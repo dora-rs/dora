@@ -3,6 +3,8 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
+use parking_lot::ReentrantMutex;
 
 use crate::error::{RclRustError, ToRclRustResult};
 use crate::impl_from_trait_for_enum;
@@ -47,21 +49,14 @@ impl TryFrom<c_int> for LogSeverity {
         } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_FATAL as u32 as i32 {
             Ok(Self::Fatal)
         } else {
-            return Err(RclRustError::RuntimeError("").into());
+            Err(RclRustError::RuntimeError("cast error: LogSeverity").into())
         }
     }
 }
 
-pub fn logging_autoinit() {
-    unsafe {
-        if !rcl_sys::g_rcutils_logging_initialized {
-            rcl_sys::rcutils_logging_initialize()
-                .to_result()
-                .expect("rcutils_logging_initialize() should succeed");
-        }
-    }
-}
+pub(crate) static LOGGER_MUTEX: Lazy<ReentrantMutex<()>> = Lazy::new(|| ReentrantMutex::new(()));
 
+#[derive(Debug)]
 pub struct Logger {
     name: CString,
 }
@@ -80,7 +75,15 @@ impl Logger {
     }
 
     pub fn log_common(&self, severity: LogSeverity, msg: &str, file: &str, line: u32) {
-        logging_autoinit();
+        let _guard = LOGGER_MUTEX.lock();
+
+        unsafe {
+            if !rcl_sys::g_rcutils_logging_initialized {
+                rcl_sys::rcutils_logging_initialize()
+                    .to_result()
+                    .expect("rcutils_logging_initialize() should succeed");
+            }
+        }
 
         if !self.is_enable_for(severity) {
             return;
@@ -108,7 +111,7 @@ impl Logger {
     }
 
     pub fn get_name(&self) -> &str {
-        &self.name.to_str().unwrap()
+        self.name.to_str().unwrap()
     }
 
     fn get_name_ptr(&self) -> *const c_char {
@@ -128,6 +131,7 @@ impl Logger {
     }
 
     pub fn set_level(&self, level: LogSeverity) -> Result<()> {
+        let _guard = LOGGER_MUTEX.lock();
         unsafe {
             rcl_sys::rcutils_logging_set_logger_level(self.get_name_ptr(), level.into()).to_result()
         }
@@ -135,6 +139,7 @@ impl Logger {
 
     pub fn get_level(&self) -> Result<LogSeverity> {
         LogSeverity::try_from(unsafe {
+            let _guard = LOGGER_MUTEX.lock();
             rcl_sys::rcutils_logging_get_logger_level(self.get_name_ptr())
         })
         .with_context(|| format!("{:?}", self.name))
@@ -142,12 +147,14 @@ impl Logger {
 
     pub fn get_effective_level(&self) -> Result<LogSeverity> {
         LogSeverity::try_from(unsafe {
+            let _guard = LOGGER_MUTEX.lock();
             rcl_sys::rcutils_logging_get_logger_effective_level(self.get_name_ptr())
         })
         .with_context(|| format!("{:?}", self.name))
     }
 
     pub fn is_enable_for(&self, severity: LogSeverity) -> bool {
+        let _guard = LOGGER_MUTEX.lock();
         unsafe {
             rcl_sys::rcutils_logging_logger_is_enabled_for(self.get_name_ptr(), severity.into())
         }
