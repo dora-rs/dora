@@ -7,7 +7,9 @@ authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 description = "TODO"
 repository = "https://github.com/ros2rust/rclrust"
 license = "Apache-2.0"
+readme = "../README.md"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+keywords = ["ROS2"]
+categories = ["science::robotics"]
 
 [dependencies]
