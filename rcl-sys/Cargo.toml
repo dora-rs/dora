@@ -1,0 +1,11 @@
+[package]
+name = "rcl-sys"
+version = "0.0.0"
+edition = "2018"
+authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
+
+description = "TODO"
+repository = "https://github.com/ros2rust/rclrust"
+license = "Apache-2.0"
+
+[dependencies]
