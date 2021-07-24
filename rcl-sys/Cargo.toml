@@ -1,11 +1,15 @@
 [package]
 name = "rcl-sys"
-version = "0.0.0"
+version = "0.0.1"
 edition = "2018"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
-description = "TODO"
+description = "The C API binding of the ROS client library (rcl)"
 repository = "https://github.com/ros2rust/rclrust"
 license = "Apache-2.0"
 
-[dependencies]
+[build-dependencies]
+bindgen = "0.59"
+
+[lib]
+doctest = false

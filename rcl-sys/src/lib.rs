@@ -1,7 +1,10 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+#![allow(
+    improper_ctypes,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    invalid_codeblock_attributes,
+    clippy::all
+)]
+
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
