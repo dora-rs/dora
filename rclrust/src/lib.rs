@@ -7,3 +7,4 @@
 
 pub mod error;
 pub(crate) mod internal;
+pub mod log;
