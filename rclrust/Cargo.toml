@@ -1,0 +1,13 @@
+[package]
+name = "rclrust"
+version = "0.0.0"
+edition = "2018"
+authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
+
+description = "TODO"
+repository = "https://github.com/ros2rust/rclrust"
+license = "Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
