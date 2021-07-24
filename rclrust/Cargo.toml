@@ -13,3 +13,7 @@ keywords = ["ROS2"]
 categories = ["science::robotics"]
 
 [dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+rcl-sys = { path = "../rcl-sys", version = "0.0.1" }
+rclrust-msg = "0.0.1"

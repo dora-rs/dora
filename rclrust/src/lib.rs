@@ -1,7 +1,9 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}
+#![warn(
+    rust_2018_idioms,
+    elided_lifetimes_in_paths,
+    clippy::all,
+    clippy::nursery
+)]
+
+pub mod error;
+pub(crate) mod internal;
