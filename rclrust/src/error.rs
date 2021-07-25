@@ -149,6 +149,7 @@ pub(crate) fn result_from_rcl_ret(ret: rcl_sys::rcl_ret_t, prefix: Option<&str>)
     }
     let formatted_prefix = prefix.map_or("".into(), |v| format!("[{}]: ", v));
     let base_error = unsafe { RclErrorBase::new(error_state, formatted_prefix) };
+    unsafe { rcl_sys::rcutils_reset_error() }
 
     let error = {
         use rcl_sys::*;
