@@ -9,6 +9,7 @@ pub mod clock;
 pub mod error;
 pub(crate) mod internal;
 pub mod log;
+pub mod qos;
 pub mod time;
 
 pub use clock::{Clock, ClockType};
