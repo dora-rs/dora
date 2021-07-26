@@ -199,6 +199,9 @@ macro_rules! rclrust_fatal {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn named_logger_init() -> Result<()> {
@@ -220,6 +223,8 @@ mod test {
 
     #[test]
     fn empty_logger_level() -> Result<()> {
+        let _guard = TEST_MUTEX.lock();
+
         let logger = Logger::empty_name();
 
         logger.set_level(LogSeverity::Debug)?;
@@ -242,6 +247,8 @@ mod test {
 
     #[test]
     fn named_logger_level() -> Result<()> {
+        let _guard = TEST_MUTEX.lock();
+
         let root_logger = Logger::empty_name();
 
         let logger = Logger::new("test");
@@ -260,6 +267,8 @@ mod test {
 
     #[test]
     fn empty_logger_is_enable_for() -> Result<()> {
+        let _guard = TEST_MUTEX.lock();
+
         let logger = Logger::empty_name();
 
         logger.set_level(LogSeverity::Unset)?;
