@@ -4,7 +4,7 @@ use crate::impl_from_trait_for_enum;
 use crate::time::RclDurationT;
 
 /// QoS reliability enumerations
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReliabilityPolicy {
     /// Implementation specific default
     SystemDefault,
@@ -26,7 +26,7 @@ impl_from_trait_for_enum! {
 }
 
 /// QoS history enumerations describing how samples endure
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryPolicy {
     /// Implementation default for history policy
     SystemDefault,
@@ -48,7 +48,7 @@ impl_from_trait_for_enum! {
 }
 
 /// QoS durability enumerations describing how samples persist
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurabilityPolicy {
     /// Implementation specific default
     SystemDefault,
@@ -72,7 +72,7 @@ impl_from_trait_for_enum! {
 /// QoS liveliness enumerations that describe a publisher's reporting policy for its alive status.
 /// For a subscriber, these are its requirements for its topic's publishers.
 #[allow(deprecated)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LivelinessPolicy {
     /// Implementation specific default
     SystemDefault,
@@ -101,7 +101,7 @@ impl_from_trait_for_enum! {
     Unknown := RMW_QOS_POLICY_LIVELINESS_UNKNOWN,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyKind {
     Invalid,
     Durability,
@@ -139,7 +139,7 @@ impl From<PolicyKind> for String {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QoSProfile {
     history: HistoryPolicy,
     depth: usize,
