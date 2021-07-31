@@ -36,17 +36,17 @@ impl TryFrom<c_int> for LogSeverity {
     fn try_from(from: c_int) -> Result<Self> {
         use rcl_sys::RCUTILS_LOG_SEVERITY;
 
-        if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_UNSET as u32 as i32 {
+        if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_UNSET as u32 as c_int {
             Ok(Self::Unset)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_DEBUG as u32 as i32 {
+        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_DEBUG as u32 as c_int {
             Ok(Self::Debug)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_INFO as u32 as i32 {
+        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_INFO as u32 as c_int {
             Ok(Self::Info)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_WARN as u32 as i32 {
+        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_WARN as u32 as c_int {
             Ok(Self::Warn)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_ERROR as u32 as i32 {
+        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_ERROR as u32 as c_int {
             Ok(Self::Error)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_FATAL as u32 as i32 {
+        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_FATAL as u32 as c_int {
             Ok(Self::Fatal)
         } else {
             Err(RclRustError::RuntimeError("cast error: LogSeverity").into())
