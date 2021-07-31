@@ -1,3 +1,5 @@
+use std::mem::MaybeUninit;
+
 use anyhow::{ensure, Result};
 
 use crate::error::ToRclRustResult;
@@ -32,76 +34,27 @@ impl_from_trait_for_enum! {
 }
 
 #[derive(Debug)]
-pub(crate) struct RclClock(rcl_sys::rcl_clock_t);
+pub struct Clock(rcl_sys::rcl_clock_t);
 
-unsafe impl Send for RclClock {}
+unsafe impl Send for Clock {}
 
-impl RclClock {
-    pub fn new(clock_type: ClockType) -> Result<Self> {
+impl Clock {
+    pub(crate) fn new(clock_type: ClockType) -> Result<Self> {
         ensure!(
             clock_type != ClockType::Uninitialized,
             "`ClockType::Uninitialized` is invalid type."
         );
 
-        let mut clock = rcl_sys::rcl_clock_t {
-            type_: ClockType::Uninitialized.into(),
-            jump_callbacks: std::ptr::null_mut(),
-            num_jump_callbacks: 0,
-            get_now: None,
-            data: std::ptr::null_mut(),
-            allocator: unsafe { rcl_sys::rcutils_get_default_allocator() },
-        };
-
-        let mut allocator = unsafe { rcl_sys::rcutils_get_default_allocator() };
+        let mut clock = MaybeUninit::uninit();
         unsafe {
-            rcl_sys::rcl_clock_init(clock_type.into(), &mut clock, &mut allocator).to_result()?;
-        }
-        Ok(Self(clock))
-    }
-
-    pub fn now(&mut self) -> Result<Time> {
-        let mut nanosecs = 0;
-
-        unsafe {
-            rcl_sys::rcl_clock_get_now(&mut self.0, &mut nanosecs).to_result()?;
-        }
-        Ok(Time::from_nanosecs(nanosecs, self.clock_type()))
-    }
-
-    pub fn clock_type(&self) -> ClockType {
-        self.0.type_.into()
-    }
-
-    pub fn valid(&mut self) -> bool {
-        unsafe { rcl_sys::rcl_clock_valid(&mut self.0) }
-    }
-}
-
-impl Drop for RclClock {
-    fn drop(&mut self) {
-        if self.clock_type() != ClockType::Uninitialized {
-            let ret = unsafe { rcl_sys::rcl_clock_fini(&mut self.0).to_result() };
-            if let Err(e) = ret {
-                rclrust_error!(
-                    Logger::new("rclrust"),
-                    "Failed to clean up rcl clock handle: {}",
-                    e
-                )
-            }
+            let mut allocator = rcl_sys::rcutils_get_default_allocator();
+            rcl_sys::rcl_clock_init(clock_type.into(), clock.as_mut_ptr(), &mut allocator)
+                .to_result()?;
+            Ok(Self(clock.assume_init()))
         }
     }
-}
 
-#[derive(Debug)]
-pub struct Clock(RclClock);
-
-impl Clock {
-    pub(crate) fn new(clock_type: ClockType) -> Result<Self> {
-        let handle = RclClock::new(clock_type)?;
-        Ok(Self(handle))
-    }
-
-    /// Construct a new `Clock`
+    /// Construct a new `Clock` with ros time
     ///
     /// # Examples
     ///
@@ -115,7 +68,7 @@ impl Clock {
         Self::new(ClockType::RosTime)
     }
 
-    /// Construct a new `Clock`
+    /// Construct a new `Clock` with system time
     ///
     /// # Examples
     ///
@@ -129,7 +82,7 @@ impl Clock {
         Self::new(ClockType::SystemTime)
     }
 
-    /// Construct a new `Clock`
+    /// Construct a new `Clock` with steady time
     ///
     /// # Examples
     ///
@@ -153,7 +106,12 @@ impl Clock {
     /// println!("current time: {:?}", now);
     /// ```
     pub fn now(&mut self) -> Result<Time> {
-        self.0.now()
+        let mut nanosecs = 0;
+
+        unsafe {
+            rcl_sys::rcl_clock_get_now(&mut self.0, &mut nanosecs).to_result()?;
+        }
+        Ok(Time::from_nanosecs(nanosecs, self.clock_type()))
     }
 
     /// # Examples
@@ -165,7 +123,7 @@ impl Clock {
     /// assert_eq!(clock.clock_type(), ClockType::RosTime);
     /// ```
     pub fn clock_type(&self) -> ClockType {
-        self.0.clock_type()
+        self.0.type_.into()
     }
 
     /// # Examples
@@ -177,6 +135,21 @@ impl Clock {
     /// assert!(clock.valid());
     /// ```
     pub fn valid(&mut self) -> bool {
-        self.0.valid()
+        unsafe { rcl_sys::rcl_clock_valid(&mut self.0) }
+    }
+}
+
+impl Drop for Clock {
+    fn drop(&mut self) {
+        if self.clock_type() != ClockType::Uninitialized {
+            let ret = unsafe { rcl_sys::rcl_clock_fini(&mut self.0).to_result() };
+            if let Err(e) = ret {
+                rclrust_error!(
+                    Logger::new("rclrust"),
+                    "Failed to clean up rcl clock handle: {}",
+                    e
+                )
+            }
+        }
     }
 }
