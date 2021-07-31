@@ -27,6 +27,17 @@ fn main() {
 
     let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("bindings.rs");
     builder
+        .allowlist_type("rcl_.*")
+        .allowlist_type("rmw_.*")
+        .allowlist_type("rcutils_.*")
+        .allowlist_type("RCUTILS_.*")
+        .allowlist_function("rcl_.*")
+        .allowlist_function("rmw_.*")
+        .allowlist_function("rcutils_.*")
+        .allowlist_var("RCL_.*")
+        .allowlist_var("RMW_.*")
+        .allowlist_var("RCUTILS_.*")
+        .allowlist_var("g_rcutils_.*")
         .generate()
         .expect("Unable to generate bindings")
         .write_to_file(out_path)
