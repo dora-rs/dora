@@ -13,6 +13,7 @@ pub(crate) mod internal;
 pub mod log;
 pub mod node;
 pub mod node_options;
+pub mod publisher;
 pub mod qos;
 pub mod time;
 pub mod utility;

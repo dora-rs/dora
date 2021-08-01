@@ -35,7 +35,7 @@ impl RclContext {
         }
     }
 
-    pub(crate) unsafe fn as_mut_ptr(&mut self) -> *mut rcl_sys::rcl_context_t {
+    pub unsafe fn as_mut_ptr(&mut self) -> *mut rcl_sys::rcl_context_t {
         self.0.as_mut()
     }
 
