@@ -8,6 +8,8 @@ use crate::error::ToRclRustResult;
 use crate::internal::ffi::*;
 use crate::log::Logger;
 use crate::node_options::NodeOptions;
+use crate::publisher::Publisher;
+use crate::qos::QoSProfile;
 use crate::rclrust_error;
 
 #[derive(Debug)]
@@ -38,6 +40,14 @@ impl RclNode {
         }
 
         Ok(Self(node))
+    }
+
+    pub(crate) const fn raw(&self) -> &rcl_sys::rcl_node_t {
+        &self.0
+    }
+
+    pub(crate) unsafe fn raw_mut(&mut self) -> &mut rcl_sys::rcl_node_t {
+        &mut self.0
     }
 
     fn valid(&self) -> bool {
@@ -79,14 +89,14 @@ impl RclNode {
 }
 
 #[derive(Debug)]
-pub struct Node<'a> {
-    handle: Mutex<RclNode>,
-    context_handle: &'a Mutex<RclContext>,
+pub struct Node<'ctx> {
+    handle: Arc<Mutex<RclNode>>,
+    context_handle: &'ctx Mutex<RclContext>,
 }
 
-impl<'a> Node<'a> {
+impl<'ctx> Node<'ctx> {
     pub(crate) fn new(
-        context: &'a Context,
+        context: &'ctx Context,
         name: &str,
         namespace: Option<&str>,
         options: &NodeOptions,
@@ -99,9 +109,13 @@ impl<'a> Node<'a> {
         };
 
         Ok(Arc::new(Self {
-            handle: Mutex::new(handle),
+            handle: Arc::new(Mutex::new(handle)),
             context_handle: context.handle(),
         }))
+    }
+
+    pub(crate) fn clone_handle(&self) -> Arc<Mutex<RclNode>> {
+        Arc::clone(&self.handle)
     }
 
     /// # Examples
@@ -172,9 +186,16 @@ impl<'a> Node<'a> {
     pub fn logger_name(&self) -> String {
         self.handle.lock().unwrap().logger_name()
     }
+
+    pub fn create_publisher<T>(&self, topic_name: &str, qos: &QoSProfile) -> Result<Publisher<T>>
+    where
+        T: rclrust_msg::MessageT,
+    {
+        Publisher::new(self, topic_name, qos)
+    }
 }
 
-impl<'a> Drop for Node<'a> {
+impl Drop for Node<'_> {
     fn drop(&mut self) {
         let ret = unsafe { self.handle.lock().unwrap().fini(self.context_handle) };
         if let Err(e) = ret {
