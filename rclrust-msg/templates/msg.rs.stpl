@@ -1,0 +1,223 @@
+<@ let func_prefix = format!("{}__{}__{}", package, namespace, msg.name); @>
+
+// <@= func_prefix @>
+
+#[allow(unused_imports)]
+use std::convert::TryInto as _;
+use std::os::raw::c_void;
+
+use <@= codegen::RCLRS_MSG_CORE @>::traits::{
+    FFIFromRust as _FFIFromRust,
+    FFIToRust as _FFIToRust,
+    MessageT as _MessageT,
+    RawMessageRefT as _RawMessageRefT,
+    RawMessageT as _RawMessageT,
+    ZeroInit as _ZeroInit
+};
+
+#[allow(non_camel_case_types)]
+#[derive(std::fmt::Debug, std::clone::Clone, std::cmp::PartialEq)]
+pub struct <@= msg.name @> {
+<@ for member in &msg.members { @>
+    pub <@= codegen::escape_keyword(&member.name) @>: <@= codegen::msg_type_to_rs_not_raw(member, package) @>,
+<@ } @>
+}
+
+impl <@= msg.name @> {
+<@ for constant in &msg.constants { @>
+    /// `<@= constant.value @>`
+    pub const <@= constant.name @>: <@= codegen::constant_type_str(constant) @> = <@= constant.value @>;
+<@ } @>
+}
+
+#[link(name = "<@= package @>__rosidl_typesupport_c")]
+extern "C" {
+    fn <@= codegen::MSG_TYPE_SUPPORT_PREFIX @>__<@= func_prefix @>() -> *const c_void;
+}
+
+impl _MessageT for <@= msg.name @> {
+    type Raw = <@= msg.name @>_Raw;
+    type RawRef = <@= msg.name @>_RawRef;
+
+    fn type_support() -> *const c_void {
+        unsafe {
+            <@= codegen::MSG_TYPE_SUPPORT_PREFIX @>__<@= func_prefix @>()
+        }
+    }
+
+    unsafe fn from_raw(from: &Self::Raw) -> Self {
+        from.to_rust()
+    }
+
+    unsafe fn to_raw_ref(&self) -> Self::RawRef {
+        Self::RawRef::from_rust(self)
+    }
+}
+
+impl _ZeroInit for <@= msg.name @> {
+    fn zero_init() -> Self {
+        Self {
+<@ for member in &msg.members { @>
+            <@= codegen::escape_keyword(&member.name) @>: <@= codegen::create_zero_init_str(member) @>,
+<@ } @>
+        }
+    }
+}
+
+
+impl std::default::Default for <@= msg.name @> {
+    fn default() -> Self {
+        Self {
+<@ for member in &msg.members { @>
+  <@ if let Some(default) = &member.default { @>
+            <@= codegen::escape_keyword(&member.name) @>: <@= default @>.into(),
+  <@ } else { @>
+            <@= codegen::escape_keyword(&member.name) @>: <@= codegen::create_zero_init_str(member) @>,
+  <@ } @>
+<@ } @>
+        }
+    }
+}
+
+#[link(name = "<@= package @>__rosidl_generator_c")]
+extern "C" {
+    #[must_use]
+    fn <@= func_prefix @>__init(msg: *mut <@= msg.name @>_Raw) -> bool;
+
+    fn <@= func_prefix @>__fini(msg: *mut <@= msg.name @>_Raw);
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(std::fmt::Debug)]
+pub struct <@= msg.name @>_Raw {
+<@ if msg.members.is_empty() { @>
+    pub structure_needs_at_least_one_member: u8,
+<@ } else { @>
+  <@ for member in &msg.members { @>
+    pub <@= codegen::escape_keyword(&member.name) @>: <@= codegen::msg_type_to_ffi_raw(member, package) @>,
+  <@ } @>
+<@ } @>
+}
+
+impl _RawMessageT for <@= msg.name @>_Raw {}
+
+impl _ZeroInit for <@= msg.name @>_Raw {
+    fn zero_init() -> Self {
+        Self {
+<@ if msg.members.is_empty() { @>
+            structure_needs_at_least_one_member: 0,
+<@ } else { @>
+  <@ for member in &msg.members { @>
+            <@= codegen::escape_keyword(&member.name) @>: <@= codegen::create_zero_init_str(member) @>,
+  <@ } @>
+<@ } @>
+        }
+    }
+}
+
+impl _FFIToRust for <@= msg.name @>_Raw {
+    type Target = <@= msg.name @>;
+
+    unsafe fn to_rust(&self) -> Self::Target {
+        Self::Target {
+<@ for member in &msg.members { @>
+            <@= codegen::escape_keyword(&member.name) @>: <@= codegen::create_ffi_to_rust(member) @>,
+<@ } @>
+        }
+    }
+}
+
+impl std::default::Default for <@= msg.name @>_Raw {
+    fn default() -> Self {
+        let mut msg = Self::zero_init();
+        let ret = unsafe {
+            <@= func_prefix @>__init(&mut msg)
+        };
+        assert!(ret, "<@= func_prefix @>__init should succeed");
+        msg
+    }
+}
+
+impl std::ops::Drop for <@= msg.name @>_Raw {
+    fn drop(&mut self) {
+        unsafe {
+            <@= func_prefix @>__fini(self as *mut _);
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(std::fmt::Debug)]
+pub struct <@= msg.name @>_RawRef {
+<@ if msg.members.is_empty() { @>
+    pub structure_needs_at_least_one_member: u8,
+<@ } else { @>
+  <@ for member in &msg.members { @>
+    <@= codegen::escape_keyword(&member.name) @>: <@= codegen::msg_type_to_ffi_raw_ref(member, package) @>,
+  <@ } @>
+<@ } @>
+}
+
+impl <@= msg.name @>_RawRef {
+<@ for member in &msg.members { @>
+    pub fn get_<@= member.name @>(&self) -> &<@= codegen::msg_type_to_ffi_raw_ref(member, package) @> {
+        &self.<@= codegen::escape_keyword(&member.name) @>
+    }
+<@ } @>
+}
+
+impl _RawMessageRefT for <@= msg.name @>_RawRef {}
+
+impl _ZeroInit for <@= msg.name @>_RawRef {
+    fn zero_init() -> Self {
+        Self {
+<@ if msg.members.is_empty() { @>
+            structure_needs_at_least_one_member: 0,
+<@ } else { @>
+  <@ for member in &msg.members { @>
+            <@= codegen::escape_keyword(&member.name) @>: <@= codegen::create_zero_init_str(member) @>,
+  <@ } @>
+<@ } @>
+        }
+    }
+}
+
+impl _FFIFromRust for <@= msg.name @>_RawRef {
+    type From = <@= msg.name @>;
+
+    #[allow(unused_variables)]
+    fn from_rust(from: &Self::From) -> Self {
+        Self {
+<@ if msg.members.is_empty() { @>
+            structure_needs_at_least_one_member: 0,
+<@ } else { @>
+  <@ for member in &msg.members { @>
+            <@= codegen::escape_keyword(&member.name) @>: <@= codegen::create_ffi_from_rust(member) @>,
+  <@ } @>
+<@ } @>
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_rust_default() {
+        let _ = <@= msg.name @>::default();
+    }
+
+    #[test]
+    fn test_raw_default() {
+        let _ = <@= msg.name @>_Raw::default();
+    }
+
+    #[test]
+    fn test_type_support() {
+        let ptr = <@= msg.name @>::type_support();
+        assert!(!ptr.is_null());
+    }
+}
