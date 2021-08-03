@@ -1,5 +1,5 @@
 use std::ffi::CString;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{ensure, Result};
 
@@ -11,6 +11,7 @@ use crate::node_options::NodeOptions;
 use crate::publisher::Publisher;
 use crate::qos::QoSProfile;
 use crate::rclrust_error;
+use crate::subscription::{RawSubscription, Subscription, SubscriptionBase};
 
 #[derive(Debug)]
 pub(crate) struct RclNode(rcl_sys::rcl_node_t);
@@ -88,10 +89,10 @@ impl RclNode {
     }
 }
 
-#[derive(Debug)]
 pub struct Node<'ctx> {
     handle: Arc<Mutex<RclNode>>,
-    context_handle: &'ctx Mutex<RclContext>,
+    context: &'ctx Context,
+    pub(crate) subscriptions: Mutex<Vec<Weak<dyn SubscriptionBase>>>,
 }
 
 impl<'ctx> Node<'ctx> {
@@ -104,18 +105,27 @@ impl<'ctx> Node<'ctx> {
         ensure!(context.valid(), "given Context is not valid");
 
         let handle = {
-            let mut context_handle_inner = context.handle().lock().unwrap();
-            RclNode::new(&mut context_handle_inner, name, namespace, options)?
+            RclNode::new(
+                &mut context.handle().lock().unwrap(),
+                name,
+                namespace,
+                options,
+            )?
         };
 
         Ok(Arc::new(Self {
             handle: Arc::new(Mutex::new(handle)),
-            context_handle: context.handle(),
+            context,
+            subscriptions: Mutex::new(vec![]),
         }))
     }
 
     pub(crate) fn clone_handle(&self) -> Arc<Mutex<RclNode>> {
         Arc::clone(&self.handle)
+    }
+
+    pub(crate) fn context_ref(&self) -> &'ctx Context {
+        self.context
     }
 
     /// # Examples
@@ -189,16 +199,47 @@ impl<'ctx> Node<'ctx> {
 
     pub fn create_publisher<T>(&self, topic_name: &str, qos: &QoSProfile) -> Result<Publisher<T>>
     where
-        T: rclrust_msg::MessageT,
+        T: rclrust_msg::traits::MessageT,
     {
         Publisher::new(self, topic_name, qos)
+    }
+
+    pub fn create_subscription<T, F>(
+        &self,
+        topic_name: &str,
+        callback: F,
+        qos: &QoSProfile,
+    ) -> Result<Arc<Subscription<T>>>
+    where
+        T: rclrust_msg::traits::MessageT + 'static,
+        F: Fn(T) + 'static,
+    {
+        let sub = Subscription::new(self, topic_name, callback, qos)?;
+        let weak_sub = Arc::downgrade(&sub) as Weak<dyn SubscriptionBase>;
+        self.subscriptions.lock().unwrap().push(weak_sub);
+        Ok(sub)
+    }
+
+    pub fn create_raw_subscription<T, F>(
+        &self,
+        topic_name: &str,
+        callback: F,
+        qos: &QoSProfile,
+    ) -> Result<Arc<RawSubscription<T>>>
+    where
+        T: rclrust_msg::traits::MessageT + 'static,
+        F: Fn(&T::Raw) + 'static,
+    {
+        let sub = RawSubscription::new(self, topic_name, callback, qos)?;
+        let weak_sub = Arc::downgrade(&sub) as Weak<dyn SubscriptionBase>;
+        self.subscriptions.lock().unwrap().push(weak_sub);
+        Ok(sub)
     }
 }
 
 impl Drop for Node<'_> {
     fn drop(&mut self) {
-        let ret = unsafe { self.handle.lock().unwrap().fini(self.context_handle) };
-        if let Err(e) = ret {
+        if let Err(e) = unsafe { self.handle.lock().unwrap().fini(self.context.handle()) } {
             rclrust_error!(
                 Logger::new("rclrust"),
                 "Failed to clean up rcl node handle: {}",

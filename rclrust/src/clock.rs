@@ -142,8 +142,7 @@ impl Clock {
 impl Drop for Clock {
     fn drop(&mut self) {
         if self.clock_type() != ClockType::Uninitialized {
-            let ret = unsafe { rcl_sys::rcl_clock_fini(&mut self.0).to_result() };
-            if let Err(e) = ret {
+            if let Err(e) = unsafe { rcl_sys::rcl_clock_fini(&mut self.0).to_result() } {
                 rclrust_error!(
                     Logger::new("rclrust"),
                     "Failed to clean up rcl clock handle: {}",

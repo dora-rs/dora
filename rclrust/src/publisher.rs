@@ -20,7 +20,7 @@ unsafe impl Send for RclPublisher {}
 impl RclPublisher {
     fn new<T>(node: &RclNode, topic_name: &str, qos: &QoSProfile) -> Result<Self>
     where
-        T: rclrust_msg::MessageT,
+        T: rclrust_msg::traits::MessageT,
     {
         let mut publisher = unsafe { rcl_sys::rcl_get_zero_initialized_publisher() };
         let topic_c_str = CString::new(topic_name)?;
@@ -41,13 +41,13 @@ impl RclPublisher {
         Ok(Self(publisher))
     }
 
-    fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        unsafe { rcl_sys::rcl_publisher_fini(&mut self.0, node.raw_mut()).to_result() }
+    unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
+        rcl_sys::rcl_publisher_fini(&mut self.0, node.raw_mut()).to_result()
     }
 
     fn publish<T>(&self, message: &T) -> Result<()>
     where
-        T: rclrust_msg::MessageT,
+        T: rclrust_msg::traits::MessageT,
     {
         unsafe {
             rcl_sys::rcl_publish(
@@ -83,7 +83,7 @@ impl RclPublisher {
 
 pub struct Publisher<T>
 where
-    T: rclrust_msg::MessageT,
+    T: rclrust_msg::traits::MessageT,
 {
     handle: RclPublisher,
     node_handle: Arc<Mutex<RclNode>>,
@@ -92,7 +92,7 @@ where
 
 impl<T> Publisher<T>
 where
-    T: rclrust_msg::MessageT,
+    T: rclrust_msg::traits::MessageT,
 {
     pub(crate) fn new<'a>(node: &'a Node<'a>, topic_name: &str, qos: &QoSProfile) -> Result<Self> {
         let node_handle = node.clone_handle();
@@ -124,14 +124,13 @@ where
 
 impl<T> Drop for Publisher<T>
 where
-    T: rclrust_msg::MessageT,
+    T: rclrust_msg::traits::MessageT,
 {
     fn drop(&mut self) {
-        let ret = self.handle.fini(&mut self.node_handle.lock().unwrap());
-        if let Err(e) = ret {
+        if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
             rclrust_error!(
                 Logger::new("rclrust"),
-                "Failed to clean up rcl publisher handle: {:?}",
+                "Failed to clean up rcl publisher handle: {}",
                 e
             )
         }

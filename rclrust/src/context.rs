@@ -49,6 +49,10 @@ impl RclContext {
         }
         Ok(())
     }
+
+    unsafe fn fini(&mut self) -> anyhow::Result<()> {
+        rcl_sys::rcl_context_fini(self.0.as_mut()).to_result()
+    }
 }
 
 impl Drop for RclContext {
@@ -60,7 +64,7 @@ impl Drop for RclContext {
                 e
             )
         }
-        if let Err(e) = unsafe { rcl_sys::rcl_context_fini(self.0.as_mut()).to_result() } {
+        if let Err(e) = unsafe { self.fini() } {
             rclrust_error!(
                 Logger::new("rclrust"),
                 "Failed to clean up rcl context handle: {}",
