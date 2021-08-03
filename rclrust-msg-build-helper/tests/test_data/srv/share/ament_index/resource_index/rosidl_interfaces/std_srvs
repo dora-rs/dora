@@ -1,0 +1,12 @@
+srv/Empty.idl
+srv/Empty.srv
+srv/Empty_Request.msg
+srv/Empty_Response.msg
+srv/SetBool.idl
+srv/SetBool.srv
+srv/SetBool_Request.msg
+srv/SetBool_Response.msg
+srv/Trigger.idl
+srv/Trigger.srv
+srv/Trigger_Request.msg
+srv/Trigger_Response.msg

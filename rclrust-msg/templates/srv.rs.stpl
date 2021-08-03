@@ -1,0 +1,49 @@
+<@ let func_prefix = format!("{}__{}__{}", package, namespace, srv.name); @>
+
+use std::os::raw::c_void;
+
+use <@= codegen::RCLRS_MSG_CORE @>::traits::ServiceT as _ServiceT;
+
+pub use self::request::*;
+pub use self::response::*;
+
+#[allow(non_camel_case_types)]
+#[derive(std::fmt::Debug)]
+pub struct <@= srv.name @>;
+
+#[link(name = "<@= package @>__rosidl_typesupport_c")]
+extern "C" {
+    fn <@= codegen::SRV_TYPE_SUPPORT_PREFIX @>__<@= func_prefix @>() -> *const c_void;
+}
+
+impl _ServiceT for <@= srv.name @> {
+    type Request = <@= srv.name @>_Request;
+    type Response = <@= srv.name @>_Response;
+
+    fn type_support() -> *const c_void {
+        unsafe {
+            <@= codegen::SRV_TYPE_SUPPORT_PREFIX @>__<@= func_prefix @>()
+        }
+    }
+}
+
+mod request {
+<@ let msg = &srv.request; @>
+<@ include!("./msg.rs.stpl"); @>
+}  // mod request
+
+mod response {
+<@ let msg = &srv.response; @>
+<@ include!("./msg.rs.stpl"); @>
+}  // mod response
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_type_support() {
+        let ptr = <@= srv.name @>::type_support();
+        assert!(!ptr.is_null());
+    }
+}

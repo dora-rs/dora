@@ -1,0 +1,23 @@
+[package]
+name = "rclrust-msg"
+version = "0.0.1"
+edition = "2018"
+authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
+
+description = "TODO"
+repository = "https://github.com/rclrust/rclrust"
+license = "Apache-2.0"
+readme = "../README.md"
+
+categories = ["robotics"]
+keywords = ["ros2"]
+
+workspace = ".."
+
+[dependencies]
+rclrust-msg-core = { path = "../rclrust-msg-core", version = "0.0.1" }
+
+[build-dependencies]
+heck = "0.3"
+rclrust-msg-build-helper = { path = "../rclrust-msg-build-helper", version = "0.0.1" }
+sailfish = "0.3"

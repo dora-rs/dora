@@ -1,0 +1,44 @@
+
+pub mod <@= package @> {
+<@ if msgs.msgs.is_empty() { @>
+// empty msg
+<@ } else { @>
+pub mod msg {
+<@ let namespace = "msg"; @>
+<@ for msg in msgs.msgs.iter() { @>
+pub use self::_<@= msg.name.to_snake_case() @>::*;
+mod _<@= msg.name.to_snake_case() @> {
+<@ include!("./msg.rs.stpl"); @>
+}  // mod _<@= msg.name.to_snake_case() @>
+<@ } @>
+}  // pub mod msg
+<@ } @>
+
+<@ if msgs.srvs.is_empty() { @>
+// empty srv
+<@ } else { @>
+pub mod srv {
+<@ let namespace = "srv"; @>
+<@ for srv in msgs.srvs.iter() { @>
+pub use self::_<@= srv.name.to_snake_case() @>::*;
+mod _<@= srv.name.to_snake_case() @> {
+<@ include!("./srv.rs.stpl"); @>
+}  // mod _<@= srv.name.to_snake_case() @>
+<@ } @>
+}  // pub mod srv
+<@ } @>
+
+<@ if msgs.actions.is_empty() { @>
+// empty action
+<@ } else { @>
+pub mod action {
+<@ let namespace = "action"; @>
+<@ for action in msgs.actions.iter() { @>
+pub use self::_<@= action.name.to_snake_case() @>::*;
+mod _<@= action.name.to_snake_case() @> {
+<@ include!("./action.rs.stpl"); @>
+}  // mod _<@= action.name.to_snake_case() @>
+<@ } @>
+}  // pub mod action
+<@ } @>
+}  // pub mod <@= package @>
