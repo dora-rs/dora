@@ -199,7 +199,7 @@ impl<'ctx> Node<'ctx> {
 
     pub fn create_publisher<T>(&self, topic_name: &str, qos: &QoSProfile) -> Result<Publisher<T>>
     where
-        T: rclrust_msg::traits::MessageT,
+        T: rclrust_msg::_core::MessageT,
     {
         Publisher::new(self, topic_name, qos)
     }
@@ -211,7 +211,7 @@ impl<'ctx> Node<'ctx> {
         qos: &QoSProfile,
     ) -> Result<Arc<Subscription<T>>>
     where
-        T: rclrust_msg::traits::MessageT + 'static,
+        T: rclrust_msg::_core::MessageT + 'static,
         F: Fn(T) + 'static,
     {
         let sub = Subscription::new(self, topic_name, callback, qos)?;
@@ -227,7 +227,7 @@ impl<'ctx> Node<'ctx> {
         qos: &QoSProfile,
     ) -> Result<Arc<RawSubscription<T>>>
     where
-        T: rclrust_msg::traits::MessageT + 'static,
+        T: rclrust_msg::_core::MessageT + 'static,
         F: Fn(&T::Raw) + 'static,
     {
         let sub = RawSubscription::new(self, topic_name, callback, qos)?;

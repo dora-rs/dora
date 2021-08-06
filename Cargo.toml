@@ -1,10 +1,7 @@
 [workspace]
 members = [
     "rclrust",
-    "rclrust-msg-build-helper",
     "rclrust-msg",
-    "rclrust-msg-core",
-    "rclrust-msg-parser",
-    "rclrust-msg-types",
+    "rclrust-msg-gen",
     "rcl-sys",
 ]

@@ -1,6 +1,6 @@
 [package]
 name = "rclrust-msg"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2018"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
@@ -15,9 +15,6 @@ keywords = ["ros2"]
 workspace = ".."
 
 [dependencies]
-rclrust-msg-core = { path = "../rclrust-msg-core", version = "0.0.1" }
-
-[build-dependencies]
-heck = "0.3"
-rclrust-msg-build-helper = { path = "../rclrust-msg-build-helper", version = "0.0.1" }
-sailfish = "0.3"
+array-init = "2.0"
+rclrust-msg-gen = { path = "../rclrust-msg-gen", version = "0.0.2" }
+widestring = "0.4"
