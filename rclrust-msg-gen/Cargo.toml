@@ -1,0 +1,22 @@
+[package]
+name = "rclrust-msg-gen"
+version = "0.0.2"
+edition = "2018"
+authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
+
+description = "TODO"
+repository = "https://github.com/rclrust/rclrust"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+heck = "0.3"
+nom = "6.1"
+proc-macro2 = "1.0"
+quote = "1.0"
+regex = "1"
+syn = "1.0"
+thiserror = "1.0"
+
+[lib]
+proc-macro = true

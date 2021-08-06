@@ -19,7 +19,7 @@ unsafe impl Send for RclSubscription {}
 impl RclSubscription {
     fn new<T>(node: &RclNode, topic_name: &str, qos: &QoSProfile) -> Result<Self>
     where
-        T: rclrust_msg::traits::MessageT,
+        T: rclrust_msg::_core::MessageT,
     {
         let mut subscription = unsafe { rcl_sys::rcl_get_zero_initialized_subscription() };
         let topic_c_str = CString::new(topic_name)?;
@@ -50,7 +50,7 @@ impl RclSubscription {
 
     fn take<T>(&self, message: &mut T::Raw) -> Result<()>
     where
-        T: rclrust_msg::traits::MessageT,
+        T: rclrust_msg::_core::MessageT,
     {
         unsafe {
             rcl_sys::rcl_take(
@@ -92,7 +92,7 @@ pub(crate) trait SubscriptionBase {
 
 pub struct RawSubscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     handle: RclSubscription,
     callback: Box<dyn Fn(&T::Raw)>,
@@ -101,7 +101,7 @@ where
 
 impl<'ctx, T> RawSubscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     pub(crate) fn new<F>(
         node: &Node<'ctx>,
@@ -137,7 +137,7 @@ where
 
 impl<T> SubscriptionBase for RawSubscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     fn handle(&self) -> &RclSubscription {
         &self.handle
@@ -154,7 +154,7 @@ where
 
 impl<T> Drop for RawSubscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     fn drop(&mut self) {
         if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
@@ -169,7 +169,7 @@ where
 
 pub struct Subscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     handle: RclSubscription,
     callback: Box<dyn Fn(T)>,
@@ -178,7 +178,7 @@ where
 
 impl<'ctx, T> Subscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     pub(crate) fn new<F>(
         node: &Node<'ctx>,
@@ -214,7 +214,7 @@ where
 
 impl<T> SubscriptionBase for Subscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     fn handle(&self) -> &RclSubscription {
         &self.handle
@@ -231,7 +231,7 @@ where
 
 impl<T> Drop for Subscription<T>
 where
-    T: rclrust_msg::traits::MessageT,
+    T: rclrust_msg::_core::MessageT,
 {
     fn drop(&mut self) {
         if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
