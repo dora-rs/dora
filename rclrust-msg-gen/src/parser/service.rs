@@ -59,7 +59,7 @@ mod test {
 
     fn parse_srv_def(srv_name: &str) -> Result<Service> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("tests/test_msgs/srv/{}.srv", srv_name));
+            .join(format!("test_msgs/srv/{}.srv", srv_name));
         parse_service_file("test_msgs", path)
     }
 
