@@ -98,7 +98,7 @@ pub(crate) trait SubscriptionBase {
     fn call_callback(&self) -> Result<()>;
 }
 
-pub struct RawSubscription<T>
+pub struct Subscription<T>
 where
     T: rclrust_msg::_core::MessageT,
 {
@@ -107,7 +107,7 @@ where
     node_handle: Arc<Mutex<RclNode>>,
 }
 
-impl<'ctx, T> RawSubscription<T>
+impl<'ctx, T> Subscription<T>
 where
     T: rclrust_msg::_core::MessageT,
 {
@@ -143,87 +143,6 @@ where
     }
 }
 
-impl<T> SubscriptionBase for RawSubscription<T>
-where
-    T: rclrust_msg::_core::MessageT,
-{
-    fn handle(&self) -> &RclSubscription {
-        &self.handle
-    }
-
-    fn call_callback(&self) -> Result<()> {
-        let mut message = T::Raw::default();
-        match self.handle.take::<T>(&mut message) {
-            Ok(_) => (self.callback)(&message),
-            Err(e) => match e.downcast_ref::<RclRustError>() {
-                Some(RclRustError::RclSubscriptionTakeFailed(_)) => {}
-                _ => return Err(e),
-            },
-        }
-        Ok(())
-    }
-}
-
-impl<T> Drop for RawSubscription<T>
-where
-    T: rclrust_msg::_core::MessageT,
-{
-    fn drop(&mut self) {
-        if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
-            rclrust_error!(
-                Logger::new("rclrust"),
-                "Failed to clean up rcl node handle: {}",
-                e
-            )
-        }
-    }
-}
-
-pub struct Subscription<T>
-where
-    T: rclrust_msg::_core::MessageT,
-{
-    handle: RclSubscription,
-    callback: Box<dyn Fn(T)>,
-    node_handle: Arc<Mutex<RclNode>>,
-}
-
-impl<'ctx, T> Subscription<T>
-where
-    T: rclrust_msg::_core::MessageT,
-{
-    pub(crate) fn new<F>(
-        node: &Node<'ctx>,
-        topic_name: &str,
-        callback: F,
-        qos: &QoSProfile,
-    ) -> Result<Arc<Self>>
-    where
-        F: Fn(T) + 'static,
-    {
-        let node_handle = node.clone_handle();
-        let handle = RclSubscription::new::<T>(&node_handle.lock().unwrap(), topic_name, qos)?;
-
-        Ok(Arc::new(Self {
-            handle,
-            callback: Box::new(callback),
-            node_handle,
-        }))
-    }
-
-    pub fn topic_name(&self) -> Option<String> {
-        self.handle().topic_name()
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.handle().is_valid()
-    }
-
-    pub fn publisher_count(&self) -> Result<usize> {
-        self.handle().publisher_count()
-    }
-}
-
 impl<T> SubscriptionBase for Subscription<T>
 where
     T: rclrust_msg::_core::MessageT,
@@ -235,7 +154,7 @@ where
     fn call_callback(&self) -> Result<()> {
         let mut message = T::Raw::default();
         match self.handle.take::<T>(&mut message) {
-            Ok(_) => (self.callback)(unsafe { T::from_raw(&message) }),
+            Ok(_) => (self.callback)(&message),
             Err(e) => match e.downcast_ref::<RclRustError>() {
                 Some(RclRustError::RclSubscriptionTakeFailed(_)) => {}
                 _ => return Err(e),

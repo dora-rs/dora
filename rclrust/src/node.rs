@@ -11,7 +11,7 @@ use crate::node_options::NodeOptions;
 use crate::publisher::Publisher;
 use crate::qos::QoSProfile;
 use crate::rclrust_error;
-use crate::subscription::{RawSubscription, Subscription, SubscriptionBase};
+use crate::subscription::{Subscription, SubscriptionBase};
 
 #[derive(Debug)]
 pub(crate) struct RclNode(rcl_sys::rcl_node_t);
@@ -217,7 +217,12 @@ impl<'ctx> Node<'ctx> {
         T: rclrust_msg::_core::MessageT + 'static,
         F: Fn(T) + 'static,
     {
-        let sub = Subscription::new(self, topic_name, callback, qos)?;
+        let sub = Subscription::new(
+            self,
+            topic_name,
+            move |msg| callback(unsafe { T::from_raw(msg) }),
+            qos,
+        )?;
         let weak_sub = Arc::downgrade(&sub) as Weak<dyn SubscriptionBase>;
         self.subscriptions.lock().unwrap().push(weak_sub);
         Ok(sub)
@@ -228,12 +233,12 @@ impl<'ctx> Node<'ctx> {
         topic_name: &str,
         callback: F,
         qos: &QoSProfile,
-    ) -> Result<Arc<RawSubscription<T>>>
+    ) -> Result<Arc<Subscription<T>>>
     where
         T: rclrust_msg::_core::MessageT + 'static,
         F: Fn(&T::Raw) + 'static,
     {
-        let sub = RawSubscription::new(self, topic_name, callback, qos)?;
+        let sub = Subscription::new(self, topic_name, callback, qos)?;
         let weak_sub = Arc::downgrade(&sub) as Weak<dyn SubscriptionBase>;
         self.subscriptions.lock().unwrap().push(weak_sub);
         Ok(sub)
