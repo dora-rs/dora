@@ -51,25 +51,26 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
     }
 
     pub fn spin_some(&self, max_duration: Duration) -> Result<()> {
-        let (n_subscriptions, _, _, _, _, _) = self.nodes.iter().filter_map(|n| n.upgrade()).fold(
-            (0, 0, 0, 0, 0, 0),
-            |(subs, guards, timers, clients, services, events), node| {
-                (
-                    subs + node.subscriptions.lock().unwrap().len(),
-                    guards,
-                    timers,
-                    clients,
-                    services,
-                    events,
-                )
-            },
-        );
+        let (n_subscriptions, _, n_timers, _, _, _) =
+            self.nodes.iter().filter_map(|n| n.upgrade()).fold(
+                (0, 0, 0, 0, 0, 0),
+                |(subs, guards, timers, clients, services, events), node| {
+                    (
+                        subs + node.subscriptions.lock().unwrap().len(),
+                        guards,
+                        timers + node.timers.lock().unwrap().len(),
+                        clients,
+                        services,
+                        events,
+                    )
+                },
+            );
 
         let mut wait_set = RclWaitSet::new(
             &mut self.context.handle().lock().unwrap(),
             n_subscriptions,
             0,
-            0,
+            n_timers,
             0,
             0,
             0,
@@ -78,21 +79,13 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
         wait_set.clear()?;
 
         for node in self.nodes.iter().filter_map(|n| n.upgrade()) {
-            for subscription in node.subscriptions.lock().unwrap().iter() {
-                if let Some(subscription) = subscription.upgrade() {
-                    wait_set.add_subscription(&subscription.handle())?;
-                }
-            }
+            node.add_to_wait_set(&mut wait_set)?;
         }
 
         wait_set.wait(max_duration.as_nanos() as i64)?;
 
         for node in self.nodes.iter().filter_map(|n| n.upgrade()) {
-            for subscription in node.subscriptions.lock().unwrap().iter() {
-                if let Some(subscription) = subscription.upgrade() {
-                    subscription.call_callback().unwrap();
-                }
-            }
+            node.call_callbacks()?;
         }
 
         Ok(())

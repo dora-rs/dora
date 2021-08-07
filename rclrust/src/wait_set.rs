@@ -5,6 +5,7 @@ use crate::error::ToRclRustResult;
 use crate::log::Logger;
 use crate::rclrust_error;
 use crate::subscription::RclSubscription;
+use crate::timer::RclTimer;
 
 #[derive(Debug)]
 pub(crate) struct RclWaitSet(rcl_sys::rcl_wait_set_t);
@@ -72,6 +73,14 @@ impl RclWaitSet {
             .with_context(|| {
                 "rcl_sys::rcl_wait_set_add_subscription in RclWaitSet::add_subscription"
             })
+        }
+    }
+
+    pub fn add_timer(&mut self, timer: &RclTimer) -> Result<()> {
+        unsafe {
+            rcl_sys::rcl_wait_set_add_timer(&mut self.0, timer.raw(), std::ptr::null_mut())
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_wait_set_add_timer in RclWaitSet::add_timer")
         }
     }
 }
