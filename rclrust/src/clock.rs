@@ -132,9 +132,9 @@ impl Clock {
     /// use rclrust::{Clock, ClockType};
     ///
     /// let mut clock = Clock::ros().unwrap();
-    /// assert!(clock.valid());
+    /// assert!(clock.is_valid());
     /// ```
-    pub fn valid(&mut self) -> bool {
+    pub fn is_valid(&mut self) -> bool {
         unsafe { rcl_sys::rcl_clock_valid(&mut self.0) }
     }
 }

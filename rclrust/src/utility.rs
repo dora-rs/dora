@@ -12,7 +12,7 @@ use crate::init_options::InitOptions;
 ///
 /// ```
 /// let ctx = rclrust::init().unwrap();
-/// assert!(ctx.valid());
+/// assert!(ctx.is_valid());
 /// ```
 pub fn init() -> Result<Arc<Context>> {
     init_with_options(InitOptions::new()?)
@@ -27,7 +27,7 @@ pub fn init() -> Result<Arc<Context>> {
 ///
 /// let init_options = InitOptions::new().unwrap();
 /// let ctx = rclrust::init_with_options(init_options).unwrap();
-/// assert!(ctx.valid());
+/// assert!(ctx.is_valid());
 /// ```
 pub fn init_with_options(init_options: InitOptions) -> Result<Arc<Context>> {
     Context::new(
@@ -40,7 +40,7 @@ pub fn init_with_options(init_options: InitOptions) -> Result<Arc<Context>> {
 
 /// Check rclrust's status.
 pub fn ok(ctx: Arc<Context>) -> bool {
-    ctx.valid()
+    ctx.is_valid()
 }
 
 /// Shutdown rclrust context
