@@ -133,7 +133,9 @@ impl Logger {
     pub fn set_level(&self, level: LogSeverity) -> Result<()> {
         let _guard = LOGGER_MUTEX.lock();
         unsafe {
-            rcl_sys::rcutils_logging_set_logger_level(self.get_name_ptr(), level.into()).to_result()
+            rcl_sys::rcutils_logging_set_logger_level(self.get_name_ptr(), level.into())
+                .to_result()
+                .with_context(|| "rcl_sys::rcutils_logging_set_logger_level in Logger::set_level")
         }
     }
 

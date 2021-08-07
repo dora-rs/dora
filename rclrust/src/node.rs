@@ -1,7 +1,7 @@
 use std::ffi::CString;
 use std::sync::{Arc, Mutex, Weak};
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 
 use crate::context::{Context, RclContext};
 use crate::error::ToRclRustResult;
@@ -37,7 +37,8 @@ impl RclNode {
                 context.as_mut_ptr(),
                 options.raw(),
             )
-            .to_result()?;
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_node_init in RclNode::new")?;
         }
 
         Ok(Self(node))
@@ -85,7 +86,9 @@ impl RclNode {
 
     unsafe fn fini(&mut self, ctx: &Mutex<RclContext>) -> Result<()> {
         let _guard = ctx.lock();
-        rcl_sys::rcl_node_fini(&mut self.0).to_result()
+        rcl_sys::rcl_node_fini(&mut self.0)
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_node_fini in RclNode::fini")
     }
 }
 

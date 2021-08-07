@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 
 use crate::error::ToRclRustResult;
 use crate::impl_from_trait_for_enum;
@@ -47,9 +47,13 @@ impl Clock {
 
         let mut clock = MaybeUninit::uninit();
         unsafe {
-            let mut allocator = rcl_sys::rcutils_get_default_allocator();
-            rcl_sys::rcl_clock_init(clock_type.into(), clock.as_mut_ptr(), &mut allocator)
-                .to_result()?;
+            rcl_sys::rcl_clock_init(
+                clock_type.into(),
+                clock.as_mut_ptr(),
+                &mut rcl_sys::rcutils_get_default_allocator(),
+            )
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_clock_init in Clock::new")?;
             Ok(Self(clock.assume_init()))
         }
     }
@@ -109,7 +113,9 @@ impl Clock {
         let mut nanosecs = 0;
 
         unsafe {
-            rcl_sys::rcl_clock_get_now(&mut self.0, &mut nanosecs).to_result()?;
+            rcl_sys::rcl_clock_get_now(&mut self.0, &mut nanosecs)
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_clock_get_now in Clock::now")?;
         }
         Ok(Time::from_nanosecs(nanosecs, self.clock_type()))
     }

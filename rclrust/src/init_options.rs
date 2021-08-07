@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::error::ToRclRustResult;
 use crate::log::Logger;
@@ -13,8 +13,9 @@ impl RclInitOptions {
     pub fn new() -> Result<Self> {
         unsafe {
             let mut options = rcl_sys::rcl_get_zero_initialized_init_options();
-            let allocator = rcl_sys::rcutils_get_default_allocator();
-            rcl_sys::rcl_init_options_init(&mut options, allocator).to_result()?;
+            rcl_sys::rcl_init_options_init(&mut options, rcl_sys::rcutils_get_default_allocator())
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_init_options_init in RclInitOptions::new")?;
             Ok(Self(options))
         }
     }

@@ -3,7 +3,7 @@ use std::os::raw::c_int;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use crate::error::ToRclRustResult;
 use crate::init_options::InitOptions;
@@ -30,7 +30,8 @@ impl RclContext {
         unsafe {
             let mut handle = rcl_sys::rcl_get_zero_initialized_context();
             rcl_sys::rcl_init(c_args.len() as c_int, argv, init_options.raw(), &mut handle)
-                .to_result()?;
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_init in RclContext::new")?;
             Ok(Self(NonNull::new(Box::into_raw(Box::new(handle))).unwrap()))
         }
     }
@@ -45,7 +46,11 @@ impl RclContext {
 
     fn shutdown(&mut self) -> Result<()> {
         if self.is_valid() {
-            unsafe { rcl_sys::rcl_shutdown(self.0.as_mut()).to_result()? }
+            unsafe {
+                rcl_sys::rcl_shutdown(self.0.as_mut())
+                    .to_result()
+                    .with_context(|| "rcl_sys::rcl_shutdown in RclContext::shutdown")?
+            }
         }
         Ok(())
     }
