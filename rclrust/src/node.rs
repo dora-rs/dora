@@ -34,7 +34,7 @@ impl RclNode {
                 &mut node,
                 name_c_str.as_ptr(),
                 namespace_c_str.as_ptr(),
-                context.as_mut_ptr(),
+                context.raw_mut(),
                 options.raw(),
             )
             .to_result()

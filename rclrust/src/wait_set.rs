@@ -30,7 +30,7 @@ impl RclWaitSet {
                 n_clients,
                 n_services,
                 n_events,
-                context.as_mut_ptr(),
+                context.raw_mut(),
                 rcl_sys::rcutils_get_default_allocator(),
             )
             .to_result()

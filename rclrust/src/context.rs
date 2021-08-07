@@ -36,8 +36,8 @@ impl RclContext {
         }
     }
 
-    pub unsafe fn as_mut_ptr(&mut self) -> *mut rcl_sys::rcl_context_t {
-        self.0.as_mut()
+    pub fn raw_mut(&mut self) -> &mut rcl_sys::rcl_context_t {
+        unsafe { self.0.as_mut() }
     }
 
     fn is_valid(&mut self) -> bool {
