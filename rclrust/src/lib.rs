@@ -19,6 +19,7 @@ pub mod publisher;
 pub mod qos;
 pub mod subscription;
 pub mod time;
+pub mod timer;
 pub mod utility;
 pub mod wait_set;
 

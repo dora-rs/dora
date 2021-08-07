@@ -1,8 +1,10 @@
 use std::ffi::CString;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use anyhow::{ensure, Context as _, Result};
 
+use crate::clock::ClockType;
 use crate::context::{Context, RclContext};
 use crate::error::ToRclRustResult;
 use crate::internal::ffi::*;
@@ -12,6 +14,8 @@ use crate::publisher::Publisher;
 use crate::qos::QoSProfile;
 use crate::rclrust_error;
 use crate::subscription::{Subscription, SubscriptionBase};
+use crate::timer::Timer;
+use crate::wait_set::RclWaitSet;
 
 #[derive(Debug)]
 pub(crate) struct RclNode(rcl_sys::rcl_node_t);
@@ -95,6 +99,7 @@ pub struct Node<'ctx> {
     handle: Arc<Mutex<RclNode>>,
     context: &'ctx Context,
     pub(crate) subscriptions: Mutex<Vec<Weak<dyn SubscriptionBase>>>,
+    pub(crate) timers: Mutex<Vec<Weak<Timer>>>,
 }
 
 impl<'ctx> Node<'ctx> {
@@ -118,7 +123,8 @@ impl<'ctx> Node<'ctx> {
         Ok(Arc::new(Self {
             handle: Arc::new(Mutex::new(handle)),
             context,
-            subscriptions: Mutex::new(vec![]),
+            subscriptions: Mutex::new(Vec::new()),
+            timers: Mutex::new(Vec::new()),
         }))
     }
 
@@ -241,6 +247,57 @@ impl<'ctx> Node<'ctx> {
         let weak_sub = Arc::downgrade(&sub) as Weak<dyn SubscriptionBase>;
         self.subscriptions.lock().unwrap().push(weak_sub);
         Ok(sub)
+    }
+
+    pub fn create_timer<F>(
+        &self,
+        period: Duration,
+        clock_type: ClockType,
+        callback: F,
+    ) -> Result<Arc<Timer>>
+    where
+        F: Fn() + 'static,
+    {
+        let timer = Timer::new(self, period, clock_type, callback)?;
+        let weak_timer = Arc::downgrade(&timer);
+        self.timers.lock().unwrap().push(weak_timer);
+        Ok(timer)
+    }
+
+    pub fn create_wall_timer<F>(&self, period: Duration, callback: F) -> Result<Arc<Timer>>
+    where
+        F: Fn() + 'static,
+    {
+        self.create_timer(period, ClockType::SteadyTime, callback)
+    }
+
+    pub(crate) fn add_to_wait_set(&self, wait_set: &mut RclWaitSet) -> Result<()> {
+        for subscription in self.subscriptions.lock().unwrap().iter() {
+            if let Some(subscription) = subscription.upgrade() {
+                wait_set.add_subscription(&subscription.handle())?;
+            }
+        }
+        for timer in self.timers.lock().unwrap().iter() {
+            if let Some(timer) = timer.upgrade() {
+                wait_set.add_timer(&timer.handle().lock().unwrap())?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn call_callbacks(&self) -> Result<()> {
+        for subscription in self.subscriptions.lock().unwrap().iter() {
+            if let Some(subscription) = subscription.upgrade() {
+                subscription.call_callback()?;
+            }
+        }
+        for timer in self.timers.lock().unwrap().iter() {
+            if let Some(timer) = timer.upgrade() {
+                timer.call_callback()?;
+            }
+        }
+
+        Ok(())
     }
 }
 

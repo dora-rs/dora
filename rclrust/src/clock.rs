@@ -58,6 +58,10 @@ impl Clock {
         }
     }
 
+    pub(crate) fn raw_mut(&mut self) -> &mut rcl_sys::rcl_clock_t {
+        &mut self.0
+    }
+
     /// Construct a new `Clock` with ros time
     ///
     /// # Examples
