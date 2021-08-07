@@ -62,15 +62,11 @@ impl RclWaitSet {
             .to_result()
         }
     }
-
-    unsafe fn fini(&mut self) -> anyhow::Result<()> {
-        rcl_sys::rcl_wait_set_fini(&mut self.0).to_result()
-    }
 }
 
 impl Drop for RclWaitSet {
     fn drop(&mut self) {
-        if let Err(e) = unsafe { self.fini() } {
+        if let Err(e) = unsafe { rcl_sys::rcl_wait_set_fini(&mut self.0).to_result() } {
             rclrust_error!(
                 Logger::new("rclrust"),
                 "rcl_wait_set_fini should succeed. {}",
