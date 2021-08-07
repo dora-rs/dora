@@ -72,7 +72,7 @@ impl RclSubscription {
         }
     }
 
-    fn valid(&self) -> bool {
+    fn is_valid(&self) -> bool {
         unsafe { rcl_sys::rcl_subscription_is_valid(&self.0) }
     }
 
@@ -126,8 +126,8 @@ where
         self.handle().topic_name()
     }
 
-    pub fn valid(&self) -> bool {
-        self.handle().valid()
+    pub fn is_valid(&self) -> bool {
+        self.handle().is_valid()
     }
 
     pub fn publisher_count(&self) -> Result<usize> {
@@ -203,8 +203,8 @@ where
         self.handle().topic_name()
     }
 
-    pub fn valid(&self) -> bool {
-        self.handle().valid()
+    pub fn is_valid(&self) -> bool {
+        self.handle().is_valid()
     }
 
     pub fn publisher_count(&self) -> Result<usize> {

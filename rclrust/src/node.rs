@@ -51,7 +51,7 @@ impl RclNode {
         &mut self.0
     }
 
-    fn valid(&self) -> bool {
+    fn is_valid(&self) -> bool {
         unsafe { rcl_sys::rcl_node_is_valid(&self.0) }
     }
 
@@ -102,7 +102,7 @@ impl<'ctx> Node<'ctx> {
         namespace: Option<&str>,
         options: &NodeOptions,
     ) -> Result<Arc<Self>> {
-        ensure!(context.valid(), "given Context is not valid");
+        ensure!(context.is_valid(), "given Context is not valid");
 
         let handle = {
             RclNode::new(
@@ -133,10 +133,10 @@ impl<'ctx> Node<'ctx> {
     /// ```
     /// let ctx = rclrust::init().unwrap();
     /// let node = ctx.create_node("node1").unwrap();
-    /// assert!(node.valid())
+    /// assert!(node.is_valid())
     /// ```
-    pub fn valid(&self) -> bool {
-        self.handle.lock().unwrap().valid()
+    pub fn is_valid(&self) -> bool {
+        self.handle.lock().unwrap().is_valid()
     }
 
     /// # Examples
@@ -257,7 +257,7 @@ mod test {
     fn node_init() -> Result<()> {
         let ctx = crate::init()?;
         let node = ctx.create_node("test_node")?;
-        assert!(node.valid());
+        assert!(node.is_valid());
 
         Ok(())
     }

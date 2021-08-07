@@ -44,7 +44,7 @@ impl RclWaitSet {
     }
 
     #[allow(unused)]
-    fn valid(&self) -> bool {
+    fn is_valid(&self) -> bool {
         unsafe { rcl_sys::rcl_wait_set_is_valid(&self.0) }
     }
 
@@ -88,7 +88,7 @@ mod test {
     fn test_rcl_wait_set_new() -> Result<()> {
         let ctx = crate::init()?;
         let wait_set = RclWaitSet::new(&mut ctx.handle().lock().unwrap(), 1, 1, 1, 1, 1, 1)?;
-        assert!(wait_set.valid());
+        assert!(wait_set.is_valid());
 
         Ok(())
     }

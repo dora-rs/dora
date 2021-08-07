@@ -68,7 +68,7 @@ impl RclPublisher {
         }
     }
 
-    fn valid(&self) -> bool {
+    fn is_valid(&self) -> bool {
         unsafe { rcl_sys::rcl_publisher_is_valid(&self.0) }
     }
 
@@ -113,8 +113,8 @@ where
         self.handle.topic_name()
     }
 
-    pub fn valid(&self) -> bool {
-        self.handle.valid()
+    pub fn is_valid(&self) -> bool {
+        self.handle.is_valid()
     }
 
     pub fn subscription_count(&self) -> Result<usize> {
@@ -148,7 +148,7 @@ mod test {
         let ctx = crate::init()?;
         let node = ctx.create_node("test_node")?;
         let publisher = node.create_publisher::<String>("message", &QoSProfile::default())?;
-        assert!(publisher.valid());
+        assert!(publisher.is_valid());
 
         Ok(())
     }

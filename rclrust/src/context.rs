@@ -39,12 +39,12 @@ impl RclContext {
         self.0.as_mut()
     }
 
-    fn valid(&mut self) -> bool {
+    fn is_valid(&mut self) -> bool {
         unsafe { rcl_sys::rcl_context_is_valid(self.0.as_mut()) }
     }
 
     fn shutdown(&mut self) -> Result<()> {
-        if self.valid() {
+        if self.is_valid() {
             unsafe { rcl_sys::rcl_shutdown(self.0.as_mut()).to_result()? }
         }
         Ok(())
@@ -94,8 +94,8 @@ impl Context {
         &self.handle
     }
 
-    pub fn valid(&self) -> bool {
-        self.handle.lock().unwrap().valid()
+    pub fn is_valid(&self) -> bool {
+        self.handle.lock().unwrap().is_valid()
     }
 
     pub(crate) fn shutdown(&self, reason: impl Into<String>) -> Result<()> {
@@ -189,7 +189,7 @@ mod test {
     #[test]
     fn context_init() -> Result<()> {
         let ctx = Context::new(&[], InitOptions::new()?)?;
-        assert!(ctx.valid());
+        assert!(ctx.is_valid());
 
         Ok(())
     }

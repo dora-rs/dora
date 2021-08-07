@@ -38,7 +38,7 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
     }
 
     pub fn spin(&self) -> Result<()> {
-        while self.context.valid() {
+        while self.context.is_valid() {
             if let Err(e) = self.spin_some(Duration::from_nanos(500)) {
                 match e.downcast_ref::<RclRustError>() {
                     Some(RclRustError::RclTimeout(_)) => continue,
