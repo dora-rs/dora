@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
-use crate::error::ToRclRustResult;
+use crate::error::{RclRustError, ToRclRustResult};
 use crate::internal::ffi::*;
 use crate::log::Logger;
 use crate::node::{Node, RclNode};
@@ -153,9 +153,13 @@ where
 
     fn call_callback(&self) -> Result<()> {
         let mut message = T::Raw::default();
-        self.handle.take::<T>(&mut message)?;
-        (self.callback)(&message);
-
+        match self.handle.take::<T>(&mut message) {
+            Ok(_) => (self.callback)(&message),
+            Err(e) => match e.downcast_ref::<RclRustError>() {
+                Some(RclRustError::RclSubscriptionTakeFailed(_)) => {}
+                _ => return Err(e),
+            },
+        }
         Ok(())
     }
 }
@@ -230,9 +234,13 @@ where
 
     fn call_callback(&self) -> Result<()> {
         let mut message = T::Raw::default();
-        self.handle.take::<T>(&mut message)?;
-        (self.callback)(unsafe { T::from_raw(&message) });
-
+        match self.handle.take::<T>(&mut message) {
+            Ok(_) => (self.callback)(unsafe { T::from_raw(&message) }),
+            Err(e) => match e.downcast_ref::<RclRustError>() {
+                Some(RclRustError::RclSubscriptionTakeFailed(_)) => {}
+                _ => return Err(e),
+            },
+        }
         Ok(())
     }
 }
