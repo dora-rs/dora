@@ -158,3 +158,30 @@ impl Drop for Clock {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn ros_clock_now() -> Result<()> {
+        let mut clock = Clock::ros()?;
+        let _now = clock.now()?;
+        Ok(())
+    }
+
+    #[test]
+    fn system_clock_now() -> Result<()> {
+        let mut clock = Clock::system()?;
+        let _now = clock.now()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn steady_clock_now() -> Result<()> {
+        let mut clock = Clock::steady()?;
+        let _now = clock.now()?;
+        Ok(())
+    }
+}
