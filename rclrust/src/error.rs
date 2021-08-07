@@ -9,17 +9,15 @@ pub struct RclErrorBase {
     message: String,
     file: String,
     line: u64,
-    prefix: String,
 }
 
 impl RclErrorBase {
-    unsafe fn new(error_state_ptr: *const rcl_sys::rcutils_error_state_t, prefix: String) -> Self {
+    unsafe fn new(error_state_ptr: *const rcl_sys::rcutils_error_state_t) -> Self {
         let error_state = error_state_ptr.as_ref().unwrap();
         Self {
             message: String::from_c_char(error_state.message.as_ptr()).unwrap(),
             file: String::from_c_char(error_state.file.as_ptr()).unwrap(),
             line: error_state.line_number,
-            prefix,
         }
     }
 }
@@ -28,8 +26,8 @@ impl fmt::Display for RclErrorBase {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}{}, at {}:{}",
-            self.prefix, self.message, self.file, self.line
+            "[rclrust]: {}, at {}:{}",
+            self.message, self.file, self.line
         )
     }
 }
@@ -139,7 +137,7 @@ pub enum RclRustError {
     RuntimeError(&'static str),
 }
 
-pub(crate) fn result_from_rcl_ret(ret: rcl_sys::rcl_ret_t, prefix: Option<&str>) -> Result<()> {
+pub(crate) fn result_from_rcl_ret(ret: rcl_sys::rcl_ret_t) -> Result<()> {
     if ret as u32 == rcl_sys::RCL_RET_OK {
         return Ok(());
     }
@@ -147,8 +145,7 @@ pub(crate) fn result_from_rcl_ret(ret: rcl_sys::rcl_ret_t, prefix: Option<&str>)
     if error_state.is_null() {
         return Err(RclRustError::RuntimeError("rcl error state is not set").into());
     }
-    let formatted_prefix = prefix.map_or("".into(), |v| format!("[{}]: ", v));
-    let base_error = unsafe { RclErrorBase::new(error_state, formatted_prefix) };
+    let base_error = unsafe { RclErrorBase::new(error_state) };
     unsafe { rcl_sys::rcutils_reset_error() }
 
     let error = {
@@ -208,6 +205,6 @@ pub(crate) trait ToRclRustResult {
 
 impl ToRclRustResult for rcl_sys::rcl_ret_t {
     fn to_result(self) -> Result<()> {
-        result_from_rcl_ret(self, Some("rclrust"))
+        result_from_rcl_ret(self)
     }
 }
