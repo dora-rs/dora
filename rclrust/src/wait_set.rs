@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::context::RclContext;
 use crate::error::ToRclRustResult;
@@ -33,14 +33,19 @@ impl RclWaitSet {
                 context.as_mut_ptr(),
                 rcl_sys::rcutils_get_default_allocator(),
             )
-            .to_result()?;
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_wait_set_init in RclWaitSet::new")?;
         }
 
         Ok(Self(wait_set))
     }
 
     pub fn wait(&mut self, timeout: i64) -> Result<()> {
-        unsafe { rcl_sys::rcl_wait(&mut self.0, timeout).to_result() }
+        unsafe {
+            rcl_sys::rcl_wait(&mut self.0, timeout)
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_wait in RclWaitSet::wait")
+        }
     }
 
     #[allow(unused)]
@@ -49,7 +54,11 @@ impl RclWaitSet {
     }
 
     pub fn clear(&mut self) -> Result<()> {
-        unsafe { rcl_sys::rcl_wait_set_clear(&mut self.0).to_result() }
+        unsafe {
+            rcl_sys::rcl_wait_set_clear(&mut self.0)
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_wait_set_clear in RclWaitSet::clear")
+        }
     }
 
     pub fn add_subscription(&mut self, subscription: &RclSubscription) -> Result<()> {
@@ -60,6 +69,9 @@ impl RclWaitSet {
                 std::ptr::null_mut(),
             )
             .to_result()
+            .with_context(|| {
+                "rcl_sys::rcl_wait_set_add_subscription in RclWaitSet::add_subscription"
+            })
         }
     }
 }

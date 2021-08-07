@@ -2,7 +2,7 @@ use std::ffi::CString;
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::error::ToRclRustResult;
 use crate::internal::ffi::*;
@@ -34,7 +34,8 @@ impl RclSubscription {
                 topic_c_str.as_ptr(),
                 &options,
             )
-            .to_result()?;
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_subscription_init in RclSubscription::new")?;
         }
 
         Ok(Self(subscription))
@@ -45,7 +46,9 @@ impl RclSubscription {
     }
 
     unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        rcl_sys::rcl_subscription_fini(&mut self.0, node.raw_mut()).to_result()
+        rcl_sys::rcl_subscription_fini(&mut self.0, node.raw_mut())
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_subscription_init in RclSubscription::fini")
     }
 
     fn take<T>(&self, message: &mut T::Raw) -> Result<()>
@@ -59,7 +62,8 @@ impl RclSubscription {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
             )
-            .to_result()?;
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_take in RclSubscription::take")?;
         }
 
         Ok(())
@@ -79,7 +83,11 @@ impl RclSubscription {
     fn publisher_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
-            rcl_sys::rcl_subscription_get_publisher_count(&self.0, &mut size).to_result()?;
+            rcl_sys::rcl_subscription_get_publisher_count(&self.0, &mut size)
+                .to_result()
+                .with_context(|| {
+                    "rcl_sys::rcl_subscription_get_publisher_count in RclSubscription::publisher_count"
+                })?;
         }
         Ok(size)
     }
