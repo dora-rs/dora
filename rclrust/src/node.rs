@@ -84,8 +84,7 @@ impl RclNode {
         }
     }
 
-    unsafe fn fini(&mut self, ctx: &Mutex<RclContext>) -> Result<()> {
-        let _guard = ctx.lock();
+    unsafe fn fini(&mut self, _ctx: &RclContext) -> Result<()> {
         rcl_sys::rcl_node_fini(&mut self.0)
             .to_result()
             .with_context(|| "rcl_sys::rcl_node_fini in RclNode::fini")
@@ -247,7 +246,12 @@ impl<'ctx> Node<'ctx> {
 
 impl Drop for Node<'_> {
     fn drop(&mut self) {
-        if let Err(e) = unsafe { self.handle.lock().unwrap().fini(self.context.handle()) } {
+        if let Err(e) = unsafe {
+            self.handle
+                .lock()
+                .unwrap()
+                .fini(&self.context.handle().lock().unwrap())
+        } {
             rclrust_error!(
                 Logger::new("rclrust"),
                 "Failed to clean up rcl node handle: {}",
