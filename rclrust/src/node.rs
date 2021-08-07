@@ -132,7 +132,7 @@ impl<'ctx> Node<'ctx> {
         Arc::clone(&self.handle)
     }
 
-    pub(crate) fn context_ref(&self) -> &'ctx Context {
+    pub(crate) const fn context_ref(&self) -> &'ctx Context {
         self.context
     }
 
@@ -274,7 +274,7 @@ impl<'ctx> Node<'ctx> {
     pub(crate) fn add_to_wait_set(&self, wait_set: &mut RclWaitSet) -> Result<()> {
         for subscription in self.subscriptions.lock().unwrap().iter() {
             if let Some(subscription) = subscription.upgrade() {
-                wait_set.add_subscription(&subscription.handle())?;
+                wait_set.add_subscription(subscription.handle())?;
             }
         }
         for timer in self.timers.lock().unwrap().iter() {

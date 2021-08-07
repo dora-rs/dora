@@ -100,7 +100,7 @@ impl<'ctx> Timer {
         }))
     }
 
-    pub(crate) fn handle(&self) -> &Mutex<RclTimer> {
+    pub(crate) const fn handle(&self) -> &Mutex<RclTimer> {
         &self.handle
     }
 
