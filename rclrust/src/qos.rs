@@ -549,10 +549,10 @@ impl QoSProfile {
             depth: rcl_sys::RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT as usize,
             reliability: ReliabilityPolicy::SystemDefault,
             durability: DurabilityPolicy::SystemDefault,
-            deadline: Duration::from_secs(0),
-            lifespan: Duration::from_secs(0),
+            deadline: Duration::ZERO,
+            lifespan: Duration::ZERO,
             liveliness: LivelinessPolicy::SystemDefault,
-            liveliness_lease_duration: Duration::from_secs(0),
+            liveliness_lease_duration: Duration::ZERO,
             avoid_ros_namespace_conventions: false,
         }
     }
