@@ -69,7 +69,7 @@ mod test {
 
     fn parse_action_def(srv_name: &str) -> Result<Action> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("tests/test_msgs/action/{}.action", srv_name));
+            .join(format!("test_msgs/action/{}.action", srv_name));
         parse_action_file("test_msgs", path)
     }
 

@@ -75,7 +75,7 @@ mod test {
 
     fn parse_msg_def(msg_name: &str) -> Result<Message> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("tests/test_msgs/msg/{}.msg", msg_name));
+            .join(format!("test_msgs/msg/{}.msg", msg_name));
         parse_message_file("test_msgs", path)
     }
 
