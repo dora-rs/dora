@@ -22,15 +22,11 @@ impl RclInitOptions {
     pub const fn raw(&self) -> &rcl_sys::rcl_init_options_t {
         &self.0
     }
-
-    unsafe fn fini(&mut self) -> anyhow::Result<()> {
-        rcl_sys::rcl_init_options_fini(&mut self.0).to_result()
-    }
 }
 
 impl Drop for RclInitOptions {
     fn drop(&mut self) {
-        if let Err(e) = unsafe { self.fini() } {
+        if let Err(e) = unsafe { rcl_sys::rcl_init_options_fini(&mut self.0).to_result() } {
             rclrust_error!(
                 Logger::new("rclrust"),
                 "Failed to clean up rcl init options handle: {}",
