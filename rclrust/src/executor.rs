@@ -19,7 +19,7 @@ pub fn spin<'ctx>(node: &Arc<Node<'ctx>>) -> Result<()> {
 pub fn spin_some<'ctx>(node: &Arc<Node<'ctx>>) -> Result<()> {
     let mut exec = SingleThreadExecutor::new(node.context_ref())?;
     exec.add_node(node);
-    exec.spin_some(Duration::new(0, 0))?;
+    exec.spin_some(Duration::ZERO)?;
 
     Ok(())
 }
