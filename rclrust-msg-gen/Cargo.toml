@@ -11,7 +11,7 @@ license = "Apache-2.0"
 [dependencies]
 anyhow = "1.0"
 heck = "0.3"
-nom = "6.1"
+nom = "6.2"
 proc-macro2 = "1.0"
 quote = "1.0"
 regex = "1"
