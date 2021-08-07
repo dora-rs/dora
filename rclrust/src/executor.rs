@@ -8,7 +8,7 @@ use crate::error::RclRustError;
 use crate::node::Node;
 use crate::wait_set::RclWaitSet;
 
-pub fn spin<'ctx>(node: &Arc<Node<'ctx>>) -> Result<()> {
+pub fn spin(node: &Arc<Node<'_>>) -> Result<()> {
     let mut exec = SingleThreadExecutor::new(node.context_ref())?;
     exec.add_node(node);
     exec.spin()?;
@@ -16,7 +16,7 @@ pub fn spin<'ctx>(node: &Arc<Node<'ctx>>) -> Result<()> {
     Ok(())
 }
 
-pub fn spin_some<'ctx>(node: &Arc<Node<'ctx>>) -> Result<()> {
+pub fn spin_some(node: &Arc<Node<'_>>) -> Result<()> {
     let mut exec = SingleThreadExecutor::new(node.context_ref())?;
     exec.add_node(node);
     exec.spin_some(Duration::ZERO)?;
@@ -30,7 +30,7 @@ pub struct SingleThreadExecutor<'ctx> {
 }
 
 impl<'ctx> SingleThreadExecutor<'ctx> {
-    pub fn new(context: &'ctx Context) -> Result<Self> {
+    pub const fn new(context: &'ctx Context) -> Result<Self> {
         Ok(Self {
             context,
             nodes: Vec::new(),
