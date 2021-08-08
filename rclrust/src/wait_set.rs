@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 
+use crate::client::RclClient;
 use crate::context::RclContext;
 use crate::error::ToRclRustResult;
 use crate::log::Logger;
@@ -82,6 +83,14 @@ impl RclWaitSet {
             rcl_sys::rcl_wait_set_add_timer(&mut self.0, timer.raw(), std::ptr::null_mut())
                 .to_result()
                 .with_context(|| "rcl_sys::rcl_wait_set_add_timer in RclWaitSet::add_timer")
+        }
+    }
+
+    pub fn add_client(&mut self, client: &RclClient) -> Result<()> {
+        unsafe {
+            rcl_sys::rcl_wait_set_add_client(&mut self.0, client.raw(), std::ptr::null_mut())
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_wait_set_add_client in RclWaitSet::add_client")
         }
     }
 
