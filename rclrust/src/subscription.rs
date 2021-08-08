@@ -132,15 +132,15 @@ where
     }
 
     pub fn topic_name(&self) -> Option<String> {
-        self.handle().topic_name()
+        self.handle.topic_name()
     }
 
     pub fn is_valid(&self) -> bool {
-        self.handle().is_valid()
+        self.handle.is_valid()
     }
 
     pub fn publisher_count(&self) -> Result<usize> {
-        self.handle().publisher_count()
+        self.handle.publisher_count()
     }
 }
 
