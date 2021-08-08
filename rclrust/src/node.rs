@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{ensure, Context as _, Result};
 use rclrust_msg::_core::{FFIToRust, MessageT, ServiceT};
 
+use crate::client::{Client, ClientBase};
 use crate::clock::ClockType;
 use crate::context::{Context, RclContext};
 use crate::error::ToRclRustResult;
@@ -102,6 +103,7 @@ pub struct Node<'ctx> {
     context: &'ctx Context,
     pub(crate) subscriptions: Mutex<Vec<Weak<dyn SubscriptionBase>>>,
     pub(crate) timers: Mutex<Vec<Weak<Timer>>>,
+    pub(crate) clients: Mutex<Vec<Weak<dyn ClientBase>>>,
     pub(crate) services: Mutex<Vec<Weak<dyn ServiceBase>>>,
 }
 
@@ -128,6 +130,7 @@ impl<'ctx> Node<'ctx> {
             context,
             subscriptions: Mutex::new(Vec::new()),
             timers: Mutex::new(Vec::new()),
+            clients: Mutex::new(Vec::new()),
             services: Mutex::new(Vec::new()),
         }))
     }
@@ -275,6 +278,20 @@ impl<'ctx> Node<'ctx> {
         self.create_timer(period, ClockType::SteadyTime, callback)
     }
 
+    pub fn create_client<Srv>(
+        &self,
+        service_name: &str,
+        qos: &QoSProfile,
+    ) -> Result<Arc<Client<Srv>>>
+    where
+        Srv: ServiceT + 'static,
+    {
+        let client = Client::<Srv>::new(self, service_name, qos)?;
+        let weak = Arc::downgrade(&client) as Weak<dyn ClientBase>;
+        self.clients.lock().unwrap().push(weak);
+        Ok(client)
+    }
+
     pub fn create_service<Srv, F>(
         &self,
         service_name: &str,
@@ -327,6 +344,13 @@ impl<'ctx> Node<'ctx> {
             .filter_map(|weak| weak.upgrade())
             .try_for_each(|timer| wait_set.add_timer(&timer.handle().lock().unwrap()))?;
 
+        self.clients
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|client| wait_set.add_client(client.handle()))?;
+
         self.services
             .lock()
             .unwrap()
@@ -351,6 +375,13 @@ impl<'ctx> Node<'ctx> {
             .iter()
             .filter_map(|weak| weak.upgrade())
             .try_for_each(|timer| timer.call_callback())?;
+
+        self.clients
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|client| client.process_requests())?;
 
         self.services
             .lock()

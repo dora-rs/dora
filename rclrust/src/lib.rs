@@ -5,6 +5,7 @@
     clippy::nursery
 )]
 
+pub mod client;
 pub mod clock;
 pub mod context;
 pub mod error;
