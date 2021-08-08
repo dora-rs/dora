@@ -8,9 +8,9 @@ fn main() -> Result<()> {
     let node = ctx.create_node("examples_subscriber")?;
     let logger = node.logger();
 
-    let _subscription = node.create_subscription::<String_, _>(
+    let _subscription = node.create_subscription(
         "message",
-        move |msg| {
+        move |msg: String_| {
             rclrust_info!(logger, "{}", msg.data);
         },
         &QoSProfile::default(),
