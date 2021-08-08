@@ -52,14 +52,15 @@ impl RclSubscription {
             .with_context(|| "rcl_sys::rcl_subscription_init in RclSubscription::fini")
     }
 
-    fn take<T>(&self, message: &mut T::Raw) -> Result<()>
+    fn take<T>(&self) -> Result<T::Raw>
     where
         T: MessageT,
     {
+        let mut message = T::Raw::default();
         unsafe {
             rcl_sys::rcl_take(
                 &self.0,
-                message as *const _ as *mut c_void,
+                &mut message as *mut _ as *mut c_void,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
             )
@@ -67,7 +68,7 @@ impl RclSubscription {
             .with_context(|| "rcl_sys::rcl_take in RclSubscription::take")?;
         }
 
-        Ok(())
+        Ok(message)
     }
 
     fn topic_name(&self) -> Option<String> {
@@ -153,9 +154,8 @@ where
     }
 
     fn call_callback(&self) -> Result<()> {
-        let mut message = T::Raw::default();
-        match self.handle.take::<T>(&mut message) {
-            Ok(_) => (self.callback)(&message),
+        match self.handle.take::<T>() {
+            Ok(message) => (self.callback)(&message),
             Err(e) => match e.downcast_ref::<RclRustError>() {
                 Some(RclRustError::RclSubscriptionTakeFailed(_)) => {}
                 _ => return Err(e),
