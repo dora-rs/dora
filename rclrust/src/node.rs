@@ -313,40 +313,51 @@ impl<'ctx> Node<'ctx> {
     }
 
     pub(crate) fn add_to_wait_set(&self, wait_set: &mut RclWaitSet) -> Result<()> {
-        for subscription in self.subscriptions.lock().unwrap().iter() {
-            if let Some(subscription) = subscription.upgrade() {
-                wait_set.add_subscription(subscription.handle())?;
-            }
-        }
-        for timer in self.timers.lock().unwrap().iter() {
-            if let Some(timer) = timer.upgrade() {
-                wait_set.add_timer(&timer.handle().lock().unwrap())?;
-            }
-        }
-        for service in self.services.lock().unwrap().iter() {
-            if let Some(service) = service.upgrade() {
-                wait_set.add_service(service.handle())?;
-            }
-        }
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|subscription| wait_set.add_subscription(subscription.handle()))?;
+
+        self.timers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|timer| wait_set.add_timer(&timer.handle().lock().unwrap()))?;
+
+        self.services
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|service| wait_set.add_service(service.handle()))?;
+
         Ok(())
     }
 
     pub(crate) fn call_callbacks(&self) -> Result<()> {
-        for subscription in self.subscriptions.lock().unwrap().iter() {
-            if let Some(subscription) = subscription.upgrade() {
-                subscription.call_callback()?;
-            }
-        }
-        for timer in self.timers.lock().unwrap().iter() {
-            if let Some(timer) = timer.upgrade() {
-                timer.call_callback()?;
-            }
-        }
-        for service in self.services.lock().unwrap().iter() {
-            if let Some(service) = service.upgrade() {
-                service.call_callback()?;
-            }
-        }
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|subscription| subscription.call_callback())?;
+
+        self.timers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|timer| timer.call_callback())?;
+
+        self.services
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .try_for_each(|service| service.call_callback())?;
 
         Ok(())
     }
