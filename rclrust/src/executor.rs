@@ -51,7 +51,7 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
     }
 
     pub fn spin_some(&self, max_duration: Duration) -> Result<()> {
-        let (n_subscriptions, _, n_timers, _, _, _) =
+        let (n_subscriptions, _, n_timers, _, n_services, _) =
             self.nodes.iter().filter_map(|n| n.upgrade()).fold(
                 (0, 0, 0, 0, 0, 0),
                 |(subs, guards, timers, clients, services, events), node| {
@@ -60,7 +60,7 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
                         guards,
                         timers + node.timers.lock().unwrap().len(),
                         clients,
-                        services,
+                        services + node.services.lock().unwrap().len(),
                         events,
                     )
                 },
@@ -72,7 +72,7 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
             0,
             n_timers,
             0,
-            0,
+            n_services,
             0,
         )?;
 

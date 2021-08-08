@@ -17,6 +17,7 @@ pub mod node_options;
 pub mod prelude;
 pub mod publisher;
 pub mod qos;
+pub mod service;
 pub mod subscription;
 pub mod time;
 pub mod timer;
