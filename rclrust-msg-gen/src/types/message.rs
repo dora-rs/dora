@@ -27,7 +27,7 @@ impl Member {
 
     fn name_token(&self) -> impl ToTokens {
         if RUST_KEYWORDS.contains(&self.name.as_str()) {
-            format_ident!("r#{}", self.name)
+            format_ident!("{}_", self.name)
         } else {
             format_ident!("{}", self.name)
         }
