@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anyhow::{ensure, Context as _, Result};
-use rclrust_msg::_core::MessageT;
+use rclrust_msg::_core::{FFIToRust, MessageT, ServiceT};
 
 use crate::clock::ClockType;
 use crate::context::{Context, RclContext};
@@ -14,6 +14,7 @@ use crate::node_options::NodeOptions;
 use crate::publisher::Publisher;
 use crate::qos::QoSProfile;
 use crate::rclrust_error;
+use crate::service::{Service, ServiceBase};
 use crate::subscription::{Subscription, SubscriptionBase};
 use crate::timer::Timer;
 use crate::wait_set::RclWaitSet;
@@ -101,6 +102,7 @@ pub struct Node<'ctx> {
     context: &'ctx Context,
     pub(crate) subscriptions: Mutex<Vec<Weak<dyn SubscriptionBase>>>,
     pub(crate) timers: Mutex<Vec<Weak<Timer>>>,
+    pub(crate) services: Mutex<Vec<Weak<dyn ServiceBase>>>,
 }
 
 impl<'ctx> Node<'ctx> {
@@ -126,6 +128,7 @@ impl<'ctx> Node<'ctx> {
             context,
             subscriptions: Mutex::new(Vec::new()),
             timers: Mutex::new(Vec::new()),
+            services: Mutex::new(Vec::new()),
         }))
     }
 
@@ -272,6 +275,43 @@ impl<'ctx> Node<'ctx> {
         self.create_timer(period, ClockType::SteadyTime, callback)
     }
 
+    pub fn create_service<Srv, F>(
+        &self,
+        service_name: &str,
+        callback: F,
+        qos: &QoSProfile,
+    ) -> Result<Arc<Service<Srv>>>
+    where
+        Srv: ServiceT + 'static,
+        F: Fn(Srv::Request) -> Srv::Response + 'static,
+    {
+        let srv = Service::<Srv>::new(
+            self,
+            service_name,
+            move |req_raw| (callback)(unsafe { req_raw.to_rust() }),
+            qos,
+        )?;
+        let weak_srv = Arc::downgrade(&srv) as Weak<dyn ServiceBase>;
+        self.services.lock().unwrap().push(weak_srv);
+        Ok(srv)
+    }
+
+    pub fn create_raw_service<Srv, F>(
+        &self,
+        service_name: &str,
+        callback: F,
+        qos: &QoSProfile,
+    ) -> Result<Arc<Service<Srv>>>
+    where
+        Srv: ServiceT + 'static,
+        F: Fn(&<Srv::Request as MessageT>::Raw) -> Srv::Response + 'static,
+    {
+        let srv = Service::new(self, service_name, callback, qos)?;
+        let weak_srv = Arc::downgrade(&srv) as Weak<dyn ServiceBase>;
+        self.services.lock().unwrap().push(weak_srv);
+        Ok(srv)
+    }
+
     pub(crate) fn add_to_wait_set(&self, wait_set: &mut RclWaitSet) -> Result<()> {
         for subscription in self.subscriptions.lock().unwrap().iter() {
             if let Some(subscription) = subscription.upgrade() {
@@ -281,6 +321,11 @@ impl<'ctx> Node<'ctx> {
         for timer in self.timers.lock().unwrap().iter() {
             if let Some(timer) = timer.upgrade() {
                 wait_set.add_timer(&timer.handle().lock().unwrap())?;
+            }
+        }
+        for service in self.services.lock().unwrap().iter() {
+            if let Some(service) = service.upgrade() {
+                wait_set.add_service(service.handle())?;
             }
         }
         Ok(())
@@ -295,6 +340,11 @@ impl<'ctx> Node<'ctx> {
         for timer in self.timers.lock().unwrap().iter() {
             if let Some(timer) = timer.upgrade() {
                 timer.call_callback()?;
+            }
+        }
+        for service in self.services.lock().unwrap().iter() {
+            if let Some(service) = service.upgrade() {
+                service.call_callback()?;
             }
         }
 

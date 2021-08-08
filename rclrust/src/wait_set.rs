@@ -4,6 +4,7 @@ use crate::context::RclContext;
 use crate::error::ToRclRustResult;
 use crate::log::Logger;
 use crate::rclrust_error;
+use crate::service::RclService;
 use crate::subscription::RclSubscription;
 use crate::timer::RclTimer;
 
@@ -81,6 +82,14 @@ impl RclWaitSet {
             rcl_sys::rcl_wait_set_add_timer(&mut self.0, timer.raw(), std::ptr::null_mut())
                 .to_result()
                 .with_context(|| "rcl_sys::rcl_wait_set_add_timer in RclWaitSet::add_timer")
+        }
+    }
+
+    pub fn add_service(&mut self, service: &RclService) -> Result<()> {
+        unsafe {
+            rcl_sys::rcl_wait_set_add_service(&mut self.0, service.raw(), std::ptr::null_mut())
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_wait_set_add_service in RclWaitSet::add_service")
         }
     }
 }
