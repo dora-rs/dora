@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anyhow::{ensure, Context as _, Result};
+use rclrust_msg::_core::MessageT;
 
 use crate::clock::ClockType;
 use crate::context::{Context, RclContext};
@@ -207,7 +208,7 @@ impl<'ctx> Node<'ctx> {
 
     pub fn create_publisher<T>(&self, topic_name: &str, qos: &QoSProfile) -> Result<Publisher<T>>
     where
-        T: rclrust_msg::_core::MessageT,
+        T: MessageT,
     {
         Publisher::new(self, topic_name, qos)
     }
@@ -219,7 +220,7 @@ impl<'ctx> Node<'ctx> {
         qos: &QoSProfile,
     ) -> Result<Arc<Subscription<T>>>
     where
-        T: rclrust_msg::_core::MessageT + 'static,
+        T: MessageT + 'static,
         F: Fn(T) + 'static,
     {
         let sub = Subscription::new(
@@ -240,7 +241,7 @@ impl<'ctx> Node<'ctx> {
         qos: &QoSProfile,
     ) -> Result<Arc<Subscription<T>>>
     where
-        T: rclrust_msg::_core::MessageT + 'static,
+        T: MessageT + 'static,
         F: Fn(&T::Raw) + 'static,
     {
         let sub = Subscription::new(self, topic_name, callback, qos)?;

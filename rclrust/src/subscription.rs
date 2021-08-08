@@ -3,6 +3,7 @@ use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use rclrust_msg::_core::MessageT;
 
 use crate::error::{RclRustError, ToRclRustResult};
 use crate::internal::ffi::*;
@@ -19,7 +20,7 @@ unsafe impl Send for RclSubscription {}
 impl RclSubscription {
     fn new<T>(node: &RclNode, topic_name: &str, qos: &QoSProfile) -> Result<Self>
     where
-        T: rclrust_msg::_core::MessageT,
+        T: MessageT,
     {
         let mut subscription = unsafe { rcl_sys::rcl_get_zero_initialized_subscription() };
         let topic_c_str = CString::new(topic_name)?;
@@ -53,7 +54,7 @@ impl RclSubscription {
 
     fn take<T>(&self, message: &mut T::Raw) -> Result<()>
     where
-        T: rclrust_msg::_core::MessageT,
+        T: MessageT,
     {
         unsafe {
             rcl_sys::rcl_take(
@@ -100,7 +101,7 @@ pub(crate) trait SubscriptionBase {
 
 pub struct Subscription<T>
 where
-    T: rclrust_msg::_core::MessageT,
+    T: MessageT,
 {
     handle: RclSubscription,
     callback: Box<dyn Fn(&T::Raw)>,
@@ -109,7 +110,7 @@ where
 
 impl<'ctx, T> Subscription<T>
 where
-    T: rclrust_msg::_core::MessageT,
+    T: MessageT,
 {
     pub(crate) fn new<F>(
         node: &Node<'ctx>,
@@ -145,7 +146,7 @@ where
 
 impl<T> SubscriptionBase for Subscription<T>
 where
-    T: rclrust_msg::_core::MessageT,
+    T: MessageT,
 {
     fn handle(&self) -> &RclSubscription {
         &self.handle
@@ -166,7 +167,7 @@ where
 
 impl<T> Drop for Subscription<T>
 where
-    T: rclrust_msg::_core::MessageT,
+    T: MessageT,
 {
     fn drop(&mut self) {
         if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
