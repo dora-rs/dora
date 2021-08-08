@@ -4,6 +4,7 @@ use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use rclrust_msg::_core::MessageT;
 
 use crate::error::ToRclRustResult;
 use crate::internal::ffi::*;
@@ -20,7 +21,7 @@ unsafe impl Send for RclPublisher {}
 impl RclPublisher {
     fn new<T>(node: &RclNode, topic_name: &str, qos: &QoSProfile) -> Result<Self>
     where
-        T: rclrust_msg::_core::MessageT,
+        T: MessageT,
     {
         let mut publisher = unsafe { rcl_sys::rcl_get_zero_initialized_publisher() };
         let topic_c_str = CString::new(topic_name)?;
@@ -50,7 +51,7 @@ impl RclPublisher {
 
     fn publish<T>(&self, message: &T) -> Result<()>
     where
-        T: rclrust_msg::_core::MessageT,
+        T: MessageT,
     {
         unsafe {
             rcl_sys::rcl_publish(
@@ -91,7 +92,7 @@ impl RclPublisher {
 
 pub struct Publisher<T>
 where
-    T: rclrust_msg::_core::MessageT,
+    T: MessageT,
 {
     handle: RclPublisher,
     node_handle: Arc<Mutex<RclNode>>,
@@ -100,7 +101,7 @@ where
 
 impl<T> Publisher<T>
 where
-    T: rclrust_msg::_core::MessageT,
+    T: MessageT,
 {
     pub(crate) fn new<'a>(node: &'a Node<'a>, topic_name: &str, qos: &QoSProfile) -> Result<Self> {
         let node_handle = node.clone_handle();
@@ -132,7 +133,7 @@ where
 
 impl<T> Drop for Publisher<T>
 where
-    T: rclrust_msg::_core::MessageT,
+    T: MessageT,
 {
     fn drop(&mut self) {
         if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
