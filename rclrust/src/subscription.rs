@@ -108,11 +108,11 @@ where
     node_handle: Arc<Mutex<RclNode>>,
 }
 
-impl<'ctx, T> Subscription<T>
+impl<T> Subscription<T>
 where
     T: MessageT,
 {
-    pub(crate) fn new<F>(
+    pub(crate) fn new<'ctx, F>(
         node: &Node<'ctx>,
         topic_name: &str,
         callback: F,
