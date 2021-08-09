@@ -18,8 +18,13 @@ pub(crate) struct RclContext(NonNull<rcl_sys::rcl_context_t>);
 unsafe impl Send for RclContext {}
 
 impl RclContext {
-    fn new(args: &[CString], init_options: &InitOptions) -> Result<Self> {
+    fn new(args: Vec<String>, init_options: &InitOptions) -> Result<Self> {
+        let args = args
+            .into_iter()
+            .map(CString::new)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let c_args: Vec<*const _> = args.iter().map(|s| s.as_ptr()).collect();
+
         let argv = if args.is_empty() {
             // to avoid invalid argument error
             std::ptr::null()
@@ -82,7 +87,7 @@ pub struct Context {
 }
 
 impl Context {
-    pub(crate) fn new(args: &[CString], init_options: InitOptions) -> Result<Arc<Self>> {
+    pub(crate) fn new(args: Vec<String>, init_options: InitOptions) -> Result<Arc<Self>> {
         let handle = RclContext::new(args, &init_options)?;
 
         Ok(Arc::new(Self {
@@ -189,7 +194,7 @@ mod test {
 
     #[test]
     fn context_init() -> Result<()> {
-        let ctx = Context::new(&[], InitOptions::new()?)?;
+        let ctx = Context::new(Vec::new(), InitOptions::new()?)?;
         assert!(ctx.is_valid());
 
         Ok(())
