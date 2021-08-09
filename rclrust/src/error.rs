@@ -135,6 +135,8 @@ pub enum RclRustError {
 
     #[error("Runtime Error: {0}")]
     RuntimeError(&'static str),
+    #[error("Service is canceled.")]
+    ServiceIsCanceled,
 }
 
 pub(crate) fn result_from_rcl_ret(ret: rcl_sys::rcl_ret_t) -> Result<()> {
