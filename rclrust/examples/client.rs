@@ -1,5 +1,3 @@
-use std::thread;
-
 use anyhow::Result;
 use rclrust::prelude::*;
 use rclrust::qos::QoSProfile;
@@ -17,20 +15,14 @@ fn main() -> Result<()> {
     }
 
     let req = AddTwoInts_Request { a: 17, b: 25 };
-    let mut recv = client.send_request(&req)?;
-
-    thread::spawn(move || loop {
-        match recv.try_recv() {
-            Ok(Some(res)) => {
-                rclrust_info!(logger, "{} + {} = {}", req.a, req.b, res.sum);
-                return;
-            }
-            Ok(None) => continue,
-            Err(_) => rclrust_error!(logger, "Request is cancelled"),
-        }
-    });
-
-    rclrust::spin(&node)?;
+    let task = client.send_request(&req)?;
+    rclrust_info!(
+        logger,
+        "{} + {} = {}",
+        req.a,
+        req.b,
+        task.wait_response(&ctx)?.unwrap().sum
+    );
 
     Ok(())
 }
