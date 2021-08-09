@@ -82,7 +82,7 @@ impl Drop for RclContext {
 
 #[derive(Debug)]
 pub struct Context {
-    handle: Mutex<RclContext>,
+    pub(crate) handle: Mutex<RclContext>,
     shutdown_reason: Mutex<Option<String>>,
 }
 
@@ -94,10 +94,6 @@ impl Context {
             handle: Mutex::new(handle),
             shutdown_reason: Mutex::new(None),
         }))
-    }
-
-    pub(crate) const fn handle(&self) -> &Mutex<RclContext> {
-        &self.handle
     }
 
     pub fn is_valid(&self) -> bool {

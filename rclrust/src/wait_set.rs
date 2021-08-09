@@ -122,7 +122,7 @@ mod test {
     #[test]
     fn test_rcl_wait_set_new() -> Result<()> {
         let ctx = crate::init()?;
-        let wait_set = RclWaitSet::new(&mut ctx.handle().lock().unwrap(), 1, 1, 1, 1, 1, 1)?;
+        let wait_set = RclWaitSet::new(&mut ctx.handle.lock().unwrap(), 1, 1, 1, 1, 1, 1)?;
         assert!(wait_set.is_valid());
 
         Ok(())
@@ -131,7 +131,7 @@ mod test {
     #[test]
     fn test_rcl_wait_set_clear() -> Result<()> {
         let ctx = crate::init()?;
-        let mut wait_set = RclWaitSet::new(&mut ctx.handle().lock().unwrap(), 1, 1, 1, 1, 1, 1)?;
+        let mut wait_set = RclWaitSet::new(&mut ctx.handle.lock().unwrap(), 1, 1, 1, 1, 1, 1)?;
         wait_set.clear()?;
 
         Ok(())

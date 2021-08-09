@@ -99,8 +99,8 @@ impl RclNode {
 }
 
 pub struct Node<'ctx> {
-    handle: Arc<Mutex<RclNode>>,
-    context: &'ctx Context,
+    pub(crate) handle: Arc<Mutex<RclNode>>,
+    pub(crate) context: &'ctx Context,
     pub(crate) subscriptions: Mutex<Vec<Weak<dyn SubscriptionBase>>>,
     pub(crate) timers: Mutex<Vec<Weak<Timer>>>,
     pub(crate) clients: Mutex<Vec<Weak<dyn ClientBase>>>,
@@ -118,7 +118,7 @@ impl<'ctx> Node<'ctx> {
 
         let handle = {
             RclNode::new(
-                &mut context.handle().lock().unwrap(),
+                &mut context.handle.lock().unwrap(),
                 name,
                 namespace,
                 options,
@@ -137,10 +137,6 @@ impl<'ctx> Node<'ctx> {
 
     pub(crate) fn clone_handle(&self) -> Arc<Mutex<RclNode>> {
         Arc::clone(&self.handle)
-    }
-
-    pub(crate) const fn context_ref(&self) -> &'ctx Context {
-        self.context
     }
 
     /// # Examples
@@ -400,7 +396,7 @@ impl Drop for Node<'_> {
             self.handle
                 .lock()
                 .unwrap()
-                .fini(&self.context.handle().lock().unwrap())
+                .fini(&self.context.handle.lock().unwrap())
         } {
             rclrust_error!(
                 Logger::new("rclrust"),
