@@ -9,7 +9,7 @@ use crate::node::Node;
 use crate::wait_set::RclWaitSet;
 
 pub fn spin(node: &Arc<Node<'_>>) -> Result<()> {
-    let mut exec = SingleThreadExecutor::new(node.context_ref())?;
+    let mut exec = SingleThreadExecutor::new(node.context)?;
     exec.add_node(node);
     exec.spin()?;
 
@@ -17,7 +17,7 @@ pub fn spin(node: &Arc<Node<'_>>) -> Result<()> {
 }
 
 pub fn spin_some(node: &Arc<Node<'_>>) -> Result<()> {
-    let mut exec = SingleThreadExecutor::new(node.context_ref())?;
+    let mut exec = SingleThreadExecutor::new(node.context)?;
     exec.add_node(node);
     exec.spin_some(Duration::ZERO)?;
 
@@ -67,7 +67,7 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
             );
 
         let mut wait_set = RclWaitSet::new(
-            &mut self.context.handle().lock().unwrap(),
+            &mut self.context.handle.lock().unwrap(),
             n_subscriptions,
             0,
             n_timers,

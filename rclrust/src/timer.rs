@@ -88,11 +88,7 @@ impl<'ctx> Timer {
         F: Fn() + 'static,
     {
         let mut clock = Box::new(Clock::new(clock_type)?);
-        let handle = RclTimer::new(
-            &mut clock,
-            &mut node.context_ref().handle().lock().unwrap(),
-            period,
-        )?;
+        let handle = RclTimer::new(&mut clock, &mut node.context.handle.lock().unwrap(), period)?;
         Ok(Arc::new(Self {
             handle: Mutex::new(handle),
             _clock: clock,

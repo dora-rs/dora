@@ -261,7 +261,7 @@ where
     fn spin_some(&self, context: &Context, max_duration: Duration) -> Result<()> {
         if let Some(client) = self.client.upgrade() {
             let mut wait_set =
-                RclWaitSet::new(&mut context.handle().lock().unwrap(), 0, 0, 0, 1, 0, 0)?;
+                RclWaitSet::new(&mut context.handle.lock().unwrap(), 0, 0, 0, 1, 0, 0)?;
 
             wait_set.clear()?;
             wait_set.add_client(client.handle())?;
