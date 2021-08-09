@@ -1,4 +1,3 @@
-use std::ffi::CString;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -30,12 +29,7 @@ pub fn init() -> Result<Arc<Context>> {
 /// assert!(ctx.is_valid());
 /// ```
 pub fn init_with_options(init_options: InitOptions) -> Result<Arc<Context>> {
-    Context::new(
-        &std::env::args()
-            .map(CString::new)
-            .collect::<std::result::Result<Vec<_>, _>>()?,
-        init_options,
-    )
+    Context::new(std::env::args().collect::<Vec<_>>(), init_options)
 }
 
 /// Check rclrust's status.
