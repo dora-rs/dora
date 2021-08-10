@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{ensure, Context as _, Result};
 use rclrust_msg::_core::{FFIToRust, MessageT, ServiceT};
+use rclrust_msg::rcl_interfaces::msg::ParameterDescriptor;
 
 use crate::client::{Client, ClientBase};
 use crate::clock::ClockType;
@@ -12,6 +13,7 @@ use crate::error::ToRclRustResult;
 use crate::internal::ffi::*;
 use crate::log::Logger;
 use crate::node_options::NodeOptions;
+use crate::parameter::{Parameter, ParameterValue, Parameters};
 use crate::publisher::Publisher;
 use crate::qos::QoSProfile;
 use crate::rclrust_error;
@@ -77,7 +79,7 @@ impl RclNode {
         }
     }
 
-    fn fully_qualified_name(&self) -> String {
+    pub(crate) fn fully_qualified_name(&self) -> String {
         unsafe {
             let name = rcl_sys::rcl_node_get_fully_qualified_name(&self.0);
             String::from_c_char(name).unwrap()
@@ -89,6 +91,14 @@ impl RclNode {
             let logger_name = rcl_sys::rcl_node_get_logger_name(&self.0);
             String::from_c_char(logger_name).unwrap()
         }
+    }
+
+    pub fn get_options(&self) -> Option<&rcl_sys::rcl_node_options_t> {
+        unsafe { rcl_sys::rcl_node_get_options(&self.0).as_ref() }
+    }
+
+    pub fn use_global_arguments(&self) -> Option<bool> {
+        self.get_options().map(|opt| opt.use_global_arguments)
     }
 
     unsafe fn fini(&mut self, _ctx: &RclContext) -> Result<()> {
@@ -105,6 +115,7 @@ pub struct Node<'ctx> {
     pub(crate) timers: Mutex<Vec<Weak<Timer>>>,
     pub(crate) clients: Mutex<Vec<Weak<dyn ClientBase>>>,
     pub(crate) services: Mutex<Vec<Weak<dyn ServiceBase>>>,
+    parameters: Parameters,
 }
 
 impl<'ctx> Node<'ctx> {
@@ -115,15 +126,10 @@ impl<'ctx> Node<'ctx> {
         options: &NodeOptions,
     ) -> Result<Arc<Self>> {
         ensure!(context.is_valid(), "given Context is not valid");
+        let mut context_handle = context.handle.lock().unwrap();
 
-        let handle = {
-            RclNode::new(
-                &mut context.handle.lock().unwrap(),
-                name,
-                namespace,
-                options,
-            )?
-        };
+        let handle = { RclNode::new(&mut context_handle, name, namespace, options)? };
+        let parameters = Parameters::new(&context_handle, &handle)?;
 
         Ok(Arc::new(Self {
             handle: Arc::new(Mutex::new(handle)),
@@ -132,6 +138,7 @@ impl<'ctx> Node<'ctx> {
             timers: Default::default(),
             clients: Default::default(),
             services: Default::default(),
+            parameters,
         }))
     }
 
@@ -206,6 +213,39 @@ impl<'ctx> Node<'ctx> {
     /// ```
     pub fn logger_name(&self) -> String {
         self.handle.lock().unwrap().logger_name()
+    }
+
+    pub fn declare_parameter(&self, name: &str, default_value: &ParameterValue) -> Result<()> {
+        self.declare_parameter_full(name, default_value, ParameterDescriptor::default(), false)
+    }
+
+    pub fn declare_parameter_full(
+        &self,
+        name: &str,
+        default_value: &ParameterValue,
+        parameter_descriptor: ParameterDescriptor,
+        ignore_override: bool,
+    ) -> Result<()> {
+        self.parameters.declare_parameter(
+            name,
+            default_value,
+            parameter_descriptor,
+            ignore_override,
+        )
+    }
+
+    pub fn has_parameter(&self, name: &str) -> bool {
+        self.parameters.has_parameter(name)
+    }
+
+    pub fn get_parameter(&self, name: &str) -> Option<Parameter> {
+        self.parameters.get_parameter(name)
+    }
+
+    pub fn set_parameter(&self, parameter: Parameter) -> Result<()> {
+        self.parameters
+            .set_parameters_atomically(&[parameter])?
+            .to_result()
     }
 
     pub fn create_publisher<T>(&self, topic_name: &str, qos: &QoSProfile) -> Result<Publisher<T>>
@@ -449,6 +489,23 @@ mod test {
         let ctx = crate::init()?;
         let node = ctx.create_node_with_ns("test_node", "ns1")?;
         crate::rclrust_debug!(node.logger(), "logging {}{}{}", 21, "abc", 20.);
+
+        Ok(())
+    }
+
+    #[test]
+    fn node_declare_parameter() -> Result<()> {
+        let ctx = crate::init()?;
+        let node = ctx.create_node("test_node")?;
+        node.declare_parameter("param", &ParameterValue::integer(42))?;
+        assert!(node.has_parameter("param"));
+        assert_eq!(
+            node.get_parameter("param").unwrap(),
+            Parameter {
+                name: "param".into(),
+                value: ParameterValue::integer(42)
+            }
+        );
 
         Ok(())
     }

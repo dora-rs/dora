@@ -137,6 +137,18 @@ pub enum RclRustError {
     RuntimeError(&'static str),
     #[error("Service is canceled.")]
     ServiceIsCanceled,
+
+    // Parameter
+    #[error(r#"Parameter "{name}" cannot be set because it was not declared."#)]
+    ParameterNotDeclared { name: String },
+    #[error(r#"Parameter "{name}" has already been declare."#)]
+    ParameterAlreadyDeclared { name: String },
+    #[error(r#"Parameter "{}" could not be set: {reason}"#)]
+    ParameterInvalidValue { name: String, reason: String },
+    #[error("{0}")]
+    ParameterInvalid(String),
+    #[error("Fail to set parameter: {reason}")]
+    ParameterSetFail { reason: String },
 }
 
 pub(crate) fn result_from_rcl_ret(ret: rcl_sys::rcl_ret_t) -> Result<()> {
@@ -208,5 +220,18 @@ pub(crate) trait ToRclRustResult {
 impl ToRclRustResult for rcl_sys::rcl_ret_t {
     fn to_result(self) -> Result<()> {
         result_from_rcl_ret(self)
+    }
+}
+
+impl ToRclRustResult for crate::parameter::SetParametersResult {
+    fn to_result(self) -> Result<()> {
+        if self.successful {
+            Ok(())
+        } else {
+            Err(RclRustError::ParameterSetFail {
+                reason: self.reason,
+            }
+            .into())
+        }
     }
 }
