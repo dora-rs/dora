@@ -151,7 +151,7 @@ where
         Ok(Arc::new(Self {
             handle,
             node_handle,
-            pendings: Mutex::new(HashMap::new()),
+            pendings: Default::default(),
             _phantom: Default::default(),
         }))
     }

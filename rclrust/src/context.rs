@@ -92,7 +92,7 @@ impl Context {
 
         Ok(Arc::new(Self {
             handle: Mutex::new(handle),
-            shutdown_reason: Mutex::new(None),
+            shutdown_reason: Default::default(),
         }))
     }
 

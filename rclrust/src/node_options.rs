@@ -8,12 +8,14 @@ pub(crate) struct RclNodeOptions(rcl_sys::rcl_node_options_t);
 unsafe impl Send for RclNodeOptions {}
 
 impl RclNodeOptions {
-    pub fn new() -> Self {
-        Self(unsafe { rcl_sys::rcl_node_get_default_options() })
-    }
-
     pub const fn raw(&self) -> &rcl_sys::rcl_node_options_t {
         &self.0
+    }
+}
+
+impl Default for RclNodeOptions {
+    fn default() -> Self {
+        Self(unsafe { rcl_sys::rcl_node_get_default_options() })
     }
 }
 
@@ -29,26 +31,18 @@ impl Drop for RclNodeOptions {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct NodeOptions {
     options: RclNodeOptions,
 }
 
 impl NodeOptions {
     pub fn new() -> Self {
-        Self {
-            options: RclNodeOptions::new(),
-        }
+        Default::default()
     }
 
     pub(crate) const fn raw(&self) -> &rcl_sys::rcl_node_options_t {
         self.options.raw()
-    }
-}
-
-impl Default for NodeOptions {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
