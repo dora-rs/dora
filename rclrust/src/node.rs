@@ -23,7 +23,7 @@ use crate::timer::Timer;
 use crate::wait_set::RclWaitSet;
 
 #[derive(Debug)]
-pub(crate) struct RclNode(rcl_sys::rcl_node_t);
+pub(crate) struct RclNode(Box<rcl_sys::rcl_node_t>);
 
 unsafe impl Send for RclNode {}
 
@@ -34,13 +34,13 @@ impl RclNode {
         namespace: Option<&str>,
         options: &NodeOptions,
     ) -> Result<Self> {
-        let mut node = unsafe { rcl_sys::rcl_get_zero_initialized_node() };
+        let mut node = Box::new(unsafe { rcl_sys::rcl_get_zero_initialized_node() });
         let name_c_str = CString::new(name)?;
         let namespace_c_str = CString::new(namespace.unwrap_or_default())?;
 
         unsafe {
             rcl_sys::rcl_node_init(
-                &mut node,
+                &mut *node,
                 name_c_str.as_ptr(),
                 namespace_c_str.as_ptr(),
                 context.raw_mut(),
@@ -62,39 +62,39 @@ impl RclNode {
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_node_is_valid(&self.0) }
+        unsafe { rcl_sys::rcl_node_is_valid(&*self.0) }
     }
 
     fn name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_node_get_name(&self.0);
+            let name = rcl_sys::rcl_node_get_name(&*self.0);
             String::from_c_char(name).unwrap()
         }
     }
 
     fn namespace(&self) -> String {
         unsafe {
-            let namespace = rcl_sys::rcl_node_get_namespace(&self.0);
+            let namespace = rcl_sys::rcl_node_get_namespace(&*self.0);
             String::from_c_char(namespace).unwrap()
         }
     }
 
     pub(crate) fn fully_qualified_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_node_get_fully_qualified_name(&self.0);
+            let name = rcl_sys::rcl_node_get_fully_qualified_name(&*self.0);
             String::from_c_char(name).unwrap()
         }
     }
 
     fn logger_name(&self) -> String {
         unsafe {
-            let logger_name = rcl_sys::rcl_node_get_logger_name(&self.0);
+            let logger_name = rcl_sys::rcl_node_get_logger_name(&*self.0);
             String::from_c_char(logger_name).unwrap()
         }
     }
 
     pub fn get_options(&self) -> Option<&rcl_sys::rcl_node_options_t> {
-        unsafe { rcl_sys::rcl_node_get_options(&self.0).as_ref() }
+        unsafe { rcl_sys::rcl_node_get_options(&*self.0).as_ref() }
     }
 
     pub fn use_global_arguments(&self) -> Option<bool> {
@@ -102,7 +102,7 @@ impl RclNode {
     }
 
     unsafe fn fini(&mut self, _ctx: &RclContext) -> Result<()> {
-        rcl_sys::rcl_node_fini(&mut self.0)
+        rcl_sys::rcl_node_fini(&mut *self.0)
             .to_result()
             .with_context(|| "rcl_sys::rcl_node_fini in RclNode::fini")
     }

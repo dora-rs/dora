@@ -1,6 +1,5 @@
 use std::ffi::CString;
 use std::os::raw::c_int;
-use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result};
@@ -13,12 +12,13 @@ use crate::node_options::NodeOptions;
 use crate::rclrust_error;
 
 #[derive(Debug)]
-pub(crate) struct RclContext(NonNull<rcl_sys::rcl_context_t>);
+pub(crate) struct RclContext(Box<rcl_sys::rcl_context_t>);
 
 unsafe impl Send for RclContext {}
 
 impl RclContext {
     fn new(args: Vec<String>, init_options: &InitOptions) -> Result<Self> {
+        let mut handle = unsafe { Box::new(rcl_sys::rcl_get_zero_initialized_context()) };
         let args = args
             .into_iter()
             .map(CString::new)
@@ -33,16 +33,20 @@ impl RclContext {
         };
 
         unsafe {
-            let mut handle = rcl_sys::rcl_get_zero_initialized_context();
-            rcl_sys::rcl_init(c_args.len() as c_int, argv, init_options.raw(), &mut handle)
-                .to_result()
-                .with_context(|| "rcl_sys::rcl_init in RclContext::new")?;
-            Ok(Self(NonNull::new(Box::into_raw(Box::new(handle))).unwrap()))
+            rcl_sys::rcl_init(
+                c_args.len() as c_int,
+                argv,
+                init_options.raw(),
+                &mut *handle,
+            )
+            .to_result()
+            .with_context(|| "rcl_sys::rcl_init in RclContext::new")?;
+            Ok(Self(handle))
         }
     }
 
     pub fn raw_mut(&mut self) -> &mut rcl_sys::rcl_context_t {
-        unsafe { self.0.as_mut() }
+        self.0.as_mut()
     }
 
     fn is_valid(&mut self) -> bool {
@@ -61,7 +65,7 @@ impl RclContext {
     }
 
     pub(crate) fn global_arguments(&self) -> &rcl_sys::rcl_arguments_t {
-        unsafe { &self.0.as_ref().global_arguments }
+        &self.0.global_arguments
     }
 }
 

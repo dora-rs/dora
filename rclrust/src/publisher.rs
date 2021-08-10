@@ -14,7 +14,7 @@ use crate::qos::QoSProfile;
 use crate::rclrust_error;
 
 #[derive(Debug)]
-pub(crate) struct RclPublisher(rcl_sys::rcl_publisher_t);
+pub(crate) struct RclPublisher(Box<rcl_sys::rcl_publisher_t>);
 
 unsafe impl Send for RclPublisher {}
 
@@ -23,14 +23,14 @@ impl RclPublisher {
     where
         T: MessageT,
     {
-        let mut publisher = unsafe { rcl_sys::rcl_get_zero_initialized_publisher() };
+        let mut publisher = Box::new(unsafe { rcl_sys::rcl_get_zero_initialized_publisher() });
         let topic_c_str = CString::new(topic_name)?;
         let mut options = unsafe { rcl_sys::rcl_publisher_get_default_options() };
         options.qos = qos.into();
 
         unsafe {
             rcl_sys::rcl_publisher_init(
-                &mut publisher,
+                &mut *publisher,
                 node.raw(),
                 T::type_support() as *const _,
                 topic_c_str.as_ptr(),
@@ -44,7 +44,7 @@ impl RclPublisher {
     }
 
     unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        rcl_sys::rcl_publisher_fini(&mut self.0, node.raw_mut())
+        rcl_sys::rcl_publisher_fini(&mut *self.0, node.raw_mut())
             .to_result()
             .with_context(|| "rcl_sys::rcl_publisher_fini in RclPublisher::fini")
     }
@@ -55,7 +55,7 @@ impl RclPublisher {
     {
         unsafe {
             rcl_sys::rcl_publish(
-                &self.0,
+                &*self.0,
                 &message.to_raw_ref() as *const _ as *const c_void,
                 std::ptr::null_mut(),
             )
@@ -68,19 +68,19 @@ impl RclPublisher {
 
     fn topic_name(&self) -> Option<String> {
         unsafe {
-            let name = rcl_sys::rcl_publisher_get_topic_name(&self.0);
+            let name = rcl_sys::rcl_publisher_get_topic_name(&*self.0);
             String::from_c_char(name)
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_publisher_is_valid(&self.0) }
+        unsafe { rcl_sys::rcl_publisher_is_valid(&*self.0) }
     }
 
     fn subscription_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
-            rcl_sys::rcl_publisher_get_subscription_count(&self.0, &mut size)
+            rcl_sys::rcl_publisher_get_subscription_count(&*self.0, &mut size)
                 .to_result()
                 .with_context(|| {
                     "rcl_sys::rcl_publisher_get_subscription_count in RclPublisher::subscription_count"

@@ -13,7 +13,7 @@ use crate::qos::QoSProfile;
 use crate::rclrust_error;
 
 #[derive(Debug)]
-pub(crate) struct RclSubscription(rcl_sys::rcl_subscription_t);
+pub(crate) struct RclSubscription(Box<rcl_sys::rcl_subscription_t>);
 
 unsafe impl Send for RclSubscription {}
 
@@ -22,14 +22,15 @@ impl RclSubscription {
     where
         T: MessageT,
     {
-        let mut subscription = unsafe { rcl_sys::rcl_get_zero_initialized_subscription() };
+        let mut subscription =
+            Box::new(unsafe { rcl_sys::rcl_get_zero_initialized_subscription() });
         let topic_c_str = CString::new(topic_name)?;
         let mut options = unsafe { rcl_sys::rcl_subscription_get_default_options() };
         options.qos = qos.into();
 
         unsafe {
             rcl_sys::rcl_subscription_init(
-                &mut subscription,
+                &mut *subscription,
                 node.raw(),
                 T::type_support() as *const _,
                 topic_c_str.as_ptr(),
@@ -47,7 +48,7 @@ impl RclSubscription {
     }
 
     unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        rcl_sys::rcl_subscription_fini(&mut self.0, node.raw_mut())
+        rcl_sys::rcl_subscription_fini(&mut *self.0, node.raw_mut())
             .to_result()
             .with_context(|| "rcl_sys::rcl_subscription_init in RclSubscription::fini")
     }
@@ -59,7 +60,7 @@ impl RclSubscription {
         let mut message = T::Raw::default();
         unsafe {
             rcl_sys::rcl_take(
-                &self.0,
+                &*self.0,
                 &mut message as *mut _ as *mut c_void,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -73,19 +74,19 @@ impl RclSubscription {
 
     fn topic_name(&self) -> Option<String> {
         unsafe {
-            let topic_name = rcl_sys::rcl_subscription_get_topic_name(&self.0);
+            let topic_name = rcl_sys::rcl_subscription_get_topic_name(&*self.0);
             String::from_c_char(topic_name)
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_subscription_is_valid(&self.0) }
+        unsafe { rcl_sys::rcl_subscription_is_valid(&*self.0) }
     }
 
     fn publisher_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
-            rcl_sys::rcl_subscription_get_publisher_count(&self.0, &mut size)
+            rcl_sys::rcl_subscription_get_publisher_count(&*self.0, &mut size)
                 .to_result()
                 .with_context(|| {
                     "rcl_sys::rcl_subscription_get_publisher_count in RclSubscription::publisher_count"
