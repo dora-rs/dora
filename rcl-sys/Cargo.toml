@@ -5,8 +5,10 @@ edition = "2018"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
 description = "The C API binding of the ROS client library (rcl)"
-repository = "https://github.com/ros2rust/rclrust"
+repository = "https://github.com/rclrust/rclrust"
 license = "Apache-2.0"
+
+workspace = ".."
 
 [build-dependencies]
 bindgen = "0.59"
