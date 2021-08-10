@@ -12,7 +12,7 @@ fn main() -> Result<()> {
     let logger = node.logger();
     let publisher = node.create_publisher::<String_>("message", &QoSProfile::default())?;
 
-    for count in 0..100 {
+    for count in 0..1000 {
         publisher.publish(&String_ {
             data: format!("hello {}", count),
         })?;
