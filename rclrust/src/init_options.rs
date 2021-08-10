@@ -95,3 +95,15 @@ impl InitOptions {
     //     }
     // }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn init_options_new() -> Result<()> {
+        let _init_options = InitOptions::new()?;
+
+        Ok(())
+    }
+}
