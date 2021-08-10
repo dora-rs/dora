@@ -76,7 +76,7 @@ impl RclContext {
         Ok(())
     }
 
-    pub(crate) fn global_arguments(&self) -> &rcl_sys::rcl_arguments_t {
+    pub(crate) const fn global_arguments(&self) -> &rcl_sys::rcl_arguments_t {
         &self.0.global_arguments
     }
 }
