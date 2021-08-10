@@ -30,6 +30,7 @@ pub use clock::{Clock, ClockType};
 pub use context::Context;
 pub use executor::{spin, spin_some};
 pub use init_options::InitOptions;
+pub use log::Logger;
 pub use node_options::NodeOptions;
 pub use parameter::{Parameter, ParameterType, ParameterValue};
 pub use time::Time;
