@@ -24,7 +24,7 @@ impl fmt::Display for Parameter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            r#"Parameter(name = "{}", value = {})"#,
+            r#"Parameter(name="{}", value={})"#,
             self.name, self.value
         )
     }
