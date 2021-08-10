@@ -12,7 +12,7 @@ use crate::node::{Node, RclNode};
 use crate::qos::QoSProfile;
 use crate::rclrust_error;
 
-pub struct RclService(rcl_sys::rcl_service_t);
+pub struct RclService(Box<rcl_sys::rcl_service_t>);
 
 unsafe impl Send for RclService {}
 
@@ -21,14 +21,14 @@ impl RclService {
     where
         Srv: ServiceT,
     {
-        let mut service = unsafe { rcl_sys::rcl_get_zero_initialized_service() };
+        let mut service = Box::new(unsafe { rcl_sys::rcl_get_zero_initialized_service() });
         let service_c_str = CString::new(service_name)?;
         let mut options = unsafe { rcl_sys::rcl_service_get_default_options() };
         options.qos = qos.into();
 
         unsafe {
             rcl_sys::rcl_service_init(
-                &mut service,
+                &mut *service,
                 node.raw(),
                 Srv::type_support() as *const _,
                 service_c_str.as_ptr(),
@@ -45,7 +45,7 @@ impl RclService {
     }
 
     unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        rcl_sys::rcl_service_fini(&mut self.0, node.raw_mut())
+        rcl_sys::rcl_service_fini(&mut *self.0, node.raw_mut())
             .to_result()
             .with_context(|| "rcl_sys::rcl_service_fini in RclService::fini")
     }
@@ -60,7 +60,7 @@ impl RclService {
         let mut request = <Srv::Request as MessageT>::Raw::default();
         unsafe {
             rcl_sys::rcl_take_request(
-                &self.0,
+                &*self.0,
                 request_header.as_mut_ptr(),
                 &mut request as *mut _ as *mut c_void,
             )
@@ -81,7 +81,7 @@ impl RclService {
     {
         unsafe {
             rcl_sys::rcl_send_response(
-                &self.0,
+                &*self.0,
                 response_header,
                 &response.to_raw_ref() as *const _ as *mut c_void,
             )
@@ -92,13 +92,13 @@ impl RclService {
 
     fn service_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_service_get_service_name(&self.0);
+            let name = rcl_sys::rcl_service_get_service_name(&*self.0);
             String::from_c_char(name).unwrap_or_default()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_service_is_valid(&self.0) }
+        unsafe { rcl_sys::rcl_service_is_valid(&*self.0) }
     }
 }
 

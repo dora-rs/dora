@@ -20,7 +20,7 @@ use crate::rclrust_error;
 use crate::wait_set::RclWaitSet;
 
 #[derive(Debug)]
-pub(crate) struct RclClient(rcl_sys::rcl_client_t);
+pub(crate) struct RclClient(Box<rcl_sys::rcl_client_t>);
 
 unsafe impl Send for RclClient {}
 
@@ -29,14 +29,14 @@ impl RclClient {
     where
         Srv: ServiceT,
     {
-        let mut client = unsafe { rcl_sys::rcl_get_zero_initialized_client() };
+        let mut client = Box::new(unsafe { rcl_sys::rcl_get_zero_initialized_client() });
         let service_c_str = CString::new(service_name)?;
         let mut options = unsafe { rcl_sys::rcl_client_get_default_options() };
         options.qos = qos.into();
 
         unsafe {
             rcl_sys::rcl_client_init(
-                &mut client,
+                &mut *client,
                 node.raw(),
                 Srv::type_support() as *const _,
                 service_c_str.as_ptr(),
@@ -54,7 +54,7 @@ impl RclClient {
     }
 
     unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        rcl_sys::rcl_client_fini(&mut self.0, node.raw_mut())
+        rcl_sys::rcl_client_fini(&mut *self.0, node.raw_mut())
             .to_result()
             .with_context(|| "rcl_sys::rcl_client_fini in RclClient::fini")
     }
@@ -66,7 +66,7 @@ impl RclClient {
         let mut sequence_number = 0;
         unsafe {
             rcl_sys::rcl_send_request(
-                &self.0,
+                &*self.0,
                 &request.to_raw_ref() as *const _ as *const c_void,
                 &mut sequence_number,
             )
@@ -86,7 +86,7 @@ impl RclClient {
         let mut response = <Srv::Response as MessageT>::Raw::default();
         unsafe {
             rcl_sys::rcl_take_response(
-                &self.0,
+                &*self.0,
                 request_header.as_mut_ptr(),
                 &mut response as *mut _ as *mut c_void,
             )
@@ -99,7 +99,7 @@ impl RclClient {
 
     fn service_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_client_get_service_name(&self.0);
+            let name = rcl_sys::rcl_client_get_service_name(&*self.0);
             String::from_c_char(name).unwrap_or_default()
         }
     }
@@ -107,7 +107,7 @@ impl RclClient {
     fn service_is_available(&self, node: &RclNode) -> Result<bool> {
         let mut is_available = false;
         unsafe {
-            rcl_sys::rcl_service_server_is_available(node.raw(), &self.0, &mut is_available)
+            rcl_sys::rcl_service_server_is_available(node.raw(), &*self.0, &mut is_available)
                 .to_result()
                 .with_context(|| {
                     "rcl_sys::rcl_service_server_is_available in RclClient::service_is_available"
@@ -117,7 +117,7 @@ impl RclClient {
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_client_is_valid(&self.0) }
+        unsafe { rcl_sys::rcl_client_is_valid(&*self.0) }
     }
 }
 

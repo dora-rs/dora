@@ -11,13 +11,15 @@ unsafe impl Send for RclInitOptions {}
 
 impl RclInitOptions {
     pub fn new() -> Result<Self> {
+        let mut options = unsafe { rcl_sys::rcl_get_zero_initialized_init_options() };
+
         unsafe {
-            let mut options = rcl_sys::rcl_get_zero_initialized_init_options();
             rcl_sys::rcl_init_options_init(&mut options, rcl_sys::rcutils_get_default_allocator())
                 .to_result()
                 .with_context(|| "rcl_sys::rcl_init_options_init in RclInitOptions::new")?;
-            Ok(Self(options))
         }
+
+        Ok(Self(options))
     }
 
     pub const fn raw(&self) -> &rcl_sys::rcl_init_options_t {
