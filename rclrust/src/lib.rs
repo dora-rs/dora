@@ -4,6 +4,7 @@
     clippy::all,
     clippy::nursery
 )]
+#![allow(clippy::missing_safety_doc)]
 
 pub mod client;
 pub mod clock;
