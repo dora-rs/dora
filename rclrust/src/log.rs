@@ -54,6 +54,19 @@ impl TryFrom<c_int> for LogSeverity {
     }
 }
 
+#[no_mangle]
+pub(crate) unsafe extern "C" fn logging_output_handler(
+    location: *const rcl_sys::rcutils_log_location_t,
+    severity: c_int,
+    name: *const c_char,
+    timestamp: rcl_sys::rcutils_time_point_value_t,
+    format: *const c_char,
+    args: *mut rcl_sys::va_list,
+) {
+    let _guard = LOGGER_MUTEX.lock();
+    rcl_sys::rcl_logging_multiple_output_handler(location, severity, name, timestamp, format, args)
+}
+
 pub(crate) static LOGGER_MUTEX: Lazy<ReentrantMutex<()>> = Lazy::new(|| ReentrantMutex::new(()));
 
 #[derive(Debug)]

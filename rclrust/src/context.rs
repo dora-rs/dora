@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result};
 use crate::error::ToRclRustResult;
 use crate::init_options::InitOptions;
 use crate::log::Logger;
+use crate::log::{logging_output_handler, LOGGER_MUTEX};
 use crate::node::Node;
 use crate::node_options::NodeOptions;
 use crate::rclrust_error;
@@ -41,6 +42,17 @@ impl RclContext {
             )
             .to_result()
             .with_context(|| "rcl_sys::rcl_init in RclContext::new")?;
+
+            {
+                let _guard = LOGGER_MUTEX.lock();
+                rcl_sys::rcl_logging_configure_with_output_handler(
+                    &handle.global_arguments,
+                    &rcl_sys::rcutils_get_default_allocator(),
+                    Some(logging_output_handler),
+                )
+                .to_result()?
+            }
+
             Ok(Self(handle))
         }
     }
@@ -176,19 +188,6 @@ impl Context {
         options: &NodeOptions,
     ) -> Result<Arc<Node<'a>>> {
         Node::new(self, name, Some(namespace), options)
-    }
-}
-
-impl Drop for Context {
-    fn drop(&mut self) {
-        let ret = unsafe { rcl_sys::rcl_logging_fini().to_result() };
-        if let Err(e) = ret {
-            rclrust_error!(
-                Logger::new("rclrust"),
-                "Failed to tear down the logging setup: {}",
-                e
-            )
-        }
     }
 }
 
