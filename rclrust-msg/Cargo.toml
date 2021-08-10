@@ -8,7 +8,7 @@ description = "ROS2 message, service, action types"
 repository = "https://github.com/rclrust/rclrust"
 license = "Apache-2.0"
 
-categories = ["science:robotics"]
+categories = ["science::robotics"]
 keywords = ["ros2"]
 
 workspace = ".."
