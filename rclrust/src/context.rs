@@ -59,6 +59,10 @@ impl RclContext {
         }
         Ok(())
     }
+
+    pub(crate) fn global_arguments(&self) -> &rcl_sys::rcl_arguments_t {
+        unsafe { &self.0.as_ref().global_arguments }
+    }
 }
 
 impl Drop for RclContext {
