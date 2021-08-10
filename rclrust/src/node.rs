@@ -128,10 +128,10 @@ impl<'ctx> Node<'ctx> {
         Ok(Arc::new(Self {
             handle: Arc::new(Mutex::new(handle)),
             context,
-            subscriptions: Mutex::new(Vec::new()),
-            timers: Mutex::new(Vec::new()),
-            clients: Mutex::new(Vec::new()),
-            services: Mutex::new(Vec::new()),
+            subscriptions: Default::default(),
+            timers: Default::default(),
+            clients: Default::default(),
+            services: Default::default(),
         }))
     }
 
