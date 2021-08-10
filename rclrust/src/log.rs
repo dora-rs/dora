@@ -238,7 +238,7 @@ mod test {
 
     #[test]
     fn empty_logger_level() -> Result<()> {
-        let _guard = TEST_MUTEX.lock();
+        let _guard = TEST_MUTEX.lock().unwrap();
 
         let logger = Logger::empty_name();
 
@@ -262,7 +262,7 @@ mod test {
 
     #[test]
     fn named_logger_level() -> Result<()> {
-        let _guard = TEST_MUTEX.lock();
+        let _guard = TEST_MUTEX.lock().unwrap();
 
         let root_logger = Logger::empty_name();
 
@@ -282,7 +282,7 @@ mod test {
 
     #[test]
     fn empty_logger_is_enable_for() -> Result<()> {
-        let _guard = TEST_MUTEX.lock();
+        let _guard = TEST_MUTEX.lock().unwrap();
 
         let logger = Logger::empty_name();
 
