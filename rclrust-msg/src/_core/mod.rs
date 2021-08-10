@@ -1,4 +1,5 @@
 #![warn(clippy::all, clippy::nursery)]
+#![allow(clippy::missing_safety_doc)]
 
 pub use widestring;
 
