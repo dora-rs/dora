@@ -1,6 +1,7 @@
 use anyhow::Result;
-use rclrust::prelude::*;
 use rclrust::qos::QoSProfile;
+use rclrust::rclrust_info;
+use rclrust_msg::_core::FFIToRust;
 use rclrust_msg::std_msgs::msg::String as String_;
 
 fn main() -> Result<()> {

@@ -2,7 +2,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::Result;
-use rclrust::prelude::*;
+use rclrust::rclrust_info;
 use rclrust::qos::QoSProfile;
 use rclrust_msg::std_msgs::msg::String as String_;
 

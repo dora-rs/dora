@@ -1,6 +1,6 @@
 use anyhow::Result;
-use rclrust::prelude::*;
 use rclrust::qos::QoSProfile;
+use rclrust::rclrust_info;
 use rclrust_msg::example_interfaces::srv::{AddTwoInts, AddTwoInts_Request};
 
 fn main() -> Result<()> {
