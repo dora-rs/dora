@@ -4,12 +4,11 @@ version = "0.0.2"
 edition = "2018"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
-description = "TODO"
+description = "ROS2 message, service, action types"
 repository = "https://github.com/rclrust/rclrust"
 license = "Apache-2.0"
-readme = "../README.md"
 
-categories = ["robotics"]
+categories = ["science:robotics"]
 keywords = ["ros2"]
 
 workspace = ".."
