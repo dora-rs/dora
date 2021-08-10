@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::time::Duration;
 
 use anyhow::Result;
-use rclrust::prelude::*;
+use rclrust::rclrust_info;
 
 fn main() -> Result<()> {
     let ctx = rclrust::init()?;

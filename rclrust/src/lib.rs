@@ -16,7 +16,6 @@ pub mod log;
 pub mod node;
 pub mod node_options;
 pub mod parameter;
-pub mod prelude;
 pub mod publisher;
 pub mod qos;
 pub mod service;
