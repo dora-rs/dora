@@ -1,5 +1,9 @@
 # RclRust
 
+| Target              | Status                                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Foxy (Ubuntu 20.04) | [![Foxy (Ubutnu 20.04)](https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml/badge.svg)](https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml) |
+
 ## Introduction
 
 This is yet another ROS2 client library written in Rust.  
@@ -31,7 +35,6 @@ By using proc-macro to generate message-type and service-type code, crate depend
   - Unit test
   - Documentation
   - Examples (especially with ament)
-- CI
 - etc...
 
 ## I'm not going to support
