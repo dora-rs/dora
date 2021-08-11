@@ -1,0 +1,58 @@
+name: Foxy
+
+on:
+  push:
+    branches: main
+  pull_request:
+    branches: main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-20.04
+            ros_distro: foxy
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+
+      - name: Setup ROS environment
+        uses: ros-tooling/setup-ros@v0.2
+        with:
+          required-ros-distributions: ${{ matrix.ros_distro }}
+
+      - name: Run cargo check
+        run: |
+          source /opt/ros/foxy/setup.bash
+          cargo check --all-features
+
+      - name: Run cargo test
+        # for skip rcl-sys
+        run: |
+          source /opt/ros/foxy/setup.bash
+          cargo test -p rclrust-msg rclrust-msg-gen
+          cargo test -p rclrust -- --test-threads 1
+
+      - name: Run cargo fmt
+        run: |
+          source /opt/ros/foxy/setup.bash
+          cargo fmt -- --check
+
+      - name: Run cargo clippy
+        run: |
+          source /opt/ros/foxy/setup.bash
+          cargo clippy -- -D warnings
