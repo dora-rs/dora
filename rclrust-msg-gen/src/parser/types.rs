@@ -146,8 +146,9 @@ fn primitive_type(s: &str) -> IResult<&str, PrimitiveType> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use anyhow::Result;
+
+    use super::*;
 
     #[test]
     fn test_parse_member_type_basic_type() -> Result<()> {

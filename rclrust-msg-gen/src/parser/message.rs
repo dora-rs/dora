@@ -59,12 +59,12 @@ pub fn parse_message_string(
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use std::path::PathBuf;
 
+    use super::*;
     use crate::types::primitives::*;
     use crate::types::sequences::*;
     use crate::types::*;
-    use std::path::PathBuf;
 
     #[test]
     fn test_split_once() {

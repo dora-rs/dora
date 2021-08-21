@@ -102,9 +102,10 @@ pub fn member_def(line: &str) -> Result<Member> {
 
 #[cfg(test)]
 mod test {
+    use anyhow::Result;
+
     use super::*;
     use crate::types::primitives::BasicType;
-    use anyhow::Result;
 
     #[test]
     fn parse_member_def() -> Result<()> {
