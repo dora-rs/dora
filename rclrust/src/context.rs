@@ -178,7 +178,9 @@ impl Context {
     ///
     /// let ctx = rclrust::init().unwrap();
     /// let options = NodeOptions::new();
-    /// let node = ctx.create_node_with_ns_and_options("test_node", "ns", &options).unwrap();
+    /// let node = ctx
+    ///     .create_node_with_ns_and_options("test_node", "ns", &options)
+    ///     .unwrap();
     /// assert_eq!(&node.fully_qualified_name(), "/ns/test_node");
     /// ```
     pub fn create_node_with_ns_and_options<'a>(

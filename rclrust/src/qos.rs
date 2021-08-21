@@ -158,7 +158,7 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::{QoSProfile, HistoryPolicy};
+    /// use rclrust::qos::{HistoryPolicy, QoSProfile};
     ///
     /// let qos = QoSProfile::system_default().history(HistoryPolicy::KeepAll);
     /// ```
@@ -242,7 +242,7 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::{QoSProfile, DurabilityPolicy};
+    /// use rclrust::qos::{DurabilityPolicy, QoSProfile};
     ///
     /// let qos = QoSProfile::system_default().durability(DurabilityPolicy::Volatile);
     /// ```
@@ -282,8 +282,8 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use std::time::Duration;
     /// use rclrust::qos::QoSProfile;
+    /// use std::time::Duration;
     ///
     /// let qos = QoSProfile::system_default().deadline(Duration::new(5, 0));
     /// ```
@@ -297,8 +297,8 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use std::time::Duration;
     /// use rclrust::qos::QoSProfile;
+    /// use std::time::Duration;
     ///
     /// let qos = QoSProfile::system_default().lifespan(Duration::new(5, 0));
     /// ```
@@ -312,7 +312,7 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::{QoSProfile, LivelinessPolicy};
+    /// use rclrust::qos::{LivelinessPolicy, QoSProfile};
     ///
     /// let qos = QoSProfile::system_default().liveliness(LivelinessPolicy::Automatic);
     /// ```
@@ -326,8 +326,8 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use std::time::Duration;
     /// use rclrust::qos::QoSProfile;
+    /// use std::time::Duration;
     ///
     /// let qos = QoSProfile::system_default().liveliness_lease_duration(Duration::new(5, 0));
     /// ```

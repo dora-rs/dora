@@ -42,16 +42,16 @@ impl Drop for RclInitOptions {
 #[derive(Debug)]
 pub struct InitOptions {
     options: RclInitOptions,
-    // shutdown_on_sigint: bool,
-    // initialize_logging: bool,
+    /* shutdown_on_sigint: bool,
+     * initialize_logging: bool, */
 }
 
 impl InitOptions {
     pub fn new() -> Result<Self> {
         Ok(Self {
             options: RclInitOptions::new()?,
-            // shutdown_on_sigint: true,
-            // initialize_logging: true,
+            /* shutdown_on_sigint: true,
+             * initialize_logging: true, */
         })
     }
 
