@@ -1,9 +1,7 @@
 use heck::SnakeCase;
 use quote::{format_ident, quote, ToTokens};
 
-use super::primitives::*;
-use super::sequences::Array;
-use super::{ConstantType, MemberType};
+use super::{primitives::*, sequences::Array, ConstantType, MemberType};
 
 /// A member of a structure
 #[derive(Debug, Clone)]

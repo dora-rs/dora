@@ -1,14 +1,14 @@
 use anyhow::{ensure, Result};
-use nom::bytes::complete::is_not;
-use nom::character::complete::{space0, space1};
-use nom::combinator::{eof, opt, recognize};
-use nom::multi::separated_list1;
-use nom::sequence::{preceded, tuple};
+use nom::{
+    bytes::complete::is_not,
+    character::complete::{space0, space1},
+    combinator::{eof, opt, recognize},
+    multi::separated_list1,
+    sequence::{preceded, tuple},
+};
 
-use super::error::RclMsgError;
-use super::{ident, literal, types};
-use crate::types::primitives::NestableType;
-use crate::types::{Member, MemberType};
+use super::{error::RclMsgError, ident, literal, types};
+use crate::types::{primitives::NestableType, Member, MemberType};
 
 fn nestable_type_default(nestable_type: NestableType, default: &str) -> Result<Vec<String>> {
     match nestable_type {

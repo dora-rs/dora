@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use crate::impl_from_trait_for_enum;
-use crate::time::RclDurationT;
+use crate::{impl_from_trait_for_enum, time::RclDurationT};
 
 /// QoS reliability enumerations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

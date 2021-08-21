@@ -1,26 +1,32 @@
-use std::ffi::CString;
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::{
+    ffi::CString,
+    sync::{Arc, Mutex, Weak},
+    time::Duration,
+};
 
 use anyhow::{ensure, Context as _, Result};
-use rclrust_msg::_core::{FFIToRust, MessageT, ServiceT};
-use rclrust_msg::rcl_interfaces::msg::ParameterDescriptor;
+use rclrust_msg::{
+    _core::{FFIToRust, MessageT, ServiceT},
+    rcl_interfaces::msg::ParameterDescriptor,
+};
 
-use crate::client::{Client, ClientBase};
-use crate::clock::ClockType;
-use crate::context::{Context, RclContext};
-use crate::error::ToRclRustResult;
-use crate::internal::ffi::*;
-use crate::log::Logger;
-use crate::node_options::NodeOptions;
-use crate::parameter::{Parameter, ParameterValue, Parameters};
-use crate::publisher::Publisher;
-use crate::qos::QoSProfile;
-use crate::rclrust_error;
-use crate::service::{Service, ServiceBase};
-use crate::subscription::{Subscription, SubscriptionBase};
-use crate::timer::Timer;
-use crate::wait_set::RclWaitSet;
+use crate::{
+    client::{Client, ClientBase},
+    clock::ClockType,
+    context::{Context, RclContext},
+    error::ToRclRustResult,
+    internal::ffi::*,
+    log::Logger,
+    node_options::NodeOptions,
+    parameter::{Parameter, ParameterValue, Parameters},
+    publisher::Publisher,
+    qos::QoSProfile,
+    rclrust_error,
+    service::{Service, ServiceBase},
+    subscription::{Subscription, SubscriptionBase},
+    timer::Timer,
+    wait_set::RclWaitSet,
+};
 
 #[derive(Debug)]
 pub(crate) struct RclNode(Box<rcl_sys::rcl_node_t>);

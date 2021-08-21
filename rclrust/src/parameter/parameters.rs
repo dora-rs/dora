@@ -1,14 +1,11 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 use anyhow::Result;
 
 use super::{
     Parameter, ParameterDescriptor, ParameterType, ParameterValue, RclParams, SetParametersResult,
 };
-use crate::context::RclContext;
-use crate::error::RclRustError;
-use crate::node::RclNode;
+use crate::{context::RclContext, error::RclRustError, node::RclNode};
 
 #[derive(Debug, Default, Clone)]
 pub struct ParameterInfo {

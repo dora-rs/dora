@@ -1,8 +1,6 @@
 use anyhow::Result;
-use rclrust::qos::QoSProfile;
-use rclrust::rclrust_info;
-use rclrust_msg::_core::FFIToRust;
-use rclrust_msg::std_msgs::msg::String as String_;
+use rclrust::{qos::QoSProfile, rclrust_info};
+use rclrust_msg::{_core::FFIToRust, std_msgs::msg::String as String_};
 
 fn main() -> Result<()> {
     let ctx = rclrust::init()?;

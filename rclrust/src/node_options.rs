@@ -1,6 +1,4 @@
-use crate::error::ToRclRustResult;
-use crate::log::Logger;
-use crate::rclrust_error;
+use crate::{error::ToRclRustResult, log::Logger, rclrust_error};
 
 #[derive(Debug)]
 pub(crate) struct RclNodeOptions(rcl_sys::rcl_node_options_t);

@@ -1,6 +1,5 @@
 use anyhow::Result;
-use rclrust::rclrust_info;
-use rclrust::{Parameter, ParameterValue};
+use rclrust::{rclrust_info, Parameter, ParameterValue};
 
 fn main() -> Result<()> {
     let ctx = rclrust::init()?;

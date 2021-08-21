@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::context::Context;
-use crate::init_options::InitOptions;
+use crate::{context::Context, init_options::InitOptions};
 
 /// Initialize rclrust context
 ///
