@@ -3,7 +3,12 @@ use std::{collections::HashMap, sync::Mutex};
 use anyhow::Result;
 
 use super::{
-    Parameter, ParameterDescriptor, ParameterType, ParameterValue, RclParams, SetParametersResult,
+    Parameter,
+    ParameterDescriptor,
+    ParameterType,
+    ParameterValue,
+    RclParams,
+    SetParametersResult,
 };
 use crate::{context::RclContext, error::RclRustError, node::RclNode};
 

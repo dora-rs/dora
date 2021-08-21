@@ -1,8 +1,14 @@
 use anyhow::{Context, Result};
 
 use crate::{
-    client::RclClient, context::RclContext, error::ToRclRustResult, log::Logger, rclrust_error,
-    service::RclService, subscription::RclSubscription, timer::RclTimer,
+    client::RclClient,
+    context::RclContext,
+    error::ToRclRustResult,
+    log::Logger,
+    rclrust_error,
+    service::RclService,
+    subscription::RclSubscription,
+    timer::RclTimer,
 };
 
 #[derive(Debug)]
