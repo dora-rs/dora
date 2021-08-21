@@ -1,12 +1,11 @@
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::{
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use anyhow::Result;
 
-use crate::context::Context;
-use crate::error::RclRustError;
-use crate::node::Node;
-use crate::wait_set::RclWaitSet;
+use crate::{context::Context, error::RclRustError, node::Node, wait_set::RclWaitSet};
 
 pub fn spin(node: &Arc<Node<'_>>) -> Result<()> {
     let mut exec = SingleThreadExecutor::new(node.context)?;

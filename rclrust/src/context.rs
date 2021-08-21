@@ -1,16 +1,19 @@
-use std::ffi::CString;
-use std::os::raw::c_int;
-use std::sync::{Arc, Mutex};
+use std::{
+    ffi::CString,
+    os::raw::c_int,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context as _, Result};
 
-use crate::error::ToRclRustResult;
-use crate::init_options::InitOptions;
-use crate::log::Logger;
-use crate::log::{logging_output_handler, LOGGER_MUTEX};
-use crate::node::Node;
-use crate::node_options::NodeOptions;
-use crate::rclrust_error;
+use crate::{
+    error::ToRclRustResult,
+    init_options::InitOptions,
+    log::{logging_output_handler, Logger, LOGGER_MUTEX},
+    node::Node,
+    node_options::NodeOptions,
+    rclrust_error,
+};
 
 #[derive(Debug)]
 pub(crate) struct RclContext(Box<rcl_sys::rcl_context_t>);

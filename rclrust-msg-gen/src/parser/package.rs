@@ -1,12 +1,12 @@
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::{
+    fs::{self, File},
+    io::{BufRead, BufReader},
+    path::Path,
+};
 
 use anyhow::Result;
 
-use super::action::parse_action_file;
-use super::message::parse_message_file;
-use super::service::parse_service_file;
+use super::{action::parse_action_file, message::parse_message_file, service::parse_service_file};
 use crate::types::Package;
 
 const ROSIDL_INTERFACES: &str = "share/ament_index/resource_index/rosidl_interfaces";

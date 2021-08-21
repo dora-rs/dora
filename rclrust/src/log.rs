@@ -1,13 +1,17 @@
-use std::convert::{TryFrom, TryInto};
-use std::ffi::CString;
-use std::os::raw::{c_char, c_int};
+use std::{
+    convert::{TryFrom, TryInto},
+    ffi::CString,
+    os::raw::{c_char, c_int},
+};
 
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::ReentrantMutex;
 
-use crate::error::{RclRustError, ToRclRustResult};
-use crate::impl_from_trait_for_enum;
+use crate::{
+    error::{RclRustError, ToRclRustResult},
+    impl_from_trait_for_enum,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogSeverity {

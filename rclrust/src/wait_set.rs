@@ -1,13 +1,9 @@
 use anyhow::{Context, Result};
 
-use crate::client::RclClient;
-use crate::context::RclContext;
-use crate::error::ToRclRustResult;
-use crate::log::Logger;
-use crate::rclrust_error;
-use crate::service::RclService;
-use crate::subscription::RclSubscription;
-use crate::timer::RclTimer;
+use crate::{
+    client::RclClient, context::RclContext, error::ToRclRustResult, log::Logger, rclrust_error,
+    service::RclService, subscription::RclSubscription, timer::RclTimer,
+};
 
 #[derive(Debug)]
 pub(crate) struct RclWaitSet(rcl_sys::rcl_wait_set_t);

@@ -1,7 +1,9 @@
 use quote::{quote, ToTokens};
 
-use super::primitives::{BasicType, GenericUnboundedString, PrimitiveType};
-use super::sequences::PrimitiveArray;
+use super::{
+    primitives::{BasicType, GenericUnboundedString, PrimitiveType},
+    sequences::PrimitiveArray,
+};
 
 macro_rules! define_enum_from {
     ($into_t:ty, $from_t:ty, $path:path) => {

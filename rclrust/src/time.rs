@@ -1,5 +1,4 @@
-use std::convert::TryInto;
-use std::time::Duration;
+use std::{convert::TryInto, time::Duration};
 
 use rclrust_msg::builtin_interfaces;
 

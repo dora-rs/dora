@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::error::ToRclRustResult;
-use crate::log::Logger;
-use crate::rclrust_error;
+use crate::{error::ToRclRustResult, log::Logger, rclrust_error};
 
 #[derive(Debug)]
 pub(crate) struct RclInitOptions(rcl_sys::rcl_init_options_t);

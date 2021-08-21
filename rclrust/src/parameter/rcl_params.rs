@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 
 use super::ParameterValue;
-use crate::error::{RclRustError, ToRclRustResult};
-use crate::internal::ffi::{FromCChar, SizedFromCChar};
+use crate::{
+    error::{RclRustError, ToRclRustResult},
+    internal::ffi::{FromCChar, SizedFromCChar},
+};
 
 #[derive(Debug)]
 pub struct RclParams(Box<*mut rcl_sys::rcl_params_t>);

@@ -1,11 +1,9 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 use regex::Regex;
 
-use super::error::RclMsgError;
-use super::message::parse_message_string;
+use super::{error::RclMsgError, message::parse_message_string};
 use crate::types::Service;
 
 const SERVICE_REQUEST_SUFFIX: &str = "_Request";
