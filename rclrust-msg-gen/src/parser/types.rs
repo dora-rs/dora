@@ -15,7 +15,8 @@ use super::{
 use crate::types::{
     primitives::*,
     sequences::{Array, BoundedSequence, PrimitiveArray, Sequence},
-    ConstantType, MemberType,
+    ConstantType,
+    MemberType,
 };
 
 pub fn parse_member_type(s: &str) -> IResult<&str, MemberType> {

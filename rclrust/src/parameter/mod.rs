@@ -8,8 +8,11 @@ use std::fmt;
 pub(crate) use parameters::Parameters;
 pub(crate) use rcl_params::RclParams;
 pub(crate) use rclrust_msg::rcl_interfaces::msg::{
-    Parameter as RclParameter, ParameterDescriptor, ParameterType as RclParameterType,
-    ParameterValue as RclParameterValue, SetParametersResult,
+    Parameter as RclParameter,
+    ParameterDescriptor,
+    ParameterType as RclParameterType,
+    ParameterValue as RclParameterValue,
+    SetParametersResult,
 };
 pub use type_::ParameterType;
 pub use value::ParameterValue;
