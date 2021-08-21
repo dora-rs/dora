@@ -46,8 +46,9 @@ pub fn constant_name(s: &str) -> IResult<&str, &str> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use anyhow::Result;
+
+    use super::*;
 
     #[test]
     fn parse_member_name() -> Result<()> {

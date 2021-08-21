@@ -213,8 +213,9 @@ macro_rules! rclrust_fatal {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::sync::Mutex;
+
+    use super::*;
 
     static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 

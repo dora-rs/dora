@@ -204,8 +204,9 @@ pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use anyhow::Result;
+
+    use super::*;
 
     #[test]
     fn parse_integer_literal() -> Result<()> {

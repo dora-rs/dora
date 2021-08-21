@@ -282,8 +282,9 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::QoSProfile;
     /// use std::time::Duration;
+    ///
+    /// use rclrust::qos::QoSProfile;
     ///
     /// let qos = QoSProfile::system_default().deadline(Duration::new(5, 0));
     /// ```
@@ -297,8 +298,9 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::QoSProfile;
     /// use std::time::Duration;
+    ///
+    /// use rclrust::qos::QoSProfile;
     ///
     /// let qos = QoSProfile::system_default().lifespan(Duration::new(5, 0));
     /// ```
@@ -326,8 +328,9 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::QoSProfile;
     /// use std::time::Duration;
+    ///
+    /// use rclrust::qos::QoSProfile;
     ///
     /// let qos = QoSProfile::system_default().liveliness_lease_duration(Duration::new(5, 0));
     /// ```

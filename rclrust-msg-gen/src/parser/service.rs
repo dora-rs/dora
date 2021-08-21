@@ -53,9 +53,9 @@ fn parse_service_string(pkg_name: &str, srv_name: &str, service_string: &str) ->
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
     use std::path::PathBuf;
+
+    use super::*;
 
     fn parse_srv_def(srv_name: &str) -> Result<Service> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

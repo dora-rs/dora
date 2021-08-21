@@ -59,10 +59,9 @@ fn parse_action_string(pkg_name: &str, action_name: &str, action_string: &str) -
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
     use std::path::PathBuf;
 
+    use super::*;
     use crate::types::primitives::*;
     use crate::types::sequences::*;
     use crate::types::MemberType;
