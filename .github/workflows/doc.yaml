@@ -1,4 +1,4 @@
-name: Document main
+name: Document
 
 on:
   push:
