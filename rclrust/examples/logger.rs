@@ -1,12 +1,6 @@
 use anyhow::Result;
 use rclrust::{
-    rclrust_debug,
-    rclrust_error,
-    rclrust_fatal,
-    rclrust_info,
-    rclrust_warn,
-    Clock,
-    Logger,
+    rclrust_debug, rclrust_error, rclrust_fatal, rclrust_info, rclrust_warn, Clock, Logger,
 };
 use rclrust_msg::geometry_msgs::msg::Twist;
 

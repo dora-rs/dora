@@ -3,11 +3,7 @@ use std::mem::MaybeUninit;
 use anyhow::{ensure, Context, Result};
 
 use crate::{
-    error::ToRclRustResult,
-    impl_from_trait_for_enum,
-    log::Logger,
-    rclrust_error,
-    time::Time,
+    error::ToRclRustResult, impl_from_trait_for_enum, log::Logger, rclrust_error, time::Time,
 };
 
 /// Time source type, used to indicate the source of a time measurement.
