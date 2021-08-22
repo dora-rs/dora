@@ -14,7 +14,7 @@ pub enum ClockType {
     /// Clock of this type will report the latest value reported by a ROS time source, or
     /// if a ROS time source is not active it reports the same as RCL_SYSTEM_TIME.
     /// For more information about ROS time sources, refer to the design document:
-    /// http://design.ros2.org/articles/clock_and_time.html
+    /// <http://design.ros2.org/articles/clock_and_time.html>
     RosTime,
     /// Clock of this type reports the same value as the system clock.
     SystemTime,
