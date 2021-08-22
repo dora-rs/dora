@@ -1,8 +1,29 @@
 # RclRust
 
-| Target              | Status                                                                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Foxy (Ubuntu 20.04) | [![Foxy (Ubutnu 20.04)](https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml/badge.svg)](https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml) |
+<table>
+  <thead>
+    <tr>
+      <th>Target</th>
+      <th>CI Status</th>
+      <th>Document</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Foxy (Ubuntu 20.04)</td>
+      <td>
+        <a href="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml" alt="Foxy CI status">
+          <img src="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml/badge.svg?branch=main"/>
+        </a>
+      </td>
+      <td>
+        <a href="https://rclrust.github.io/rclrust/foxy/main/rclrust/index.html" alt="Foxy document">
+          <img src="https://github.com/rclrust/rclrust/actions/workflows/doc.yaml/badge.svg"/>
+        </a>
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 ## Introduction
 
