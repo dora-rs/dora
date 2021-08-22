@@ -45,9 +45,8 @@ jobs:
           cargo check --all-features
 
       - name: Run cargo test
-        # for skip rcl-sys
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
-          cargo test -p rclrust-msg rclrust-msg-gen
+          cargo test -p rclrust-msg -p rclrust-msg-gen -p rcl-sys
           cargo test -p rclrust -- --test-threads 1
         continue-on-error: ${{ matrix.rust == 'nightly' }}
