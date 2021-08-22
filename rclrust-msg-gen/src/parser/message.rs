@@ -1,10 +1,8 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 
-use super::constant::constant_def;
-use super::member::member_def;
+use super::{constant::constant_def, member::member_def};
 use crate::types::Message;
 
 fn split_once(s: &'_ str, pat: char) -> (&'_ str, Option<&'_ str>) {
@@ -59,12 +57,10 @@ pub fn parse_message_string(
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
-    use crate::types::primitives::*;
-    use crate::types::sequences::*;
-    use crate::types::*;
     use std::path::PathBuf;
+
+    use super::*;
+    use crate::types::{primitives::*, sequences::*, *};
 
     #[test]
     fn test_split_once() {

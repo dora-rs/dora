@@ -1,5 +1,4 @@
-use std::mem::ManuallyDrop;
-use std::ops::Deref;
+use std::{mem::ManuallyDrop, ops::Deref};
 
 use super::traits::{FFIFromRust, FFIToRust};
 

@@ -1,16 +1,20 @@
-use std::ffi::{c_void, CString};
-use std::mem::MaybeUninit;
-use std::sync::{Arc, Mutex};
+use std::{
+    ffi::{c_void, CString},
+    mem::MaybeUninit,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use rclrust_msg::_core::{MessageT, ServiceT};
 
-use crate::error::{RclRustError, ToRclRustResult};
-use crate::internal::ffi::*;
-use crate::log::Logger;
-use crate::node::{Node, RclNode};
-use crate::qos::QoSProfile;
-use crate::rclrust_error;
+use crate::{
+    error::{RclRustError, ToRclRustResult},
+    internal::ffi::*,
+    log::Logger,
+    node::{Node, RclNode},
+    qos::QoSProfile,
+    rclrust_error,
+};
 
 pub struct RclService(Box<rcl_sys::rcl_service_t>);
 

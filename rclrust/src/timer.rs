@@ -1,15 +1,19 @@
-use std::convert::TryInto;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::{
+    convert::TryInto,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 
-use crate::clock::{Clock, ClockType};
-use crate::context::RclContext;
-use crate::error::ToRclRustResult;
-use crate::log::Logger;
-use crate::node::Node;
-use crate::rclrust_error;
+use crate::{
+    clock::{Clock, ClockType},
+    context::RclContext,
+    error::ToRclRustResult,
+    log::Logger,
+    node::Node,
+    rclrust_error,
+};
 
 #[derive(Debug)]
 pub struct RclTimer(Box<rcl_sys::rcl_timer_t>);

@@ -1,8 +1,7 @@
 use heck::SnakeCase;
 use quote::{format_ident, quote, ToTokens};
 
-use super::primitives::*;
-use super::{Member, Message, Service};
+use super::{primitives::*, Member, Message, Service};
 
 /// An action definition
 #[derive(Debug, Clone)]

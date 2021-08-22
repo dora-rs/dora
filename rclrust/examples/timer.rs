@@ -1,5 +1,4 @@
-use std::cell::Cell;
-use std::time::Duration;
+use std::{cell::Cell, time::Duration};
 
 use anyhow::Result;
 use rclrust::rclrust_info;

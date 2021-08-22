@@ -1,15 +1,15 @@
 use std::convert::TryFrom;
 
-use nom::branch::alt;
-use nom::bytes::complete::{is_not, tag, tag_no_case, take_while};
-use nom::character::complete::{
-    anychar, char, digit1, hex_digit1, none_of, oct_digit1, one_of, space0,
+use nom::{
+    branch::alt,
+    bytes::complete::{is_not, tag, tag_no_case, take_while},
+    character::complete::{anychar, char, digit1, hex_digit1, none_of, oct_digit1, one_of, space0},
+    combinator::{eof, map, map_res, opt, recognize, rest, value, verify},
+    multi::{many0, separated_list1},
+    number::complete::recognize_float,
+    sequence::{delimited, pair, tuple},
+    IResult,
 };
-use nom::combinator::{eof, map, map_res, opt, recognize, rest, value, verify};
-use nom::multi::{many0, separated_list1};
-use nom::number::complete::recognize_float;
-use nom::sequence::{delimited, pair, tuple};
-use nom::IResult;
 
 use crate::types::primitives::{BasicType, GenericString};
 
@@ -204,8 +204,9 @@ pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use anyhow::Result;
+
+    use super::*;
 
     #[test]
     fn parse_integer_literal() -> Result<()> {

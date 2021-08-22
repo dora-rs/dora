@@ -1,14 +1,14 @@
 use anyhow::{ensure, Result};
-use nom::bytes::complete::is_not;
-use nom::character::complete::{char, space0, space1};
-use nom::combinator::{eof, recognize};
-use nom::multi::separated_list1;
-use nom::sequence::tuple;
+use nom::{
+    bytes::complete::is_not,
+    character::complete::{char, space0, space1},
+    combinator::{eof, recognize},
+    multi::separated_list1,
+    sequence::tuple,
+};
 
-use super::error::RclMsgError;
-use super::{ident, literal, types};
-use crate::types::primitives::PrimitiveType;
-use crate::types::{Constant, ConstantType};
+use super::{error::RclMsgError, ident, literal, types};
+use crate::types::{primitives::PrimitiveType, Constant, ConstantType};
 
 fn validate_value(r#type: ConstantType, value: &str) -> Result<Vec<String>> {
     match r#type {
