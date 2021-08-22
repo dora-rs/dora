@@ -1,0 +1,40 @@
+name: Lint
+
+on:
+  push:
+    branches: main
+  pull_request:
+    branches: main
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-20.04
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
+
+      - name: Setup ROS environment
+        uses: ros-tooling/setup-ros@v0.2
+        with:
+          required-ros-distributions: foxy
+
+      - name: Run cargo fmt
+        run: |
+          source /opt/ros/foxy/setup.bash
+          cargo fmt -- --check
+
+      - name: Run cargo clippy
+        run: |
+          source /opt/ros/foxy/setup.bash
+          cargo clippy -- -D warnings
