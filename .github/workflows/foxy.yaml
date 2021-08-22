@@ -13,6 +13,11 @@ jobs:
   test:
     strategy:
       matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+
         include:
           - os: ubuntu-20.04
             ros_distro: foxy
@@ -22,13 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Install stable toolchain
+      - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
-          toolchain: stable
+          toolchain: ${{ matrix.rust }}
           override: true
-          components: rustfmt, clippy
 
       - name: Setup ROS environment
         uses: ros-tooling/setup-ros@v0.2
@@ -37,22 +41,13 @@ jobs:
 
       - name: Run cargo check
         run: |
-          source /opt/ros/foxy/setup.bash
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           cargo check --all-features
 
       - name: Run cargo test
         # for skip rcl-sys
         run: |
-          source /opt/ros/foxy/setup.bash
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           cargo test -p rclrust-msg rclrust-msg-gen
           cargo test -p rclrust -- --test-threads 1
-
-      - name: Run cargo fmt
-        run: |
-          source /opt/ros/foxy/setup.bash
-          cargo fmt -- --check
-
-      - name: Run cargo clippy
-        run: |
-          source /opt/ros/foxy/setup.bash
-          cargo clippy -- -D warnings
+        continue-on-error: ${{ matrix.rust == 'nightly' }}
