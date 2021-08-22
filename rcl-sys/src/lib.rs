@@ -4,7 +4,10 @@
     non_snake_case,
     non_upper_case_globals,
     invalid_codeblock_attributes,
-    clippy::all
+    clippy::all,
+    rustdoc::bare_urls,
+    rustdoc::broken_intra_doc_links,
+    rustdoc::invalid_rust_codeblocks
 )]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
