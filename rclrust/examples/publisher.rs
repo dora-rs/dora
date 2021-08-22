@@ -1,9 +1,7 @@
-use std::thread::sleep;
-use std::time::Duration;
+use std::{thread::sleep, time::Duration};
 
 use anyhow::Result;
-use rclrust::qos::QoSProfile;
-use rclrust::rclrust_info;
+use rclrust::{qos::QoSProfile, rclrust_info};
 use rclrust_msg::std_msgs::msg::String as String_;
 
 fn main() -> Result<()> {

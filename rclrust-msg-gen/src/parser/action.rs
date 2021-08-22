@@ -1,11 +1,9 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 use regex::Regex;
 
-use super::error::RclMsgError;
-use super::message::parse_message_string;
+use super::{error::RclMsgError, message::parse_message_string};
 use crate::types::Action;
 
 const ACTION_GOAL_SUFFIX: &str = "_Goal";
@@ -59,13 +57,10 @@ fn parse_action_string(pkg_name: &str, action_name: &str, action_string: &str) -
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
     use std::path::PathBuf;
 
-    use crate::types::primitives::*;
-    use crate::types::sequences::*;
-    use crate::types::MemberType;
+    use super::*;
+    use crate::types::{primitives::*, sequences::*, MemberType};
 
     fn parse_action_def(srv_name: &str) -> Result<Action> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

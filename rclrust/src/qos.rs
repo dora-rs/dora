@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use crate::impl_from_trait_for_enum;
-use crate::time::RclDurationT;
+use crate::{impl_from_trait_for_enum, time::RclDurationT};
 
 /// QoS reliability enumerations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +157,7 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::{QoSProfile, HistoryPolicy};
+    /// use rclrust::qos::{HistoryPolicy, QoSProfile};
     ///
     /// let qos = QoSProfile::system_default().history(HistoryPolicy::KeepAll);
     /// ```
@@ -242,7 +241,7 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::{QoSProfile, DurabilityPolicy};
+    /// use rclrust::qos::{DurabilityPolicy, QoSProfile};
     ///
     /// let qos = QoSProfile::system_default().durability(DurabilityPolicy::Volatile);
     /// ```
@@ -283,6 +282,7 @@ impl QoSProfile {
     ///
     /// ```
     /// use std::time::Duration;
+    ///
     /// use rclrust::qos::QoSProfile;
     ///
     /// let qos = QoSProfile::system_default().deadline(Duration::new(5, 0));
@@ -298,6 +298,7 @@ impl QoSProfile {
     ///
     /// ```
     /// use std::time::Duration;
+    ///
     /// use rclrust::qos::QoSProfile;
     ///
     /// let qos = QoSProfile::system_default().lifespan(Duration::new(5, 0));
@@ -312,7 +313,7 @@ impl QoSProfile {
     /// # Examples
     ///
     /// ```
-    /// use rclrust::qos::{QoSProfile, LivelinessPolicy};
+    /// use rclrust::qos::{LivelinessPolicy, QoSProfile};
     ///
     /// let qos = QoSProfile::system_default().liveliness(LivelinessPolicy::Automatic);
     /// ```
@@ -327,6 +328,7 @@ impl QoSProfile {
     ///
     /// ```
     /// use std::time::Duration;
+    ///
     /// use rclrust::qos::QoSProfile;
     ///
     /// let qos = QoSProfile::system_default().liveliness_lease_duration(Duration::new(5, 0));

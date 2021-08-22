@@ -1,5 +1,7 @@
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_char,
+};
 
 pub unsafe trait SizedFromCChar: Sized {
     unsafe fn from_c_char(ptr: *const c_char) -> Option<Self>;

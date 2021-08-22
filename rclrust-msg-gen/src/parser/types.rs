@@ -1,16 +1,22 @@
 use anyhow::anyhow;
-use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::character::complete::{char, space1};
-use nom::combinator::{eof, map, map_res, opt, peek};
-use nom::sequence::{delimited, pair, preceded, tuple};
-use nom::IResult;
+use nom::{
+    branch::alt,
+    bytes::complete::tag,
+    character::complete::{char, space1},
+    combinator::{eof, map, map_res, opt, peek},
+    sequence::{delimited, pair, preceded, tuple},
+    IResult,
+};
 
-use super::ident::{message_name, package_name};
-use super::literal::usize_literal;
-use crate::types::primitives::*;
-use crate::types::sequences::{Array, BoundedSequence, PrimitiveArray, Sequence};
-use crate::types::{ConstantType, MemberType};
+use super::{
+    ident::{message_name, package_name},
+    literal::usize_literal,
+};
+use crate::types::{
+    primitives::*,
+    sequences::{Array, BoundedSequence, PrimitiveArray, Sequence},
+    ConstantType, MemberType,
+};
 
 pub fn parse_member_type(s: &str) -> IResult<&str, MemberType> {
     map_res(
@@ -146,8 +152,9 @@ fn primitive_type(s: &str) -> IResult<&str, PrimitiveType> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use anyhow::Result;
+
+    use super::*;
 
     #[test]
     fn test_parse_member_type_basic_type() -> Result<()> {

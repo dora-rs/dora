@@ -1,16 +1,20 @@
-use std::ffi::CString;
-use std::os::raw::c_void;
-use std::sync::{Arc, Mutex};
+use std::{
+    ffi::CString,
+    os::raw::c_void,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use rclrust_msg::_core::MessageT;
 
-use crate::error::{RclRustError, ToRclRustResult};
-use crate::internal::ffi::*;
-use crate::log::Logger;
-use crate::node::{Node, RclNode};
-use crate::qos::QoSProfile;
-use crate::rclrust_error;
+use crate::{
+    error::{RclRustError, ToRclRustResult},
+    internal::ffi::*,
+    log::Logger,
+    node::{Node, RclNode},
+    qos::QoSProfile,
+    rclrust_error,
+};
 
 #[derive(Debug)]
 pub(crate) struct RclSubscription(Box<rcl_sys::rcl_subscription_t>);

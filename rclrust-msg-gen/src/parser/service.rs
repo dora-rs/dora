@@ -1,11 +1,9 @@
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 use regex::Regex;
 
-use super::error::RclMsgError;
-use super::message::parse_message_string;
+use super::{error::RclMsgError, message::parse_message_string};
 use crate::types::Service;
 
 const SERVICE_REQUEST_SUFFIX: &str = "_Request";
@@ -53,9 +51,9 @@ fn parse_service_string(pkg_name: &str, srv_name: &str, service_string: &str) ->
 
 #[cfg(test)]
 mod test {
-    use super::*;
-
     use std::path::PathBuf;
+
+    use super::*;
 
     fn parse_srv_def(srv_name: &str) -> Result<Service> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

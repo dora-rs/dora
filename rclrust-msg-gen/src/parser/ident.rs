@@ -1,9 +1,11 @@
-use nom::branch::alt;
-use nom::character::complete::{alphanumeric0, char, one_of};
-use nom::combinator::{opt, recognize};
-use nom::multi::{many1, separated_list0, separated_list1};
-use nom::sequence::{pair, tuple};
-use nom::IResult;
+use nom::{
+    branch::alt,
+    character::complete::{alphanumeric0, char, one_of},
+    combinator::{opt, recognize},
+    multi::{many1, separated_list0, separated_list1},
+    sequence::{pair, tuple},
+    IResult,
+};
 
 fn upperalpha(s: &str) -> IResult<&str, char> {
     one_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ")(s)
@@ -46,8 +48,9 @@ pub fn constant_name(s: &str) -> IResult<&str, &str> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use anyhow::Result;
+
+    use super::*;
 
     #[test]
     fn parse_member_name() -> Result<()> {

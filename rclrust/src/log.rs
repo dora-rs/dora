@@ -1,13 +1,17 @@
-use std::convert::{TryFrom, TryInto};
-use std::ffi::CString;
-use std::os::raw::{c_char, c_int};
+use std::{
+    convert::{TryFrom, TryInto},
+    ffi::CString,
+    os::raw::{c_char, c_int},
+};
 
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::ReentrantMutex;
 
-use crate::error::{RclRustError, ToRclRustResult};
-use crate::impl_from_trait_for_enum;
+use crate::{
+    error::{RclRustError, ToRclRustResult},
+    impl_from_trait_for_enum,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogSeverity {
@@ -179,42 +183,43 @@ impl Logger {
 #[macro_export]
 macro_rules! rclrust_debug {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Debug, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Debug, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_info {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Info, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Info, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_warn {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Warn, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Warn, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_error {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Error, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Error, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_fatal {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Fatal, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Fatal, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::sync::Mutex;
+
+    use super::*;
 
     static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 

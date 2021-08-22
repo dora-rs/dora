@@ -1,23 +1,27 @@
-use std::collections::HashMap;
-use std::ffi::CString;
-use std::marker::PhantomData;
-use std::mem::MaybeUninit;
-use std::os::raw::c_void;
-use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    ffi::CString,
+    marker::PhantomData,
+    mem::MaybeUninit,
+    os::raw::c_void,
+    sync::{Arc, Mutex, Weak},
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context as _, Result};
 use futures::channel::oneshot;
 use rclrust_msg::_core::{FFIToRust, MessageT, ServiceT};
 
-use crate::context::Context;
-use crate::error::{RclRustError, ToRclRustResult};
-use crate::internal::ffi::*;
-use crate::log::Logger;
-use crate::node::{Node, RclNode};
-use crate::qos::QoSProfile;
-use crate::rclrust_error;
-use crate::wait_set::RclWaitSet;
+use crate::{
+    context::Context,
+    error::{RclRustError, ToRclRustResult},
+    internal::ffi::*,
+    log::Logger,
+    node::{Node, RclNode},
+    qos::QoSProfile,
+    rclrust_error,
+    wait_set::RclWaitSet,
+};
 
 #[derive(Debug)]
 pub(crate) struct RclClient(Box<rcl_sys::rcl_client_t>);

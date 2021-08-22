@@ -1,5 +1,7 @@
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::{
+    ffi::{CStr, CString},
+    os::raw::c_char,
+};
 
 use widestring::{U16CStr, U16CString, U16String};
 

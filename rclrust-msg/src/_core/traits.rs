@@ -1,5 +1,4 @@
-use std::convert::TryInto;
-use std::os::raw::c_void;
+use std::{convert::TryInto, os::raw::c_void};
 
 use array_init::array_init;
 use widestring::U16String;

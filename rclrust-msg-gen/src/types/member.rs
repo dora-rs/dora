@@ -1,7 +1,6 @@
 use quote::{quote, ToTokens};
 
-use super::primitives::*;
-use super::sequences::*;
+use super::{primitives::*, sequences::*};
 
 macro_rules! define_enum_from {
     ($into_t:ty, $from_t:ty, $path:path) => {
