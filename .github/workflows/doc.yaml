@@ -2,7 +2,7 @@ name: Document
 
 on:
   push:
-    branches: [main, self-host-doc]
+    branches: main
 
 jobs:
   doc:
