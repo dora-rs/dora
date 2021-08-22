@@ -183,35 +183,35 @@ impl Logger {
 #[macro_export]
 macro_rules! rclrust_debug {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Debug, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Debug, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_info {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Info, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Info, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_warn {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Warn, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Warn, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_error {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Error, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Error, &format!($($arg)+), file!(), line!())
     };
 }
 
 #[macro_export]
 macro_rules! rclrust_fatal {
     ($logger:expr, $($arg:tt)+) => {
-        $logger.log_common($crate::log::LogSeverity::Fatal, &format!($($arg)+), file!(), line!());
+        $logger.log_common($crate::log::LogSeverity::Fatal, &format!($($arg)+), file!(), line!())
     };
 }
 
