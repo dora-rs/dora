@@ -1,6 +1,6 @@
 [package]
 name = "rclrust-msg"
-version = "0.0.2"
+version = "0.1.0"
 edition = "2018"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
@@ -15,5 +15,5 @@ workspace = ".."
 
 [dependencies]
 array-init = "2.0"
-rclrust-msg-gen = { path = "../rclrust-msg-gen", version = "0.0.2" }
+rclrust-msg-gen = { path = "../rclrust-msg-gen", version = "0.1.0" }
 widestring = "0.4"

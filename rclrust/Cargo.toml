@@ -1,6 +1,6 @@
 [package]
 name = "rclrust"
-version = "0.0.2"
+version = "0.1.0"
 edition = "2018"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
@@ -19,6 +19,6 @@ anyhow = "1.0"
 futures = "0.3"
 once_cell = "1.8"
 parking_lot = "0.11"
-rcl-sys = { path = "../rcl-sys", version = "0.0.2" }
-rclrust-msg = { path = "../rclrust-msg", version = "0.0.2" }
+rcl-sys = { path = "../rcl-sys", version = "0.1.0" }
+rclrust-msg = { path = "../rclrust-msg", version = "0.1.0" }
 thiserror = "1.0"
