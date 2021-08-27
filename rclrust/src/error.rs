@@ -137,6 +137,8 @@ pub enum RclRustError {
     RuntimeError(&'static str),
     #[error("Service is canceled.")]
     ServiceIsCanceled,
+    #[error("Internal message queue if full: {type_} {name}")]
+    MessageQueueIsFull { type_: &'static str, name: String },
 
     // Parameter
     #[error(r#"Parameter "{name}" cannot be set because it was not declared."#)]

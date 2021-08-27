@@ -26,20 +26,21 @@ impl FFIString {
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub unsafe fn to_str(&self) -> Result<&str, std::str::Utf8Error> {
+        if self.is_empty() {
+            Ok("")
+        } else {
+            CStr::from_ptr(self.data).to_str()
+        }
+    }
 }
 
 impl FFIToRust for FFIString {
     type Target = String;
 
     unsafe fn to_rust(&self) -> Self::Target {
-        if self.is_empty() {
-            "".to_string()
-        } else {
-            CStr::from_ptr(self.data)
-                .to_str()
-                .expect("CStr::to_str failed")
-                .to_string()
-        }
+        self.to_str().expect("CStr::to_str failed").to_string()
     }
 }
 
