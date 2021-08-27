@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct RclWaitSet(rcl_sys::rcl_wait_set_t);
+pub(super) struct RclWaitSet(rcl_sys::rcl_wait_set_t);
 
 impl RclWaitSet {
     pub fn new(
@@ -74,12 +74,24 @@ impl RclWaitSet {
         }
     }
 
+    pub fn subscriptions_ready(&self) -> impl Iterator<Item = bool> {
+        unsafe { std::slice::from_raw_parts(self.0.subscriptions, self.0.size_of_subscriptions) }
+            .iter()
+            .map(|p| !p.is_null())
+    }
+
     pub fn add_timer(&mut self, timer: &RclTimer) -> Result<()> {
         unsafe {
             rcl_sys::rcl_wait_set_add_timer(&mut self.0, timer.raw(), std::ptr::null_mut())
                 .to_result()
                 .with_context(|| "rcl_sys::rcl_wait_set_add_timer in RclWaitSet::add_timer")
         }
+    }
+
+    pub fn timers_ready(&self) -> impl Iterator<Item = bool> {
+        unsafe { std::slice::from_raw_parts(self.0.timers, self.0.size_of_timers) }
+            .iter()
+            .map(|p| !p.is_null())
     }
 
     pub fn add_client(&mut self, client: &RclClient) -> Result<()> {
@@ -90,12 +102,24 @@ impl RclWaitSet {
         }
     }
 
+    pub fn clients_ready(&self) -> impl Iterator<Item = bool> {
+        unsafe { std::slice::from_raw_parts(self.0.clients, self.0.size_of_clients) }
+            .iter()
+            .map(|p| !p.is_null())
+    }
+
     pub fn add_service(&mut self, service: &RclService) -> Result<()> {
         unsafe {
             rcl_sys::rcl_wait_set_add_service(&mut self.0, service.raw(), std::ptr::null_mut())
                 .to_result()
                 .with_context(|| "rcl_sys::rcl_wait_set_add_service in RclWaitSet::add_service")
         }
+    }
+
+    pub fn services_ready(&self) -> impl Iterator<Item = bool> {
+        unsafe { std::slice::from_raw_parts(self.0.services, self.0.size_of_services) }
+            .iter()
+            .map(|p| !p.is_null())
     }
 }
 

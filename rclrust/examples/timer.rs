@@ -1,19 +1,22 @@
-use std::{cell::Cell, time::Duration};
+use std::{
+    sync::atomic::{AtomicU32, Ordering},
+    time::Duration,
+};
 
 use anyhow::Result;
 use rclrust::rclrust_info;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let ctx = rclrust::init()?;
-    let node = ctx.create_node("examples_timer")?;
+    let mut node = ctx.create_node("examples_timer")?;
     let logger = node.logger();
-    let count = Cell::new(0);
+    let count = AtomicU32::default();
     let _timer = node.create_wall_timer(Duration::from_millis(100), move || {
-        rclrust_info!(logger, "count: {}", count.get());
-        count.set(count.get() + 1);
+        rclrust_info!(logger, "count: {}", count.load(Ordering::Relaxed));
+        count.fetch_add(1, Ordering::Relaxed);
     })?;
 
-    rclrust::spin(&node)?;
-
+    node.wait();
     Ok(())
 }

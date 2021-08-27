@@ -15,7 +15,7 @@ fn main() -> Result<()> {
             data: format!("hello {}", count),
         })?;
         rclrust_info!(logger, "hello {}", count);
-        sleep(Duration::from_secs_f32(0.1));
+        sleep(Duration::from_millis(100));
     }
 
     Ok(())

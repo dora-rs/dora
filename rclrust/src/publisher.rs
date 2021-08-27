@@ -18,12 +18,16 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct RclPublisher(Box<rcl_sys::rcl_publisher_t>);
+pub(crate) struct RclPublisher {
+    r#impl: Box<rcl_sys::rcl_publisher_t>,
+    node: Arc<Mutex<RclNode>>,
+}
 
 unsafe impl Send for RclPublisher {}
+unsafe impl Sync for RclPublisher {}
 
 impl RclPublisher {
-    fn new<T>(node: &RclNode, topic_name: &str, qos: &QoSProfile) -> Result<Self>
+    fn new<T>(node: Arc<Mutex<RclNode>>, topic_name: &str, qos: &QoSProfile) -> Result<Self>
     where
         T: MessageT,
     {
@@ -35,7 +39,7 @@ impl RclPublisher {
         unsafe {
             rcl_sys::rcl_publisher_init(
                 &mut *publisher,
-                node.raw(),
+                node.lock().unwrap().raw(),
                 T::type_support() as *const _,
                 topic_c_str.as_ptr(),
                 &options,
@@ -44,13 +48,10 @@ impl RclPublisher {
             .with_context(|| "rcl_sys::rcl_publisher_init in RclPublisher::new")?;
         }
 
-        Ok(Self(publisher))
-    }
-
-    unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        rcl_sys::rcl_publisher_fini(&mut *self.0, node.raw_mut())
-            .to_result()
-            .with_context(|| "rcl_sys::rcl_publisher_fini in RclPublisher::fini")
+        Ok(Self {
+            r#impl: publisher,
+            node,
+        })
     }
 
     fn publish<T>(&self, message: &T) -> Result<()>
@@ -59,7 +60,7 @@ impl RclPublisher {
     {
         unsafe {
             rcl_sys::rcl_publish(
-                &*self.0,
+                &*self.r#impl,
                 &message.to_raw_ref() as *const _ as *const c_void,
                 std::ptr::null_mut(),
             )
@@ -70,21 +71,21 @@ impl RclPublisher {
         Ok(())
     }
 
-    fn topic_name(&self) -> Option<String> {
+    fn topic_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_publisher_get_topic_name(&*self.0);
-            String::from_c_char(name)
+            let name = rcl_sys::rcl_publisher_get_topic_name(&*self.r#impl);
+            String::from_c_char(name).unwrap()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_publisher_is_valid(&*self.0) }
+        unsafe { rcl_sys::rcl_publisher_is_valid(&*self.r#impl) }
     }
 
     fn subscription_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
-            rcl_sys::rcl_publisher_get_subscription_count(&*self.0, &mut size)
+            rcl_sys::rcl_publisher_get_subscription_count(&*self.r#impl, &mut size)
                 .to_result()
                 .with_context(|| {
                     "rcl_sys::rcl_publisher_get_subscription_count in RclPublisher::subscription_count"
@@ -94,12 +95,26 @@ impl RclPublisher {
     }
 }
 
+impl Drop for RclPublisher {
+    fn drop(&mut self) {
+        if let Err(e) = unsafe {
+            rcl_sys::rcl_publisher_fini(&mut *self.r#impl, self.node.lock().unwrap().raw_mut())
+                .to_result()
+        } {
+            rclrust_error!(
+                Logger::new("rclrust"),
+                "Failed to clean up rcl publisher handle: {}",
+                e
+            )
+        }
+    }
+}
+
 pub struct Publisher<T>
 where
     T: MessageT,
 {
     handle: RclPublisher,
-    node_handle: Arc<Mutex<RclNode>>,
     _phantom: PhantomData<T>,
 }
 
@@ -107,13 +122,11 @@ impl<T> Publisher<T>
 where
     T: MessageT,
 {
-    pub(crate) fn new<'a>(node: &'a Node<'a>, topic_name: &str, qos: &QoSProfile) -> Result<Self> {
-        let node_handle = node.clone_handle();
-        let handle = RclPublisher::new::<T>(&node_handle.lock().unwrap(), topic_name, qos)?;
+    pub(crate) fn new(node: &Node, topic_name: &str, qos: &QoSProfile) -> Result<Self> {
+        let handle = RclPublisher::new::<T>(node.clone_handle(), topic_name, qos)?;
 
         Ok(Self {
             handle,
-            node_handle,
             _phantom: Default::default(),
         })
     }
@@ -122,7 +135,7 @@ where
         self.handle.publish(message)
     }
 
-    pub fn topic_name(&self) -> Option<String> {
+    pub fn topic_name(&self) -> String {
         self.handle.topic_name()
     }
 
@@ -132,21 +145,6 @@ where
 
     pub fn subscription_count(&self) -> Result<usize> {
         self.handle.subscription_count()
-    }
-}
-
-impl<T> Drop for Publisher<T>
-where
-    T: MessageT,
-{
-    fn drop(&mut self) {
-        if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
-            rclrust_error!(
-                Logger::new("rclrust"),
-                "Failed to clean up rcl publisher handle: {}",
-                e
-            )
-        }
     }
 }
 

@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Result;
 
@@ -27,11 +30,16 @@ pub struct Parameters {
 }
 
 impl Parameters {
-    pub(crate) fn new(context_handle: &RclContext, node_handle: &RclNode) -> Result<Self> {
+    pub(crate) fn new(
+        context_handle: Arc<Mutex<RclContext>>,
+        node_handle: &RclNode,
+    ) -> Result<Self> {
         let mut parameter_overrides = HashMap::new();
 
         if node_handle.use_global_arguments().unwrap() {
-            if let Some(rcl_params) = RclParams::new(context_handle.global_arguments())? {
+            if let Some(rcl_params) =
+                RclParams::new(context_handle.lock().unwrap().global_arguments())?
+            {
                 parameter_overrides =
                     rcl_params.to_parameters(&node_handle.fully_qualified_name())?;
             }

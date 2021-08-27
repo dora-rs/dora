@@ -3,8 +3,8 @@ use std::{convert::TryInto, os::raw::c_void};
 use array_init::array_init;
 use widestring::U16String;
 
-pub trait MessageT: Default {
-    type Raw: FFIToRust<Target = Self> + Default + Drop;
+pub trait MessageT: Default + Send + Sync {
+    type Raw: FFIToRust<Target = Self> + Default + Drop + Send + Sync;
     type RawRef: FFIFromRust<From = Self>;
 
     fn type_support() -> *const c_void;
@@ -18,14 +18,14 @@ pub trait MessageT: Default {
     }
 }
 
-pub trait ServiceT {
+pub trait ServiceT: Send {
     type Request: MessageT;
     type Response: MessageT;
 
     fn type_support() -> *const c_void;
 }
 
-pub trait ActionT {
+pub trait ActionT: Send {
     type Goal: MessageT;
     type Result: MessageT;
     type Feedback: MessageT;
