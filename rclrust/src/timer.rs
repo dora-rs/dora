@@ -43,6 +43,7 @@ impl RclTimer {
         Ok(Self(timer))
     }
 
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_timer_t {
         &self.0
     }
@@ -51,7 +52,7 @@ impl RclTimer {
     fn is_ready(&self) -> Result<bool> {
         let mut ready = false;
         unsafe {
-            rcl_sys::rcl_timer_is_ready(&*self.0, &mut ready)
+            rcl_sys::rcl_timer_is_ready(self.raw(), &mut ready)
                 .to_result()
                 .with_context(|| "rcl_sys::rcl_timer_is_ready in RclTimer::is_ready")?;
         }

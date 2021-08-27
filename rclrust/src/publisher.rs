@@ -54,13 +54,18 @@ impl RclPublisher {
         })
     }
 
+    #[inline]
+    const fn raw(&self) -> &rcl_sys::rcl_publisher_t {
+        &self.r#impl
+    }
+
     fn publish<T>(&self, message: &T) -> Result<()>
     where
         T: MessageT,
     {
         unsafe {
             rcl_sys::rcl_publish(
-                &*self.r#impl,
+                self.raw(),
                 &message.to_raw_ref() as *const _ as *const c_void,
                 std::ptr::null_mut(),
             )
@@ -73,19 +78,19 @@ impl RclPublisher {
 
     fn topic_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_publisher_get_topic_name(&*self.r#impl);
+            let name = rcl_sys::rcl_publisher_get_topic_name(self.raw());
             String::from_c_char(name).unwrap()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_publisher_is_valid(&*self.r#impl) }
+        unsafe { rcl_sys::rcl_publisher_is_valid(self.raw()) }
     }
 
     fn subscription_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
-            rcl_sys::rcl_publisher_get_subscription_count(&*self.r#impl, &mut size)
+            rcl_sys::rcl_publisher_get_subscription_count(self.raw(), &mut size)
                 .to_result()
                 .with_context(|| {
                     "rcl_sys::rcl_publisher_get_subscription_count in RclPublisher::subscription_count"
