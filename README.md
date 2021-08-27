@@ -1,5 +1,10 @@
 # RclRust
 
+<img src="https://user-images.githubusercontent.com/25898373/131146249-36f349ba-ce33-462d-89f8-40bfa1a9899f.png" width="200px" alt="rclrust's logo"/>
+
+[![rclrust](https://img.shields.io/crates/v/rclrust.svg)](https://crates.io/crates/rclrust)
+[![Apache-2.0](https://img.shields.io/github/license/rclrust/rclrust)](https://github.com/rclrust/rclrust/blob/main/LICENSE)
+
 <table>
   <thead>
     <tr>
@@ -90,6 +95,12 @@ $ cargo run --examples subscription
 ![out](https://user-images.githubusercontent.com/25898373/128894819-f925b31f-d814-4046-a328-68bfe854d03b.gif)
 
 For more examples, see https://github.com/rclrust/rclrust/tree/main/rclrust/examples.
+
+## Notice
+
+The icon of RclRust was created by combinating and modifing the following materials.
+- [ros.svg](https://github.com/ros-infrastructure/artwork/blob/master/orgunits/ros.svg) © ROS (Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/))
+- [Gear-icon.png](https://commons.wikimedia.org/wiki/File:Gear-icon.png) (Licensed under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/deed.en))
 
 ## The other ROS2 clients written in Rust
 
