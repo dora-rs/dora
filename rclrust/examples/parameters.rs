@@ -14,7 +14,5 @@ fn main() -> Result<()> {
 
     rclrust_info!(logger, "param0 = {}", node.get_parameter("param0").unwrap());
 
-    std::thread::sleep(std::time::Duration::from_secs(20));
-
     Ok(())
 }

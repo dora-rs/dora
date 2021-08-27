@@ -267,6 +267,9 @@ impl Message {
                 }
             }
 
+            unsafe impl std::marker::Send for #raw_type {}
+            unsafe impl std::marker::Sync for #raw_type {}
+
             impl std::ops::Drop for #raw_type {
                 fn drop(&mut self) {
                     unsafe {
