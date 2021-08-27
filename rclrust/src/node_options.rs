@@ -6,6 +6,7 @@ pub(crate) struct RclNodeOptions(rcl_sys::rcl_node_options_t);
 unsafe impl Send for RclNodeOptions {}
 
 impl RclNodeOptions {
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_node_options_t {
         &self.0
     }

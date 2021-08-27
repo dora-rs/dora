@@ -62,8 +62,14 @@ impl RclClient {
         })
     }
 
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_client_t {
         &self.r#impl
+    }
+
+    #[inline]
+    fn raw_mut(&mut self) -> &mut rcl_sys::rcl_client_t {
+        &mut self.r#impl
     }
 
     fn send_request<Srv>(&self, request: &Srv::Request) -> Result<i64>
@@ -73,7 +79,7 @@ impl RclClient {
         let mut sequence_number = 0;
         unsafe {
             rcl_sys::rcl_send_request(
-                &*self.r#impl,
+                self.raw(),
                 &request.to_raw_ref() as *const _ as *const c_void,
                 &mut sequence_number,
             )
@@ -93,7 +99,7 @@ impl RclClient {
         let mut response = <Srv::Response as MessageT>::Raw::default();
         unsafe {
             rcl_sys::rcl_take_response(
-                &*self.r#impl,
+                self.raw(),
                 request_header.as_mut_ptr(),
                 &mut response as *mut _ as *mut c_void,
             )
@@ -106,7 +112,7 @@ impl RclClient {
 
     fn service_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_client_get_service_name(&*self.r#impl);
+            let name = rcl_sys::rcl_client_get_service_name(self.raw());
             String::from_c_char(name).unwrap()
         }
     }
@@ -116,7 +122,7 @@ impl RclClient {
         unsafe {
             rcl_sys::rcl_service_server_is_available(
                 self.node.lock().unwrap().raw(),
-                &*self.r#impl,
+                self.raw(),
                 &mut is_available,
             )
             .to_result()
@@ -128,14 +134,14 @@ impl RclClient {
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_client_is_valid(&*self.r#impl) }
+        unsafe { rcl_sys::rcl_client_is_valid(self.raw()) }
     }
 }
 
 impl Drop for RclClient {
     fn drop(&mut self) {
         if let Err(e) = unsafe {
-            rcl_sys::rcl_client_fini(&mut *self.r#impl, self.node.lock().unwrap().raw_mut())
+            rcl_sys::rcl_client_fini(self.raw_mut(), self.node.lock().unwrap().raw_mut())
                 .to_result()
         } {
             rclrust_error!(

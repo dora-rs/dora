@@ -59,6 +59,7 @@ impl RclSubscription {
         })
     }
 
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_subscription_t {
         &self.r#impl
     }
@@ -70,7 +71,7 @@ impl RclSubscription {
         let mut message = T::Raw::default();
         unsafe {
             rcl_sys::rcl_take(
-                &*self.r#impl,
+                self.raw(),
                 &mut message as *mut _ as *mut c_void,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -84,19 +85,19 @@ impl RclSubscription {
 
     fn topic_name(&self) -> String {
         unsafe {
-            let topic_name = rcl_sys::rcl_subscription_get_topic_name(&*self.r#impl);
+            let topic_name = rcl_sys::rcl_subscription_get_topic_name(self.raw());
             String::from_c_char(topic_name).unwrap()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_subscription_is_valid(&*self.r#impl) }
+        unsafe { rcl_sys::rcl_subscription_is_valid(self.raw()) }
     }
 
     fn publisher_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
-            rcl_sys::rcl_subscription_get_publisher_count(&*self.r#impl, &mut size)
+            rcl_sys::rcl_subscription_get_publisher_count(self.raw(), &mut size)
                 .to_result()
                 .with_context(|| {
                     "rcl_sys::rcl_subscription_get_publisher_count in RclSubscription::publisher_count"

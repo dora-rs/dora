@@ -22,7 +22,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct RclService {
+pub(crate) struct RclService {
     r#impl: Box<rcl_sys::rcl_service_t>,
     node: Arc<Mutex<RclNode>>,
 }
@@ -57,6 +57,7 @@ impl RclService {
         })
     }
 
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_service_t {
         &self.r#impl
     }
@@ -71,7 +72,7 @@ impl RclService {
         let mut request = <Srv::Request as MessageT>::Raw::default();
         unsafe {
             rcl_sys::rcl_take_request(
-                &*self.r#impl,
+                self.raw(),
                 request_header.as_mut_ptr(),
                 &mut request as *mut _ as *mut c_void,
             )
@@ -92,7 +93,7 @@ impl RclService {
     {
         unsafe {
             rcl_sys::rcl_send_response(
-                &*self.r#impl,
+                self.raw(),
                 response_header,
                 &response.to_raw_ref() as *const _ as *mut c_void,
             )
@@ -103,13 +104,13 @@ impl RclService {
 
     fn service_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_service_get_service_name(&*self.r#impl);
+            let name = rcl_sys::rcl_service_get_service_name(self.raw());
             String::from_c_char(name).unwrap()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_service_is_valid(&*self.r#impl) }
+        unsafe { rcl_sys::rcl_service_is_valid(self.raw()) }
     }
 }
 
