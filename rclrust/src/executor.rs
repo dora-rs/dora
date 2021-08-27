@@ -1,46 +1,64 @@
 use std::{
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex},
+    thread,
     time::Duration,
 };
 
 use anyhow::Result;
+use derive_new::new;
+use futures::channel::mpsc;
 
-use crate::{context::Context, error::RclRustError, node::Node, wait_set::RclWaitSet};
+use crate::{
+    client::ClientInvokerBase, context::RclContext, error::RclRustError,
+    service::ServiceInvokerBase, subscription::SubscriptionInvokerBase, timer::TimerInvoker,
+    wait_set::RclWaitSet,
+};
 
-pub fn spin(node: &Arc<Node<'_>>) -> Result<()> {
-    let mut exec = SingleThreadExecutor::new(node.context)?;
-    exec.add_node(node);
-    exec.spin()?;
-
-    Ok(())
+#[derive(Debug)]
+pub(super) enum ExecutorMessage {
+    Subscription(Box<dyn SubscriptionInvokerBase + Send>),
+    Timer(TimerInvoker),
+    Client(Box<dyn ClientInvokerBase + Send>),
+    Service(Box<dyn ServiceInvokerBase + Send>),
 }
 
-pub fn spin_some(node: &Arc<Node<'_>>) -> Result<()> {
-    let mut exec = SingleThreadExecutor::new(node.context)?;
-    exec.add_node(node);
-    exec.spin_some(Duration::ZERO)?;
-
-    Ok(())
+#[derive(new)]
+pub(super) struct Executor {
+    context: Arc<Mutex<RclContext>>,
+    rx: mpsc::Receiver<ExecutorMessage>,
+    #[new(default)]
+    subscriptions: Vec<Box<dyn SubscriptionInvokerBase + Send>>,
+    #[new(default)]
+    timers: Vec<TimerInvoker>,
+    #[new(default)]
+    clients: Vec<Box<dyn ClientInvokerBase + Send>>,
+    #[new(default)]
+    services: Vec<Box<dyn ServiceInvokerBase + Send>>,
 }
 
-pub struct SingleThreadExecutor<'ctx> {
-    context: &'ctx Context,
-    nodes: Vec<Weak<Node<'ctx>>>,
-}
+impl Executor {
+    pub fn spin(&mut self) -> Result<()> {
+        let max_duration = Duration::from_millis(50);
 
-impl<'ctx> SingleThreadExecutor<'ctx> {
-    pub const fn new(context: &'ctx Context) -> Result<Self> {
-        Ok(Self {
-            context,
-            nodes: Vec::new(),
-        })
-    }
+        while self.context.lock().unwrap().is_valid() {
+            loop {
+                match self.rx.try_next() {
+                    Ok(Some(ExecutorMessage::Subscription(v))) => self.subscriptions.push(v),
+                    Ok(Some(ExecutorMessage::Timer(v))) => self.timers.push(v),
+                    Ok(Some(ExecutorMessage::Client(v))) => self.clients.push(v),
+                    Ok(Some(ExecutorMessage::Service(v))) => self.services.push(v),
+                    Ok(None) => return Ok(()),
+                    Err(_) => break,
+                }
+            }
 
-    pub fn spin(&self) -> Result<()> {
-        while self.context.is_valid() {
-            if let Err(e) = self.spin_some(Duration::from_nanos(500)) {
+            if let Err(e) = self.spin_some(max_duration) {
                 match e.downcast_ref::<RclRustError>() {
                     Some(RclRustError::RclTimeout(_)) => continue,
+                    Some(RclRustError::RclWaitSetEmpty(_)) => {
+                        thread::sleep(max_duration);
+                        continue;
+                    }
                     _ => return Err(e),
                 }
             }
@@ -49,48 +67,61 @@ impl<'ctx> SingleThreadExecutor<'ctx> {
         Ok(())
     }
 
-    pub fn spin_some(&self, max_duration: Duration) -> Result<()> {
-        let (n_subscriptions, _, n_timers, n_clients, n_services, _) =
-            self.nodes.iter().filter_map(|n| n.upgrade()).fold(
-                (0, 0, 0, 0, 0, 0),
-                |(subs, guards, timers, clients, services, events), node| {
-                    (
-                        subs + node.subscriptions.lock().unwrap().len(),
-                        guards,
-                        timers + node.timers.lock().unwrap().len(),
-                        clients + node.clients.lock().unwrap().len(),
-                        services + node.services.lock().unwrap().len(),
-                        events,
-                    )
-                },
-            );
-
+    pub fn spin_some(&mut self, max_duration: Duration) -> Result<()> {
         let mut wait_set = RclWaitSet::new(
-            &mut self.context.handle.lock().unwrap(),
-            n_subscriptions,
+            &mut self.context.lock().unwrap(),
+            self.subscriptions.len(),
             0,
-            n_timers,
-            n_clients,
-            n_services,
+            self.timers.len(),
+            self.clients.len(),
+            self.services.len(),
             0,
         )?;
 
         wait_set.clear()?;
 
-        for node in self.nodes.iter().filter_map(|n| n.upgrade()) {
-            node.add_to_wait_set(&mut wait_set)?;
-        }
+        self.subscriptions
+            .iter()
+            .try_for_each(|subscription| wait_set.add_subscription(subscription.handle()))?;
+
+        self.timers
+            .iter()
+            .try_for_each(|timer| wait_set.add_timer(&timer.handle.lock().unwrap()))?;
+
+        self.clients
+            .iter()
+            .try_for_each(|client| wait_set.add_client(client.handle()))?;
+
+        self.services
+            .iter()
+            .try_for_each(|service| wait_set.add_service(service.handle()))?;
 
         wait_set.wait(max_duration.as_nanos() as i64)?;
 
-        for node in self.nodes.iter().filter_map(|n| n.upgrade()) {
-            node.call_callbacks()?;
-        }
+        self.subscriptions
+            .iter_mut()
+            .zip(wait_set.subscriptions_ready())
+            .filter(|(_, ready)| *ready)
+            .try_for_each(|(subscription, _)| subscription.invoke())?;
+
+        self.timers
+            .iter_mut()
+            .zip(wait_set.timers_ready())
+            .filter(|(_, ready)| *ready)
+            .try_for_each(|(timer, _)| timer.invoke())?;
+
+        self.clients
+            .iter_mut()
+            .zip(wait_set.clients_ready())
+            .filter(|(_, ready)| *ready)
+            .try_for_each(|(client, _)| client.invoke())?;
+
+        self.services
+            .iter_mut()
+            .zip(wait_set.services_ready())
+            .filter(|(_, ready)| *ready)
+            .try_for_each(|(service, _)| service.invoke())?;
 
         Ok(())
-    }
-
-    fn add_node(&mut self, node: &Arc<Node<'ctx>>) {
-        self.nodes.push(Arc::downgrade(node));
     }
 }

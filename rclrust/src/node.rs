@@ -1,20 +1,23 @@
 use std::{
     ffi::CString,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex},
+    thread::{self, JoinHandle},
     time::Duration,
 };
 
 use anyhow::{ensure, Context as _, Result};
+use futures::channel::mpsc;
 use rclrust_msg::{
     _core::{FFIToRust, MessageT, ServiceT},
     rcl_interfaces::msg::ParameterDescriptor,
 };
 
 use crate::{
-    client::{Client, ClientBase},
+    client::Client,
     clock::ClockType,
     context::{Context, RclContext},
     error::ToRclRustResult,
+    executor::{Executor, ExecutorMessage},
     internal::ffi::*,
     log::Logger,
     node_options::NodeOptions,
@@ -22,20 +25,22 @@ use crate::{
     publisher::Publisher,
     qos::QoSProfile,
     rclrust_error,
-    service::{Service, ServiceBase},
-    subscription::{Subscription, SubscriptionBase},
+    service::Service,
+    subscription::Subscription,
     timer::Timer,
-    wait_set::RclWaitSet,
 };
 
 #[derive(Debug)]
-pub(crate) struct RclNode(Box<rcl_sys::rcl_node_t>);
+pub(crate) struct RclNode {
+    r#impl: Box<rcl_sys::rcl_node_t>,
+    context: Arc<Mutex<RclContext>>,
+}
 
 unsafe impl Send for RclNode {}
 
 impl RclNode {
     fn new(
-        context: &mut RclContext,
+        context: Arc<Mutex<RclContext>>,
         name: &str,
         namespace: Option<&str>,
         options: &NodeOptions,
@@ -49,103 +54,126 @@ impl RclNode {
                 &mut *node,
                 name_c_str.as_ptr(),
                 namespace_c_str.as_ptr(),
-                context.raw_mut(),
+                context.lock().unwrap().raw_mut(),
                 options.raw(),
             )
             .to_result()
             .with_context(|| "rcl_sys::rcl_node_init in RclNode::new")?;
         }
 
-        Ok(Self(node))
+        Ok(Self {
+            r#impl: node,
+            context,
+        })
     }
 
     pub(crate) const fn raw(&self) -> &rcl_sys::rcl_node_t {
-        &self.0
+        &self.r#impl
     }
 
     pub(crate) unsafe fn raw_mut(&mut self) -> &mut rcl_sys::rcl_node_t {
-        &mut self.0
+        &mut self.r#impl
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_node_is_valid(&*self.0) }
+        unsafe { rcl_sys::rcl_node_is_valid(&*self.r#impl) }
     }
 
     fn name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_node_get_name(&*self.0);
+            let name = rcl_sys::rcl_node_get_name(&*self.r#impl);
             String::from_c_char(name).unwrap()
         }
     }
 
     fn namespace(&self) -> String {
         unsafe {
-            let namespace = rcl_sys::rcl_node_get_namespace(&*self.0);
+            let namespace = rcl_sys::rcl_node_get_namespace(&*self.r#impl);
             String::from_c_char(namespace).unwrap()
         }
     }
 
     pub(crate) fn fully_qualified_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_node_get_fully_qualified_name(&*self.0);
+            let name = rcl_sys::rcl_node_get_fully_qualified_name(&*self.r#impl);
             String::from_c_char(name).unwrap()
         }
     }
 
     fn logger_name(&self) -> String {
         unsafe {
-            let logger_name = rcl_sys::rcl_node_get_logger_name(&*self.0);
+            let logger_name = rcl_sys::rcl_node_get_logger_name(&*self.r#impl);
             String::from_c_char(logger_name).unwrap()
         }
     }
 
     pub fn get_options(&self) -> Option<&rcl_sys::rcl_node_options_t> {
-        unsafe { rcl_sys::rcl_node_get_options(&*self.0).as_ref() }
+        unsafe { rcl_sys::rcl_node_get_options(&*self.r#impl).as_ref() }
     }
 
     pub fn use_global_arguments(&self) -> Option<bool> {
         self.get_options().map(|opt| opt.use_global_arguments)
     }
+}
 
-    unsafe fn fini(&mut self, _ctx: &RclContext) -> Result<()> {
-        rcl_sys::rcl_node_fini(&mut *self.0)
-            .to_result()
-            .with_context(|| "rcl_sys::rcl_node_fini in RclNode::fini")
+impl Drop for RclNode {
+    fn drop(&mut self) {
+        let result = unsafe {
+            let _guard = self.context.lock().unwrap();
+            rcl_sys::rcl_node_fini(&mut *self.r#impl).to_result()
+        };
+        if let Err(e) = result {
+            rclrust_error!(
+                Logger::new("rclrust"),
+                "Failed to clean up rcl node handle: {}",
+                e
+            )
+        }
     }
 }
 
-pub struct Node<'ctx> {
+#[derive(Debug)]
+pub struct Node {
     pub(crate) handle: Arc<Mutex<RclNode>>,
-    pub(crate) context: &'ctx Context,
-    pub(crate) subscriptions: Mutex<Vec<Weak<dyn SubscriptionBase>>>,
-    pub(crate) timers: Mutex<Vec<Weak<Timer>>>,
-    pub(crate) clients: Mutex<Vec<Weak<dyn ClientBase>>>,
-    pub(crate) services: Mutex<Vec<Weak<dyn ServiceBase>>>,
+    pub(crate) context: Arc<Mutex<RclContext>>,
     parameters: Parameters,
+    wait_thread: Option<JoinHandle<Result<()>>>,
+    tx: mpsc::Sender<ExecutorMessage>,
 }
 
-impl<'ctx> Node<'ctx> {
+impl Node {
     pub(crate) fn new(
-        context: &'ctx Context,
+        context: &Context,
         name: &str,
         namespace: Option<&str>,
         options: &NodeOptions,
-    ) -> Result<Arc<Self>> {
+    ) -> Result<Self> {
         ensure!(context.is_valid(), "given Context is not valid");
-        let mut context_handle = context.handle.lock().unwrap();
 
-        let handle = { RclNode::new(&mut context_handle, name, namespace, options)? };
-        let parameters = Parameters::new(&context_handle, &handle)?;
+        let context = Arc::clone(&context.handle);
+        let handle = RclNode::new(Arc::clone(&context), name, namespace, options)?;
+        let parameters = Parameters::new(Arc::clone(&context), &handle)?;
 
-        Ok(Arc::new(Self {
+        let (tx, rx) = mpsc::channel(10);
+
+        let wait_thread = {
+            let context = Arc::clone(&context);
+
+            thread::spawn(move || {
+                let mut executor = Executor::new(context, rx);
+                loop {
+                    executor.spin()?
+                }
+            })
+        };
+
+        Ok(Self {
             handle: Arc::new(Mutex::new(handle)),
             context,
-            subscriptions: Default::default(),
-            timers: Default::default(),
-            clients: Default::default(),
-            services: Default::default(),
             parameters,
-        }))
+            wait_thread: Some(wait_thread),
+            tx,
+        })
     }
 
     pub(crate) fn clone_handle(&self) -> Arc<Mutex<RclNode>> {
@@ -262,193 +290,130 @@ impl<'ctx> Node<'ctx> {
     }
 
     pub fn create_subscription<T, F>(
-        &self,
+        &mut self,
         topic_name: &str,
         callback: F,
         qos: &QoSProfile,
-    ) -> Result<Arc<Subscription<T>>>
+    ) -> Result<Subscription<T>>
     where
         T: MessageT + 'static,
-        F: Fn(T) + 'static,
+        F: Fn(Arc<T>) + Send + 'static,
     {
-        let sub = Subscription::new(
+        let subscription = Subscription::new(
             self,
             topic_name,
-            move |msg| callback(unsafe { T::from_raw(msg) }),
+            move |msg| callback(Arc::new(unsafe { T::from_raw(&msg) })),
             qos,
         )?;
-        let weak_sub = Arc::downgrade(&sub) as Weak<dyn SubscriptionBase>;
-        self.subscriptions.lock().unwrap().push(weak_sub);
-        Ok(sub)
+        self.tx
+            .try_send(ExecutorMessage::Subscription(Box::new(
+                subscription.create_invoker(),
+            )))
+            .expect("try_send should succeed");
+        Ok(subscription)
     }
 
     pub fn create_raw_subscription<T, F>(
-        &self,
+        &mut self,
         topic_name: &str,
         callback: F,
         qos: &QoSProfile,
-    ) -> Result<Arc<Subscription<T>>>
+    ) -> Result<Subscription<T>>
     where
         T: MessageT + 'static,
-        F: Fn(&T::Raw) + 'static,
+        F: Fn(Arc<T::Raw>) + Send + 'static,
     {
-        let sub = Subscription::new(self, topic_name, callback, qos)?;
-        let weak_sub = Arc::downgrade(&sub) as Weak<dyn SubscriptionBase>;
-        self.subscriptions.lock().unwrap().push(weak_sub);
-        Ok(sub)
+        let subscription = Subscription::new(self, topic_name, callback, qos)?;
+        self.tx
+            .try_send(ExecutorMessage::Subscription(Box::new(
+                subscription.create_invoker(),
+            )))
+            .expect("try_send should succeed");
+        Ok(subscription)
     }
 
     pub fn create_timer<F>(
-        &self,
+        &mut self,
         period: Duration,
         clock_type: ClockType,
         callback: F,
     ) -> Result<Arc<Timer>>
     where
-        F: Fn() + 'static,
+        F: Fn() + Send + 'static,
     {
         let timer = Timer::new(self, period, clock_type, callback)?;
-        let weak_timer = Arc::downgrade(&timer);
-        self.timers.lock().unwrap().push(weak_timer);
+        self.tx
+            .try_send(ExecutorMessage::Timer(timer.create_invoker()))
+            .expect("try_send should succeed");
         Ok(timer)
     }
 
-    pub fn create_wall_timer<F>(&self, period: Duration, callback: F) -> Result<Arc<Timer>>
+    pub fn create_wall_timer<F>(&mut self, period: Duration, callback: F) -> Result<Arc<Timer>>
     where
-        F: Fn() + 'static,
+        F: Fn() + Send + 'static,
     {
         self.create_timer(period, ClockType::SteadyTime, callback)
     }
 
     pub fn create_client<Srv>(
-        &self,
+        &mut self,
         service_name: &str,
         qos: &QoSProfile,
-    ) -> Result<Arc<Client<Srv>>>
+    ) -> Result<Client<Srv>>
     where
         Srv: ServiceT + 'static,
     {
         let client = Client::<Srv>::new(self, service_name, qos)?;
-        let weak = Arc::downgrade(&client) as Weak<dyn ClientBase>;
-        self.clients.lock().unwrap().push(weak);
+        self.tx
+            .try_send(ExecutorMessage::Client(Box::new(client.create_invoker())))
+            .expect("try_send should succeed");
         Ok(client)
     }
 
     pub fn create_service<Srv, F>(
-        &self,
+        &mut self,
         service_name: &str,
         callback: F,
         qos: &QoSProfile,
-    ) -> Result<Arc<Service<Srv>>>
+    ) -> Result<Service<Srv>>
     where
         Srv: ServiceT + 'static,
-        F: Fn(Srv::Request) -> Srv::Response + 'static,
+        F: Fn(Srv::Request) -> Srv::Response + Send + 'static,
     {
-        let srv = Service::<Srv>::new(
+        let service = Service::<Srv>::new(
             self,
             service_name,
             move |req_raw| (callback)(unsafe { req_raw.to_rust() }),
             qos,
         )?;
-        let weak_srv = Arc::downgrade(&srv) as Weak<dyn ServiceBase>;
-        self.services.lock().unwrap().push(weak_srv);
-        Ok(srv)
+        self.tx
+            .try_send(ExecutorMessage::Service(Box::new(service.create_invoker())))
+            .expect("try_send should succeed");
+        Ok(service)
     }
 
     pub fn create_raw_service<Srv, F>(
-        &self,
+        &mut self,
         service_name: &str,
         callback: F,
         qos: &QoSProfile,
-    ) -> Result<Arc<Service<Srv>>>
+    ) -> Result<Service<Srv>>
     where
         Srv: ServiceT + 'static,
-        F: Fn(&<Srv::Request as MessageT>::Raw) -> Srv::Response + 'static,
+        F: Fn(&<Srv::Request as MessageT>::Raw) -> Srv::Response + Send + 'static,
     {
-        let srv = Service::new(self, service_name, callback, qos)?;
-        let weak_srv = Arc::downgrade(&srv) as Weak<dyn ServiceBase>;
-        self.services.lock().unwrap().push(weak_srv);
-        Ok(srv)
+        let service = Service::new(self, service_name, callback, qos)?;
+        self.tx
+            .try_send(ExecutorMessage::Service(Box::new(service.create_invoker())))
+            .expect("try_send should succeed");
+        Ok(service)
     }
 
-    pub(crate) fn add_to_wait_set(&self, wait_set: &mut RclWaitSet) -> Result<()> {
-        self.subscriptions
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|subscription| wait_set.add_subscription(subscription.handle()))?;
-
-        self.timers
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|timer| wait_set.add_timer(&timer.handle().lock().unwrap()))?;
-
-        self.clients
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|client| wait_set.add_client(client.handle()))?;
-
-        self.services
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|service| wait_set.add_service(service.handle()))?;
-
-        Ok(())
-    }
-
-    pub(crate) fn call_callbacks(&self) -> Result<()> {
-        self.subscriptions
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|subscription| subscription.call_callback())?;
-
-        self.timers
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|timer| timer.call_callback())?;
-
-        self.clients
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|client| client.process_requests())?;
-
-        self.services
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|weak| weak.upgrade())
-            .try_for_each(|service| service.call_callback())?;
-
-        Ok(())
-    }
-}
-
-impl Drop for Node<'_> {
-    fn drop(&mut self) {
-        if let Err(e) = unsafe {
-            self.handle
-                .lock()
-                .unwrap()
-                .fini(&self.context.handle.lock().unwrap())
-        } {
-            rclrust_error!(
-                Logger::new("rclrust"),
-                "Failed to clean up rcl node handle: {}",
-                e
-            )
+    pub fn wait(&mut self) {
+        if let Some(handle) = self.wait_thread.take() {
+            if let Err(e) = handle.join() {
+                rclrust_error!(Logger::new("rclrust"), "{:?}", e);
+            }
         }
     }
 }

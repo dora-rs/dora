@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 
 use crate::{context::Context, init_options::InitOptions};
@@ -12,7 +10,7 @@ use crate::{context::Context, init_options::InitOptions};
 /// let ctx = rclrust::init().unwrap();
 /// assert!(ctx.is_valid());
 /// ```
-pub fn init() -> Result<Arc<Context>> {
+pub fn init() -> Result<Context> {
     init_with_options(InitOptions::new()?)
 }
 
@@ -27,17 +25,17 @@ pub fn init() -> Result<Arc<Context>> {
 /// let ctx = rclrust::init_with_options(init_options).unwrap();
 /// assert!(ctx.is_valid());
 /// ```
-pub fn init_with_options(init_options: InitOptions) -> Result<Arc<Context>> {
+pub fn init_with_options(init_options: InitOptions) -> Result<Context> {
     Context::new(std::env::args().collect::<Vec<_>>(), init_options)
 }
 
 /// Check rclrust's status.
-pub fn ok(ctx: Arc<Context>) -> bool {
+pub fn ok(ctx: &Context) -> bool {
     ctx.is_valid()
 }
 
 /// Shutdown rclrust context
-pub fn shutdown(ctx: Arc<Context>, reason: &str) -> Result<()> {
+pub fn shutdown(ctx: &Context, reason: &str) -> Result<()> {
     ctx.shutdown(reason)
 }
 
@@ -48,7 +46,7 @@ mod test {
     #[test]
     fn rclrust_init() -> Result<()> {
         let ctx = init()?;
-        assert!(ok(ctx));
+        assert!(ok(&ctx));
 
         Ok(())
     }

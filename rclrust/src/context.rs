@@ -64,7 +64,7 @@ impl RclContext {
         self.0.as_mut()
     }
 
-    fn is_valid(&mut self) -> bool {
+    pub(crate) fn is_valid(&mut self) -> bool {
         unsafe { rcl_sys::rcl_context_is_valid(self.0.as_mut()) }
     }
 
@@ -105,18 +105,18 @@ impl Drop for RclContext {
 
 #[derive(Debug)]
 pub struct Context {
-    pub(crate) handle: Mutex<RclContext>,
+    pub(crate) handle: Arc<Mutex<RclContext>>,
     shutdown_reason: Mutex<Option<String>>,
 }
 
 impl Context {
-    pub(crate) fn new(args: Vec<String>, init_options: InitOptions) -> Result<Arc<Self>> {
+    pub(crate) fn new(args: Vec<String>, init_options: InitOptions) -> Result<Self> {
         let handle = RclContext::new(args, &init_options)?;
 
-        Ok(Arc::new(Self {
-            handle: Mutex::new(handle),
+        Ok(Self {
+            handle: Arc::new(Mutex::new(handle)),
             shutdown_reason: Default::default(),
-        }))
+        })
     }
 
     pub fn is_valid(&self) -> bool {
@@ -138,7 +138,7 @@ impl Context {
     /// let node = ctx.create_node("test_node").unwrap();
     /// assert_eq!(&node.fully_qualified_name(), "/test_node");
     /// ```
-    pub fn create_node<'a>(&'a self, name: &str) -> Result<Arc<Node<'a>>> {
+    pub fn create_node(&self, name: &str) -> Result<Node> {
         Node::new(self, name, None, &NodeOptions::new())
     }
 
@@ -153,11 +153,7 @@ impl Context {
     /// let node = ctx.create_node_with_options("test_node", &options).unwrap();
     /// assert_eq!(&node.fully_qualified_name(), "/test_node");
     /// ```
-    pub fn create_node_with_options<'a>(
-        &'a self,
-        name: &str,
-        options: &NodeOptions,
-    ) -> Result<Arc<Node<'a>>> {
+    pub fn create_node_with_options(&self, name: &str, options: &NodeOptions) -> Result<Node> {
         Node::new(self, name, None, options)
     }
 
@@ -169,7 +165,7 @@ impl Context {
     /// let node = ctx.create_node_with_ns("test_node", "ns").unwrap();
     /// assert_eq!(&node.fully_qualified_name(), "/ns/test_node");
     /// ```
-    pub fn create_node_with_ns<'a>(&'a self, name: &str, namespace: &str) -> Result<Arc<Node<'a>>> {
+    pub fn create_node_with_ns(&self, name: &str, namespace: &str) -> Result<Node> {
         Node::new(self, name, Some(namespace), &NodeOptions::new())
     }
 
@@ -186,12 +182,12 @@ impl Context {
     ///     .unwrap();
     /// assert_eq!(&node.fully_qualified_name(), "/ns/test_node");
     /// ```
-    pub fn create_node_with_ns_and_options<'a>(
-        &'a self,
+    pub fn create_node_with_ns_and_options(
+        &self,
         name: &str,
         namespace: &str,
         options: &NodeOptions,
-    ) -> Result<Arc<Node<'a>>> {
+    ) -> Result<Node> {
         Node::new(self, name, Some(namespace), options)
     }
 }

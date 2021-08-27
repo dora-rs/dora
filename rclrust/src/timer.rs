@@ -1,15 +1,18 @@
 use std::{
     convert::TryInto,
+    fmt,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::{Context, Result};
+use futures::channel::mpsc;
 
 use crate::{
     clock::{Clock, ClockType},
     context::RclContext,
-    error::ToRclRustResult,
+    error::{RclRustError, ToRclRustResult},
+    internal::worker::{ReceiveWorker, WorkerMessage},
     log::Logger,
     node::Node,
     rclrust_error,
@@ -44,6 +47,7 @@ impl RclTimer {
         &self.0
     }
 
+    #[allow(dead_code)]
     fn is_ready(&self) -> Result<bool> {
         let mut ready = false;
         unsafe {
@@ -76,42 +80,82 @@ impl Drop for RclTimer {
 }
 
 pub struct Timer {
-    handle: Mutex<RclTimer>,
+    handle: Arc<Mutex<RclTimer>>,
     _clock: Box<Clock>,
-    callback: Box<dyn Fn()>,
+    worker: ReceiveWorker<()>,
 }
 
-impl<'ctx> Timer {
+impl Timer {
     pub(crate) fn new<F>(
-        node: &Node<'ctx>,
+        node: &Node,
         period: Duration,
         clock_type: ClockType,
         callback: F,
     ) -> Result<Arc<Self>>
     where
-        F: Fn() + 'static,
+        F: Fn() + Send + 'static,
     {
         let mut clock = Box::new(Clock::new(clock_type)?);
-        let handle = RclTimer::new(&mut clock, &mut node.context.handle.lock().unwrap(), period)?;
+        let handle = Arc::new(Mutex::new(RclTimer::new(
+            &mut clock,
+            &mut node.context.lock().unwrap(),
+            period,
+        )?));
         Ok(Arc::new(Self {
-            handle: Mutex::new(handle),
+            handle,
             _clock: clock,
-            callback: Box::new(callback),
+            worker: ReceiveWorker::new(move |_| callback()),
         }))
     }
 
-    pub(crate) const fn handle(&self) -> &Mutex<RclTimer> {
-        &self.handle
+    pub(crate) fn create_invoker(&self) -> TimerInvoker {
+        TimerInvoker {
+            handle: self.clone_handle(),
+            tx: Some(self.clone_tx()),
+        }
     }
 
-    pub(crate) fn call_callback(&self) -> Result<()> {
-        let mut handle = self.handle.lock().unwrap();
+    pub(crate) fn clone_handle(&self) -> Arc<Mutex<RclTimer>> {
+        Arc::clone(&self.handle)
+    }
 
-        if handle.is_ready()? {
-            handle.call()?;
-            drop(handle);
-            (self.callback)()
+    pub(crate) fn clone_tx(&self) -> mpsc::Sender<WorkerMessage<()>> {
+        self.worker.clone_tx()
+    }
+}
+
+pub(crate) struct TimerInvoker {
+    pub handle: Arc<Mutex<RclTimer>>,
+    tx: Option<mpsc::Sender<WorkerMessage<()>>>,
+}
+
+impl fmt::Debug for TimerInvoker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TimerInvoker {{{:?}}}", self.handle)
+    }
+}
+
+impl TimerInvoker {
+    fn stop(&mut self) {
+        self.tx.take();
+    }
+
+    pub fn invoke(&mut self) -> Result<()> {
+        self.handle.lock().unwrap().call()?;
+        if let Some(ref mut tx) = self.tx {
+            match tx.try_send(WorkerMessage::Message(())) {
+                Ok(_) => (),
+                Err(e) if e.is_disconnected() => self.stop(),
+                Err(_) => {
+                    return Err(RclRustError::MessageQueueIsFull {
+                        type_: "Timer",
+                        name: "<none>".into(),
+                    }
+                    .into())
+                }
+            }
         }
+
         Ok(())
     }
 }

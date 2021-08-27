@@ -1,27 +1,37 @@
 use std::{
     ffi::{c_void, CString},
+    fmt,
     mem::MaybeUninit,
     sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result};
+use futures::channel::mpsc;
 use rclrust_msg::_core::{MessageT, ServiceT};
 
 use crate::{
     error::{RclRustError, ToRclRustResult},
-    internal::ffi::*,
+    internal::{
+        ffi::*,
+        worker::{ReceiveWorker, WorkerMessage},
+    },
     log::Logger,
     node::{Node, RclNode},
     qos::QoSProfile,
     rclrust_error,
 };
 
-pub struct RclService(Box<rcl_sys::rcl_service_t>);
+#[derive(Debug)]
+pub struct RclService {
+    r#impl: Box<rcl_sys::rcl_service_t>,
+    node: Arc<Mutex<RclNode>>,
+}
 
 unsafe impl Send for RclService {}
+unsafe impl Sync for RclService {}
 
 impl RclService {
-    fn new<Srv>(node: &RclNode, service_name: &str, qos: &QoSProfile) -> Result<Self>
+    fn new<Srv>(node: Arc<Mutex<RclNode>>, service_name: &str, qos: &QoSProfile) -> Result<Self>
     where
         Srv: ServiceT,
     {
@@ -33,7 +43,7 @@ impl RclService {
         unsafe {
             rcl_sys::rcl_service_init(
                 &mut *service,
-                node.raw(),
+                node.lock().unwrap().raw(),
                 Srv::type_support() as *const _,
                 service_c_str.as_ptr(),
                 &options,
@@ -41,17 +51,14 @@ impl RclService {
             .to_result()?;
         }
 
-        Ok(Self(service))
+        Ok(Self {
+            r#impl: service,
+            node,
+        })
     }
 
     pub const fn raw(&self) -> &rcl_sys::rcl_service_t {
-        &self.0
-    }
-
-    unsafe fn fini(&mut self, node: &mut RclNode) -> Result<()> {
-        rcl_sys::rcl_service_fini(&mut *self.0, node.raw_mut())
-            .to_result()
-            .with_context(|| "rcl_sys::rcl_service_fini in RclService::fini")
+        &self.r#impl
     }
 
     fn take_request<Srv>(
@@ -64,7 +71,7 @@ impl RclService {
         let mut request = <Srv::Request as MessageT>::Raw::default();
         unsafe {
             rcl_sys::rcl_take_request(
-                &*self.0,
+                &*self.r#impl,
                 request_header.as_mut_ptr(),
                 &mut request as *mut _ as *mut c_void,
             )
@@ -85,7 +92,7 @@ impl RclService {
     {
         unsafe {
             rcl_sys::rcl_send_response(
-                &*self.0,
+                &*self.r#impl,
                 response_header,
                 &response.to_raw_ref() as *const _ as *mut c_void,
             )
@@ -96,51 +103,92 @@ impl RclService {
 
     fn service_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_service_get_service_name(&*self.0);
-            String::from_c_char(name).unwrap_or_default()
+            let name = rcl_sys::rcl_service_get_service_name(&*self.r#impl);
+            String::from_c_char(name).unwrap()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_service_is_valid(&*self.0) }
+        unsafe { rcl_sys::rcl_service_is_valid(&*self.r#impl) }
     }
 }
 
-pub(crate) trait ServiceBase {
-    fn handle(&self) -> &RclService;
-    fn call_callback(&self) -> Result<()>;
+impl Drop for RclService {
+    fn drop(&mut self) {
+        if let Err(e) = unsafe {
+            rcl_sys::rcl_service_fini(&mut *self.r#impl, self.node.lock().unwrap().raw_mut())
+                .to_result()
+        } {
+            rclrust_error!(
+                Logger::new("rclrust"),
+                "Failed to clean up rcl service handle: {}",
+                e
+            )
+        }
+    }
 }
+
+type ChannelMessage<Srv> = (
+    rcl_sys::rmw_request_id_t,
+    <<Srv as ServiceT>::Request as MessageT>::Raw,
+);
 
 pub struct Service<Srv>
 where
     Srv: ServiceT,
 {
-    handle: RclService,
-    callback: Box<dyn Fn(&<Srv::Request as MessageT>::Raw) -> Srv::Response>,
-    node_handle: Arc<Mutex<RclNode>>,
+    handle: Arc<RclService>,
+    worker: ReceiveWorker<ChannelMessage<Srv>>,
 }
 
 impl<Srv> Service<Srv>
 where
     Srv: ServiceT,
 {
-    pub(crate) fn new<'ctx, F>(
-        node: &Node<'ctx>,
+    pub(crate) fn new<F>(
+        node: &Node,
         service_name: &str,
         callback: F,
         qos: &QoSProfile,
-    ) -> Result<Arc<Self>>
+    ) -> Result<Self>
     where
-        F: Fn(&<Srv::Request as MessageT>::Raw) -> Srv::Response + 'static,
+        <Srv::Request as MessageT>::Raw: 'static,
+        F: Fn(&<Srv::Request as MessageT>::Raw) -> Srv::Response + Send + 'static,
     {
-        let node_handle = node.clone_handle();
-        let handle = RclService::new::<Srv>(&node_handle.lock().unwrap(), service_name, qos)?;
+        let handle = Arc::new(RclService::new::<Srv>(
+            node.clone_handle(),
+            service_name,
+            qos,
+        )?);
 
-        Ok(Arc::new(Self {
+        let callback = {
+            let handle = Arc::clone(&handle);
+
+            move |(mut req_header, req)| {
+                let res = (callback)(&req);
+                handle.send_response::<Srv>(&mut req_header, res).unwrap();
+            }
+        };
+
+        Ok(Self {
             handle,
-            callback: Box::new(callback),
-            node_handle,
-        }))
+            worker: ReceiveWorker::new(callback),
+        })
+    }
+
+    pub(crate) fn create_invoker(&self) -> ServiceInvoker<Srv> {
+        ServiceInvoker {
+            handle: self.clone_handle(),
+            tx: Some(self.clone_tx()),
+        }
+    }
+
+    pub(crate) fn clone_handle(&self) -> Arc<RclService> {
+        Arc::clone(&self.handle)
+    }
+
+    pub(crate) fn clone_tx(&self) -> mpsc::Sender<WorkerMessage<ChannelMessage<Srv>>> {
+        self.worker.clone_tx()
     }
 
     pub fn service_name(&self) -> String {
@@ -152,7 +200,38 @@ where
     }
 }
 
-impl<Srv> ServiceBase for Service<Srv>
+pub(crate) trait ServiceInvokerBase: fmt::Debug {
+    fn handle(&self) -> &RclService;
+    fn invoke(&mut self) -> Result<()>;
+}
+
+pub(crate) struct ServiceInvoker<Srv>
+where
+    Srv: ServiceT,
+{
+    handle: Arc<RclService>,
+    tx: Option<mpsc::Sender<WorkerMessage<ChannelMessage<Srv>>>>,
+}
+
+impl<Srv> ServiceInvoker<Srv>
+where
+    Srv: ServiceT,
+{
+    fn stop(&mut self) {
+        self.tx.take();
+    }
+}
+
+impl<Srv> fmt::Debug for ServiceInvoker<Srv>
+where
+    Srv: ServiceT,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ServiceInvoker {{{:?}}}", self.handle)
+    }
+}
+
+impl<Srv> ServiceInvokerBase for ServiceInvoker<Srv>
 where
     Srv: ServiceT,
 {
@@ -160,31 +239,21 @@ where
         &self.handle
     }
 
-    fn call_callback(&self) -> Result<()> {
-        match self.handle.take_request::<Srv>() {
-            Ok((mut req_header, req)) => {
-                let res = (self.callback)(&req);
-                self.handle.send_response::<Srv>(&mut req_header, res)
+    fn invoke(&mut self) -> Result<()> {
+        if let Some(ref mut tx) = self.tx {
+            match tx.try_send(WorkerMessage::Message(self.handle.take_request::<Srv>()?)) {
+                Ok(_) => (),
+                Err(e) if e.is_disconnected() => self.stop(),
+                Err(_) => {
+                    return Err(RclRustError::MessageQueueIsFull {
+                        type_: "Service",
+                        name: self.handle.service_name(),
+                    }
+                    .into())
+                }
             }
-            Err(e) => match e.downcast_ref::<RclRustError>() {
-                Some(RclRustError::RclSubscriptionTakeFailed(_)) => Ok(()),
-                _ => Err(e),
-            },
         }
-    }
-}
 
-impl<Srv> Drop for Service<Srv>
-where
-    Srv: ServiceT,
-{
-    fn drop(&mut self) {
-        if let Err(e) = unsafe { self.handle.fini(&mut self.node_handle.lock().unwrap()) } {
-            rclrust_error!(
-                Logger::new("rclrust"),
-                "Failed to clean up rcl service handle: {}",
-                e
-            )
-        }
+        Ok(())
     }
 }
