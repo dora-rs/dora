@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{convert::TryInto, fmt};
 
 use super::{ParameterDescriptor, ParameterType, RclParameterType, RclParameterValue};
 use crate::internal::ffi::SizedFromCChar;
@@ -124,7 +124,7 @@ impl ParameterValue {
     }
 
     pub fn get_type(&self) -> ParameterType {
-        self.0.type_.into()
+        self.0.type_.try_into().unwrap()
     }
 
     pub fn get_value(&self) -> Option<Variant> {
