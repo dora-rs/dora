@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use futures::channel::{mpsc, oneshot};
-use rclrust_msg::_core::{FFIToRust, MessageT, ServiceT};
+use rclrust_msg::_core::{FFIToRust, MessageT, ServiceResponseRaw, ServiceT};
 
 use crate::{
     error::{RclRustError, ToRclRustResult},
@@ -89,14 +89,12 @@ impl RclClient {
         Ok(sequence_number)
     }
 
-    fn take_response<Srv>(
-        &self,
-    ) -> Result<(rcl_sys::rmw_request_id_t, <Srv::Response as MessageT>::Raw)>
+    fn take_response<Srv>(&self) -> Result<(rcl_sys::rmw_request_id_t, ServiceResponseRaw<Srv>)>
     where
         Srv: ServiceT,
     {
         let mut request_header = MaybeUninit::uninit();
-        let mut response = <Srv::Response as MessageT>::Raw::default();
+        let mut response = Default::default();
         unsafe {
             rcl_sys::rcl_take_response(
                 self.raw(),
@@ -153,10 +151,7 @@ impl Drop for RclClient {
     }
 }
 
-type ChannelMessage<Srv> = (
-    rcl_sys::rmw_request_id_t,
-    <<Srv as ServiceT>::Response as MessageT>::Raw,
-);
+type ChannelMessage<Srv> = (rcl_sys::rmw_request_id_t, ServiceResponseRaw<Srv>);
 
 pub struct Client<Srv>
 where
@@ -185,10 +180,7 @@ where
         let callback = {
             let pendings = Arc::clone(&pendings);
 
-            move |(req_header, res): (
-                rcl_sys::rmw_request_id_t,
-                <Srv::Response as MessageT>::Raw,
-            )| {
+            move |(req_header, res): (rcl_sys::rmw_request_id_t, ServiceResponseRaw<Srv>)| {
                 pendings
                     .lock()
                     .unwrap()
