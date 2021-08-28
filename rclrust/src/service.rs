@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures::channel::mpsc;
-use rclrust_msg::_core::{MessageT, ServiceT};
+use rclrust_msg::_core::{MessageT, ServiceRequestRaw, ServiceT};
 
 use crate::{
     error::{RclRustError, ToRclRustResult},
@@ -62,14 +62,12 @@ impl RclService {
         &self.r#impl
     }
 
-    fn take_request<Srv>(
-        &self,
-    ) -> Result<(rcl_sys::rmw_request_id_t, <Srv::Request as MessageT>::Raw)>
+    fn take_request<Srv>(&self) -> Result<(rcl_sys::rmw_request_id_t, ServiceRequestRaw<Srv>)>
     where
         Srv: ServiceT,
     {
         let mut request_header = MaybeUninit::uninit();
-        let mut request = <Srv::Request as MessageT>::Raw::default();
+        let mut request = Default::default();
         unsafe {
             rcl_sys::rcl_take_request(
                 self.raw(),

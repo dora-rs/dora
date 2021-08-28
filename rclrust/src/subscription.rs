@@ -64,11 +64,11 @@ impl RclSubscription {
         &self.r#impl
     }
 
-    fn take<T>(&self) -> Result<Arc<T::Raw>>
+    fn take<T>(&self) -> Result<T::Raw>
     where
         T: MessageT,
     {
-        let mut message = T::Raw::default();
+        let mut message = Default::default();
         unsafe {
             rcl_sys::rcl_take(
                 self.raw(),
@@ -80,7 +80,7 @@ impl RclSubscription {
             .with_context(|| "rcl_sys::rcl_take in RclSubscription::take")?;
         }
 
-        Ok(Arc::new(message))
+        Ok(message)
     }
 
     fn topic_name(&self) -> String {
@@ -226,7 +226,7 @@ where
 
     fn invoke(&mut self) -> Result<()> {
         if let Some(ref mut tx) = self.tx {
-            match tx.try_send(WorkerMessage::Message(self.handle.take::<T>()?)) {
+            match tx.try_send(WorkerMessage::Message(Arc::new(self.handle.take::<T>()?))) {
                 Ok(_) => (),
                 Err(e) if e.is_disconnected() => self.stop(),
                 Err(_) => {
