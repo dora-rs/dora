@@ -20,6 +20,7 @@ impl RclInitOptions {
         Ok(Self(options))
     }
 
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_init_options_t {
         &self.0
     }
