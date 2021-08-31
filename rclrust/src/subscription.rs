@@ -59,18 +59,19 @@ impl RclSubscription {
         })
     }
 
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_subscription_t {
         &self.r#impl
     }
 
-    fn take<T>(&self) -> Result<Arc<T::Raw>>
+    fn take<T>(&self) -> Result<T::Raw>
     where
         T: MessageT,
     {
-        let mut message = T::Raw::default();
+        let mut message = Default::default();
         unsafe {
             rcl_sys::rcl_take(
-                &*self.r#impl,
+                self.raw(),
                 &mut message as *mut _ as *mut c_void,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -79,24 +80,24 @@ impl RclSubscription {
             .with_context(|| "rcl_sys::rcl_take in RclSubscription::take")?;
         }
 
-        Ok(Arc::new(message))
+        Ok(message)
     }
 
     fn topic_name(&self) -> String {
         unsafe {
-            let topic_name = rcl_sys::rcl_subscription_get_topic_name(&*self.r#impl);
+            let topic_name = rcl_sys::rcl_subscription_get_topic_name(self.raw());
             String::from_c_char(topic_name).unwrap()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_subscription_is_valid(&*self.r#impl) }
+        unsafe { rcl_sys::rcl_subscription_is_valid(self.raw()) }
     }
 
     fn publisher_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
-            rcl_sys::rcl_subscription_get_publisher_count(&*self.r#impl, &mut size)
+            rcl_sys::rcl_subscription_get_publisher_count(self.raw(), &mut size)
                 .to_result()
                 .with_context(|| {
                     "rcl_sys::rcl_subscription_get_publisher_count in RclSubscription::publisher_count"
@@ -225,7 +226,7 @@ where
 
     fn invoke(&mut self) -> Result<()> {
         if let Some(ref mut tx) = self.tx {
-            match tx.try_send(WorkerMessage::Message(self.handle.take::<T>()?)) {
+            match tx.try_send(WorkerMessage::Message(Arc::new(self.handle.take::<T>()?))) {
                 Ok(_) => (),
                 Err(e) if e.is_disconnected() => self.stop(),
                 Err(_) => {

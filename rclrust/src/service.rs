@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures::channel::mpsc;
-use rclrust_msg::_core::{MessageT, ServiceT};
+use rclrust_msg::_core::{MessageT, ServiceRequestRaw, ServiceT};
 
 use crate::{
     error::{RclRustError, ToRclRustResult},
@@ -22,7 +22,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct RclService {
+pub(crate) struct RclService {
     r#impl: Box<rcl_sys::rcl_service_t>,
     node: Arc<Mutex<RclNode>>,
 }
@@ -57,21 +57,20 @@ impl RclService {
         })
     }
 
+    #[inline]
     pub const fn raw(&self) -> &rcl_sys::rcl_service_t {
         &self.r#impl
     }
 
-    fn take_request<Srv>(
-        &self,
-    ) -> Result<(rcl_sys::rmw_request_id_t, <Srv::Request as MessageT>::Raw)>
+    fn take_request<Srv>(&self) -> Result<(rcl_sys::rmw_request_id_t, ServiceRequestRaw<Srv>)>
     where
         Srv: ServiceT,
     {
         let mut request_header = MaybeUninit::uninit();
-        let mut request = <Srv::Request as MessageT>::Raw::default();
+        let mut request = Default::default();
         unsafe {
             rcl_sys::rcl_take_request(
-                &*self.r#impl,
+                self.raw(),
                 request_header.as_mut_ptr(),
                 &mut request as *mut _ as *mut c_void,
             )
@@ -92,7 +91,7 @@ impl RclService {
     {
         unsafe {
             rcl_sys::rcl_send_response(
-                &*self.r#impl,
+                self.raw(),
                 response_header,
                 &response.to_raw_ref() as *const _ as *mut c_void,
             )
@@ -103,13 +102,13 @@ impl RclService {
 
     fn service_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_service_get_service_name(&*self.r#impl);
+            let name = rcl_sys::rcl_service_get_service_name(self.raw());
             String::from_c_char(name).unwrap()
         }
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_service_is_valid(&*self.r#impl) }
+        unsafe { rcl_sys::rcl_service_is_valid(self.raw()) }
     }
 }
 

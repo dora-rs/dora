@@ -3,6 +3,8 @@
 <img src="https://user-images.githubusercontent.com/25898373/131146249-36f349ba-ce33-462d-89f8-40bfa1a9899f.png" width="200px" alt="rclrust's logo"/>
 
 [![rclrust](https://img.shields.io/crates/v/rclrust.svg)](https://crates.io/crates/rclrust)
+[![dependency status](https://deps.rs/repo/github/rclrust/rclrust/status.svg)](https://deps.rs/repo/github/rclrust/rclrust)
+[![Rust 1.53](https://img.shields.io/badge/rust-1.53+-blue.svg)](https://blog.rust-lang.org/2021/06/17/Rust-1.53.0.html)
 [![Apache-2.0](https://img.shields.io/github/license/rclrust/rclrust)](https://github.com/rclrust/rclrust/blob/main/LICENSE)
 
 <table>
@@ -99,6 +101,7 @@ For more examples, see https://github.com/rclrust/rclrust/tree/main/rclrust/exam
 ## Notice
 
 The icon of RclRust was created by combinating and modifing the following materials.
+
 - [ros.svg](https://github.com/ros-infrastructure/artwork/blob/master/orgunits/ros.svg) © ROS (Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/))
 - [Gear-icon.png](https://commons.wikimedia.org/wiki/File:Gear-icon.png) (Licensed under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/deed.en))
 

@@ -135,10 +135,10 @@ pub enum RclRustError {
 
     #[error("Runtime Error: {0}")]
     RuntimeError(&'static str),
-    #[error("Service is canceled.")]
-    ServiceIsCanceled,
     #[error("Internal message queue if full: {type_} {name}")]
     MessageQueueIsFull { type_: &'static str, name: String },
+    #[error("Out of range: {0}")]
+    OutOfRange(String),
 
     // Parameter
     #[error(r#"Parameter "{name}" cannot be set because it was not declared."#)]

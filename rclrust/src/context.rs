@@ -60,18 +60,24 @@ impl RclContext {
         }
     }
 
+    #[inline]
+    const fn raw(&self) -> &rcl_sys::rcl_context_t {
+        &self.0
+    }
+
+    #[inline]
     pub fn raw_mut(&mut self) -> &mut rcl_sys::rcl_context_t {
-        self.0.as_mut()
+        &mut self.0
     }
 
     pub(crate) fn is_valid(&mut self) -> bool {
-        unsafe { rcl_sys::rcl_context_is_valid(self.0.as_mut()) }
+        unsafe { rcl_sys::rcl_context_is_valid(self.raw_mut()) }
     }
 
     fn shutdown(&mut self) -> Result<()> {
         if self.is_valid() {
             unsafe {
-                rcl_sys::rcl_shutdown(self.0.as_mut())
+                rcl_sys::rcl_shutdown(self.raw_mut())
                     .to_result()
                     .with_context(|| "rcl_sys::rcl_shutdown in RclContext::shutdown")?
             }
@@ -80,7 +86,7 @@ impl RclContext {
     }
 
     pub(crate) const fn global_arguments(&self) -> &rcl_sys::rcl_arguments_t {
-        &self.0.global_arguments
+        &self.raw().global_arguments
     }
 }
 
@@ -93,7 +99,7 @@ impl Drop for RclContext {
                 e
             )
         }
-        if let Err(e) = unsafe { rcl_sys::rcl_context_fini(self.0.as_mut()).to_result() } {
+        if let Err(e) = unsafe { rcl_sys::rcl_context_fini(self.raw_mut()).to_result() } {
             rclrust_error!(
                 Logger::new("rclrust"),
                 "Failed to clean up rcl context handle: {}",

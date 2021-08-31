@@ -67,48 +67,50 @@ impl RclNode {
         })
     }
 
+    #[inline]
     pub(crate) const fn raw(&self) -> &rcl_sys::rcl_node_t {
         &self.r#impl
     }
 
-    pub(crate) unsafe fn raw_mut(&mut self) -> &mut rcl_sys::rcl_node_t {
+    #[inline]
+    pub(crate) fn raw_mut(&mut self) -> &mut rcl_sys::rcl_node_t {
         &mut self.r#impl
     }
 
     fn is_valid(&self) -> bool {
-        unsafe { rcl_sys::rcl_node_is_valid(&*self.r#impl) }
+        unsafe { rcl_sys::rcl_node_is_valid(self.raw()) }
     }
 
     fn name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_node_get_name(&*self.r#impl);
+            let name = rcl_sys::rcl_node_get_name(self.raw());
             String::from_c_char(name).unwrap()
         }
     }
 
     fn namespace(&self) -> String {
         unsafe {
-            let namespace = rcl_sys::rcl_node_get_namespace(&*self.r#impl);
+            let namespace = rcl_sys::rcl_node_get_namespace(self.raw());
             String::from_c_char(namespace).unwrap()
         }
     }
 
     pub(crate) fn fully_qualified_name(&self) -> String {
         unsafe {
-            let name = rcl_sys::rcl_node_get_fully_qualified_name(&*self.r#impl);
+            let name = rcl_sys::rcl_node_get_fully_qualified_name(self.raw());
             String::from_c_char(name).unwrap()
         }
     }
 
     fn logger_name(&self) -> String {
         unsafe {
-            let logger_name = rcl_sys::rcl_node_get_logger_name(&*self.r#impl);
+            let logger_name = rcl_sys::rcl_node_get_logger_name(self.raw());
             String::from_c_char(logger_name).unwrap()
         }
     }
 
     pub fn get_options(&self) -> Option<&rcl_sys::rcl_node_options_t> {
-        unsafe { rcl_sys::rcl_node_get_options(&*self.r#impl).as_ref() }
+        unsafe { rcl_sys::rcl_node_get_options(self.raw()).as_ref() }
     }
 
     pub fn use_global_arguments(&self) -> Option<bool> {
