@@ -1,0 +1,2 @@
+ignore-not-existing: true
+output-path: ./lcov.info
