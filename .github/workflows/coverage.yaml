@@ -35,7 +35,7 @@ jobs:
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           cargo test -p rclrust-msg -p rclrust-msg-gen --no-fail-fast
-          cargo test -p rclrust --no-fail-fast -- --test-threads 1
+          cargo test -p rclrust --features ${{ matrix.ros_distro }} --no-fail-fast -- --test-threads 1
         env:
           CARGO_INCREMENTAL: 0
           RUSTFLAGS: -Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests

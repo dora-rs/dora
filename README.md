@@ -12,23 +12,49 @@
   <thead>
     <tr>
       <th>Target</th>
+      <th>OS</th>
+      <th>EOL</th>
       <th>CI Status</th>
       <th>Document</th>
+      <th>Remarks</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td>Foxy (Ubuntu 20.04)</td>
-      <td>
-        <a href="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml" alt="Foxy CI status">
-          <img src="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml/badge.svg?branch=main"/>
-        </a>
-      </td>
-      <td>
-        <a href="https://rclrust.github.io/rclrust/foxy/main/rclrust/index.html" alt="Foxy document">
-          <img src="https://github.com/rclrust/rclrust/actions/workflows/doc.yaml/badge.svg"/>
-        </a>
-      </td>
+      <td>Foxy</td>
+      <td>Ubuntu 20.04</td>
+      <td>May 2023</td>
+      <td><a href="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml" alt="Foxy CI status">
+        <img src="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml/badge.svg?branch=main"/>
+      </a></td>
+      <td><a href="https://rclrust.github.io/rclrust/foxy/main/rclrust/index.html" alt="Foxy document">
+        <img src="https://github.com/rclrust/rclrust/actions/workflows/doc.yaml/badge.svg"/>
+      </a></td>
+      <td>-</td>
+    </tr>
+    <tr>
+      <td>Galactic</td>
+      <td>Ubuntu 20.04</td>
+      <td>Nov 2022</td>
+      <td><a href="https://github.com/rclrust/rclrust/actions/workflows/galactic.yaml" alt="Galactic CI status">
+        <img src="https://github.com/rclrust/rclrust/actions/workflows/galactic.yaml/badge.svg?branch=main"/>
+      </a></td>
+      <td><a href="https://rclrust.github.io/rclrust/galactic/main/rclrust/index.html" alt="Galactic document">
+        <img src="https://github.com/rclrust/rclrust/actions/workflows/doc.yaml/badge.svg"/>
+      </a></td>
+      <td>-</td>
+    </tr>
+    <tr>
+      <td>Rolling</td>
+      <td>Ubuntu 20.04</td>
+      <td>-</td>
+      <td><a href="https://github.com/rclrust/rclrust/actions/workflows/rolling.yaml" alt="Rolling CI status">
+        <img src="https://github.com/rclrust/rclrust/actions/workflows/rolling.yaml/badge.svg?branch=main"/>
+      </a></td>
+      <td><a href="https://rclrust.github.io/rclrust/rolling/main/rclrust/index.html" alt="Rolling document">
+        <img src="https://github.com/rclrust/rclrust/actions/workflows/doc.yaml/badge.svg"/>
+      </a></td>
+      <td>For development</td>
     </tr>
   </tbody>
 </table>
