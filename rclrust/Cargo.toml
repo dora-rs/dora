@@ -14,6 +14,13 @@ categories = ["science::robotics"]
 
 workspace = ".."
 
+[features]
+foxy = []
+galactic = ["galactic+"]
+rolling = ["galactic+"]
+# internal fatures
+"galactic+" = []
+
 [dependencies]
 anyhow = "1.0"
 derive-new = "0.5"

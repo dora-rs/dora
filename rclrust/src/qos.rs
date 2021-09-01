@@ -95,6 +95,7 @@ impl_from_trait_for_enum! {
     rcl_sys::rmw_qos_liveliness_policy_t,
     SystemDefault := RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT,
     Automatic := RMW_QOS_POLICY_LIVELINESS_AUTOMATIC,
+    #[allow(deprecated)]
     ManualByNode := RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_NODE,
     ManualByTopic := RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC,
     Unknown := RMW_QOS_POLICY_LIVELINESS_UNKNOWN,
@@ -109,6 +110,12 @@ pub enum PolicyKind {
     Reliability,
     History,
     Lifespan,
+    #[cfg(feature = "galactic+")]
+    Depth,
+    #[cfg(feature = "galactic+")]
+    LivelinessLeaseDuration,
+    #[cfg(feature = "galactic+")]
+    AvoidROSNamespaceConventions,
 }
 
 impl_from_trait_for_enum! {
@@ -121,6 +128,12 @@ impl_from_trait_for_enum! {
     Reliability := RMW_QOS_POLICY_RELIABILITY,
     History := RMW_QOS_POLICY_HISTORY,
     Lifespan := RMW_QOS_POLICY_LIFESPAN,
+    #[cfg(feature = "galactic+")]
+    Depth := RMW_QOS_POLICY_DEPTH,
+    #[cfg(feature = "galactic+")]
+    LivelinessLeaseDuration := RMW_QOS_POLICY_LIVELINESS_LEASE_DURATION,
+    #[cfg(feature = "galactic+")]
+    AvoidROSNamespaceConventions := RMW_QOS_POLICY_AVOID_ROS_NAMESPACE_CONVENTIONS,
 }
 
 impl From<PolicyKind> for String {
