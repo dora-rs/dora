@@ -1,4 +1,4 @@
-name: Foxy
+name: Galactic
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
 
         include:
           - os: ubuntu-20.04
-            ros_distro: foxy
+            ros_distro: galactic
 
     runs-on: ${{ matrix.os }}
 
