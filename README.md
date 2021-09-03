@@ -12,9 +12,8 @@
   <thead>
     <tr>
       <th>Target</th>
-      <th>OS</th>
       <th>EOL</th>
-      <th>CI Status</th>
+      <th>CI Status (Ubuntu)</th>
       <th>Document</th>
       <th>Remarks</th>
     </tr>
@@ -22,7 +21,6 @@
   <tbody>
     <tr>
       <td>Foxy</td>
-      <td>Ubuntu 20.04</td>
       <td>May 2023</td>
       <td><a href="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml" alt="Foxy CI status">
         <img src="https://github.com/rclrust/rclrust/actions/workflows/foxy.yaml/badge.svg?branch=main"/>
@@ -34,7 +32,6 @@
     </tr>
     <tr>
       <td>Galactic</td>
-      <td>Ubuntu 20.04</td>
       <td>Nov 2022</td>
       <td><a href="https://github.com/rclrust/rclrust/actions/workflows/galactic.yaml" alt="Galactic CI status">
         <img src="https://github.com/rclrust/rclrust/actions/workflows/galactic.yaml/badge.svg?branch=main"/>
@@ -46,7 +43,6 @@
     </tr>
     <tr>
       <td>Rolling</td>
-      <td>Ubuntu 20.04</td>
       <td>-</td>
       <td><a href="https://github.com/rclrust/rclrust/actions/workflows/rolling.yaml" alt="Rolling CI status">
         <img src="https://github.com/rclrust/rclrust/actions/workflows/rolling.yaml/badge.svg?branch=main"/>
@@ -59,17 +55,9 @@
   </tbody>
 </table>
 
-## Introduction
-
 This is yet another ROS2 client library written in Rust.  
 I have implemented it independent of the ament or colcon.
-By using proc-macro to generate message-type and service-type code, crate dependency resolution can now be completed in `cargo`. This was inspired by [rosrust](https://github.com/adnanademovic/rosrust).
-
-## Development environment
-
-- OS: Ubuntu 20.04
-- ROS2: Foxy
-- rustc: 1.54.0 (stable)
+By using proc-macro to generate message-type and service-type code, crate dependency resolution can now be completed in `cargo`. This was inspired by [rosrust](https://github.com/adnanademovic/rosrust)
 
 ## Supporting features
 
@@ -84,7 +72,6 @@ By using proc-macro to generate message-type and service-type code, crate depend
 
 - Parameter services/clients
 - Actions
-- Multithread
 - Lifecycles
 - More
   - Unit test
@@ -92,10 +79,20 @@ By using proc-macro to generate message-type and service-type code, crate depend
   - Examples (especially with ament)
 - etc...
 
-## I'm not going to support
+## Distribution
 
-- Components
-  - Is it necessary for Rust?
+RclRust is supporting multiple distributions by using [cargo features](https://doc.rust-lang.org/cargo/reference/features.html).
+If you use a fixed distribution, set `features` in `Cargo.toml` as follows.
+
+```toml
+rclrust = { git = "https://github.com/rclrust/rclrust.git", features = ["foxy"] }
+```
+
+Otherwise, do not set `features` in `Cargo.toml` and pass target features like `--featuers rclrust/${ROS_DISTRO}` on build.
+
+```toml
+rclrust = { git = "https://github.com/rclrust/rclrust.git" }
+```
 
 ## Examples
 
@@ -112,18 +109,18 @@ $ cargo build
 Publisher:
 
 ```sh-session
-$ cargo run --examples publisher
+$ cargo run --features <distro> --examples publisher
 ```
 
 Subscription
 
 ```sh-session
-$ cargo run --examples subscription
+$ cargo run --features <distro> --examples subscription
 ```
 
 ![out](https://user-images.githubusercontent.com/25898373/128894819-f925b31f-d814-4046-a328-68bfe854d03b.gif)
 
-For more examples, see https://github.com/rclrust/rclrust/tree/main/rclrust/examples.
+Other examples are [here](https://github.com/rclrust/rclrust/tree/main/rclrust/examples), and examples with colcon are [here](https://github.com/rclrust/rclrust-examples).
 
 ## Notice
 
