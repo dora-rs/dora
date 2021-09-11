@@ -11,6 +11,7 @@ pub mod clock;
 pub mod context;
 pub mod error;
 mod executor;
+mod graph;
 pub mod init_options;
 mod internal;
 pub mod log;

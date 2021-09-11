@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::CString,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
@@ -18,6 +19,7 @@ use crate::{
     context::{Context, RclContext},
     error::ToRclRustResult,
     executor::{Executor, ExecutorMessage},
+    graph::{RclNamesAndTypes, RclStringArray},
     internal::ffi::*,
     log::Logger,
     node_options::NodeOptions,
@@ -115,6 +117,59 @@ impl RclNode {
 
     pub fn use_global_arguments(&self) -> Option<bool> {
         self.get_options().map(|opt| opt.use_global_arguments)
+    }
+
+    fn get_topic_names_and_types(&self, no_mangle: bool) -> Result<HashMap<String, Vec<String>>> {
+        let mut names_and_types = RclNamesAndTypes::new();
+        unsafe {
+            rcl_sys::rcl_get_topic_names_and_types(
+                self.raw(),
+                &mut rcl_sys::rcutils_get_default_allocator(),
+                no_mangle,
+                names_and_types.raw_mut(),
+            )
+            .to_result()?;
+
+            Ok(names_and_types.to_hash_map())
+        }
+    }
+
+    fn get_service_names_and_types(&self) -> Result<HashMap<String, Vec<String>>> {
+        let mut names_and_types = RclNamesAndTypes::new();
+        unsafe {
+            rcl_sys::rcl_get_service_names_and_types(
+                self.raw(),
+                &mut rcl_sys::rcutils_get_default_allocator(),
+                names_and_types.raw_mut(),
+            )
+            .to_result()?;
+
+            Ok(names_and_types.to_hash_map())
+        }
+    }
+
+    fn get_node_names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .get_node_names_and_namespace()?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect())
+    }
+
+    fn get_node_names_and_namespace(&self) -> Result<Vec<(String, String)>> {
+        let mut node_names = RclStringArray::new();
+        let mut node_namespaces = RclStringArray::new();
+        unsafe {
+            rcl_sys::rcl_get_node_names(
+                self.raw(),
+                rcl_sys::rcutils_get_default_allocator(),
+                node_names.raw_mut(),
+                node_namespaces.raw_mut(),
+            )
+            .to_result()?;
+
+            Ok(node_names.iter().zip(node_namespaces.iter()).collect())
+        }
     }
 }
 
@@ -418,10 +473,33 @@ impl Node {
             }
         }
     }
+
+    pub fn get_topic_names_and_types(
+        &self,
+        no_mangle: bool,
+    ) -> Result<HashMap<String, Vec<String>>> {
+        self.handle
+            .lock()
+            .unwrap()
+            .get_topic_names_and_types(no_mangle)
+    }
+
+    pub fn get_service_names_and_types(&self) -> Result<HashMap<String, Vec<String>>> {
+        self.handle.lock().unwrap().get_service_names_and_types()
+    }
+
+    pub fn get_node_names(&self) -> Result<Vec<String>> {
+        self.handle.lock().unwrap().get_node_names()
+    }
+
+    pub fn get_node_names_and_namespace(&self) -> Result<Vec<(String, String)>> {
+        self.handle.lock().unwrap().get_node_names_and_namespace()
+    }
 }
 
 #[cfg(test)]
 mod test {
+
     use super::*;
 
     #[test]
@@ -478,6 +556,98 @@ mod test {
                 name: "param".into(),
                 value: ParameterValue::integer(42)
             }
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_topic_names_and_types() -> Result<()> {
+        use rclrust_msg::std_msgs::msg::Int32;
+
+        let ctx = crate::init()?;
+        let node1 = ctx.create_node("test_node")?;
+        let mut node2 = ctx.create_node_with_ns("another_node", "ns")?;
+
+        let _pub = node2.create_publisher::<Int32>("pub", &QoSProfile::default())?;
+        let _sub = node2.create_subscription::<Int32, _>("sub", |_| (), &QoSProfile::default())?;
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let hash_map = node1.get_topic_names_and_types(false)?;
+
+        assert!(hash_map.contains_key("/ns/pub"));
+        assert_eq!(hash_map["/ns/pub"], vec!["std_msgs/msg/Int32".to_string()]);
+        assert!(hash_map.contains_key("/ns/sub"));
+        assert_eq!(hash_map["/ns/sub"], vec!["std_msgs/msg/Int32".to_string()]);
+        assert!(hash_map.contains_key("/rosout"));
+        assert_eq!(
+            hash_map["/rosout"],
+            vec!["rcl_interfaces/msg/Log".to_string()]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_service_names_and_types() -> Result<()> {
+        use rclrust_msg::std_srvs::srv::{Empty, Empty_Response, SetBool};
+
+        let ctx = crate::init()?;
+        let node1 = ctx.create_node("test_node")?;
+        let mut node2 = ctx.create_node_with_ns("another_node", "ns")?;
+
+        let _service = node2.create_service::<Empty, _>(
+            "service",
+            |_| Empty_Response::default(),
+            &QoSProfile::default(),
+        )?;
+        let _client = node2.create_client::<SetBool>("client", &QoSProfile::default())?;
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let hash_map = node1.get_service_names_and_types()?;
+
+        println!("{:?}", hash_map);
+
+        assert!(hash_map.contains_key("/ns/service"));
+        assert_eq!(
+            hash_map["/ns/service"],
+            vec!["std_srvs/srv/Empty".to_string()]
+        );
+        assert!(hash_map.contains_key("/ns/client"));
+        assert_eq!(
+            hash_map["/ns/client"],
+            vec!["std_srvs/srv/SetBool".to_string()]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_node_names() -> Result<()> {
+        let ctx = crate::init()?;
+        let node1 = ctx.create_node_with_ns("test_node", "ns")?;
+        let _node2 = ctx.create_node("another_node")?;
+
+        assert_eq!(
+            node1.get_node_names()?,
+            vec!["test_node".to_string(), "another_node".to_string()]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_node_names_and_namespace() -> Result<()> {
+        let ctx = crate::init()?;
+        let node1 = ctx.create_node_with_ns("test_node", "ns")?;
+        let _node2 = ctx.create_node("another_node")?;
+
+        assert_eq!(
+            node1.get_node_names_and_namespace()?,
+            vec![
+                ("test_node".to_string(), "/ns".to_string()),
+                ("another_node".to_string(), "/".to_string())
+            ]
         );
 
         Ok(())
