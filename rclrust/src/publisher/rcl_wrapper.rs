@@ -1,6 +1,29 @@
+//! Wrapper for rcl/publsiher.h
+//!
+//! <https://docs.ros2.org/foxy/api/rcl/publisher_8h_source.html>
+//!
+//! - [x] `rcl_get_zero_initialized_publisher`
+//! - [x] `rcl_publisher_init`
+//! - [x] `rcl_publisher_fini`
+//! - [x] `rcl_publisher_get_default_options`
+//! - [ ] `rcl_borrow_loaned_message`
+//! - [ ] `rcl_return_loaned_message_from_publisher`
+//! - [x] `rcl_publish`
+//! - [ ] `rcl_publish_serialized_message`
+//! - [ ] `rcl_publish_loaned_message`
+//! - [ ] `rcl_publisher_assert_liveliness`
+//! - [x] `rcl_publisher_get_topic_name`
+//! - [ ] `rcl_publisher_get_options`
+//! - [ ] `rcl_publisher_get_rmw_handle`
+//! - [ ] `rcl_publisher_get_context`
+//! - [x] `rcl_publisher_is_valid`
+//! - [ ] `rcl_publisher_is_valid_except_context`
+//! - [x] `rcl_publisher_get_subscription_count`
+//! - [x] `rcl_publisher_get_actual_qos`
+//! - [ ] `rcl_publisher_can_loan_messages`
+
 use std::{
     ffi::CString,
-    marker::PhantomData,
     os::raw::c_void,
     sync::{Arc, Mutex},
 };
@@ -9,16 +32,12 @@ use anyhow::{Context, Result};
 use rclrust_msg::_core::MessageT;
 
 use crate::{
-    error::ToRclRustResult,
-    internal::ffi::*,
-    log::Logger,
-    node::{Node, RclNode},
-    qos::QoSProfile,
+    error::ToRclRustResult, internal::ffi::*, log::Logger, node::RclNode, qos::QoSProfile,
     rclrust_error,
 };
 
 #[derive(Debug)]
-pub(crate) struct RclPublisher {
+pub(super) struct RclPublisher {
     r#impl: Box<rcl_sys::rcl_publisher_t>,
     node: Arc<Mutex<RclNode>>,
 }
@@ -27,7 +46,7 @@ unsafe impl Send for RclPublisher {}
 unsafe impl Sync for RclPublisher {}
 
 impl RclPublisher {
-    fn new<T>(node: Arc<Mutex<RclNode>>, topic_name: &str, qos: &QoSProfile) -> Result<Self>
+    pub fn new<T>(node: Arc<Mutex<RclNode>>, topic_name: &str, qos: &QoSProfile) -> Result<Self>
     where
         T: MessageT,
     {
@@ -59,7 +78,7 @@ impl RclPublisher {
         &self.r#impl
     }
 
-    fn publish<T>(&self, message: &T) -> Result<()>
+    pub fn publish<T>(&self, message: &T) -> Result<()>
     where
         T: MessageT,
     {
@@ -76,18 +95,18 @@ impl RclPublisher {
         Ok(())
     }
 
-    fn topic_name(&self) -> String {
+    pub fn topic_name(&self) -> Option<String> {
         unsafe {
             let name = rcl_sys::rcl_publisher_get_topic_name(self.raw());
-            String::from_c_char(name).unwrap()
+            String::from_c_char(name)
         }
     }
 
-    fn is_valid(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         unsafe { rcl_sys::rcl_publisher_is_valid(self.raw()) }
     }
 
-    fn subscription_count(&self) -> Result<usize> {
+    pub fn subscription_count(&self) -> Result<usize> {
         let mut size = 0;
         unsafe {
             rcl_sys::rcl_publisher_get_subscription_count(self.raw(), &mut size)
@@ -97,6 +116,14 @@ impl RclPublisher {
                 })?;
         }
         Ok(size)
+    }
+
+    pub fn actual_qos(&self) -> Option<QoSProfile> {
+        unsafe {
+            rcl_sys::rcl_publisher_get_actual_qos(self.raw())
+                .as_ref()
+                .map(|qos| qos.into())
+        }
     }
 }
 
@@ -112,60 +139,5 @@ impl Drop for RclPublisher {
                 e
             )
         }
-    }
-}
-
-pub struct Publisher<T>
-where
-    T: MessageT,
-{
-    handle: RclPublisher,
-    _phantom: PhantomData<T>,
-}
-
-impl<T> Publisher<T>
-where
-    T: MessageT,
-{
-    pub(crate) fn new(node: &Node, topic_name: &str, qos: &QoSProfile) -> Result<Self> {
-        let handle = RclPublisher::new::<T>(node.clone_handle(), topic_name, qos)?;
-
-        Ok(Self {
-            handle,
-            _phantom: Default::default(),
-        })
-    }
-
-    pub fn publish(&self, message: &T) -> Result<()> {
-        self.handle.publish(message)
-    }
-
-    pub fn topic_name(&self) -> String {
-        self.handle.topic_name()
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.handle.is_valid()
-    }
-
-    pub fn subscription_count(&self) -> Result<usize> {
-        self.handle.subscription_count()
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn create_publisher() -> Result<()> {
-        use rclrust_msg::std_msgs::msg::String;
-
-        let ctx = crate::init()?;
-        let node = ctx.create_node("test_node")?;
-        let publisher = node.create_publisher::<String>("message", &QoSProfile::default())?;
-        assert!(publisher.is_valid());
-
-        Ok(())
     }
 }

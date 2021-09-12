@@ -324,7 +324,8 @@ impl Message {
 }
 
 /// Keywords in Rust
-/// https://doc.rust-lang.org/reference/keywords.html
+///
+/// <https://doc.rust-lang.org/reference/keywords.html>
 const RUST_KEYWORDS: [&str; 51] = [
     // Strict keywords
     "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",

@@ -6,7 +6,6 @@
 )]
 #![allow(clippy::missing_safety_doc)]
 
-pub mod client;
 pub mod clock;
 pub mod context;
 pub mod error;
@@ -18,10 +17,6 @@ pub mod log;
 pub mod node;
 pub mod node_options;
 pub mod parameter;
-pub mod publisher;
-pub mod qos;
-pub mod service;
-pub mod subscription;
 pub mod time;
 pub mod timer;
 pub mod utility;
@@ -35,3 +30,18 @@ pub use node_options::NodeOptions;
 pub use parameter::{Parameter, ParameterType, ParameterValue};
 pub use time::Time;
 pub use utility::*;
+
+pub(crate) mod client;
+pub use client::Client;
+
+pub(crate) mod publisher;
+pub use publisher::Publisher;
+
+pub mod qos;
+pub use qos::{DurabilityPolicy, HistoryPolicy, LivelinessPolicy, QoSProfile};
+
+pub(crate) mod service;
+pub use service::Service;
+
+pub(crate) mod subscription;
+pub use subscription::Subscription;
