@@ -180,6 +180,45 @@ mod test {
     }
 
     #[tokio::test]
+    async fn pub_sub() -> Result<()> {
+        use std::{
+            sync::{
+                atomic::{AtomicU32, Ordering},
+                Arc,
+            },
+            time::Duration,
+        };
+
+        let ctx = crate::init()?;
+        let pub_node = ctx.create_node(&random_name())?;
+        let mut sub_node = ctx.create_node(&random_name())?;
+
+        let topic_name = random_name();
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let _subscriber = {
+            let counter = Arc::clone(&counter);
+            sub_node.create_subscription(
+                &topic_name,
+                move |topic: Arc<Int32>| {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    assert_eq!(topic.data, 42);
+                    println!("called");
+                },
+                &QoSProfile::default(),
+            )?
+        };
+
+        let publisher = pub_node.create_publisher::<Int32>(&topic_name, &QoSProfile::default())?;
+        publisher.publish(&Int32 { data: 42 })?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn subscription_topic_name() -> Result<()> {
         let ctx = crate::init()?;
         let mut node = ctx.create_node(&random_name())?;
