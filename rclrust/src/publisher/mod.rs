@@ -10,7 +10,7 @@ use crate::{node::Node, qos::QoSProfile};
 mod rcl_wrapper;
 use rcl_wrapper::RclPublisher;
 
-/// Publisher struct
+/// Publisher
 pub struct Publisher<T>
 where
     T: MessageT,
