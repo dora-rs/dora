@@ -6,7 +6,6 @@
 )]
 #![allow(clippy::missing_safety_doc)]
 
-pub mod client;
 pub mod clock;
 pub mod context;
 pub mod error;
@@ -31,6 +30,9 @@ pub use node_options::NodeOptions;
 pub use parameter::{Parameter, ParameterType, ParameterValue};
 pub use time::Time;
 pub use utility::*;
+
+pub(crate) mod client;
+pub use client::Client;
 
 pub(crate) mod publisher;
 pub use publisher::Publisher;
