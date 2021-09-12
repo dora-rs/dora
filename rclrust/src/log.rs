@@ -286,6 +286,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
     fn empty_logger_is_enable_for() -> Result<()> {
         let _guard = TEST_MUTEX.lock().unwrap();
 
