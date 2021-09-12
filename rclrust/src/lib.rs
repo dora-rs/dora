@@ -18,8 +18,6 @@ pub mod log;
 pub mod node;
 pub mod node_options;
 pub mod parameter;
-pub mod publisher;
-pub mod qos;
 pub mod service;
 pub mod subscription;
 pub mod time;
@@ -35,3 +33,9 @@ pub use node_options::NodeOptions;
 pub use parameter::{Parameter, ParameterType, ParameterValue};
 pub use time::Time;
 pub use utility::*;
+
+pub(crate) mod publisher;
+pub use publisher::Publisher;
+
+pub mod qos;
+pub use qos::{DurabilityPolicy, HistoryPolicy, LivelinessPolicy, QoSProfile};
