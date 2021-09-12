@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  check:
     strategy:
       fail-fast: false
 
@@ -22,8 +22,6 @@ jobs:
 
         ros:
           - { distro: foxy, os: ubuntu-20.04 }
-          - { distro: galactic, os: ubuntu-20.04 }
-          - { distro: rolling, os: ubuntu-20.04 }
 
     runs-on: ${{ matrix.ros.os }}
 
@@ -42,24 +40,59 @@ jobs:
         with:
           required-ros-distributions: ${{ matrix.ros.distro }}
 
-      - name: Install DDS
-        run: |
-          sudo apt install -y \
-            ros-${{ matrix.ros.distro }}-rmw-fastrtps-cpp \
-            ros-${{ matrix.ros.distro }}-rmw-cyclonedds-cpp
-
       - name: Run cargo check
         run: |
           source /opt/ros/${{ matrix.ros.distro }}/setup.bash
           cargo check --features $ROS_DISTRO
+
+  test:
+    strategy:
+      fail-fast: false
+
+      matrix:
+        ros:
+          - { distro: foxy, os: ubuntu-20.04 }
+          - { distro: galactic, os: ubuntu-20.04 }
+          - { distro: rolling, os: ubuntu-20.04 }
+
+    runs-on: ${{ matrix.ros.os }}
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Setup ROS environment
+        uses: ros-tooling/setup-ros@v0.2
+        with:
+          required-ros-distributions: ${{ matrix.ros.distro }}
 
       - name: Run cargo test
         run: |
           source /opt/ros/${{ matrix.ros.distro }}/setup.bash
           cargo test -p rclrust-msg -p rclrust-msg-gen
           cargo test -p rclrust --features $ROS_DISTRO -- --test-threads 1
-          RMW_IMPLEMENTATION=rmw_fastrtps_cpp cargo test -p rclrust --features $ROS_DISTRO -- --test-threads 1
-          RMW_IMPLEMENTATION=rmw_cyclonedds_cpp cargo test -p rclrust --features $ROS_DISTRO -- --test-threads 1
+
+      - name: Run cargo test (Fast DDS)
+        run: |
+          sudo apt install -y ros-${{ matrix.ros.distro }}-rmw-fastrtps-cpp
+          source /opt/ros/${{ matrix.ros.distro }}/setup.bash
+          cargo test -p rclrust --features $ROS_DISTRO --lib -- --test-threads 1
+        env:
+          RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+
+      - name: Run cargo test (Cyclone DDS)
+        run: |
+          sudo apt install -y ros-${{ matrix.ros.distro }}-rmw-cyclonedds-cpp
+          source /opt/ros/${{ matrix.ros.distro }}/setup.bash
+          cargo test -p rclrust --features $ROS_DISTRO --lib -- --test-threads 1
+        env:
+          RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
 
   format:
     strategy:

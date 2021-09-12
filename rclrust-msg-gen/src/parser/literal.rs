@@ -248,10 +248,10 @@ mod test {
 
     #[test]
     fn parse_bool_literal() -> Result<()> {
-        assert_eq!(bool_literal("true")?.1, true);
-        assert_eq!(bool_literal("false")?.1, false);
-        assert_eq!(bool_literal("1")?.1, true);
-        assert_eq!(bool_literal("0")?.1, false);
+        assert!(bool_literal("true")?.1);
+        assert!(!bool_literal("false")?.1);
+        assert!(bool_literal("1")?.1);
+        assert!(!bool_literal("0")?.1);
         Ok(())
     }
 

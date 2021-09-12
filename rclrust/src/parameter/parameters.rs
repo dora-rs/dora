@@ -300,7 +300,7 @@ mod test {
     #[test]
     fn read_overrided_value() -> Result<()> {
         let mut parameter_overrides = HashMap::new();
-        parameter_overrides.insert(PARAM_NAME.into(), ParameterValue::double(3.14));
+        parameter_overrides.insert(PARAM_NAME.into(), ParameterValue::double(32.3));
         let parameters = Parameters {
             parameter_overrides,
             ..Default::default()
@@ -316,7 +316,7 @@ mod test {
         assert!(parameters.has_parameter(PARAM_NAME));
         assert_eq!(
             parameters.get_parameter(PARAM_NAME),
-            Some(Parameter::double(PARAM_NAME, 3.14))
+            Some(Parameter::double(PARAM_NAME, 32.3))
         );
 
         Ok(())
@@ -325,7 +325,7 @@ mod test {
     #[test]
     fn set_parameter() -> Result<()> {
         let mut parameter_overrides = HashMap::new();
-        parameter_overrides.insert(PARAM_NAME.into(), ParameterValue::double(3.14));
+        parameter_overrides.insert(PARAM_NAME.into(), ParameterValue::double(1.0));
         let parameters = Parameters {
             parameter_overrides,
             ..Default::default()
