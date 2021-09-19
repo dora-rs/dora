@@ -30,11 +30,21 @@ extern "C" {
     pub fn rcl_context_fini(context: *mut rcl_context_t) -> rcl_ret_t;
 
     /// Return the init options used during initialization for this context.
+    #[cfg(feature = "foxy")]
     pub fn rcl_context_get_init_options(context: *mut rcl_context_t) -> *const rcl_init_options_t;
+    #[cfg(feature = "galactic+")]
+    pub fn rcl_context_get_init_options(context: *const rcl_context_t)
+        -> *const rcl_init_options_t;
 
     /// Returns an unsigned integer that is unique to the given context, or `0` if invalid.
+    #[cfg(feature = "foxy")]
     pub fn rcl_context_get_instance_id(context: *mut rcl_context_t) -> rcl_context_instance_id_t;
+    #[cfg(feature = "galactic+")]
+    pub fn rcl_context_get_instance_id(context: *const rcl_context_t) -> rcl_context_instance_id_t;
 
     /// Return `true` if the given context is currently valid, otherwise `false`.
+    #[cfg(feature = "foxy")]
     pub fn rcl_context_is_valid(context: *mut rcl_context_t) -> bool;
+    #[cfg(feature = "galactic+")]
+    pub fn rcl_context_is_valid(context: *const rcl_context_t) -> bool;
 }

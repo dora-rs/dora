@@ -4,6 +4,7 @@ use std::os::raw::c_void;
 
 use crate::*;
 
+/// Enumeration of all of the publisher events that may fire.
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum rcl_publisher_event_type_t {
@@ -12,12 +13,15 @@ pub enum rcl_publisher_event_type_t {
     RCL_PUBLISHER_OFFERED_INCOMPATIBLE_QOS = 2,
 }
 
+/// Enumeration of all of the subscription events that may fire.
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum rcl_subscription_event_type_t {
     RCL_SUBSCRIPTION_REQUESTED_DEADLINE_MISSED = 0,
     RCL_SUBSCRIPTION_LIVELINESS_CHANGED = 1,
     RCL_SUBSCRIPTION_REQUESTED_INCOMPATIBLE_QOS = 2,
+    #[cfg(feature = "galactic+")]
+    RCL_SUBSCRIPTION_MESSAGE_LOST = 3,
 }
 
 /// Internal rcl implementation struct.
