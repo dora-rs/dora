@@ -20,6 +20,7 @@ pub(super) enum ExecutorMessage {
     Timer(TimerInvoker),
     Client(Box<dyn ClientInvokerBase + Send>),
     Service(Box<dyn ServiceInvokerBase + Send>),
+    Terminate,
 }
 
 #[derive(new)]
@@ -47,6 +48,7 @@ impl Executor {
                     Ok(Some(ExecutorMessage::Timer(v))) => self.timers.push(v),
                     Ok(Some(ExecutorMessage::Client(v))) => self.clients.push(v),
                     Ok(Some(ExecutorMessage::Service(v))) => self.services.push(v),
+                    Ok(Some(ExecutorMessage::Terminate)) => return Ok(()),
                     Ok(None) => return Ok(()),
                     Err(_) => break,
                 }
