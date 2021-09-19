@@ -218,9 +218,7 @@ impl Node {
 
             thread::spawn(move || {
                 let mut executor = Executor::new(context, rx);
-                loop {
-                    executor.spin()?
-                }
+                executor.spin()
             })
         };
 
@@ -494,6 +492,17 @@ impl Node {
 
     pub fn get_node_names_and_namespace(&self) -> Result<Vec<(String, String)>> {
         self.handle.lock().unwrap().get_node_names_and_namespace()
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        self.tx
+            .try_send(ExecutorMessage::Terminate)
+            .expect("try_send should succeed");
+        if let Some(thread) = self.wait_thread.take() {
+            thread.join().unwrap().unwrap();
+        }
     }
 }
 
