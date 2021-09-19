@@ -1,5 +1,5 @@
 use std::{
-    convert::{TryFrom, TryInto},
+    convert::TryInto,
     ffi::CString,
     os::raw::{c_char, c_int},
 };
@@ -7,56 +7,9 @@ use std::{
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use parking_lot::ReentrantMutex;
+pub use rcl_sys::RcutilsLogSeverity as LogSeverity;
 
-use crate::{
-    error::{RclRustError, ToRclRustResult},
-    impl_from_trait_for_enum,
-};
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LogSeverity {
-    Unset,
-    Debug,
-    Info,
-    Warn,
-    Error,
-    Fatal,
-}
-
-impl_from_trait_for_enum! {
-    LogSeverity,
-    rcl_sys::RCUTILS_LOG_SEVERITY,
-    Unset := RCUTILS_LOG_SEVERITY_UNSET,
-    Debug := RCUTILS_LOG_SEVERITY_DEBUG,
-    Info := RCUTILS_LOG_SEVERITY_INFO,
-    Warn := RCUTILS_LOG_SEVERITY_WARN,
-    Error := RCUTILS_LOG_SEVERITY_ERROR,
-    Fatal := RCUTILS_LOG_SEVERITY_FATAL,
-}
-
-impl TryFrom<c_int> for LogSeverity {
-    type Error = anyhow::Error;
-
-    fn try_from(from: c_int) -> Result<Self> {
-        use rcl_sys::RCUTILS_LOG_SEVERITY;
-
-        if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_UNSET as u32 as c_int {
-            Ok(Self::Unset)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_DEBUG as u32 as c_int {
-            Ok(Self::Debug)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_INFO as u32 as c_int {
-            Ok(Self::Info)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_WARN as u32 as c_int {
-            Ok(Self::Warn)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_ERROR as u32 as c_int {
-            Ok(Self::Error)
-        } else if from == RCUTILS_LOG_SEVERITY::RCUTILS_LOG_SEVERITY_FATAL as u32 as c_int {
-            Ok(Self::Fatal)
-        } else {
-            Err(RclRustError::RuntimeError("cast error: LogSeverity").into())
-        }
-    }
-}
+use crate::error::ToRclRustResult;
 
 #[no_mangle]
 pub(crate) unsafe extern "C" fn logging_output_handler(
@@ -157,7 +110,7 @@ impl Logger {
     }
 
     pub fn get_level(&self) -> Result<LogSeverity> {
-        LogSeverity::try_from(unsafe {
+        LogSeverity::try_from_int(unsafe {
             let _guard = LOGGER_MUTEX.lock();
             rcl_sys::rcutils_logging_get_logger_level(self.get_name_ptr())
         })
@@ -165,7 +118,7 @@ impl Logger {
     }
 
     pub fn get_effective_level(&self) -> Result<LogSeverity> {
-        LogSeverity::try_from(unsafe {
+        LogSeverity::try_from_int(unsafe {
             let _guard = LOGGER_MUTEX.lock();
             rcl_sys::rcutils_logging_get_logger_effective_level(self.get_name_ptr())
         })

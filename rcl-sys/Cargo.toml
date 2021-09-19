@@ -10,8 +10,9 @@ license = "Apache-2.0"
 
 workspace = ".."
 
-[build-dependencies]
-bindgen = "0.59"
-
-[lib]
-doctest = false
+[features]
+foxy = []
+galactic = ["galactic+"]
+rolling = ["galactic+"]
+# internal fatures
+"galactic+" = []
