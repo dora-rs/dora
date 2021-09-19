@@ -2,106 +2,13 @@
 
 use std::time::Duration;
 
-use crate::{impl_from_trait_for_enum, time::RclDurationT};
+#[doc(inline)]
+pub use rcl_sys::{
+    RMWQoSDurabilityPolicy as DurabilityPolicy, RMWQoSHistoryPolicy as HistoryPolicy,
+    RMWQoSLivelinessPolicy as LivelinessPolicy, RMWQoSReliabilityPolicy as ReliabilityPolicy,
+};
 
-/// QoS reliability enumerations
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReliabilityPolicy {
-    /// Implementation specific default
-    SystemDefault,
-    /// Guarantee that samples are delivered, may retry multiple times.
-    Reliable,
-    /// Attempt to deliver samples, but some may be lost if the network is not robust
-    BestEffort,
-    /// Reliability policy has not yet been set
-    Unknown,
-}
-
-impl_from_trait_for_enum! {
-    ReliabilityPolicy,
-    rcl_sys::rmw_qos_reliability_policy_t,
-    SystemDefault := RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT,
-    Reliable := RMW_QOS_POLICY_RELIABILITY_RELIABLE,
-    BestEffort := RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
-    Unknown := RMW_QOS_POLICY_RELIABILITY_UNKNOWN,
-}
-
-/// QoS history enumerations describing how samples endure
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryPolicy {
-    /// Implementation default for history policy
-    SystemDefault,
-    /// Only store up to a maximum number of samples, dropping oldest once max is exceeded
-    KeepLast,
-    /// Store all samples, subject to resource limits
-    KeepAll,
-    /// History policy has not yet been set
-    Unknown,
-}
-
-impl_from_trait_for_enum! {
-    HistoryPolicy,
-    rcl_sys::rmw_qos_history_policy_t,
-    SystemDefault := RMW_QOS_POLICY_HISTORY_SYSTEM_DEFAULT,
-    KeepLast := RMW_QOS_POLICY_HISTORY_KEEP_LAST,
-    KeepAll := RMW_QOS_POLICY_HISTORY_KEEP_ALL,
-    Unknown := RMW_QOS_POLICY_HISTORY_UNKNOWN,
-}
-
-/// QoS durability enumerations describing how samples persist
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DurabilityPolicy {
-    /// Implementation specific default
-    SystemDefault,
-    /// The rmw publisher is responsible for persisting samples for “late-joining” subscribers
-    TransientLocal,
-    /// Samples are not persistent
-    Volatile,
-    /// Durability policy has not yet been set
-    Unknown,
-}
-
-impl_from_trait_for_enum! {
-    DurabilityPolicy,
-    rcl_sys::rmw_qos_durability_policy_t,
-    SystemDefault := RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT,
-    TransientLocal := RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL,
-    Volatile := RMW_QOS_POLICY_DURABILITY_VOLATILE,
-    Unknown := RMW_QOS_POLICY_DURABILITY_UNKNOWN,
-}
-
-/// QoS liveliness enumerations that describe a publisher's reporting policy for its alive status.
-/// For a subscriber, these are its requirements for its topic's publishers.
-#[allow(deprecated)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LivelinessPolicy {
-    /// Implementation specific default
-    SystemDefault,
-    /// The signal that establishes a Topic is alive comes from the ROS rmw layer.
-    Automatic,
-    /// Explicitly asserting node liveliness is required in this case.
-    /// This option is deprecated, use RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC if your application
-    /// requires to assert liveliness manually.
-    #[deprecated]
-    ManualByNode,
-    /// The signal that establishes a Topic is alive is at the Topic level. Only publishing a message
-    /// on the Topic or an explicit signal from the application to assert liveliness on the Topic
-    /// will mark the Topic as being alive.
-    ManualByTopic,
-    /// Liveliness policy has not yet been set
-    Unknown,
-}
-
-impl_from_trait_for_enum! {
-    LivelinessPolicy,
-    rcl_sys::rmw_qos_liveliness_policy_t,
-    SystemDefault := RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT,
-    Automatic := RMW_QOS_POLICY_LIVELINESS_AUTOMATIC,
-    #[allow(deprecated)]
-    ManualByNode := RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_NODE,
-    ManualByTopic := RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC,
-    Unknown := RMW_QOS_POLICY_LIVELINESS_UNKNOWN,
-}
+use crate::time::RclDurationT;
 
 /// QoS profile
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +178,7 @@ impl QoSProfile {
     const fn common() -> Self {
         Self {
             history: HistoryPolicy::SystemDefault,
-            depth: rcl_sys::RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT as usize,
+            depth: rcl_sys::RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT,
             reliability: ReliabilityPolicy::SystemDefault,
             durability: DurabilityPolicy::SystemDefault,
             deadline: Duration::ZERO,
@@ -494,18 +401,16 @@ impl QoSProfile {
 impl From<&rcl_sys::rmw_qos_profile_t> for QoSProfile {
     fn from(qos: &rcl_sys::rmw_qos_profile_t) -> Self {
         let (history, depth) = match qos.history {
-            rcl_sys::rmw_qos_history_policy_t::RMW_QOS_POLICY_HISTORY_KEEP_ALL => {
-                (HistoryPolicy::KeepAll, 0)
-            }
+            HistoryPolicy::KeepAll => (HistoryPolicy::KeepAll, 0),
             _ => (HistoryPolicy::KeepLast, qos.depth),
         };
 
         Self {
             depth,
             history,
-            reliability: qos.reliability.into(),
-            durability: qos.durability.into(),
-            liveliness: qos.liveliness.into(),
+            reliability: qos.reliability,
+            durability: qos.durability,
+            liveliness: qos.liveliness,
             deadline: Duration::from_rmw_time_t(&qos.deadline),
             lifespan: Duration::from_rmw_time_t(&qos.lifespan),
             liveliness_lease_duration: Duration::from_rmw_time_t(&qos.liveliness_lease_duration),
@@ -517,13 +422,13 @@ impl From<&rcl_sys::rmw_qos_profile_t> for QoSProfile {
 impl From<&QoSProfile> for rcl_sys::rmw_qos_profile_t {
     fn from(qos: &QoSProfile) -> Self {
         Self {
-            history: qos.history.into(),
+            history: qos.history,
             depth: qos.depth,
-            reliability: qos.reliability.into(),
-            durability: qos.durability.into(),
+            reliability: qos.reliability,
+            durability: qos.durability,
             deadline: qos.deadline.to_rmw_time_t(),
             lifespan: qos.lifespan.to_rmw_time_t(),
-            liveliness: qos.liveliness.into(),
+            liveliness: qos.liveliness,
             liveliness_lease_duration: qos.liveliness_lease_duration.to_rmw_time_t(),
             avoid_ros_namespace_conventions: qos.avoid_ros_namespace_conventions,
         }
@@ -533,51 +438,6 @@ impl From<&QoSProfile> for rcl_sys::rmw_qos_profile_t {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn reliability_policy_equal() {
-        let equal_after_convert = |from: ReliabilityPolicy| {
-            assert_eq!(
-                from,
-                ReliabilityPolicy::from(rcl_sys::rmw_qos_reliability_policy_t::from(from))
-            );
-        };
-
-        equal_after_convert(ReliabilityPolicy::SystemDefault);
-        equal_after_convert(ReliabilityPolicy::Reliable);
-        equal_after_convert(ReliabilityPolicy::BestEffort);
-        equal_after_convert(ReliabilityPolicy::Unknown);
-    }
-
-    #[test]
-    fn history_policy_equal() {
-        let equal_after_convert = |from: HistoryPolicy| {
-            assert_eq!(
-                from,
-                HistoryPolicy::from(rcl_sys::rmw_qos_history_policy_t::from(from))
-            );
-        };
-
-        equal_after_convert(HistoryPolicy::SystemDefault);
-        equal_after_convert(HistoryPolicy::KeepLast);
-        equal_after_convert(HistoryPolicy::KeepAll);
-        equal_after_convert(HistoryPolicy::Unknown);
-    }
-
-    #[test]
-    fn durability_policy_equal() {
-        let equal_after_convert = |from: DurabilityPolicy| {
-            assert_eq!(
-                from,
-                DurabilityPolicy::from(rcl_sys::rmw_qos_durability_policy_t::from(from))
-            );
-        };
-
-        equal_after_convert(DurabilityPolicy::SystemDefault);
-        equal_after_convert(DurabilityPolicy::TransientLocal);
-        equal_after_convert(DurabilityPolicy::Volatile);
-        equal_after_convert(DurabilityPolicy::Unknown);
-    }
 
     #[test]
     fn qos_profile_equal() {
