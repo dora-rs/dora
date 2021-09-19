@@ -6,6 +6,7 @@ use crate::*;
 #[repr(C)]
 #[derive(Debug)]
 pub struct rcl_node_options_t {
+    #[cfg(feature = "foxy")]
     /// If set, then this value overrides the ROS_DOMAIN_ID environment variable.
     pub domain_id: usize,
     /// Custom allocator used for internal allocations.
@@ -16,6 +17,9 @@ pub struct rcl_node_options_t {
     pub arguments: rcl_arguments_t,
     /// Flag to enable rosout for this node
     pub enable_rosout: bool,
+    #[cfg(feature = "galactic+")]
+    /// Middleware quality of service settings for /rosout.
+    pub rosout_qos: rmw_qos_profile_t,
 }
 
 extern "C" {

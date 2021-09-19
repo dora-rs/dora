@@ -20,12 +20,34 @@ pub enum rmw_endpoint_type_t {
     RMW_ENDPOINT_SUBSCRIPTION = 2,
 }
 
+#[cfg(feature = "galactic+")]
+#[repr(u32)]
+/// Unique network flow endpoints requirement enumeration
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub enum rmw_unique_network_flow_endpoints_requirement_t {
+    /// Unique network flow endpoints not required
+    RMW_UNIQUE_NETWORK_FLOW_ENDPOINTS_NOT_REQUIRED = 0,
+
+    /// Unique network flow endpoins strictly required.
+    /// Error if not provided by RMW implementation.
+    RMW_UNIQUE_NETWORK_FLOW_ENDPOINTS_STRICTLY_REQUIRED = 1,
+
+    /// Unique network flow endpoints optionally required.
+    /// No error if not provided RMW implementation.
+    RMW_UNIQUE_NETWORK_FLOW_ENDPOINTS_OPTIONALLY_REQUIRED = 2,
+
+    /// Unique network flow endpoints requirement decided by system.
+    RMW_UNIQUE_NETWORK_FLOW_ENDPOINTS_SYSTEM_DEFAULT = 3,
+}
+
 /// Options that can be used to configure the creation of a publisher in rmw.
 #[repr(C)]
 #[derive(Debug)]
 pub struct rmw_publisher_options_t {
     /// Used to pass rmw implementation specific resources during publisher creation.
     pub rmw_specific_publisher_payload: *mut c_void,
+    #[cfg(feature = "galactic+")]
+    pub require_unique_network_flow_endpoints: rmw_unique_network_flow_endpoints_requirement_t,
 }
 
 /// Options that can be used to configure the creation of a subscription in rmw.
