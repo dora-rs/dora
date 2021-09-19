@@ -15,9 +15,9 @@ categories = ["science::robotics"]
 workspace = ".."
 
 [features]
-foxy = []
-galactic = ["galactic+"]
-rolling = ["galactic+"]
+foxy = ["rcl-sys/foxy"]
+galactic = ["rcl-sys/galactic", "galactic+"]
+rolling = ["rcl-sys/rolling", "galactic+"]
 # internal fatures
 "galactic+" = []
 
