@@ -5,7 +5,7 @@ use futures::channel::mpsc;
 use rclrust_msg::_core::ServiceT;
 
 use super::{ChannelMessage, Client, RclClient};
-use crate::{error::RclRustError, internal::worker::WorkerMessage};
+use crate::{error::RclRustError, internal::worker::WorkerMessage, rclrust_debug, Logger};
 
 pub trait ClientInvokerBase: fmt::Debug {
     fn handle(&self) -> &RclClient;
@@ -55,7 +55,24 @@ where
 
     fn invoke(&mut self) -> Result<()> {
         if let Some(ref mut tx) = self.tx {
-            match tx.try_send(WorkerMessage::Message(self.handle.take_response::<Srv>()?)) {
+            let res = match self.handle.take_response::<Srv>() {
+                Ok(v) => v,
+                Err(e) => {
+                    return if let Some(RclRustError::RclClientTakeFailed(_)) =
+                        e.downcast_ref::<RclRustError>()
+                    {
+                        rclrust_debug!(
+                            Logger::new("rclrust"),
+                            "`rcl_wait()` indicate that response is ready, however which incorrect. I know this happens when I use Cyclone DDS."
+                        );
+                        Ok(())
+                    } else {
+                        Err(e)
+                    };
+                }
+            };
+
+            match tx.try_send(WorkerMessage::Message(res)) {
                 Ok(_) => (),
                 Err(e) if e.is_disconnected() => self.stop(),
                 Err(_) => {
