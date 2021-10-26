@@ -1,7 +1,7 @@
 [package]
 name = "rclrust"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
 description = "ROS2 client written in Rust"
