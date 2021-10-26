@@ -1,7 +1,7 @@
 [package]
 name = "rcl-sys"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 
 description = "The C API binding of the ROS client library (rcl)"

@@ -16,7 +16,7 @@ By using proc-macro to generate message-type and service-type code, crate depend
 
 ## Supporting Environments
 
-- Rust: 1.53+
+- Rust: 1.56+
 - ROS2:
   - Foxy ([doc](https://rclrust.github.io/rclrust/foxy/main/rclrust/index.html))
   - Galctic ([doc](https://rclrust.github.io/rclrust/galactic/main/rclrust/index.html))
