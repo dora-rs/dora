@@ -14,6 +14,14 @@ To make this project work, you will need to:
 pip install -r requirements.txt
 ```
 
+- Install Zenoh-Python from the current Git repository as the pip version might not be up to date:
+```bash
+pip uninstall eclipse-zenoh
+git clone git@github.com:eclipse-zenoh/zenoh-python.git
+cd zenoh-python
+python setup.py develop
+``` 
+
 > It's possible that cv2 might not have all its dependencies. You should try installing with conda with:
 
 ```bash
