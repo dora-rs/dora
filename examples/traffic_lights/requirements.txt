@@ -1,0 +1,3 @@
+tensorflow-gpu
+opencv-python
+eclipse-zenoh

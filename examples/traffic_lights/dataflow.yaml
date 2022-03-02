@@ -1,0 +1,26 @@
+source:
+  - metadata:
+      name: my-source-1
+    spec:
+      selector:
+        labels: my-source
+    # or IP
+        ip: 
+          - 192.0.0.1
+
+operator:
+  - metadata:
+      name: my-operator
+      labels: trafficlight
+    spec:
+      run: python operator.py
+      start: False
+      input:
+        selector:
+          labels: my-source
+      # env: 
+         # - STATE: ... 
+      selector:
+        - app: trafficlight
+
+
