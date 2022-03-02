@@ -1,0 +1,67 @@
+sinks:
+  - id: control
+    input: control_stream
+
+sources:
+  - id: Camera
+    output: camera_stream
+  - id: Localisation
+    output: pose_stream
+  - id: Route
+    output: route_stream
+  - id: LIDAR Sensor
+    output: point_cloud_stream
+  - id: MAP track
+    output: open_drive_stream
+  - id: Vehicle ID
+    output: vehicle_id_stream
+operators:
+  - id: PIDControlOperator
+    inputs:
+      - pose_stream
+      - waypoints_stream
+    outputs:
+      - control_stream
+  - id: PlanningOperator
+    inputs:
+      - pose_stream
+      - prediction_stream
+      - obstacles_stream
+      - lanes_stream
+      - route_stream
+      - open_drive_stream
+      - time_to_decision_stream
+    outputs:
+      - waypoints_stream
+  - id: DetectionOperator
+    inputs:
+      - camera_stream
+      - time_to_decision_stream
+    outputs:
+      - obstacles_stream
+  - id: R2P2PredictorOperator
+    inputs:
+      - point_cloud_stream
+      - tracking_stream
+      - time_to_decision_stream
+    outputs:
+      - prediction_stream
+  - id: Lanenet_detection
+    inputs: 
+      - camera_stream
+    outputs:
+      - lanes_stream
+  - id: PerfectTrackerOperator
+    inputs:
+      - vehicle_id_stream
+      - obstacles_stream
+      - pose_stream
+    outputs:
+      - tracking_stream
+  - id: TimeToDecisionOperator
+    inputs:
+      - pose_stream
+      - obstacles_stream
+    outputs:
+      - time_to_decision_stream
+    
