@@ -2,6 +2,7 @@ source:
   - metadata:
       name: my-source-1
     spec:
+      run: python source.py
       selector:
         labels: my-source
     # or IP
@@ -11,16 +12,25 @@ source:
 operator:
   - metadata:
       name: my-operator
-      labels: trafficlight
+      labels: traffic_light
     spec:
       run: python operator.py
       start: False
       input:
         selector:
           labels: my-source
+      output:
+        labels: traffic_light
       # env: 
          # - STATE: ... 
-      selector:
-        - app: trafficlight
 
-
+sink:
+  - metadata:
+      name: sink
+      labels: sink-visualisation
+    spec:
+      run: python sink.py
+      input:
+        selector:
+          labels: traffic_light
+      
