@@ -16,7 +16,6 @@ pip install -r requirements.txt
 
 - Install Zenoh-Python from the current Git repository as the pip version might not be up to date:
 ```bash
-pip uninstall eclipse-zenoh
 git clone git@github.com:eclipse-zenoh/zenoh-python.git
 cd zenoh-python
 python setup.py develop
