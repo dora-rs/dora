@@ -73,7 +73,7 @@ info = z.info()["info_pid"]
 
 def send_image(msg):
     z.put(LABELS + "/" + info, bytes(msg.raw_data))
-    time.sleep(1)
+    time.sleep(0.1)
 
 
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))

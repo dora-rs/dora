@@ -1,6 +1,8 @@
 import json
+import time
 
 import zenoh
+from zenoh import QueryTarget, Target, config, queryable
 
 ZENOH_HOST = ["tcp/192.168.1.15:7447"]
 config = zenoh.Config()
@@ -37,5 +39,21 @@ def register_sink(source):
             return result
 
         return z.subscribe(source + "/**", wrapper)
+
+    return decorator
+
+
+def fuse(src_left, src_right):
+    def decorator(function):
+        while True:
+            replies_left = z.get(
+                src_left, target=QueryTarget(queryable.ALL_KINDS, Target.All())
+            )
+            replies_right = z.get(
+                src_right,
+                target=QueryTarget(queryable.ALL_KINDS, Target.All()),
+            )
+
+            time.sleep(1)
 
     return decorator

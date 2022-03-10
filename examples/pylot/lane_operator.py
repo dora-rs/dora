@@ -22,6 +22,15 @@ LANE_NUMBER = os.environ["LANE_NUMBER"]
 tf.compat.v1.disable_eager_execution()
 
 
+def minmax_scale(input_arr):
+    min_val = np.min(input_arr)
+    max_val = np.max(input_arr)
+
+    output_arr = (input_arr - min_val) * 255.0 / (max_val - min_val)
+    output_arr = output_arr * (output_arr > 125)
+    return output_arr
+
+
 class LanePredictor:
     def __init__(self, weights):
         """Initializes a LanePredictor which is used to register a callback
@@ -80,8 +89,17 @@ class LanePredictor:
             instance_seg_result=instance_seg_image[0],
             source_image=image_vis,
         )
-        mask_image = postprocess_result["mask_image"]
-
+        for i in range(4):
+            if i == 1:
+                instance_seg_image[0][:, :, i] = minmax_scale(
+                    instance_seg_image[0][:, :, i]
+                )
+            else:
+                instance_seg_image[0][:, :, i] = 0
+        embedding_image = np.array(instance_seg_image[0], np.uint8)
+        resized_image = cv2.addWeighted(
+            embedding_image[:, :, :3], 0.3, resized_image, 1, 0
+        )
         return resized_image.tobytes()
 
 
@@ -92,7 +110,6 @@ lane_operator = LanePredictor(LANENET_MODEL_PATH)
 def detect_lane(state, change):
 
     value = bytes(change.value.decode())
-    print("recieved data")
     return lane_operator.process_images(value)
 
 
