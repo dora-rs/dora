@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=0.12,<0.13"]
+build-backend = "maturin"
+
+[project]
+name = "dora-rs"
+dependencies = [
+  "typing_extensions >= 4.0.0; python_version < '3.10'",
+]
+requires-python = ">=3.7"
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+disallow_untyped_defs = true
+warn_unused_ignores = true
+show_error_codes = true
+files = ["tests"]

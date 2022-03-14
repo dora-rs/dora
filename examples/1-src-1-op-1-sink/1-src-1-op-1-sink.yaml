@@ -1,0 +1,17 @@
+sinks:
+  - label: sink-1
+    run: python examples/1-src-1-op-1-sink/sink_plot.py
+    inputs: 
+      source: A
+sources:
+  - label: source-1
+    run: python examples/1-src-1-op-1-sink/source_image.py
+    outputs: 
+      target: B
+operators:
+  - label: op-1
+    run: python examples/1-src-1-op-1-sink/operator_copy.py
+    inputs:
+      source: A
+    outputs:
+      target: B

@@ -50,12 +50,11 @@ impl Descriptor {
 
         for source in &self.sources {
             for output in source.outputs.values().into_iter() {
-            let targets = expected_inputs.remove(output).unwrap_or_default();
-            let label = &source.label;
-            for target in targets {
-                flowchart.push_str(&format!("  {label} -- {output} --> {target}\n"));
-            }
-
+                let targets = expected_inputs.remove(output).unwrap_or_default();
+                let label = &source.label;
+                for target in targets {
+                    flowchart.push_str(&format!("  {label} -- {output} --> {target}\n"));
+                }
             }
         }
 
@@ -77,18 +76,62 @@ impl Descriptor {
 
         Ok(flowchart)
     }
+    pub fn print_commands(&self) -> eyre::Result<String> {
+        let mut commands = "# Commands to run\n".to_owned();
+        for source in &self.sources {
+            let run = &source.run;
+            let label = &source.label;
+
+            let mut env_variables = format!("LABEL={label} ");
+            for (key, value) in source.outputs.iter() {
+                env_variables.push_str(format!("{key}={value} ").as_str())
+            }
+
+            commands.push_str(&format!("{env_variables}{run}\n"));
+        }
+        for operator in &self.operators {
+            let run = &operator.run;
+            let label = &operator.label;
+
+            let mut env_variables = format!("LABEL={label} ");
+            for (key, value) in operator.outputs.iter() {
+                env_variables.push_str(format!("{key}={value} ").as_str())
+            }
+            for (key, value) in operator.inputs.iter() {
+                env_variables.push_str(format!("{key}={value} ").as_str())
+            }
+
+            commands.push_str(&format!("{env_variables}{run}\n"));
+        }
+        for sink in &self.sinks {
+            let run = &sink.run;
+            let label = &sink.label;
+
+            let mut env_variables = format!("LABEL={label} ");
+
+            for (key, value) in sink.inputs.iter() {
+                env_variables.push_str(format!("{key}={value} ").as_str())
+            }
+            commands.push_str(&format!("{env_variables}{run}\n"));
+        }
+        Ok(commands)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Source {
     label: String,
     outputs: BTreeMap<String, String>,
+    run: String,
+    env: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Sink {
     label: String,
     inputs: BTreeMap<String, String>,
+    run: String,
+    env: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -96,4 +139,6 @@ pub struct Operator {
     label: String,
     inputs: BTreeMap<String, String>,
     outputs: BTreeMap<String, String>,
+    run: String,
+    env: Option<BTreeMap<String, String>>,
 }

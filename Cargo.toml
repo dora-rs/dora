@@ -1,14 +1,2 @@
-[package]
-name = "dora-rs"
-version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [workspace]
-
-[dependencies]
-eyre = "0.6.7"
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.8.23"
-structopt = "0.3.26"
+members = ["dora-rs", "dora-py"]
