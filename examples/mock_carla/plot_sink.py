@@ -4,10 +4,9 @@ import time
 
 import matplotlib.pyplot as plt
 import numpy as np
-
 from dora import register_sink
 
-LABELS = os.environ["SINK"]
+LABELS = os.environ["NAME"]
 
 
 data = np.zeros((720, 1280, 3))
@@ -34,7 +33,7 @@ def detect_lane(state, change):
     global mutex
     global data
     mutex.acquire()
-    data = resized_image
+    data = resized_image  # [:, :, (2, 1, 0)]
     mutex.release()
 
 
