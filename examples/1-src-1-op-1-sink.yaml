@@ -1,13 +1,13 @@
 sinks:
-  - id: sink-1
+  - label: sink-1
     inputs: 
       source: A
 sources:
-  - id: source-1
+  - label: source-1
     outputs: 
       target: B
 operators:
-  - id: op-1
+  - label: op-1
     inputs:
       source: A
     outputs:

@@ -1,34 +1,36 @@
 sinks:
-  - id: sink-1
+  - label: sink-1
     inputs:
       input: A
-  - id: sink-2
+  - label: sink-2
     inputs:
-      input: B
+      input: B_bis
 sources:
-  - id: source-1
+  - label: source-1
     outputs: 
-      output: C
-  - id: source-2
+      output_0: C
+      output_1: C_bis
+  - label: source-2
     outputs:
       output: G
 operators:
-  - id: op-1
+  - label: op-1
     inputs:
      input_C: C
      input_E: E
      input_B: B
     outputs:
       output: A
-  - id: op-2
+  - label: op-2
     inputs:
      input_C: C
      input_F: F
     outputs:
       output: E
-  - id: op-3
+  - label: op-3
     inputs:
-      input_C: C
+      input_C: C_bis
       input_G: G
     outputs:
       output_B: B
+      output_A: B_bis

@@ -18,16 +18,16 @@ impl Descriptor {
     pub fn visualize_as_mermaid(&self) -> eyre::Result<String> {
         let mut flowchart = "flowchart TB\n".to_owned();
         for source in &self.sources {
-            let id = &source.id;
-            flowchart.push_str(&format!("  {id}[\\{id}/]\n"));
+            let label = &source.label;
+            flowchart.push_str(&format!("  {label}[\\{label}/]\n"));
         }
         for operator in &self.operators {
-            let id = &operator.id;
-            flowchart.push_str(&format!("  {id}\n"));
+            let label = &operator.label;
+            flowchart.push_str(&format!("  {label}\n"));
         }
         for sink in &self.sinks {
-            let id = &sink.id;
-            flowchart.push_str(&format!("  {id}[/{id}\\]\n"));
+            let label = &sink.label;
+            flowchart.push_str(&format!("  {label}[/{label}\\]\n"));
         }
 
         let mut expected_inputs: HashMap<_, BTreeSet<_>> = HashMap::new();
@@ -36,7 +36,7 @@ impl Descriptor {
                 expected_inputs
                     .entry(input.to_owned())
                     .or_default()
-                    .insert(&operator.id);
+                    .insert(&operator.label);
             }
         }
         for sink in &self.sinks {
@@ -44,27 +44,27 @@ impl Descriptor {
                 expected_inputs
                     .entry(input.to_owned())
                     .or_default()
-                    .insert(&sink.id);
+                    .insert(&sink.label);
             }
         }
 
         for source in &self.sources {
             for output in source.outputs.values().into_iter() {
             let targets = expected_inputs.remove(output).unwrap_or_default();
-            let id = &source.id;
+            let label = &source.label;
             for target in targets {
-                flowchart.push_str(&format!("  {id} -- {output} --> {target}\n"));
+                flowchart.push_str(&format!("  {label} -- {output} --> {target}\n"));
             }
 
             }
         }
 
         for operator in &self.operators {
-            let id = &operator.id;
+            let label = &operator.label;
             for output in operator.outputs.values().into_iter() {
                 let targets = expected_inputs.remove(output).unwrap_or_default();
                 for target in targets {
-                    flowchart.push_str(&format!("  {id} -- {output} --> {target}\n"));
+                    flowchart.push_str(&format!("  {label} -- {output} --> {target}\n"));
                 }
             }
         }
@@ -81,19 +81,19 @@ impl Descriptor {
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Source {
-    id: String,
+    label: String,
     outputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Sink {
-    id: String,
+    label: String,
     inputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Operator {
-    id: String,
+    label: String,
     inputs: BTreeMap<String, String>,
     outputs: BTreeMap<String, String>,
 }
