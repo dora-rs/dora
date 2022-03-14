@@ -1,0 +1,14 @@
+sinks:
+  - id: sink-1
+    inputs: 
+      source: A
+sources:
+  - id: source-1
+    outputs: 
+      target: B
+operators:
+  - id: op-1
+    inputs:
+      source: A
+    outputs:
+      target: B

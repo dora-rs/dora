@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    hash::Hash,
+};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Descriptor {
@@ -29,7 +32,7 @@ impl Descriptor {
 
         let mut expected_inputs: HashMap<_, BTreeSet<_>> = HashMap::new();
         for operator in &self.operators {
-            for input in &operator.inputs {
+            for input in operator.inputs.values().into_iter() {
                 expected_inputs
                     .entry(input.to_owned())
                     .or_default()
@@ -37,24 +40,28 @@ impl Descriptor {
             }
         }
         for sink in &self.sinks {
-            expected_inputs
-                .entry(sink.input.to_owned())
-                .or_default()
-                .insert(&sink.id);
+            for input in sink.inputs.values().into_iter() {
+                expected_inputs
+                    .entry(input.to_owned())
+                    .or_default()
+                    .insert(&sink.id);
+            }
         }
 
         for source in &self.sources {
-            let targets = expected_inputs.remove(&source.output).unwrap_or_default();
+            for output in source.outputs.values().into_iter() {
+            let targets = expected_inputs.remove(output).unwrap_or_default();
             let id = &source.id;
-            let output = &source.output;
             for target in targets {
                 flowchart.push_str(&format!("  {id} -- {output} --> {target}\n"));
+            }
+
             }
         }
 
         for operator in &self.operators {
             let id = &operator.id;
-            for output in &operator.outputs {
+            for output in operator.outputs.values().into_iter() {
                 let targets = expected_inputs.remove(output).unwrap_or_default();
                 for target in targets {
                     flowchart.push_str(&format!("  {id} -- {output} --> {target}\n"));
@@ -75,18 +82,18 @@ impl Descriptor {
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Source {
     id: String,
-    output: String,
+    outputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Sink {
     id: String,
-    input: String,
+    inputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Operator {
     id: String,
-    inputs: BTreeSet<String>,
-    outputs: BTreeSet<String>,
+    inputs: BTreeMap<String, String>,
+    outputs: BTreeMap<String, String>,
 }
