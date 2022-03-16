@@ -8,3 +8,8 @@ eyre = "0.6.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8.23"
 structopt = "0.3.26"
+async-std = { version = "1.10.0", default-features = false, features = [
+	"attributes",
+] }
+zenoh = { git="https://github.com/eclipse-zenoh/zenoh.git" }
+env_logger = "0.9.0"

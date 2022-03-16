@@ -7,6 +7,14 @@ edition = "2021"
 
 [dependencies]
 pyo3 = "0.16.1"
+pyo3-asyncio = { version = "0.16", features = ["async-std-runtime"] }
+zenoh = { git="https://github.com/eclipse-zenoh/zenoh.git" }
+env_logger = "0.9.0"
+pollster = "0.2.5"
+async-std = { version = "1.10.0", default-features = false, features = [
+	"attributes",
+] }
+futures = "0.3.12"
 
 [lib]
 name = "dora"

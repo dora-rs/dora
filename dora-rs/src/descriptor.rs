@@ -32,7 +32,7 @@ impl Descriptor {
 
         let mut expected_inputs: HashMap<_, BTreeSet<_>> = HashMap::new();
         for operator in &self.operators {
-            for input in operator.inputs.values().into_iter() {
+            for input in operator.inputs.values() {
                 expected_inputs
                     .entry(input.to_owned())
                     .or_default()
@@ -40,7 +40,7 @@ impl Descriptor {
             }
         }
         for sink in &self.sinks {
-            for input in sink.inputs.values().into_iter() {
+            for input in sink.inputs.values() {
                 expected_inputs
                     .entry(input.to_owned())
                     .or_default()
@@ -49,7 +49,7 @@ impl Descriptor {
         }
 
         for source in &self.sources {
-            for output in source.outputs.values().into_iter() {
+            for output in source.outputs.values() {
                 let targets = expected_inputs.remove(output).unwrap_or_default();
                 let label = &source.label;
                 for target in targets {
@@ -60,7 +60,7 @@ impl Descriptor {
 
         for operator in &self.operators {
             let label = &operator.label;
-            for output in operator.outputs.values().into_iter() {
+            for output in operator.outputs.values() {
                 let targets = expected_inputs.remove(output).unwrap_or_default();
                 for target in targets {
                     flowchart.push_str(&format!("  {label} -- {output} --> {target}\n"));
