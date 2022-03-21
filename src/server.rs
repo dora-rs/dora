@@ -1,5 +1,7 @@
 use futures::prelude::*;
 use pyo3::prelude::*;
+use std::collections::HashMap;
+use std::env;
 use zenoh::config::Config;
 use zenoh::net::protocol::io::SplitBuffer;
 
@@ -8,7 +10,10 @@ pub async fn start_server(file: &str, app: &str) -> eyre::Result<()> {
     env_logger::init();
     let config = Config::default();
     let session = zenoh::open(config).await.unwrap();
-    let mut subscriber = session.subscribe("a").await.unwrap();
+    let mut subscriber = session
+        .subscribe(env::var("SRC_LABELS").unwrap())
+        .await
+        .unwrap();
     let identity = initialize(file, app).await.unwrap();
 
     loop {
@@ -17,12 +22,17 @@ pub async fn start_server(file: &str, app: &str) -> eyre::Result<()> {
         println!("recieved data");
 
         let result = Python::with_gil(|py| {
-            let a = (binary.into_py(py),);
-            pyo3_asyncio::tokio::into_future(identity.call(py, a, None).unwrap().as_ref(py))
+            let args = (binary.into_py(py),);
+            pyo3_asyncio::tokio::into_future(identity.call(py, args, None).unwrap().as_ref(py))
         })
         .unwrap()
         .await
         .unwrap();
+
+        let outputs: HashMap<String, String> = Python::with_gil(|py| result.extract(py)).unwrap();
+        for (key, value) in outputs {
+            session.put(key, value).await.unwrap();
+        }
     }
 }
 
