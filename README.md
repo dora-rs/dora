@@ -14,3 +14,17 @@ The philosophy is to use async function as primary instance to:
 - Mitigate the risk of running undafe data mutations.
 - Managing several run at the same time with timeout / deadline capabilities
 - Using Tokio Spawn to avoid thread locks on CPU bound runs.
+
+## Getting started
+
+I have made a simple example that can be run with:
+```
+cargo run start-server app:return_1
+
+# Running this might required some shared library as:
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/miniconda3/lib
+export PYTHONPATH=$PYTHONPATH:$(pwd)
+```
+That is going to listen to the key_expr "a" and run the `return_1` function within the `app.py` python async.
+
+This is still very experimental.
