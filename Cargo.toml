@@ -5,10 +5,17 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[workspace]
-
 [dependencies]
 eyre = "0.6.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8.23"
 structopt = "0.3.26"
+async-std = { version = "1.10.0", default-features = false, features = [
+	"attributes",
+] }
+zenoh = { git="https://github.com/eclipse-zenoh/zenoh.git" }
+env_logger = "0.9.0"
+tokio = { version="1.17.0", features=["full"]}
+pyo3 = "0.16.1"
+pyo3-asyncio = { version = "0.16", features = ["tokio-runtime", "attributes"] }
+futures = "0.3.12"
