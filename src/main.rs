@@ -9,8 +9,6 @@ use structopt::StructOpt;
 enum Command {
     #[structopt(about = "Print Graph")]
     Graph { file: PathBuf },
-    #[structopt(about = "Print Runner")]
-    Runner { file: PathBuf },
     #[structopt(about = "Run Python server")]
     StartPython { server: String },
 }
@@ -36,20 +34,6 @@ async fn main() -> PyResult<()> {
                 "Paste the above output on https://mermaid.live/ or in a \
         ```mermaid code block on GitHub to display it."
             );
-        }
-        Command::Runner { file } => {
-            let descriptor_file = File::open(&file)
-                .context("failed to open given file")
-                .unwrap();
-
-            let descriptor: Descriptor = serde_yaml::from_reader(descriptor_file)
-                .context("failed to parse given descriptor")
-                .unwrap();
-            let commands = descriptor
-                .print_commands()
-                .context("Failed to generate commands.")
-                .unwrap();
-            println!("{commands}");
         }
         Command::StartPython { server } => {
             let mut server = server.split(":");
