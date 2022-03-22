@@ -1,6 +1,6 @@
 use dora_rs::{descriptor::Descriptor, server::start_server};
-use eyre::{Context, ContextCompat};
-use pyo3::prelude::*;
+use eyre::{Context, ContextCompat, Result};
+use pyo3::{prelude::*, prepare_freethreaded_python};
 use std::{fs::File, path::PathBuf};
 use structopt::StructOpt;
 
@@ -13,8 +13,7 @@ enum Command {
     StartPython { server: String },
 }
 
-#[pyo3_asyncio::tokio::main]
-async fn main() -> PyResult<()> {
+fn main() -> Result<()> {
     let command = Command::from_args();
     match command {
         Command::Graph { file } => {
@@ -39,8 +38,11 @@ async fn main() -> PyResult<()> {
             let mut server = server.split(":");
             let file = server.next().context("Server string is empty.").unwrap();
             let app = server.next().context("No app found").unwrap();
-
-            let _result = start_server(file, app).await;
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            prepare_freethreaded_python();
+            rt.block_on(async {
+                let _result = start_server(file, app).await;
+            });
         }
     }
 
