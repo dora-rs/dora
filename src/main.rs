@@ -1,6 +1,6 @@
-use dora_rs::{descriptor::Descriptor, server::start_server};
-use eyre::{Context, ContextCompat, Result};
-use pyo3::{prelude::*, prepare_freethreaded_python};
+use dora_rs::descriptor::Descriptor;
+use eyre::{Context, Result};
+use pyo3::prepare_freethreaded_python;
 use std::{fs::File, path::PathBuf};
 use structopt::StructOpt;
 
@@ -10,7 +10,7 @@ enum Command {
     #[structopt(about = "Print Graph")]
     Graph { file: PathBuf },
     #[structopt(about = "Run Python server")]
-    StartPython { server: String },
+    StartPython,
 }
 
 fn main() -> Result<()> {
@@ -34,15 +34,10 @@ fn main() -> Result<()> {
         ```mermaid code block on GitHub to display it."
             );
         }
-        Command::StartPython { server } => {
-            let mut server = server.split(":");
-            let file = server.next().context("Server string is empty.").unwrap();
-            let app = server.next().context("No app found").unwrap();
-            let rt = tokio::runtime::Runtime::new().unwrap();
+        Command::StartPython => {
             prepare_freethreaded_python();
-            rt.block_on(async {
-                let _result = start_server(file, app).await;
-            });
+
+            dora_rs::server::main();
         }
     }
 
