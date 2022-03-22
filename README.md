@@ -11,7 +11,7 @@ async def function_name(state: DoraState, message: DoraMessage):
 ``` 
 
 The philosophy is to use async function as primary instance to:
-- Mitigate the risk of running undafe data mutations.
+- Mitigate the risk of running unsafe data mutations.
 - Managing several run at the same time with timeout / deadline capabilities
 - Using Tokio Spawn to avoid thread locks on CPU bound runs.
 
@@ -19,7 +19,7 @@ The philosophy is to use async function as primary instance to:
 
 I have made a simple example that can be run with:
 ```
-cargo run start-server app:return_1
+cargo run start-python app:return_1
 
 # Running this might required some shared library as:
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/miniconda3/lib
