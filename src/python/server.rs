@@ -52,6 +52,8 @@ pub async fn run(variables: PythonCommand) -> PyResult<()> {
     let mut futures_put = vec![];
 
     loop {
+        let loop_start = Instant::now();
+
         let mut futures = vec![];
         for (_, v) in subscribers.iter_mut() {
             futures.push(timeout(duration, v.next()));
@@ -87,7 +89,7 @@ pub async fn run(variables: PythonCommand) -> PyResult<()> {
         }
 
         states_hash = hash(&states);
-        println!("loop {:#?}", now.elapsed());
+        println!("loop {:#?}", loop_start.elapsed());
     }
 }
 
