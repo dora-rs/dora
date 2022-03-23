@@ -1,24 +1,17 @@
-use eyre::{eyre, Context};
+use eyre::Context;
 use pyo3::prelude::*;
-use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 
-#[derive(Deserialize, Debug)]
-struct PythonVariables {
-    app: String,
-    function: String,
-}
-
-pub fn init() -> eyre::Result<Py<PyAny>> {
-    let variables = envy::from_env::<PythonVariables>().unwrap();
+pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
+    pyo3::prepare_freethreaded_python();
     Ok(Python::with_gil(|py| {
         let file = py
-            .import(&variables.app)
+            .import(app)
             .wrap_err("The import file was not found. Check your PYTHONPATH env variable.")
             .unwrap();
         // convert Function into a PyObject
         let identity = file
-            .getattr(variables.function)
+            .getattr(function)
             .wrap_err("The Function was not found in the imported file.")
             .unwrap();
         identity.to_object(py)
