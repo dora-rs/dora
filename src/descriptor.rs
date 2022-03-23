@@ -4,11 +4,11 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Descriptor {
     #[serde(default)]
-    sources: HashSet<Source>,
+    pub sources: HashSet<Source>,
     #[serde(default)]
-    sinks: HashSet<Sink>,
+    pub sinks: HashSet<Sink>,
     #[serde(default)]
-    operators: HashSet<Operator>,
+    pub operators: HashSet<Operator>,
 }
 
 impl Descriptor {
@@ -74,19 +74,20 @@ impl Descriptor {
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Source {
-    id: String,
-    output: String,
+    pub id: String,
+    pub output: String,
+    pub run: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Sink {
-    id: String,
-    input: String,
+    pub id: String,
+    pub input: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Operator {
-    id: String,
-    inputs: BTreeSet<String>,
-    outputs: BTreeSet<String>,
+    pub id: String,
+    pub inputs: BTreeSet<String>,
+    pub outputs: BTreeSet<String>,
 }

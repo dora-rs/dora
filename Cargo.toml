@@ -14,5 +14,8 @@ zenoh = { git="https://github.com/eclipse-zenoh/zenoh.git" }
 env_logger = "0.9.0"
 tokio = { version="1.17.0", features=["full"]}
 pyo3 = "0.16.1"
-futures = "0.3.12"
+futures = "0.3.21"
 envy = "0.4.2"
+log = "0.4.16"
+tokio-stream = { version = "0.1.8", features = ["io-util"] }
+futures-concurrency = "2.0.3"

@@ -6,8 +6,10 @@ sinks:
 sources:
   - id: source-1
     output: C
+    run: target/debug/examples/example_source
   - id: source-2
     output: G
+    run: target/debug/examples/example_source
 operators:
   - id: op-1
     inputs:
