@@ -15,13 +15,13 @@ use zenoh::prelude::SplitBuffer;
 
 use crate::python_binding::{call, init};
 
-static DURATION_MILLIS: u64 = 1;
+static DURATION_MILLIS: u64 = 5;
 #[derive(Deserialize, Debug)]
 struct ConfigVariables {
     subscriptions: Vec<String>,
 }
 
-#[pyo3_asyncio::tokio::main]
+#[tokio::main]
 pub async fn main() -> PyResult<()> {
     // Subscribe
     let variables = envy::from_env::<ConfigVariables>().unwrap();
@@ -81,6 +81,7 @@ pub async fn main() -> PyResult<()> {
         }
 
         let now = Instant::now();
+
         let outputs = call(&py_function, states.clone()).await.unwrap();
         println!("call python {:#?}", now.elapsed());
 
@@ -90,7 +91,6 @@ pub async fn main() -> PyResult<()> {
         }
 
         states_hash = hash(&states);
-
         println!("loop {:#?}", now.elapsed());
     }
 }
