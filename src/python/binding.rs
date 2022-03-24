@@ -1,6 +1,14 @@
 use eyre::Context;
-use pyo3::prelude::*;
-use std::collections::{BTreeMap, HashMap};
+use pyo3::{
+    buffer::PyBuffer,
+    prelude::*,
+    types::{PyByteArray, PyDict},
+};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Instant,
+};
 
 pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     pyo3::prepare_freethreaded_python();
@@ -17,16 +25,28 @@ pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
 }
 
 pub fn call(
-    py_function: &PyObject,
-    states: BTreeMap<String, String>,
-) -> eyre::Result<HashMap<String, String>> {
-    Python::with_gil(|py| {
-        let args = (states.into_py(py),);
+    py_function: Arc<PyObject>,
+    states: BTreeMap<String, Vec<u8>>,
+) -> eyre::Result<HashMap<String, Vec<u8>>> {
+    let a = Python::with_gil(|py| {
+        let time_generate_args = Instant::now();
+        // let args = (states.into_py(py),);
+        let dicts = PyDict::new(py);
+        for (k, v) in states.into_iter() {
+            let buffer = PyByteArray::new(py, v.as_slice());
+            dicts.set_item(k, buffer).unwrap();
+        }
+        println!("time: generate_args: {:#?}", time_generate_args.elapsed());
         let result = py_function
-            .call(py, args, None)
-            .wrap_err("The Python function call did not succeed.")?;
-        result
-            .extract(py)
-            .wrap_err("The Python function returned an error.")
-    })
+            .call(py, (), Some(dicts))
+            .wrap_err("The Python function call did not succeed.")
+            .unwrap();
+        let a = PyBuffer::get(result.as_ref(py)).unwrap().to_vec(py);
+        //.wrap_err("The Python function returned an error.");
+
+        a.unwrap()
+    });
+    let mut data = HashMap::new();
+    data.insert("a".to_string(), a);
+    Ok(data)
 }
