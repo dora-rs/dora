@@ -91,7 +91,7 @@ pub async fn run(variables: PythonCommand) -> PyResult<()> {
             }
         });
         if is_source {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(30)).await;
         }
     }
 }

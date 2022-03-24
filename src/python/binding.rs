@@ -2,12 +2,11 @@ use eyre::Context;
 use pyo3::{
     buffer::PyBuffer,
     prelude::*,
-    types::{PyByteArray, PyDict},
+    types::{PyByteArray, PyDict, PyString},
 };
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
-    time::Instant,
 };
 
 pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
@@ -28,25 +27,26 @@ pub fn call(
     py_function: Arc<PyObject>,
     states: BTreeMap<String, Vec<u8>>,
 ) -> eyre::Result<HashMap<String, Vec<u8>>> {
-    let a = Python::with_gil(|py| {
-        let time_generate_args = Instant::now();
+    let outputs = Python::with_gil(|py| {
         // let args = (states.into_py(py),);
         let dicts = PyDict::new(py);
         for (k, v) in states.into_iter() {
             let buffer = PyByteArray::new(py, v.as_slice());
             dicts.set_item(k, buffer).unwrap();
         }
-        println!("time: generate_args: {:#?}", time_generate_args.elapsed());
         let result = py_function
             .call(py, (), Some(dicts))
             .wrap_err("The Python function call did not succeed.")
             .unwrap();
-        let a = PyBuffer::get(result.as_ref(py)).unwrap().to_vec(py);
-        //.wrap_err("The Python function returned an error.");
+        let dicts = result.cast_as::<PyDict>(py).unwrap();
+        let mut outputs = HashMap::new();
+        for (k, v) in dicts.into_iter() {
+            let values = PyBuffer::get(v).unwrap().to_vec(py).unwrap();
+            let key = k.cast_as::<PyString>().unwrap().to_string();
+            outputs.insert(key, values);
+        }
 
-        a.unwrap()
+        outputs
     });
-    let mut data = HashMap::new();
-    data.insert("a".to_string(), a);
-    Ok(data)
+    Ok(outputs)
 }
