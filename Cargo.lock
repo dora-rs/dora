@@ -511,6 +511,7 @@ dependencies = [
 name = "dora-rs"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "env_logger",
  "envy",
  "eyre",
@@ -523,6 +524,7 @@ dependencies = [
  "structopt",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "zenoh",
 ]
 
@@ -2181,6 +2183,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50145484efff8818b5ccd256697f36863f587da82cf8b409c53adf1e840798e3"
 dependencies = [
  "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64910e1b9c1901aaf5375561e35b9c057d95ff41a44ede043a03e09279eabaf1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "log",
  "pin-project-lite",
  "tokio",
 ]
