@@ -16,7 +16,7 @@ pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     })
 }
 
-pub async fn call(
+pub fn call(
     py_function: &PyObject,
     states: BTreeMap<String, String>,
 ) -> eyre::Result<HashMap<String, String>> {
