@@ -14,7 +14,7 @@ pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     Python::with_gil(|py| {
         let file = py
             .import(app)
-            .wrap_err("The import file was not found. Check your PYTHONPATH env variable.")?;
+            .wrap_err("Importing the Python file did not succeed.")?;
         // convert Function into a PyObject
         let identity = file
             .getattr(function)
