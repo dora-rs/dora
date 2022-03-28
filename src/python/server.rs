@@ -18,8 +18,8 @@ use zenoh::prelude::Sample;
 use zenoh::prelude::SplitBuffer;
 use zenoh::Session;
 
-static DURATION_MILLIS: u64 = 1;
-static FREQUENCY: f32 = 200.;
+static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(5);
+static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(30);
 
 #[derive(Deserialize, Debug, Clone, StructOpt)]
 pub struct PythonCommand {
@@ -30,24 +30,21 @@ pub struct PythonCommand {
 
 #[tokio::main]
 pub async fn run(variables: PythonCommand) -> Result<()> {
-    let duration = Duration::from_millis(DURATION_MILLIS);
+    // Store the latest value of all subscription as well as the output of the function.
+    let states = Arc::new(Mutex::new(BTreeMap::new()));
     let pool = Arc::new(
         rayon::ThreadPoolBuilder::new()
             .num_threads(4)
             .build()
             .unwrap(),
     );
-
-    // Store the latest value of all subscription as well as the output of the function.
-    let states = Arc::new(Mutex::new(BTreeMap::new()));
-
+    let session = Arc::new(zenoh::open(Config::default()).await.unwrap());
     let py_function = Arc::new(
         binding::init(&variables.app, &variables.function)
             .wrap_err("Failed to init the Python Function")
             .unwrap(),
     );
 
-    let session = Arc::new(zenoh::open(Config::default()).await.unwrap());
     let is_source = variables.subscriptions.is_empty();
 
     let mut subscribers = Vec::new();
@@ -64,62 +61,62 @@ pub async fn run(variables: PythonCommand) -> Result<()> {
     let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
 
     loop {
-        let subs = variables.subscriptions.clone();
-        let mut states_copy = (*states.lock().await).clone();
+        let mut states_copy = (*states.lock().await).clone(); // This is probably very expensive.
         let states = states.clone();
         let pool = pool.clone();
         let session = session.clone();
         let pyfunc = py_function.clone();
-        let inputs = join_all(
-            receivers
-                .iter_mut()
-                .map(|reciever| timeout(duration, reciever.next())),
-        )
-        .await;
-        let mutation = if !is_source {
-            update(inputs, &subs, &mut states_copy)
-        } else {
-            true
-        };
 
-        if mutation {
-            tokio::spawn(async move {
-                let outputs = pool.install(move || {
-                    Some(
-                        binding::call(pyfunc, states_copy)
-                            .wrap_err("Python binding call did not work")
-                            .unwrap(),
-                    )
-                });
-                if let Some(outputs) = outputs {
-                    push(session, states, outputs).await;
-                } else {
-                }
-            });
+        if !is_source {
+            let inputs = join_all(
+                receivers
+                    .iter_mut()
+                    .map(|reciever| timeout(PULL_WAIT_PERIOD, reciever.next())),
+            )
+            .await;
+
+            let update = pull(inputs, &variables.subscriptions, &mut states_copy);
+
+            if !update {
+                continue;
+            }
         }
 
+        tokio::spawn(async move {
+            let outputs = pool.install(move || {
+                Some(
+                    binding::call(pyfunc, &states_copy)
+                        .wrap_err("Python binding call did not work")
+                        .unwrap(),
+                )
+            });
+            if let Some(outputs) = outputs {
+                push(session, states, outputs).await;
+            }
+        });
+
         if is_source {
-            tokio::time::sleep(Duration::from_secs_f32(1.0 / FREQUENCY)).await;
+            tokio::time::sleep(PUSH_WAIT_PERIOD).await;
         }
     }
 }
 
-fn update(
+fn pull(
     results: Vec<Result<Option<Sample>, Elapsed>>,
-    subs: &Vec<String>,
+    subs: &[String],
     states_copy: &mut BTreeMap<String, Vec<u8>>,
 ) -> bool {
-    let mut mutation = false;
+    let mut update = false;
 
     for (result, subscription) in results.into_iter().zip(subs) {
         if let Ok(Some(data)) = result {
             let value = data.value.payload;
             let binary = value.contiguous();
             states_copy.insert(subscription.clone().to_string(), binary.to_vec());
-            mutation = true;
+            update = true;
         }
     }
-    mutation
+    update
 }
 
 async fn push(

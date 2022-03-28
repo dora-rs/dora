@@ -25,23 +25,27 @@ pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
 
 pub fn call(
     py_function: Arc<PyObject>,
-    states: BTreeMap<String, Vec<u8>>,
+    states: &BTreeMap<String, Vec<u8>>,
 ) -> eyre::Result<HashMap<String, Vec<u8>>> {
     let outputs = Python::with_gil(|py| {
-        // let args = (states.into_py(py),);
-        let dicts = PyDict::new(py);
-        for (k, v) in states.into_iter() {
-            let buffer = PyByteArray::new(py, v.as_slice());
-            dicts.set_item(k, buffer).unwrap();
+        let py_inputs = PyDict::new(py);
+        for (k, v) in states.iter() {
+            py_inputs.set_item(k, PyByteArray::new(py, v)).unwrap();
         }
-        let result = py_function
-            .call(py, (), Some(dicts))
+
+        let results = py_function
+            .call(py, (), Some(py_inputs))
             .wrap_err("The Python function call did not succeed.")
             .unwrap();
-        let dicts = result.cast_as::<PyDict>(py).unwrap();
+
+        let py_outputs = results.cast_as::<PyDict>(py).unwrap();
         let mut outputs = HashMap::new();
-        for (k, v) in dicts.into_iter() {
-            let values = PyBuffer::get(v).unwrap().to_vec(py).unwrap();
+        for (k, v) in py_outputs.into_iter() {
+            let values = PyBuffer::get(v)
+                .wrap_err("Reading from Python Buffer failed")
+                .unwrap()
+                .to_vec(py)
+                .unwrap();
             let key = k.cast_as::<PyString>().unwrap().to_string();
             outputs.insert(key, values);
         }
