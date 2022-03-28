@@ -1,4 +1,3 @@
-import time
 import cv2
 
 IMAGE_PATH = "examples/panneau-feu-usa2.jpg"
@@ -7,7 +6,7 @@ IMAGE_PATH = "examples/panneau-feu-usa2.jpg"
 src = cv2.imread(IMAGE_PATH)
 
 
-def produce(b=None, image=None):
+def produce(image=None):
     """
     read and produce a temperature every second
     """
