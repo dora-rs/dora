@@ -1,9 +1,9 @@
 import cv2
 
-IMAGE_PATH = "examples/panneau-feu-usa2.jpg"
+IMAGE_PATH = "examples/pylot/panneau-feu-usa2.jpg"
 
 
-src = cv2.imread(IMAGE_PATH)
+src = cv2.imread(IMAGE_PATH).tobytes()
 
 
 def produce(image=None):
@@ -11,4 +11,4 @@ def produce(image=None):
     read and produce a temperature every second
     """
 
-    return {"image": src.tobytes()}
+    return {"image": src}

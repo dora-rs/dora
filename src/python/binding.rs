@@ -26,12 +26,21 @@ pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
 pub fn call(
     py_function: Arc<PyObject>,
     states: &BTreeMap<String, Vec<u8>>,
+    pulled_states: &Option<BTreeMap<String, Vec<u8>>>,
 ) -> eyre::Result<HashMap<String, Vec<u8>>> {
     let outputs = Python::with_gil(|py| {
         let py_inputs = PyDict::new(py);
         for (k, v) in states.iter() {
             py_inputs.set_item(k, PyByteArray::new(py, v)).unwrap();
         }
+        if let Some(pulled_states) = pulled_states {
+            for (k, v) in pulled_states.iter() {
+                py_inputs.set_item(k, PyByteArray::new(py, v)).unwrap();
+            }
+        }
+
+        drop(states);
+        drop(pulled_states);
 
         let results = py_function
             .call(py, (), Some(py_inputs))

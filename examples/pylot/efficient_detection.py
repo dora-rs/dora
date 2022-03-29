@@ -30,7 +30,6 @@ def load_serving_model(model_name, model_path, gpu_memory_fraction):
             tf.import_graph_def(graph_def, name="")
     gpu_options = tf.compat.v1.GPUOptions(
         allow_growth=True,
-        visible_device_list=str(0),
         per_process_gpu_memory_fraction=gpu_memory_fraction,
     )
     return model_name, tf.compat.v1.Session(
@@ -50,7 +49,7 @@ HEIGHT = 1043
 OBSTACLE_THRESHOLD = 0.1
 coco_labels = load_coco_labels(LABELS_PATH)
 models, tf_session = load_serving_model(
-    "efficientdet-d0", model_path=MODEL_PATH, gpu_memory_fraction=1
+    "efficientdet-d0", model_path=MODEL_PATH, gpu_memory_fraction=0.9
 )
 signitures = {
     "image_files": "image_files:0",
