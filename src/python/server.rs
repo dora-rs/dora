@@ -2,7 +2,6 @@ use super::binding;
 use eyre::eyre;
 use eyre::Context;
 use eyre::Result;
-use eyre::WrapErr;
 use futures::future::join_all;
 use futures::prelude::*;
 use serde::Deserialize;
@@ -65,7 +64,11 @@ pub async fn run(variables: PythonCommand) -> Result<()> {
     });
 
     // Push Event Loop
-    let session = Arc::new(zenoh::open(Config::default()).await.unwrap());
+    let session = Arc::new(
+        zenoh::open(Config::default())
+            .await
+            .map_err(|e| eyre!("{e}"))?,
+    );
     let states = Arc::new(RwLock::new(BTreeMap::new()));
     let session_push = session.clone();
     let states_push = states.clone();

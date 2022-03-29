@@ -1,3 +1,4 @@
+use eyre::eyre;
 use eyre::Context;
 use pyo3::{
     buffer::PyBuffer,
@@ -28,14 +29,14 @@ pub fn call(
     states: &BTreeMap<String, Vec<u8>>,
     pulled_states: &Option<BTreeMap<String, Vec<u8>>>,
 ) -> eyre::Result<HashMap<String, Vec<u8>>> {
-    let outputs = Python::with_gil(|py| {
+    Python::with_gil(|py| {
         let py_inputs = PyDict::new(py);
         for (k, v) in states.iter() {
-            py_inputs.set_item(k, PyByteArray::new(py, v)).unwrap();
+            py_inputs.set_item(k, PyByteArray::new(py, v))?;
         }
         if let Some(pulled_states) = pulled_states {
             for (k, v) in pulled_states.iter() {
-                py_inputs.set_item(k, PyByteArray::new(py, v)).unwrap();
+                py_inputs.set_item(k, PyByteArray::new(py, v))?;
             }
         }
 
@@ -44,22 +45,21 @@ pub fn call(
 
         let results = py_function
             .call(py, (), Some(py_inputs))
-            .wrap_err("The Python function call did not succeed.")
-            .unwrap();
+            .wrap_err("The Python function call did not succeed.")?;
 
         let py_outputs = results.cast_as::<PyDict>(py).unwrap();
         let mut outputs = HashMap::new();
         for (k, v) in py_outputs.into_iter() {
             let values = PyBuffer::get(v)
-                .wrap_err("Reading from Python Buffer failed")
-                .unwrap()
-                .to_vec(py)
-                .unwrap();
-            let key = k.cast_as::<PyString>().unwrap().to_string();
+                .wrap_err("Reading from Python Buffer failed")?
+                .to_vec(py)?;
+            let key = k
+                .cast_as::<PyString>()
+                .map_err(|e| eyre!("{e}"))?
+                .to_string();
             outputs.insert(key, values);
         }
 
-        outputs
-    });
-    Ok(outputs)
+        Ok(outputs)
+    })
 }
