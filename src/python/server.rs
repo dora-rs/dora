@@ -1,5 +1,6 @@
 use super::binding;
 use eyre::eyre;
+use eyre::Context;
 use eyre::Result;
 use eyre::WrapErr;
 use futures::future::join_all;
@@ -9,6 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
+use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use zenoh::config::Config;
@@ -26,71 +28,92 @@ pub struct PythonCommand {
     pub subscriptions: Vec<String>,
 }
 
+pub struct Workload {
+    states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+    pulled_states: Option<BTreeMap<String, Vec<u8>>>,
+}
+
 #[tokio::main]
 pub async fn run(variables: PythonCommand) -> Result<()> {
     // Store the latest value of all subscription as well as the output of the function.
-    let states = Arc::new(RwLock::new(BTreeMap::new()));
-    let pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(8)
-            .build()
-            .unwrap(),
-    );
+    //  let states = Arc::new(RwLock::new(BTreeMap::new()));
+    let (push_tx, mut push_rx) = mpsc::channel::<HashMap<String, Vec<u8>>>(8);
+    let (rayon_tx, mut rayon_rx) = mpsc::channel::<Workload>(8);
+
+    // Computation Event Loop
+    tokio::spawn(async move {
+        let py_function = Arc::new(
+            binding::init(&variables.app, &variables.function)
+                .context("Failed to init the Python Function")
+                .unwrap(),
+        );
+
+        while let Some(workload) = rayon_rx.recv().await {
+            let pyfunc = py_function.clone();
+            let push_tx = push_tx.clone();
+            let states = workload.states.read().await.clone(); // This is probably expensive.
+            rayon::spawn(move || {
+                push_tx
+                    .blocking_send(
+                        binding::call(pyfunc, &states, &workload.pulled_states)
+                            .wrap_err("Python binding call did not work")
+                            .unwrap(),
+                    )
+                    .unwrap();
+            });
+        }
+    });
+
+    // Push Event Loop
     let session = Arc::new(zenoh::open(Config::default()).await.unwrap());
-    let py_function = Arc::new(
-        binding::init(&variables.app, &variables.function)
-            .wrap_err("Failed to init the Python Function")
-            .unwrap(),
-    );
+    let states = Arc::new(RwLock::new(BTreeMap::new()));
+    let session_push = session.clone();
+    let states_push = states.clone();
+    tokio::spawn(async move {
+        while let Some(outputs) = push_rx.recv().await {
+            let states = states_push.clone();
+            let session = session_push.clone();
+            push(session, states, outputs).await;
+        }
+    });
 
-    let is_source = variables.subscriptions.is_empty();
-
+    // Pull Event Loop
     let mut subscribers = Vec::new();
     for subscription in variables.subscriptions.iter() {
-        subscribers.push( session
-            .subscribe(subscription)
-            .await
-            .map_err(|err| {
-                eyre!("Could not subscribe to the given subscription key expression. Error: {err}")
-            })
-            .unwrap());
+        subscribers.push(session.subscribe(subscription).await.map_err(|err| {
+            eyre!("Could not subscribe to the given subscription key expression. Error: {err}")
+        })?);
     }
-
     let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
-
-    loop {
-        let pool = pool.clone();
-        let session = session.clone();
-        let pyfunc = py_function.clone();
-
-        let pulled_states = if !is_source {
-            let pulled_states = pull(&mut receivers, &variables.subscriptions).await;
-
-            if pulled_states.is_empty() {
-                continue;
+    let is_source = variables.subscriptions.is_empty();
+    if is_source {
+        loop {
+            let states = states.clone();
+            if let Err(_) = rayon_tx
+                .send(Workload {
+                    states,
+                    pulled_states: None,
+                })
+                .await
+            {
+                println!("Dropped Messages")
             }
-            Some(pulled_states)
-        } else {
-            None
-        };
-
-        let states = states.clone();
-        tokio::spawn(async move {
-            let states_read = states.read().await;
-            let outputs = pool.install(move || {
-                Some(
-                    binding::call(pyfunc, &states_read, &pulled_states)
-                        .wrap_err("Python binding call did not work")
-                        .unwrap(),
-                )
-            });
-            if let Some(outputs) = outputs {
-                push(session, states, outputs).await;
-            }
-        });
-
-        if is_source {
             tokio::time::sleep(PUSH_WAIT_PERIOD).await;
+        }
+    } else {
+        loop {
+            if let Some(pulled_states) = pull(&mut receivers, &variables.subscriptions).await {
+                let states = states.clone();
+                if let Err(_) = rayon_tx
+                    .send(Workload {
+                        states,
+                        pulled_states: Some(pulled_states),
+                    })
+                    .await
+                {
+                    println!("Dropped Messages")
+                }
+            }
         }
     }
 }
@@ -98,7 +121,7 @@ pub async fn run(variables: PythonCommand) -> Result<()> {
 async fn pull(
     receivers: &mut Vec<&mut SampleReceiver>,
     subs: &[String],
-) -> BTreeMap<String, Vec<u8>> {
+) -> Option<BTreeMap<String, Vec<u8>>> {
     let fetched_data = join_all(
         receivers
             .iter_mut()
@@ -114,7 +137,11 @@ async fn pull(
             pulled_states.insert(subscription.clone().to_string(), binary.to_vec());
         }
     }
-    pulled_states
+    if pulled_states.is_empty() {
+        None
+    } else {
+        Some(pulled_states)
+    }
 }
 
 async fn push(
@@ -122,11 +149,11 @@ async fn push(
     states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     outputs: HashMap<String, Vec<u8>>,
 ) {
-    let mut futures = vec![];
-    let mut states = states.write().await;
-    for (key, value) in outputs {
-        states.insert(key.clone(), value.clone());
-        futures.push(session.put(key, value));
-    }
-    join_all(futures).await;
+    join_all(
+        outputs
+            .iter()
+            .map(|(key, value)| session.put(key, value.clone())),
+    )
+    .await;
+    states.write().await.extend(outputs);
 }

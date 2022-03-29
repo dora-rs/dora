@@ -17,6 +17,6 @@ mod bench {
     fn call_python(b: &mut Bencher) {
         let function = Arc::new(init("source", "produce").unwrap());
         let state = BTreeMap::new();
-        b.iter(|| call(function.clone(), &state));
+        b.iter(|| call(function.clone(), &state, &None));
     }
 }
