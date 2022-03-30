@@ -43,9 +43,6 @@ fn call(
             }
         }
 
-        drop(states);
-        drop(pulled_states);
-
         let results = py_function
             .call(py, (), Some(py_inputs))
             .wrap_err("The Python function call did not succeed.")?;
