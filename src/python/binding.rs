@@ -10,7 +10,10 @@ use std::{
     sync::Arc,
 };
 
-pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
+use super::server::PythonCommand;
+use super::server::Workload;
+
+fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     pyo3::prepare_freethreaded_python();
     Python::with_gil(|py| {
         let file = py
@@ -24,7 +27,7 @@ pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     })
 }
 
-pub fn call(
+fn call(
     py_function: Arc<PyObject>,
     states: &BTreeMap<String, Vec<u8>>,
     pulled_states: &Option<BTreeMap<String, Vec<u8>>>,
@@ -62,4 +65,35 @@ pub fn call(
 
         Ok(outputs)
     })
+}
+
+pub fn python_compute_event_loop(
+    mut input_receiver: tokio::sync::mpsc::Receiver<Workload>,
+    output_sender: tokio::sync::mpsc::Sender<
+        std::collections::HashMap<std::string::String, std::vec::Vec<u8>>,
+    >,
+    variables: PythonCommand,
+) {
+    tokio::spawn(async move {
+        let py_function = Arc::new(
+            init(&variables.app, &variables.function)
+                .context("Failed to init the Python Function")
+                .unwrap(),
+        );
+
+        while let Some(workload) = input_receiver.recv().await {
+            let pyfunc = py_function.clone();
+            let push_tx = output_sender.clone();
+            let states = workload.states.read().await.clone(); // This is probably expensive.
+            rayon::spawn(move || {
+                push_tx
+                    .blocking_send(
+                        call(pyfunc, &states, &workload.pulled_states)
+                            .wrap_err("Python binding call did not work")
+                            .unwrap(),
+                    )
+                    .unwrap();
+            });
+        }
+    });
 }
