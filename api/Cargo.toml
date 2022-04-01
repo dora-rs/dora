@@ -1,0 +1,20 @@
+[package]
+name = "dora-api"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+eyre = "0.6.7"
+futures = "0.3.21"
+futures-concurrency = "2.0.3"
+serde = { version = "1.0.136", features = ["derive"] }
+serde_yaml = "0.8.23"
+thiserror = "1.0.30"
+uuid = "0.8.2"
+zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
+zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
+
+[dev-dependencies]
+tokio = { version = "1.17.0", features = ["rt"] }

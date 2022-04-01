@@ -1,0 +1,30 @@
+communication:
+  zenoh_prefix: /foo
+
+operators:
+  - id: timer
+    outputs:
+      - time
+    run: non-existent
+  - id: camera
+    outputs:
+      - image
+    run: non-existent
+
+  - id: timestamp
+    run: non-existent
+    inputs:
+      timestamp: timer/time
+      pic: camera/image
+    outputs:
+      - image-with-timestamp
+
+  - id: printer
+    run: non-existent
+    inputs:
+      data: timestamp/image-with-timestamp
+  - id: logger
+    run: non-existent
+    inputs:
+      data: timestamp/image-with-timestamp
+      time: timer/time
