@@ -1,0 +1,13 @@
+communication:
+  zenoh_prefix: /foo
+
+operators:
+  - id: timer
+    outputs:
+      - time
+    run: ../target/debug/examples/example_source_timer
+
+  - id: logger
+    run: ../target/debug/examples/example_sink_logger
+    inputs:
+      data: timer/time
