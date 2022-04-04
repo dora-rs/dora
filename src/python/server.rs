@@ -16,6 +16,7 @@ pub struct PythonCommand {
     pub subscriptions: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Workload {
     pub states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     pub pulled_states: Option<BTreeMap<String, Vec<u8>>>,

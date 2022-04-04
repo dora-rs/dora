@@ -1,4 +1,3 @@
-use eyre::eyre;
 use eyre::Context;
 use pyo3::{
     buffer::PyBuffer,
@@ -55,7 +54,7 @@ fn call(
                 .to_vec(py)?;
             let key = k
                 .cast_as::<PyString>()
-                .map_err(|e| eyre!("{e}"))?
+                .or_else(|e| eyre::bail!("{e}"))?
                 .to_string();
             outputs.insert(key, values);
         }

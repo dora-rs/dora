@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use eyre::{eyre, Result};
+use eyre::Result;
 use futures::{future::join_all, prelude::*};
 use tokio::{
     sync::{
@@ -33,7 +33,7 @@ impl ZenohClient {
         let session = Arc::new(
             zenoh::open(Config::default())
                 .await
-                .map_err(|e| eyre!("{e}"))?,
+                .or_else(|e| eyre::bail!("{e}"))?,
         );
         let states = Arc::new(RwLock::new(BTreeMap::new()));
 
@@ -90,8 +90,10 @@ impl ZenohClient {
     pub async fn pull_event_loop(self, sender: Sender<Workload>) -> eyre::Result<()> {
         let mut subscribers = Vec::new();
         for subscription in self.subscriptions.iter() {
-            subscribers.push(self.session.subscribe(subscription).await.map_err(|err| {
-                eyre!("Could not subscribe to the given subscription key expression. Error: {err}")
+            subscribers.push(self.session.subscribe(subscription).await.or_else(|err| {
+                eyre::bail!(
+                    "Could not subscribe to the given subscription key expression. Error: {err}"
+                )
             })?);
         }
         let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
@@ -106,7 +108,7 @@ impl ZenohClient {
                     })
                     .await
                 {
-                    eyre!("{err}");
+                    eyre::bail!("{err}");
                 }
                 tokio::time::sleep(PUSH_WAIT_PERIOD).await;
             }
@@ -121,7 +123,7 @@ impl ZenohClient {
                         })
                         .await
                     {
-                        eyre!("{err}");
+                        eyre::bail!("{err}");
                     }
                 }
             }
