@@ -1,8 +1,9 @@
-import tensorflow as tf
 import os
-import numpy as np
-import cv2
 import time
+
+import cv2
+import numpy as np
+import tensorflow as tf
 
 
 def load_coco_labels(labels_path):
@@ -40,12 +41,12 @@ def load_serving_model(model_name, model_path, gpu_memory_fraction):
 
 MODEL_PATH = (
     os.environ["PYLOT_HOME"]
-    + "/dependencies/models/obstacle_detection/efficientdet/efficientdet-d0/efficientdet-d0_frozen.pb"
+    + "/dependencies/models/obstacle_detection/efficientdet/efficientdet-d2/efficientdet-d2_frozen.pb"
 )
 LABELS_PATH = os.environ["PYLOT_HOME"] + "/dependencies/models/coco.names"
 
-WIDTH = 587
-HEIGHT = 1043
+WIDTH = 720
+HEIGHT = 1280
 OBSTACLE_THRESHOLD = 0.1
 coco_labels = load_coco_labels(LABELS_PATH)
 models, tf_session = load_serving_model(
@@ -59,7 +60,7 @@ signitures = {
 
 
 # Serve some junk image to load up the model.
-inputs = np.zeros((108, 192, 3), dtype="uint8")
+inputs = np.zeros((WIDTH, HEIGHT, 3), dtype="uint8")
 tf_session.run(
     signitures["prediction"],
     feed_dict={signitures["image_arrays"]: [inputs]},
@@ -69,7 +70,9 @@ tf_session.run(
 def run(image, destination=None):
 
     image = np.frombuffer(image, dtype=np.dtype("uint8"))
-    inputs = np.reshape(image, (587, 1043, 3))
+    inputs = np.reshape(image, (WIDTH, HEIGHT, 4))
+    inputs = inputs[:, :, :3]
+    outputs = np.ascontiguousarray(inputs, dtype=np.uint8)
 
     outputs_np = tf_session.run(
         signitures["prediction"],
@@ -92,19 +95,25 @@ def run(image, destination=None):
                             coco_labels[_class],
                         )
                     )
+                    print(
+                        (xmin, xmax, ymin, ymax),
+                        score,
+                        coco_labels[_class],
+                    )
 
                     # Add the patch to the Axes
                     cv2.rectangle(
-                        inputs,
+                        outputs,
                         (
-                            xmin,
-                            ymin,
+                            int(xmin),
+                            int(ymin),
                         ),
                         (
-                            xmax,
-                            ymax,
+                            int(xmax),
+                            int(ymax),
                         ),
                         (255, 0, 0),
+                        3,
                     )
 
-    return {"destination": inputs.tobytes()}
+    return {"destination": outputs.tobytes()}

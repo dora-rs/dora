@@ -1,15 +1,16 @@
+import threading
+import time
+
+import cv2
 import numpy as np
 import pygame
-import cv2
-import time
-import threading
 
 mutex = threading.Lock()
 pygame.init()
 
 
-display_width = 587
-display_height = 1043
+display_width = 720
+display_height = 1280
 
 gameDisplay = pygame.display.set_mode(
     (display_width, display_height),
@@ -28,7 +29,7 @@ counter = time.time()
 def plot(destination, report=None):
 
     image = np.frombuffer(destination, dtype=np.dtype("uint8"))
-    resized_image = np.reshape(image, (587, 1043, 3))
+    resized_image = np.reshape(image, (display_width, display_height, 3))
     global counter
     now = time.time()
     cv2.putText(
