@@ -18,10 +18,6 @@ conda create -n dora3.8 python=3.8
 ```bash
 pip install -r requirements.txt
 ```
-- Add this directory to your PYTHONPATH
-```bash
-export PYTHONPATH=$PYTHONPATH:$(pwd)
-```
 - Add your pythonlib:
 ```bash
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/miniconda3/envs/dora3.8/lib
@@ -29,11 +25,11 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/miniconda3/envs/dora3.8/lib
 
 - Run on different terminal:
 ```bash
-cargo run --release start-python source produce                                             
+cargo run --release start-python examples.pylot.source produce                                             
 ```
 ```bash
-cargo run --release start-python efficient_detection run image                                             
+cargo run --release start-python examples.pylot.efficient_detection run image                                             
 ```
 ```bash
-cargo run --release start-python sink_eval_plot destination                                 
+cargo run --release start-python examples.pylot.sink_eval_plot destination                                 
 ```

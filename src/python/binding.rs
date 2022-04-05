@@ -43,7 +43,7 @@ fn call(
         }
 
         let results = py_function
-            .call(py, (), Some(py_inputs))
+            .call(py, (py_inputs,), None)
             .wrap_err("The Python function call did not succeed.")?;
 
         let py_outputs = results.cast_as::<PyDict>(py).unwrap();

@@ -18,13 +18,17 @@ The philosophy is to use async function as primary instance to:
 ## Getting started
 
 I have made a simple example that can be run with:
-```
-cargo run start-python app:return_1
+```bash
+docker build --tag dora .
+nvidia-docker run -itd --name dora -p 20022:22 dora /bin/bash
+nvidia-docker cp ~/.ssh/id_rsa.pub dora:/home/erdos/.ssh/authorized_keys
+nvidia-docker exec -i -t dora sudo chown erdos /home/erdos/.ssh/authorized_keys
+nvidia-docker exec -i -t dora sudo service ssh start
 
-# Running this might required some shared library as:
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:~/miniconda3/lib
-export PYTHONPATH=$PYTHONPATH:$(pwd)
-```
-That is going to listen to the key_expr "a" and run the `return_1` function within the `app.py` python async.
+ssh -p 20022 -X erdos@localhost
 
-This is still very experimental.
+/home/erdos/workspace/pylot/scripts/run_simulator.sh &
+cd /home/erdos/workspace/dora-rs
+export PYTHONPATH=$PYTHONPATH:$(pwd)/examples/pylot
+cargo run start-python carla_source_operator send
+```
