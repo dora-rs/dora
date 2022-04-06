@@ -16,6 +16,8 @@ CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
 LABELS = "image"
 last_frame = None
+IMAGE_WIDTH = 800
+IMAGE_HEIGHT = 600
 
 
 def spawn_driving_vehicle(client, world):
@@ -62,8 +64,8 @@ def spawn_driving_vehicle(client, world):
 
 def spawn_rgb_camera(world, location, rotation, vehicle):
     camera_bp = world.get_blueprint_library().find("sensor.camera.rgb")
-    camera_bp.set_attribute("image_size_x", "1280")
-    camera_bp.set_attribute("image_size_y", "720")
+    camera_bp.set_attribute("image_size_x", f"{IMAGE_WIDTH}")
+    camera_bp.set_attribute("image_size_y", f"{IMAGE_HEIGHT}")
     camera_bp.set_attribute("sensor_tick", "0.1")
     transform = Transform(location=location, rotation=rotation)
     return world.spawn_actor(camera_bp, transform, attach_to=vehicle)
@@ -77,12 +79,18 @@ def on_camera_msg(simulator_image):
     )
 
     camera_setup = CameraSetup(
-        "rgb_camera", "sensor.camera.rgb", 800, 600, camera_transform, fov=90.0
+        "rgb_camera",
+        "sensor.camera.rgb",
+        IMAGE_WIDTH,
+        IMAGE_HEIGHT,
+        camera_transform,
+        fov=90.0,
     )
     global last_frame
-    last_frame = CameraFrame.from_simulator_frame(
-        simulator_image, camera_setup
-    )
+    # last_frame = CameraFrame.from_simulator_frame(
+    #    simulator_image, camera_setup
+    # )
+    last_frame = simulator_image.raw_data
 
 
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
@@ -108,7 +116,7 @@ def send(_):
     binary_data = pickle.dumps(pose)
 
     return {
-        "image": last_frame.as_numpy_array().tobytes(),
+        "image": last_frame,
         "pose": binary_data,
         "open_drive": world.get_map().to_opendrive().encode("utf-8"),
     }

@@ -41,12 +41,12 @@ def load_serving_model(model_name, model_path, gpu_memory_fraction):
 
 MODEL_PATH = (
     os.environ["PYLOT_HOME"]
-    + "/dependencies/models/obstacle_detection/efficientdet/efficientdet-d2/efficientdet-d2_frozen.pb"
+    + "/dependencies/models/obstacle_detection/efficientdet/efficientdet-d0/efficientdet-d0_frozen.pb"
 )
 LABELS_PATH = os.environ["PYLOT_HOME"] + "/dependencies/models/coco.names"
 
-WIDTH = 720
-HEIGHT = 1280
+WIDTH = 800
+HEIGHT = 600
 OBSTACLE_THRESHOLD = 0.1
 coco_labels = load_coco_labels(LABELS_PATH)
 models, tf_session = load_serving_model(
@@ -67,10 +67,12 @@ tf_session.run(
 )[0]
 
 
-def run(image, destination=None):
-
+def run(inputs):
+    if "image" not in inputs.keys():
+        return {}
+    image = inputs["image"]
     image = np.frombuffer(image, dtype=np.dtype("uint8"))
-    inputs = np.reshape(image, (WIDTH, HEIGHT, 4))
+    inputs = np.reshape(image, (HEIGHT, WIDTH, 4))
     inputs = inputs[:, :, :3]
     outputs = np.ascontiguousarray(inputs, dtype=np.uint8)
 

@@ -19,16 +19,28 @@ The philosophy is to use async function as primary instance to:
 
 I have made a simple example that can be run with:
 ```bash
-docker build --tag dora .
+nvidia-docker build --tag dora .
 nvidia-docker run -itd --name dora -p 20022:22 dora /bin/bash
+nvidia-docker exec -itd dora /home/erdos/workspace/pylot/scripts/run_simulator.sh
 nvidia-docker cp ~/.ssh/id_rsa.pub dora:/home/erdos/.ssh/authorized_keys
 nvidia-docker exec -i -t dora sudo chown erdos /home/erdos/.ssh/authorized_keys
 nvidia-docker exec -i -t dora sudo service ssh start
-
 ssh -p 20022 -X erdos@localhost
+```
 
-/home/erdos/workspace/pylot/scripts/run_simulator.sh &
+- Within the docker container, to run the object detection simulation that use ~6Gib of GPU memory:
+```bash
 cd /home/erdos/workspace/dora-rs
 export PYTHONPATH=$PYTHONPATH:$(pwd)/examples/pylot
-cargo run start-python carla_source_operator send
+cargo run start-python carla_source_operator send &
+cargo run start-python efficient_detection run image &
+cargo run start-python sink_eval_plot plot destination
+```
+
+- Within the docker container, to run just a visualisation of the simulation:
+```bash
+cd /home/erdos/workspace/dora-rs
+export PYTHONPATH=$PYTHONPATH:$(pwd)/examples/pylot
+cargo run start-python carla_source_operator send &
+SOURCE=image cargo run start-python sink_eval_plot plot image
 ```

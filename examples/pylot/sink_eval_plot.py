@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 
@@ -9,8 +10,8 @@ mutex = threading.Lock()
 pygame.init()
 
 
-display_width = 720
-display_height = 1280
+display_width = 800
+display_height = 600
 
 gameDisplay = pygame.display.set_mode(
     (display_width, display_height),
@@ -26,15 +27,20 @@ lineType = 2
 counter = time.time()
 
 
-def plot(destination, report=None):
-
+def plot(inputs):
+    destination = inputs[os.environ["SOURCE"]]
     image = np.frombuffer(destination, dtype=np.dtype("uint8"))
-    resized_image = np.reshape(image, (display_width, display_height, 3))
+    if len(image) == 800 * 600 * 4:
+        resized_image = np.reshape(image, (display_height, display_width, 4))
+        resized_image = resized_image[:, :, :3]
+        resized_image = np.ascontiguousarray(resized_image, dtype=np.uint8)
+    else:
+        resized_image = np.reshape(image, (display_height, display_width, 3))
     global counter
     now = time.time()
     cv2.putText(
         resized_image,
-        f"Hello {1 / (now - counter):.2f}",
+        f"Hertz {1 / (now - counter):.2f}",
         bottomLeftCornerOfText,
         font,
         fontScale,
@@ -43,6 +49,7 @@ def plot(destination, report=None):
         lineType,
     )
     data = resized_image[:, :, (2, 1, 0)]
+    data = np.rot90(data)
 
     global mutex
     mutex.acquire()
