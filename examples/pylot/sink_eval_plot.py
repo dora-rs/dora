@@ -1,10 +1,14 @@
 import os
+import pickle
 import threading
 import time
+from curses import KEY_SLEFT
 
 import cv2
 import numpy as np
 import pygame
+
+import pylot.perception.detection.utils
 
 mutex = threading.Lock()
 pygame.init()
@@ -28,8 +32,24 @@ counter = time.time()
 
 
 def plot(inputs):
+    keys = inputs.keys()
+    if "image" not in keys:
+        return {}
     destination = inputs[os.environ["SOURCE"]]
-    image = np.frombuffer(destination, dtype=np.dtype("uint8"))
+
+    image = pickle.loads(destination)
+    if "waypoints" in keys:
+        waypoints = pickle.loads(inputs["waypoints"])
+        waypoints.draw_on_frame(image)
+
+    if "obstacles" in keys:
+        obstacles = pickle.loads(inputs["obstacles"])
+        for obstacle in obstacles:
+            obstacle.draw_on_frame(
+                image, pylot.perception.detection.utils.PYLOT_BBOX_COLOR_MAP
+            )
+
+    image = image.as_numpy_array()
     if len(image) == 800 * 600 * 4:
         resized_image = np.reshape(image, (display_height, display_width, 4))
         resized_image = resized_image[:, :, :3]

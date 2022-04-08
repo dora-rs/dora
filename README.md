@@ -16,6 +16,12 @@ The philosophy is to use async function as primary instance to:
 - Using Tokio Spawn to avoid thread locks on CPU bound runs.
 
 ## Getting started
+### Enabling autonomous driving through Dora.
+
+Project largely inspired by [Pylot](https://github.com/erdos-project/pylot).
+
+Thank you the Pylot team for your contribution to open autonomous driving.
+
 
 I have made a simple example that can be run with:
 ```bash
@@ -43,4 +49,14 @@ cd /home/erdos/workspace/dora-rs
 export PYTHONPATH=$PYTHONPATH:$(pwd)/examples/pylot
 cargo run start-python carla_source_operator send &
 SOURCE=image cargo run start-python sink_eval_plot plot image
+```
+
+- Within the docker container, to run just a visualisation of the simulation:
+```bash
+cd /home/erdos/workspace/dora-rs
+export PYTHONPATH=$PYTHONPATH:$(pwd)/examples/pylot
+cargo run start-python carla_source_operator send &
+cargo run start-python planning_operator run pose open_drive &
+cargo run start-python efficient_detection run image &
+SOURCE=image cargo run start-python sink_eval_plot plot image waypoints obstacles
 ```

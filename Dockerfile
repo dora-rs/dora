@@ -10,8 +10,18 @@ RUN sudo apt-get update
 
 RUN sudo apt-get install vim -y
 
-COPY . /home/erdos/workspace/dora-rs
-
-RUN sudo chown erdos /home/erdos/workspace/dora-rs
-
 WORKDIR /home/erdos/workspace/dora-rs
+
+COPY src src
+
+COPY Cargo.toml . 
+
+RUN sudo chown erdos:erdos /home/erdos/workspace/dora-rs
+
+RUN rustup default stable
+
+RUN cargo build 
+
+COPY examples examples
+
+

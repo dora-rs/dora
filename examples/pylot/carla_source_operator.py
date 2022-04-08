@@ -87,10 +87,9 @@ def on_camera_msg(simulator_image):
         fov=90.0,
     )
     global last_frame
-    # last_frame = CameraFrame.from_simulator_frame(
-    #    simulator_image, camera_setup
-    # )
-    last_frame = simulator_image.raw_data
+    last_frame = pickle.dumps(CameraFrame.from_simulator_frame(
+        simulator_image, camera_setup
+    ))
 
 
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))

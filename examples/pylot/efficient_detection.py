@@ -1,9 +1,14 @@
 import os
+import pickle
 import time
+from random import random
 
 import cv2
 import numpy as np
 import tensorflow as tf
+
+from pylot.perception.detection.obstacle import Obstacle
+from pylot.perception.detection.utils import BoundingBox2D
 
 
 def load_coco_labels(labels_path):
@@ -70,10 +75,10 @@ tf_session.run(
 def run(inputs):
     if "image" not in inputs.keys():
         return {}
-    image = inputs["image"]
-    image = np.frombuffer(image, dtype=np.dtype("uint8"))
-    inputs = np.reshape(image, (HEIGHT, WIDTH, 4))
-    inputs = inputs[:, :, :3]
+    image = pickle.loads(inputs["image"])
+    image = image.as_numpy_array()
+    # image = np.frombuffer(image, dtype=np.dtype("uint8"))
+    inputs = np.reshape(image, (HEIGHT, WIDTH, 3))
     outputs = np.ascontiguousarray(inputs, dtype=np.uint8)
 
     outputs_np = tf_session.run(
@@ -91,31 +96,11 @@ def run(inputs):
                 ymin, ymax = max(0, ymin), min(ymax, HEIGHT)
                 if xmin < xmax and ymin < ymax:
                     obstacles.append(
-                        (
-                            (xmin, xmax, ymin, ymax),
+                        Obstacle(
+                            BoundingBox2D(xmin, xmax, ymin, ymax),
                             score,
                             coco_labels[_class],
                         )
                     )
-                    print(
-                        (xmin, xmax, ymin, ymax),
-                        score,
-                        coco_labels[_class],
-                    )
 
-                    # Add the patch to the Axes
-                    cv2.rectangle(
-                        outputs,
-                        (
-                            int(xmin),
-                            int(ymin),
-                        ),
-                        (
-                            int(xmax),
-                            int(ymax),
-                        ),
-                        (255, 0, 0),
-                        3,
-                    )
-
-    return {"destination": outputs.tobytes()}
+    return {"obstacles": pickle.dumps(obstacles)}
