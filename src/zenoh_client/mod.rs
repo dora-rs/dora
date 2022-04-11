@@ -18,7 +18,7 @@ use zenoh::{subscriber::SampleReceiver, Session};
 
 use crate::python::server::Workload;
 
-static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(5);
+static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(50);
 static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]

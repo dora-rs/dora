@@ -1,3 +1,4 @@
+import logging
 import os
 import pickle
 import threading
@@ -9,9 +10,51 @@ import numpy as np
 import pygame
 
 import pylot.perception.detection.utils
+from pylot.map.hd_map import HDMap
+from pylot.planning.world import World
+from pylot.simulation.utils import get_map, map_from_opendrive
 
 mutex = threading.Lock()
 pygame.init()
+
+goal_location = pylot.utils.Location(234, 59, 39)
+
+
+class Flags(object):
+    pass
+
+
+FLAGS = Flags()
+FLAGS.tracking_num_steps = 10
+FLAGS.step_size = 1
+FLAGS.max_iterations = 10
+FLAGS.end_dist_threshold = 1
+FLAGS.obstacle_clearance_rrt = 1
+FLAGS.lane_width = 1
+FLAGS.planning_type = "waypoints"
+FLAGS.target_speed = 10
+FLAGS.max_speed = 10
+FLAGS.max_accel = 10
+FLAGS.max_step_hybrid_astar = 10
+FLAGS.step_size_hybrid_astar = 10
+FLAGS.max_iterations_hybrid_astar = 10
+FLAGS.completion_threshold = 10
+FLAGS.angle_completion_threshold = 10
+FLAGS.rad_step = 10
+FLAGS.rad_upper_range = 10
+FLAGS.rad_lower_range = 10
+FLAGS.max_curvature = 10
+FLAGS.num_waypoints_ahead = 10
+FLAGS.obstacle_clearance_hybrid_astar = 10
+FLAGS.lane_width_hybrid_astar = 10
+FLAGS.radius = 10
+FLAGS.car_length = 10
+FLAGS.car_width = 10
+
+goal_location = pylot.utils.Location(234, 59, 39)
+
+
+logger = logging.Logger("")
 
 
 display_width = 800
@@ -30,24 +73,45 @@ lineType = 2
 
 counter = time.time()
 
+world = World(FLAGS, logger)
+
+map = HDMap(get_map())
+
 
 def plot(inputs):
     keys = inputs.keys()
     if "image" not in keys:
         return {}
-    destination = inputs[os.environ["SOURCE"]]
 
-    image = pickle.loads(destination)
-    if "waypoints" in keys:
-        waypoints = pickle.loads(inputs["waypoints"])
-        waypoints.draw_on_frame(image)
+    if "pose" not in keys:
+        return {}
+
+    image = pickle.loads(inputs["image"])
+
+    pose = pickle.loads(inputs["pose"])
+
+    obstacles = []
 
     if "obstacles" in keys:
         obstacles = pickle.loads(inputs["obstacles"])
-        for obstacle in obstacles:
-            obstacle.draw_on_frame(
-                image, pylot.perception.detection.utils.PYLOT_BBOX_COLOR_MAP
-            )
+
+    global mutex
+    mutex.acquire()
+    world.update(
+        time.time(),
+        pose,
+        [],
+        obstacles,
+        hd_map=map,
+        lanes=None,
+    )
+
+    if "waypoints" in keys:
+        waypoints = pickle.loads(inputs["waypoints"])
+        world.update_waypoints(goal_location, waypoints)
+
+    mutex.release()
+    world.draw_on_frame(image)
 
     image = image.as_numpy_array()
     if len(image) == 800 * 600 * 4:

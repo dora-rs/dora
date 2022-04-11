@@ -65,7 +65,7 @@ signitures = {
 
 
 # Serve some junk image to load up the model.
-inputs = np.zeros((WIDTH, HEIGHT, 3), dtype="uint8")
+inputs = np.zeros((HEIGHT, WIDTH, 3), dtype="uint8")
 tf_session.run(
     signitures["prediction"],
     feed_dict={signitures["image_arrays"]: [inputs]},
@@ -79,7 +79,6 @@ def run(inputs):
     image = image.as_numpy_array()
     # image = np.frombuffer(image, dtype=np.dtype("uint8"))
     inputs = np.reshape(image, (HEIGHT, WIDTH, 3))
-    outputs = np.ascontiguousarray(inputs, dtype=np.uint8)
 
     outputs_np = tf_session.run(
         signitures["prediction"],
@@ -102,5 +101,8 @@ def run(inputs):
                             coco_labels[_class],
                         )
                     )
+
+    if len(obstacles) == 0:
+        return {}
 
     return {"obstacles": pickle.dumps(obstacles)}

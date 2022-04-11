@@ -11,11 +11,13 @@ import pylot.simulation.utils
 import pylot.utils
 from pylot.drivers.sensor_setup import CameraSetup, LidarSetup
 from pylot.perception.camera_frame import CameraFrame
+from pylot.perception.Depth_frame import DepthFrame
 
 CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
 LABELS = "image"
 last_frame = None
+last_depth_frame = None
 IMAGE_WIDTH = 800
 IMAGE_HEIGHT = 600
 
@@ -62,13 +64,32 @@ def spawn_driving_vehicle(client, world):
     return world.get_actors().find(vehicle_id)
 
 
-def spawn_rgb_camera(world, location, rotation, vehicle):
+def add_camera(world, location, rotation, callback, vehicle):
     camera_bp = world.get_blueprint_library().find("sensor.camera.rgb")
     camera_bp.set_attribute("image_size_x", f"{IMAGE_WIDTH}")
     camera_bp.set_attribute("image_size_y", f"{IMAGE_HEIGHT}")
     camera_bp.set_attribute("sensor_tick", "0.1")
     transform = Transform(location=location, rotation=rotation)
-    return world.spawn_actor(camera_bp, transform, attach_to=vehicle)
+    camera = world.spawn_actor(camera_bp, transform, attach_to=vehicle)
+    camera.listen(callback)
+    return camera
+
+
+def add_lidar(world, location, rotation, callback, vehicle):
+    lidar_blueprint = world.get_blueprint_library().find(
+        "sensor.lidar.ray_cast"
+    )
+    lidar_blueprint.set_attribute("channels", "32")
+    lidar_blueprint.set_attribute("range", "5000")
+    lidar_blueprint.set_attribute("points_per_second", "500000")
+    lidar_blueprint.set_attribute("rotation_frequency", "20")
+    lidar_blueprint.set_attribute("upper_fov", "15")
+    lidar_blueprint.set_attribute("lower_fov", "-30")
+    transform = Transform(location=location, rotation=rotation)
+    lidar = world.spawn_actor(lidar_blueprint, transform, attach_to=vehicle)
+    # Register callback to be invoked when a new point cloud is received.
+    lidar.listen(callback)
+    return lidar
 
 
 def on_camera_msg(simulator_image):
@@ -87,9 +108,30 @@ def on_camera_msg(simulator_image):
         fov=90.0,
     )
     global last_frame
-    last_frame = pickle.dumps(CameraFrame.from_simulator_frame(
-        simulator_image, camera_setup
-    ))
+    last_frame = pickle.dumps(
+        CameraFrame.from_simulator_frame(simulator_image, camera_setup)
+    )
+
+
+def on_lidar_msg(simulator_lidar):
+    game_time = int(simulator_lidar.timestamp * 1000)
+
+    lidar_transform = pylot.utils.Transform.from_simulator_transform(
+        simulator_lidar.transform
+    )
+
+    camera_setup = CameraSetup(
+        "rgb_camera",
+        "sensor.camera.rgb",
+        IMAGE_WIDTH,
+        IMAGE_HEIGHT,
+        lidar_transform,
+        fov=90.0,
+    )
+    global last_depth_frame
+    last_depth_frame = pickle.dumps(
+        DepthFrame.from_simulator_frame(simulator_lidar, camera_setup)
+    )
 
 
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
@@ -98,6 +140,24 @@ world = client.get_world()
 # Spawn the vehicle.
 vehicle = spawn_driving_vehicle(client, world)
 assert vehicle is not None, "Vehicle is None"
+
+# Spawn the camera and register a function to listen to the images.
+camera = add_camera(
+    world,
+    Location(x=2.0, y=0.0, z=1.8),
+    Rotation(roll=0, pitch=0, yaw=0),
+    on_camera_msg,
+    vehicle,
+)
+
+# Spawn lidar camera.
+camera = add_lidar(
+    world,
+    Location(x=2.0, y=0.0, z=1.8),
+    Rotation(roll=0, pitch=0, yaw=0),
+    on_lidar_msg,
+    vehicle,
+)
 
 
 def send(_):
@@ -117,16 +177,5 @@ def send(_):
     return {
         "image": last_frame,
         "pose": binary_data,
-        "open_drive": world.get_map().to_opendrive().encode("utf-8"),
+        #  "open_drive": world.get_map().to_opendrive().encode("utf-8"),
     }
-
-
-# Spawn the camera and register a function to listen to the images.
-camera = spawn_rgb_camera(
-    world,
-    Location(x=2.0, y=0.0, z=1.8),
-    Rotation(roll=0, pitch=0, yaw=0),
-    vehicle,
-)
-
-camera.listen(on_camera_msg)
