@@ -69,7 +69,12 @@ fn spawn_operator(
     operator: descriptor::Operator,
     communication: &dora_api::config::CommunicationConfig,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let mut command = tokio::process::Command::new(&operator.run);
+    let mut args = operator.run.split_ascii_whitespace();
+    let cmd = args
+        .next()
+        .ok_or_else(|| eyre!("`run` field must not be empty"))?;
+    let mut command = tokio::process::Command::new(cmd);
+    command.args(args);
     command.env(
         "OPERATOR_CONFIG",
         serde_yaml::to_string(&operator.config).wrap_err("failed to serialize operator config")?,
