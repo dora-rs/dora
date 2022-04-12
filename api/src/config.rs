@@ -42,6 +42,14 @@ impl std::fmt::Display for DataId {
     }
 }
 
+impl std::ops::Deref for DataId {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputMapping {
     pub source: NodeId,
