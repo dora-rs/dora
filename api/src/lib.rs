@@ -1,10 +1,13 @@
 use config::{CommunicationConfig, DataId, OperatorConfig};
 use eyre::WrapErr;
-use futures::{SinkExt, StreamExt};
+use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
 use futures_concurrency::Merge;
+use std::collections::HashSet;
 use zenoh::prelude::SplitBuffer;
 
 pub mod config;
+
+const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 
 pub struct DoraOperator {
     operator_config: OperatorConfig,
@@ -54,14 +57,33 @@ impl DoraOperator {
                 .subscribe(&topic)
                 .await
                 .map_err(BoxError)
-                .wrap_err_with(|| format!("failed to subscribe on {input}"))?;
+                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
             streams.push(sub.map(|s| Input {
                 id: input.clone(),
                 data: s.value.payload.contiguous().into_owned(),
             }))
         }
 
-        Ok(streams.merge())
+        let stop_messages = FuturesUnordered::new();
+        let sources: HashSet<_> = self
+            .operator_config
+            .inputs
+            .values()
+            .map(|v| &v.source)
+            .collect();
+        for source in &sources {
+            let topic = format!("{prefix}/{source}/{STOP_TOPIC}");
+            let sub = self
+                .zenoh
+                .subscribe(&topic)
+                .await
+                .map_err(BoxError)
+                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+            stop_messages.push(sub.into_future());
+        }
+        let finished = Box::pin(stop_messages.all(|_| async { true }));
+
+        Ok(streams.merge().take_until(finished))
     }
 
     pub async fn send_output(&self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {
@@ -79,13 +101,30 @@ impl DoraOperator {
             .await
             .map_err(BoxError)
             .wrap_err_with(|| format!("failed to create publisher for output {output_id}"))?;
-
         SinkExt::send(&mut publisher, data)
             .await
             .map_err(BoxError)
             .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
-
         Ok(())
+    }
+}
+
+impl Drop for DoraOperator {
+    fn drop(&mut self) {
+        use zenoh::prelude::ZFuture;
+
+        let prefix = &self.communication_config.zenoh_prefix;
+        let self_id = &self.operator_config.id;
+        let topic = format!("{prefix}/{self_id}/{STOP_TOPIC}");
+        let result = self
+            .zenoh
+            .put(&topic, Vec::new())
+            .wait()
+            .map_err(BoxError)
+            .wrap_err_with(|| format!("failed to send stop message for source `{self_id}`"));
+        if let Err(err) = result {
+            tracing::error!("{err}")
+        }
     }
 }
 
