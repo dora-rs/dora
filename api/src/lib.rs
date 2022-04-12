@@ -1,10 +1,11 @@
+use communication::CommunicationLayer;
 use config::{CommunicationConfig, DataId, OperatorConfig};
 use eyre::WrapErr;
-use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures::{stream::FuturesUnordered, StreamExt};
 use futures_concurrency::Merge;
 use std::collections::HashSet;
-use zenoh::prelude::SplitBuffer;
 
+mod communication;
 pub mod config;
 
 const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
@@ -12,7 +13,7 @@ const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 pub struct DoraOperator {
     operator_config: OperatorConfig,
     communication_config: CommunicationConfig,
-    zenoh: zenoh::Session,
+    communication: Box<dyn CommunicationLayer>,
 }
 
 impl DoraOperator {
@@ -42,7 +43,7 @@ impl DoraOperator {
         Ok(Self {
             operator_config,
             communication_config,
-            zenoh,
+            communication: Box::new(zenoh),
         })
     }
 
@@ -53,14 +54,13 @@ impl DoraOperator {
         for (input, config::InputMapping { source, output }) in &self.operator_config.inputs {
             let topic = format!("{prefix}/{source}/{output}");
             let sub = self
-                .zenoh
+                .communication
                 .subscribe(&topic)
                 .await
-                .map_err(BoxError)
                 .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-            streams.push(sub.map(|s| Input {
+            streams.push(sub.map(|data| Input {
                 id: input.clone(),
-                data: s.value.payload.contiguous().into_owned(),
+                data,
             }))
         }
 
@@ -74,10 +74,9 @@ impl DoraOperator {
         for source in &sources {
             let topic = format!("{prefix}/{source}/{STOP_TOPIC}");
             let sub = self
-                .zenoh
+                .communication
                 .subscribe(&topic)
                 .await
-                .map_err(BoxError)
                 .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
             stop_messages.push(sub.into_future());
         }
@@ -95,15 +94,9 @@ impl DoraOperator {
         let self_id = &self.operator_config.id;
 
         let topic = format!("{prefix}/{self_id}/{output_id}");
-        let mut publisher = self
-            .zenoh
-            .publish(&topic)
+        self.communication
+            .publish(&topic, data)
             .await
-            .map_err(BoxError)
-            .wrap_err_with(|| format!("failed to create publisher for output {output_id}"))?;
-        SinkExt::send(&mut publisher, data)
-            .await
-            .map_err(BoxError)
             .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         Ok(())
     }
@@ -111,16 +104,12 @@ impl DoraOperator {
 
 impl Drop for DoraOperator {
     fn drop(&mut self) {
-        use zenoh::prelude::ZFuture;
-
         let prefix = &self.communication_config.zenoh_prefix;
         let self_id = &self.operator_config.id;
         let topic = format!("{prefix}/{self_id}/{STOP_TOPIC}");
         let result = self
-            .zenoh
-            .put(&topic, Vec::new())
-            .wait()
-            .map_err(BoxError)
+            .communication
+            .publish_sync(&topic, &[])
             .wrap_err_with(|| format!("failed to send stop message for source `{self_id}`"));
         if let Err(err) = result {
             tracing::error!("{err}")
