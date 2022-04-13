@@ -97,9 +97,7 @@ class PlanningOperator:
         self._planner = RRTStarPlanner(self._world, self._flags, self._logger)
         self._map = HDMap(get_map())
 
-    def run(self, pose_msg, open_drive_msg):
-        # with open("mock_pose.pkl", "wb") as pickle_file:
-        #    pickle.dump(pose_msg, pickle_file)
+    def run(self, pose_msg, open_drive_msg=None):
         ego_transform = pose_msg.transform
 
         # if open_drive_msg:
@@ -162,13 +160,13 @@ planning = PlanningOperator()
 
 def run(inputs):
     keys = inputs.keys()
-    if "pose" not in keys or "open_drive" not in keys:
+    if "pose" not in keys:  # or "open_drive" not in keys:
         return {}
 
     pose = inputs["pose"]
     pose = pickle.loads(pose)
-    open_drive = inputs["open_drive"].decode("utf-8")
-    waypoints = planning.run(pose, open_drive)
+    # open_drive = inputs["open_drive"].decode("utf-8")
+    waypoints = planning.run(pose)  # , open_drive)
 
     return {"waypoints": pickle.dumps(waypoints)}
 

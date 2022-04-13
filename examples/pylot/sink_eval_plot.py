@@ -50,6 +50,7 @@ FLAGS.lane_width_hybrid_astar = 10
 FLAGS.radius = 10
 FLAGS.car_length = 10
 FLAGS.car_width = 10
+FLAGS.static_obstacle_distance_threshold = 1000
 
 goal_location = pylot.utils.Location(234, 59, 39)
 
@@ -94,6 +95,8 @@ def plot(inputs):
 
     if "obstacles" in keys:
         obstacles = pickle.loads(inputs["obstacles"])
+        for obstacle in obstacles:
+            obstacle.draw_on_frame(image, {})
 
     global mutex
     mutex.acquire()
@@ -110,7 +113,6 @@ def plot(inputs):
         waypoints = pickle.loads(inputs["waypoints"])
         world.update_waypoints(goal_location, waypoints)
 
-    mutex.release()
     world.draw_on_frame(image)
 
     image = image.as_numpy_array()
@@ -135,8 +137,6 @@ def plot(inputs):
     data = resized_image[:, :, (2, 1, 0)]
     data = np.rot90(data)
 
-    global mutex
-    mutex.acquire()
     counter = now
     pygame.surfarray.blit_array(gameDisplay, data)
     pygame.display.flip()
