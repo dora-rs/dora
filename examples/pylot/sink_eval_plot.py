@@ -91,20 +91,23 @@ def plot(inputs):
 
     pose = pickle.loads(inputs["pose"])
 
-    obstacles = []
-
     if "obstacles" in keys:
         obstacles = pickle.loads(inputs["obstacles"])
-        for obstacle in obstacles:
-            obstacle.draw_on_frame(image, {})
+        previous_obstacles = inputs["obstacles"]
+    elif "previous_obstacles" in keys:
+        obstacles = pickle.loads(inputs["previous_obstacles"])
+        previous_obstacles = inputs["previous_obstacles"]
+    else:
+        obstacles = []
+        previous_obstacles = pickle.dumps([])
 
     global mutex
     mutex.acquire()
     world.update(
         time.time(),
         pose,
-        [],
         obstacles,
+        [],
         hd_map=map,
         lanes=None,
     )
@@ -142,4 +145,4 @@ def plot(inputs):
     pygame.display.flip()
     mutex.release()
 
-    return {"report": bytes("ok", "utf-8")}
+    return {"previous_obstacles": previous_obstacles}

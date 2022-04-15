@@ -134,27 +134,6 @@ class PlanningOperator:
         return output_wps
 
 
-def get_predictions(prediction_msg, ego_transform):
-    """Extracts obstacle predictions out of the message.
-    This method is useful to build obstacle predictions when
-    the operator directly receives detections instead of predictions.
-    The method assumes that the obstacles are static.
-    """
-    predictions = []
-    # Transform the obstacle into a prediction.
-    for obstacle in prediction_msg.obstacles:
-        obstacle_trajectory = ObstacleTrajectory(obstacle, [])
-        prediction = ObstaclePrediction(
-            obstacle_trajectory,
-            obstacle.transform,
-            1.0,
-            [ego_transform.inverse_transform() * obstacle.transform],
-        )
-        predictions.append(prediction)
-
-    return predictions
-
-
 planning = PlanningOperator()
 
 

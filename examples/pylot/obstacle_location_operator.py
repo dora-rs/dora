@@ -5,6 +5,8 @@ from pylot.drivers.sensor_setup import CameraSetup
 import pylot.utils
 import numpy as np
 from carla import Transform, Location, Rotation
+from pylot.perception.tracking.obstacle_trajectory import ObstacleTrajectory
+from pylot.prediction.obstacle_prediction import ObstaclePrediction
 
 sensor_transform = pylot.utils.Transform.from_simulator_transform(
     Transform(Location(0, 18, 1.4), Rotation(pitch=0, yaw=-90, roll=0))
@@ -21,6 +23,27 @@ camera_setup = CameraSetup(
 )
 
 logger = logging.Logger("Obstacle Location")
+
+
+def get_predictions(obstacles, ego_transform):
+    """Extracts obstacle predictions out of the message.
+    This method is useful to build obstacle predictions when
+    the operator directly receives detections instead of predictions.
+    The method assumes that the obstacles are static.
+    """
+    predictions = []
+    # Transform the obstacle into a prediction.
+    for obstacle in obstacles:
+        obstacle_trajectory = ObstacleTrajectory(obstacle, [])
+        prediction = ObstaclePrediction(
+            obstacle_trajectory,
+            obstacle.transform,
+            1.0,
+            [ego_transform.inverse_transform() * obstacle.transform],
+        )
+        predictions.append(prediction)
+
+    return predictions
 
 
 def get_obstacle_locations(
@@ -84,4 +107,8 @@ def run(inputs):
         camera_setup,
     )
 
-    return {"obstacles": pickle.dumps(obstacles_with_location)}
+    obstacles_with_prediction = get_predictions(
+        obstacles_with_location, pose.transform
+    )
+
+    return {"obstacles": pickle.dumps(obstacles_with_prediction)}

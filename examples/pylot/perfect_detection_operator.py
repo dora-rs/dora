@@ -49,6 +49,9 @@ def run(inputs):
             if bbox:
                 det_obstacles.append(obstacle)
 
+    if len(det_obstacles) == 0:
+        return {}
+
     return {
         "obstacles_without_location": pickle.dumps(det_obstacles),
         #   "traffic_lights": pickle.dumps(visible_tls),
