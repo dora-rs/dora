@@ -23,13 +23,7 @@ class Flags(object):
 
 FLAGS = Flags()
 FLAGS.tracking_num_steps = 10
-FLAGS.step_size = 1
-FLAGS.max_iterations = 10
-FLAGS.end_dist_threshold = 1
-FLAGS.obstacle_clearance_rrt = 1
-FLAGS.lane_width = 1
 FLAGS.planning_type = "waypoints"
-FLAGS.target_speed = 10
 FLAGS.max_speed = 10
 FLAGS.max_accel = 10
 FLAGS.max_step_hybrid_astar = 10
@@ -41,12 +35,27 @@ FLAGS.rad_step = 10
 FLAGS.rad_upper_range = 10
 FLAGS.rad_lower_range = 10
 FLAGS.max_curvature = 10
-FLAGS.num_waypoints_ahead = 10
 FLAGS.obstacle_clearance_hybrid_astar = 10
 FLAGS.lane_width_hybrid_astar = 10
 FLAGS.radius = 10
 FLAGS.car_length = 10
 FLAGS.car_width = 10
+FLAGS.dynamic_obstacle_distance_threshold = 100
+
+# Planning general
+FLAGS.target_speed = 10
+FLAGS.obstacle_radius = 1
+FLAGS.num_waypoints_ahead = 60
+FLAGS.num_waypoints_behind = 30
+FLAGS.obstacle_filtering_distance = 1.0
+
+# RRT Star
+FLAGS.step_size = 0.5
+FLAGS.max_iterations = 2000
+FLAGS.end_dist_threshold = 2.0
+FLAGS.obstacle_clearance_rrt = 0.5
+FLAGS.lane_width = 3
+
 
 goal_location = pylot.utils.Location(234, 59, 39)
 
@@ -97,7 +106,7 @@ class PlanningOperator:
         self._planner = RRTStarPlanner(self._world, self._flags, self._logger)
         self._map = HDMap(get_map())
 
-    def run(self, pose_msg, open_drive_msg=None):
+    def run(self, pose_msg, obstacles, open_drive_msg=None):
         ego_transform = pose_msg.transform
 
         # if open_drive_msg:
@@ -109,7 +118,7 @@ class PlanningOperator:
             time.time(),
             pose_msg,
             obstacles,
-            obstacles,
+            [],
             hd_map=self._map,
             lanes=None,
         )
@@ -144,10 +153,24 @@ def run(inputs):
 
     pose = inputs["pose"]
     pose = pickle.loads(pose)
-    # open_drive = inputs["open_drive"].decode("utf-8")
-    waypoints = planning.run(pose)  # , open_drive)
 
-    return {"waypoints": pickle.dumps(waypoints)}
+    if "obstacles" in keys:
+        obstacles = pickle.loads(inputs["obstacles"])
+        previous_obstacles = inputs["obstacles"]
+    elif "previous_obstacles" in keys:
+        obstacles = pickle.loads(inputs["previous_obstacles"])
+        previous_obstacles = inputs["previous_obstacles"]
+    else:
+        obstacles = []
+        previous_obstacles = pickle.dumps([])
+
+    # open_drive = inputs["open_drive"].decode("utf-8")
+    waypoints = planning.run(pose, obstacles)  # , open_drive)
+
+    return {
+        "waypoints": pickle.dumps(waypoints),
+        "previous_obstacles": previous_obstacles,
+    }
 
 
 # run(pose_msg)

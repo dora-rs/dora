@@ -3,7 +3,6 @@ import os
 import pickle
 import threading
 import time
-from curses import KEY_SLEFT
 
 import cv2
 import numpy as np
