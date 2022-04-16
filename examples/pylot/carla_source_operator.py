@@ -1,20 +1,17 @@
-import json
-import os
+import logging
 import pickle
 import random
 import time
-import logging
 
-import numpy as np
 from carla import Client, Location, Rotation, Transform, command
 
 import pylot.simulation.utils
 import pylot.utils
-from pylot.drivers.sensor_setup import CameraSetup, LidarSetup
+from pylot.drivers.sensor_setup import (CameraSetup, LidarSetup,
+                                        SegmentedCameraSetup)
 from pylot.perception.camera_frame import CameraFrame
 from pylot.perception.depth_frame import DepthFrame
 from pylot.perception.point_cloud import PointCloud
-from pylot.drivers.sensor_setup import SegmentedCameraSetup
 from pylot.perception.segmentation.segmented_frame import SegmentedFrame
 
 logger = logging.Logger("")
@@ -55,7 +52,6 @@ def on_segmented_msg(simulator_image):
 
 
 def on_lidar_msg(simulator_pc):
-    game_time = int(simulator_pc.timestamp * 1000)
     lidar_transform = pylot.utils.Transform.from_simulator_transform(
         simulator_pc.transform
     )
@@ -64,14 +60,11 @@ def on_lidar_msg(simulator_pc):
     )
 
     global lidar_pc
-    point_cloud = PointCloud.from_simulator_point_cloud(
-        simulator_pc, lidar_setup
-    )
+    lidar_pc = PointCloud.from_simulator_point_cloud(simulator_pc, lidar_setup)
     # pptk.viewer(point_cloud.points)
 
 
 def on_camera_msg(simulator_image):
-    game_time = int(simulator_image.timestamp * 1000)
 
     camera_transform = pylot.utils.Transform.from_simulator_transform(
         simulator_image.transform
@@ -86,7 +79,6 @@ def on_camera_msg(simulator_image):
 
 
 def on_depth_msg(simulator_image):
-    game_time = int(simulator_image.timestamp * 1000)
 
     depth_camera_transform = pylot.utils.Transform.from_simulator_transform(
         simulator_image.transform
@@ -174,7 +166,7 @@ def spawn_driving_vehicle(client, world):
     )
     while (
         not vehicle_bp.has_attribute("number_of_wheels")
-        or not int(vehicle_bp.get_attribute("number_of_wheels")) == 4
+        or int(vehicle_bp.get_attribute("number_of_wheels")) != 4
     ):
         vehicle_bp = random.choice(
             world.get_blueprint_library().filter("vehicle.*")

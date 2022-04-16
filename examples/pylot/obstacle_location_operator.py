@@ -1,26 +1,11 @@
 import logging
 import pickle
 
-from pylot.drivers.sensor_setup import CameraSetup
-import pylot.utils
 import numpy as np
-from carla import Transform, Location, Rotation
+
+import pylot.utils
 from pylot.perception.tracking.obstacle_trajectory import ObstacleTrajectory
 from pylot.prediction.obstacle_prediction import ObstaclePrediction
-
-sensor_transform = pylot.utils.Transform.from_simulator_transform(
-    Transform(Location(0, 18, 1.4), Rotation(pitch=0, yaw=-90, roll=0))
-)
-
-
-camera_setup = CameraSetup(
-    "depth_camera",
-    "sensor.camera.depth",
-    800,
-    600,
-    sensor_transform,
-    fov=90.0,
-)
 
 logger = logging.Logger("Obstacle Location")
 
@@ -50,7 +35,6 @@ def get_obstacle_locations(
     obstacles,
     depth_frame,
     ego_transform,
-    camera_setup,
 ):
 
     depth_frame.camera_setup.set_transform(
@@ -104,7 +88,6 @@ def run(inputs):
         obstacles,
         depth_frame,
         pose.transform,
-        camera_setup,
     )
 
     obstacles_with_prediction = get_predictions(

@@ -7,12 +7,10 @@ import pickle
 import threading
 import time
 
-from carla import Map  # Resolve import error of Carla
-
 import pylot.utils
 from pylot.map.hd_map import HDMap
 from pylot.planning.world import World
-from pylot.simulation.utils import get_map, map_from_opendrive
+from pylot.simulation.utils import get_map
 
 mutex = threading.Lock()
 
@@ -23,7 +21,7 @@ class Flags(object):
 
 FLAGS = Flags()
 FLAGS.tracking_num_steps = 10
-FLAGS.planning_type = "waypoints"
+FLAGS.planning_type = "rrt"
 FLAGS.max_speed = 10
 FLAGS.max_accel = 10
 FLAGS.max_step_hybrid_astar = 10
@@ -62,14 +60,6 @@ goal_location = pylot.utils.Location(234, 59, 39)
 
 logger = logging.Logger("")
 
-# TODO: Remove template messages
-class Obstacles(object):
-    pass
-
-
-obstacles = Obstacles()
-obstacles = []
-
 
 class PlanningOperator:
     """Planning Operator.
@@ -107,11 +97,9 @@ class PlanningOperator:
         self._map = HDMap(get_map())
 
     def run(self, pose_msg, obstacles, open_drive_msg=None):
-        ego_transform = pose_msg.transform
 
         # if open_drive_msg:
         #    self._map = map_from_opendrive(open_drive_msg)
-        # predictions = self.get_predictions(prediction_msg, ego_transform)
 
         # Update the representation of the world.
         self._world.update(
@@ -127,7 +115,7 @@ class PlanningOperator:
         #  ttd = ttd_msg.data - (time.time() - self._world.pose.localization_time)
         # Total ttd - time spent up to now
         speed_factor = 1
-        speed_factor_stop = 0
+        speed_factor_stop = 1
         speed_factor_tl = 1
         global mutex
         mutex.acquire()
@@ -171,6 +159,3 @@ def run(inputs):
         "waypoints": pickle.dumps(waypoints),
         "previous_obstacles": previous_obstacles,
     }
-
-
-# run(pose_msg)

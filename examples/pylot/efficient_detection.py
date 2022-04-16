@@ -1,9 +1,6 @@
 import os
 import pickle
-import time
-from random import random
 
-import cv2
 import numpy as np
 import tensorflow as tf
 

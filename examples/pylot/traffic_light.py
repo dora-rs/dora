@@ -1,10 +1,8 @@
 import os
-import time
 
 import cv2
 import numpy as np
 import tensorflow as tf
-
 
 TRAFFIC_LIGHT_DET_MIN_SCORE_THRESHOLD = 0.01
 WIDTH = 1043

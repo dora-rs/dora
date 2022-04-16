@@ -1,6 +1,6 @@
 import pickle
 
-from carla import Client, Location, Rotation, Transform, command
+from carla import Client
 
 CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
@@ -9,7 +9,7 @@ client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
 world = client.get_world()
 
 town_name = world.get_map().name
-dynamic_obstacle_distance_threshold = 1000
+DYNAMIC_OBSTACLE_DISTANCE_THRESHOLD = 1000
 
 
 def run(inputs):
@@ -30,7 +30,7 @@ def run(inputs):
     from pylot.simulation.utils import extract_data_in_pylot_format
 
     actor_list = world.get_actors()
-    (vehicles, people, traffic_lights, _, _) = extract_data_in_pylot_format(
+    (vehicles, people, _traffic_lights, _, _) = extract_data_in_pylot_format(
         actor_list
     )
 
@@ -41,7 +41,7 @@ def run(inputs):
         # dynamic_obstacle_distance_threshold metres away.
         if (
             obstacle.transform.location.distance(vehicle_transform.location)
-            <= dynamic_obstacle_distance_threshold
+            <= DYNAMIC_OBSTACLE_DISTANCE_THRESHOLD
         ):
             bbox = obstacle.populate_bounding_box_2D(
                 depth_frame, segmented_frame

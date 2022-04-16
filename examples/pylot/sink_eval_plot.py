@@ -1,5 +1,4 @@
 import logging
-import os
 import pickle
 import threading
 import time
@@ -11,7 +10,7 @@ import pygame
 import pylot.perception.detection.utils
 from pylot.map.hd_map import HDMap
 from pylot.planning.world import World
-from pylot.simulation.utils import get_map, map_from_opendrive
+from pylot.simulation.utils import get_map
 
 mutex = threading.Lock()
 pygame.init()
@@ -75,7 +74,7 @@ counter = time.time()
 
 world = World(FLAGS, logger)
 
-map = HDMap(get_map())
+hd_map = HDMap(get_map())
 
 
 def plot(inputs):
@@ -107,7 +106,7 @@ def plot(inputs):
         pose,
         obstacles,
         [],
-        hd_map=map,
+        hd_map=hd_map,
         lanes=None,
     )
 
