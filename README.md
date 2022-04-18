@@ -73,6 +73,8 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/examples/pylot
 cargo run start-python carla_source_operator send &
 cargo run start-python perfect_detection_operator run pose depth_frame segmented_frame &
 cargo run start-python obstacle_location_operator run pose depth_frame obstacles_without_location &
-cargo run start-python planning_operator run pose open_drive obstacles &
+cargo run start-python planning_operator run pose obstacles &
+cargo run start-python pid_control_operator run pose waypoints &
+cargo run start-python control_operator run control vehicle_id &
 SOURCE=image cargo run start-python sink_eval_plot plot image waypoints obstacles pose
 ```

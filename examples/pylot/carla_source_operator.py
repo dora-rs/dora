@@ -7,8 +7,11 @@ from carla import Client, Location, Rotation, Transform, command
 
 import pylot.simulation.utils
 import pylot.utils
-from pylot.drivers.sensor_setup import (CameraSetup, LidarSetup,
-                                        SegmentedCameraSetup)
+from pylot.drivers.sensor_setup import (
+    CameraSetup,
+    LidarSetup,
+    SegmentedCameraSetup,
+)
 from pylot.perception.camera_frame import CameraFrame
 from pylot.perception.depth_frame import DepthFrame
 from pylot.perception.point_cloud import PointCloud
@@ -27,10 +30,13 @@ lidar_pc = None
 depth_frame = None
 last_frame = None
 segmented_frame = None
+vehicle_id = None
 
 sensor_transform = Transform(
     Location(2, 0, 1), Rotation(pitch=0, yaw=0, roll=0)
 )
+
+goal_location = pylot.utils.Location(234, 59, 39)
 
 
 def on_segmented_msg(simulator_image):
@@ -171,7 +177,7 @@ def spawn_driving_vehicle(client, world):
         vehicle_bp = random.choice(
             world.get_blueprint_library().filter("vehicle.*")
         )
-    vehicle_bp.set_attribute("role_name", "autopilot")
+    # vehicle_bp.set_attribute("role_name", "autopilot")
 
     # Get the spawn point of the vehicle.
     start_pose = random.choice(world.get_map().get_spawn_points())
@@ -179,9 +185,11 @@ def spawn_driving_vehicle(client, world):
     # Spawn the vehicle.
     batch = [
         command.SpawnActor(vehicle_bp, start_pose).then(
-            command.SetAutopilot(command.FutureActor, True)
+            command.SetAutopilot(command.FutureActor, False)
         )
     ]
+
+    global vehicle_id
     vehicle_id = client.apply_batch_sync(batch)[0].actor_id
     while world.get_actors().find(vehicle_id) is None:
 
@@ -224,11 +232,6 @@ segmented_camera = add_segmented_camera(
 )
 
 
-vec_transform = pylot.utils.Transform.from_simulator_transform(
-    ego_vehicle.get_transform()
-)
-
-
 def send(_):
     global last_frame
     global segmented_frame
@@ -237,6 +240,9 @@ def send(_):
     if last_frame is None or segmented_frame is None or depth_frame is None:
         return {}
 
+    vec_transform = pylot.utils.Transform.from_simulator_transform(
+        ego_vehicle.get_transform()
+    )
     velocity_vector = pylot.utils.Vector3D.from_simulator_vector(
         ego_vehicle.get_velocity()
     )
@@ -248,5 +254,6 @@ def send(_):
         "depth_frame": pickle.dumps(depth_frame),
         "segmented_frame": pickle.dumps(segmented_frame),
         "pose": pickle.dumps(pose),
+        "vehicle_id": pickle.dumps(vehicle_id)
         #  "open_drive": world.get_map().to_opendrive().encode("utf-8"),
     }
