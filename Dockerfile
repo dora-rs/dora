@@ -20,7 +20,7 @@ RUN sudo chown erdos:erdos /home/erdos/workspace/dora-rs
 
 RUN rustup default stable
 
-RUN cargo build 
+RUN cargo build --release 
 
 COPY examples examples
 

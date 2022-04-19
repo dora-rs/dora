@@ -10,22 +10,27 @@ CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
 
-counter = time.time()
+vehicle_id = None
 
 
 def run(inputs):
-    if "control" not in inputs.keys() or "vehicle_id" not in inputs.keys():
-        return {}
+
+    global vehicle_id
     global mutex
+
+    if vehicle_id is None and "vehicle_id" not in inputs.keys():
+        return {}
+    elif vehicle_id is None and "vehicle_id" in inputs.keys():
+        mutex.acquire()
+        vehicle_id = pickle.loads(inputs["vehicle_id"])
+        mutex.release()
+
+    if "control" not in inputs.keys():
+        return {}
     mutex.acquire()
-    global counter
-    now = time.time()
-    print(f"{now - counter:.2f}")
-    counter = now
     mutex.release()
 
     control = pickle.loads(inputs["control"])
-    vehicle_id = pickle.loads(inputs["vehicle_id"])
 
     vec_control = VehicleControl(
         throttle=control["throttle"],
