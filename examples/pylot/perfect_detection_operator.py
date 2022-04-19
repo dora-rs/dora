@@ -9,7 +9,7 @@ client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
 world = client.get_world()
 
 town_name = world.get_map().name
-DYNAMIC_OBSTACLE_DISTANCE_THRESHOLD = 1000
+DYNAMIC_OBSTACLE_DISTANCE_THRESHOLD = 500
 
 
 def run(inputs):

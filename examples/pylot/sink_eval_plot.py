@@ -2,6 +2,7 @@ import logging
 import pickle
 import threading
 import time
+from collections import deque
 
 import cv2
 import numpy as np
@@ -91,30 +92,24 @@ def plot(inputs):
 
     if "obstacles" in keys:
         obstacles = pickle.loads(inputs["obstacles"])
-        previous_obstacles = inputs["obstacles"]
     elif "previous_obstacles" in keys:
         obstacles = pickle.loads(inputs["previous_obstacles"])
-        previous_obstacles = inputs["previous_obstacles"]
     else:
         obstacles = []
-        previous_obstacles = pickle.dumps([])
-
-    global mutex
-    mutex.acquire()
-    world.update(
-        time.time(),
-        pose,
-        obstacles,
-        [],
-        hd_map=hd_map,
-        lanes=None,
-    )
 
     if "waypoints" in keys:
         waypoints = pickle.loads(inputs["waypoints"])
-        world.update_waypoints(goal_location, waypoints)
+    elif "previous_waypoints" in keys:
+        waypoints = pickle.loads(inputs["previous_waypoints"])
+        waypoints.remove_completed(pose.transform)
+    else:
+        waypoints = None
 
-    world.draw_on_frame(image)
+    if waypoints is not None:
+        waypoints.draw_on_frame(image)
+
+    for obstacle_prediction in obstacles:
+        obstacle_prediction.draw_trajectory_on_frame(image)
 
     image = image.as_numpy_array()
     if len(image) == 800 * 600 * 4:
@@ -123,6 +118,8 @@ def plot(inputs):
         resized_image = np.ascontiguousarray(resized_image, dtype=np.uint8)
     else:
         resized_image = np.reshape(image, (display_height, display_width, 3))
+    global mutex
+    mutex.acquire()
     global counter
     now = time.time()
     cv2.putText(
@@ -143,4 +140,7 @@ def plot(inputs):
     pygame.display.flip()
     mutex.release()
 
-    return {"previous_obstacles": previous_obstacles}
+    return {
+        "previous_obstacles": pickle.dumps(obstacles),
+        "previous_waypoints": pickle.dumps(waypoints),
+    }

@@ -14,7 +14,7 @@ COAST_FACTOR = 1.75
 pid_p = 1.0
 pid_d = 0.0
 pid_i = 0.05
-dt = 1.0 / 10
+dt = 1.0 / 4
 pid_use_real_time = True
 pid = PIDLongitudinalController(pid_p, pid_d, pid_i, dt, pid_use_real_time)
 
@@ -27,7 +27,7 @@ class Flags(object):
 
 FLAGS = Flags()
 FLAGS.brake_max = 1.0
-FLAGS.throttle_max = 1.0
+FLAGS.throttle_max = 0.5
 
 
 def run(inputs):
@@ -69,8 +69,8 @@ def run(inputs):
         steer = 0.0
 
     return {
-        # "control": pickle.dumps(
-        #     {"steer": steer, "throttle": throttle, "brake": brake}
-        # ),
+        "control": pickle.dumps(
+            {"steer": steer, "throttle": throttle, "brake": brake}
+        ),
         "previous_waypoints": pickle.dumps(waypoints),
     }

@@ -33,7 +33,7 @@ segmented_frame = None
 vehicle_id = None
 
 sensor_transform = Transform(
-    Location(2, 0, 1), Rotation(pitch=0, yaw=0, roll=0)
+    Location(3, 0, 1), Rotation(pitch=0, yaw=0, roll=0)
 )
 
 goal_location = pylot.utils.Location(234, 59, 39)

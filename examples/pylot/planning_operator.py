@@ -43,12 +43,12 @@ FLAGS.dynamic_obstacle_distance_threshold = 100
 # Planning general
 FLAGS.target_speed = 10
 FLAGS.obstacle_radius = 1
-FLAGS.num_waypoints_ahead = 6000
-FLAGS.num_waypoints_behind = 3000
+FLAGS.num_waypoints_ahead = 60
+FLAGS.num_waypoints_behind = 30
 FLAGS.obstacle_filtering_distance = 1.0
 
 # RRT Star
-FLAGS.step_size = 2
+FLAGS.step_size = 0.5
 FLAGS.max_iterations = 2000
 FLAGS.end_dist_threshold = 2.0
 FLAGS.obstacle_clearance_rrt = 0.5
@@ -154,7 +154,7 @@ def run(inputs):
 
     # open_drive = inputs["open_drive"].decode("utf-8")
     waypoints = planning.run(pose, obstacles)  # , open_drive)
-    print(waypoints.as_numpy_array_2D()[0][:5])
+
     return {
         "waypoints": pickle.dumps(waypoints),
         "previous_obstacles": previous_obstacles,
