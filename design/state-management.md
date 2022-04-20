@@ -28,7 +28,7 @@ fn restore_state(&mut self, state: HashMap<String, Vec<u8>>)
 
 In this method, the operator should deserialize and apply all state entries, and perform all custom consistency checks that are necessary.
 
-## Staring State
+## Sharing State
 
 To share state between operators, dora provides access to a node-local key-value store:
 
