@@ -14,7 +14,7 @@ COAST_FACTOR = 1.75
 pid_p = 1.0
 pid_d = 0.0
 pid_i = 0.05
-dt = 1.0 / 4
+dt = 1.0 / 3
 pid_use_real_time = True
 pid = PIDLongitudinalController(pid_p, pid_d, pid_i, dt, pid_use_real_time)
 
@@ -47,10 +47,13 @@ def run(inputs):
     else:
         return {}
 
+    waypoints.remove_completed(ego_transform.location)
+
     try:
         angle_steer = waypoints.get_angle(
             ego_transform, MIN_PID_STEER_WAYPOINT_DISTANCE
         )
+
         target_speed = waypoints.get_target_speed(
             ego_transform, MIN_PID_SPEED_WAYPOINT_DISTANCE
         )

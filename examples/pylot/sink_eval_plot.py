@@ -99,8 +99,10 @@ def plot(inputs):
 
     if "waypoints" in keys:
         waypoints = pickle.loads(inputs["waypoints"])
+        waypoints.remove_completed(pose.transform.location)
     elif "previous_waypoints" in keys:
         waypoints = pickle.loads(inputs["previous_waypoints"])
+        waypoints.remove_completed(pose.transform.location)
     else:
         waypoints = None
 

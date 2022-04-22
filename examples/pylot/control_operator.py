@@ -16,19 +16,17 @@ vehicle_id = None
 def run(inputs):
 
     global vehicle_id
-    global mutex
 
     if vehicle_id is None and "vehicle_id" not in inputs.keys():
         return {}
     elif vehicle_id is None and "vehicle_id" in inputs.keys():
+        global mutex
         mutex.acquire()
         vehicle_id = pickle.loads(inputs["vehicle_id"])
         mutex.release()
 
     if "control" not in inputs.keys():
         return {}
-    mutex.acquire()
-    mutex.release()
 
     control = pickle.loads(inputs["control"])
 
@@ -39,6 +37,7 @@ def run(inputs):
         hand_brake=False,
         reverse=False,
     )
+
     client.apply_batch_sync(
         [command.ApplyVehicleControl(vehicle_id, vec_control)]
     )

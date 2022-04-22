@@ -94,4 +94,7 @@ def run(inputs):
         obstacles_with_location, pose.transform
     )
 
+    if len(obstacles_with_prediction) == 0:
+        return {}
+
     return {"obstacles": pickle.dumps(obstacles_with_prediction)}

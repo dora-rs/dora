@@ -6,6 +6,7 @@ import logging
 import pickle
 import threading
 import time
+from collections import deque
 
 import pylot.utils
 from pylot.map.hd_map import HDMap
@@ -21,35 +22,37 @@ class Flags(object):
 
 FLAGS = Flags()
 FLAGS.tracking_num_steps = 10
-FLAGS.planning_type = "waypoint"
-FLAGS.max_speed = 10
-FLAGS.max_accel = 10
-FLAGS.max_step_hybrid_astar = 10
-FLAGS.step_size_hybrid_astar = 10
-FLAGS.max_iterations_hybrid_astar = 10
-FLAGS.completion_threshold = 10
-FLAGS.angle_completion_threshold = 10
-FLAGS.rad_step = 10
-FLAGS.rad_upper_range = 10
-FLAGS.rad_lower_range = 10
-FLAGS.max_curvature = 10
-FLAGS.obstacle_clearance_hybrid_astar = 10
-FLAGS.lane_width_hybrid_astar = 10
-FLAGS.radius = 10
-FLAGS.car_length = 10
-FLAGS.car_width = 10
-FLAGS.dynamic_obstacle_distance_threshold = 100
+FLAGS.planning_type = "rrt"
+FLAGS.max_speed = 10.0
+FLAGS.max_accel = 6.0
+FLAGS.max_curvature = 1.0
+
+# Hybrid AStar flags
+FLAGS.step_size_hybrid_astar = 3.0
+FLAGS.max_iterations_hybrid_astar = 2000
+FLAGS.completion_threshold = 1.0
+FLAGS.angle_completion_threshold = 100
+FLAGS.rad_step = 4.0
+FLAGS.rad_upper_range = 4.0
+FLAGS.rad_lower_range = 4.0
+FLAGS.obstacle_clearance_hybrid_astar = 1.0
+FLAGS.lane_width_hybrid_astar = 6
+FLAGS.radius = 6.0
+FLAGS.car_length = 4.0
+FLAGS.car_width = 1.8
+
+FLAGS.dynamic_obstacle_distance_threshold = 50
 
 # Planning general
 FLAGS.target_speed = 10
 FLAGS.obstacle_radius = 1
-FLAGS.num_waypoints_ahead = 60
-FLAGS.num_waypoints_behind = 30
+FLAGS.num_waypoints_ahead = 30
+FLAGS.num_waypoints_behind = 0
 FLAGS.obstacle_filtering_distance = 1.0
 
 # RRT Star
 FLAGS.step_size = 0.5
-FLAGS.max_iterations = 2000
+FLAGS.max_iterations = 200
 FLAGS.end_dist_threshold = 2.0
 FLAGS.obstacle_clearance_rrt = 0.5
 FLAGS.lane_width = 3
@@ -57,8 +60,18 @@ FLAGS.lane_width = 3
 
 goal_location = pylot.utils.Location(234, 59, 39)
 
+logger = logging.getLogger("")
+logger.setLevel(logging.INFO)
+# define file handler and set formatter
+file_handler = logging.FileHandler("logfile.log")
+formatter = logging.Formatter(
+    "%(asctime)s : %(levelname)s : %(name)s : %(message)s"
+)
+file_handler.setFormatter(formatter)
 
-logger = logging.Logger("")
+# add file handler to logger
+logger.addHandler(file_handler)
+file_handler = logging.FileHandler("logfile.log")
 
 
 class PlanningOperator:
@@ -123,9 +136,11 @@ class PlanningOperator:
             target_speed = speed_factor * self._flags.target_speed
             output_wps = self._world.follow_waypoints(target_speed)
         else:
+            print("pre")
             output_wps = self._planner.run(time.time())
-            speed_factor = min(speed_factor_stop, speed_factor_tl)
-            output_wps.apply_speed_factor(speed_factor)
+            print("post")
+            # speed_factor = min(speed_factor_stop, speed_factor_tl)
+            # output_wps.apply_speed_factor(speed_factor)
         mutex.release()
 
         return output_wps
@@ -149,8 +164,8 @@ def run(inputs):
         obstacles = pickle.loads(inputs["previous_obstacles"])
         previous_obstacles = inputs["previous_obstacles"]
     else:
-        obstacles = []
-        previous_obstacles = pickle.dumps([])
+        obstacles = deque()
+        previous_obstacles = pickle.dumps(obstacles)
 
     # open_drive = inputs["open_drive"].decode("utf-8")
     waypoints = planning.run(pose, obstacles)  # , open_drive)

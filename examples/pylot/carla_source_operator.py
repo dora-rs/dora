@@ -216,8 +216,8 @@ world = client.get_world()
     "0.9.10",
     -1,
     True,
-    7,
-    7,
+    10,
+    10,
     logger,
 )
 
