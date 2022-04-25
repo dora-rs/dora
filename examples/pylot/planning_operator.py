@@ -3,12 +3,12 @@ Author: Edward Fang
 Email: edward.fang@berkeley.edu
 """
 import logging
-import pickle
 import threading
 import time
 from collections import deque
 
 import pylot.utils
+from dora_watermark import dump, load
 from pylot.map.hd_map import HDMap
 from pylot.planning.world import World
 from pylot.simulation.utils import get_map
@@ -171,23 +171,26 @@ def run(inputs):
     if "pose" not in keys:  # or "open_drive" not in keys:
         return {}
 
-    pose = pickle.loads(inputs["pose"])
+    pose, timestamps = load(inputs, "pose")
+    timestamps.append(("planning_operator_recieving", time.time()))
 
     if "obstacles" in keys:
-        obstacles = pickle.loads(inputs["obstacles"])
+        obstacles, timestamps = load(inputs, "obstacles")
     elif "previous_obstacles" in keys:
-        obstacles = pickle.loads(inputs["previous_obstacles"])
+        obstacles, _ = load(inputs, "previous_obstacles")
     else:
         obstacles = deque()
 
-    # open_drive = inputs["open_drive"].decode("utf-8")
+    # open_drive = inputs,"open_drive"].decode("utf-8")
     global mutex
     global planning
     mutex.acquire()
     waypoints = planning.run(pose, obstacles)  # , open_drive)
     mutex.release()
 
+    timestamps.append(("planning_operator", time.time()))
+
     return {
-        "waypoints": pickle.dumps(waypoints),
-        "previous_obstacles": pickle.dumps(obstacles),
+        "waypoints": dump(waypoints, timestamps),
+        "previous_obstacles": dump(obstacles, timestamps),
     }

@@ -1,6 +1,7 @@
-import pickle
 import threading
 import time
+
+from dora_watermark import dump, load
 
 mutex = threading.Lock()
 
@@ -22,13 +23,14 @@ def run(inputs):
     elif vehicle_id is None and "vehicle_id" in inputs.keys():
         global mutex
         mutex.acquire()
-        vehicle_id = pickle.loads(inputs["vehicle_id"])
+        vehicle_id, _ = load(inputs, "vehicle_id")
         mutex.release()
 
     if "control" not in inputs.keys():
         return {}
 
-    control = pickle.loads(inputs["control"])
+    control, timestamps = load(inputs, "control")
+    timestamps.append(("control_operator_recieving", time.time()))
 
     vec_control = VehicleControl(
         throttle=control["throttle"],
@@ -41,4 +43,5 @@ def run(inputs):
     client.apply_batch_sync(
         [command.ApplyVehicleControl(vehicle_id, vec_control)]
     )
-    return {}
+    timestamps.append(("control_operator", time.time()))
+    return {"control_status": dump(1, timestamps)}

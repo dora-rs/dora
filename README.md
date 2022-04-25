@@ -77,4 +77,5 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/examples/pylot
 ./target/release/dora-rs start-python control_operator run control vehicle_id &
 ./target/release/dora-rs start-python sink_eval_plot plot image waypoints obstacles pose &
 ./target/release/dora-rs start-python carla_source_operator send &
+./target/release/dora-rs start-python summary_operator run control_status &
 ```

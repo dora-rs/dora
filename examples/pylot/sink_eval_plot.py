@@ -1,5 +1,4 @@
 import logging
-import pickle
 import threading
 import time
 from collections import deque
@@ -9,6 +8,7 @@ import numpy as np
 import pygame
 
 import pylot.perception.detection.utils
+from dora_watermark import dump, load
 from pylot.map.hd_map import HDMap
 from pylot.planning.world import World
 from pylot.simulation.utils import get_map
@@ -86,21 +86,21 @@ def plot(inputs):
     if "pose" not in keys:
         return {}
 
-    image = pickle.loads(inputs["image"])
+    image, timestamps = load(inputs, "image")
 
-    pose = pickle.loads(inputs["pose"])
+    pose, timestamps = load(inputs, "pose")
 
     if "obstacles" in keys:
-        obstacles = pickle.loads(inputs["obstacles"])
+        obstacles, timestamps = load(inputs, "obstacles")
     elif "previous_obstacles" in keys:
-        obstacles = pickle.loads(inputs["previous_obstacles"])
+        obstacles, timestamps = load(inputs, "previous_obstacles")
     else:
         obstacles = []
 
     if "waypoints" in keys:
-        waypoints = pickle.loads(inputs["waypoints"])
+        waypoints, timestamps = load(inputs, "waypoints")
     elif "previous_waypoints" in keys:
-        waypoints = pickle.loads(inputs["previous_waypoints"])
+        waypoints, timestamps = load(inputs, "previous_waypoints")
     else:
         waypoints = None
 
@@ -141,6 +141,6 @@ def plot(inputs):
     mutex.release()
 
     return {
-        "previous_obstacles": pickle.dumps(obstacles),
-        "previous_waypoints": pickle.dumps(waypoints),
+        "previous_obstacles": dump(obstacles, timestamps),
+        "previous_waypoints": dump(waypoints, timestamps),
     }

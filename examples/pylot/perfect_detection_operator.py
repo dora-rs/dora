@@ -1,6 +1,8 @@
-import pickle
+import time
 
 from carla import Client
+
+from dora_watermark import dump, load
 
 CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
@@ -22,10 +24,12 @@ def run(inputs):
     ):
         return {}
 
-    vehicle_transform = pickle.loads(inputs["pose"]).transform
+    pose, timestamps = load(inputs, "pose")
+    timestamps.append(("perfect_detection_operator_recieving", time.time()))
+    vehicle_transform = pose.transform
 
-    depth_frame = pickle.loads(inputs["depth_frame"])
-    segmented_frame = pickle.loads(inputs["segmented_frame"])
+    depth_frame, _ = load(inputs, "depth_frame")
+    segmented_frame, _ = load(inputs, "segmented_frame")
 
     from pylot.simulation.utils import extract_data_in_pylot_format
 
@@ -52,7 +56,9 @@ def run(inputs):
     if len(det_obstacles) == 0:
         return {}
 
+    timestamps.append(("perfect_detection_operator", time.time()))
+
     return {
-        "obstacles_without_location": pickle.dumps(det_obstacles),
-        #   "traffic_lights": pickle.dumps(visible_tls),
+        "obstacles_without_location": dump(det_obstacles, timestamps),
+        #   "traffic_lights": dump(visible_tls),
     }

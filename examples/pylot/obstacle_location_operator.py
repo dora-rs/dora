@@ -1,9 +1,10 @@
 import logging
-import pickle
+import time
 
 import numpy as np
 
 import pylot.utils
+from dora_watermark import dump, load
 from pylot.perception.tracking.obstacle_trajectory import ObstacleTrajectory
 from pylot.prediction.obstacle_prediction import ObstaclePrediction
 
@@ -80,9 +81,10 @@ def run(inputs):
     ):
         return {}
 
-    obstacles = pickle.loads(inputs["obstacles_without_location"])
-    depth_frame = pickle.loads(inputs["depth_frame"])
-    pose = pickle.loads(inputs["pose"])
+    obstacles, timestamps = load(inputs, "obstacles_without_location")
+    depth_frame, _ = load(inputs, "depth_frame")
+    pose, _ = load(inputs, "pose")
+    timestamps.append(("obstacle_location_operator_recieving", time.time()))
 
     obstacles_with_location = get_obstacle_locations(
         obstacles,
@@ -97,4 +99,5 @@ def run(inputs):
     if len(obstacles_with_prediction) == 0:
         return {}
 
-    return {"obstacles": pickle.dumps(obstacles_with_prediction)}
+    timestamps.append(("obstacle_location_operator", time.time()))
+    return {"obstacles": dump(obstacles_with_prediction, timestamps)}

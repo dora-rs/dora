@@ -1,5 +1,4 @@
 import logging
-import pickle
 import random
 import time
 
@@ -7,6 +6,7 @@ from carla import Client, Location, Rotation, Transform, command
 
 import pylot.simulation.utils
 import pylot.utils
+from dora_watermark import dump, load
 from pylot.drivers.sensor_setup import (
     CameraSetup,
     LidarSetup,
@@ -249,11 +249,12 @@ def send(_):
     forward_speed = velocity_vector.magnitude()
     pose = pylot.utils.Pose(vec_transform, forward_speed, velocity_vector)
 
+    timestamps = [("carla_source_operator", time.time())]
     return {
-        "image": pickle.dumps(last_frame),
-        "depth_frame": pickle.dumps(depth_frame),
-        "segmented_frame": pickle.dumps(segmented_frame),
-        "pose": pickle.dumps(pose),
-        "vehicle_id": pickle.dumps(vehicle_id)
+        "image": dump(last_frame, timestamps),
+        "depth_frame": dump(depth_frame, timestamps),
+        "segmented_frame": dump(segmented_frame, timestamps),
+        "pose": dump(pose, timestamps),
+        "vehicle_id": dump(vehicle_id, timestamps)
         #  "open_drive": world.get_map().to_opendrive().encode("utf-8"),
     }

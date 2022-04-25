@@ -1,9 +1,10 @@
 import logging
-import pickle
 import threading
+import time
 
 import pylot.control.utils
 import pylot.planning.utils
+from dora_watermark import dump, load
 from pylot.control.pid import PIDLongitudinalController
 
 mutex = threading.Lock()
@@ -36,14 +37,15 @@ def run(inputs):
     if "pose" not in keys:
         return {}
 
-    pose = inputs["pose"]
-    ego_transform = pickle.loads(pose).transform
+    pose, timestamps = load(inputs, "pose")
+    timestamps.append(("pid_control_operator_recieving", time.time()))
+    ego_transform = pose.transform
     # Vehicle speed in m/s.
-    current_speed = pickle.loads(pose).forward_speed
+    current_speed = pose.forward_speed
     if "waypoints" in keys:
-        waypoints = pickle.loads(inputs["waypoints"])
+        waypoints, timestamps = load(inputs, "waypoints")
     elif "previous_waypoints" in keys:
-        waypoints = pickle.loads(inputs["previous_waypoints"])
+        waypoints, _ = load(inputs, "previous_waypoints")
     else:
         return {}
 
@@ -71,9 +73,11 @@ def run(inputs):
         throttle, brake = 0.0, 0.5
         steer = 0.0
 
+    timestamps.append(("PID_control_operator", time.time()))
+
     return {
-        "control": pickle.dumps(
-            {"steer": steer, "throttle": throttle, "brake": brake}
+        "control": dump(
+            {"steer": steer, "throttle": throttle, "brake": brake}, timestamps
         ),
-        "previous_waypoints": pickle.dumps(waypoints),
+        "previous_waypoints": dump(waypoints, timestamps),
     }

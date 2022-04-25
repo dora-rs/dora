@@ -1,9 +1,9 @@
 import os
-import pickle
 
 import numpy as np
 import tensorflow as tf
 
+from dora_watermark import dump, load
 from pylot.perception.detection.obstacle import Obstacle
 from pylot.perception.detection.utils import BoundingBox2D
 
@@ -72,7 +72,7 @@ tf_session.run(
 def run(inputs):
     if "image" not in inputs.keys():
         return {}
-    image = pickle.loads(inputs["image"])
+    image, timestamps = load(inputs, "image")
     image = image.as_numpy_array()
     # image = np.frombuffer(image, dtype=np.dtype("uint8"))
     inputs = np.reshape(image, (HEIGHT, WIDTH, 3))
@@ -102,4 +102,4 @@ def run(inputs):
     if len(obstacles) == 0:
         return {}
 
-    return {"obstacles": pickle.dumps(obstacles)}
+    return {"obstacles": dump(obstacles, timestamps)}
