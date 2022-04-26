@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    convert::Infallible,
+    str::FromStr,
+};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -12,6 +16,14 @@ pub struct NodeRunConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NodeId(String);
+
+impl FromStr for NodeId {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
 
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
@@ -27,6 +39,14 @@ impl std::fmt::Display for NodeId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct OperatorId(String);
+
+impl FromStr for OperatorId {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
 
 impl From<String> for OperatorId {
     fn from(id: String) -> Self {
