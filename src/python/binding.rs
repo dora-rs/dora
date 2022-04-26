@@ -1,4 +1,5 @@
 use eyre::Context;
+use log::debug;
 use pyo3::{
     buffer::PyBuffer,
     prelude::*,
@@ -88,7 +89,7 @@ pub fn python_compute_event_loop(
                             .wrap_err("Python binding call did not work")
                             .unwrap(),
                     )
-                    .unwrap();
+                    .unwrap_or_else(|err| debug!("Timed out due to tokio mpsc buffer: {err}"));
             });
         }
     });

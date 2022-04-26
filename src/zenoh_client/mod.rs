@@ -6,6 +6,7 @@ use std::{
 
 use eyre::Result;
 use futures::{future::join_all, prelude::*};
+use log::debug;
 use tokio::{
     sync::{
         mpsc::{Receiver, Sender},
@@ -18,8 +19,8 @@ use zenoh::{subscriber::SampleReceiver, Session};
 
 use crate::python::server::Workload;
 
-static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(250);
-static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(250);
+static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
+static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
 pub struct ZenohClient {
@@ -101,14 +102,16 @@ impl ZenohClient {
         if is_source {
             loop {
                 let states = self.states.clone();
-                if let Err(err) = sender
-                    .send(Workload {
+                if let Err(err) = timeout(
+                    PULL_WAIT_PERIOD,
+                    sender.send(Workload {
                         states,
                         pulled_states: None,
-                    })
-                    .await
+                    }),
+                )
+                .await
                 {
-                    eyre::bail!("{err}");
+                    debug!("{err}");
                 }
                 tokio::time::sleep(PUSH_WAIT_PERIOD).await;
             }
@@ -116,14 +119,16 @@ impl ZenohClient {
             loop {
                 if let Some(pulled_states) = self.pull(&mut receivers).await {
                     let states = self.states.clone();
-                    if let Err(err) = sender
-                        .send(Workload {
+                    if let Err(err) = timeout(
+                        PULL_WAIT_PERIOD,
+                        sender.send(Workload {
                             states,
                             pulled_states: Some(pulled_states),
-                        })
-                        .await
+                        }),
+                    )
+                    .await
                     {
-                        eyre::bail!("{err}");
+                        debug!("{err}");
                     }
                 }
             }
