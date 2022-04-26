@@ -89,6 +89,8 @@ RUN sudo apt-get install vim -y
 
 WORKDIR /home/erdos/workspace/dora-rs
 
+RUN pip install influxdb-client
+
 COPY src src
 
 COPY Cargo.toml . 
