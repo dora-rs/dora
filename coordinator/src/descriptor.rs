@@ -1,74 +1,72 @@
-use dora_api::config::{CommunicationConfig, InputMapping, OperatorConfig};
+use dora_api::config::{CommunicationConfig, InputMapping, NodeId, NodeRunConfig};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
     pub communication: CommunicationConfig,
-    pub operators: Vec<Operator>,
+    pub nodes: Vec<Node>,
 }
 
 impl Descriptor {
-    pub fn sources(&self) -> impl Iterator<Item = &OperatorConfig> {
-        self.operators
-            .iter()
-            .map(|o| &o.config)
-            .filter(|o| o.inputs.is_empty())
-    }
-
-    pub fn sinks(&self) -> impl Iterator<Item = &OperatorConfig> {
-        self.operators
-            .iter()
-            .map(|o| &o.config)
-            .filter(|o| o.outputs.is_empty())
-    }
-
-    pub fn actions(&self) -> impl Iterator<Item = &OperatorConfig> {
-        self.operators
-            .iter()
-            .map(|o| &o.config)
-            .filter(|o| !o.inputs.is_empty() && !o.outputs.is_empty())
-    }
-
     pub fn visualize_as_mermaid(&self) -> eyre::Result<String> {
         let mut flowchart = "flowchart TB\n".to_owned();
-        for source in self.sources() {
-            let id = &source.id;
-            flowchart.push_str(&format!("  {id}[\\{id}/]\n"));
-        }
-        for action in self.actions() {
-            let id = &action.id;
-            flowchart.push_str(&format!("  {id}\n"));
-        }
-        for sink in self.sinks() {
-            let id = &sink.id;
-            flowchart.push_str(&format!("  {id}[/{id}\\]\n"));
+
+        let mut nodes = HashMap::new();
+        for node in &self.nodes {
+            nodes.insert(&node.id, node);
         }
 
-        let operators: HashMap<_, _> = self
-            .operators
-            .iter()
-            .map(|o| (&o.config.id, &o.config))
-            .collect();
+        for node in &self.nodes {
+            let node_id = &node.id;
 
-        for operator in &self.operators {
-            let operator = &operator.config;
-            let id = &operator.id;
-            for (input_id, InputMapping { source, output }) in &operator.inputs {
-                if operators
-                    .get(source)
-                    .map(|source| source.outputs.contains(output))
-                    .unwrap_or(false)
-                {
-                    let data = if output == input_id {
-                        format!("{output}")
+            match &node.kind {
+                NodeKind::Custom(node) => {
+                    if node.run_config.inputs.is_empty() {
+                        // source node
+                        flowchart.push_str(&format!("  {node_id}[\\{node_id}/]\n"));
+                    } else if node.run_config.outputs.is_empty() {
+                        // sink node
+                        flowchart.push_str(&format!("  {node_id}[/{node_id}\\]\n"));
                     } else {
-                        format!("{output} as {input_id}")
-                    };
-                    flowchart.push_str(&format!("  {source} -- {data} --> {id}\n"));
-                } else {
-                    flowchart.push_str(&format!("  missing>missing] -- {input_id} --> {id}\n"));
+                        // normal node
+                        flowchart.push_str(&format!("  {node_id}\n"));
+                    }
+
+                    for (input_id, mapping) in &node.run_config.inputs {
+                        let InputMapping {
+                            source,
+                            operator,
+                            output,
+                        } = mapping;
+
+                        let mut source_found = false;
+                        if let Some(source_node) = nodes.get(source) {
+                            match (&source_node.kind, operator) {
+                                (NodeKind::Custom(custom_node), None) => {
+                                    if custom_node.run_config.outputs.contains(output) {
+                                        let data = if output == input_id {
+                                            format!("{output}")
+                                        } else {
+                                            format!("{output} as {input_id}")
+                                        };
+                                        flowchart.push_str(&format!(
+                                            "  {source} -- {data} --> {node_id}\n"
+                                        ));
+                                        source_found = true;
+                                    }
+                                }
+                                (NodeKind::Custom(_), Some(_)) => {}
+                            }
+                        }
+
+                        if !source_found {
+                            flowchart.push_str(&format!(
+                                "  missing>missing] -- {input_id} --> {node_id}\n"
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -78,8 +76,35 @@ impl Descriptor {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Operator {
+pub struct Node {
+    pub id: NodeId,
+    pub name: Option<String>,
+    pub description: Option<String>,
+
     #[serde(flatten)]
-    pub config: OperatorConfig,
+    pub kind: NodeKind,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeKind {
+    Custom(CustomNode),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CustomNode {
     pub run: String,
+    pub env: Option<BTreeMap<String, EnvValue>>,
+    pub working_directory: Option<BTreeMap<String, EnvValue>>,
+
+    #[serde(flatten)]
+    pub run_config: NodeRunConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EnvValue {
+    Bool(bool),
+    Integer(u64),
+    String(String),
 }

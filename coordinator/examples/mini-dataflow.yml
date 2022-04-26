@@ -1,28 +1,32 @@
 communication:
   zenoh_prefix: /foo
 
-operators:
+nodes:
   - id: timer
-    outputs:
-      - time
-    run: ../target/debug/examples/example_source_timer
+    custom:
+      run: ../target/debug/examples/example_source_timer
+      outputs:
+        - time
 
   - id: rate-limited-timer
-    run: ../target/debug/examples/rate_limit --seconds 0.5
-    inputs:
-      data: timer/time
-    outputs:
-      - rate_limited
+    custom:
+      run: ../target/debug/examples/rate_limit --seconds 0.5
+      inputs:
+        data: timer/time
+      outputs:
+        - rate_limited
 
   - id: random
-    run: ../target/debug/examples/random_number
-    inputs:
-      timestamp: rate-limited-timer/rate_limited
-    outputs:
-      - number
+    custom:
+      run: ../target/debug/examples/random_number
+      inputs:
+        timestamp: rate-limited-timer/rate_limited
+      outputs:
+        - number
 
   - id: logger
-    run: ../target/debug/examples/example_sink_logger
-    inputs:
-      random: random/number
-      time: timer/time
+    custom:
+      run: ../target/debug/examples/example_sink_logger
+      inputs:
+        random: random/number
+        time: timer/time
