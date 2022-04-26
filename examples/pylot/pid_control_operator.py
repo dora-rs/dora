@@ -49,6 +49,8 @@ def run(inputs):
     else:
         return {}
 
+    global mutex
+    mutex.acquire()
     waypoints.remove_completed(ego_transform.location)
 
     try:
@@ -60,18 +62,16 @@ def run(inputs):
             ego_transform, MIN_PID_SPEED_WAYPOINT_DISTANCE
         )
 
-        global mutex
-        mutex.acquire()
         throttle, brake = pylot.control.utils.compute_throttle_and_brake(
             pid, current_speed, target_speed, FLAGS, logger
         )
-        mutex.release()
 
         steer = pylot.control.utils.radians_to_steer(angle_steer, STEER_GAIN)
     except ValueError:
         print("Braking! No more waypoints to follow.")
         throttle, brake = 0.0, 0.5
         steer = 0.0
+    mutex.release()
 
     timestamps.append(("PID_control_operator", time.time()))
 
