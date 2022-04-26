@@ -1,30 +1,35 @@
 communication:
   zenoh_prefix: /foo
 
-operators:
+nodes:
   - id: timer
-    outputs:
-      - time
-    run: non-existent
+    custom:
+      run: non-existent
+      outputs:
+        - time
   - id: camera
-    outputs:
-      - image
-    run: non-existent
+    custom:
+      run: non-existent
+      outputs:
+        - image
 
   - id: timestamp
-    run: non-existent
-    inputs:
-      timestamp: timer/time
-      pic: camera/image
-    outputs:
-      - image-with-timestamp
+    custom:
+      run: non-existent
+      inputs:
+        timestamp: timer/time
+        pic: camera/image
+      outputs:
+        - image-with-timestamp
 
   - id: printer
-    run: non-existent
-    inputs:
-      data: timestamp/image-with-timestamp
+    custom:
+      run: non-existent
+      inputs:
+        data: timestamp/image-with-timestamp
   - id: logger
-    run: non-existent
-    inputs:
-      data: timestamp/image-with-timestamp
-      time: timer/time
+    custom:
+      run: non-existent
+      inputs:
+        data: timestamp/image-with-timestamp
+        time: timer/time

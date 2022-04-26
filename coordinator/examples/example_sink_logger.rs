@@ -1,11 +1,11 @@
-use dora_api::{self, DoraOperator};
+use dora_api::{self, DoraNode};
 use eyre::bail;
 use futures::StreamExt;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let operator = DoraOperator::init_from_args().await?;
+    let operator = DoraNode::init_from_env().await?;
 
     let mut inputs = operator.inputs().await?;
 

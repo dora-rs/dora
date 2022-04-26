@@ -1,5 +1,5 @@
 use communication::CommunicationLayer;
-use config::{CommunicationConfig, DataId, OperatorConfig};
+use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 use eyre::WrapErr;
 use futures::{stream::FuturesUnordered, StreamExt};
 use futures_concurrency::Merge;
@@ -10,29 +10,36 @@ pub mod config;
 
 const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 
-pub struct DoraOperator {
-    operator_config: OperatorConfig,
+pub struct DoraNode {
+    id: NodeId,
+    operator_config: NodeRunConfig,
     communication_config: CommunicationConfig,
     communication: Box<dyn CommunicationLayer>,
 }
 
-impl DoraOperator {
-    pub async fn init_from_args() -> eyre::Result<Self> {
+impl DoraNode {
+    pub async fn init_from_env() -> eyre::Result<Self> {
+        let id = {
+            let raw =
+                std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
+            serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
+        };
         let operator_config = {
-            let raw = std::env::var("OPERATOR_CONFIG")
-                .wrap_err("env variable OPERATOR_CONFIG must be set")?;
+            let raw = std::env::var("DORA_NODE_RUN_CONFIG")
+                .wrap_err("env variable DORA_NODE_RUN_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
         let communication_config = {
-            let raw = std::env::var("COMMUNICATION_CONFIG")
-                .wrap_err("env variable COMMUNICATION_CONFIG must be set")?;
+            let raw = std::env::var("DORA_COMMUNICATION_CONFIG")
+                .wrap_err("env variable DORA_COMMUNICATION_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize communication config")?
         };
-        Self::init(operator_config, communication_config).await
+        Self::init(id, operator_config, communication_config).await
     }
 
     pub async fn init(
-        operator_config: OperatorConfig,
+        id: NodeId,
+        operator_config: NodeRunConfig,
         communication_config: CommunicationConfig,
     ) -> eyre::Result<Self> {
         let zenoh = zenoh::open(communication_config.zenoh_config.clone())
@@ -41,6 +48,7 @@ impl DoraOperator {
             .wrap_err("failed to create zenoh session")?;
 
         Ok(Self {
+            id,
             operator_config,
             communication_config,
             communication: Box::new(zenoh),
@@ -51,8 +59,19 @@ impl DoraOperator {
         let prefix = &self.communication_config.zenoh_prefix;
 
         let mut streams = Vec::new();
-        for (input, config::InputMapping { source, output }) in &self.operator_config.inputs {
-            let topic = format!("{prefix}/{source}/{output}");
+        for (
+            input,
+            config::InputMapping {
+                source,
+                operator,
+                output,
+            },
+        ) in &self.operator_config.inputs
+        {
+            let topic = match operator {
+                Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
+                None => format!("{prefix}/{source}/{output}"),
+            };
             let sub = self
                 .communication
                 .subscribe(&topic)
@@ -91,7 +110,7 @@ impl DoraOperator {
         }
 
         let prefix = &self.communication_config.zenoh_prefix;
-        let self_id = &self.operator_config.id;
+        let self_id = &self.id;
 
         let topic = format!("{prefix}/{self_id}/{output_id}");
         self.communication
@@ -102,10 +121,10 @@ impl DoraOperator {
     }
 }
 
-impl Drop for DoraOperator {
+impl Drop for DoraNode {
     fn drop(&mut self) {
         let prefix = &self.communication_config.zenoh_prefix;
-        let self_id = &self.operator_config.id;
+        let self_id = &self.id;
         let topic = format!("{prefix}/{self_id}/{STOP_TOPIC}");
         let result = self
             .communication
@@ -158,8 +177,8 @@ mod tests {
 
     #[test]
     fn no_op_operator() {
-        let operator_config = config::OperatorConfig {
-            id: uuid::Uuid::new_v4().to_string().into(),
+        let id = uuid::Uuid::new_v4().to_string().into();
+        let operator_config = config::NodeRunConfig {
             inputs: Default::default(),
             outputs: Default::default(),
         };
@@ -169,7 +188,7 @@ mod tests {
         };
 
         run(async {
-            let operator = DoraOperator::init(operator_config, communication_config)
+            let operator = DoraNode::init(id, operator_config, communication_config)
                 .await
                 .unwrap();
             let mut inputs = operator.inputs().await.unwrap();

@@ -1,4 +1,4 @@
-use dora_api::{self, config::DataId, DoraOperator};
+use dora_api::{self, config::DataId, DoraNode};
 use eyre::bail;
 use futures::StreamExt;
 use std::time::Duration;
@@ -7,7 +7,7 @@ use std::time::Duration;
 async fn main() -> eyre::Result<()> {
     let output = DataId::from("number".to_owned());
 
-    let operator = DoraOperator::init_from_args().await?;
+    let operator = DoraNode::init_from_env().await?;
 
     let mut inputs = operator.inputs().await?;
 

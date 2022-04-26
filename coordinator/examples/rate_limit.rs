@@ -1,5 +1,5 @@
 use clap::StructOpt;
-use dora_api::{self, config::DataId, DoraOperator};
+use dora_api::{self, config::DataId, DoraNode};
 use eyre::bail;
 use futures::StreamExt;
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ async fn main() -> eyre::Result<()> {
     let min_interval = Duration::from_secs_f32(args.seconds);
     let output = DataId::from("rate_limited".to_owned());
 
-    let operator = DoraOperator::init_from_args().await?;
+    let operator = DoraNode::init_from_env().await?;
 
     let mut inputs = operator.inputs().await?;
 

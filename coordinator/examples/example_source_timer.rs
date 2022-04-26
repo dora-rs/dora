@@ -1,10 +1,10 @@
-use dora_api::{self, config::DataId, DoraOperator};
+use dora_api::{self, config::DataId, DoraNode};
 use std::time::Duration;
 use time::OffsetDateTime;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let operator = DoraOperator::init_from_args().await?;
+    let operator = DoraNode::init_from_env().await?;
 
     let mut interval = tokio::time::interval(Duration::from_millis(20));
 
