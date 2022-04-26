@@ -13,6 +13,22 @@ nodes:
       outputs:
         - image
 
+  - id: process
+    operators:
+      - id: operator-1
+        inputs:
+          image: camera/image
+        outputs:
+          - processed
+        shared_library: non-existent
+      - id: operator-2
+        inputs:
+          processed: process/operator-1/processed
+          time: timer/time
+        outputs:
+          - processed
+        python: non-existent
+
   - id: timestamp
     custom:
       run: non-existent
@@ -27,6 +43,7 @@ nodes:
       run: non-existent
       inputs:
         data: timestamp/image-with-timestamp
+        processed: process/operator-2/processed
   - id: logger
     custom:
       run: non-existent
