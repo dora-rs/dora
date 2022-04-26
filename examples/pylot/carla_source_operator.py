@@ -202,6 +202,7 @@ def spawn_driving_vehicle(client, world):
 
 
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
+client.set_timeout(20.0)  # seconds
 world = client.get_world()
 # settings = world.get_settings()
 # settings.synchronous_mode = True
@@ -217,7 +218,7 @@ world = client.get_world()
     -1,
     True,
     10,
-    10,
+    1,
     logger,
 )
 

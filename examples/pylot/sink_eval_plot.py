@@ -111,6 +111,8 @@ def plot(inputs):
     for obstacle_prediction in obstacles:
         obstacle_prediction.draw_trajectory_on_frame(image)
 
+    global mutex
+    mutex.acquire()
     image = image.as_numpy_array()
     if len(image) == 800 * 600 * 4:
         resized_image = np.reshape(image, (display_height, display_width, 4))
@@ -118,8 +120,6 @@ def plot(inputs):
         resized_image = np.ascontiguousarray(resized_image, dtype=np.uint8)
     else:
         resized_image = np.reshape(image, (display_height, display_width, 3))
-    global mutex
-    mutex.acquire()
     global counter
     now = time.time()
     cv2.putText(

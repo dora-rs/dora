@@ -82,15 +82,14 @@ pub fn python_compute_event_loop(
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
             let states = workload.states.read().await.clone(); // This is probably expensive.
-            rayon::spawn(move || {
-                push_tx
-                    .blocking_send(
-                        call(pyfunc, &states, &workload.pulled_states)
-                            .wrap_err("Python binding call did not work")
-                            .unwrap(),
-                    )
-                    .unwrap_or_else(|err| debug!("Timed out due to tokio mpsc buffer: {err}"));
-            });
+            push_tx
+                .send(
+                    call(pyfunc, &states, &workload.pulled_states)
+                        .wrap_err("Python binding call did not work")
+                        .unwrap(),
+                )
+                .await
+                .unwrap_or_else(|err| debug!("{err}"));
         }
     });
 }

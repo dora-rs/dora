@@ -1,7 +1,7 @@
 import threading
 import time
 
-from dora_watermark import dump, load
+from dora_watermark import MAX_SECONDS_LATENCY, dump, load
 
 mutex = threading.Lock()
 
@@ -30,7 +30,10 @@ def run(inputs):
         return {}
 
     control, timestamps = load(inputs, "control")
+    previous_timestamp = timestamps[-1][1]
     timestamps.append(("control_operator_recieving", time.time()))
+    if time.time() - previous_timestamp > MAX_SECONDS_LATENCY:
+        return {}
 
     vec_control = VehicleControl(
         throttle=control["throttle"],

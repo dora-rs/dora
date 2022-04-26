@@ -2,12 +2,13 @@ import time
 
 from carla import Client
 
-from dora_watermark import dump, load
+from dora_watermark import MAX_SECONDS_LATENCY, dump, load
 
 CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
 
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
+client.set_timeout(20.0)  # seconds
 world = client.get_world()
 
 town_name = world.get_map().name
@@ -25,7 +26,10 @@ def run(inputs):
         return {}
 
     pose, timestamps = load(inputs, "pose")
+    previous_timestamp = timestamps[-1][1]
     timestamps.append(("perfect_detection_operator_recieving", time.time()))
+    if time.time() - previous_timestamp > MAX_SECONDS_LATENCY:
+        return {}
     vehicle_transform = pose.transform
 
     depth_frame, _ = load(inputs, "depth_frame")

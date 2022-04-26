@@ -1,5 +1,7 @@
 import pickle
 
+MAX_SECONDS_LATENCY = 10
+
 
 def load(inputs, key):
     data_wrapper = pickle.loads(inputs[key])

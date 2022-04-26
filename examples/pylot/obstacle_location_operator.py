@@ -4,7 +4,7 @@ import time
 import numpy as np
 
 import pylot.utils
-from dora_watermark import dump, load
+from dora_watermark import MAX_SECONDS_LATENCY, dump, load
 from pylot.perception.tracking.obstacle_trajectory import ObstacleTrajectory
 from pylot.prediction.obstacle_prediction import ObstaclePrediction
 
@@ -84,7 +84,10 @@ def run(inputs):
     obstacles, timestamps = load(inputs, "obstacles_without_location")
     depth_frame, _ = load(inputs, "depth_frame")
     pose, _ = load(inputs, "pose")
+    previous_timestamp = timestamps[-1][1]
     timestamps.append(("obstacle_location_operator_recieving", time.time()))
+    if time.time() - previous_timestamp > MAX_SECONDS_LATENCY:
+        return {}
 
     obstacles_with_location = get_obstacle_locations(
         obstacles,

@@ -4,7 +4,7 @@ import time
 
 import pylot.control.utils
 import pylot.planning.utils
-from dora_watermark import dump, load
+from dora_watermark import MAX_SECONDS_LATENCY, dump, load
 from pylot.control.pid import PIDLongitudinalController
 
 mutex = threading.Lock()
@@ -15,7 +15,7 @@ COAST_FACTOR = 1.75
 pid_p = 1.0
 pid_d = 0.0
 pid_i = 0.05
-dt = 1.0 / 3
+dt = 1.0 / 10
 pid_use_real_time = True
 pid = PIDLongitudinalController(pid_p, pid_d, pid_i, dt, pid_use_real_time)
 
@@ -38,7 +38,10 @@ def run(inputs):
         return {}
 
     pose, timestamps = load(inputs, "pose")
+    previous_timestamp = timestamps[-1][1]
     timestamps.append(("pid_control_operator_recieving", time.time()))
+    if time.time() - previous_timestamp > MAX_SECONDS_LATENCY:
+        return {}
     ego_transform = pose.transform
     # Vehicle speed in m/s.
     current_speed = pose.forward_speed

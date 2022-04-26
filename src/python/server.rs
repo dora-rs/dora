@@ -24,8 +24,8 @@ pub struct Workload {
 
 #[tokio::main]
 pub async fn run(variables: PythonCommand) -> Result<()> {
-    let (push_sender, push_receiver) = mpsc::channel::<HashMap<String, Vec<u8>>>(4);
-    let (python_sender, python_receiver) = mpsc::channel::<Workload>(4);
+    let (push_sender, push_receiver) = mpsc::channel::<HashMap<String, Vec<u8>>>(1);
+    let (python_sender, python_receiver) = mpsc::channel::<Workload>(1);
 
     let zenoh_client = ZenohClient::try_new(variables.subscriptions.clone()).await?;
     zenoh_client.clone().push_event_loop(push_receiver);

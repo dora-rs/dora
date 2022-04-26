@@ -8,7 +8,7 @@ import time
 from collections import deque
 
 import pylot.utils
-from dora_watermark import dump, load
+from dora_watermark import MAX_SECONDS_LATENCY, dump, load
 from pylot.map.hd_map import HDMap
 from pylot.planning.world import World
 from pylot.simulation.utils import get_map
@@ -172,7 +172,10 @@ def run(inputs):
         return {}
 
     pose, timestamps = load(inputs, "pose")
+    previous_timestamp = timestamps[-1][1]
     timestamps.append(("planning_operator_recieving", time.time()))
+    if time.time() - previous_timestamp > MAX_SECONDS_LATENCY:
+        return {}
 
     if "obstacles" in keys:
         obstacles, timestamps = load(inputs, "obstacles")
