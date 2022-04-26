@@ -1,5 +1,6 @@
-use super::{CustomNode, Node, NodeKind, Operator};
 use dora_api::config::{DataId, InputMapping, NodeId};
+
+use super::{CustomNode, Node, NodeKind, Operator};
 use std::collections::{BTreeMap, HashMap};
 
 pub fn visualize_nodes(nodes: &[Node]) -> String {

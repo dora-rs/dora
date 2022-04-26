@@ -6,7 +6,7 @@ use zenoh::prelude::{SplitBuffer, ZFuture};
 use crate::BoxError;
 
 #[async_trait]
-pub(crate) trait CommunicationLayer {
+pub trait CommunicationLayer {
     async fn subscribe<'a>(
         &'a self,
         topic: &str,

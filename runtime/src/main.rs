@@ -1,16 +1,157 @@
-use communication::CommunicationLayer;
-use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
-use eyre::WrapErr;
+use clap::StructOpt;
+use dora_api::{
+    self,
+    communication::CommunicationLayer,
+    config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
+    STOP_TOPIC,
+};
+use dora_common::{
+    descriptor::{Descriptor, Operator},
+    BoxError,
+};
+use eyre::{bail, eyre, Context};
 use futures::{stream::FuturesUnordered, StreamExt};
 use futures_concurrency::Merge;
-use std::collections::HashSet;
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    time::Duration,
+};
 
-pub mod communication;
-pub mod config;
+#[derive(Debug, Clone, clap::Parser)]
+#[clap(about = "Limit the rate of incoming data")]
+struct Args {
+    #[clap(long)]
+    node_id: NodeId,
+    #[clap(long)]
+    dataflow: PathBuf,
+}
 
-#[doc(hidden)]
-pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    let args = Args::parse();
 
+    let dataflow: Descriptor = {
+        let raw = tokio::fs::read(&args.dataflow)
+            .await
+            .wrap_err("failed to read dataflow file")?;
+        serde_yaml::from_slice(&raw).wrap_err("failed to parse dataflow file")?
+    };
+
+    let node = dataflow
+        .nodes
+        .into_iter()
+        .find(|n| n.id == args.node_id)
+        .ok_or_else(|| eyre!("did not find node ID `{}` in dataflow file", args.node_id))?;
+
+    let operators = match node.kind {
+        dora_common::descriptor::NodeKind::Operators(operators) => operators,
+        dora_common::descriptor::NodeKind::Custom(_) => {
+            bail!("node `{}` is a custom node", args.node_id)
+        }
+    };
+
+    let zenoh = zenoh::open(dataflow.communication.zenoh_config.clone())
+        .await
+        .map_err(BoxError)
+        .wrap_err("failed to create zenoh session")?;
+    let mut communication: Box<dyn CommunicationLayer> = Box::new(zenoh);
+
+    let mut inputs = subscribe(communication.as_mut(), &dataflow.communication, &operators)
+        .await
+        .context("failed to subscribe")?;
+
+    let operator_map: BTreeMap<_, _> = operators.iter().map(|o| (&o.id, o)).collect();
+
+    loop {
+        let timeout = Duration::from_secs(15 * 60);
+        let input = match tokio::time::timeout(timeout, inputs.next()).await {
+            Ok(Some(input)) => input,
+            Ok(None) => break,
+            Err(_) => bail!("timeout while waiting for input"),
+        };
+
+        let operator = operator_map.get(&input.target_operator).ok_or_else(|| {
+            eyre!(
+                "received input for unexpected operator `{}`",
+                input.target_operator
+            )
+        })?;
+
+        let todo = "implement operator abstraction and call it here";
+        println!(
+            "Received input {} for operator {}: {}",
+            input.id,
+            input.target_operator,
+            String::from_utf8_lossy(&input.data)
+        );
+    }
+
+    Ok(())
+}
+
+async fn subscribe<'a>(
+    communication: &'a mut dyn CommunicationLayer,
+    communication_config: &CommunicationConfig,
+    operators: &'a [Operator],
+) -> eyre::Result<impl futures::Stream<Item = OperatorInput> + 'a> {
+    let prefix = &communication_config.zenoh_prefix;
+
+    let mut streams = Vec::new();
+
+    for operator in operators {
+        for (input, mapping) in &operator.inputs {
+            let InputMapping {
+                source,
+                operator: source_operator,
+                output,
+            } = mapping;
+            let topic = match source_operator {
+                Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
+                None => format!("{prefix}/{source}/{output}"),
+            };
+            println!("subscribing to {topic}");
+            let sub = communication
+                .subscribe(&topic)
+                .await
+                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+            streams.push(sub.map(|data| OperatorInput {
+                target_operator: operator.id.clone(),
+                id: input.clone(),
+                data,
+            }))
+        }
+    }
+    let stop_messages = FuturesUnordered::new();
+    let sources: HashSet<_> = operators
+        .iter()
+        .flat_map(|o| o.inputs.values())
+        .map(|v| (&v.source, &v.operator))
+        .collect();
+    for (source, operator) in &sources {
+        let topic = match operator {
+            Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
+            None => format!("{prefix}/{source}/{STOP_TOPIC}"),
+        };
+        println!("subscribing to {topic}");
+        let sub = communication
+            .subscribe(&topic)
+            .await
+            .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+        stop_messages.push(sub.into_future());
+    }
+    let finished = Box::pin(stop_messages.all(|_| async { true }));
+
+    Ok(streams.merge().take_until(finished))
+}
+
+pub struct OperatorInput {
+    pub target_operator: OperatorId,
+    pub id: DataId,
+    pub data: Vec<u8>,
+}
+
+/*
 pub struct DoraNode {
     id: NodeId,
     operator_config: NodeRunConfig,
@@ -89,13 +230,10 @@ impl DoraNode {
             .operator_config
             .inputs
             .values()
-            .map(|v| (&v.source, &v.operator))
+            .map(|v| &v.source)
             .collect();
-        for (source, operator) in &sources {
-            let topic = match operator {
-                Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
-                None => format!("{prefix}/{source}/{STOP_TOPIC}"),
-            };
+        for source in &sources {
+            let topic = format!("{prefix}/{source}/{STOP_TOPIC}");
             let sub = self
                 .communication
                 .subscribe(&topic)
@@ -145,7 +283,7 @@ pub struct Input {
     pub data: Vec<u8>,
 }
 
-pub struct BoxError(Box<dyn std::error::Error + Send + Sync + 'static>);
+struct BoxError(Box<dyn std::error::Error + Send + Sync + 'static>);
 
 impl std::fmt::Debug for BoxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -200,3 +338,4 @@ mod tests {
         });
     }
 }
+*/

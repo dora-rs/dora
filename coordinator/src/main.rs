@@ -1,10 +1,8 @@
-use descriptor::Descriptor;
 use dora_api::config::NodeId;
+use dora_common::descriptor::{self, Descriptor};
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::path::{Path, PathBuf};
-
-mod descriptor;
 
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora coordinator")]
