@@ -1,6 +1,6 @@
 use descriptor::Descriptor;
 use dora_api::config::NodeId;
-use eyre::{eyre, WrapErr};
+use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::path::{Path, PathBuf};
 
@@ -58,6 +58,10 @@ async fn run_dataflow(file: PathBuf) -> eyre::Result<()> {
                 let result = spawn_custom_node(node_id.clone(), node, &communication)
                     .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
                 tasks.push(result);
+            }
+            descriptor::NodeKind::Operators(_) => {
+                let todo = "todo";
+                bail!("runtime nodes are not supported yet")
             }
         }
     }
