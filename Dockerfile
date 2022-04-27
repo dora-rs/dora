@@ -103,4 +103,6 @@ RUN cargo build --release
 
 COPY examples examples
 
+COPY launch_in_container.sh /home/erdos/
 
+RUN sudo chmod +x /home/erdos/launch_in_container.sh

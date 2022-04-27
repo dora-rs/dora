@@ -8,7 +8,7 @@ CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
 
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
-client.set_timeout(20.0)  # seconds
+client.set_timeout(30.0)  # seconds
 world = client.get_world()
 
 town_name = world.get_map().name

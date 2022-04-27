@@ -10,7 +10,7 @@ from carla import Client, VehicleControl, command
 CARLA_SIMULATOR_HOST = "localhost"
 CARLA_SIMULATOR_PORT = "2000"
 client = Client(CARLA_SIMULATOR_HOST, int(CARLA_SIMULATOR_PORT))
-
+client.set_timeout(30.0)
 vehicle_id = None
 
 
