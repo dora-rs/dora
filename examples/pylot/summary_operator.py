@@ -7,6 +7,7 @@ from datetime import datetime
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
+import pylot.utils
 from dora_watermark import load
 
 # You can generate an API token from the "API Tokens Tab" in the UI
@@ -15,8 +16,10 @@ token = "iit96Hkq0sYco2sHIuFCM5cU4I5srivYQafgbZgoGmG92gReT9Kao3rNH8b3KFlgPskStVv
 org = "shavtao@gmail.com"
 bucket = "DORA Test Bucket"
 mutex = threading.Lock()
+goal_location = pylot.utils.Location(234, 59, 39)
 
-id = random.randint(0, 1000000)
+summary_id = random.randint(0, 1000000)
+host = "host1"
 
 points = []
 counter = 0
@@ -47,20 +50,56 @@ def run(inputs):
         if timestamp[0] == "carla_source_operator":
             points.append(
                 Point("Dora-Pylot-Test")
-                .tag("host", "host1")
-                .tag("id", id)
+                .tag("host", host)
+                .tag("id", summary_id)
                 .field("global_latency", previous_timestamp - timestamp[1])
                 .time(current_time, WritePrecision.NS)
             )
         else:
             points.append(
                 Point("Dora-Pylot-Test")
-                .tag("host", "host1")
-                .tag("id", id)
+                .tag("host", host)
+                .tag("id", summary_id)
                 .field(timestamp[0], timestamp[1] - previous_timestamp)
                 .time(current_time, WritePrecision.NS)
             )
         previous_timestamp = timestamp[1]
+
+    if "pose" in inputs.keys():
+        pose, _ = load(inputs, "pose")
+        location = pose.transform.location
+        points.append(
+            Point("Dora-Pylot-Test")
+            .tag("host", host)
+            .tag("id", summary_id)
+            .field("goal_distance", goal_location.distance(location))
+            .time(current_time, WritePrecision.NS)
+        )
+        points.append(
+            Point("Dora-Pylot-Test")
+            .tag("host", host)
+            .tag("id", summary_id)
+            .field("x_coordinate", location.x / 100)
+            .time(current_time, WritePrecision.NS)
+        )
+        points.append(
+            Point("Dora-Pylot-Test")
+            .tag("host", host)
+            .tag("id", summary_id)
+            .field("y_coordinate", location.y / 100)
+            .time(current_time, WritePrecision.NS)
+        )
+
+    if "obstacles" in inputs.keys():
+        obstacles, _ = load(inputs, "obstacles")
+        points.append(
+            Point("Dora-Pylot-Test")
+            .tag("host", host)
+            .tag("id", summary_id)
+            .field("obstacles", len(obstacles))
+            .time(current_time, WritePrecision.NS)
+        )
+
     counter += 1
 
     if counter % 500:
