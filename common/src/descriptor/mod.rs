@@ -38,12 +38,12 @@ pub struct Node {
 #[serde(rename_all = "lowercase")]
 pub enum NodeKind {
     /// Dora runtime node
-    Operators(Vec<Operator>),
+    Operators(Vec<OperatorConfig>),
     Custom(CustomNode),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Operator {
+pub struct OperatorConfig {
     pub id: OperatorId,
     pub name: Option<String>,
     pub description: Option<String>,
