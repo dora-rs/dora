@@ -13,7 +13,7 @@ from dora_watermark import load
 token = os.getenv("INFLUX_TOKEN")
 token = "iit96Hkq0sYco2sHIuFCM5cU4I5srivYQafgbZgoGmG92gReT9Kao3rNH8b3KFlgPskStVvOOaOU5-LZY94dfA=="
 org = "shavtao@gmail.com"
-bucket = "shavtao's Bucket"
+bucket = "DORA Test Bucket"
 mutex = threading.Lock()
 
 id = random.randint(0, 1000000)
@@ -63,7 +63,7 @@ def run(inputs):
         previous_timestamp = timestamp[1]
     counter += 1
 
-    if counter % 100:
+    if counter % 500:
         write_to_influxdb(points)
 
     mutex.release()
