@@ -628,6 +628,7 @@ dependencies = [
  "futures-concurrency",
  "serde_yaml",
  "tokio",
+ "tokio-stream",
  "zenoh",
  "zenoh-config",
 ]

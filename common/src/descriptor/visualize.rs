@@ -1,6 +1,6 @@
 use dora_api::config::{DataId, InputMapping, NodeId};
 
-use super::{CustomNode, Node, NodeKind, Operator};
+use super::{CustomNode, Node, NodeKind, OperatorConfig};
 use std::collections::{BTreeMap, HashMap};
 
 pub fn visualize_nodes(nodes: &[Node]) -> String {
@@ -40,7 +40,7 @@ fn visualize_custom_node(node_id: &NodeId, node: &CustomNode, flowchart: &mut St
     }
 }
 
-fn visualize_runtime_node(node_id: &NodeId, operators: &[Operator], flowchart: &mut String) {
+fn visualize_runtime_node(node_id: &NodeId, operators: &[OperatorConfig], flowchart: &mut String) {
     flowchart.push_str(&format!("subgraph {node_id}\n"));
     for operator in operators {
         let operator_id = &operator.id;
