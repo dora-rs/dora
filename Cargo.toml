@@ -34,3 +34,4 @@ rayon = "1.5.1"
 futures-concurrency = "2.0.3"
 tokio-util = { version = "0.7.0", features = ["codec"] }
 bincode = "1.3.3"
+rayon = "1.5.1"
