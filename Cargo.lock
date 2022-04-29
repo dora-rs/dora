@@ -626,6 +626,7 @@ dependencies = [
  "eyre",
  "futures",
  "futures-concurrency",
+ "libloading",
  "serde_yaml",
  "tokio",
  "tokio-stream",

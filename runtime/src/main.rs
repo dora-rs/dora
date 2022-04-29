@@ -1,3 +1,5 @@
+#![warn(unsafe_op_in_unsafe_fn)]
+
 use clap::StructOpt;
 use dora_api::{
     self,
@@ -59,7 +61,7 @@ async fn main() -> eyre::Result<()> {
     let mut operator_events = StreamMap::new();
     for operator_config in &operators {
         let (events_tx, events) = mpsc::channel(1);
-        let operator = Operator::init(operator_config, events_tx.clone())
+        let operator = Operator::init(operator_config.clone(), events_tx.clone())
             .await
             .wrap_err_with(|| format!("failed to init operator {}", operator_config.id))?;
         operator_map.insert(&operator_config.id, operator);
@@ -70,9 +72,9 @@ async fn main() -> eyre::Result<()> {
         .await
         .map_err(BoxError)
         .wrap_err("failed to create zenoh session")?;
-    let mut communication: Box<dyn CommunicationLayer> = Box::new(zenoh);
+    let communication: Box<dyn CommunicationLayer> = Box::new(zenoh);
 
-    let inputs = subscribe(communication.as_mut(), &dataflow.communication, &operators)
+    let inputs = subscribe(communication.as_ref(), &dataflow.communication, &operators)
         .await
         .context("failed to subscribe")?;
 
@@ -108,7 +110,32 @@ async fn main() -> eyre::Result<()> {
                         )
                     })?;
             }
-            Event::Operator { id, event } => match event {},
+            Event::Operator { id, event } => {
+                let operator = operator_map
+                    .get(&id)
+                    .ok_or_else(|| eyre!("received event from unknown operator {id}"))?;
+                match event {
+                    OperatorEvent::Output { id: data_id, value } => {
+                        if !operator.config().outputs.contains(&data_id) {
+                            eyre::bail!("unknown output {data_id} for operator {id}");
+                        }
+                        publish(
+                            &args.node_id,
+                            id,
+                            data_id,
+                            &value,
+                            communication.as_ref(),
+                            &dataflow.communication,
+                        )
+                        .await
+                        .context("failed to publish operator output")?;
+                    }
+                    OperatorEvent::Error(err) => {
+                        bail!(err.wrap_err(format!("operator {id} failed")))
+                    }
+                    OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
+                }
+            }
         }
     }
 
@@ -116,7 +143,7 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn subscribe<'a>(
-    communication: &'a mut dyn CommunicationLayer,
+    communication: &'a dyn CommunicationLayer,
     communication_config: &CommunicationConfig,
     operators: &'a [OperatorConfig],
 ) -> eyre::Result<impl futures::Stream<Item = OperatorInput> + 'a> {
@@ -168,6 +195,25 @@ async fn subscribe<'a>(
     let finished = Box::pin(stop_messages.all(|_| async { true }));
 
     Ok(streams.merge().take_until(finished))
+}
+
+async fn publish(
+    self_id: &NodeId,
+    operator_id: OperatorId,
+    output_id: DataId,
+    value: &[u8],
+    communication: &dyn CommunicationLayer,
+    communication_config: &CommunicationConfig,
+) -> eyre::Result<()> {
+    let prefix = &communication_config.zenoh_prefix;
+
+    let topic = format!("{prefix}/{self_id}/{operator_id}/{output_id}");
+    communication
+        .publish(&topic, value)
+        .await
+        .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
+
+    Ok(())
 }
 
 enum Event {
