@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use eyre::Result;
 use futures::{future::join_all, prelude::*};
@@ -45,7 +41,7 @@ impl ZenohClient {
         })
     }
 
-    pub async fn push(&self, outputs: HashMap<String, Vec<u8>>) {
+    pub async fn push(&self, outputs: BTreeMap<String, Vec<u8>>) {
         join_all(
             outputs
                 .iter()
@@ -80,7 +76,7 @@ impl ZenohClient {
             Some(pulled_states)
         }
     }
-    pub fn push_event_loop(self, mut receiver: Receiver<HashMap<String, Vec<u8>>>) {
+    pub fn push_event_loop(self, mut receiver: Receiver<BTreeMap<String, Vec<u8>>>) {
         tokio::spawn(async move {
             while let Some(outputs) = receiver.recv().await {
                 self.push(outputs).await;

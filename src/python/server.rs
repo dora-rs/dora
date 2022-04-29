@@ -3,7 +3,7 @@ use crate::zenoh_client::ZenohClient;
 use super::binding::python_compute_event_loop;
 use eyre::Result;
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use structopt::StructOpt;
 use tokio::sync::mpsc;
@@ -24,7 +24,7 @@ pub struct Workload {
 
 #[tokio::main]
 pub async fn run(variables: PythonCommand) -> Result<()> {
-    let (push_sender, push_receiver) = mpsc::channel::<HashMap<String, Vec<u8>>>(1);
+    let (push_sender, push_receiver) = mpsc::channel::<BTreeMap<String, Vec<u8>>>(1);
     let (python_sender, python_receiver) = mpsc::channel::<Workload>(1);
 
     let zenoh_client = ZenohClient::try_new(variables.subscriptions.clone()).await?;
