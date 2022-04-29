@@ -20,22 +20,24 @@ static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
 pub struct ZenohClient {
-    pub session: Arc<Session>,
-    pub states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
-    pub subscriptions: Vec<String>,
+    session: Arc<Session>,
+    context: String,
+    states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
+    subscriptions: Vec<String>,
 }
 
 impl ZenohClient {
-    pub async fn try_new(subscriptions: Vec<String>) -> Result<Self> {
+    pub async fn try_new(subscriptions: Vec<String>, context: String) -> Result<Self> {
         let session = Arc::new(
             zenoh::open(Config::default())
                 .await
-                .or_else(|e| eyre::bail!("{e}"))?,
+                .or_else(|e| eyre::bail!("{context}, Error: {e}"))?,
         );
         let states = Arc::new(RwLock::new(BTreeMap::new()));
 
         Ok(ZenohClient {
             session,
+            context,
             states,
             subscriptions,
         })
@@ -107,7 +109,8 @@ impl ZenohClient {
                 )
                 .await
                 {
-                    debug!("{err}");
+                    let context = &self.context;
+                    debug!("{context}, Sending Error: {err}");
                 }
                 tokio::time::sleep(PUSH_WAIT_PERIOD).await;
             }
@@ -124,7 +127,8 @@ impl ZenohClient {
                     )
                     .await
                     {
-                        debug!("{err}");
+                        let context = &self.context;
+                        debug!("{context}, Sending Error: {err}");
                     }
                 }
             }

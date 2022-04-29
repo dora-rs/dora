@@ -1,5 +1,5 @@
 use eyre::Context;
-use log::debug;
+use log::{debug, warn};
 use pyo3::{
     buffer::PyBuffer,
     prelude::*,
@@ -19,7 +19,7 @@ fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
         // convert Function into a PyObject
         let identity = file
             .getattr(function)
-            .wrap_err(format!("'{function}' was not found in the imported file."))?;
+            .wrap_err(format!("'{function}' was not found in '{app}'."))?;
         Ok(identity.to_object(py))
     })
 }
@@ -87,17 +87,17 @@ pub fn python_compute_event_loop(
             let states = workload.states.read().await.clone(); // This is probably expensive.
             push_tx
                 .send(
-                    call(pyfunc, function_name, &states, &workload.pulled_states)
-                        .wrap_err(format!(
-                            "App: '{app}', Function: '{function_name}' call did not work"
-                        ))
-                        .unwrap_or_else(|err| {
-                            debug!("{err}");
+                    call(pyfunc, function_name, &states, &workload.pulled_states).unwrap_or_else(
+                        |err| {
+                            warn!("App: '{app}', Function: '{function_name}', Error: {err}");
                             states
-                        }),
+                        },
+                    ),
                 )
                 .await
-                .unwrap_or_else(|err| debug!("{err}"));
+                .unwrap_or_else(|err| {
+                    debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
+                });
         }
     });
 }

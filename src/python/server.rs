@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 pub struct PythonCommand {
     pub app: String,
     pub function: String,
-    pub subscriptions: Vec<String>,
+    subscriptions: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -27,7 +27,9 @@ pub async fn run(variables: PythonCommand) -> Result<()> {
     let (push_sender, push_receiver) = mpsc::channel::<BTreeMap<String, Vec<u8>>>(1);
     let (python_sender, python_receiver) = mpsc::channel::<Workload>(1);
 
-    let zenoh_client = ZenohClient::try_new(variables.subscriptions.clone()).await?;
+    let context = format!("App: {}, Function: {}", &variables.app, &variables.function);
+
+    let zenoh_client = ZenohClient::try_new(variables.subscriptions.clone(), context).await?;
     zenoh_client.clone().push_event_loop(push_receiver);
     python_compute_event_loop(python_receiver, push_sender, variables);
     zenoh_client.pull_event_loop(python_sender).await
