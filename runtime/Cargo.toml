@@ -12,6 +12,7 @@ dora-common = { version = "0.1.0", path = "../common" }
 eyre = "0.6.8"
 futures = "0.3.21"
 futures-concurrency = "2.0.3"
+libloading = "0.7.3"
 serde_yaml = "0.8.23"
 tokio = { version = "1.17.0", features = ["full"] }
 tokio-stream = "0.1.8"

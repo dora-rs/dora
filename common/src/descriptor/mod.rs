@@ -42,7 +42,7 @@ pub enum NodeKind {
     Custom(CustomNode),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperatorConfig {
     pub id: OperatorId,
     pub name: Option<String>,
@@ -57,7 +57,7 @@ pub struct OperatorConfig {
     pub source: OperatorSource,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorSource {
     SharedLibrary(PathBuf),
