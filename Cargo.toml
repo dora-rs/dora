@@ -16,3 +16,5 @@ tokio = { version="1.17.0", features=["full"]}
 pyo3 = "0.16.1"
 futures = "0.3.12"
 envy = "0.4.2"
+rayon = "1.5.1"
+log = "0.4.16"
