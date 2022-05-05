@@ -13,7 +13,10 @@ use tokio::{
 use zenoh::{config::Config, prelude::SplitBuffer};
 use zenoh::{subscriber::SampleReceiver, Session};
 
-use crate::python::server::Workload;
+use crate::{
+    message::{deserialize_message, serialize_message},
+    python::server::Workload,
+};
 
 static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
@@ -44,11 +47,10 @@ impl ZenohClient {
     }
 
     pub async fn push(&self, outputs: BTreeMap<String, Vec<u8>>) {
-        join_all(
-            outputs
-                .iter()
-                .map(|(key, value)| self.session.put(key, value.clone())),
-        )
+        join_all(outputs.iter().map(|(key, data)| {
+            let buffer = serialize_message(data);
+            self.session.put(key, buffer)
+        }))
         .await;
         self.states.write().await.extend(outputs);
     }
@@ -68,8 +70,10 @@ impl ZenohClient {
         for (result, subscription) in fetched_data.into_iter().zip(&self.subscriptions) {
             if let Ok(Some(data)) = result {
                 let value = data.value.payload;
-                let binary = value.contiguous();
-                pulled_states.insert(subscription.clone().to_string(), binary.to_vec());
+                let buffer = value.contiguous();
+                let owned_buffer = buffer.into_owned();
+                let data = deserialize_message(owned_buffer);
+                pulled_states.insert(subscription.clone().to_string(), data);
             }
         }
         if pulled_states.is_empty() {
