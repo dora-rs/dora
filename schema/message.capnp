@@ -4,13 +4,13 @@ struct Metadata {
   metadataVersion @0 :Text;
   watermark @1 :UInt64; 
   deadline @2 :UInt64;
-  opentelemetryContext @3 :Text;
+  otelContext @3 :Text;
   tracingId @4 :Text;
 }
 
 
 struct Message {
-  data @0 :Data;
-  id @1 :UInt32;
+  id @0 :UInt32;
+  data @1 :Data;
   metadata @2 :Metadata;
 }

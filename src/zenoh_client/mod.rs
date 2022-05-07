@@ -14,8 +14,8 @@ use zenoh::{config::Config, prelude::SplitBuffer};
 use zenoh::{subscriber::SampleReceiver, Session};
 
 use crate::{
-    message::{deserialize_message, serialize_message},
-    python::server::Workload,
+    message::{message_capnp, serialize_message},
+    python::server::{BatchMessages, Workload},
 };
 
 static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
@@ -46,19 +46,16 @@ impl ZenohClient {
         })
     }
 
-    pub async fn push(&self, outputs: BTreeMap<String, Vec<u8>>) {
-        join_all(outputs.iter().map(|(key, data)| {
-            let buffer = serialize_message(data);
+    pub async fn push(&self, batch_messages: BatchMessages) {
+        join_all(batch_messages.outputs.iter().map(|(key, data)| {
+            let buffer = serialize_message(data, &batch_messages.otel_context);
             self.session.put(key, buffer)
         }))
         .await;
-        self.states.write().await.extend(outputs);
+        self.states.write().await.extend(batch_messages.outputs);
     }
 
-    pub async fn pull(
-        &self,
-        receivers: &mut [&mut SampleReceiver],
-    ) -> Option<BTreeMap<String, Vec<u8>>> {
+    pub async fn pull(&self, receivers: &mut Vec<&mut SampleReceiver>) -> Option<Workload> {
         let fetched_data = join_all(
             receivers
                 .iter_mut()
@@ -67,25 +64,48 @@ impl ZenohClient {
         .await;
 
         let mut pulled_states = BTreeMap::new();
+        let mut otel_contexts = vec![];
         for (result, subscription) in fetched_data.into_iter().zip(&self.subscriptions) {
             if let Ok(Some(data)) = result {
                 let value = data.value.payload;
                 let buffer = value.contiguous();
                 let owned_buffer = buffer.into_owned();
-                let data = deserialize_message(owned_buffer);
+                let deserialized = capnp::serialize::read_message(
+                    &mut owned_buffer.as_slice(),
+                    capnp::message::ReaderOptions::new(),
+                )
+                .unwrap();
+                let message = deserialized
+                    .get_root::<message_capnp::message::Reader>()
+                    .unwrap();
+                let data = message.get_data().unwrap().to_vec();
+                otel_contexts.push(
+                    message
+                        .get_metadata()
+                        .unwrap()
+                        .get_otel_context()
+                        .unwrap()
+                        .to_string(),
+                );
+
                 pulled_states.insert(subscription.clone().to_string(), data);
             }
         }
         if pulled_states.is_empty() {
             None
         } else {
-            Some(pulled_states)
+            Some(Workload {
+                pulled_states: Some(pulled_states),
+                states: self.states.clone(),
+                otel_context: otel_contexts.pop().unwrap(), // TODO: Better telemetry management
+            })
         }
     }
-    pub fn push_event_loop(self, mut receiver: Receiver<BTreeMap<String, Vec<u8>>>) {
+
+    pub fn push_event_loop(self, mut receiver: Receiver<BatchMessages>) {
         tokio::spawn(async move {
-            while let Some(outputs) = receiver.recv().await {
-                self.push(outputs).await;
+            while let Some(batch_messages) = receiver.recv().await {
+                self.push(batch_messages).await;
             }
         });
     }
@@ -109,6 +129,7 @@ impl ZenohClient {
                     sender.send(Workload {
                         states,
                         pulled_states: None,
+                        otel_context: "".to_string(),
                     }),
                 )
                 .await
@@ -120,17 +141,8 @@ impl ZenohClient {
             }
         } else {
             loop {
-                if let Some(pulled_states) = self.pull(&mut receivers).await {
-                    let states = self.states.clone();
-                    if let Err(err) = timeout(
-                        PULL_WAIT_PERIOD,
-                        sender.send(Workload {
-                            states,
-                            pulled_states: Some(pulled_states),
-                        }),
-                    )
-                    .await
-                    {
+                if let Some(workload) = self.pull(&mut receivers).await {
+                    if let Err(err) = timeout(PULL_WAIT_PERIOD, sender.send(workload)).await {
                         let context = &self.context;
                         debug!("{context}, Sending Error: {err}");
                     }

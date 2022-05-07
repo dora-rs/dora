@@ -20,11 +20,18 @@ pub struct PythonCommand {
 pub struct Workload {
     pub states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     pub pulled_states: Option<BTreeMap<String, Vec<u8>>>,
+    pub otel_context: String,
+}
+
+pub struct BatchMessages {
+    pub outputs: BTreeMap<String, Vec<u8>>,
+    pub deadlines: u64,
+    pub otel_context: String,
 }
 
 #[tokio::main]
 pub async fn run(variables: PythonCommand) -> Result<()> {
-    let (push_sender, push_receiver) = mpsc::channel::<BTreeMap<String, Vec<u8>>>(1);
+    let (push_sender, push_receiver) = mpsc::channel::<BatchMessages>(1);
     let (python_sender, python_receiver) = mpsc::channel::<Workload>(1);
 
     let context = format!("App: {}, Function: {}", &variables.app, &variables.function);

@@ -65,10 +65,10 @@ pub mod metadata {
       self.reader.get_data_field::<u64>(1)
     }
     #[inline]
-    pub fn get_opentelemetry_context(self) -> ::capnp::Result<::capnp::text::Reader<'a>> {
+    pub fn get_otel_context(self) -> ::capnp::Result<::capnp::text::Reader<'a>> {
       ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(1), ::core::option::Option::None)
     }
-    pub fn has_opentelemetry_context(&self) -> bool {
+    pub fn has_otel_context(&self) -> bool {
       !self.reader.get_pointer_field(1).is_null()
     }
     #[inline]
@@ -160,18 +160,18 @@ pub mod metadata {
       self.builder.set_data_field::<u64>(1, value);
     }
     #[inline]
-    pub fn get_opentelemetry_context(self) -> ::capnp::Result<::capnp::text::Builder<'a>> {
+    pub fn get_otel_context(self) -> ::capnp::Result<::capnp::text::Builder<'a>> {
       ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(1), ::core::option::Option::None)
     }
     #[inline]
-    pub fn set_opentelemetry_context(&mut self, value: ::capnp::text::Reader<'_>)  {
+    pub fn set_otel_context(&mut self, value: ::capnp::text::Reader<'_>)  {
       self.builder.get_pointer_field(1).set_text(value);
     }
     #[inline]
-    pub fn init_opentelemetry_context(self, size: u32) -> ::capnp::text::Builder<'a> {
+    pub fn init_otel_context(self, size: u32) -> ::capnp::text::Builder<'a> {
       self.builder.get_pointer_field(1).init_text(size)
     }
-    pub fn has_opentelemetry_context(&self) -> bool {
+    pub fn has_otel_context(&self) -> bool {
       !self.builder.get_pointer_field(1).is_null()
     }
     #[inline]
@@ -253,15 +253,15 @@ pub mod message {
       self.reader.total_size()
     }
     #[inline]
+    pub fn get_id(self) -> u32 {
+      self.reader.get_data_field::<u32>(0)
+    }
+    #[inline]
     pub fn get_data(self) -> ::capnp::Result<::capnp::data::Reader<'a>> {
       ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(0), ::core::option::Option::None)
     }
     pub fn has_data(&self) -> bool {
       !self.reader.get_pointer_field(0).is_null()
-    }
-    #[inline]
-    pub fn get_id(self) -> u32 {
-      self.reader.get_data_field::<u32>(0)
     }
     #[inline]
     pub fn get_metadata(self) -> ::capnp::Result<crate::message::message_capnp::metadata::Reader<'a>> {
@@ -321,6 +321,14 @@ pub mod message {
       self.builder.into_reader().total_size()
     }
     #[inline]
+    pub fn get_id(self) -> u32 {
+      self.builder.get_data_field::<u32>(0)
+    }
+    #[inline]
+    pub fn set_id(&mut self, value: u32)  {
+      self.builder.set_data_field::<u32>(0, value);
+    }
+    #[inline]
     pub fn get_data(self) -> ::capnp::Result<::capnp::data::Builder<'a>> {
       ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(0), ::core::option::Option::None)
     }
@@ -334,14 +342,6 @@ pub mod message {
     }
     pub fn has_data(&self) -> bool {
       !self.builder.get_pointer_field(0).is_null()
-    }
-    #[inline]
-    pub fn get_id(self) -> u32 {
-      self.builder.get_data_field::<u32>(0)
-    }
-    #[inline]
-    pub fn set_id(&mut self, value: u32)  {
-      self.builder.set_data_field::<u32>(0, value);
     }
     #[inline]
     pub fn get_metadata(self) -> ::capnp::Result<crate::message::message_capnp::metadata::Builder<'a>> {

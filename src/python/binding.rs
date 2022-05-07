@@ -7,8 +7,8 @@ use pyo3::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-use super::server::PythonCommand;
 use super::server::Workload;
+use super::server::{BatchMessages, PythonCommand};
 
 fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     pyo3::prepare_freethreaded_python();
@@ -64,9 +64,7 @@ fn call(
 
 pub fn python_compute_event_loop(
     mut input_receiver: tokio::sync::mpsc::Receiver<Workload>,
-    output_sender: tokio::sync::mpsc::Sender<
-        std::collections::BTreeMap<std::string::String, std::vec::Vec<u8>>,
-    >,
+    output_sender: tokio::sync::mpsc::Sender<BatchMessages>,
     variables: PythonCommand,
 ) {
     tokio::spawn(async move {
@@ -85,19 +83,19 @@ pub fn python_compute_event_loop(
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
             let states = workload.states.read().await.clone(); // This is probably expensive.
-            push_tx
-                .send(
-                    call(pyfunc, function_name, &states, &workload.pulled_states).unwrap_or_else(
-                        |err| {
-                            warn!("App: '{app}', Function: '{function_name}', Error: {err}");
-                            states
-                        },
-                    ),
-                )
-                .await
+            let outputs = call(pyfunc, function_name, &states, &workload.pulled_states)
                 .unwrap_or_else(|err| {
-                    debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
+                    warn!("App: '{app}', Function: '{function_name}', Error: {err}");
+                    states
                 });
+            let batch_messages = BatchMessages {
+                outputs,
+                deadlines: 1,
+                otel_context: "".to_string(),
+            };
+            push_tx.send(batch_messages).await.unwrap_or_else(|err| {
+                debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
+            });
         }
     });
 }
