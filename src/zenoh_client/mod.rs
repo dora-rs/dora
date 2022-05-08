@@ -133,23 +133,23 @@ impl ZenohClient {
         let is_source = self.subscriptions.is_empty();
         let tracer = tracing_init()?;
         let name = &self.context;
-        //let span = tracer.start("client-root");
-        //let cx = Context::current_with_span(span);
+
         if is_source {
             loop {
                 let states = self.states.clone();
                 let span = tracer.start(format!("{name}-pushing"));
                 let cx = Context::current_with_span(span);
-                if let Err(err) = timeout(
+
+                let sent_workload = timeout(
                     PULL_WAIT_PERIOD,
                     sender.send(Workload {
                         states,
                         pulled_states: None,
                         otel_context: cx,
                     }),
-                )
-                .await
-                {
+                );
+
+                if let Err(err) = sent_workload.await {
                     let context = &self.context;
                     warn!("{context}, Sending Error: {err}");
                 }
@@ -158,7 +158,12 @@ impl ZenohClient {
         } else {
             loop {
                 if let Some(workload) = self.pull(&mut receivers).await {
-                    if let Err(err) = timeout(PULL_WAIT_PERIOD, sender.send(workload)).await {
+                    let span = tracer
+                        .start_with_context(format!("{name}-pulling"), &workload.otel_context);
+                    let cx = Context::current_with_span(span);
+                    let sent_workload =
+                        timeout(PULL_WAIT_PERIOD, sender.send(workload)).with_context(cx);
+                    if let Err(err) = sent_workload.await {
                         let context = &self.context;
                         warn!("{context}, Sending Error: {err}");
                     }
