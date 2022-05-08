@@ -1,5 +1,10 @@
 use eyre::Context;
 use log::{debug, warn};
+use opentelemetry::{
+    global,
+    trace::{TraceContextExt, Tracer},
+    Context as OTelContext,
+};
 use pyo3::{
     buffer::PyBuffer,
     prelude::*,
@@ -78,20 +83,28 @@ pub fn python_compute_event_loop(
                 ))
                 .unwrap(),
         );
+        let tracer = global::tracer("python-caller");
 
         while let Some(workload) = input_receiver.recv().await {
+            let span = tracer.start_with_context(
+                format!("wrapper-{app}-{function_name}"),
+                &workload.otel_context,
+            );
+            let cx = OTelContext::current_with_span(span);
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
             let states = workload.states.read().await.clone(); // This is probably expensive.
+
             let outputs = call(pyfunc, function_name, &states, &workload.pulled_states)
                 .unwrap_or_else(|err| {
                     warn!("App: '{app}', Function: '{function_name}', Error: {err}");
                     states
                 });
+
             let batch_messages = BatchMessages {
                 outputs,
                 deadlines: 1,
-                otel_context: "".to_string(),
+                otel_context: cx.clone(),
             };
             push_tx.send(batch_messages).await.unwrap_or_else(|err| {
                 debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")

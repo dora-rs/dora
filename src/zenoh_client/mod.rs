@@ -1,8 +1,18 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+use opentelemetry::{
+    sdk::{propagation::TraceContextPropagator, trace as sdktrace},
+    trace::{FutureExt, TraceError},
+};
+
 use eyre::Result;
 use futures::{future::join_all, prelude::*};
-use log::debug;
+use log::warn;
+use opentelemetry::{
+    global,
+    trace::{TraceContextExt, Tracer},
+    Context,
+};
 use tokio::{
     sync::{
         mpsc::{Receiver, Sender},
@@ -14,7 +24,7 @@ use zenoh::{config::Config, prelude::SplitBuffer};
 use zenoh::{subscriber::SampleReceiver, Session};
 
 use crate::{
-    message::{message_capnp, serialize_message},
+    message::{deserialize_context, message_capnp, serialize_context, serialize_message},
     python::server::{BatchMessages, Workload},
 };
 
@@ -47,10 +57,15 @@ impl ZenohClient {
     }
 
     pub async fn push(&self, batch_messages: BatchMessages) {
+        let tracer = global::tracer("pusher");
+        let span = tracer.start_with_context("result-pushing", &batch_messages.otel_context);
+        let cx = Context::current_with_span(span);
+        let string_context = serialize_context(&cx);
         join_all(batch_messages.outputs.iter().map(|(key, data)| {
-            let buffer = serialize_message(data, &batch_messages.otel_context);
+            let buffer = serialize_message(data, &string_context);
             self.session.put(key, buffer)
         }))
+        .with_context(cx)
         .await;
         self.states.write().await.extend(batch_messages.outputs);
     }
@@ -79,14 +94,9 @@ impl ZenohClient {
                     .get_root::<message_capnp::message::Reader>()
                     .unwrap();
                 let data = message.get_data().unwrap().to_vec();
-                otel_contexts.push(
-                    message
-                        .get_metadata()
-                        .unwrap()
-                        .get_otel_context()
-                        .unwrap()
-                        .to_string(),
-                );
+                let string_context = message.get_metadata().unwrap().get_otel_context().unwrap();
+                let cx = deserialize_context(string_context);
+                otel_contexts.push(cx);
 
                 pulled_states.insert(subscription.clone().to_string(), data);
             }
@@ -121,21 +131,27 @@ impl ZenohClient {
         }
         let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
         let is_source = self.subscriptions.is_empty();
+        let tracer = tracing_init()?;
+        let name = &self.context;
+        //let span = tracer.start("client-root");
+        //let cx = Context::current_with_span(span);
         if is_source {
             loop {
                 let states = self.states.clone();
+                let span = tracer.start(format!("{name}-pushing"));
+                let cx = Context::current_with_span(span);
                 if let Err(err) = timeout(
                     PULL_WAIT_PERIOD,
                     sender.send(Workload {
                         states,
                         pulled_states: None,
-                        otel_context: "".to_string(),
+                        otel_context: cx,
                     }),
                 )
                 .await
                 {
                     let context = &self.context;
-                    debug!("{context}, Sending Error: {err}");
+                    warn!("{context}, Sending Error: {err}");
                 }
                 tokio::time::sleep(PUSH_WAIT_PERIOD).await;
             }
@@ -144,10 +160,18 @@ impl ZenohClient {
                 if let Some(workload) = self.pull(&mut receivers).await {
                     if let Err(err) = timeout(PULL_WAIT_PERIOD, sender.send(workload)).await {
                         let context = &self.context;
-                        debug!("{context}, Sending Error: {err}");
+                        warn!("{context}, Sending Error: {err}");
                     }
                 }
             }
         }
     }
+}
+
+fn tracing_init() -> Result<sdktrace::Tracer, TraceError> {
+    global::set_text_map_propagator(TraceContextPropagator::new());
+    opentelemetry_jaeger::new_agent_pipeline()
+        .with_endpoint("172.17.0.1:6831")
+        .with_service_name("test-client")
+        .install_batch(opentelemetry::runtime::Tokio)
 }
