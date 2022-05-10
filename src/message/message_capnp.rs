@@ -78,6 +78,10 @@ pub mod metadata {
     pub fn has_tracing_id(&self) -> bool {
       !self.reader.get_pointer_field(2).is_null()
     }
+    #[inline]
+    pub fn get_degree(self) -> u32 {
+      self.reader.get_data_field::<u32>(4)
+    }
   }
 
   pub struct Builder<'a> { builder: ::capnp::private::layout::StructBuilder<'a> }
@@ -189,6 +193,14 @@ pub mod metadata {
     pub fn has_tracing_id(&self) -> bool {
       !self.builder.get_pointer_field(2).is_null()
     }
+    #[inline]
+    pub fn get_degree(self) -> u32 {
+      self.builder.get_data_field::<u32>(4)
+    }
+    #[inline]
+    pub fn set_degree(&mut self, value: u32)  {
+      self.builder.set_data_field::<u32>(4, value);
+    }
   }
 
   pub struct Pipeline { _typeless: ::capnp::any_pointer::Pipeline }
@@ -201,7 +213,7 @@ pub mod metadata {
   }
   mod _private {
     use capnp::private::layout;
-    pub const STRUCT_SIZE: layout::StructSize = layout::StructSize { data: 2, pointers: 3 };
+    pub const STRUCT_SIZE: layout::StructSize = layout::StructSize { data: 3, pointers: 3 };
     pub const TYPE_ID: u64 = 0xdfe7_acab_c48a_7843;
   }
 }

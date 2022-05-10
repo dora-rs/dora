@@ -62,7 +62,7 @@ impl ZenohClient {
         let cx = Context::current_with_span(span);
         let string_context = serialize_context(&cx);
         join_all(batch_messages.outputs.iter().map(|(key, data)| {
-            let buffer = serialize_message(data, &string_context);
+            let buffer = serialize_message(data, &string_context, batch_messages.degree);
             self.session.put(key, buffer)
         }))
         .with_context(cx)
@@ -79,14 +79,16 @@ impl ZenohClient {
         .await;
 
         let mut pulled_states = BTreeMap::new();
-        let mut otel_contexts = vec![];
+        let mut string_context = "".to_string();
+        let mut max_degree = 0;
+
         for (result, subscription) in fetched_data.into_iter().zip(&self.subscriptions) {
             if let Ok(Some(data)) = result {
                 let value = data.value.payload;
                 let buffer = value.contiguous();
-                let owned_buffer = buffer.into_owned();
+                let mut owned_buffer = &*buffer;
                 let deserialized = capnp::serialize::read_message(
-                    &mut owned_buffer.as_slice(),
+                    &mut owned_buffer,
                     capnp::message::ReaderOptions::new(),
                 )
                 .unwrap();
@@ -94,9 +96,12 @@ impl ZenohClient {
                     .get_root::<message_capnp::message::Reader>()
                     .unwrap();
                 let data = message.get_data().unwrap().to_vec();
-                let string_context = message.get_metadata().unwrap().get_otel_context().unwrap();
-                let cx = deserialize_context(string_context);
-                otel_contexts.push(cx);
+                let metadata = message.get_metadata().unwrap();
+                let degree = metadata.get_degree();
+                if max_degree <= degree {
+                    string_context = metadata.get_otel_context().unwrap().to_string();
+                    max_degree = degree
+                }
 
                 pulled_states.insert(subscription.clone().to_string(), data);
             }
@@ -107,7 +112,8 @@ impl ZenohClient {
             Some(Workload {
                 pulled_states: Some(pulled_states),
                 states: self.states.clone(),
-                otel_context: otel_contexts.pop().unwrap(), // TODO: Better telemetry management
+                otel_context: deserialize_context(string_context.as_str()), // TODO: Better telemetry management
+                degree: max_degree,
             })
         }
     }
@@ -140,13 +146,14 @@ impl ZenohClient {
                 let span = tracer.start(format!("{name}-pushing"));
                 let cx = Context::current_with_span(span);
 
-                let sent_workload = timeout(
-                    PULL_WAIT_PERIOD,
-                    sender.send(Workload {
+                let sent_workload = sender.send_timeout(
+                    Workload {
                         states,
                         pulled_states: None,
                         otel_context: cx,
-                    }),
+                        degree: 0,
+                    },
+                    PULL_WAIT_PERIOD,
                 );
 
                 if let Err(err) = sent_workload.await {
@@ -161,8 +168,10 @@ impl ZenohClient {
                     let span = tracer
                         .start_with_context(format!("{name}-pulling"), &workload.otel_context);
                     let cx = Context::current_with_span(span);
-                    let sent_workload =
-                        timeout(PULL_WAIT_PERIOD, sender.send(workload)).with_context(cx);
+
+                    let sent_workload = sender
+                        .send_timeout(workload, PULL_WAIT_PERIOD)
+                        .with_context(cx);
                     if let Err(err) = sent_workload.await {
                         let context = &self.context;
                         warn!("{context}, Sending Error: {err}");

@@ -6,6 +6,7 @@ struct Metadata {
   deadline @2 :UInt64;
   otelContext @3 :Text;
   tracingId @4 :Text;
+  degree @5 :UInt32;
 }
 
 

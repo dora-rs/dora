@@ -105,6 +105,7 @@ pub fn python_compute_event_loop(
                 outputs,
                 deadlines: 1,
                 otel_context: cx.clone(),
+                degree: workload.degree + 1,
             };
             push_tx.send(batch_messages).await.unwrap_or_else(|err| {
                 debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")

@@ -22,12 +22,14 @@ pub struct Workload {
     pub states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     pub pulled_states: Option<BTreeMap<String, Vec<u8>>>,
     pub otel_context: Context,
+    pub degree: u32,
 }
 
 pub struct BatchMessages {
     pub outputs: BTreeMap<String, Vec<u8>>,
     pub deadlines: u64,
     pub otel_context: Context,
+    pub degree: u32,
 }
 
 #[tokio::main]

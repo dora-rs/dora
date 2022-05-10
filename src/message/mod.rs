@@ -19,11 +19,12 @@ impl<'a> Extractor for MetadataMap<'a> {
 }
 pub mod message_capnp;
 
-pub fn serialize_message(data: &[u8], otel_context: &str) -> Vec<u8> {
+pub fn serialize_message(data: &[u8], otel_context: &str, degree: u32) -> Vec<u8> {
     let mut meta_builder = capnp::message::Builder::new_default();
     // And now we can set up the actual message we're trying to create
     let mut metadata = meta_builder.init_root::<message_capnp::metadata::Builder>();
     metadata.set_otel_context(otel_context);
+    metadata.set_degree(degree);
 
     let mut builder = capnp::message::Builder::new_default();
     let mut message = builder.init_root::<message_capnp::message::Builder>();
