@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use opentelemetry::{
     sdk::{propagation::TraceContextPropagator, trace as sdktrace},
@@ -14,10 +18,7 @@ use opentelemetry::{
     Context,
 };
 use tokio::{
-    sync::{
-        mpsc::{Receiver, Sender},
-        RwLock,
-    },
+    sync::mpsc::{Receiver, Sender},
     time::timeout,
 };
 use zenoh::{config::Config, prelude::SplitBuffer};
@@ -29,28 +30,29 @@ use crate::{
 };
 
 static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
+static QUEUE_WAIT_PERIOD: std::time::Duration = Duration::from_millis(20);
 static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
 pub struct ZenohClient {
     session: Arc<Session>,
-    context: String,
+    name: String,
     states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     subscriptions: Vec<String>,
 }
 
 impl ZenohClient {
-    pub async fn try_new(subscriptions: Vec<String>, context: String) -> Result<Self> {
+    pub async fn try_new(subscriptions: Vec<String>, name: String) -> Result<Self> {
         let session = Arc::new(
             zenoh::open(Config::default())
                 .await
-                .or_else(|e| eyre::bail!("{context}, Error: {e}"))?,
+                .or_else(|e| eyre::bail!("{name}, Error: {e}"))?,
         );
         let states = Arc::new(RwLock::new(BTreeMap::new()));
 
         Ok(ZenohClient {
             session,
-            context,
+            name,
             states,
             subscriptions,
         })
@@ -67,7 +69,7 @@ impl ZenohClient {
         }))
         .with_context(cx)
         .await;
-        self.states.write().await.extend(batch_messages.outputs);
+        self.states.write().unwrap().extend(batch_messages.outputs);
     }
 
     pub async fn pull(&self, receivers: &mut Vec<&mut SampleReceiver>) -> Option<Workload> {
@@ -80,7 +82,7 @@ impl ZenohClient {
 
         let mut pulled_states = BTreeMap::new();
         let mut string_context = "".to_string();
-        let mut max_degree = 0;
+        let mut max_depth = 0;
 
         for (result, subscription) in fetched_data.into_iter().zip(&self.subscriptions) {
             if let Ok(Some(data)) = result {
@@ -97,10 +99,10 @@ impl ZenohClient {
                     .unwrap();
                 let data = message.get_data().unwrap().to_vec();
                 let metadata = message.get_metadata().unwrap();
-                let degree = metadata.get_degree();
-                if max_degree <= degree {
+                let depth = metadata.get_depth();
+                if max_depth <= depth {
                     string_context = metadata.get_otel_context().unwrap().to_string();
-                    max_degree = degree
+                    max_depth = depth
                 }
 
                 pulled_states.insert(subscription.clone().to_string(), data);
@@ -113,7 +115,7 @@ impl ZenohClient {
                 pulled_states: Some(pulled_states),
                 states: self.states.clone(),
                 otel_context: deserialize_context(string_context.as_str()), // TODO: Better telemetry management
-                degree: max_degree,
+                degree: max_depth,
             })
         }
     }
@@ -138,7 +140,7 @@ impl ZenohClient {
         let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
         let is_source = self.subscriptions.is_empty();
         let tracer = tracing_init()?;
-        let name = &self.context;
+        let name = &self.name;
 
         if is_source {
             loop {
@@ -153,11 +155,11 @@ impl ZenohClient {
                         otel_context: cx,
                         degree: 0,
                     },
-                    PULL_WAIT_PERIOD,
+                    QUEUE_WAIT_PERIOD,
                 );
 
                 if let Err(err) = sent_workload.await {
-                    let context = &self.context;
+                    let context = &self.name;
                     warn!("{context}, Sending Error: {err}");
                 }
                 tokio::time::sleep(PUSH_WAIT_PERIOD).await;
@@ -170,10 +172,10 @@ impl ZenohClient {
                     let cx = Context::current_with_span(span);
 
                     let sent_workload = sender
-                        .send_timeout(workload, PULL_WAIT_PERIOD)
+                        .send_timeout(workload, QUEUE_WAIT_PERIOD)
                         .with_context(cx);
                     if let Err(err) = sent_workload.await {
-                        let context = &self.context;
+                        let context = &self.name;
                         warn!("{context}, Sending Error: {err}");
                     }
                 }

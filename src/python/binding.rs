@@ -12,6 +12,8 @@ use pyo3::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+use crate::message::serialize_context;
+
 use super::server::Workload;
 use super::server::{BatchMessages, PythonCommand};
 
@@ -34,6 +36,7 @@ fn call(
     function_name: &str,
     states: &BTreeMap<String, Vec<u8>>,
     pulled_states: &Option<BTreeMap<String, Vec<u8>>>,
+    context: OTelContext,
 ) -> eyre::Result<BTreeMap<String, Vec<u8>>> {
     Python::with_gil(|py| {
         let py_inputs = PyDict::new(py);
@@ -45,6 +48,8 @@ fn call(
                 py_inputs.set_item(k, PyByteArray::new(py, v))?;
             }
         }
+
+        py_inputs.set_item("otel_context", serialize_context(&context))?;
 
         let results = py_function
             .call(py, (py_inputs,), None)
@@ -72,7 +77,7 @@ pub fn python_compute_event_loop(
     output_sender: tokio::sync::mpsc::Sender<BatchMessages>,
     variables: PythonCommand,
 ) {
-    tokio::spawn(async move {
+    rayon::spawn(move || {
         let app = &variables.app;
         let function_name = &variables.function;
 
@@ -85,7 +90,7 @@ pub fn python_compute_event_loop(
         );
         let tracer = global::tracer("python-caller");
 
-        while let Some(workload) = input_receiver.recv().await {
+        while let Some(workload) = input_receiver.blocking_recv() {
             let span = tracer.start_with_context(
                 format!("wrapper-{app}-{function_name}"),
                 &workload.otel_context,
@@ -93,13 +98,17 @@ pub fn python_compute_event_loop(
             let cx = OTelContext::current_with_span(span);
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
-            let states = workload.states.read().await.clone(); // This is probably expensive.
+            let states = workload.states.read().unwrap().clone(); // This is probably expensive.
 
-            let outputs = call(pyfunc, function_name, &states, &workload.pulled_states)
-                .unwrap_or_else(|err| {
-                    warn!("App: '{app}', Function: '{function_name}', Error: {err}");
-                    states
-                });
+            let outputs = call(
+                pyfunc,
+                function_name,
+                &states,
+                &workload.pulled_states,
+                cx.clone(),
+            )
+            .context(format!("App: '{app}', Function: '{function_name}'"))
+            .unwrap();
 
             let batch_messages = BatchMessages {
                 outputs,
@@ -107,7 +116,7 @@ pub fn python_compute_event_loop(
                 otel_context: cx.clone(),
                 degree: workload.degree + 1,
             };
-            push_tx.send(batch_messages).await.unwrap_or_else(|err| {
+            push_tx.blocking_send(batch_messages).unwrap_or_else(|err| {
                 debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
             });
         }

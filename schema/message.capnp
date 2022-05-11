@@ -5,8 +5,7 @@ struct Metadata {
   watermark @1 :UInt64; 
   deadline @2 :UInt64;
   otelContext @3 :Text;
-  tracingId @4 :Text;
-  degree @5 :UInt32;
+  depth @4 :UInt32; # The depth within the graph of the message 
 }
 
 

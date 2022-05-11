@@ -72,14 +72,7 @@ pub mod metadata {
       !self.reader.get_pointer_field(1).is_null()
     }
     #[inline]
-    pub fn get_tracing_id(self) -> ::capnp::Result<::capnp::text::Reader<'a>> {
-      ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(2), ::core::option::Option::None)
-    }
-    pub fn has_tracing_id(&self) -> bool {
-      !self.reader.get_pointer_field(2).is_null()
-    }
-    #[inline]
-    pub fn get_degree(self) -> u32 {
+    pub fn get_depth(self) -> u32 {
       self.reader.get_data_field::<u32>(4)
     }
   }
@@ -179,26 +172,11 @@ pub mod metadata {
       !self.builder.get_pointer_field(1).is_null()
     }
     #[inline]
-    pub fn get_tracing_id(self) -> ::capnp::Result<::capnp::text::Builder<'a>> {
-      ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(2), ::core::option::Option::None)
-    }
-    #[inline]
-    pub fn set_tracing_id(&mut self, value: ::capnp::text::Reader<'_>)  {
-      self.builder.get_pointer_field(2).set_text(value);
-    }
-    #[inline]
-    pub fn init_tracing_id(self, size: u32) -> ::capnp::text::Builder<'a> {
-      self.builder.get_pointer_field(2).init_text(size)
-    }
-    pub fn has_tracing_id(&self) -> bool {
-      !self.builder.get_pointer_field(2).is_null()
-    }
-    #[inline]
-    pub fn get_degree(self) -> u32 {
+    pub fn get_depth(self) -> u32 {
       self.builder.get_data_field::<u32>(4)
     }
     #[inline]
-    pub fn set_degree(&mut self, value: u32)  {
+    pub fn set_depth(&mut self, value: u32)  {
       self.builder.set_data_field::<u32>(4, value);
     }
   }
@@ -213,7 +191,7 @@ pub mod metadata {
   }
   mod _private {
     use capnp::private::layout;
-    pub const STRUCT_SIZE: layout::StructSize = layout::StructSize { data: 3, pointers: 3 };
+    pub const STRUCT_SIZE: layout::StructSize = layout::StructSize { data: 3, pointers: 2 };
     pub const TYPE_ID: u64 = 0xdfe7_acab_c48a_7843;
   }
 }

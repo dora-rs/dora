@@ -5,10 +5,9 @@ use eyre::Result;
 use opentelemetry::Context;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use structopt::StructOpt;
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
 
 #[derive(Deserialize, Debug, Clone, StructOpt)]
 pub struct PythonCommand {
@@ -37,7 +36,7 @@ pub async fn run(variables: PythonCommand) -> Result<()> {
     let (push_sender, push_receiver) = mpsc::channel::<BatchMessages>(1);
     let (python_sender, python_receiver) = mpsc::channel::<Workload>(1);
 
-    let app_function_name = format!("App: {}, Function: {}", &variables.app, &variables.function);
+    let app_function_name = format!("{}-{}", &variables.app, &variables.function);
 
     let zenoh_client =
         ZenohClient::try_new(variables.subscriptions.clone(), app_function_name).await?;
