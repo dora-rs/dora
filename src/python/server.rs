@@ -2,6 +2,7 @@ use crate::zenoh_client::ZenohClient;
 
 use super::binding::python_compute_event_loop;
 use eyre::Result;
+#[cfg(feature = "opentelemetry_jaeger")]
 use opentelemetry::Context;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -20,14 +21,20 @@ pub struct PythonCommand {
 pub struct Workload {
     pub states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     pub pulled_states: Option<BTreeMap<String, Vec<u8>>>,
+    #[cfg(feature = "opentelemetry")]
     pub otel_context: Context,
+    #[cfg(not(feature = "opentelemetry"))]
+    pub otel_context: String,
     pub degree: u32,
 }
 
 pub struct BatchMessages {
     pub outputs: BTreeMap<String, Vec<u8>>,
     pub deadlines: u64,
+    #[cfg(feature = "opentelemetry")]
     pub otel_context: Context,
+    #[cfg(not(feature = "opentelemetry"))]
+    pub otel_context: String,
     pub degree: u32,
 }
 

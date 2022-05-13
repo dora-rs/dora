@@ -4,19 +4,20 @@ use std::{
     time::Duration,
 };
 
+use crate::message::{message_capnp, serialize_message};
+#[cfg(feature = "opentelemetry_jaeger")]
+use crate::tracing::{deserialize_context, serialize_context, tracing_init};
+#[cfg(feature = "opentelemetry_jaeger")]
 use opentelemetry::{
+    global,
     sdk::{propagation::TraceContextPropagator, trace as sdktrace},
-    trace::{FutureExt, TraceError},
+    trace::{TraceContextExt, TraceError, Tracer},
+    Context, KeyValue,
 };
 
 use eyre::Result;
 use futures::{future::join_all, prelude::*};
 use log::warn;
-use opentelemetry::{
-    global,
-    trace::{TraceContextExt, Tracer},
-    Context,
-};
 use tokio::{
     sync::mpsc::{Receiver, Sender},
     time::timeout,
@@ -24,13 +25,10 @@ use tokio::{
 use zenoh::{config::Config, prelude::SplitBuffer};
 use zenoh::{subscriber::SampleReceiver, Session};
 
-use crate::{
-    message::{deserialize_context, message_capnp, serialize_context, serialize_message},
-    python::server::{BatchMessages, Workload},
-};
+use crate::python::server::{BatchMessages, Workload};
 
 static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
-static QUEUE_WAIT_PERIOD: std::time::Duration = Duration::from_millis(20);
+static QUEUE_WAIT_PERIOD: std::time::Duration = Duration::from_millis(50);
 static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
@@ -59,20 +57,27 @@ impl ZenohClient {
     }
 
     pub async fn push(&self, batch_messages: BatchMessages) {
+        #[cfg(feature = "opentelemetry_jaeger")]
         let tracer = global::tracer("pusher");
+        #[cfg(feature = "opentelemetry_jaeger")]
         let span = tracer.start_with_context("result-pushing", &batch_messages.otel_context);
+        #[cfg(feature = "opentelemetry_jaeger")]
         let cx = Context::current_with_span(span);
+        #[cfg(feature = "opentelemetry_jaeger")]
         let string_context = serialize_context(&cx);
+
+        #[cfg(not(feature = "opentelemetry_jaeger"))]
+        let string_context = "".to_string();
+
         join_all(batch_messages.outputs.iter().map(|(key, data)| {
             let buffer = serialize_message(data, &string_context, batch_messages.degree);
             self.session.put(key, buffer)
         }))
-        .with_context(cx)
         .await;
         self.states.write().unwrap().extend(batch_messages.outputs);
     }
 
-    pub async fn pull(&self, receivers: &mut Vec<&mut SampleReceiver>) -> Option<Workload> {
+    pub async fn pull(&self, receivers: &mut [&mut SampleReceiver]) -> Option<Workload> {
         let fetched_data = join_all(
             receivers
                 .iter_mut()
@@ -108,13 +113,19 @@ impl ZenohClient {
                 pulled_states.insert(subscription.clone().to_string(), data);
             }
         }
+
+        #[cfg(feature = "opentelemetry_jaeger")]
+        let cx = deserialize_context(string_context.as_str());
+        #[cfg(not(feature = "opentelemetry_jaeger"))]
+        let cx = string_context;
+
         if pulled_states.is_empty() {
             None
         } else {
             Some(Workload {
                 pulled_states: Some(pulled_states),
                 states: self.states.clone(),
-                otel_context: deserialize_context(string_context.as_str()), // TODO: Better telemetry management
+                otel_context: cx, // TODO: Better telemetry management
                 degree: max_depth,
             })
         }
@@ -139,14 +150,20 @@ impl ZenohClient {
         }
         let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
         let is_source = self.subscriptions.is_empty();
+        #[cfg(feature = "opentelemetry_jaeger")]
         let tracer = tracing_init()?;
+        #[cfg(feature = "opentelemetry_jaeger")]
         let name = &self.name;
 
         if is_source {
             loop {
                 let states = self.states.clone();
+                #[cfg(feature = "opentelemetry_jaeger")]
                 let span = tracer.start(format!("{name}-pushing"));
+                #[cfg(feature = "opentelemetry_jaeger")]
                 let cx = Context::current_with_span(span);
+                #[cfg(not(feature = "opentelemetry_jaeger"))]
+                let cx = "".to_string();
 
                 let sent_workload = sender.send_timeout(
                     Workload {
@@ -167,27 +184,24 @@ impl ZenohClient {
         } else {
             loop {
                 if let Some(workload) = self.pull(&mut receivers).await {
+                    #[cfg(feature = "opentelemetry_jaeger")]
                     let span = tracer
                         .start_with_context(format!("{name}-pulling"), &workload.otel_context);
+                    #[cfg(feature = "opentelemetry_jaeger")]
                     let cx = Context::current_with_span(span);
 
-                    let sent_workload = sender
-                        .send_timeout(workload, QUEUE_WAIT_PERIOD)
-                        .with_context(cx);
+                    let sent_workload = sender.send_timeout(workload, QUEUE_WAIT_PERIOD);
                     if let Err(err) = sent_workload.await {
                         let context = &self.name;
                         warn!("{context}, Sending Error: {err}");
+                        #[cfg(feature = "opentelemetry_jaeger")]
+                        cx.span().add_event(
+                            "Sending Error",
+                            vec![KeyValue::new("err", format!("{err}"))],
+                        )
                     }
                 }
             }
         }
     }
-}
-
-fn tracing_init() -> Result<sdktrace::Tracer, TraceError> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
-    opentelemetry_jaeger::new_agent_pipeline()
-        .with_endpoint("172.17.0.1:6831")
-        .with_service_name("test-client")
-        .install_batch(opentelemetry::runtime::Tokio)
 }

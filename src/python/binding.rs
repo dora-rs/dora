@@ -1,5 +1,6 @@
 use eyre::Context;
-use log::{debug, warn};
+use log::debug;
+#[cfg(feature = "opentelemetry_jaeger")]
 use opentelemetry::{
     global,
     trace::{TraceContextExt, Tracer},
@@ -12,7 +13,8 @@ use pyo3::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::message::serialize_context;
+#[cfg(feature = "opentelemetry_jaeger")]
+use crate::tracing::serialize_context;
 
 use super::server::Workload;
 use super::server::{BatchMessages, PythonCommand};
@@ -36,7 +38,8 @@ fn call(
     function_name: &str,
     states: &BTreeMap<String, Vec<u8>>,
     pulled_states: &Option<BTreeMap<String, Vec<u8>>>,
-    context: OTelContext,
+    #[cfg(feature = "opentelemetry_jaeger")] context: OTelContext,
+    #[cfg(not(feature = "opentelemetry_jaeger"))] context: String,
 ) -> eyre::Result<BTreeMap<String, Vec<u8>>> {
     Python::with_gil(|py| {
         let py_inputs = PyDict::new(py);
@@ -49,7 +52,10 @@ fn call(
             }
         }
 
+        #[cfg(feature = "opentelemetry_jaeger")]
         py_inputs.set_item("otel_context", serialize_context(&context))?;
+        #[cfg(not(feature = "opentelemetry_jaeger"))]
+        py_inputs.set_item("otel_context", context)?;
 
         let results = py_function
             .call(py, (py_inputs,), None)
@@ -88,14 +94,20 @@ pub fn python_compute_event_loop(
                 ))
                 .unwrap(),
         );
+        #[cfg(feature = "opentelemetry_jaeger")]
         let tracer = global::tracer("python-caller");
 
         while let Some(workload) = input_receiver.blocking_recv() {
+            #[cfg(feature = "opentelemetry_jaeger")]
             let span = tracer.start_with_context(
                 format!("wrapper-{app}-{function_name}"),
                 &workload.otel_context,
             );
+            #[cfg(feature = "opentelemetry_jaeger")]
             let cx = OTelContext::current_with_span(span);
+            #[cfg(not(feature = "opentelemetry_jaeger"))]
+            let cx = workload.otel_context;
+
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
             let states = workload.states.read().unwrap().clone(); // This is probably expensive.
