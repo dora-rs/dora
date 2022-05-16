@@ -1,19 +1,13 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
-
-use crate::message::{message_capnp, serialize_message};
+use crate::message::message_capnp;
 #[cfg(feature = "opentelemetry_jaeger")]
 use crate::tracing::{deserialize_context, serialize_context, tracing_init};
 #[cfg(feature = "opentelemetry_jaeger")]
 use opentelemetry::{
     global,
-    sdk::{propagation::TraceContextPropagator, trace as sdktrace},
-    trace::{TraceContextExt, TraceError, Tracer},
+    trace::{TraceContextExt, Tracer},
     Context, KeyValue,
 };
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use eyre::Result;
 use futures::{future::join_all, prelude::*};
@@ -22,10 +16,8 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
     time::timeout,
 };
-use zenoh::{config::Config, prelude::SplitBuffer};
+use zenoh::{buf::ZBuf, config::Config};
 use zenoh::{subscriber::SampleReceiver, Session};
-
-use crate::python::server::{BatchMessages, Workload};
 
 static PULL_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 static QUEUE_WAIT_PERIOD: std::time::Duration = Duration::from_millis(50);
@@ -35,7 +27,6 @@ static PUSH_WAIT_PERIOD: std::time::Duration = Duration::from_millis(100);
 pub struct ZenohClient {
     session: Arc<Session>,
     name: String,
-    states: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     subscriptions: Vec<String>,
 }
 
@@ -46,38 +37,24 @@ impl ZenohClient {
                 .await
                 .or_else(|e| eyre::bail!("{name}, Error: {e}"))?,
         );
-        let states = Arc::new(RwLock::new(BTreeMap::new()));
 
         Ok(ZenohClient {
             session,
             name,
-            states,
             subscriptions,
         })
     }
 
-    pub async fn push(&self, batch_messages: BatchMessages) {
-        #[cfg(feature = "opentelemetry_jaeger")]
-        let tracer = global::tracer("pusher");
-        #[cfg(feature = "opentelemetry_jaeger")]
-        let span = tracer.start_with_context("result-pushing", &batch_messages.otel_context);
-        #[cfg(feature = "opentelemetry_jaeger")]
-        let cx = Context::current_with_span(span);
-        #[cfg(feature = "opentelemetry_jaeger")]
-        let string_context = serialize_context(&cx);
-
-        #[cfg(not(feature = "opentelemetry_jaeger"))]
-        let string_context = "".to_string();
-
-        join_all(batch_messages.outputs.iter().map(|(key, data)| {
-            let buffer = serialize_message(data, &string_context, batch_messages.degree);
-            self.session.put(key, buffer)
-        }))
+    pub async fn push(&self, batch_messages: BTreeMap<String, Vec<u8>>) {
+        join_all(
+            batch_messages
+                .iter()
+                .map(|(key, data)| self.session.put(key, data.as_slice())),
+        )
         .await;
-        self.states.write().unwrap().extend(batch_messages.outputs);
     }
 
-    pub async fn pull(&self, receivers: &mut [&mut SampleReceiver]) -> Option<Workload> {
+    pub async fn pull(&self, receivers: &mut [&mut SampleReceiver]) -> BTreeMap<String, ZBuf> {
         let fetched_data = join_all(
             receivers
                 .iter_mut()
@@ -86,52 +63,19 @@ impl ZenohClient {
         .await;
 
         let mut pulled_states = BTreeMap::new();
-        let mut string_context = "".to_string();
-        let mut max_depth = 0;
 
         for (result, subscription) in fetched_data.into_iter().zip(&self.subscriptions) {
             if let Ok(Some(data)) = result {
                 let value = data.value.payload;
-                let buffer = value.contiguous();
-                let mut owned_buffer = &*buffer;
-                let deserialized = capnp::serialize::read_message(
-                    &mut owned_buffer,
-                    capnp::message::ReaderOptions::new(),
-                )
-                .unwrap();
-                let message = deserialized
-                    .get_root::<message_capnp::message::Reader>()
-                    .unwrap();
-                let data = message.get_data().unwrap().to_vec();
-                let metadata = message.get_metadata().unwrap();
-                let depth = metadata.get_depth();
-                if max_depth <= depth {
-                    string_context = metadata.get_otel_context().unwrap().to_string();
-                    max_depth = depth
-                }
 
-                pulled_states.insert(subscription.clone().to_string(), data);
+                pulled_states.insert(subscription.clone().to_string(), value);
             }
         }
 
-        #[cfg(feature = "opentelemetry_jaeger")]
-        let cx = deserialize_context(string_context.as_str());
-        #[cfg(not(feature = "opentelemetry_jaeger"))]
-        let cx = string_context;
-
-        if pulled_states.is_empty() {
-            None
-        } else {
-            Some(Workload {
-                pulled_states: Some(pulled_states),
-                states: self.states.clone(),
-                otel_context: cx, // TODO: Better telemetry management
-                degree: max_depth,
-            })
-        }
+        pulled_states
     }
 
-    pub fn push_event_loop(self, mut receiver: Receiver<BatchMessages>) {
+    pub fn push_event_loop(self, mut receiver: Receiver<BTreeMap<String, Vec<u8>>>) {
         tokio::spawn(async move {
             while let Some(batch_messages) = receiver.recv().await {
                 self.push(batch_messages).await;
@@ -139,7 +83,7 @@ impl ZenohClient {
         });
     }
 
-    pub async fn pull_event_loop(self, sender: Sender<Workload>) -> eyre::Result<()> {
+    pub async fn pull_event_loop(self, sender: Sender<BTreeMap<String, ZBuf>>) -> eyre::Result<()> {
         let mut subscribers = Vec::new();
         for subscription in self.subscriptions.iter() {
             subscribers.push(self.session.subscribe(subscription).await.or_else(|err| {
@@ -157,7 +101,6 @@ impl ZenohClient {
 
         if is_source {
             loop {
-                let states = self.states.clone();
                 #[cfg(feature = "opentelemetry_jaeger")]
                 let span = tracer.start(format!("{name}-pushing"));
                 #[cfg(feature = "opentelemetry_jaeger")]
@@ -165,15 +108,11 @@ impl ZenohClient {
                 #[cfg(not(feature = "opentelemetry_jaeger"))]
                 let cx = "".to_string();
 
-                let sent_workload = sender.send_timeout(
-                    Workload {
-                        states,
-                        pulled_states: None,
-                        otel_context: cx,
-                        degree: 0,
-                    },
-                    QUEUE_WAIT_PERIOD,
-                );
+                let mut message = ::capnp::message::Builder::new_default();
+                let mut metadata = message.init_root::<message_capnp::metadata::Builder>();
+                metadata.set_otel_context(&cx);
+
+                let sent_workload = sender.send_timeout(BTreeMap::new(), QUEUE_WAIT_PERIOD);
 
                 if let Err(err) = sent_workload.await {
                     let context = &self.name;
@@ -183,23 +122,22 @@ impl ZenohClient {
             }
         } else {
             loop {
-                if let Some(workload) = self.pull(&mut receivers).await {
-                    #[cfg(feature = "opentelemetry_jaeger")]
-                    let span = tracer
-                        .start_with_context(format!("{name}-pulling"), &workload.otel_context);
-                    #[cfg(feature = "opentelemetry_jaeger")]
-                    let cx = Context::current_with_span(span);
+                let workload = self.pull(&mut receivers).await;
+                #[cfg(feature = "opentelemetry_jaeger")]
+                let span =
+                    tracer.start_with_context(format!("{name}-pulling"), &workload.otel_context);
+                #[cfg(feature = "opentelemetry_jaeger")]
+                let cx = Context::current_with_span(span);
 
-                    let sent_workload = sender.send_timeout(workload, QUEUE_WAIT_PERIOD);
-                    if let Err(err) = sent_workload.await {
-                        let context = &self.name;
-                        warn!("{context}, Sending Error: {err}");
-                        #[cfg(feature = "opentelemetry_jaeger")]
-                        cx.span().add_event(
-                            "Sending Error",
-                            vec![KeyValue::new("err", format!("{err}"))],
-                        )
-                    }
+                let sent_workload = sender.send_timeout(workload, QUEUE_WAIT_PERIOD);
+                if let Err(err) = sent_workload.await {
+                    let context = &self.name;
+                    warn!("{context}, Sending Error: {err}");
+                    #[cfg(feature = "opentelemetry_jaeger")]
+                    cx.span().add_event(
+                        "Sending Error",
+                        vec![KeyValue::new("err", format!("{err}"))],
+                    )
                 }
             }
         }

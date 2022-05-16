@@ -7,17 +7,18 @@ use opentelemetry::{
     Context as OTelContext,
 };
 use pyo3::{
-    buffer::PyBuffer,
     prelude::*,
-    types::{PyByteArray, PyDict, PyString},
+    types::{PyBytes, PyDict, PyString},
 };
 use std::{collections::BTreeMap, sync::Arc};
+use zenoh::buf::ZBuf;
+use zenoh::prelude::SplitBuffer;
 
+use crate::message::{message_capnp, serialize_message};
 #[cfg(feature = "opentelemetry_jaeger")]
 use crate::tracing::serialize_context;
 
-use super::server::Workload;
-use super::server::{BatchMessages, PythonCommand};
+use super::server::PythonCommand;
 
 fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     pyo3::prepare_freethreaded_python();
@@ -36,26 +37,38 @@ fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
 fn call(
     py_function: Arc<PyObject>,
     function_name: &str,
-    states: &BTreeMap<String, Vec<u8>>,
-    pulled_states: &Option<BTreeMap<String, Vec<u8>>>,
-    #[cfg(feature = "opentelemetry_jaeger")] context: OTelContext,
-    #[cfg(not(feature = "opentelemetry_jaeger"))] context: String,
+    pulled_states: &BTreeMap<String, ZBuf>,
 ) -> eyre::Result<BTreeMap<String, Vec<u8>>> {
+    let mut string_context = "".to_string();
+    let mut max_depth = 0;
     Python::with_gil(|py| {
         let py_inputs = PyDict::new(py);
-        for (k, v) in states.iter() {
-            py_inputs.set_item(k, PyByteArray::new(py, v))?;
-        }
-        if let Some(pulled_states) = pulled_states {
-            for (k, v) in pulled_states.iter() {
-                py_inputs.set_item(k, PyByteArray::new(py, v))?;
+
+        for (k, value) in pulled_states.iter() {
+            let buffer = value.contiguous();
+            let mut owned_buffer = &*buffer;
+            let deserialized = capnp::serialize::read_message(
+                &mut owned_buffer,
+                capnp::message::ReaderOptions::new(),
+            )
+            .unwrap();
+            let message = deserialized
+                .get_root::<message_capnp::message::Reader>()
+                .unwrap();
+            let data = message.get_data().unwrap();
+            let metadata = message.get_metadata().unwrap();
+            let depth = metadata.get_depth();
+            if max_depth <= depth {
+                string_context = metadata.get_otel_context().unwrap().to_string();
+                max_depth = depth
             }
+            py_inputs.set_item(k, PyBytes::new(py, data))?;
         }
 
         #[cfg(feature = "opentelemetry_jaeger")]
-        py_inputs.set_item("otel_context", serialize_context(&context))?;
+        py_inputs.set_item("otel_context", serialize_context(&string_context))?;
         #[cfg(not(feature = "opentelemetry_jaeger"))]
-        py_inputs.set_item("otel_context", context)?;
+        py_inputs.set_item("otel_context", &string_context)?;
 
         let results = py_function
             .call(py, (py_inputs,), None)
@@ -64,14 +77,18 @@ fn call(
         let py_outputs = results.cast_as::<PyDict>(py).unwrap();
         let mut outputs = BTreeMap::new();
         for (k, v) in py_outputs.into_iter() {
-            let values = PyBuffer::get(v)
-                .wrap_err("Reading from Python Buffer failed")?
-                .to_vec(py)?;
+            let slice = v
+                .cast_as::<PyBytes>()
+                .or_else(|e| eyre::bail!("{e}"))?
+                .as_bytes();
             let key = k
                 .cast_as::<PyString>()
                 .or_else(|e| eyre::bail!("{e}"))?
                 .to_string();
-            outputs.insert(key, values);
+            outputs.insert(
+                key,
+                serialize_message(&slice, &string_context, max_depth + 1),
+            );
         }
 
         Ok(outputs)
@@ -79,8 +96,8 @@ fn call(
 }
 
 pub fn python_compute_event_loop(
-    mut input_receiver: tokio::sync::mpsc::Receiver<Workload>,
-    output_sender: tokio::sync::mpsc::Sender<BatchMessages>,
+    mut input_receiver: tokio::sync::mpsc::Receiver<BTreeMap<String, ZBuf>>,
+    output_sender: tokio::sync::mpsc::Sender<BTreeMap<String, Vec<u8>>>,
     variables: PythonCommand,
 ) {
     rayon::spawn(move || {
@@ -98,36 +115,15 @@ pub fn python_compute_event_loop(
         let tracer = global::tracer("python-caller");
 
         while let Some(workload) = input_receiver.blocking_recv() {
-            #[cfg(feature = "opentelemetry_jaeger")]
-            let span = tracer.start_with_context(
-                format!("wrapper-{app}-{function_name}"),
-                &workload.otel_context,
-            );
-            #[cfg(feature = "opentelemetry_jaeger")]
-            let cx = OTelContext::current_with_span(span);
-            #[cfg(not(feature = "opentelemetry_jaeger"))]
-            let cx = workload.otel_context;
-
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
-            let states = workload.states.read().unwrap().clone(); // This is probably expensive.
 
-            let outputs = call(
-                pyfunc,
-                function_name,
-                &states,
-                &workload.pulled_states,
-                cx.clone(),
-            )
-            .context(format!("App: '{app}', Function: '{function_name}'"))
-            .unwrap();
+            let outputs = call(pyfunc, function_name, &workload)
+                .context(format!("App: '{app}', Function: '{function_name}'"))
+                .unwrap();
 
-            let batch_messages = BatchMessages {
-                outputs,
-                deadlines: 1,
-                otel_context: cx.clone(),
-                degree: workload.degree + 1,
-            };
+            let batch_messages = outputs;
+
             push_tx.blocking_send(batch_messages).unwrap_or_else(|err| {
                 debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
             });
