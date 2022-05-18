@@ -1,11 +1,5 @@
 use eyre::Context;
 use log::debug;
-#[cfg(feature = "opentelemetry_jaeger")]
-use opentelemetry::{
-    global,
-    trace::{TraceContextExt, Tracer},
-    Context as OTelContext,
-};
 use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyString},
@@ -15,8 +9,6 @@ use zenoh::buf::ZBuf;
 use zenoh::prelude::SplitBuffer;
 
 use crate::message::{message_capnp, serialize_message};
-#[cfg(feature = "opentelemetry_jaeger")]
-use crate::tracing::serialize_context;
 
 use super::server::PythonCommand;
 
@@ -65,9 +57,6 @@ fn call(
             py_inputs.set_item(k, PyBytes::new(py, data))?;
         }
 
-        #[cfg(feature = "opentelemetry_jaeger")]
-        py_inputs.set_item("otel_context", serialize_context(&string_context))?;
-        #[cfg(not(feature = "opentelemetry_jaeger"))]
         py_inputs.set_item("otel_context", &string_context)?;
 
         let results = py_function
@@ -87,7 +76,7 @@ fn call(
                 .to_string();
             outputs.insert(
                 key,
-                serialize_message(&slice, &string_context, max_depth + 1),
+                serialize_message(slice, &string_context, max_depth + 1),
             );
         }
 
@@ -111,8 +100,6 @@ pub fn python_compute_event_loop(
                 ))
                 .unwrap(),
         );
-        #[cfg(feature = "opentelemetry_jaeger")]
-        let tracer = global::tracer("python-caller");
 
         while let Some(workload) = input_receiver.blocking_recv() {
             let pyfunc = py_function.clone();

@@ -1,11 +1,11 @@
 use crate::message::message_capnp;
+
 #[cfg(feature = "opentelemetry_jaeger")]
-use crate::tracing::{deserialize_context, serialize_context, tracing_init};
+use crate::tracing::{serialize_context, tracing_init};
 #[cfg(feature = "opentelemetry_jaeger")]
 use opentelemetry::{
-    global,
     trace::{TraceContextExt, Tracer},
-    Context, KeyValue,
+    Context,
 };
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -110,7 +110,10 @@ impl ZenohClient {
 
                 let mut message = ::capnp::message::Builder::new_default();
                 let mut metadata = message.init_root::<message_capnp::metadata::Builder>();
+                #[cfg(not(feature = "opentelemetry_jaeger"))]
                 metadata.set_otel_context(&cx);
+                #[cfg(feature = "opentelemetry_jaeger")]
+                metadata.set_otel_context(&serialize_context(&cx));
 
                 let sent_workload = sender.send_timeout(BTreeMap::new(), QUEUE_WAIT_PERIOD);
 
@@ -123,21 +126,11 @@ impl ZenohClient {
         } else {
             loop {
                 let workload = self.pull(&mut receivers).await;
-                #[cfg(feature = "opentelemetry_jaeger")]
-                let span =
-                    tracer.start_with_context(format!("{name}-pulling"), &workload.otel_context);
-                #[cfg(feature = "opentelemetry_jaeger")]
-                let cx = Context::current_with_span(span);
 
                 let sent_workload = sender.send_timeout(workload, QUEUE_WAIT_PERIOD);
                 if let Err(err) = sent_workload.await {
                     let context = &self.name;
                     warn!("{context}, Sending Error: {err}");
-                    #[cfg(feature = "opentelemetry_jaeger")]
-                    cx.span().add_event(
-                        "Sending Error",
-                        vec![KeyValue::new("err", format!("{err}"))],
-                    )
                 }
             }
         }
