@@ -50,30 +50,27 @@ pub mod metadata {
       self.reader.total_size()
     }
     #[inline]
-    pub fn get_metadata_version(self) -> ::capnp::Result<::capnp::text::Reader<'a>> {
-      ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(0), ::core::option::Option::None)
-    }
-    pub fn has_metadata_version(&self) -> bool {
-      !self.reader.get_pointer_field(0).is_null()
+    pub fn get_metadata_version(self) -> u16 {
+      self.reader.get_data_field::<u16>(0)
     }
     #[inline]
     pub fn get_watermark(self) -> u64 {
-      self.reader.get_data_field::<u64>(0)
-    }
-    #[inline]
-    pub fn get_deadline(self) -> u64 {
       self.reader.get_data_field::<u64>(1)
     }
     #[inline]
+    pub fn get_deadline(self) -> u64 {
+      self.reader.get_data_field::<u64>(2)
+    }
+    #[inline]
     pub fn get_otel_context(self) -> ::capnp::Result<::capnp::text::Reader<'a>> {
-      ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(1), ::core::option::Option::None)
+      ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(0), ::core::option::Option::None)
     }
     pub fn has_otel_context(&self) -> bool {
-      !self.reader.get_pointer_field(1).is_null()
+      !self.reader.get_pointer_field(0).is_null()
     }
     #[inline]
     pub fn get_depth(self) -> u32 {
-      self.reader.get_data_field::<u32>(4)
+      self.reader.get_data_field::<u32>(1)
     }
   }
 
@@ -126,58 +123,51 @@ pub mod metadata {
       self.builder.into_reader().total_size()
     }
     #[inline]
-    pub fn get_metadata_version(self) -> ::capnp::Result<::capnp::text::Builder<'a>> {
-      ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(0), ::core::option::Option::None)
+    pub fn get_metadata_version(self) -> u16 {
+      self.builder.get_data_field::<u16>(0)
     }
     #[inline]
-    pub fn set_metadata_version(&mut self, value: ::capnp::text::Reader<'_>)  {
-      self.builder.get_pointer_field(0).set_text(value);
-    }
-    #[inline]
-    pub fn init_metadata_version(self, size: u32) -> ::capnp::text::Builder<'a> {
-      self.builder.get_pointer_field(0).init_text(size)
-    }
-    pub fn has_metadata_version(&self) -> bool {
-      !self.builder.get_pointer_field(0).is_null()
+    pub fn set_metadata_version(&mut self, value: u16)  {
+      self.builder.set_data_field::<u16>(0, value);
     }
     #[inline]
     pub fn get_watermark(self) -> u64 {
-      self.builder.get_data_field::<u64>(0)
-    }
-    #[inline]
-    pub fn set_watermark(&mut self, value: u64)  {
-      self.builder.set_data_field::<u64>(0, value);
-    }
-    #[inline]
-    pub fn get_deadline(self) -> u64 {
       self.builder.get_data_field::<u64>(1)
     }
     #[inline]
-    pub fn set_deadline(&mut self, value: u64)  {
+    pub fn set_watermark(&mut self, value: u64)  {
       self.builder.set_data_field::<u64>(1, value);
     }
     #[inline]
+    pub fn get_deadline(self) -> u64 {
+      self.builder.get_data_field::<u64>(2)
+    }
+    #[inline]
+    pub fn set_deadline(&mut self, value: u64)  {
+      self.builder.set_data_field::<u64>(2, value);
+    }
+    #[inline]
     pub fn get_otel_context(self) -> ::capnp::Result<::capnp::text::Builder<'a>> {
-      ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(1), ::core::option::Option::None)
+      ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(0), ::core::option::Option::None)
     }
     #[inline]
     pub fn set_otel_context(&mut self, value: ::capnp::text::Reader<'_>)  {
-      self.builder.get_pointer_field(1).set_text(value);
+      self.builder.get_pointer_field(0).set_text(value);
     }
     #[inline]
     pub fn init_otel_context(self, size: u32) -> ::capnp::text::Builder<'a> {
-      self.builder.get_pointer_field(1).init_text(size)
+      self.builder.get_pointer_field(0).init_text(size)
     }
     pub fn has_otel_context(&self) -> bool {
-      !self.builder.get_pointer_field(1).is_null()
+      !self.builder.get_pointer_field(0).is_null()
     }
     #[inline]
     pub fn get_depth(self) -> u32 {
-      self.builder.get_data_field::<u32>(4)
+      self.builder.get_data_field::<u32>(1)
     }
     #[inline]
     pub fn set_depth(&mut self, value: u32)  {
-      self.builder.set_data_field::<u32>(4, value);
+      self.builder.set_data_field::<u32>(1, value);
     }
   }
 
@@ -191,7 +181,7 @@ pub mod metadata {
   }
   mod _private {
     use capnp::private::layout;
-    pub const STRUCT_SIZE: layout::StructSize = layout::StructSize { data: 3, pointers: 2 };
+    pub const STRUCT_SIZE: layout::StructSize = layout::StructSize { data: 3, pointers: 1 };
     pub const TYPE_ID: u64 = 0xdfe7_acab_c48a_7843;
   }
 }
@@ -247,17 +237,17 @@ pub mod message {
       self.reader.get_data_field::<u32>(0)
     }
     #[inline]
-    pub fn get_data(self) -> ::capnp::Result<::capnp::data::Reader<'a>> {
+    pub fn get_metadata(self) -> ::capnp::Result<crate::message::message_capnp::metadata::Reader<'a>> {
       ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(0), ::core::option::Option::None)
     }
-    pub fn has_data(&self) -> bool {
+    pub fn has_metadata(&self) -> bool {
       !self.reader.get_pointer_field(0).is_null()
     }
     #[inline]
-    pub fn get_metadata(self) -> ::capnp::Result<crate::message::message_capnp::metadata::Reader<'a>> {
+    pub fn get_data(self) -> ::capnp::Result<::capnp::data::Reader<'a>> {
       ::capnp::traits::FromPointerReader::get_from_pointer(&self.reader.get_pointer_field(1), ::core::option::Option::None)
     }
-    pub fn has_metadata(&self) -> bool {
+    pub fn has_data(&self) -> bool {
       !self.reader.get_pointer_field(1).is_null()
     }
   }
@@ -319,33 +309,33 @@ pub mod message {
       self.builder.set_data_field::<u32>(0, value);
     }
     #[inline]
-    pub fn get_data(self) -> ::capnp::Result<::capnp::data::Builder<'a>> {
+    pub fn get_metadata(self) -> ::capnp::Result<crate::message::message_capnp::metadata::Builder<'a>> {
       ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(0), ::core::option::Option::None)
     }
     #[inline]
-    pub fn set_data(&mut self, value: ::capnp::data::Reader<'_>)  {
-      self.builder.get_pointer_field(0).set_data(value);
-    }
-    #[inline]
-    pub fn init_data(self, size: u32) -> ::capnp::data::Builder<'a> {
-      self.builder.get_pointer_field(0).init_data(size)
-    }
-    pub fn has_data(&self) -> bool {
-      !self.builder.get_pointer_field(0).is_null()
-    }
-    #[inline]
-    pub fn get_metadata(self) -> ::capnp::Result<crate::message::message_capnp::metadata::Builder<'a>> {
-      ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(1), ::core::option::Option::None)
-    }
-    #[inline]
     pub fn set_metadata(&mut self, value: crate::message::message_capnp::metadata::Reader<'_>) -> ::capnp::Result<()> {
-      ::capnp::traits::SetPointerBuilder::set_pointer_builder(self.builder.get_pointer_field(1), value, false)
+      ::capnp::traits::SetPointerBuilder::set_pointer_builder(self.builder.get_pointer_field(0), value, false)
     }
     #[inline]
     pub fn init_metadata(self, ) -> crate::message::message_capnp::metadata::Builder<'a> {
-      ::capnp::traits::FromPointerBuilder::init_pointer(self.builder.get_pointer_field(1), 0)
+      ::capnp::traits::FromPointerBuilder::init_pointer(self.builder.get_pointer_field(0), 0)
     }
     pub fn has_metadata(&self) -> bool {
+      !self.builder.get_pointer_field(0).is_null()
+    }
+    #[inline]
+    pub fn get_data(self) -> ::capnp::Result<::capnp::data::Builder<'a>> {
+      ::capnp::traits::FromPointerBuilder::get_from_pointer(self.builder.get_pointer_field(1), ::core::option::Option::None)
+    }
+    #[inline]
+    pub fn set_data(&mut self, value: ::capnp::data::Reader<'_>)  {
+      self.builder.get_pointer_field(1).set_data(value);
+    }
+    #[inline]
+    pub fn init_data(self, size: u32) -> ::capnp::data::Builder<'a> {
+      self.builder.get_pointer_field(1).init_data(size)
+    }
+    pub fn has_data(&self) -> bool {
       !self.builder.get_pointer_field(1).is_null()
     }
   }
@@ -358,7 +348,7 @@ pub mod message {
   }
   impl Pipeline  {
     pub fn get_metadata(&self) -> crate::message::message_capnp::metadata::Pipeline {
-      ::capnp::capability::FromTypelessPipeline::new(self._typeless.get_pointer_field(1))
+      ::capnp::capability::FromTypelessPipeline::new(self._typeless.get_pointer_field(0))
     }
   }
   mod _private {
