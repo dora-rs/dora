@@ -4,3 +4,6 @@ pub mod zenoh_client;
 
 #[cfg(feature = "opentelemetry_jaeger")]
 pub mod tracing;
+
+#[cfg(feature = "metrics")]
+pub mod metrics;

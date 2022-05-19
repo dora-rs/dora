@@ -1,8 +1,9 @@
 use super::binding::python_compute_event_loop;
 use crate::zenoh_client::ZenohClient;
+
+#[cfg(feature = "metrics")]
+use crate::metrics::{get_meter, init_meter};
 use eyre::Result;
-#[cfg(feature = "opentelemetry_jaeger")]
-use opentelemetry::Context;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use structopt::StructOpt;
@@ -20,6 +21,11 @@ pub struct PythonCommand {
 pub async fn run(variables: PythonCommand) -> Result<()> {
     let (push_sender, push_receiver) = mpsc::channel::<BTreeMap<String, Vec<u8>>>(1);
     let (python_sender, python_receiver) = mpsc::channel::<BTreeMap<String, ZBuf>>(1);
+
+    #[cfg(feature = "metrics")]
+    let _started = init_meter();
+    #[cfg(feature = "metrics")]
+    let _meter = get_meter();
 
     let app_function_name = format!("{}-{}", &variables.app, &variables.function);
 
