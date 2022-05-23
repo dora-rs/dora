@@ -58,7 +58,7 @@ impl ZenohClient {
         let fetched_data = join_all(
             receivers
                 .iter_mut()
-                .map(|reciever| timeout(PULL_WAIT_PERIOD, reciever.next())),
+                .map(|receiver| timeout(PULL_WAIT_PERIOD, receiver.next())),
         )
         .await;
 

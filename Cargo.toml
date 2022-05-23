@@ -38,13 +38,13 @@ bincode = "1.3.3"
 rayon = "1.5.1"
 capnp = "0.14.6"
 opentelemetry = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["rt-tokio", "metrics"], optional = true }
+opentelemetry-otlp = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["tonic", "metrics"], optional = true  } 
 opentelemetry-jaeger = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["rt-tokio"], optional = true }
-lazy_static = "1.4.0"
-sysinfo = { version="0.23.12", optional = true }
+opentelemetry-system-metrics = { git="https://github.com/haixuanTao/opentelemetry-rust-system-metrics", optional = true } 
 
 [features]
 opentelemetry_jaeger = ["opentelemetry", "opentelemetry-jaeger"]
-metrics = ["opentelemetry", "opentelemetry-jaeger", "sysinfo" ]
+metrics = ["opentelemetry", "opentelemetry-jaeger", "opentelemetry-system-metrics", "opentelemetry-otlp"]
 
 [build-dependencies]
 capnpc = "0.14"

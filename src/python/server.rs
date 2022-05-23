@@ -2,8 +2,12 @@ use super::binding::python_compute_event_loop;
 use crate::zenoh_client::ZenohClient;
 
 #[cfg(feature = "metrics")]
-use crate::metrics::{get_meter, init_meter};
+use crate::metrics::init_meter;
 use eyre::Result;
+#[cfg(feature = "metrics")]
+use opentelemetry::global;
+#[cfg(feature = "metrics")]
+use opentelemetry_system_metrics::init_process_observer;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use structopt::StructOpt;
@@ -25,7 +29,9 @@ pub async fn run(variables: PythonCommand) -> Result<()> {
     #[cfg(feature = "metrics")]
     let _started = init_meter();
     #[cfg(feature = "metrics")]
-    let _meter = get_meter();
+    let meter = global::meter("process-meter");
+    #[cfg(feature = "metrics")]
+    init_process_observer(meter);
 
     let app_function_name = format!("{}-{}", &variables.app, &variables.function);
 
