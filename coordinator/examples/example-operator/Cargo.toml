@@ -9,3 +9,4 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+once_cell = "1.12.0"

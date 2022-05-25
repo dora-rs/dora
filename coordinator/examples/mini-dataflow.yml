@@ -30,6 +30,7 @@ nodes:
       inputs:
         random: random/number
         time: timer/time
+        timestamped-random: runtime-node/op-1/timestamped-random
 
   - id: runtime-node
     operators:
@@ -38,3 +39,5 @@ nodes:
         inputs:
           random: random/number
           time: timer/time
+        outputs:
+          - timestamped-random
