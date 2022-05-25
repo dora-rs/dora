@@ -10,11 +10,12 @@ enum Command {
     #[clap(about = "Print Graph")]
     Visualize { dataflow: PathBuf },
     #[clap(about = "Run dataflow pipeline")]
-    Run {
-        dataflow: PathBuf,
-        #[clap(long)]
-        runtime: PathBuf,
-    },
+    Run { dataflow: PathBuf },
+}
+
+fn runtime_path() -> &'static Path {
+    const RUNTIME_PATH: &str = env!("DORA_RUNTIME_PATH");
+    Path::new(RUNTIME_PATH)
 }
 
 #[tokio::main]
@@ -32,7 +33,7 @@ async fn main() -> eyre::Result<()> {
         ```mermaid code block on GitHub to display it."
             );
         }
-        Command::Run { dataflow, runtime } => run_dataflow(dataflow.clone(), runtime)
+        Command::Run { dataflow } => run_dataflow(dataflow.clone(), runtime_path())
             .await
             .wrap_err_with(|| format!("failed to run dataflow at {}", dataflow.display()))?,
     }
@@ -40,7 +41,7 @@ async fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-async fn run_dataflow(dataflow_path: PathBuf, runtime: PathBuf) -> eyre::Result<()> {
+async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()> {
     let Descriptor {
         mut communication,
         nodes,
