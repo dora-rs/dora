@@ -72,13 +72,6 @@ async fn main() -> eyre::Result<()> {
                         )
                     })?;
 
-                println!(
-                    "Received input {} for operator {}: {}",
-                    input.id,
-                    input.target_operator,
-                    String::from_utf8_lossy(&input.data)
-                );
-
                 operator
                     .handle_input(input.id.clone(), input.data)
                     .wrap_err_with(|| {

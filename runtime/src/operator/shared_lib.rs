@@ -60,7 +60,6 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let data_start = input.value.as_slice().as_ptr();
             let data_len = input.value.len();
 
-            println!("Received input {}", input.id);
             let output = |id: &str, data: &[u8]| -> isize {
                 let result = self.events_tx.blocking_send(OperatorEvent::Output {
                     id: id.to_owned().into(),
