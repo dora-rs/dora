@@ -21,7 +21,7 @@ pub fn spawn(
 
     thread::spawn(move || {
         let closure = AssertUnwindSafe(|| {
-            let bindings = Bindings::init(&library)?;
+            let bindings = Bindings::init(&library).context("failed to init operator")?;
 
             let operator = SharedLibraryOperator {
                 events_tx: events_tx.clone(),
