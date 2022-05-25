@@ -36,6 +36,11 @@ async fn main() -> eyre::Result<()> {
                     println!("random at {}: {}", timestamp, number);
                 }
             }
+            "timestamped-random" => {
+                let data = String::from_utf8(input.data)?;
+                println!("received timestamped random value: {data}");
+            }
+
             other => eprintln!("Ignoring unexpected input `{other}`"),
         }
     }
