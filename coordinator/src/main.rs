@@ -8,16 +8,20 @@ use std::path::{Path, PathBuf};
 #[clap(about = "Dora coordinator")]
 enum Command {
     #[clap(about = "Print Graph")]
-    Visualize { file: PathBuf },
+    Visualize { dataflow: PathBuf },
     #[clap(about = "Run dataflow pipeline")]
-    Run { file: PathBuf },
+    Run {
+        dataflow: PathBuf,
+        #[clap(long)]
+        runtime: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let command = clap::Parser::parse();
     match command {
-        Command::Visualize { file } => {
+        Command::Visualize { dataflow: file } => {
             let descriptor = read_descriptor(&file).await?;
             let visualized = descriptor
                 .visualize_as_mermaid()
@@ -28,21 +32,31 @@ async fn main() -> eyre::Result<()> {
         ```mermaid code block on GitHub to display it."
             );
         }
-        Command::Run { file } => run_dataflow(file.clone())
+        Command::Run { dataflow, runtime } => run_dataflow(dataflow.clone(), runtime)
             .await
-            .wrap_err_with(|| format!("failed to run dataflow at {}", file.display()))?,
+            .wrap_err_with(|| format!("failed to run dataflow at {}", dataflow.display()))?,
     }
 
     Ok(())
 }
 
-async fn run_dataflow(file: PathBuf) -> eyre::Result<()> {
+async fn run_dataflow(dataflow_path: PathBuf, runtime: PathBuf) -> eyre::Result<()> {
     let Descriptor {
         mut communication,
         nodes,
-    } = read_descriptor(&file)
-        .await
-        .wrap_err_with(|| format!("failed to read dataflow descriptor at {}", file.display()))?;
+    } = read_descriptor(&dataflow_path).await.wrap_err_with(|| {
+        format!(
+            "failed to read dataflow descriptor at {}",
+            dataflow_path.display()
+        )
+    })?;
+
+    if !runtime.is_file() {
+        bail!(
+            "There is no runtime at {}, or it is not a file",
+            runtime.display()
+        );
+    }
 
     // add uuid as prefix to ensure isolation
     communication.zenoh_prefix += &format!("/{}", uuid::Uuid::new_v4());
