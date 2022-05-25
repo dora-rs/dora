@@ -38,8 +38,15 @@ pub struct Node {
 #[serde(rename_all = "lowercase")]
 pub enum NodeKind {
     /// Dora runtime node
-    Operators(Vec<OperatorConfig>),
+    #[serde(rename = "operators")]
+    Runtime(RuntimeNode),
     Custom(CustomNode),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RuntimeNode {
+    pub operators: Vec<OperatorConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -58,7 +65,7 @@ pub struct OperatorConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
     SharedLibrary(PathBuf),
     Python(PathBuf),

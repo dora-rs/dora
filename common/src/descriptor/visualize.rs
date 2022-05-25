@@ -1,6 +1,6 @@
 use dora_api::config::{DataId, InputMapping, NodeId};
 
-use super::{CustomNode, Node, NodeKind, OperatorConfig};
+use super::{CustomNode, Node, NodeKind, OperatorConfig, RuntimeNode};
 use std::collections::{BTreeMap, HashMap};
 
 pub fn visualize_nodes(nodes: &[Node]) -> String {
@@ -23,7 +23,9 @@ fn visualize_node(node: &Node, flowchart: &mut String) {
     let node_id = &node.id;
     match &node.kind {
         NodeKind::Custom(node) => visualize_custom_node(node_id, &node, flowchart),
-        NodeKind::Operators(operators) => visualize_runtime_node(node_id, operators, flowchart),
+        NodeKind::Runtime(RuntimeNode { operators }) => {
+            visualize_runtime_node(node_id, operators, flowchart)
+        }
     }
 }
 
@@ -68,7 +70,7 @@ fn visualize_node_inputs(node: &Node, flowchart: &mut String, nodes: &HashMap<&N
             flowchart,
             nodes,
         ),
-        NodeKind::Operators(operators) => {
+        NodeKind::Runtime(RuntimeNode { operators }) => {
             for operator in operators {
                 visualize_inputs(
                     &format!("{node_id}/{}", operator.id),
@@ -108,7 +110,7 @@ fn visualize_inputs(
                         source_found = true;
                     }
                 }
-                (NodeKind::Operators(operators), Some(operator_id)) => {
+                (NodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
                     if let Some(operator) = operators.into_iter().find(|o| &o.id == operator_id) {
                         if operator.outputs.contains(output) {
                             let data = if output == input_id {
@@ -123,7 +125,7 @@ fn visualize_inputs(
                         }
                     }
                 }
-                (NodeKind::Custom(_), Some(_)) | (NodeKind::Operators(_), None) => {}
+                (NodeKind::Custom(_), Some(_)) | (NodeKind::Runtime(_), None) => {}
             }
         }
 

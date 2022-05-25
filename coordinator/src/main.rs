@@ -53,13 +53,17 @@ async fn run_dataflow(file: PathBuf) -> eyre::Result<()> {
 
         match node.kind {
             descriptor::NodeKind::Custom(node) => {
-                let result = spawn_custom_node(node_id.clone(), node, &communication)
+                let result = spawn_custom_node(node_id.clone(), &node, &communication)
                     .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
                 tasks.push(result);
             }
-            descriptor::NodeKind::Operators(_) => {
-                let todo = "todo";
-                bail!("runtime nodes are not supported yet")
+            descriptor::NodeKind::Runtime(node) => {
+                if !node.operators.is_empty() {
+                    let result =
+                        spawn_runtime_node(&runtime, node_id.clone(), &node, &communication)
+                            .wrap_err_with(|| format!("failed to spawn runtime node {node_id}"))?;
+                    tasks.push(result);
+                }
             }
         }
     }
@@ -75,7 +79,7 @@ async fn run_dataflow(file: PathBuf) -> eyre::Result<()> {
 
 fn spawn_custom_node(
     node_id: NodeId,
-    node: descriptor::CustomNode,
+    node: &descriptor::CustomNode,
     communication: &dora_api::config::CommunicationConfig,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut args = node.run.split_ascii_whitespace();
@@ -84,19 +88,11 @@ fn spawn_custom_node(
         .ok_or_else(|| eyre!("`run` field must not be empty"))?;
     let mut command = tokio::process::Command::new(cmd);
     command.args(args);
-    command.env(
-        "DORA_NODE_ID",
-        serde_yaml::to_string(&node_id).wrap_err("failed to serialize custom node ID")?,
-    );
+    command_init_common_env(&mut command, &node_id, communication)?;
     command.env(
         "DORA_NODE_RUN_CONFIG",
         serde_yaml::to_string(&node.run_config)
             .wrap_err("failed to serialize custom node run config")?,
-    );
-    command.env(
-        "DORA_COMMUNICATION_CONFIG",
-        serde_yaml::to_string(communication)
-            .wrap_err("failed to serialize communication config")?,
     );
     let mut child = command
         .spawn()
@@ -113,6 +109,54 @@ fn spawn_custom_node(
         }
     });
     Ok(result)
+}
+
+fn spawn_runtime_node(
+    runtime: &Path,
+    node_id: NodeId,
+    node: &descriptor::RuntimeNode,
+    communication: &dora_api::config::CommunicationConfig,
+) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
+    let mut command = tokio::process::Command::new(runtime);
+    command_init_common_env(&mut command, &node_id, communication)?;
+    command.env(
+        "DORA_OPERATORS",
+        serde_yaml::to_string(&node.operators)
+            .wrap_err("failed to serialize custom node run config")?,
+    );
+
+    let mut child = command
+        .spawn()
+        .wrap_err_with(|| format!("failed to run runtime at `{}`", runtime.display()))?;
+    let result = tokio::spawn(async move {
+        let status = child.wait().await.context("child process failed")?;
+        if status.success() {
+            println!("operator {node_id} finished");
+            Ok(())
+        } else if let Some(code) = status.code() {
+            Err(eyre!("operator {node_id} failed with exit code: {code}"))
+        } else {
+            Err(eyre!("operator {node_id} failed (unknown exit code)"))
+        }
+    });
+    Ok(result)
+}
+
+fn command_init_common_env(
+    command: &mut tokio::process::Command,
+    node_id: &NodeId,
+    communication: &dora_api::config::CommunicationConfig,
+) -> Result<(), eyre::Error> {
+    command.env(
+        "DORA_NODE_ID",
+        serde_yaml::to_string(&node_id).wrap_err("failed to serialize custom node ID")?,
+    );
+    command.env(
+        "DORA_COMMUNICATION_CONFIG",
+        serde_yaml::to_string(communication)
+            .wrap_err("failed to serialize communication config")?,
+    );
+    Ok(())
 }
 
 async fn read_descriptor(file: &Path) -> Result<Descriptor, eyre::Error> {
