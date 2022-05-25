@@ -4,6 +4,8 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
     build_runtime(&out_dir);
+
+    println!("cargo:rerun-if-changed=.");
 }
 
 fn build_runtime(out_dir: &PathBuf) {
@@ -21,4 +23,5 @@ fn build_runtime(out_dir: &PathBuf) {
         "cargo:rustc-env=DORA_RUNTIME_PATH={}",
         target_dir.join("release").join("dora-runtime").display()
     );
+    println!("cargo:rerun-if-changed=../runtime");
 }
