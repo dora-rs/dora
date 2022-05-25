@@ -30,3 +30,11 @@ nodes:
       inputs:
         random: random/number
         time: timer/time
+
+  - id: runtime-node
+    operators:
+      - id: op-1
+        shared-library: ../target/debug/libexample_operator.so
+        inputs:
+          random: random/number
+          time: timer/time

@@ -6,7 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]
-members = ["api", "coordinator", "common", "runtime"]
+members = [
+    "api",
+    "coordinator",
+    "common",
+    "runtime",
+    "coordinator/examples/example-operator",
+]
 
 [dependencies]
 eyre = "0.6.7"
