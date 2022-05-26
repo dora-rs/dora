@@ -105,11 +105,9 @@ pub fn python_compute_event_loop(
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
 
-            let outputs = call(pyfunc, function_name, &workload)
+            let batch_messages = call(pyfunc, function_name, &workload)
                 .context(format!("App: '{app}', Function: '{function_name}'"))
                 .unwrap();
-
-            let batch_messages = outputs;
 
             push_tx.blocking_send(batch_messages).unwrap_or_else(|err| {
                 debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
