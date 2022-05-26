@@ -1,8 +1,8 @@
 use crate::message::message_capnp;
 
-#[cfg(feature = "opentelemetry_jaeger")]
+#[cfg(feature = "tracing")]
 use crate::tracing::{serialize_context, tracing_init};
-#[cfg(feature = "opentelemetry_jaeger")]
+#[cfg(feature = "tracing")]
 use opentelemetry::{
     trace::{TraceContextExt, Tracer},
     Context,
@@ -94,25 +94,25 @@ impl ZenohClient {
         }
         let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
         let is_source = self.subscriptions.is_empty();
-        #[cfg(feature = "opentelemetry_jaeger")]
+        #[cfg(feature = "tracing")]
         let tracer = tracing_init()?;
-        #[cfg(feature = "opentelemetry_jaeger")]
+        #[cfg(feature = "tracing")]
         let name = &self.name;
 
         if is_source {
             loop {
-                #[cfg(feature = "opentelemetry_jaeger")]
+                #[cfg(feature = "tracing")]
                 let span = tracer.start(format!("{name}-pushing"));
-                #[cfg(feature = "opentelemetry_jaeger")]
+                #[cfg(feature = "tracing")]
                 let cx = Context::current_with_span(span);
-                #[cfg(not(feature = "opentelemetry_jaeger"))]
+                #[cfg(not(feature = "tracing"))]
                 let cx = "".to_string();
 
                 let mut message = ::capnp::message::Builder::new_default();
                 let mut metadata = message.init_root::<message_capnp::metadata::Builder>();
-                #[cfg(not(feature = "opentelemetry_jaeger"))]
+                #[cfg(not(feature = "tracing"))]
                 metadata.set_otel_context(&cx);
-                #[cfg(feature = "opentelemetry_jaeger")]
+                #[cfg(feature = "tracing")]
                 metadata.set_otel_context(&serialize_context(&cx));
 
                 let sent_workload = sender.send_timeout(BTreeMap::new(), QUEUE_WAIT_PERIOD);

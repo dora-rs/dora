@@ -45,8 +45,8 @@ opentelemetry-jaeger = { git="https://github.com/open-telemetry/opentelemetry-ru
 opentelemetry-system-metrics = { git="https://github.com/haixuanTao/opentelemetry-rust-system-metrics", optional = true } 
 
 [features]
-opentelemetry_jaeger = ["opentelemetry", "opentelemetry-jaeger"]
-metrics = ["opentelemetry", "opentelemetry-jaeger", "opentelemetry-system-metrics", "opentelemetry-otlp"]
+tracing = ["opentelemetry", "opentelemetry-jaeger"]
+metrics = ["opentelemetry", "opentelemetry-system-metrics", "opentelemetry-otlp"]
 
 [build-dependencies]
 capnpc = "0.14"

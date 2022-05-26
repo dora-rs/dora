@@ -2,7 +2,7 @@ pub mod message;
 pub mod python;
 pub mod zenoh_client;
 
-#[cfg(feature = "opentelemetry_jaeger")]
+#[cfg(feature = "tracing")]
 pub mod tracing;
 
 #[cfg(feature = "metrics")]
