@@ -1,3 +1,5 @@
+//! Enable serialisation and deserialisation of capnproto messages
+//!
 pub mod message_capnp;
 
 pub fn serialize_message(data: &[u8], otel_context: &str, depth: u32) -> Vec<u8> {
