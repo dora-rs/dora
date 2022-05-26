@@ -86,25 +86,18 @@ impl ZenohClient {
         let mut receivers: Vec<_> = subscribers.iter_mut().map(|sub| sub.receiver()).collect();
         let is_source = self.subscriptions.is_empty();
 
-        if is_source {
-            loop {
-                let sent_workload = sender.send_timeout(BTreeMap::new(), QUEUE_WAIT_PERIOD);
-
-                if let Err(err) = sent_workload.await {
-                    let name = &self.name;
-                    warn!("{name}, Sending Error: {err}");
-                }
+        loop {
+            let workload = if is_source {
                 tokio::time::sleep(PUSH_WAIT_PERIOD).await;
-            }
-        } else {
-            loop {
-                let workload = self.pull(&mut receivers).await;
+                BTreeMap::new()
+            } else {
+                self.pull(&mut receivers).await
+            };
 
-                let sent_workload = sender.send_timeout(workload, QUEUE_WAIT_PERIOD);
-                if let Err(err) = sent_workload.await {
-                    let name = &self.name;
-                    warn!("{name}, Sending Error: {err}");
-                }
+            let sent_workload = sender.send_timeout(workload, QUEUE_WAIT_PERIOD);
+            if let Err(err) = sent_workload.await {
+                let name = &self.name;
+                warn!("{name}, Sending Error: {err}");
             }
         }
     }
