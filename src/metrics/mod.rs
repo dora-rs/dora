@@ -1,9 +1,21 @@
+//! Enable system metric through opentelemetry exporter.
+//!
+//! This module fetch system information using [`sysinfo`] and
+//! export those metrics via an [`opentelemetry-rust`] exporter with default configuration.
+//! Observed metrics are:
+//! - CPU usage.
+//! - Memory and Virtual memory usage.
+//! - disk usage (read and write).
+//!
+//! [`sysinfo`]: https://github.com/GuillaumeGomez/sysinfo
+//! [`opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
+
 use futures::stream::Stream;
 use futures::StreamExt;
-use opentelemetry::metrics;
+use opentelemetry::global;
 use opentelemetry::sdk::metrics::selectors;
-use opentelemetry::sdk::metrics::PushController;
 use opentelemetry_otlp::{ExportConfig, WithExportConfig};
+use opentelemetry_system_metrics::init_process_observer;
 use std::time::Duration;
 
 // Skip first immediate tick from tokio, not needed for async_std.
@@ -11,9 +23,14 @@ fn delayed_interval(duration: Duration) -> impl Stream<Item = tokio::time::Insta
     opentelemetry::sdk::util::tokio_interval_stream(duration).skip(1)
 }
 
-pub fn init_meter() -> metrics::Result<PushController> {
+/// Init opentelemetry meter
+///
+/// Use the default Opentelemetry exporter with default config
+/// TODO: Make Opentelemetry configurable
+///
+pub fn init_meter() -> () {
     let export_config = ExportConfig::default();
-    opentelemetry_otlp::new_pipeline()
+    let _started = opentelemetry_otlp::new_pipeline()
         .metrics(tokio::spawn, delayed_interval)
         .with_exporter(
             opentelemetry_otlp::new_exporter()
@@ -22,4 +39,8 @@ pub fn init_meter() -> metrics::Result<PushController> {
         )
         .with_aggregator_selector(selectors::simple::Selector::Exact)
         .build()
+        .unwrap();
+
+    let meter = global::meter("process-meter");
+    init_process_observer(meter);
 }
