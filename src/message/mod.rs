@@ -1,5 +1,6 @@
 //! Enable serialisation and deserialisation of capnproto messages
 //!
+#[rustfmt::skip]
 pub mod message_capnp;
 
 pub fn serialize_message(data: &[u8], otel_context: &str, depth: u32) -> Vec<u8> {
