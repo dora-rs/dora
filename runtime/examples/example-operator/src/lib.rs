@@ -1,5 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
+use dora_operator_api::{DoraOperator, DoraOutputSender, OutputFnRaw};
 use std::{ffi::c_void, slice};
 
 #[no_mangle]
@@ -16,14 +17,6 @@ pub unsafe extern "C" fn dora_drop_operator(operator_context: *mut ()) {
     let raw: *mut Operator = operator_context.cast();
     unsafe { Box::from_raw(raw) };
 }
-
-type OutputFnRaw = unsafe extern "C" fn(
-    id_start: *const u8,
-    id_len: usize,
-    data_start: *const u8,
-    data_len: usize,
-    output_context: *const c_void,
-) -> isize;
 
 #[no_mangle]
 pub unsafe extern "C" fn dora_on_input(
@@ -53,36 +46,12 @@ pub unsafe extern "C" fn dora_on_input(
     }
 }
 
-struct DoraOutputSender {
-    output_fn_raw: OutputFnRaw,
-    output_context: *const c_void,
-}
-
-impl DoraOutputSender {
-    pub fn send(&mut self, id: &str, data: &[u8]) -> Result<(), isize> {
-        println!("operator sending output..");
-        let result = unsafe {
-            (self.output_fn_raw)(
-                id.as_ptr(),
-                id.len(),
-                data.as_ptr(),
-                data.len(),
-                self.output_context,
-            )
-        };
-        match result {
-            0 => Ok(()),
-            other => Err(other),
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct Operator {
     time: Option<String>,
 }
 
-impl Operator {
+impl DoraOperator for Operator {
     fn on_input(
         &mut self,
         id: &str,

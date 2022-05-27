@@ -1,5 +1,5 @@
-use dora_api::config::NodeId;
 use dora_common::descriptor::{self, Descriptor};
+use dora_node_api::config::NodeId;
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::path::{Path, PathBuf};
@@ -95,7 +95,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
 fn spawn_custom_node(
     node_id: NodeId,
     node: &descriptor::CustomNode,
-    communication: &dora_api::config::CommunicationConfig,
+    communication: &dora_node_api::config::CommunicationConfig,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut args = node.run.split_ascii_whitespace();
     let cmd = args
@@ -130,7 +130,7 @@ fn spawn_runtime_node(
     runtime: &Path,
     node_id: NodeId,
     node: &descriptor::RuntimeNode,
-    communication: &dora_api::config::CommunicationConfig,
+    communication: &dora_node_api::config::CommunicationConfig,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut command = tokio::process::Command::new(runtime);
     command_init_common_env(&mut command, &node_id, communication)?;
@@ -160,7 +160,7 @@ fn spawn_runtime_node(
 fn command_init_common_env(
     command: &mut tokio::process::Command,
     node_id: &NodeId,
-    communication: &dora_api::config::CommunicationConfig,
+    communication: &dora_node_api::config::CommunicationConfig,
 ) -> Result<(), eyre::Error> {
     command.env(
         "DORA_NODE_ID",

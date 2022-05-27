@@ -1,4 +1,4 @@
-use dora_api::config::{
+use dora_node_api::config::{
     CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,4 @@
-use dora_api::{self, DoraNode};
+use dora_node_api::{self, DoraNode};
 use eyre::bail;
 use futures::StreamExt;
 use std::time::Duration;

@@ -1,5 +1,5 @@
-use dora_api::config::DataId;
 use dora_common::descriptor::{OperatorConfig, OperatorSource};
+use dora_node_api::config::DataId;
 use eyre::{eyre, Context};
 use std::any::Any;
 use tokio::sync::mpsc::{self, Sender};

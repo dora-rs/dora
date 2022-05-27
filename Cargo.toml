@@ -7,11 +7,12 @@ edition = "2021"
 
 [workspace]
 members = [
-    "api",
+    "api/node",
+    "api/operator",
     "coordinator",
     "common",
     "runtime",
-    "coordinator/examples/example-operator",
+    "runtime/examples/example-operator",
 ]
 
 [dependencies]

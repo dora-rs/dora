@@ -547,7 +547,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-api"
+name = "dora-common"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "serde",
+]
+
+[[package]]
+name = "dora-coordinator"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "clap 3.1.12",
+ "dora-common",
+ "dora-node-api",
+ "eyre",
+ "futures",
+ "futures-concurrency",
+ "rand",
+ "serde",
+ "serde_yaml",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "dora-node-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -566,34 +596,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-common"
+name = "dora-operator-api"
 version = "0.1.0"
-dependencies = [
- "dora-api",
- "eyre",
- "serde",
-]
-
-[[package]]
-name = "dora-coordinator"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "clap 3.1.12",
- "dora-api",
- "dora-common",
- "eyre",
- "futures",
- "futures-concurrency",
- "rand",
- "serde",
- "serde_yaml",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "uuid",
-]
 
 [[package]]
 name = "dora-rs"
@@ -621,8 +625,8 @@ name = "dora-runtime"
 version = "0.1.0"
 dependencies = [
  "clap 3.1.12",
- "dora-api",
  "dora-common",
+ "dora-node-api",
  "eyre",
  "futures",
  "futures-concurrency",
@@ -665,6 +669,9 @@ checksum = "77f3309417938f28bf8228fcff79a4a37103981e3e186d2ccd19c74b38f4eb71"
 [[package]]
 name = "example-operator"
 version = "0.1.0"
+dependencies = [
+ "dora-operator-api",
+]
 
 [[package]]
 name = "eyre"

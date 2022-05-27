@@ -1,5 +1,5 @@
 [package]
-name = "dora-api"
+name = "dora-node-api"
 version = "0.1.0"
 edition = "2021"
 
