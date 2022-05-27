@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::pin::Pin;
-use zenoh::prelude::{SplitBuffer, ZFuture};
+use zenoh::{
+    prelude::{Priority, SplitBuffer, ZFuture},
+    publication::CongestionControl,
+};
 
 use crate::BoxError;
 
@@ -34,10 +37,22 @@ impl CommunicationLayer for zenoh::Session {
     }
 
     async fn publish(&self, topic: &str, data: &[u8]) -> Result<(), BoxError> {
-        self.put(topic, data).await.map_err(BoxError)
+        let writer = self
+            .put(topic, data)
+            .congestion_control(CongestionControl::Block)
+            .priority(Priority::RealTime);
+
+        let result = writer.await.map_err(BoxError);
+        result
     }
 
     fn publish_sync(&self, topic: &str, data: &[u8]) -> Result<(), BoxError> {
-        self.put(topic, data).wait().map_err(BoxError)
+        let writer = self
+            .put(topic, data)
+            .congestion_control(CongestionControl::Block)
+            .priority(Priority::RealTime);
+
+        let result = writer.wait().map_err(BoxError);
+        result
     }
 }
