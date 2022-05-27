@@ -1,0 +1,14 @@
+communication:
+  zenoh_prefix: /foo
+
+nodes:
+  - id: carla_source
+    custom:
+      run: ../target/debug/examples/example_python_api
+      inputs:
+        random: random/number
+        time: timer/time
+        timestamped-random: runtime-node/op-1/timestamped-random
+      env:
+        DORA_NODE_PYTHON_FILE: ../../pytgon.py        
+
