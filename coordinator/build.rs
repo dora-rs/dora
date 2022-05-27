@@ -1,4 +1,7 @@
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -8,7 +11,7 @@ fn main() {
     println!("cargo:rerun-if-changed=.");
 }
 
-fn build_runtime(out_dir: &PathBuf) {
+fn build_runtime(out_dir: &Path) {
     let mut cmd = Command::new(std::env::var("CARGO").unwrap());
     cmd.arg("build");
     cmd.arg("-p").arg("dora-runtime");

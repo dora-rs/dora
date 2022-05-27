@@ -1,3 +1,6 @@
+#![warn(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::missing_safety_doc)]
+
 pub use dora_operator_api_macros::register_operator;
 use raw::OutputFnRaw;
 use std::ffi::c_void;
@@ -5,6 +8,7 @@ use std::ffi::c_void;
 pub mod raw;
 
 pub trait DoraOperator: Default {
+    #[allow(clippy::result_unit_err)] // we use a () error type only for testing
     fn on_input(
         &mut self,
         id: &str,

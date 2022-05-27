@@ -10,7 +10,7 @@ pub type OutputFnRaw = unsafe extern "C" fn(
     output_context: *const c_void,
 ) -> isize;
 
-pub fn dora_init_operator<O: DoraOperator>(operator_context: *mut *mut c_void) -> isize {
+pub unsafe fn dora_init_operator<O: DoraOperator>(operator_context: *mut *mut c_void) -> isize {
     let operator: O = Default::default();
     let ptr: *mut O = Box::leak(Box::new(operator));
     let type_erased: *mut c_void = ptr.cast();
@@ -18,12 +18,12 @@ pub fn dora_init_operator<O: DoraOperator>(operator_context: *mut *mut c_void) -
     0
 }
 
-pub fn dora_drop_operator<O>(operator_context: *mut c_void) {
+pub unsafe fn dora_drop_operator<O>(operator_context: *mut c_void) {
     let raw: *mut O = operator_context.cast();
     unsafe { Box::from_raw(raw) };
 }
 
-pub fn dora_on_input<O: DoraOperator>(
+pub unsafe fn dora_on_input<O: DoraOperator>(
     id_start: *const u8,
     id_len: usize,
     data_start: *const u8,

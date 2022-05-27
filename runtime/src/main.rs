@@ -95,10 +95,10 @@ async fn main() -> eyre::Result<()> {
                     // --------------------------------------------------------
 
                     communication
-                        .publish(&"/HHH", &[])
+                        .publish("/HHH", &[])
                         .await
-                        .wrap_err_with(|| format!("failed to send on /HHH"))?;
-                    if let Some(_) = operator_map.remove(&target_operator) {
+                        .wrap_err("failed to send on /HHH")?;
+                    if operator_map.remove(&target_operator).is_some() {
                         println!("operator {node_id}/{target_operator} finished");
                         // send stopped message
                         publish(

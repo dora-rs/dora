@@ -75,7 +75,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
             descriptor::NodeKind::Runtime(node) => {
                 if !node.operators.is_empty() {
                     let result =
-                        spawn_runtime_node(&runtime, node_id.clone(), &node, &communication)
+                        spawn_runtime_node(runtime, node_id.clone(), &node, &communication)
                             .wrap_err_with(|| format!("failed to spawn runtime node {node_id}"))?;
                     tasks.push(result);
                 }
