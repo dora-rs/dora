@@ -12,11 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: "Check"
-        run: cargo check
+        run: cargo check --all
       - name: "Build"
-        run: cargo build
+        run: cargo build --all
       - name: "Test"
-        run: cargo test
+        run: cargo test --all
 
   clippy:
     name: "Clippy"
@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: "Clippy"
-        run: cargo clippy
+        run: cargo clippy --all
 
   rustfmt:
     name: "Formatting"
@@ -32,4 +32,4 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: "rustfmt"
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
