@@ -1,26 +1,27 @@
-use dora_api::{self, config::DataId, DoraOperator};
-use eyre::bail;
+use dora_api::{self, config::DataId, DoraNode};
+use eyre::{bail, Context};
 use futures::StreamExt;
 use std::{
     collections::BTreeMap,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 static ATOMIC_TIMEOUT: Duration = Duration::from_millis(20);
 static BATCH_TIMEOUT: Duration = Duration::from_millis(100);
-use dora_rs::python::binding::{call, init};
+use dora_rs::python::binding::PythonBinding;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let operator = DoraOperator::init_from_args().await?;
+    let Node = DoraNode::init_from_env().await?;
 
-    let app = "app";
-    let function_name = "function";
+    let app = std::env::var("DORA_NODE_PYTHON_FILE")
+        .wrap_err("env variable DORA_NODE_RUN_CONFIG must be set")?;
+    let func = std::env::var("DORA_NODE_PYTHON_FUNCTION")
+        .wrap_err("env variable DORA_NODE_RUN_CONFIG must be set")?;
 
-    let py_function = Arc::new(init("app", "func").unwrap());
+    let py_function = PythonBinding::try_new(&app, &func).unwrap();
 
-    let mut inputs = operator.inputs().await?;
+    let mut inputs = Node.inputs().await?;
 
     loop {
         let mut workload = BTreeMap::new();
@@ -38,12 +39,11 @@ async fn main() -> eyre::Result<()> {
         }
 
         // Call the function
-        let batch_messages = call(py_function, function_name, &workload).unwrap();
+        let batch_messages = py_function.call(&workload).unwrap();
 
         // Send the data one by one.
         for (k, v) in batch_messages {
-            operator.send_output(&DataId::from(k), &v).await.unwrap();
+            Node.send_output(&DataId::from(k), &v).await.unwrap();
         }
     }
-    Ok(())
 }
