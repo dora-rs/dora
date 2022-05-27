@@ -1,4 +1,4 @@
-use dora_api::config::{DataId, InputMapping, NodeId};
+use dora_node_api::config::{DataId, InputMapping, NodeId};
 
 use super::{CustomNode, Node, NodeKind, OperatorConfig, RuntimeNode};
 use std::collections::{BTreeMap, HashMap};

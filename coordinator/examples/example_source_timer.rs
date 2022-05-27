@@ -1,4 +1,4 @@
-use dora_api::{self, config::DataId, DoraNode};
+use dora_node_api::{self, config::DataId, DoraNode};
 use std::time::Duration;
 use time::OffsetDateTime;
 

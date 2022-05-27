@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "3.1.12", features = ["derive"] }
-dora-api = { path = "../api" }
+dora-node-api = { path = "../api/node" }
 dora-common = { version = "0.1.0", path = "../common" }
 eyre = "0.6.8"
 futures = "0.3.21"

@@ -1,12 +1,12 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_api::{
+use dora_common::{descriptor::OperatorConfig, BoxError};
+use dora_node_api::{
     self,
     communication::CommunicationLayer,
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
     STOP_TOPIC,
 };
-use dora_common::{descriptor::OperatorConfig, BoxError};
 use eyre::{bail, eyre, Context};
 use futures::{stream::FuturesUnordered, StreamExt};
 use futures_concurrency::Merge;

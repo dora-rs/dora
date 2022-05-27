@@ -1,5 +1,5 @@
 use clap::StructOpt;
-use dora_api::{self, config::DataId, DoraNode};
+use dora_node_api::{self, config::DataId, DoraNode};
 use eyre::bail;
 use futures::StreamExt;
 use std::time::{Duration, Instant};
