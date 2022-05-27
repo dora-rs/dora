@@ -22,7 +22,7 @@ pub fn visualize_nodes(nodes: &[Node]) -> String {
 fn visualize_node(node: &Node, flowchart: &mut String) {
     let node_id = &node.id;
     match &node.kind {
-        NodeKind::Custom(node) => visualize_custom_node(node_id, &node, flowchart),
+        NodeKind::Custom(node) => visualize_custom_node(node_id, node, flowchart),
         NodeKind::Runtime(RuntimeNode { operators }) => {
             visualize_runtime_node(node_id, operators, flowchart)
         }
@@ -111,7 +111,7 @@ fn visualize_inputs(
                     }
                 }
                 (NodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
-                    if let Some(operator) = operators.into_iter().find(|o| &o.id == operator_id) {
+                    if let Some(operator) = operators.iter().find(|o| &o.id == operator_id) {
                         if operator.outputs.contains(output) {
                             let data = if output == input_id {
                                 format!("{output}")

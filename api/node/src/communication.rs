@@ -52,7 +52,6 @@ impl CommunicationLayer for zenoh::Session {
             .congestion_control(CongestionControl::Block)
             .priority(Priority::RealTime);
 
-        let result = writer.wait().map_err(BoxError);
-        result
+        writer.wait().map_err(BoxError)
     }
 }
