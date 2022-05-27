@@ -23,7 +23,7 @@ impl CommunicationLayer for zenoh::Session {
         &'a self,
         topic: &str,
     ) -> Result<Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>>, BoxError> {
-        self.subscribe(topic)
+        zenoh::Session::subscribe(self, topic)
             .await
             .map(|s| {
                 let trait_object: Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>> =
