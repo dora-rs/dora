@@ -12,7 +12,7 @@ use crate::message::{message_capnp, serialize_message};
 
 use super::server::PythonCommand;
 
-fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
+pub fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     pyo3::prepare_freethreaded_python();
     Python::with_gil(|py| {
         let file = py
@@ -26,10 +26,10 @@ fn init(app: &str, function: &str) -> eyre::Result<Py<PyAny>> {
     })
 }
 
-fn call(
+pub fn call(
     py_function: Arc<PyObject>,
     function_name: &str,
-    pulled_states: &BTreeMap<String, ZBuf>,
+    pulled_states: &BTreeMap<String, Vec<u8>>,
 ) -> eyre::Result<BTreeMap<String, Vec<u8>>> {
     let mut string_context = "".to_string();
     let mut max_depth = 0;
@@ -37,10 +37,8 @@ fn call(
         let py_inputs = PyDict::new(py);
 
         for (k, value) in pulled_states.iter() {
-            let buffer = value.contiguous();
-            let mut owned_buffer = &*buffer;
             let deserialized = capnp::serialize::read_message(
-                &mut owned_buffer,
+                &mut value.as_slice(),
                 capnp::message::ReaderOptions::new(),
             )
             .unwrap();
@@ -105,13 +103,13 @@ pub fn python_compute_event_loop(
             let pyfunc = py_function.clone();
             let push_tx = output_sender.clone();
 
-            let batch_messages = call(pyfunc, function_name, &workload)
-                .context(format!("App: '{app}', Function: '{function_name}'"))
-                .unwrap();
+            // let batch_messages = call(pyfunc, function_name, &workload)
+            //    .context(format!("App: '{app}', Function: '{function_name}'"))
+            //    .unwrap();
 
-            push_tx.blocking_send(batch_messages).unwrap_or_else(|err| {
-                debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
-            });
+            // push_tx.blocking_send(batch_messages).unwrap_or_else(|err| {
+            //    debug!("App: '{app}', Function: '{function_name}', Sending Error: {err}")
+            // });
         }
     });
 }
