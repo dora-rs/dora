@@ -8,10 +8,13 @@ use dora_node_api::{
     STOP_TOPIC,
 };
 use eyre::{bail, eyre, Context};
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{
+    stream::{self, FuturesUnordered},
+    FutureExt, StreamExt,
+};
 use futures_concurrency::Merge;
 use operator::{Operator, OperatorEvent};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamMap};
 
@@ -52,35 +55,70 @@ async fn main() -> eyre::Result<()> {
         .wrap_err("failed to create zenoh session")?;
     let communication: Box<dyn CommunicationLayer> = Box::new(zenoh);
 
-    let inputs = subscribe(communication.as_ref(), &communication_config, &operators)
+    let inputs = subscribe(&operators, communication.as_ref(), &communication_config)
         .await
         .context("failed to subscribe")?;
 
-    let input_events = inputs.map(Event::Input);
+    let input_events = inputs.map(Event::External);
     let operator_events = operator_events.map(|(id, event)| Event::Operator { id, event });
     let mut events = (input_events, operator_events).merge();
 
     while let Some(event) = events.next().await {
         match event {
-            Event::Input(input) => {
-                let operator = operator_map
-                    .get_mut(&input.target_operator)
-                    .ok_or_else(|| {
-                        eyre!(
-                            "received input for unexpected operator `{}`",
-                            input.target_operator
-                        )
-                    })?;
+            Event::External(event) => match event {
+                SubscribeEvent::Input(input) => {
+                    let operator =
+                        operator_map
+                            .get_mut(&input.target_operator)
+                            .ok_or_else(|| {
+                                eyre!(
+                                    "received input for unexpected operator `{}`",
+                                    input.target_operator
+                                )
+                            })?;
 
-                operator
-                    .handle_input(input.id.clone(), input.data)
-                    .wrap_err_with(|| {
-                        format!(
-                            "operator {} failed to handle input {}",
-                            input.target_operator, input.id
+                    operator
+                        .handle_input(input.id.clone(), input.data)
+                        .wrap_err_with(|| {
+                            format!(
+                                "operator {} failed to handle input {}",
+                                input.target_operator, input.id
+                            )
+                        })?;
+                }
+                SubscribeEvent::InputsStopped { target_operator } => {
+                    // --------------------------------------------------------
+                    // TODO FIXME: For some reason, these zenoh publish calls
+                    // (and also subsequent ones) are not visible to other
+                    // nodes. This includes the stop command, so the input
+                    // streams of dependent nodes are not closed properly.
+                    // --------------------------------------------------------
+
+                    communication
+                        .publish(&"/HHH", &[])
+                        .await
+                        .wrap_err_with(|| format!("failed to send on /HHH"))?;
+                    if let Some(_) = operator_map.remove(&target_operator) {
+                        println!("operator {node_id}/{target_operator} finished");
+                        // send stopped message
+                        publish(
+                            &node_id,
+                            target_operator.clone(),
+                            STOP_TOPIC.to_owned().into(),
+                            &[],
+                            communication.as_ref(),
+                            &communication_config,
                         )
-                    })?;
-            }
+                        .await.with_context(|| {
+                            format!("failed to send stop message for operator `{node_id}/{target_operator}`")
+                        })?;
+                    }
+
+                    if operator_map.is_empty() {
+                        break;
+                    }
+                }
+            },
             Event::Operator { id, event } => {
                 let operator = operator_map
                     .get(&id)
@@ -114,58 +152,76 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn subscribe<'a>(
+    operators: &'a [OperatorConfig],
     communication: &'a dyn CommunicationLayer,
     communication_config: &CommunicationConfig,
-    operators: &'a [OperatorConfig],
-) -> eyre::Result<impl futures::Stream<Item = OperatorInput> + 'a> {
-    let prefix = &communication_config.zenoh_prefix;
-
+) -> eyre::Result<impl futures::Stream<Item = SubscribeEvent> + 'a> {
     let mut streams = Vec::new();
 
     for operator in operators {
-        for (input, mapping) in &operator.inputs {
-            let InputMapping {
-                source,
-                operator: source_operator,
-                output,
-            } = mapping;
-            let topic = match source_operator {
-                Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
-                None => format!("{prefix}/{source}/{output}"),
-            };
-            println!("subscribing to {topic}");
-            let sub = communication
-                .subscribe(&topic)
-                .await
-                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-            streams.push(sub.map(|data| OperatorInput {
-                target_operator: operator.id.clone(),
-                id: input.clone(),
-                data,
-            }))
-        }
+        let events = subscribe_operator(operator, communication, communication_config).await?;
+        streams.push(events);
     }
+
+    Ok(streams.merge())
+}
+
+async fn subscribe_operator<'a>(
+    operator: &'a OperatorConfig,
+    communication: &'a dyn CommunicationLayer,
+    communication_config: &CommunicationConfig,
+) -> Result<impl futures::Stream<Item = SubscribeEvent> + 'a, eyre::Error> {
+    let prefix = &communication_config.zenoh_prefix;
+
     let stop_messages = FuturesUnordered::new();
-    let sources: HashSet<_> = operators
-        .iter()
-        .flat_map(|o| o.inputs.values())
-        .map(|v| (&v.source, &v.operator))
-        .collect();
-    for (source, operator) in &sources {
+    for input in operator.inputs.values() {
+        let InputMapping {
+            source, operator, ..
+        } = input;
         let topic = match operator {
             Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
             None => format!("{prefix}/{source}/{STOP_TOPIC}"),
         };
-        println!("subscribing to {topic}");
         let sub = communication
             .subscribe(&topic)
             .await
             .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
         stop_messages.push(sub.into_future());
     }
-    let finished = Box::pin(stop_messages.all(|_| async { true }));
+    let finished = Box::pin(stop_messages.all(|_| async { true }).shared());
 
-    Ok(streams.merge().take_until(finished))
+    let mut streams = Vec::new();
+    for (input, mapping) in &operator.inputs {
+        let InputMapping {
+            source,
+            operator: source_operator,
+            output,
+        } = mapping;
+        let topic = match source_operator {
+            Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
+            None => format!("{prefix}/{source}/{output}"),
+        };
+        let sub = communication
+            .subscribe(&topic)
+            .await
+            .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+        let stream = sub
+            .map(|data| OperatorInput {
+                target_operator: operator.id.clone(),
+                id: input.clone(),
+                data,
+            })
+            .map(SubscribeEvent::Input)
+            .take_until(finished.clone())
+            .chain(stream::once(async {
+                SubscribeEvent::InputsStopped {
+                    target_operator: operator.id.clone(),
+                }
+            }));
+        streams.push(stream);
+    }
+
+    Ok(streams.merge())
 }
 
 async fn publish(
@@ -188,10 +244,20 @@ async fn publish(
 }
 
 enum Event {
-    Input(OperatorInput),
+    External(SubscribeEvent),
     Operator {
         id: OperatorId,
         event: OperatorEvent,
+    },
+}
+
+enum SubscribeEvent {
+    /// New input for an operator
+    Input(OperatorInput),
+    /// All input streams for an operator are finished.
+    InputsStopped {
+        /// The operator whose inputs are all finished.
+        target_operator: OperatorId,
     },
 }
 
