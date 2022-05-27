@@ -3045,6 +3045,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zenoh-logger"
+version = "0.1.0"
+dependencies = [
+ "zenoh",
+ "zenoh-config",
+]
+
+[[package]]
 name = "zenoh-macros"
 version = "0.6.0-dev.0"
 source = "git+https://github.com/eclipse-zenoh/zenoh.git#c0d746f54f3f366db2c759116b84eb6825a68252"
