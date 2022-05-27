@@ -598,6 +598,19 @@ dependencies = [
 [[package]]
 name = "dora-operator-api"
 version = "0.1.0"
+dependencies = [
+ "dora-operator-api-macros",
+]
+
+[[package]]
+name = "dora-operator-api-macros"
+version = "0.1.0"
+dependencies = [
+ "dora-operator-api",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "dora-rs"

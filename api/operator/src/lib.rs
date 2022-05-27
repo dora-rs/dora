@@ -1,6 +1,10 @@
+pub use dora_operator_api_macros::register_operator;
+use raw::OutputFnRaw;
 use std::ffi::c_void;
 
-pub trait DoraOperator {
+pub mod raw;
+
+pub trait DoraOperator: Default {
     fn on_input(
         &mut self,
         id: &str,
@@ -10,8 +14,8 @@ pub trait DoraOperator {
 }
 
 pub struct DoraOutputSender {
-    pub output_fn_raw: OutputFnRaw,
-    pub output_context: *const c_void,
+    output_fn_raw: OutputFnRaw,
+    output_context: *const c_void,
 }
 
 impl DoraOutputSender {
@@ -32,11 +36,3 @@ impl DoraOutputSender {
         }
     }
 }
-
-pub type OutputFnRaw = unsafe extern "C" fn(
-    id_start: *const u8,
-    id_len: usize,
-    data_start: *const u8,
-    data_len: usize,
-    output_context: *const c_void,
-) -> isize;

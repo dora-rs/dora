@@ -1,57 +1,15 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{DoraOperator, DoraOutputSender, OutputFnRaw};
-use std::{ffi::c_void, slice};
+use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender};
 
-#[no_mangle]
-pub unsafe extern "C" fn dora_init_operator(operator_context: *mut *mut ()) -> isize {
-    let operator = Operator::default();
-    let ptr: *mut Operator = Box::leak(Box::new(operator));
-    let type_erased: *mut () = ptr.cast();
-    unsafe { *operator_context = type_erased };
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn dora_drop_operator(operator_context: *mut ()) {
-    let raw: *mut Operator = operator_context.cast();
-    unsafe { Box::from_raw(raw) };
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn dora_on_input(
-    id_start: *const u8,
-    id_len: usize,
-    data_start: *const u8,
-    data_len: usize,
-    output_fn_raw: OutputFnRaw,
-    output_context: *const c_void,
-    operator_context: *mut (),
-) -> isize {
-    let id = match std::str::from_utf8(unsafe { slice::from_raw_parts(id_start, id_len) }) {
-        Ok(id) => id,
-        Err(_) => return -1,
-    };
-    let data = unsafe { slice::from_raw_parts(data_start, data_len) };
-    let mut output_sender = DoraOutputSender {
-        output_fn_raw,
-        output_context,
-    };
-
-    let operator: &mut Operator = unsafe { &mut *operator_context.cast() };
-
-    match operator.on_input(id, data, &mut output_sender) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
-}
+register_operator!(ExampleOperator);
 
 #[derive(Debug, Default)]
-struct Operator {
+struct ExampleOperator {
     time: Option<String>,
 }
 
-impl DoraOperator for Operator {
+impl DoraOperator for ExampleOperator {
     fn on_input(
         &mut self,
         id: &str,

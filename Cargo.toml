@@ -9,6 +9,7 @@ edition = "2021"
 members = [
     "api/node",
     "api/operator",
+    "api/operator/macros",
     "coordinator",
     "common",
     "runtime",
