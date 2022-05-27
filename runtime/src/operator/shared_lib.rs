@@ -5,7 +5,7 @@ use std::{
     ffi::c_void,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
-    slice, thread,
+    ptr, slice, thread,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 
@@ -54,6 +54,18 @@ struct SharedLibraryOperator<'lib> {
 
 impl<'lib> SharedLibraryOperator<'lib> {
     fn run(mut self) -> eyre::Result<()> {
+        let operator_context = {
+            let mut raw = ptr::null_mut();
+            let result = unsafe { (self.bindings.init_operator)(&mut raw) };
+            if result != 0 {
+                bail!("init_operator failed with error code {result}");
+            }
+            OperatorContext {
+                raw,
+                drop_fn: self.bindings.drop_operator.clone(),
+            }
+        };
+
         while let Some(input) = self.inputs.blocking_recv() {
             let id_start = input.id.as_bytes().as_ptr();
             let id_len = input.id.as_bytes().len();
@@ -74,14 +86,31 @@ impl<'lib> SharedLibraryOperator<'lib> {
 
             let result = unsafe {
                 (self.bindings.on_input)(
-                    id_start, id_len, data_start, data_len, output_fn, output_ctx,
+                    id_start,
+                    id_len,
+                    data_start,
+                    data_len,
+                    output_fn,
+                    output_ctx,
+                    operator_context.raw,
                 )
             };
             if result != 0 {
-                bail!("on_input failed with exit code {result}");
+                bail!("on_input failed with error code {result}");
             }
         }
         Ok(())
+    }
+}
+
+struct OperatorContext<'lib> {
+    raw: *mut (),
+    drop_fn: Symbol<'lib, OperatorContextDropFn>,
+}
+
+impl<'lib> Drop for OperatorContext<'lib> {
+    fn drop(&mut self) {
+        unsafe { (self.drop_fn)(self.raw) };
     }
 }
 
@@ -121,6 +150,8 @@ where
 }
 
 struct Bindings<'lib> {
+    init_operator: Symbol<'lib, InitFn>,
+    drop_operator: Symbol<'lib, OperatorContextDropFn>,
     on_input: Symbol<'lib, OnInputFn>,
 }
 
@@ -128,6 +159,12 @@ impl<'lib> Bindings<'lib> {
     fn init(library: &'lib libloading::Library) -> Result<Self, eyre::Error> {
         let bindings = unsafe {
             Bindings {
+                init_operator: library
+                    .get(b"dora_init_operator")
+                    .wrap_err("failed to get `dora_init_operator`")?,
+                drop_operator: library
+                    .get(b"dora_drop_operator")
+                    .wrap_err("failed to get `dora_drop_operator`")?,
                 on_input: library
                     .get(b"dora_on_input")
                     .wrap_err("failed to get `dora_on_input`")?,
@@ -137,6 +174,9 @@ impl<'lib> Bindings<'lib> {
     }
 }
 
+type InitFn = unsafe extern "C" fn(operator_context: *mut *mut ()) -> isize;
+type OperatorContextDropFn = unsafe extern "C" fn(operator_context: *mut ());
+
 type OnInputFn = unsafe extern "C" fn(
     id_start: *const u8,
     id_len: usize,
@@ -144,6 +184,7 @@ type OnInputFn = unsafe extern "C" fn(
     data_len: usize,
     output: OutputFn,
     output_context: *const c_void,
+    operator_context: *mut (),
 ) -> isize;
 
 type OutputFn = unsafe extern "C" fn(

@@ -1,6 +1,21 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use std::{ffi::c_void, slice, sync::Mutex};
+use std::{ffi::c_void, slice};
+
+#[no_mangle]
+pub unsafe extern "C" fn dora_init_operator(operator_context: *mut *mut ()) -> isize {
+    let operator = Operator::default();
+    let ptr: *mut Operator = Box::leak(Box::new(operator));
+    let type_erased: *mut () = ptr.cast();
+    unsafe { *operator_context = type_erased };
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn dora_drop_operator(operator_context: *mut ()) {
+    let raw: *mut Operator = operator_context.cast();
+    unsafe { Box::from_raw(raw) };
+}
 
 type OutputFnRaw = unsafe extern "C" fn(
     id_start: *const u8,
@@ -18,6 +33,7 @@ pub unsafe extern "C" fn dora_on_input(
     data_len: usize,
     output_fn_raw: OutputFnRaw,
     output_context: *const c_void,
+    operator_context: *mut (),
 ) -> isize {
     let id = match std::str::from_utf8(unsafe { slice::from_raw_parts(id_start, id_len) }) {
         Ok(id) => id,
@@ -29,7 +45,9 @@ pub unsafe extern "C" fn dora_on_input(
         output_context,
     };
 
-    match on_input(id, data, &mut output_sender) {
+    let operator: &mut Operator = unsafe { &mut *operator_context.cast() };
+
+    match operator.on_input(id, data, &mut output_sender) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -59,30 +77,37 @@ impl DoraOutputSender {
     }
 }
 
-fn on_input(id: &str, data: &[u8], output_sender: &mut DoraOutputSender) -> Result<(), ()> {
-    static TIME: once_cell::sync::Lazy<Mutex<Option<String>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(None));
+#[derive(Debug, Default)]
+struct Operator {
+    time: Option<String>,
+}
 
-    let mut time = TIME.lock().unwrap();
-
-    match id {
-        "time" => {
-            let parsed = std::str::from_utf8(data).map_err(|_| ())?;
-            *time = Some(parsed.to_owned());
-        }
-        "random" => {
-            let parsed = {
-                let data: [u8; 8] = data.try_into().map_err(|_| ())?;
-                u64::from_le_bytes(data)
-            };
-            if let Some(time) = &*time {
-                let output = format!("operator random value {parsed} at {time}");
-                output_sender
-                    .send("timestamped-random", output.as_bytes())
-                    .map_err(|_| ())?;
+impl Operator {
+    fn on_input(
+        &mut self,
+        id: &str,
+        data: &[u8],
+        output_sender: &mut DoraOutputSender,
+    ) -> Result<(), ()> {
+        match id {
+            "time" => {
+                let parsed = std::str::from_utf8(data).map_err(|_| ())?;
+                self.time = Some(parsed.to_owned());
             }
+            "random" => {
+                let parsed = {
+                    let data: [u8; 8] = data.try_into().map_err(|_| ())?;
+                    u64::from_le_bytes(data)
+                };
+                if let Some(time) = &self.time {
+                    let output = format!("state operator random value {parsed} at {time}");
+                    output_sender
+                        .send("timestamped-random", output.as_bytes())
+                        .map_err(|_| ())?;
+                }
+            }
+            other => eprintln!("ignoring unexpected input {other}"),
         }
-        other => eprintln!("ignoring unexpected input {other}"),
+        Ok(())
     }
-    Ok(())
 }
