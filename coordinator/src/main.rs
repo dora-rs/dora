@@ -115,12 +115,12 @@ fn spawn_custom_node(
     let result = tokio::spawn(async move {
         let status = child.wait().await.context("child process failed")?;
         if status.success() {
-            println!("operator {node_id} finished");
+            println!("node {node_id} finished");
             Ok(())
         } else if let Some(code) = status.code() {
-            Err(eyre!("operator {node_id} failed with exit code: {code}"))
+            Err(eyre!("node {node_id} failed with exit code: {code}"))
         } else {
-            Err(eyre!("operator {node_id} failed (unknown exit code)"))
+            Err(eyre!("node {node_id} failed (unknown exit code)"))
         }
     });
     Ok(result)
@@ -146,12 +146,14 @@ fn spawn_runtime_node(
     let result = tokio::spawn(async move {
         let status = child.wait().await.context("child process failed")?;
         if status.success() {
-            println!("operator {node_id} finished");
+            println!("runtime node {node_id} finished");
             Ok(())
         } else if let Some(code) = status.code() {
-            Err(eyre!("operator {node_id} failed with exit code: {code}"))
+            Err(eyre!(
+                "runtime node {node_id} failed with exit code: {code}"
+            ))
         } else {
-            Err(eyre!("operator {node_id} failed (unknown exit code)"))
+            Err(eyre!("runtime node {node_id} failed (unknown exit code)"))
         }
     });
     Ok(result)
