@@ -22,6 +22,8 @@ mod operator;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    set_up_logger()?;
+
     let node_id = {
         let raw =
             std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
@@ -269,4 +271,21 @@ struct OperatorInput {
     pub target_operator: OperatorId,
     pub id: DataId,
     pub data: Vec<u8>,
+}
+
+fn set_up_logger() -> Result<(), fern::InitError> {
+    fern::Dispatch::new()
+        .format(|out, message, record| {
+            out.finish(format_args!(
+                "    [{}][{}] {}",
+                record.target(),
+                record.level(),
+                message
+            ))
+        })
+        .level(log::LevelFilter::Debug)
+        .chain(std::io::stdout())
+        .chain(fern::log_file("runtime.log")?)
+        .apply()?;
+    Ok(())
 }
