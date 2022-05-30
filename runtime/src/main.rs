@@ -14,7 +14,7 @@ use futures::{
 };
 use futures_concurrency::Merge;
 use operator::{Operator, OperatorEvent};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, mem};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamMap};
 
@@ -147,6 +147,10 @@ async fn main() -> eyre::Result<()> {
             }
         }
     }
+
+    mem::drop(events);
+
+    communication.close().await?;
 
     Ok(())
 }

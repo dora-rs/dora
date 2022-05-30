@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
+use futures_time::future::FutureExt;
 use std::pin::Pin;
 use zenoh::{
     prelude::{Priority, SplitBuffer, ZFuture},
@@ -18,6 +19,8 @@ pub trait CommunicationLayer {
     async fn publish(&self, topic: &str, data: &[u8]) -> Result<(), BoxError>;
 
     fn publish_sync(&self, topic: &str, data: &[u8]) -> Result<(), BoxError>;
+
+    async fn close(self: Box<Self>) -> Result<(), BoxError>;
 }
 
 #[async_trait]
@@ -53,5 +56,11 @@ impl CommunicationLayer for zenoh::Session {
             .priority(Priority::RealTime);
 
         writer.wait().map_err(BoxError)
+    }
+
+    async fn close(self: Box<Self>) -> Result<(), BoxError> {
+        zenoh::Session::close(*self)
+            .await
+            .map_err(BoxError)
     }
 }
