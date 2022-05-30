@@ -37,7 +37,8 @@ async fn main() -> eyre::Result<()> {
                 }
             }
             "timestamped-random" => {
-                let data = String::from_utf8(input.data)?;
+                let data = String::from_utf8(input.data)
+                    .unwrap_or("Malformed `timestamped` messages".to_string());
                 println!("received timestamped random value: {data}");
             }
 

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
+use paho_mqtt as mqtt;
 use std::pin::Pin;
 use zenoh::{
     prelude::{Priority, SplitBuffer, ZFuture},
@@ -18,6 +19,32 @@ pub trait CommunicationLayer {
     async fn publish(&self, topic: &str, data: &[u8]) -> Result<(), BoxError>;
 
     fn publish_sync(&self, topic: &str, data: &[u8]) -> Result<(), BoxError>;
+}
+
+#[async_trait]
+impl CommunicationLayer for mqtt::AsyncClient {
+    async fn subscribe<'a>(
+        &'a self,
+        topic: &str,
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>>, BoxError> {
+        let mut client = self.clone();
+        let stream = client.get_stream(1);
+
+        client.subscribe(topic, 1).await.unwrap();
+        Ok(Box::pin(stream.map(|x| x.unwrap().payload().to_vec())))
+    }
+
+    async fn publish(&self, topic: &str, data: &[u8]) -> Result<(), BoxError> {
+        let msg = mqtt::Message::new(topic, data, mqtt::QOS_1);
+        self.publish(msg).await.unwrap();
+        Ok(())
+    }
+
+    fn publish_sync(&self, topic: &str, data: &[u8]) -> Result<(), BoxError> {
+        let msg = mqtt::Message::new(topic, data, mqtt::QOS_1);
+        self.publish(msg).wait().unwrap();
+        Ok(())
+    }
 }
 
 #[async_trait]

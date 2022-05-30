@@ -3,13 +3,13 @@ use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 use eyre::WrapErr;
 use futures::{stream::FuturesUnordered, StreamExt};
 use futures_concurrency::Merge;
-use std::collections::HashSet;
-
+use std::{collections::HashSet, time::Duration};
 pub mod communication;
 pub mod config;
 
 #[doc(hidden)]
 pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
+use paho_mqtt as mqtt;
 
 pub struct DoraNode {
     id: NodeId,
@@ -35,10 +35,10 @@ impl DoraNode {
                 .wrap_err("env variable DORA_COMMUNICATION_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize communication config")?
         };
-        Self::init(id, node_config, communication_config).await
+        Self::init_mqtt(id, node_config, communication_config).await
     }
 
-    pub async fn init(
+    pub async fn init_zenoh(
         id: NodeId,
         node_config: NodeRunConfig,
         communication_config: CommunicationConfig,
@@ -53,6 +53,40 @@ impl DoraNode {
             node_config,
             communication_config,
             communication: Box::new(zenoh),
+        })
+    }
+
+    pub async fn init_mqtt(
+        id: NodeId,
+        node_config: NodeRunConfig,
+        communication_config: CommunicationConfig,
+    ) -> eyre::Result<Self> {
+        let host_config = "tcp://localhost:1883";
+        // Create the client. Use an ID for a persistent session.
+        // A real system should try harder to use a unique ID.
+
+        let create_opts = mqtt::CreateOptionsBuilder::new()
+            .server_uri(host_config)
+            .client_id(format!("mqtt_client_{}", id))
+            .finalize();
+        // Create the client connection
+        let client = mqtt::AsyncClient::new(create_opts).unwrap();
+
+        // Define the set of options for the connection
+        let lwt = mqtt::Message::new("test", "Async subscriber lost connection", mqtt::QOS_1);
+
+        let conn_opts = mqtt::ConnectOptionsBuilder::new()
+            .keep_alive_interval(Duration::from_secs(10))
+            .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
+            .clean_session(false)
+            .will_message(lwt)
+            .finalize();
+        client.connect(conn_opts).await?;
+        Ok(Self {
+            id,
+            node_config,
+            communication_config,
+            communication: Box::new(client),
         })
     }
 
@@ -84,28 +118,28 @@ impl DoraNode {
             }))
         }
 
-        let stop_messages = FuturesUnordered::new();
-        let sources: HashSet<_> = self
-            .node_config
-            .inputs
-            .values()
-            .map(|v| (&v.source, &v.operator))
-            .collect();
-        for (source, operator) in &sources {
-            let topic = match operator {
-                Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
-                None => format!("{prefix}/{source}/{STOP_TOPIC}"),
-            };
-            let sub = self
-                .communication
-                .subscribe(&topic)
-                .await
-                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-            stop_messages.push(sub.into_future());
-        }
-        let finished = Box::pin(stop_messages.all(|_| async { true }));
+        //let stop_messages = FuturesUnordered::new();
+        //let sources: HashSet<_> = self
+        //.node_config
+        //.inputs
+        //.values()
+        //.map(|v| (&v.source, &v.operator))
+        //.collect();
+        //for (source, operator) in &sources {
+        //let topic = match operator {
+        //Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
+        //None => format!("{prefix}/{source}/{STOP_TOPIC}"),
+        //};
+        //let sub = self
+        //.communication
+        //.subscribe(&topic)
+        //.await
+        //.wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+        //stop_messages.push(sub.into_future());
+        //}
+        //let finished = Box::pin(stop_messages.all(|_| async { true }));
 
-        Ok(streams.merge().take_until(finished))
+        Ok(streams.merge()) //.take_until(finished))
     }
 
     pub async fn send_output(&self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {
@@ -192,7 +226,7 @@ mod tests {
         };
 
         run(async {
-            let operator = DoraNode::init(id, node_config, communication_config)
+            let operator = DoraNode::init_mqtt(id, node_config, communication_config)
                 .await
                 .unwrap();
             let mut inputs = operator.inputs().await.unwrap();
