@@ -30,6 +30,7 @@ impl CommunicationLayer for zenoh::Session {
         topic: &str,
     ) -> Result<Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>>, BoxError> {
         zenoh::Session::subscribe(self, topic)
+            .reliable()
             .await
             .map(|s| {
                 let trait_object: Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>> =
