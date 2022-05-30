@@ -8,7 +8,9 @@ fn main() {
 
     build_runtime(&out_dir);
 
-    println!("cargo:rerun-if-changed=.");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../Cargo.lock");
+    println!("cargo:rerun-if-changed=src");
 }
 
 fn build_runtime(out_dir: &Path) {
@@ -27,4 +29,6 @@ fn build_runtime(out_dir: &Path) {
         target_dir.join("release").join("dora-runtime").display()
     );
     println!("cargo:rerun-if-changed=../runtime");
+    println!("cargo:rerun-if-changed=../api");
+    println!("cargo:rerun-if-changed=../common");
 }
