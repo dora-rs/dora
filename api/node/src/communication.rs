@@ -61,6 +61,12 @@ impl CommunicationLayer for zenoh::Session {
 
     async fn close(self: Box<Self>) -> Result<(), BoxError> {
         zenoh::Session::close(*self)
+            // wait a bit before closing to ensure that remaining published
+            // messages are sent out
+            //
+            // TODO: create a minimal example to reproduce the dropped messages
+            // and report this issue in the zenoh repo
+            .delay(futures_time::time::Duration::from_secs_f32(0.5))
             .await
             .map_err(BoxError)
     }
