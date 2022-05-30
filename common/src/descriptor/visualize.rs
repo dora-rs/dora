@@ -1,7 +1,9 @@
-use dora_node_api::config::{DataId, InputMapping, NodeId};
-
 use super::{CustomNode, Node, NodeKind, OperatorConfig, RuntimeNode};
-use std::collections::{BTreeMap, HashMap};
+use dora_node_api::config::{DataId, InputMapping, NodeId};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Write as _,
+};
 
 pub fn visualize_nodes(nodes: &[Node]) -> String {
     let mut flowchart = "flowchart TB\n".to_owned();
@@ -32,29 +34,29 @@ fn visualize_node(node: &Node, flowchart: &mut String) {
 fn visualize_custom_node(node_id: &NodeId, node: &CustomNode, flowchart: &mut String) {
     if node.run_config.inputs.is_empty() {
         // source node
-        flowchart.push_str(&format!("  {node_id}[\\{node_id}/]\n"));
+        writeln!(flowchart, "  {node_id}[\\{node_id}/]").unwrap();
     } else if node.run_config.outputs.is_empty() {
         // sink node
-        flowchart.push_str(&format!("  {node_id}[/{node_id}\\]\n"));
+        writeln!(flowchart, "  {node_id}[/{node_id}\\]").unwrap();
     } else {
         // normal node
-        flowchart.push_str(&format!("  {node_id}\n"));
+        writeln!(flowchart, "  {node_id}").unwrap();
     }
 }
 
 fn visualize_runtime_node(node_id: &NodeId, operators: &[OperatorConfig], flowchart: &mut String) {
-    flowchart.push_str(&format!("subgraph {node_id}\n"));
+    writeln!(flowchart, "subgraph {node_id}").unwrap();
     for operator in operators {
         let operator_id = &operator.id;
         if operator.inputs.is_empty() {
             // source operator
-            flowchart.push_str(&format!("  {node_id}/{operator_id}[\\{operator_id}/]\n"));
+            writeln!(flowchart, "  {node_id}/{operator_id}[\\{operator_id}/]").unwrap();
         } else if operator.outputs.is_empty() {
             // sink operator
-            flowchart.push_str(&format!("  {node_id}/{operator_id}[/{operator_id}\\]\n"));
+            writeln!(flowchart, "  {node_id}/{operator_id}[/{operator_id}\\]").unwrap();
         } else {
             // normal operator
-            flowchart.push_str(&format!("  {node_id}/{operator_id}[{operator_id}]\n"));
+            writeln!(flowchart, "  {node_id}/{operator_id}[{operator_id}]").unwrap();
         }
     }
 
@@ -106,7 +108,7 @@ fn visualize_inputs(
                         } else {
                             format!("{output} as {input_id}")
                         };
-                        flowchart.push_str(&format!("  {source} -- {data} --> {target}\n"));
+                        writeln!(flowchart, "  {source} -- {data} --> {target}").unwrap();
                         source_found = true;
                     }
                 }
@@ -118,9 +120,8 @@ fn visualize_inputs(
                             } else {
                                 format!("{output} as {input_id}")
                             };
-                            flowchart.push_str(&format!(
-                                "  {source}/{operator_id} -- {data} --> {target}\n"
-                            ));
+                            writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}")
+                                .unwrap();
                             source_found = true;
                         }
                     }
@@ -130,7 +131,7 @@ fn visualize_inputs(
         }
 
         if !source_found {
-            flowchart.push_str(&format!("  missing>missing] -- {input_id} --> {target}\n"));
+            writeln!(flowchart, "  missing>missing] -- {input_id} --> {target}").unwrap();
         }
     }
 }
