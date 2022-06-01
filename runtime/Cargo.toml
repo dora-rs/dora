@@ -18,3 +18,5 @@ tokio = { version = "1.17.0", features = ["full"] }
 tokio-stream = "0.1.8"
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
 zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
+
+paho-mqtt = "0.11"

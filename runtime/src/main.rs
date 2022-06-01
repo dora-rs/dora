@@ -13,13 +13,51 @@ use futures::{
     FutureExt, StreamExt,
 };
 use futures_concurrency::Merge;
+use mqtt::AsyncClient;
 use operator::{Operator, OperatorEvent};
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamMap};
 
+use paho_mqtt as mqtt;
 mod operator;
 
+async fn create_client(
+    id: &str,
+    host: &str,
+    topic: &str,
+    subscribe: bool,
+) -> (
+    AsyncClient,
+    mqtt::AsyncReceiver<std::option::Option<paho_mqtt::Message>>,
+) {
+    let create_opts = mqtt::CreateOptionsBuilder::new()
+        .server_uri(host)
+        .client_id(id)
+        .finalize();
+    // Create the client connection
+    let mut client = mqtt::AsyncClient::new(create_opts).unwrap();
+
+    // Define the set of options for the connection
+    let lwt = mqtt::Message::new("test", "Async subscriber lost connection", mqtt::QOS_1);
+
+    let conn_opts = mqtt::ConnectOptionsBuilder::new()
+        .keep_alive_interval(Duration::from_secs(10))
+        .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
+        .clean_session(false)
+        .will_message(lwt)
+        .finalize();
+    client.connect(conn_opts).await.unwrap();
+    let stream = client.get_stream(25);
+    if subscribe {
+        client.subscribe(topic, 1).await.unwrap();
+    }
+
+    (client, stream)
+}
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let node_id = {
@@ -49,11 +87,55 @@ async fn main() -> eyre::Result<()> {
         operator_events.insert(operator_config.id.clone(), ReceiverStream::new(events));
     }
 
-    let zenoh = zenoh::open(communication_config.zenoh_config.clone())
-        .await
-        .map_err(BoxError)
-        .wrap_err("failed to create zenoh session")?;
-    let communication: Box<dyn CommunicationLayer> = Box::new(zenoh);
+    //let zenoh = zenoh::open(communication_config.zenoh_config.clone())
+    //.await
+    //.map_err(BoxError)
+    //.wrap_err("failed to create zenoh session")?;
+
+    let host_config = "tcp://localhost:1883";
+    let prefix = &communication_config.zenoh_prefix;
+    // Create the client. Use an ID for a persistent session.
+    // A real system should try harder to use a unique ID.
+    let mut clients = HashMap::new();
+    for operator in &operators {
+        for (
+            _,
+            InputMapping {
+                source,
+                operator,
+                output,
+            },
+        ) in operator.inputs.iter()
+        {
+            let topic = match operator {
+                Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
+                None => format!("{prefix}/{source}/{output}"),
+            };
+            let client = create_client(
+                &format!("mqtt_{}_{}", node_id, topic),
+                host_config,
+                &topic,
+                true,
+            )
+            .await;
+            clients.insert(topic, client);
+            let topic = match operator {
+                Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
+                None => format!("{prefix}/{source}/{STOP_TOPIC}"),
+            };
+            let client = create_client(
+                &format!("mqtt_{}_{}_stop", node_id, topic),
+                host_config,
+                &topic,
+                true,
+            )
+            .await;
+            clients.insert(topic, client);
+        }
+    }
+    let client = create_client(&format!("mqtt_{}_publish", node_id), host_config, "", false).await;
+    clients.insert("publish".to_string(), client);
+    let communication: Box<dyn CommunicationLayer> = Box::new(clients);
 
     let inputs = subscribe(&operators, communication.as_ref(), &communication_config)
         .await

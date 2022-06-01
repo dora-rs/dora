@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
+    fmt::Display,
     str::FromStr,
 };
 
@@ -99,6 +100,16 @@ impl Serialize for InputMapping {
             serializer.collect_str(&format_args!("{}/{operator}/{}", self.source, self.output))
         } else {
             serializer.collect_str(&format_args!("{}/{}", self.source, self.output))
+        }
+    }
+}
+
+impl Display for InputMapping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(operator) = &self.operator {
+            write!(f, "{}/{operator}/{}", self.source, self.output)
+        } else {
+            write!(f, "{}/{}", self.source, self.output)
         }
     }
 }

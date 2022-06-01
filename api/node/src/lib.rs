@@ -3,7 +3,11 @@ use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 use eyre::WrapErr;
 use futures::{stream::FuturesUnordered, StreamExt};
 use futures_concurrency::Merge;
-use std::{collections::HashSet, time::Duration};
+use mqtt::AsyncClient;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 pub mod communication;
 pub mod config;
 
@@ -11,6 +15,39 @@ pub mod config;
 pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 use paho_mqtt as mqtt;
 
+async fn create_client(
+    id: &str,
+    host: &str,
+    topic: &str,
+    subscribe: bool,
+) -> (
+    AsyncClient,
+    mqtt::AsyncReceiver<std::option::Option<paho_mqtt::Message>>,
+) {
+    let create_opts = mqtt::CreateOptionsBuilder::new()
+        .server_uri(host)
+        .client_id(id)
+        .finalize();
+    // Create the client connection
+    let mut client = mqtt::AsyncClient::new(create_opts).unwrap();
+
+    // Define the set of options for the connection
+    let lwt = mqtt::Message::new("test", "Async subscriber lost connection", mqtt::QOS_1);
+
+    let conn_opts = mqtt::ConnectOptionsBuilder::new()
+        .keep_alive_interval(Duration::from_secs(10))
+        .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
+        .clean_session(false)
+        .will_message(lwt)
+        .finalize();
+    client.connect(conn_opts).await.unwrap();
+    let stream = client.get_stream(25);
+    if subscribe {
+        client.subscribe(topic, 1).await.unwrap();
+    }
+
+    (client, stream)
+}
 pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
@@ -62,31 +99,47 @@ impl DoraNode {
         communication_config: CommunicationConfig,
     ) -> eyre::Result<Self> {
         let host_config = "tcp://localhost:1883";
+        let prefix = &communication_config.zenoh_prefix;
         // Create the client. Use an ID for a persistent session.
         // A real system should try harder to use a unique ID.
+        let mut clients = HashMap::new();
+        for (
+            _,
+            config::InputMapping {
+                source,
+                operator,
+                output,
+            },
+        ) in &node_config.inputs
+        {
+            let topic = match operator {
+                Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
+                None => format!("{prefix}/{source}/{output}"),
+            };
+            let client =
+                create_client(&format!("mqtt_{}_{}", id, topic), host_config, &topic, true).await;
+            clients.insert(topic, client);
+            let topic = match operator {
+                Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
+                None => format!("{prefix}/{source}/{STOP_TOPIC}"),
+            };
+            let client = create_client(
+                &format!("mqtt_{}_{}_stop", id, topic),
+                host_config,
+                &topic,
+                true,
+            )
+            .await;
+            clients.insert(topic, client);
+        }
+        let client = create_client(&format!("mqtt_{}_publish", id), host_config, "", false).await;
+        clients.insert("publish".to_string(), client);
 
-        let create_opts = mqtt::CreateOptionsBuilder::new()
-            .server_uri(host_config)
-            .client_id(format!("mqtt_client_{}", id))
-            .finalize();
-        // Create the client connection
-        let client = mqtt::AsyncClient::new(create_opts).unwrap();
-
-        // Define the set of options for the connection
-        let lwt = mqtt::Message::new("test", "Async subscriber lost connection", mqtt::QOS_1);
-
-        let conn_opts = mqtt::ConnectOptionsBuilder::new()
-            .keep_alive_interval(Duration::from_secs(10))
-            .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
-            .clean_session(false)
-            .will_message(lwt)
-            .finalize();
-        client.connect(conn_opts).await?;
         Ok(Self {
             id,
             node_config,
             communication_config,
-            communication: Box::new(client),
+            communication: Box::new(clients),
         })
     }
 
@@ -118,26 +171,27 @@ impl DoraNode {
             }))
         }
 
-        //let stop_messages = FuturesUnordered::new();
-        //let sources: HashSet<_> = self
-        //.node_config
-        //.inputs
-        //.values()
-        //.map(|v| (&v.source, &v.operator))
-        //.collect();
-        //for (source, operator) in &sources {
-        //let topic = match operator {
-        //Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
-        //None => format!("{prefix}/{source}/{STOP_TOPIC}"),
-        //};
-        //let sub = self
-        //.communication
-        //.subscribe(&topic)
-        //.await
-        //.wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-        //stop_messages.push(sub.into_future());
-        //}
-        //let finished = Box::pin(stop_messages.all(|_| async { true }));
+        let stop_messages = FuturesUnordered::new();
+        let sources: HashSet<_> = self
+            .node_config
+            .inputs
+            .values()
+            .map(|v| (&v.source, &v.operator))
+            .collect();
+        for (source, operator) in &sources {
+            let topic = match operator {
+                Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
+                None => format!("{prefix}/{source}/{STOP_TOPIC}"),
+            };
+
+            let sub = self
+                .communication
+                .subscribe(&topic)
+                .await
+                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+            stop_messages.push(sub.into_future());
+        }
+        let finished = Box::pin(stop_messages.all(|_| async { true }));
 
         Ok(streams.merge()) //.take_until(finished))
     }
