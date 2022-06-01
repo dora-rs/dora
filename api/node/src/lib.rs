@@ -19,7 +19,6 @@ async fn create_client(
     id: &str,
     host: &str,
     topic: &str,
-    subscribe: bool,
 ) -> (
     AsyncClient,
     mqtt::AsyncReceiver<std::option::Option<paho_mqtt::Message>>,
@@ -27,6 +26,7 @@ async fn create_client(
     let create_opts = mqtt::CreateOptionsBuilder::new()
         .server_uri(host)
         .client_id(id)
+        .mqtt_version(mqtt::MQTT_VERSION_5)
         .finalize();
     // Create the client connection
     let mut client = mqtt::AsyncClient::new(create_opts).unwrap();
@@ -36,15 +36,12 @@ async fn create_client(
 
     let conn_opts = mqtt::ConnectOptionsBuilder::new()
         .keep_alive_interval(Duration::from_secs(10))
-        .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
+        .mqtt_version(mqtt::MQTT_VERSION_5)
         .clean_session(false)
         .will_message(lwt)
         .finalize();
     client.connect(conn_opts).await.unwrap();
     let stream = client.get_stream(25);
-    if subscribe {
-        client.subscribe(topic, 1).await.unwrap();
-    }
 
     (client, stream)
 }
@@ -117,22 +114,17 @@ impl DoraNode {
                 None => format!("{prefix}/{source}/{output}"),
             };
             let client =
-                create_client(&format!("mqtt_{}_{}", id, topic), host_config, &topic, true).await;
+                create_client(&format!("mqtt_{}_{}", id, topic), host_config, &topic).await;
             clients.insert(topic, client);
             let topic = match operator {
                 Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
                 None => format!("{prefix}/{source}/{STOP_TOPIC}"),
             };
-            let client = create_client(
-                &format!("mqtt_{}_{}_stop", id, topic),
-                host_config,
-                &topic,
-                true,
-            )
-            .await;
+            let client =
+                create_client(&format!("mqtt_{}_{}_stop", id, topic), host_config, &topic).await;
             clients.insert(topic, client);
         }
-        let client = create_client(&format!("mqtt_{}_publish", id), host_config, "", false).await;
+        let client = create_client(&format!("mqtt_{}_publish", id), host_config, "").await;
         clients.insert("publish".to_string(), client);
 
         Ok(Self {
@@ -193,7 +185,7 @@ impl DoraNode {
         }
         let finished = Box::pin(stop_messages.all(|_| async { true }));
 
-        Ok(streams.merge()) //.take_until(finished))
+        Ok(streams.merge().take_until(finished))
     }
 
     pub async fn send_output(&self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {

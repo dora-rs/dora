@@ -36,6 +36,7 @@ async fn create_client(
 ) {
     let create_opts = mqtt::CreateOptionsBuilder::new()
         .server_uri(host)
+        .mqtt_version(mqtt::MQTT_VERSION_5)
         .client_id(id)
         .finalize();
     // Create the client connection
@@ -46,7 +47,7 @@ async fn create_client(
 
     let conn_opts = mqtt::ConnectOptionsBuilder::new()
         .keep_alive_interval(Duration::from_secs(10))
-        .mqtt_version(mqtt::MQTT_VERSION_3_1_1)
+        .mqtt_version(mqtt::MQTT_VERSION_5)
         .clean_session(false)
         .will_message(lwt)
         .finalize();
