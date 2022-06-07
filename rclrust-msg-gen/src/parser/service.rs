@@ -10,26 +10,27 @@ const SERVICE_REQUEST_SUFFIX: &str = "_Request";
 const SERVICE_RESPONSE_SUFFIX: &str = "_Response";
 
 pub fn parse_service_file<P: AsRef<Path>>(pkg_name: &str, interface_file: P) -> Result<Service> {
+    let interface_file = interface_file.as_ref();
+    let service_string = fs::read_to_string(interface_file)?.replace("\r\n", "\n");
+
     parse_service_string(
         pkg_name,
-        interface_file
-            .as_ref()
-            .file_stem()
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        fs::read_to_string(interface_file.as_ref())?.as_str(),
+        interface_file.file_stem().unwrap().to_str().unwrap(),
+        &service_string,
     )
-    .with_context(|| format!("Parse file error: {}", interface_file.as_ref().display()))
+    .with_context(|| format!("Parse file error: {}", interface_file.display()))
 }
 
 fn parse_service_string(pkg_name: &str, srv_name: &str, service_string: &str) -> Result<Service> {
     let re = Regex::new(r"(?m)^---$").unwrap();
     let service_blocks: Vec<_> = re.split(service_string).collect();
     if service_blocks.len() != 2 {
-        return Err(RclMsgError::InvalidServiceSpecification(
-            "Number of '---' separators nonconformant with service definition".into(),
-        )
+        return Err(RclMsgError::InvalidServiceSpecification(format!(
+            "Expect one '---' seperator in {}/{} service definition, but get {}",
+            pkg_name,
+            srv_name,
+            service_blocks.len() - 1
+        ))
         .into());
     }
 
