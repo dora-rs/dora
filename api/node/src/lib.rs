@@ -114,6 +114,14 @@ impl DoraNode {
             .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         Ok(())
     }
+
+    pub fn id(&self) -> &NodeId {
+        &self.id
+    }
+
+    pub fn node_config(&self) -> &NodeRunConfig {
+        &self.node_config
+    }
 }
 
 impl Drop for DoraNode {
