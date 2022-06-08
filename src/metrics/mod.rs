@@ -12,10 +12,8 @@
 
 use futures::stream::Stream;
 use futures::StreamExt;
-use opentelemetry::global;
-use opentelemetry::sdk::metrics::selectors;
+use opentelemetry::sdk::metrics::{selectors, PushController};
 use opentelemetry_otlp::{ExportConfig, WithExportConfig};
-use opentelemetry_system_metrics::init_process_observer;
 use std::time::Duration;
 
 // Skip first immediate tick from tokio, not needed for async_std.
@@ -28,9 +26,10 @@ fn delayed_interval(duration: Duration) -> impl Stream<Item = tokio::time::Insta
 /// Use the default Opentelemetry exporter with default config
 /// TODO: Make Opentelemetry configurable
 ///
-pub fn init_meter() -> () {
+pub fn init_meter() -> PushController {
     let export_config = ExportConfig::default();
-    let _started = opentelemetry_otlp::new_pipeline()
+
+    opentelemetry_otlp::new_pipeline()
         .metrics(tokio::spawn, delayed_interval)
         .with_exporter(
             opentelemetry_otlp::new_exporter()
@@ -39,8 +38,5 @@ pub fn init_meter() -> () {
         )
         .with_aggregator_selector(selectors::simple::Selector::Exact)
         .build()
-        .unwrap();
-
-    let meter = global::meter("process-meter");
-    init_process_observer(meter);
+        .unwrap()
 }

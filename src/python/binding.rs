@@ -5,8 +5,6 @@ use pyo3::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::message::{message_capnp, serialize_message};
-
 #[derive(Clone)]
 pub struct PythonBinding {
     app: String,
@@ -37,31 +35,12 @@ impl PythonBinding {
         &self,
         inputs: &BTreeMap<String, Vec<u8>>,
     ) -> eyre::Result<BTreeMap<String, Vec<u8>>> {
-        let mut string_context = "".to_string();
-        let mut max_depth = 0;
         Python::with_gil(|py| {
             let py_inputs = PyDict::new(py);
 
             for (k, value) in inputs.iter() {
-                let deserialized = capnp::serialize::read_message(
-                    &mut value.as_slice(),
-                    capnp::message::ReaderOptions::new(),
-                )
-                .unwrap();
-                let message = deserialized
-                    .get_root::<message_capnp::message::Reader>()
-                    .unwrap();
-                let data = message.get_data().unwrap();
-                let metadata = message.get_metadata().unwrap();
-                let depth = metadata.get_depth();
-                if max_depth <= depth {
-                    string_context = metadata.get_otel_context().unwrap().to_string();
-                    max_depth = depth
-                }
-                py_inputs.set_item(k, PyBytes::new(py, data))?;
+                py_inputs.set_item(k, PyBytes::new(py, value))?;
             }
-
-            py_inputs.set_item("otel_context", &string_context)?;
 
             let results = self
                 .python_wrapper
@@ -77,15 +56,13 @@ impl PythonBinding {
                 let slice = v
                     .cast_as::<PyBytes>()
                     .or_else(|e| eyre::bail!("{e}"))?
-                    .as_bytes();
+                    .as_bytes()
+                    .to_vec();
                 let key = k
                     .cast_as::<PyString>()
                     .or_else(|e| eyre::bail!("{e}"))?
                     .to_string();
-                outputs.insert(
-                    key,
-                    serialize_message(slice, &string_context, max_depth + 1),
-                );
+                outputs.insert(key, slice);
             }
 
             Ok(outputs)
