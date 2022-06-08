@@ -1,4 +1,4 @@
-use dora_common::descriptor::{self, Descriptor};
+use dora_common::descriptor::{self, Descriptor, NodeKind};
 use dora_node_api::config::NodeId;
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -10,12 +10,10 @@ enum Command {
     #[clap(about = "Print Graph")]
     Visualize { dataflow: PathBuf },
     #[clap(about = "Run dataflow pipeline")]
-    Run { dataflow: PathBuf },
-}
-
-fn runtime_path() -> &'static Path {
-    const RUNTIME_PATH: &str = env!("DORA_RUNTIME_PATH");
-    Path::new(RUNTIME_PATH)
+    Run {
+        dataflow: PathBuf,
+        runtime: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -33,9 +31,18 @@ async fn main() -> eyre::Result<()> {
         ```mermaid code block on GitHub to display it."
             );
         }
-        Command::Run { dataflow } => run_dataflow(dataflow.clone(), runtime_path())
-            .await
-            .wrap_err_with(|| format!("failed to run dataflow at {}", dataflow.display()))?,
+        Command::Run { dataflow, runtime } => {
+            let runtime_path = runtime.unwrap_or_else(|| {
+                std::env::args()
+                    .next()
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+                    .with_file_name("dora-runtime")
+            });
+            run_dataflow(dataflow.clone(), &runtime_path)
+                .await
+                .wrap_err_with(|| format!("failed to run dataflow at {}", dataflow.display()))?
+        }
     }
 
     Ok(())
