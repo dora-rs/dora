@@ -52,7 +52,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
         )
     })?;
 
-    if !runtime.is_file() {
+    if nodes.iter().any(|n| matches!(n.kind, NodeKind::Runtime(_))) && !runtime.is_file() {
         bail!(
             "There is no runtime at {}, or it is not a file",
             runtime.display()
