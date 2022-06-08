@@ -1,0 +1,44 @@
+communication:
+  zenoh:
+    prefix: /foo
+
+nodes:
+  - id: timer
+    custom:
+      run: ../target/debug/examples/example_source_timer
+      outputs:
+        - time
+
+  - id: rate-limited-timer
+    custom:
+      run: ../target/debug/examples/rate_limit --seconds 0.5
+      inputs:
+        data: timer/time
+      outputs:
+        - rate_limited
+
+  - id: random
+    custom:
+      run: ../target/debug/examples/random_number
+      inputs:
+        timestamp: rate-limited-timer/rate_limited
+      outputs:
+        - number
+
+  - id: logger
+    custom:
+      run: ../target/debug/examples/example_sink_logger
+      inputs:
+        random: random/number
+        time: timer/time
+        timestamped-random: runtime-node/op-1/timestamped-random
+
+  - id: runtime-node
+    operators:
+      - id: op-1
+        shared-library: ../target/debug/libexample_operator.so
+        inputs:
+          random: random/number
+          time: timer/time
+        outputs:
+          - timestamped-random

@@ -55,7 +55,7 @@ impl ZenohClient {
 
     pub async fn pull(
         &self,
-        receivers: &mut Vec<&mut SampleReceiver>,
+        receivers: &mut [&mut SampleReceiver],
     ) -> Option<BTreeMap<String, Vec<u8>>> {
         let fetched_data = join_all(
             receivers
