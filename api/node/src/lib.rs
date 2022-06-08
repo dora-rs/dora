@@ -14,7 +14,6 @@ pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
-    communication_config: CommunicationConfig,
     communication: Box<dyn CommunicationLayer>,
 }
 
@@ -43,22 +42,15 @@ impl DoraNode {
         node_config: NodeRunConfig,
         communication_config: CommunicationConfig,
     ) -> eyre::Result<Self> {
-        let zenoh = zenoh::open(communication_config.zenoh_config.clone())
-            .await
-            .map_err(BoxError)
-            .wrap_err("failed to create zenoh session")?;
-
+        let communication = communication::init(&communication_config).await?;
         Ok(Self {
             id,
             node_config,
-            communication_config,
-            communication: Box::new(zenoh),
+            communication,
         })
     }
 
     pub async fn inputs(&self) -> eyre::Result<impl futures::Stream<Item = Input> + '_> {
-        let prefix = &self.communication_config.zenoh_prefix;
-
         let mut streams = Vec::new();
         for (
             input,
@@ -70,8 +62,8 @@ impl DoraNode {
         ) in &self.node_config.inputs
         {
             let topic = match operator {
-                Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
-                None => format!("{prefix}/{source}/{output}"),
+                Some(operator) => format!("{source}/{operator}/{output}"),
+                None => format!("{source}/{output}"),
             };
             let sub = self
                 .communication
@@ -93,8 +85,8 @@ impl DoraNode {
             .collect();
         for (source, operator) in &sources {
             let topic = match operator {
-                Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
-                None => format!("{prefix}/{source}/{STOP_TOPIC}"),
+                Some(operator) => format!("{source}/{operator}/{STOP_TOPIC}"),
+                None => format!("{source}/{STOP_TOPIC}"),
             };
             let sub = self
                 .communication
@@ -113,10 +105,9 @@ impl DoraNode {
             eyre::bail!("unknown output");
         }
 
-        let prefix = &self.communication_config.zenoh_prefix;
         let self_id = &self.id;
 
-        let topic = format!("{prefix}/{self_id}/{output_id}");
+        let topic = format!("{self_id}/{output_id}");
         self.communication
             .publish(&topic, data)
             .await
@@ -127,9 +118,8 @@ impl DoraNode {
 
 impl Drop for DoraNode {
     fn drop(&mut self) {
-        let prefix = &self.communication_config.zenoh_prefix;
         let self_id = &self.id;
-        let topic = format!("{prefix}/{self_id}/{STOP_TOPIC}");
+        let topic = format!("{self_id}/{STOP_TOPIC}");
         let result = self
             .communication
             .publish_sync(&topic, &[])
@@ -186,9 +176,9 @@ mod tests {
             inputs: Default::default(),
             outputs: Default::default(),
         };
-        let communication_config = config::CommunicationConfig {
-            zenoh_config: Default::default(),
-            zenoh_prefix: format!("/{}", uuid::Uuid::new_v4()),
+        let communication_config = config::CommunicationConfig::Zenoh {
+            config: Default::default(),
+            prefix: format!("/{}", uuid::Uuid::new_v4()),
         };
 
         run(async {

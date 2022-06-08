@@ -2,10 +2,7 @@ use dora_common::descriptor::{self, Descriptor};
 use dora_node_api::config::NodeId;
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
-use std::{
-    fmt::Write as _,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora coordinator")]
@@ -63,7 +60,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
     }
 
     // add uuid as prefix to ensure isolation
-    write!(communication.zenoh_prefix, "/{}", uuid::Uuid::new_v4()).unwrap();
+    communication.add_topic_prefix(&uuid::Uuid::new_v4().to_string());
 
     let mut tasks = FuturesUnordered::new();
     for node in nodes {

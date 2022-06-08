@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
+    fmt::Write as _,
     str::FromStr,
 };
 
@@ -127,9 +128,24 @@ impl<'de> Deserialize<'de> for InputMapping {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommunicationConfig {
-    #[serde(default)]
-    pub zenoh_config: zenoh_config::Config,
-    pub zenoh_prefix: String,
+#[serde(deny_unknown_fields, rename_all = "lowercase")]
+pub enum CommunicationConfig {
+    Zenoh {
+        #[serde(default)]
+        config: zenoh_config::Config,
+        prefix: String,
+    },
+}
+
+impl CommunicationConfig {
+    pub fn add_topic_prefix(&mut self, prefix: &str) {
+        match self {
+            CommunicationConfig::Zenoh {
+                prefix: zenoh_prefix,
+                ..
+            } => {
+                write!(zenoh_prefix, "/{}", prefix).unwrap();
+            }
+        }
+    }
 }

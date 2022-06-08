@@ -1,5 +1,6 @@
 communication:
-  zenoh_prefix: /foo
+  zenoh:
+    prefix: /foo
 
 nodes:
   - id: timer

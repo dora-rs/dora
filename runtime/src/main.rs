@@ -1,9 +1,9 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_common::{descriptor::OperatorConfig, BoxError};
+use dora_common::descriptor::OperatorConfig;
 use dora_node_api::{
     self,
-    communication::CommunicationLayer,
+    communication::{self, CommunicationLayer},
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
     STOP_TOPIC,
 };
@@ -51,13 +51,10 @@ async fn main() -> eyre::Result<()> {
         operator_events.insert(operator_config.id.clone(), ReceiverStream::new(events));
     }
 
-    let zenoh = zenoh::open(communication_config.zenoh_config.clone())
-        .await
-        .map_err(BoxError)
-        .wrap_err("failed to create zenoh session")?;
-    let communication: Box<dyn CommunicationLayer> = Box::new(zenoh);
+    let communication: Box<dyn CommunicationLayer> =
+        communication::init(&communication_config).await?;
 
-    let inputs = subscribe(&operators, communication.as_ref(), &communication_config)
+    let inputs = subscribe(&operators, communication.as_ref())
         .await
         .context("failed to subscribe")?;
 
@@ -109,7 +106,6 @@ async fn main() -> eyre::Result<()> {
                             STOP_TOPIC.to_owned().into(),
                             &[],
                             communication.as_ref(),
-                            &communication_config,
                         )
                         .await.with_context(|| {
                             format!("failed to send stop message for operator `{node_id}/{target_operator}`")
@@ -130,16 +126,9 @@ async fn main() -> eyre::Result<()> {
                         if !operator.config().outputs.contains(&data_id) {
                             eyre::bail!("unknown output {data_id} for operator {id}");
                         }
-                        publish(
-                            &node_id,
-                            id,
-                            data_id,
-                            &value,
-                            communication.as_ref(),
-                            &communication_config,
-                        )
-                        .await
-                        .context("failed to publish operator output")?;
+                        publish(&node_id, id, data_id, &value, communication.as_ref())
+                            .await
+                            .context("failed to publish operator output")?;
                     }
                     OperatorEvent::Error(err) => {
                         bail!(err.wrap_err(format!("operator {id} failed")))
@@ -160,12 +149,11 @@ async fn main() -> eyre::Result<()> {
 async fn subscribe<'a>(
     operators: &'a [OperatorConfig],
     communication: &'a dyn CommunicationLayer,
-    communication_config: &CommunicationConfig,
 ) -> eyre::Result<impl futures::Stream<Item = SubscribeEvent> + 'a> {
     let mut streams = Vec::new();
 
     for operator in operators {
-        let events = subscribe_operator(operator, communication, communication_config).await?;
+        let events = subscribe_operator(operator, communication).await?;
         streams.push(events);
     }
 
@@ -175,18 +163,15 @@ async fn subscribe<'a>(
 async fn subscribe_operator<'a>(
     operator: &'a OperatorConfig,
     communication: &'a dyn CommunicationLayer,
-    communication_config: &CommunicationConfig,
 ) -> Result<impl futures::Stream<Item = SubscribeEvent> + 'a, eyre::Error> {
-    let prefix = &communication_config.zenoh_prefix;
-
     let stop_messages = FuturesUnordered::new();
     for input in operator.inputs.values() {
         let InputMapping {
             source, operator, ..
         } = input;
         let topic = match operator {
-            Some(operator) => format!("{prefix}/{source}/{operator}/{STOP_TOPIC}"),
-            None => format!("{prefix}/{source}/{STOP_TOPIC}"),
+            Some(operator) => format!("{source}/{operator}/{STOP_TOPIC}"),
+            None => format!("{source}/{STOP_TOPIC}"),
         };
         let sub = communication
             .subscribe(&topic)
@@ -204,8 +189,8 @@ async fn subscribe_operator<'a>(
             output,
         } = mapping;
         let topic = match source_operator {
-            Some(operator) => format!("{prefix}/{source}/{operator}/{output}"),
-            None => format!("{prefix}/{source}/{output}"),
+            Some(operator) => format!("{source}/{operator}/{output}"),
+            None => format!("{source}/{output}"),
         };
         let sub = communication
             .subscribe(&topic)
@@ -236,11 +221,8 @@ async fn publish(
     output_id: DataId,
     value: &[u8],
     communication: &dyn CommunicationLayer,
-    communication_config: &CommunicationConfig,
 ) -> eyre::Result<()> {
-    let prefix = &communication_config.zenoh_prefix;
-
-    let topic = format!("{prefix}/{self_id}/{operator_id}/{output_id}");
+    let topic = format!("{self_id}/{operator_id}/{output_id}");
     communication
         .publish(&topic, value)
         .await
