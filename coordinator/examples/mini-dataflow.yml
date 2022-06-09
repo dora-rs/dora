@@ -32,6 +32,7 @@ nodes:
         random: random/number
         time: timer/time
         timestamped-random: runtime-node/op-1/timestamped-random
+        counter: runtime-node/op-2/counter
 
   - id: runtime-node
     operators:
@@ -42,3 +43,9 @@ nodes:
           time: timer/time
         outputs:
           - timestamped-random
+      - id: op-2
+        shared-library: ../runtime/examples/c-operator/operator.so
+        inputs:
+          time: timer/time
+        outputs:
+          - counter
