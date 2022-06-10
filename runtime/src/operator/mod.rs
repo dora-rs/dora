@@ -60,6 +60,7 @@ pub enum OperatorEvent {
     Output { id: DataId, value: Vec<u8> },
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
+    EndOfInput,
 }
 
 pub struct OperatorInput {
