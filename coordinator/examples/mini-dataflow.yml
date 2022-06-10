@@ -49,3 +49,9 @@ nodes:
           time: timer/time
         outputs:
           - counter
+      - id: op-3
+        python: ../runtime/examples/python-operator/op.py
+        inputs:
+          time: timer/time
+        outputs:
+          - counter
