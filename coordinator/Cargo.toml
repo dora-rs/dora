@@ -21,9 +21,3 @@ time = "0.3.9"
 futures-concurrency = "2.0.3"
 rand = "0.8.5"
 dora-common = { version = "0.1.0", path = "../common" }
-dora-rs = { path = "../.", features= ["metrics", "tracing"]}
-
-opentelemetry = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["rt-tokio", "metrics"] }
-
-opentelemetry-system-metrics = { git="https://github.com/haixuanTao/opentelemetry-rust-system-metrics" } 
-capnp = "0.14.6"

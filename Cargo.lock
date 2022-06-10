@@ -479,7 +479,7 @@ version = "3.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3aab4734e083b809aaf5794e14e756d1c798d2c69c7f7de7a09a2f5214993c1"
 dependencies = [
- "heck 0.4.0",
+ "heck",
  "proc-macro-error",
  "proc-macro2",
  "quote",
@@ -693,16 +693,12 @@ name = "dora-coordinator"
 version = "0.1.0"
 dependencies = [
  "bincode",
- "capnp",
  "clap 3.1.12",
  "dora-common",
  "dora-node-api",
- "dora-rs",
  "eyre",
  "futures",
  "futures-concurrency",
- "opentelemetry",
- "opentelemetry-system-metrics",
  "rand",
  "serde",
  "serde_yaml",
@@ -711,6 +707,25 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "dora-message"
+version = "0.1.0"
+dependencies = [
+ "capnp",
+ "capnpc",
+]
+
+[[package]]
+name = "dora-metrics"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-system-metrics",
+ "tokio",
 ]
 
 [[package]]
@@ -751,32 +766,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-rs"
+name = "dora-python-binding"
 version = "0.1.0"
 dependencies = [
- "bincode",
+ "eyre",
+ "pyo3",
+]
+
+[[package]]
+name = "dora-python-node"
+version = "0.1.0"
+dependencies = [
  "capnp",
- "capnpc",
- "env_logger",
- "envy",
+ "dora-message",
+ "dora-metrics",
+ "dora-node-api",
+ "dora-python-binding",
+ "dora-tracing",
  "eyre",
  "futures",
- "futures-concurrency",
- "log",
  "opentelemetry",
- "opentelemetry-jaeger",
- "opentelemetry-otlp",
  "opentelemetry-system-metrics",
- "pyo3",
- "rayon",
- "serde",
- "serde_yaml",
- "structopt",
  "tokio",
- "tokio-stream",
- "tokio-util",
- "zenoh",
 ]
+
+[[package]]
+name = "dora-rs"
+version = "0.1.0"
 
 [[package]]
 name = "dora-runtime"
@@ -799,6 +815,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-tracing"
+version = "0.1.0"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry-jaeger",
+ "tokio",
+]
+
+[[package]]
 name = "either"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -815,15 +840,6 @@ dependencies = [
  "log",
  "regex",
  "termcolor",
-]
-
-[[package]]
-name = "envy"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f47e0157f2cb54f5ae1bd371b30a2ae4311e1c028f575cd4e81de7353215965"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -1130,15 +1146,6 @@ name = "hashbrown"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab5ef0d4909ef3724cc8cce6ccc8572c5c817592e9285f5464f8e86f8bd3726e"
-
-[[package]]
-name = "heck"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d621efb26863f0e9924c6ac577e8275e5e6b77455db64ffa6c65c904e9e132c"
-dependencies = [
- "unicode-segmentation",
-]
 
 [[package]]
 name = "heck"
@@ -2122,7 +2129,7 @@ dependencies = [
  "bytes",
  "cfg-if",
  "cmake",
- "heck 0.4.0",
+ "heck",
  "itertools",
  "lazy_static",
  "log",
@@ -2730,30 +2737,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
 
 [[package]]
-name = "structopt"
-version = "0.3.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c6b5c64445ba8094a6ab0c3cd2ad323e07171012d9c98b0b15651daf1787a10"
-dependencies = [
- "clap 2.34.0",
- "lazy_static",
- "structopt-derive",
-]
-
-[[package]]
-name = "structopt-derive"
-version = "0.4.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcb5ae327f9cc13b68763b5749770cb9e048a99bd9dfdfa58d0cf05d5f64afe0"
-dependencies = [
- "heck 0.3.3",
- "proc-macro-error",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "subtle"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3143,12 +3126,6 @@ dependencies = [
  "serde",
  "uuid",
 ]
-
-[[package]]
-name = "unicode-segmentation"
-version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e8820f5d777f6224dc4be3632222971ac30164d4a258d595640799554ebfd99"
 
 [[package]]
 name = "unicode-width"

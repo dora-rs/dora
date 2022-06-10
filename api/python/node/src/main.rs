@@ -1,6 +1,6 @@
-use dora_node_api::{self, config::DataId, DoraNode};
-use futures::StreamExt;
+use dora_node_api::{config::DataId, DoraNode};
 
+use futures::StreamExt;
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -9,13 +9,12 @@ use tokio::time::sleep;
 
 static ATOMIC_TIMEOUT: Duration = Duration::from_millis(20);
 static BATCH_TIMEOUT: Duration = Duration::from_millis(100);
-use dora_rs::metrics::init_meter;
-use dora_rs::python::binding::PythonBinding;
-use dora_rs::tracing::{init_tracing, serialize_context};
-use dora_rs::{
-    message::{message_capnp, serialize_message},
-    tracing::deserialize_context,
-};
+use dora_message::{message_capnp, serialize_message};
+
+use dora_metrics::init_meter;
+use dora_python_binding::PythonBinding;
+use dora_tracing::deserialize_context;
+use dora_tracing::{init_tracing, serialize_context};
 use opentelemetry::global;
 use opentelemetry::{
     trace::{TraceContextExt, Tracer},
@@ -35,9 +34,9 @@ async fn main() -> eyre::Result<()> {
     // Opentelemetry Tracing
     let tracer = init_tracing().unwrap();
 
-    let py_function = PythonBinding::try_new(&node.id.to_string(), &"dora_run").unwrap();
+    let py_function = PythonBinding::try_new(&node.id().to_string(), &"dora_run").unwrap();
 
-    let is_source = node.node_config.inputs.len() == 0;
+    let is_source = node.node_config().inputs.len() == 0;
 
     let mut inputs = node.inputs().await?;
 
@@ -51,7 +50,7 @@ async fn main() -> eyre::Result<()> {
         // Retrieve several inputs within a time frame
         if is_source {
             sleep(BATCH_TIMEOUT).await;
-            let span = tracer.start(format!("{}.pushing", node.id));
+            let span = tracer.start(format!("{}.pushing", node.id()));
             let cx = Context::current_with_span(span);
 
             string_context = serialize_context(&cx);
@@ -83,7 +82,7 @@ async fn main() -> eyre::Result<()> {
         }
 
         let span = tracer.start_with_context(
-            format!("{}.calling", node.id),
+            format!("{}.calling", node.id()),
             &deserialize_context(&string_context),
         );
         let cx = Context::current_with_span(span);

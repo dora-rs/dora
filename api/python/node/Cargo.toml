@@ -1,0 +1,19 @@
+[package]
+name = "dora-python-node"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dora-message = { path = "../../../message" }
+dora-metrics = { path = "../../../metrics" }
+dora-tracing = { path = "../../../tracing" }
+dora-python-binding = { path = "../binding" }
+dora-node-api = { path = "../../node" }
+opentelemetry = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["rt-tokio", "metrics"] }
+opentelemetry-system-metrics = { git="https://github.com/haixuanTao/opentelemetry-rust-system-metrics" } 
+capnp = "0.14.6"
+tokio = { version = "1.17.0", features = ["full"] }
+eyre = "0.6.7"
+futures = "0.3.21"
