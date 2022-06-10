@@ -7,9 +7,9 @@ edition = "2021"
 
 [workspace]
 members = [
-    "api/node",
-    "api/operator",
-    "api/operator/macros",
+    "api/rust/node",
+    "api/rust/operator",
+    "api/rust/operator/macros",
     "coordinator",
     "common",
     "runtime",
