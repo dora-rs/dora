@@ -7,19 +7,18 @@ edition = "2021"
 
 [workspace]
 members = [
-    "api/node",
-    "api/operator",
-    "api/operator/macros",
-    "coordinator",
-    "message",
-    "metrics",
-    "tracing",
-    "api/python/node",
-    "api/python/binding",
-    "common",
-    "runtime",
-    "runtime/examples/example-operator",
-    "zenoh-logger",
+  "api/node",
+  "api/operator",
+  "api/operator/macros",
+  "coordinator",
+  "message",
+  "metrics",
+  "tracing",
+  "api/python/binding",
+  "common",
+  "runtime",
+  "runtime/examples/example-operator",
+  "zenoh-logger",
 ]
 
 [dependencies]

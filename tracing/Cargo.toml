@@ -6,6 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-opentelemetry = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["rt-tokio", "metrics"] }
-opentelemetry-jaeger = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["rt-tokio"] }
+opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust", features = [
+  "rt-tokio",
+  "metrics",
+] }
+opentelemetry-jaeger = { git = "https://github.com/open-telemetry/opentelemetry-rust", features = [
+  "rt-tokio",
+] }
 tokio = { version = "1.17.0", features = ["full"] }

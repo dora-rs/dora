@@ -774,23 +774,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-python-node"
-version = "0.1.0"
-dependencies = [
- "capnp",
- "dora-message",
- "dora-metrics",
- "dora-node-api",
- "dora-python-binding",
- "dora-tracing",
- "eyre",
- "futures",
- "opentelemetry",
- "opentelemetry-system-metrics",
- "tokio",
-]
-
-[[package]]
 name = "dora-rs"
 version = "0.1.0"
 

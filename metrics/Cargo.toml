@@ -7,7 +7,13 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3.21"
-opentelemetry = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["rt-tokio", "metrics"] }
-opentelemetry-otlp = { git="https://github.com/open-telemetry/opentelemetry-rust", features = ["tonic", "metrics"] } 
-opentelemetry-system-metrics = { git="https://github.com/haixuanTao/opentelemetry-rust-system-metrics" } 
+opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust", features = [
+  "rt-tokio",
+  "metrics",
+] }
+opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust", features = [
+  "tonic",
+  "metrics",
+] }
+opentelemetry-system-metrics = { git = "https://github.com/haixuanTao/opentelemetry-rust-system-metrics" }
 tokio = { version = "1.17.0", features = ["full"] }
