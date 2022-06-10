@@ -4,6 +4,7 @@ use eyre::{eyre, Context};
 use std::any::Any;
 use tokio::sync::mpsc::{self, Sender};
 
+mod python;
 mod shared_lib;
 
 pub struct Operator {
@@ -28,7 +29,12 @@ impl Operator {
                 })?;
             }
             OperatorSource::Python(path) => {
-                eprintln!("WARNING: Python operators are not supported yet");
+                python::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
+                    format!(
+                        "failed ot spawn shared library operator for {}",
+                        operator_config.id
+                    )
+                })?;
             }
             OperatorSource::Wasm(path) => {
                 eprintln!("WARNING: WASM operators are not supported yet");

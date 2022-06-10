@@ -20,3 +20,4 @@ zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
 zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
 log = "0.4.17"
 fern = "0.6.1"
+pyo3 = { version = "0.16.5", features = ["auto-initialize"] }
