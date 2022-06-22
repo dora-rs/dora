@@ -9,4 +9,4 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-dora-operator-api = { path = "../../../api/operator" }
+dora-operator-api = { path = "../../../api/rust/operator" }
