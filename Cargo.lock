@@ -2131,6 +2131,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6302e85060011447471887705bb7838f14aba43fcb06957d823739a496b3dc"
 dependencies = [
  "cfg-if",
+ "eyre",
  "indoc",
  "libc",
  "parking_lot",
