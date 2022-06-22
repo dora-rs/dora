@@ -40,8 +40,11 @@ async fn main() -> eyre::Result<()> {
                 let data = String::from_utf8(input.data)?;
                 println!("received timestamped random value: {data}");
             }
-            "counter" => {
-                println!("received counter value: {:?}", input.data);
+            "c-counter" => {
+                println!("received C counter value: {:?}", input.data);
+            }
+            "python-counter" => {
+                println!("received PYTHON counter value: {:?}", input.data);
             }
 
             other => eprintln!("Ignoring unexpected input `{other}`"),
