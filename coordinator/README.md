@@ -27,14 +27,19 @@ There are drawbacks too, for example:
 
 ## Try it out
 
-- Compile the dora runtime using `cargo build -p dora-runtime --release`
-- Compile the nodes in `examples` using `cargo build -p dora-coordinator --examples --release`
-- Compile the Rust example operator through `cargo build --manifest-path ../runtime/examples/example-operator/Cargo.toml --release`
+- Compile: the dora runtime,  the nodes in `examples`, and the Rust example operator through:
+```bash
+cargo build -p dora-runtime --release
+cargo build -p dora-coordinator --examples --release
+cargo build --manifest-path ../runtime/examples/example-operator/Cargo.toml --release
+```
 - Compile the C example operator through:
-  - `cd ../runtime/examples/c-operator`
-  - `cp ../../../api/c/operator/api.h .`
-  - `clang -c operator.c`
-  - `clang -shared -v operator.o -o operator.so`
+```bash
+cd ../runtime/examples/c-operator
+cp ../../../api/c/operator/api.h .
+clang -c operator.c
+clang -shared -v operator.o -o operator.so
+```
 - Run the `mini-dataflow` example using `cargo run --release -- run examples/mini-dataflow.yml`
   - This spawns a `timer` source, which sends the current time periodically, and a `logger` sink, which prints the incoming data.
   - The `timer` will exit after 100 iterations. The other nodes/operators will then exit as well because all sources closed.
