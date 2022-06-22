@@ -1,6 +1,6 @@
 use super::{OperatorEvent, OperatorInput};
 use eyre::{bail, eyre, Context};
-use pyo3::Python;
+use pyo3::{pyclass, PyResult, Python};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -56,8 +56,29 @@ pub fn spawn(
                     .wrap_err("dora_init_operator failed")?;
 
                 while let Some(input) = inputs.blocking_recv() {
+                    let events_tx = events_tx.clone();
+                    let send_output_callback = move |output_id: &str, data: &[u8]| {
+                        println!(
+                            "RUNTIME received python output `{output_id}` with value `{data:?}`"
+                        );
+                        let result = events_tx.blocking_send(OperatorEvent::Output {
+                            id: output_id.to_owned().into(),
+                            value: data.to_owned(),
+                        });
+                        if result.is_ok() {
+                            0
+                        } else {
+                            -1
+                        }
+                    };
+                    let send_output = SendOutputCallback {
+                        callback: Box::new(send_output_callback),
+                    };
                     operator_context
-                        .call_method1("dora_on_input", (input.id.to_string(), input.value))
+                        .call_method1(
+                            "dora_on_input",
+                            (input.id.to_string(), input.value, send_output),
+                        )
                         .wrap_err("dora_on_input failed")?;
                 }
 
@@ -83,4 +104,22 @@ pub fn spawn(
     });
 
     Ok(())
+}
+
+#[pyclass]
+struct SendOutputCallback {
+    callback: Box<dyn FnMut(&str, &[u8]) -> isize + Send>,
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+mod callback_impl {
+    use super::SendOutputCallback;
+    use pyo3::{pymethods, PyResult};
+
+    #[pymethods]
+    impl SendOutputCallback {
+        fn __call__(&mut self, output: &str, data: &[u8]) -> PyResult<isize> {
+            Ok((self.callback)(output, data))
+        }
+    }
 }
