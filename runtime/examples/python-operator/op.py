@@ -2,7 +2,8 @@ def dora_init_operator():
     return Operator()
 
 class Operator:
-    counter = 0
+    def __init__(self, counter=0):
+        self.counter = counter
 
     def dora_drop_operator(self):
         print('drop python operator')
