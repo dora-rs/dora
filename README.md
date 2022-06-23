@@ -1,4 +1,4 @@
-# dora-rs
+# dora
 Dataflow Oriented Robotic Architecture
 
 ## Build Requirements
