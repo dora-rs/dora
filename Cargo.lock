@@ -774,10 +774,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-rs"
-version = "0.1.0"
-
-[[package]]
 name = "dora-runtime"
 version = "0.1.0"
 dependencies = [
