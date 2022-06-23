@@ -1,6 +1,6 @@
 use super::{OperatorEvent, OperatorInput};
 use eyre::{bail, eyre, Context};
-use pyo3::{pyclass, Python};
+use pyo3::{pyclass, types::IntoPyDict, Python};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -50,17 +50,17 @@ pub fn spawn(
         let module = py
             .import(module_name)
             .wrap_err("failed to import Python module")?;
+        let operator_class = module
+            .getattr("Operator")
+            .wrap_err("no `Operator` class found in module")?;
 
-        let dora_init_operator = module
-            .getattr("dora_init_operator")
-            .wrap_err("`dora_init_operator` was not found")?;
-
-        let operator_context = dora_init_operator
-            .call0()
-            .wrap_err("dora_init_operator failed")?;
+        let locals = [("Operator", operator_class)].into_py_dict(py);
+        let operator = py
+            .eval("Operator()", None, Some(locals))
+            .wrap_err("failed to create Operator instance")?;
 
         while let Some(input) = inputs.blocking_recv() {
-            operator_context
+            operator
                 .call_method1(
                     "dora_on_input",
                     (input.id.to_string(), input.value, send_output.clone()),
@@ -68,7 +68,7 @@ pub fn spawn(
                 .wrap_err("dora_on_input failed")?;
         }
 
-        operator_context
+        operator
             .call_method0("dora_drop_operator")
             .wrap_err("dora_drop_operator failed")?;
 

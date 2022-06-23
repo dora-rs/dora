@@ -1,6 +1,3 @@
-def dora_init_operator():
-    return Operator()
-
 class Operator:
     def __init__(self, counter=0):
         self.counter = counter
