@@ -13,8 +13,8 @@ jobs:
       - uses: actions/checkout@v2
       - name: Install Cap'n Proto
         run: |
-            export DEBIAN_FRONTEND=noninteractive
-            sudo apt-get install -y capnproto libcapnp-dev
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y capnproto libcapnp-dev
       - name: "Check"
         run: cargo check --all
       - name: "Build"
@@ -29,8 +29,8 @@ jobs:
       - uses: actions/checkout@v2
       - name: Install Cap'n Proto
         run: |
-            export DEBIAN_FRONTEND=noninteractive
-            sudo apt-get install -y capnproto libcapnp-dev
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y capnproto libcapnp-dev
       - name: "Clippy"
         run: cargo clippy --all
 
