@@ -32,7 +32,8 @@ nodes:
         random: random/number
         time: timer/time
         timestamped-random: runtime-node/op-1/timestamped-random
-        counter: runtime-node/op-2/counter
+        c-counter: runtime-node/op-2/counter
+        python-counter: runtime-node/op-3/counter
 
   - id: runtime-node
     operators:
@@ -45,6 +46,12 @@ nodes:
           - timestamped-random
       - id: op-2
         shared-library: ../runtime/examples/c-operator/operator.so
+        inputs:
+          time: timer/time
+        outputs:
+          - counter
+      - id: op-3
+        python: ../runtime/examples/python-operator/op.py
         inputs:
           time: timer/time
         outputs:
