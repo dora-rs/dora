@@ -62,15 +62,15 @@ pub fn spawn(
         while let Some(input) = inputs.blocking_recv() {
             operator
                 .call_method1(
-                    "dora_on_input",
+                    "on_input",
                     (input.id.to_string(), input.value, send_output.clone()),
                 )
-                .wrap_err("dora_on_input failed")?;
+                .wrap_err("on_input failed")?;
         }
 
         operator
-            .call_method0("dora_drop_operator")
-            .wrap_err("dora_drop_operator failed")?;
+            .call_method0("drop_operator")
+            .wrap_err("drop_operator failed")?;
 
         Result::<_, eyre::Report>::Ok(())
     };
