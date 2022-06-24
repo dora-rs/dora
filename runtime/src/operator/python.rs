@@ -68,9 +68,14 @@ pub fn spawn(
                 .wrap_err("on_input failed")?;
         }
 
-        operator
-            .call_method0("drop_operator")
-            .wrap_err("drop_operator failed")?;
+        if operator
+            .hasattr("drop_operator")
+            .wrap_err("failed to look for drop_operator")?
+        {
+            operator
+                .call_method0("drop_operator")
+                .wrap_err("drop_operator failed")?;
+        }
 
         Result::<_, eyre::Report>::Ok(())
     };
