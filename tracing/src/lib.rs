@@ -40,8 +40,8 @@ impl<'a> Extractor for MetadataMap<'a> {
 ///
 pub fn init_tracing() -> Result<sdktrace::Tracer, TraceError> {
     global::set_text_map_propagator(TraceContextPropagator::new());
-    opentelemetry_jaeger::new_agent_pipeline()
-        .with_endpoint("172.17.0.1:6831")
+    opentelemetry_jaeger::new_pipeline()
+        .with_agent_endpoint("172.17.0.1:6831")
         .with_service_name("rust.dora")
         .install_batch(opentelemetry::runtime::Tokio)
 }

@@ -8,13 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 futures = "0.3.21"
-opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust", features = [
-  "rt-tokio",
-  "metrics",
-] }
-opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust", features = [
-  "tonic",
-  "metrics",
-] }
-opentelemetry-system-metrics = { git = "https://github.com/haixuanTao/opentelemetry-rust-system-metrics" }
+opentelemetry = { version = "0.17", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.10", features = ["tonic", "metrics"] }
+opentelemetry-system-metrics = "0.1.1"
 tokio = { version = "1.17.0", features = ["full"] }
