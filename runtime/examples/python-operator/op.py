@@ -15,7 +15,7 @@ class Operator:
         self,
         input_id: str,
         value: bytes,
-        send_output: Callable[[str, bytes]],
+        send_output: Callable[[str, bytes], None],
     ):
         """Handle input by incrementing count by one.
 
