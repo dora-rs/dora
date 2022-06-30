@@ -13,5 +13,5 @@ Dataflow Oriented Robotic Architecture
 - Run
 ```bash
 conda activate dora3.8
-../dora-pylot/launch.sh
+../dora-drives/launch.sh
 ```
