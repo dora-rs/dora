@@ -1,17 +1,35 @@
-# dora
-Dataflow Oriented Robotic Architecture
+# dora: Dataflow Oriented Robotic Architecture
 
-## Build Requirements
+`dora` goal is to be a low latency, composable, and distributed data flow.
 
-- Install docker
-- Install Conda and create a dora environment according to dora-drives
-- Optional: Install capnp if you want to change the message design:  https://capnproto.org/install.html
+This project is in early development, and many features have yet to be implemented with breaking changes. Please don't take for granted the current design.
+
+Composability as:
+- [x] `YAML` declarative programming
+- [ ] language-agnostic:
+  - [x] Rust
+  - [x] C
+  - [ ] Python
+- [ ] Isolated operator and node that can be reused.
+
+Low latency as:
+- [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
+- [ ] Minimal abstraction close to the metal.
+
+Distributed as:
+- [x] PubSub communication with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
+- [x] Distributed telemetry with [`opentelemetry`](https://github.com/open-telemetry/opentelemetry-rust)
+
 
 ## Getting started
 
-- Clone dora-drives in the parent directory
-- Run
-```bash
-conda activate dora3.8
-../dora-pylot/launch.sh
-```
+- Check out [coordinator/README.md](coordinator/README.md)
+
+## Further reading
+
+- Check out [dora-drives](https://github.com/dora-rs/dora-drives) for a template of an autonomous vehicle within a simulation.
+
+
+## LICENSE 
+
+This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for more information.
