@@ -4,7 +4,7 @@
     clippy::all,
     clippy::nursery
 )]
-#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::missing_safety_doc, clippy::non_send_fields_in_send_ty)]
 
 pub mod clock;
 pub mod context;
