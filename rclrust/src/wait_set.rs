@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(super) struct RclWaitSet(rcl_sys::rcl_wait_set_t);
+pub struct RclWaitSet(rcl_sys::rcl_wait_set_t);
 
 impl RclWaitSet {
     pub fn new(

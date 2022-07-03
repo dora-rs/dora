@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{error::ToRclRustResult, internal::ffi::*, log::Logger, rclrust_error};
 
 #[derive(Debug)]
-pub(super) struct RclStringArray(rcl_sys::rcutils_string_array_t);
+pub struct RclStringArray(rcl_sys::rcutils_string_array_t);
 
 impl RclStringArray {
     pub fn new() -> Self {
@@ -40,7 +40,7 @@ impl Drop for RclStringArray {
 }
 
 #[derive(Debug)]
-pub(super) struct RclNamesAndTypes(rcl_sys::rcl_names_and_types_t);
+pub struct RclNamesAndTypes(rcl_sys::rcl_names_and_types_t);
 
 impl RclNamesAndTypes {
     pub fn new() -> Self {

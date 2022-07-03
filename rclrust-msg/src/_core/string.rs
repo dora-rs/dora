@@ -81,7 +81,7 @@ impl FFIFromRust for OwnedFFIString {
 impl Drop for OwnedFFIString {
     fn drop(&mut self) {
         unsafe {
-            CString::from_raw(self.data);
+            std::mem::drop(CString::from_raw(self.data));
         }
     }
 }
@@ -155,7 +155,9 @@ impl FFIFromRust for OwnedFFIWString {
 
 impl Drop for OwnedFFIWString {
     fn drop(&mut self) {
-        unsafe { U16CString::from_raw(self.data) };
+        unsafe {
+            std::mem::drop(U16CString::from_raw(self.data));
+        }
     }
 }
 

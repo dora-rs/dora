@@ -52,14 +52,14 @@ impl RclService {
         options.qos = qos.into();
 
         unsafe {
-            rcl_sys::rcl_service_init(
+            let value = rcl_sys::rcl_service_init(
                 &mut *service,
                 node.lock().unwrap().raw(),
                 Srv::type_support() as *const _,
                 service_c_str.as_ptr(),
                 &options,
-            )
-            .to_result()?;
+            );
+            value.to_result()?;
         }
 
         Ok(Self {
