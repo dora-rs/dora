@@ -52,15 +52,16 @@ impl RclNode {
         let namespace_c_str = CString::new(namespace.unwrap_or_default())?;
 
         unsafe {
-            rcl_sys::rcl_node_init(
+            let value = rcl_sys::rcl_node_init(
                 &mut *node,
                 name_c_str.as_ptr(),
                 namespace_c_str.as_ptr(),
                 context.lock().unwrap().raw_mut(),
                 options.raw(),
-            )
-            .to_result()
-            .with_context(|| "rcl_sys::rcl_node_init in RclNode::new")?;
+            );
+            value
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_node_init in RclNode::new")?;
         }
 
         Ok(Self {

@@ -2,7 +2,6 @@
 
 use std::os::raw::c_char;
 
-#[must_use]
 pub type rcutils_ret_t = std::os::raw::c_int;
 
 use super::rcutils_allocator_t;

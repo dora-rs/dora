@@ -58,15 +58,16 @@ impl RclSubscription {
         options.qos = qos.into();
 
         unsafe {
-            rcl_sys::rcl_subscription_init(
+            let value = rcl_sys::rcl_subscription_init(
                 &mut *subscription,
                 node.lock().unwrap().raw(),
                 T::type_support() as *const _,
                 topic_c_str.as_ptr(),
                 &options,
-            )
-            .to_result()
-            .with_context(|| "rcl_sys::rcl_subscription_init in RclSubscription::new")?;
+            );
+            value
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_subscription_init in RclSubscription::new")?;
         }
 
         Ok(Self {

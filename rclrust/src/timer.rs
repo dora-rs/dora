@@ -125,7 +125,7 @@ impl Timer {
     }
 }
 
-pub(crate) struct TimerInvoker {
+pub struct TimerInvoker {
     pub handle: Arc<Mutex<RclTimer>>,
     tx: Option<mpsc::Sender<WorkerMessage<()>>>,
 }

@@ -39,12 +39,13 @@ impl Member {
 
     fn default_value(&self) -> impl ToTokens {
         let name = self.name_token();
-        if let Some(default) = &self.default {
-            let default = self.r#type.value_tokens(default);
-            quote! { #name: #default, }
-        } else {
-            quote! { #name: crate::_core::InternalDefault::_default(), }
-        }
+        self.default.as_ref().map_or_else(
+            || quote! { #name: crate::_core::InternalDefault::_default(), },
+            |default| {
+                let default = self.r#type.value_tokens(default);
+                quote! { #name: #default, }
+            },
+        )
     }
 
     fn raw_type_def(&self, package: &str) -> impl ToTokens {

@@ -106,19 +106,18 @@ fn generic_string(s: &str) -> IResult<&str, GenericString> {
             opt(preceded(tag("<="), usize_literal)),
         ),
         |(type_str, array_info)| {
-            if let Some(max_size) = array_info {
-                match type_str {
-                    "string" => GenericString::BoundedString(max_size),
-                    "wstring" => GenericString::BoundedWString(max_size),
-                    _ => unreachable!(),
-                }
-            } else {
-                match type_str {
+            array_info.map_or_else(
+                || match type_str {
                     "string" => GenericString::String,
                     "wstring" => GenericString::WString,
                     _ => unreachable!(),
-                }
-            }
+                },
+                |max_size| match type_str {
+                    "string" => GenericString::BoundedString(max_size),
+                    "wstring" => GenericString::BoundedWString(max_size),
+                    _ => unreachable!(),
+                },
+            )
         },
     )(s)
 }

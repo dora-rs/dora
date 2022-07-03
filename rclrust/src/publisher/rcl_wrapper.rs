@@ -56,15 +56,16 @@ impl RclPublisher {
         options.qos = qos.into();
 
         unsafe {
-            rcl_sys::rcl_publisher_init(
+            let value = rcl_sys::rcl_publisher_init(
                 &mut *publisher,
                 node.lock().unwrap().raw(),
                 T::type_support() as *const _,
                 topic_c_str.as_ptr(),
                 &options,
-            )
-            .to_result()
-            .with_context(|| "rcl_sys::rcl_publisher_init in RclPublisher::new")?;
+            );
+            value
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_publisher_init in RclPublisher::new")?;
         }
 
         Ok(Self {

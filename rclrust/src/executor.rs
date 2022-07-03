@@ -15,7 +15,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(super) enum ExecutorMessage {
+pub enum ExecutorMessage {
     Subscription(Box<dyn SubscriptionInvokerBase + Send>),
     Timer(TimerInvoker),
     Client(Box<dyn ClientInvokerBase + Send>),
@@ -24,7 +24,7 @@ pub(super) enum ExecutorMessage {
 }
 
 #[derive(new)]
-pub(super) struct Executor {
+pub struct Executor {
     context: Arc<Mutex<RclContext>>,
     rx: mpsc::Receiver<ExecutorMessage>,
     #[new(default)]
@@ -70,13 +70,18 @@ impl Executor {
     }
 
     pub fn spin_some(&mut self, max_duration: Duration) -> Result<()> {
+        let n_subscriptions = self.subscriptions.len();
+        let n_timers = self.timers.len();
+        let n_clients = self.clients.len();
+        let n_services = self.services.len();
+
         let mut wait_set = RclWaitSet::new(
             &mut self.context.lock().unwrap(),
-            self.subscriptions.len(),
+            n_subscriptions,
             0,
-            self.timers.len(),
-            self.clients.len(),
-            self.services.len(),
+            n_timers,
+            n_clients,
+            n_services,
             0,
         )?;
 

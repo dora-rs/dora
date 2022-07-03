@@ -7,7 +7,6 @@ pub mod ret_types {
     //! API in rmw/ret_types.h
 
     /// Return code for rmw functions
-    #[must_use]
     pub type rmw_ret_t = i32;
 }
 pub use ret_types::*;
