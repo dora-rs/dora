@@ -12,7 +12,7 @@ pub enum WorkerMessage<T> {
 #[derive(Debug)]
 pub struct ReceiveWorker<T> {
     tx: mpsc::Sender<WorkerMessage<T>>,
-    thread: Option<JoinHandle<()>>,
+    _thread: Option<JoinHandle<()>>,
 }
 
 impl<T> ReceiveWorker<T> {
@@ -36,7 +36,7 @@ impl<T> ReceiveWorker<T> {
 
         Self {
             tx,
-            thread: Some(thread),
+            _thread: Some(thread),
         }
     }
 

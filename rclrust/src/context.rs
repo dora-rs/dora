@@ -16,7 +16,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct RclContext(Box<rcl_sys::rcl_context_t>);
+pub struct RclContext(Box<rcl_sys::rcl_context_t>);
 
 unsafe impl Send for RclContext {}
 

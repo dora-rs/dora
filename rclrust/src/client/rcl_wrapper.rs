@@ -53,15 +53,16 @@ impl RclClient {
         options.qos = qos.into();
 
         unsafe {
-            rcl_sys::rcl_client_init(
+            let value = rcl_sys::rcl_client_init(
                 &mut *client,
                 node.lock().unwrap().raw(),
                 Srv::type_support() as *const _,
                 service_c_str.as_ptr(),
                 &options,
-            )
-            .to_result()
-            .with_context(|| "rcl_sys::rcl_client_init in RclClient::new")?;
+            );
+            value
+                .to_result()
+                .with_context(|| "rcl_sys::rcl_client_init in RclClient::new")?;
         }
 
         Ok(Self {
@@ -131,13 +132,12 @@ impl RclClient {
     pub fn service_is_available(&self) -> Result<bool> {
         let mut is_available = false;
         unsafe {
-            rcl_sys::rcl_service_server_is_available(
+            let value = rcl_sys::rcl_service_server_is_available(
                 self.node.lock().unwrap().raw(),
                 self.raw(),
                 &mut is_available,
-            )
-            .to_result()
-            .with_context(|| {
+            );
+            value.to_result().with_context(|| {
                 "rcl_sys::rcl_service_server_is_available in RclClient::service_is_available"
             })?;
         }
