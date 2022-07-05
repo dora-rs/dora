@@ -38,12 +38,12 @@ impl<'a> Extractor for MetadataMap<'a> {
 ///
 /// TODO: Make Jaeger configurable
 ///
-pub fn init_tracing() -> Result<sdktrace::Tracer, TraceError> {
+pub fn init_tracing(name: &str) -> Result<sdktrace::Tracer, TraceError> {
     global::set_text_map_propagator(TraceContextPropagator::new());
     opentelemetry_jaeger::new_pipeline()
         .with_agent_endpoint("172.17.0.1:6831")
-        .with_service_name("rust.dora")
-        .install_batch(opentelemetry::runtime::Tokio)
+        .with_service_name(name)
+        .install_simple()
 }
 
 pub fn serialize_context(context: &Context) -> String {
