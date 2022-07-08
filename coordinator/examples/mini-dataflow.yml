@@ -5,13 +5,13 @@ communication:
 nodes:
   - id: timer
     custom:
-      run: ../target/release/examples/example_source_timer
+      run: cargo run --release --example example_source_timer
       outputs:
         - time
 
   - id: rate-limited-timer
     custom:
-      run: ../target/release/examples/rate_limit --seconds 0.5
+      run: cargo run --release --example rate_limit -- --seconds 0.5
       inputs:
         data: timer/time
       outputs:
@@ -19,7 +19,7 @@ nodes:
 
   - id: random
     custom:
-      run: ../target/release/examples/random_number
+      run: cargo run --release --example random_number
       inputs:
         timestamp: rate-limited-timer/rate_limited
       outputs:
@@ -27,7 +27,7 @@ nodes:
 
   - id: logger
     custom:
-      run: ../target/release/examples/example_sink_logger
+      run: cargo run --release --example example_sink_logger
       inputs:
         random: random/number
         time: timer/time
