@@ -6,7 +6,7 @@ members = [
   "apis/python/binding",
   "binaries/coordinator",
   "binaries/runtime",
-  "libraries/extensions/serialisation",
+  "libraries/extensions/message",
   "libraries/extensions/telemetry/metrics",
   "libraries/extensions/telemetry/tracing",
   "libraries/core",
