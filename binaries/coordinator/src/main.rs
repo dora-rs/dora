@@ -1,4 +1,4 @@
-use dora_common::descriptor::{self, Descriptor, NodeKind};
+use dora_core::descriptor::{self, Descriptor, NodeKind};
 use dora_node_api::config::NodeId;
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
