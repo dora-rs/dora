@@ -1,4 +1,4 @@
-use dora_core::descriptor::{self, Descriptor, NodeKind};
+use dora_core::descriptor::{self, CoreNodeKind, Descriptor};
 use dora_node_api::config::NodeId;
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -49,17 +49,21 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()> {
-    let Descriptor {
-        mut communication,
-        nodes,
-    } = read_descriptor(&dataflow_path).await.wrap_err_with(|| {
+    let descriptor = read_descriptor(&dataflow_path).await.wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
             dataflow_path.display()
         )
     })?;
 
-    if nodes.iter().any(|n| matches!(n.kind, NodeKind::Runtime(_))) && !runtime.is_file() {
+    let nodes = descriptor.resolve_aliases();
+    let mut communication = descriptor.communication;
+
+    if nodes
+        .iter()
+        .any(|n| matches!(n.kind, CoreNodeKind::Runtime(_)))
+        && !runtime.is_file()
+    {
         bail!(
             "There is no runtime at {}, or it is not a file",
             runtime.display()
@@ -74,12 +78,12 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
         let node_id = node.id.clone();
 
         match node.kind {
-            descriptor::NodeKind::Custom(node) => {
+            descriptor::CoreNodeKind::Custom(node) => {
                 let result = spawn_custom_node(node_id.clone(), &node, &communication)
                     .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
                 tasks.push(result);
             }
-            descriptor::NodeKind::Runtime(node) => {
+            descriptor::CoreNodeKind::Runtime(node) => {
                 if !node.operators.is_empty() {
                     let result =
                         spawn_runtime_node(runtime, node_id.clone(), &node, &communication)

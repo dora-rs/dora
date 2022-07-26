@@ -6,7 +6,7 @@ use std::{
     str::FromStr,
 };
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeRunConfig {
     #[serde(default)]

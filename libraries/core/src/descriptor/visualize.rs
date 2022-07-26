@@ -1,11 +1,11 @@
-use super::{CustomNode, Node, NodeKind, OperatorConfig, RuntimeNode};
+use super::{CoreNodeKind, CustomNode, OperatorConfig, ResolvedNode, RuntimeNode};
 use dora_node_api::config::{DataId, InputMapping, NodeId};
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Write as _,
 };
 
-pub fn visualize_nodes(nodes: &[Node]) -> String {
+pub fn visualize_nodes(nodes: &[ResolvedNode]) -> String {
     let mut flowchart = "flowchart TB\n".to_owned();
     let mut all_nodes = HashMap::new();
 
@@ -21,11 +21,11 @@ pub fn visualize_nodes(nodes: &[Node]) -> String {
     flowchart
 }
 
-fn visualize_node(node: &Node, flowchart: &mut String) {
+fn visualize_node(node: &ResolvedNode, flowchart: &mut String) {
     let node_id = &node.id;
     match &node.kind {
-        NodeKind::Custom(node) => visualize_custom_node(node_id, node, flowchart),
-        NodeKind::Runtime(RuntimeNode { operators }) => {
+        CoreNodeKind::Custom(node) => visualize_custom_node(node_id, node, flowchart),
+        CoreNodeKind::Runtime(RuntimeNode { operators }) => {
             visualize_runtime_node(node_id, operators, flowchart)
         }
     }
@@ -63,16 +63,20 @@ fn visualize_runtime_node(node_id: &NodeId, operators: &[OperatorConfig], flowch
     flowchart.push_str("end\n");
 }
 
-fn visualize_node_inputs(node: &Node, flowchart: &mut String, nodes: &HashMap<&NodeId, &Node>) {
+fn visualize_node_inputs(
+    node: &ResolvedNode,
+    flowchart: &mut String,
+    nodes: &HashMap<&NodeId, &ResolvedNode>,
+) {
     let node_id = &node.id;
     match &node.kind {
-        NodeKind::Custom(node) => visualize_inputs(
+        CoreNodeKind::Custom(node) => visualize_inputs(
             &node_id.to_string(),
             &node.run_config.inputs,
             flowchart,
             nodes,
         ),
-        NodeKind::Runtime(RuntimeNode { operators }) => {
+        CoreNodeKind::Runtime(RuntimeNode { operators }) => {
             for operator in operators {
                 visualize_inputs(
                     &format!("{node_id}/{}", operator.id),
@@ -89,7 +93,7 @@ fn visualize_inputs(
     target: &str,
     inputs: &BTreeMap<DataId, InputMapping>,
     flowchart: &mut String,
-    nodes: &HashMap<&NodeId, &Node>,
+    nodes: &HashMap<&NodeId, &ResolvedNode>,
 ) {
     for (input_id, mapping) in inputs {
         let InputMapping {
@@ -101,7 +105,7 @@ fn visualize_inputs(
         let mut source_found = false;
         if let Some(source_node) = nodes.get(source) {
             match (&source_node.kind, operator) {
-                (NodeKind::Custom(custom_node), None) => {
+                (CoreNodeKind::Custom(custom_node), None) => {
                     if custom_node.run_config.outputs.contains(output) {
                         let data = if output == input_id {
                             format!("{output}")
@@ -112,7 +116,7 @@ fn visualize_inputs(
                         source_found = true;
                     }
                 }
-                (NodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
+                (CoreNodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
                     if let Some(operator) = operators.iter().find(|o| &o.id == operator_id) {
                         if operator.outputs.contains(output) {
                             let data = if output == input_id {
@@ -126,7 +130,7 @@ fn visualize_inputs(
                         }
                     }
                 }
-                (NodeKind::Custom(_), Some(_)) | (NodeKind::Runtime(_), None) => {}
+                (CoreNodeKind::Custom(_), Some(_)) | (CoreNodeKind::Runtime(_), None) => {}
             }
         }
 
