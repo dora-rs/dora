@@ -1,4 +1,4 @@
-use dora_core::descriptor::{OperatorConfig, OperatorSource};
+use dora_core::descriptor::{OperatorDefinition, OperatorSource};
 use dora_node_api::config::DataId;
 use eyre::{eyre, Context};
 use std::any::Any;
@@ -9,17 +9,17 @@ mod shared_lib;
 
 pub struct Operator {
     operator_task: Sender<OperatorInput>,
-    config: OperatorConfig,
+    config: OperatorDefinition,
 }
 
 impl Operator {
     pub async fn init(
-        operator_config: OperatorConfig,
+        operator_config: OperatorDefinition,
         events_tx: Sender<OperatorEvent>,
     ) -> eyre::Result<Self> {
         let (operator_task, operator_rx) = mpsc::channel(10);
 
-        match &operator_config.source {
+        match &operator_config.config.source {
             OperatorSource::SharedLibrary(path) => {
                 shared_lib::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
                     format!(
@@ -54,7 +54,7 @@ impl Operator {
 
     /// Get a reference to the operator's config.
     #[must_use]
-    pub fn config(&self) -> &OperatorConfig {
+    pub fn config(&self) -> &OperatorDefinition {
         &self.config
     }
 }

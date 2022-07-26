@@ -2,7 +2,7 @@ use dora_node_api::config::{
     CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,13 +20,15 @@ pub struct Descriptor {
 
 impl Descriptor {
     pub fn resolve_aliases(&self) -> Vec<ResolvedNode> {
-        const PYTHON_OP_NAME: &str = "op";
+        let default_op_id = OperatorId::from("op".to_string());
 
-        let python_nodes: HashSet<_> = self
+        let single_operator_nodes: HashMap<_, _> = self
             .nodes
             .iter()
-            .filter(|n| matches!(n.kind, NodeKind::Python(_)))
-            .map(|n| &n.id)
+            .filter_map(|n| match &n.kind {
+                NodeKind::Operator(op) => Some((&n.id, op.id.as_ref().unwrap_or(&default_op_id))),
+                _ => None,
+            })
             .collect();
 
         let mut resolved = vec![];
@@ -36,15 +38,16 @@ impl Descriptor {
                 NodeKind::Runtime(node) => node
                     .operators
                     .iter_mut()
-                    .flat_map(|op| op.inputs.values_mut())
+                    .flat_map(|op| op.config.inputs.values_mut())
                     .collect(),
                 NodeKind::Custom(node) => node.run_config.inputs.values_mut().collect(),
-                NodeKind::Python(node) => node.inputs.values_mut().collect(),
+                NodeKind::Operator(operator) => operator.config.inputs.values_mut().collect(),
             };
             for mapping in input_mappings {
-                if python_nodes.contains(&mapping.source) {
-                    assert_eq!(mapping.operator, None);
-                    mapping.operator = Some(OperatorId::from(PYTHON_OP_NAME.to_string()));
+                if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
+                    if mapping.operator.is_none() {
+                        mapping.operator = Some(op_name.to_owned());
+                    }
                 }
             }
 
@@ -52,14 +55,10 @@ impl Descriptor {
             let kind = match node.kind {
                 NodeKind::Custom(node) => CoreNodeKind::Custom(node),
                 NodeKind::Runtime(node) => CoreNodeKind::Runtime(node),
-                NodeKind::Python(node) => CoreNodeKind::Runtime(RuntimeNode {
-                    operators: vec![OperatorConfig {
-                        id: OperatorId::from(PYTHON_OP_NAME.to_string()),
-                        name: None,
-                        description: None,
-                        inputs: node.inputs,
-                        outputs: node.outputs,
-                        source: OperatorSource::Python(node.path),
+                NodeKind::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
+                    operators: vec![OperatorDefinition {
+                        id: op.id.unwrap_or_else(|| default_op_id.clone()),
+                        config: op.config,
                     }],
                 }),
             };
@@ -98,7 +97,7 @@ pub enum NodeKind {
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
     Custom(CustomNode),
-    Python(PythonOperatorConfig),
+    Operator(SingleOperatorDefinition),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -123,12 +122,26 @@ pub enum CoreNodeKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RuntimeNode {
-    pub operators: Vec<OperatorConfig>,
+    pub operators: Vec<OperatorDefinition>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OperatorDefinition {
+    pub id: OperatorId,
+    #[serde(flatten)]
+    pub config: OperatorConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SingleOperatorDefinition {
+    /// ID is optional if there is only a single operator.
+    pub id: Option<OperatorId>,
+    #[serde(flatten)]
+    pub config: OperatorConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperatorConfig {
-    pub id: OperatorId,
     pub name: Option<String>,
     pub description: Option<String>,
 
