@@ -54,5 +54,14 @@ nodes:
         python: ../runtime/examples/python-operator/op.py
         inputs:
           time: timer/time
+          test: python-operator/counter
         outputs:
           - counter
+
+  - id: python-operator
+    python:
+      path: ../runtime/examples/python-operator/op.py
+      inputs:
+        time: timer/time
+      outputs:
+        - counter
