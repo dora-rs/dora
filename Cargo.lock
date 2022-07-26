@@ -628,21 +628,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-common"
-version = "0.1.0"
-dependencies = [
- "dora-node-api",
- "eyre",
- "serde",
-]
-
-[[package]]
 name = "dora-coordinator"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "clap 3.1.12",
- "dora-common",
+ "dora-core",
  "dora-node-api",
  "eyre",
  "futures",
@@ -655,6 +646,15 @@ dependencies = [
  "tokio-stream",
  "tokio-util 0.7.1",
  "uuid",
+]
+
+[[package]]
+name = "dora-core"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "serde",
 ]
 
 [[package]]
@@ -726,7 +726,7 @@ name = "dora-runtime"
 version = "0.1.0"
 dependencies = [
  "clap 3.1.12",
- "dora-common",
+ "dora-core",
  "dora-node-api",
  "eyre",
  "fern",

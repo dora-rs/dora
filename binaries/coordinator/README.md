@@ -36,7 +36,7 @@ cargo build --manifest-path ../runtime/examples/example-operator/Cargo.toml --re
 - Compile the C example operator through:
 ```bash
 cd ../runtime/examples/c-operator
-cp ../../../api/c/operator/api.h .
+cp ../../../apis/c/operator/api.h .
 clang -c operator.c
 clang -shared -v operator.o -o operator.so
 ```
