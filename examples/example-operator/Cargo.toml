@@ -10,4 +10,4 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-dora-operator-api = { path = "../../../api/rust/operator" }
+dora-operator-api = { path = "../../apis/rust/operator" }

@@ -1,5 +1,5 @@
 [package]
-name = "dora-common"
+name = "dora-core"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -7,6 +7,6 @@ license = "Apache-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { version = "0.1.0", path = "../api/rust/node" }
+dora-node-api = { version = "0.1.0", path = "../../apis/rust/node" }
 eyre = "0.6.8"
 serde = { version = "1.0.136", features = ["derive"] }

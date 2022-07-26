@@ -1,6 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_common::descriptor::OperatorConfig;
+use dora_core::descriptor::OperatorConfig;
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer},
