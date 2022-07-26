@@ -1,4 +1,4 @@
-use super::{CoreNodeKind, CustomNode, OperatorConfig, ResolvedNode, RuntimeNode};
+use super::{CoreNodeKind, CustomNode, OperatorDefinition, ResolvedNode, RuntimeNode};
 use dora_node_api::config::{DataId, InputMapping, NodeId};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -44,14 +44,18 @@ fn visualize_custom_node(node_id: &NodeId, node: &CustomNode, flowchart: &mut St
     }
 }
 
-fn visualize_runtime_node(node_id: &NodeId, operators: &[OperatorConfig], flowchart: &mut String) {
+fn visualize_runtime_node(
+    node_id: &NodeId,
+    operators: &[OperatorDefinition],
+    flowchart: &mut String,
+) {
     writeln!(flowchart, "subgraph {node_id}").unwrap();
     for operator in operators {
         let operator_id = &operator.id;
-        if operator.inputs.is_empty() {
+        if operator.config.inputs.is_empty() {
             // source operator
             writeln!(flowchart, "  {node_id}/{operator_id}[\\{operator_id}/]").unwrap();
-        } else if operator.outputs.is_empty() {
+        } else if operator.config.outputs.is_empty() {
             // sink operator
             writeln!(flowchart, "  {node_id}/{operator_id}[/{operator_id}\\]").unwrap();
         } else {
@@ -80,7 +84,7 @@ fn visualize_node_inputs(
             for operator in operators {
                 visualize_inputs(
                     &format!("{node_id}/{}", operator.id),
-                    &operator.inputs,
+                    &operator.config.inputs,
                     flowchart,
                     nodes,
                 )
@@ -118,7 +122,7 @@ fn visualize_inputs(
                 }
                 (CoreNodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
                     if let Some(operator) = operators.iter().find(|o| &o.id == operator_id) {
-                        if operator.outputs.contains(output) {
+                        if operator.config.outputs.contains(output) {
                             let data = if output == input_id {
                                 format!("{output}")
                             } else {
