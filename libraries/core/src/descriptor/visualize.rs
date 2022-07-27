@@ -15,11 +15,49 @@ pub fn visualize_nodes(nodes: &[ResolvedNode]) -> String {
         all_nodes.insert(&node.id, node);
     }
 
+    let mut dora_timers = BTreeSet::new();
+    for node in nodes {
+        match &node.kind {
+            CoreNodeKind::Runtime(node) => {
+                for operator in &node.operators {
+                    collect_dora_nodes(operator.config.inputs.values(), &mut dora_timers);
+                }
+            }
+            CoreNodeKind::Custom(node) => {
+                collect_dora_nodes(node.run_config.inputs.values(), &mut dora_timers);
+            }
+        }
+    }
+    if !dora_timers.is_empty() {
+        writeln!(flowchart, "subgraph ___dora___ [dora]").unwrap();
+        writeln!(flowchart, "  subgraph ___timer_timer___ [timer]").unwrap();
+        for interval in dora_timers {
+            let duration = format_duration(interval);
+            writeln!(flowchart, "    dora/timer/{duration}[\\{duration}/]").unwrap();
+        }
+        flowchart.push_str("  end\n");
+        flowchart.push_str("end\n");
+    }
+
     for node in nodes {
         visualize_node_inputs(node, &mut flowchart, &all_nodes)
     }
 
     flowchart
+}
+
+fn collect_dora_nodes(
+    values: std::collections::btree_map::Values<DataId, InputMapping>,
+    dora_timers: &mut BTreeSet<Duration>,
+) {
+    for input in values {
+        match input {
+            InputMapping::User(_) => {}
+            InputMapping::Timer { interval } => {
+                dora_timers.insert(*interval);
+            }
+        }
+    }
 }
 
 fn visualize_node(node: &ResolvedNode, flowchart: &mut String) {
@@ -103,6 +141,12 @@ fn visualize_inputs(
     for (input_id, mapping) in inputs {
         match mapping {
             mapping @ InputMapping::Timer { .. } => {
+                writeln!(
+                    flowchart,
+                    "  {} -- {input_id} --> {target}",
+                    mapping.to_string()
+                )
+                .unwrap();
             }
             InputMapping::User(mapping) => {
                 visualize_user_mapping(mapping, target, nodes, input_id, flowchart)
