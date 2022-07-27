@@ -107,7 +107,7 @@ async fn main() -> eyre::Result<()> {
                     .ok_or_else(|| eyre!("received event from unknown operator {id}"))?;
                 match event {
                     OperatorEvent::Output { id: data_id, value } => {
-                        if !operator.config().config.outputs.contains(&data_id) {
+                        if !operator.definition().config.outputs.contains(&data_id) {
                             eyre::bail!("unknown output {data_id} for operator {id}");
                         }
                         publish(&node_id, id, data_id, &value, communication.as_ref())
