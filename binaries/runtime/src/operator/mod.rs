@@ -1,4 +1,4 @@
-use dora_core::descriptor::{OperatorConfig, OperatorSource};
+use dora_core::descriptor::{OperatorDefinition, OperatorSource};
 use dora_node_api::config::DataId;
 use eyre::{eyre, Context};
 use std::any::Any;
@@ -9,28 +9,31 @@ mod shared_lib;
 
 pub struct Operator {
     operator_task: Sender<OperatorInput>,
-    config: OperatorConfig,
+    definition: OperatorDefinition,
 }
 
 impl Operator {
     pub async fn init(
-        operator_config: OperatorConfig,
+        operator_definition: OperatorDefinition,
         events_tx: Sender<OperatorEvent>,
     ) -> eyre::Result<Self> {
         let (operator_task, operator_rx) = mpsc::channel(10);
 
-        match &operator_config.source {
+        match &operator_definition.config.source {
             OperatorSource::SharedLibrary(path) => {
                 shared_lib::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
                     format!(
                         "failed ot spawn shared library operator for {}",
-                        operator_config.id
+                        operator_definition.id
                     )
                 })?;
             }
             OperatorSource::Python(path) => {
                 python::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
-                    format!("failed ot spawn Python operator for {}", operator_config.id)
+                    format!(
+                        "failed ot spawn Python operator for {}",
+                        operator_definition.id
+                    )
                 })?;
             }
             OperatorSource::Wasm(path) => {
@@ -39,7 +42,7 @@ impl Operator {
         }
         Ok(Self {
             operator_task,
-            config: operator_config,
+            definition: operator_definition,
         })
     }
 
@@ -52,10 +55,10 @@ impl Operator {
             })
     }
 
-    /// Get a reference to the operator's config.
+    /// Get a reference to the operator's definition.
     #[must_use]
-    pub fn config(&self) -> &OperatorConfig {
-        &self.config
+    pub fn definition(&self) -> &OperatorDefinition {
+        &self.definition
     }
 }
 

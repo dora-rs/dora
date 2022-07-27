@@ -1,6 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_core::descriptor::OperatorConfig;
+use dora_core::descriptor::OperatorDefinition;
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer},
@@ -37,7 +37,7 @@ async fn main() -> eyre::Result<()> {
             .wrap_err("env variable DORA_COMMUNICATION_CONFIG must be set")?;
         serde_yaml::from_str(&raw).context("failed to deserialize communication config")?
     };
-    let operators: Vec<OperatorConfig> = {
+    let operators: Vec<OperatorDefinition> = {
         let raw =
             std::env::var("DORA_OPERATORS").wrap_err("env variable DORA_OPERATORS must be set")?;
         serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
@@ -107,7 +107,7 @@ async fn main() -> eyre::Result<()> {
                     .ok_or_else(|| eyre!("received event from unknown operator {id}"))?;
                 match event {
                     OperatorEvent::Output { id: data_id, value } => {
-                        if !operator.config().outputs.contains(&data_id) {
+                        if !operator.definition().config.outputs.contains(&data_id) {
                             eyre::bail!("unknown output {data_id} for operator {id}");
                         }
                         publish(&node_id, id, data_id, &value, communication.as_ref())
@@ -154,7 +154,7 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn subscribe<'a>(
-    operators: &'a [OperatorConfig],
+    operators: &'a [OperatorDefinition],
     communication: &'a dyn CommunicationLayer,
 ) -> eyre::Result<impl futures::Stream<Item = SubscribeEvent> + 'a> {
     let mut streams = Vec::new();
@@ -168,11 +168,11 @@ async fn subscribe<'a>(
 }
 
 async fn subscribe_operator<'a>(
-    operator: &'a OperatorConfig,
+    operator: &'a OperatorDefinition,
     communication: &'a dyn CommunicationLayer,
 ) -> Result<impl futures::Stream<Item = SubscribeEvent> + 'a, eyre::Error> {
     let stop_messages = FuturesUnordered::new();
-    for input in operator.inputs.values() {
+    for input in operator.config.inputs.values() {
         let InputMapping {
             source, operator, ..
         } = input;
@@ -189,7 +189,7 @@ async fn subscribe_operator<'a>(
     let finished = Box::pin(stop_messages.all(|_| async { true }).shared());
 
     let mut streams = Vec::new();
-    for (input, mapping) in &operator.inputs {
+    for (input, mapping) in &operator.config.inputs {
         let InputMapping {
             source,
             operator: source_operator,
