@@ -4,7 +4,7 @@ use dora_core::descriptor::OperatorDefinition;
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer},
-    config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
+    config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId, UserInputMapping},
     STOP_TOPIC,
 };
 use eyre::{bail, eyre, Context};
@@ -172,8 +172,11 @@ async fn subscribe_operator<'a>(
     communication: &'a dyn CommunicationLayer,
 ) -> Result<impl futures::Stream<Item = SubscribeEvent> + 'a, eyre::Error> {
     let stop_messages = FuturesUnordered::new();
-    for input in operator.config.inputs.values() {
-        let InputMapping {
+    for input in operator.config.inputs.values().filter_map(|m| match m {
+        InputMapping::Timer { .. } => None,
+        InputMapping::User(m) => Some(m),
+    }) {
+        let UserInputMapping {
             source, operator, ..
         } = input;
         let topic = match operator {
@@ -190,15 +193,7 @@ async fn subscribe_operator<'a>(
 
     let mut streams = Vec::new();
     for (input, mapping) in &operator.config.inputs {
-        let InputMapping {
-            source,
-            operator: source_operator,
-            output,
-        } = mapping;
-        let topic = match source_operator {
-            Some(operator) => format!("{source}/{operator}/{output}"),
-            None => format!("{source}/{output}"),
-        };
+        let topic = mapping.to_string();
         let sub = communication
             .subscribe(&topic)
             .await

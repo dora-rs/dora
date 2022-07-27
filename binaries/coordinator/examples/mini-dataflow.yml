@@ -63,5 +63,6 @@ nodes:
       python: ../runtime/examples/python-operator/op.py
       inputs:
         time: timer/time
+        dora_time: dora/timer/secs/5
       outputs:
         - counter

@@ -1,8 +1,9 @@
 use super::{CoreNodeKind, CustomNode, OperatorDefinition, ResolvedNode, RuntimeNode};
-use dora_node_api::config::{DataId, InputMapping, NodeId};
+use dora_node_api::config::{format_duration, DataId, InputMapping, NodeId, UserInputMapping};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write as _,
+    time::Duration,
 };
 
 pub fn visualize_nodes(nodes: &[ResolvedNode]) -> String {
@@ -100,46 +101,60 @@ fn visualize_inputs(
     nodes: &HashMap<&NodeId, &ResolvedNode>,
 ) {
     for (input_id, mapping) in inputs {
-        let InputMapping {
-            source,
-            operator,
-            output,
-        } = mapping;
+        match mapping {
+            mapping @ InputMapping::Timer { .. } => {
+            }
+            InputMapping::User(mapping) => {
+                visualize_user_mapping(mapping, target, nodes, input_id, flowchart)
+            }
+        }
+    }
+}
 
-        let mut source_found = false;
-        if let Some(source_node) = nodes.get(source) {
-            match (&source_node.kind, operator) {
-                (CoreNodeKind::Custom(custom_node), None) => {
-                    if custom_node.run_config.outputs.contains(output) {
+fn visualize_user_mapping(
+    mapping: &UserInputMapping,
+    target: &str,
+    nodes: &HashMap<&NodeId, &ResolvedNode>,
+    input_id: &DataId,
+    flowchart: &mut String,
+) {
+    let UserInputMapping {
+        source,
+        operator,
+        output,
+    } = mapping;
+    let mut source_found = false;
+    if let Some(source_node) = nodes.get(source) {
+        match (&source_node.kind, operator) {
+            (CoreNodeKind::Custom(custom_node), None) => {
+                if custom_node.run_config.outputs.contains(output) {
+                    let data = if output == input_id {
+                        format!("{output}")
+                    } else {
+                        format!("{output} as {input_id}")
+                    };
+                    writeln!(flowchart, "  {source} -- {data} --> {target}").unwrap();
+                    source_found = true;
+                }
+            }
+            (CoreNodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
+                if let Some(operator) = operators.iter().find(|o| &o.id == operator_id) {
+                    if operator.config.outputs.contains(output) {
                         let data = if output == input_id {
                             format!("{output}")
                         } else {
                             format!("{output} as {input_id}")
                         };
-                        writeln!(flowchart, "  {source} -- {data} --> {target}").unwrap();
+                        writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}")
+                            .unwrap();
                         source_found = true;
                     }
                 }
-                (CoreNodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
-                    if let Some(operator) = operators.iter().find(|o| &o.id == operator_id) {
-                        if operator.config.outputs.contains(output) {
-                            let data = if output == input_id {
-                                format!("{output}")
-                            } else {
-                                format!("{output} as {input_id}")
-                            };
-                            writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}")
-                                .unwrap();
-                            source_found = true;
-                        }
-                    }
-                }
-                (CoreNodeKind::Custom(_), Some(_)) | (CoreNodeKind::Runtime(_), None) => {}
             }
+            (CoreNodeKind::Custom(_), Some(_)) | (CoreNodeKind::Runtime(_), None) => {}
         }
-
-        if !source_found {
-            writeln!(flowchart, "  missing>missing] -- {input_id} --> {target}").unwrap();
-        }
+    }
+    if !source_found {
+        writeln!(flowchart, "  missing>missing] -- {input_id} --> {target}").unwrap();
     }
 }
