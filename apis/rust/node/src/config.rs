@@ -1,9 +1,11 @@
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     fmt::Write as _,
     str::FromStr,
+    time::Duration,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,11 +86,54 @@ impl std::ops::Deref for DataId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InputMapping {
-    pub source: NodeId,
-    pub operator: Option<OperatorId>,
-    pub output: DataId,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InputMapping {
+    Timer { interval: Duration },
+    User(UserInputMapping),
+}
+
+impl InputMapping {
+    pub fn source(&self) -> &NodeId {
+        static DORA_NODE_ID: OnceCell<NodeId> = OnceCell::new();
+
+        match self {
+            InputMapping::User(mapping) => &mapping.source,
+            InputMapping::Timer { .. } => DORA_NODE_ID.get_or_init(|| NodeId("dora".to_string())),
+        }
+    }
+
+    pub fn operator(&self) -> &Option<OperatorId> {
+        match self {
+            InputMapping::User(mapping) => &mapping.operator,
+            InputMapping::Timer { .. } => &None,
+        }
+    }
+}
+
+impl ToString for InputMapping {
+    fn to_string(&self) -> String {
+        match self {
+            InputMapping::Timer { interval } => {
+                let duration = format_duration(*interval);
+                format!("dora/timer/{duration}")
+            }
+            InputMapping::User(mapping) => {
+                if let Some(operator) = &mapping.operator {
+                    format!("{}/{operator}/{}", mapping.source, mapping.output)
+                } else {
+                    format!("{}/{}", mapping.source, mapping.output)
+                }
+            }
+        }
+    }
+}
+
+pub fn format_duration(interval: Duration) -> String {
+    if interval.subsec_millis() == 0 {
+        format!("secs/{}", interval.as_secs())
+    } else {
+        format!("millis/{}", interval.as_millis())
+    }
 }
 
 impl Serialize for InputMapping {
@@ -96,11 +141,7 @@ impl Serialize for InputMapping {
     where
         S: serde::Serializer,
     {
-        if let Some(operator) = &self.operator {
-            serializer.collect_str(&format_args!("{}/{operator}/{}", self.source, self.output))
-        } else {
-            serializer.collect_str(&format_args!("{}/{}", self.source, self.output))
-        }
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -119,12 +160,66 @@ impl<'de> Deserialize<'de> for InputMapping {
             .map(|(op, out)| (Some(op), out))
             .unwrap_or((None, rest));
 
-        Ok(Self {
-            source: source.to_owned().into(),
-            operator: operator.map(|o| o.to_owned().into()),
-            output: output.to_owned().into(),
-        })
+        let deserialized = match source {
+            "dora" => match operator {
+                Some("timer") => {
+                    let (unit, value) = output.split_once('/').ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "timer input must specify unit and value (e.g. `secs/5` or `millis/100`)",
+                        )
+                    })?;
+                    let interval = match unit {
+                        "secs" => {
+                            let value = value.parse().map_err(|_| {
+                                serde::de::Error::custom(format!(
+                                    "secs must be an integer (got `{value}`)"
+                                ))
+                            })?;
+                            Duration::from_secs(value)
+                        }
+                        "millis" => {
+                            let value = value.parse().map_err(|_| {
+                                serde::de::Error::custom(format!(
+                                    "millis must be an integer (got `{value}`)"
+                                ))
+                            })?;
+                            Duration::from_millis(value)
+                        }
+                        other => {
+                            return Err(serde::de::Error::custom(format!(
+                                "timer unit must be either secs or millis (got `{other}`"
+                            )))
+                        }
+                    };
+                    Self::Timer { interval }
+                }
+                Some(other) => {
+                    return Err(serde::de::Error::custom(format!(
+                        "unknown dora input `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(serde::de::Error::custom(format!(
+                        "dora input has invalid format"
+                    )))
+                }
+            },
+            _ => Self::User(UserInputMapping {
+                source: source.to_owned().into(),
+                operator: operator.map(|o| o.to_owned().into()),
+                output: output.to_owned().into(),
+            }),
+        };
+
+        Ok(deserialized)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UserInputMapping {
+    pub source: NodeId,
+    pub operator: Option<OperatorId>,
+    pub output: DataId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
