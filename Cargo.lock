@@ -697,6 +697,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-node-api-python"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "pyo3",
+]
+
+[[package]]
 name = "dora-operator-api"
 version = "0.1.0"
 dependencies = [
@@ -748,7 +756,6 @@ version = "0.1.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-jaeger",
- "tokio",
 ]
 
 [[package]]
