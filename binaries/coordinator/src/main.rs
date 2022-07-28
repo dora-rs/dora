@@ -1,8 +1,12 @@
-use dora_core::descriptor::{self, CoreNodeKind, Descriptor};
-use dora_node_api::config::NodeId;
+use dora_core::descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor};
+use dora_node_api::{
+    communication,
+    config::{format_duration, NodeId},
+};
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::path::{Path, PathBuf};
+use tokio_stream::wrappers::IntervalStream;
 
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora coordinator")]
@@ -57,6 +61,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
     })?;
 
     let nodes = descriptor.resolve_aliases();
+    let dora_timers = collect_dora_timers(&nodes);
     let mut communication = descriptor.communication;
 
     if nodes
@@ -92,6 +97,28 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
                 }
             }
         }
+    }
+
+    for interval in dora_timers {
+        let communication = communication.clone();
+        let task = tokio::spawn(async move {
+            let communication = communication::init(&communication)
+                .await
+                .wrap_err("failed to init communication layer")?;
+            let topic = {
+                let duration = format_duration(interval);
+                format!("dora/timer/{duration}")
+            };
+            let mut stream = IntervalStream::new(tokio::time::interval(interval));
+            while let Some(_) = stream.next().await {
+                let publish = communication.publish(&topic, &[]);
+                publish
+                    .await
+                    .wrap_err("failed to publish timer tick message")?;
+            }
+            Ok(())
+        });
+        tasks.push(task);
     }
 
     while let Some(task_result) = tasks.next().await {

@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
 };
+pub use visualize::collect_dora_timers;
 
 mod visualize;
 
