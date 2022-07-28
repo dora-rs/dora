@@ -211,16 +211,15 @@ async fn subscribe_operator<'a>(
                 data,
             })
             .map(SubscribeEvent::Input)
-            .take_until(finished.clone())
-            .chain(stream::once(async {
-                SubscribeEvent::InputsStopped {
-                    target_operator: operator.id.clone(),
-                }
-            }));
+            .take_until(finished.clone());
         streams.push(stream);
     }
 
-    Ok(streams.merge())
+    Ok(streams.merge().chain(stream::once(async {
+        SubscribeEvent::InputsStopped {
+            target_operator: operator.id.clone(),
+        }
+    })))
 }
 
 async fn publish(
