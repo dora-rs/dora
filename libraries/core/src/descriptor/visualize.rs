@@ -15,19 +15,7 @@ pub fn visualize_nodes(nodes: &[ResolvedNode]) -> String {
         all_nodes.insert(&node.id, node);
     }
 
-    let mut dora_timers = BTreeSet::new();
-    for node in nodes {
-        match &node.kind {
-            CoreNodeKind::Runtime(node) => {
-                for operator in &node.operators {
-                    collect_dora_nodes(operator.config.inputs.values(), &mut dora_timers);
-                }
-            }
-            CoreNodeKind::Custom(node) => {
-                collect_dora_nodes(node.run_config.inputs.values(), &mut dora_timers);
-            }
-        }
-    }
+    let dora_timers = collect_dora_timers(nodes);
     if !dora_timers.is_empty() {
         writeln!(flowchart, "subgraph ___dora___ [dora]").unwrap();
         writeln!(flowchart, "  subgraph ___timer_timer___ [timer]").unwrap();
@@ -44,6 +32,23 @@ pub fn visualize_nodes(nodes: &[ResolvedNode]) -> String {
     }
 
     flowchart
+}
+
+pub fn collect_dora_timers(nodes: &[ResolvedNode]) -> BTreeSet<Duration> {
+    let mut dora_timers = BTreeSet::new();
+    for node in nodes {
+        match &node.kind {
+            CoreNodeKind::Runtime(node) => {
+                for operator in &node.operators {
+                    collect_dora_nodes(operator.config.inputs.values(), &mut dora_timers);
+                }
+            }
+            CoreNodeKind::Custom(node) => {
+                collect_dora_nodes(node.run_config.inputs.values(), &mut dora_timers);
+            }
+        }
+    }
+    dora_timers
 }
 
 fn collect_dora_nodes(

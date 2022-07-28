@@ -222,7 +222,7 @@ pub struct UserInputMapping {
     pub output: DataId,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
 pub enum CommunicationConfig {
     Zenoh {
