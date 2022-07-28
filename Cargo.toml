@@ -4,6 +4,7 @@ members = [
   "apis/rust/operator",
   "apis/rust/operator/macros",
   "apis/python/binding",
+  "apis/python/node",
   "binaries/coordinator",
   "binaries/runtime",
   "libraries/extensions/message",
