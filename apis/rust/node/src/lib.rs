@@ -14,7 +14,7 @@ pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
-    communication: Box<dyn CommunicationLayer>,
+    communication: Box<dyn CommunicationLayer + Send>,
 }
 
 impl DoraNode {
@@ -138,6 +138,7 @@ impl Drop for DoraNode {
     }
 }
 
+#[derive(Debug)]
 pub struct Input {
     pub id: DataId,
     pub data: Vec<u8>,

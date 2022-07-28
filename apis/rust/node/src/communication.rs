@@ -12,7 +12,7 @@ use crate::{config::CommunicationConfig, BoxError};
 
 pub async fn init(
     communication_config: &CommunicationConfig,
-) -> eyre::Result<Box<dyn CommunicationLayer>> {
+) -> eyre::Result<Box<dyn CommunicationLayer + Send>> {
     match communication_config {
         CommunicationConfig::Zenoh {
             config: zenoh_config,
