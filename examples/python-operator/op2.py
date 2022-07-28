@@ -34,4 +34,7 @@ class Operator:
         send_output("counter", (self.counter % 256).to_bytes(1, "little"))
         self.counter = self.counter + 1
 
-        return DoraStatus.OK
+        if self.counter > 500:
+            return DoraStatus.STOP
+        else:
+            return DoraStatus.OK

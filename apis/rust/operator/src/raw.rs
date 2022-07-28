@@ -45,7 +45,7 @@ pub unsafe fn dora_on_input<O: DoraOperator>(
     let operator: &mut O = unsafe { &mut *operator_context.cast() };
 
     match operator.on_input(id, data, &mut output_sender) {
-        Ok(()) => 0,
+        Ok(status) => status as isize,
         Err(_) => -1,
     }
 }
