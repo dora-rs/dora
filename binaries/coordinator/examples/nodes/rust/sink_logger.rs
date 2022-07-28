@@ -12,7 +12,7 @@ async fn main() -> eyre::Result<()> {
     let mut last_timestamp = None;
 
     loop {
-        let timeout = Duration::from_secs(2);
+        let timeout = Duration::from_secs(5);
         let input = match tokio::time::timeout(timeout, inputs.next()).await {
             Ok(Some(input)) => input,
             Ok(None) => break,
