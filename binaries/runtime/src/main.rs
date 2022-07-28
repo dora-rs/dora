@@ -15,7 +15,7 @@ use futures::{
 use futures_concurrency::Merge;
 use operator::{Operator, OperatorEvent};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     mem,
     pin::Pin,
 };
@@ -45,6 +45,7 @@ async fn main() -> eyre::Result<()> {
     };
 
     let mut operator_map = BTreeMap::new();
+    let mut stopped_operators = BTreeSet::new();
     let mut operator_events = StreamMap::new();
     let mut operator_events_tx = HashMap::new();
     for operator_config in &operators {
@@ -72,15 +73,19 @@ async fn main() -> eyre::Result<()> {
         match event {
             Event::External(event) => match event {
                 SubscribeEvent::Input(input) => {
-                    let operator =
-                        operator_map
-                            .get_mut(&input.target_operator)
-                            .ok_or_else(|| {
-                                eyre!(
+                    let operator = match operator_map.get_mut(&input.target_operator) {
+                        Some(op) => op,
+                        None => {
+                            if stopped_operators.contains(&input.target_operator) {
+                                continue; // operator was stopped already -> ignore input
+                            } else {
+                                bail!(
                                     "received input for unexpected operator `{}`",
                                     input.target_operator
-                                )
-                            })?;
+                                );
+                            }
+                        }
+                    };
 
                     operator
                         .handle_input(input.id.clone(), input.data)
@@ -92,14 +97,18 @@ async fn main() -> eyre::Result<()> {
                         })?;
                 }
                 SubscribeEvent::InputsStopped { target_operator } => {
-                    let events_tx = operator_events_tx.get(&target_operator).ok_or_else(|| {
-                        eyre!("failed to get events_tx for operator {target_operator}")
-                    })?;
-
-                    let events_tx = events_tx.clone();
-                    tokio::spawn(async move {
-                        let _ = events_tx.send(OperatorEvent::EndOfInput).await;
-                    });
+                    println!("all inputs finished for operator {node_id}/{target_operator}");
+                    match operator_map.get_mut(&target_operator) {
+                        Some(op) => op.close_input_stream(),
+                        None => {
+                            if !stopped_operators.contains(&target_operator) {
+                                bail!(
+                                    "received InputsStopped event for unknown operator `{}`",
+                                    target_operator
+                                );
+                            }
+                        }
+                    }
                 }
             },
             Event::Operator { id, event } => {
@@ -119,9 +128,10 @@ async fn main() -> eyre::Result<()> {
                         bail!(err.wrap_err(format!("operator {id} failed")))
                     }
                     OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
-                    OperatorEvent::EndOfInput => {
+                    OperatorEvent::Finished => {
                         if operator_map.remove(&id).is_some() {
                             println!("operator {node_id}/{id} finished");
+                            stopped_operators.insert(id.clone());
                             // send stopped message
                             publish(
                                 &node_id,
