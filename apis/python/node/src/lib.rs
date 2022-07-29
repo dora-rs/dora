@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 #[pyclass]
-pub struct PyDoraNode {
+pub struct Node {
     id: NodeId,
     pub rx_input: Receiver<Input>,
     pub tx_output: Sender<(String, Vec<u8>)>,
@@ -25,7 +25,7 @@ impl IntoPy<PyObject> for PyInput {
 }
 
 #[pymethods]
-impl PyDoraNode {
+impl Node {
     #[new]
     pub fn new() -> Result<Self> {
         let id = {
@@ -70,7 +70,7 @@ impl PyDoraNode {
             })
         });
 
-        Ok(PyDoraNode {
+        Ok(Node {
             id,
             rx_input,
             tx_output,
@@ -103,6 +103,6 @@ impl PyDoraNode {
 
 #[pymodule]
 fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_class::<PyDoraNode>().unwrap();
+    m.add_class::<Node>().unwrap();
     Ok(())
 }
