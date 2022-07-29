@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::thread;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
+
 #[pyclass]
-// #[repr(transparent)]
 pub struct PyDoraNode {
     // pub node: DoraNode,
     pub rx_input: Receiver<Input>,
@@ -28,8 +28,8 @@ impl IntoPy<PyObject> for PyInput {
 impl PyDoraNode {
     #[staticmethod]
     pub fn init_from_env() -> Self {
-        let (tx_input, rx_input) = mpsc::channel(10);
-        let (tx_output, mut rx_output) = mpsc::channel::<(String, Vec<u8>)>(10);
+        let (tx_input, rx_input) = mpsc::channel(1);
+        let (tx_output, mut rx_output) = mpsc::channel::<(String, Vec<u8>)>(1);
 
         // Dispatching a tokio threadpool enables us to conveniently use Dora Future stream
         // through tokio channel.
@@ -41,18 +41,14 @@ impl PyDoraNode {
                 let _node = node.clone();
                 let receive_handle = tokio::spawn(async move {
                     let mut inputs = _node.inputs().await.unwrap();
-                    loop {
-                        if let Some(input) = inputs.next().await {
-                            tx_input.send(input).await.unwrap()
-                        };
+                    while let Some(input) = inputs.next().await {
+                        tx_input.send(input).await.unwrap()
                     }
                 });
                 let send_handle = tokio::spawn(async move {
-                    loop {
-                        if let Some((output_str, data)) = rx_output.recv().await {
-                            let output_id = DataId::from(output_str);
-                            node.send_output(&output_id, data.as_slice()).await.unwrap()
-                        };
+                    while let Some((output_str, data)) = rx_output.recv().await {
+                        let output_id = DataId::from(output_str);
+                        node.send_output(&output_id, data.as_slice()).await.unwrap()
                     }
                 });
                 let (_, _) = tokio::join!(receive_handle, send_handle);
@@ -70,11 +66,7 @@ impl PyDoraNode {
     }
 
     pub fn __next__(&mut self) -> PyResult<Option<PyInput>> {
-        if let Some(input) = self.rx_input.blocking_recv() {
-            Ok(Some(PyInput(input)))
-        } else {
-            Ok(None)
-        }
+        Ok(self.rx_input.blocking_recv().map(PyInput))
     }
 
     pub fn send_output(&self, output_str: String, data: Vec<u8>) -> () {
@@ -85,7 +77,6 @@ impl PyDoraNode {
     }
 }
 
-/// This module is implemented in Rust.
 #[pymodule]
 fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyDoraNode>().unwrap();
