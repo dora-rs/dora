@@ -1,8 +1,8 @@
 import time
 
-from dora import PyDoraNode
+from dora import Node
 
-node = PyDoraNode()
+node = Node()
 
 for i in range(100):
     node.send_output("string", b"Hello World")
