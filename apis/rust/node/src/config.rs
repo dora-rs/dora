@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
-    fmt::Write as _,
+    fmt::{self, Write as _},
     str::FromStr,
     time::Duration,
 };
@@ -110,30 +110,38 @@ impl InputMapping {
     }
 }
 
-impl ToString for InputMapping {
-    fn to_string(&self) -> String {
+impl fmt::Display for InputMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InputMapping::Timer { interval } => {
                 let duration = format_duration(*interval);
-                format!("dora/timer/{duration}")
+                write!(f, "dora/timer/{duration}")
             }
             InputMapping::User(mapping) => {
                 if let Some(operator) = &mapping.operator {
-                    format!("{}/{operator}/{}", mapping.source, mapping.output)
+                    write!(f, "{}/{operator}/{}", mapping.source, mapping.output)
                 } else {
-                    format!("{}/{}", mapping.source, mapping.output)
+                    write!(f, "{}/{}", mapping.source, mapping.output)
                 }
             }
         }
     }
 }
 
-pub fn format_duration(interval: Duration) -> String {
-    if interval.subsec_millis() == 0 {
-        format!("secs/{}", interval.as_secs())
-    } else {
-        format!("millis/{}", interval.as_millis())
+pub struct FormattedDuration(pub Duration);
+
+impl fmt::Display for FormattedDuration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.subsec_millis() == 0 {
+            write!(f, "secs/{}", self.0.as_secs())
+        } else {
+            write!(f, "millis/{}", self.0.as_millis())
+        }
     }
+}
+
+pub fn format_duration(interval: Duration) -> FormattedDuration {
+    FormattedDuration(interval)
 }
 
 impl Serialize for InputMapping {
@@ -141,7 +149,7 @@ impl Serialize for InputMapping {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.collect_str(self)
     }
 }
 
