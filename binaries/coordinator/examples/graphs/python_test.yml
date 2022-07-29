@@ -1,0 +1,29 @@
+communication:
+  zenoh:
+    prefix: /foo
+
+nodes:
+  - id: static-string
+    custom:
+      run: python examples/nodes/python/static_string.py
+      outputs:
+        - string
+
+  - id: python-printer
+    custom:
+      run: python examples/nodes/python/printer.py
+      inputs:
+          time: static-string/string
+          time2: rust-timer/time
+  
+  - id: rust-timer
+    custom:
+      run: cargo run --example source_timer 
+      outputs:
+          - time
+
+  - id: rust-logger
+    custom:
+      run: cargo run --example sink_logger 
+      inputs:
+          time: static-string/string
