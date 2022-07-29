@@ -701,7 +701,11 @@ name = "dora-node-api-python"
 version = "0.1.0"
 dependencies = [
  "dora-node-api",
+ "eyre",
+ "futures",
  "pyo3",
+ "serde_yaml",
+ "tokio",
 ]
 
 [[package]]
@@ -756,6 +760,7 @@ version = "0.1.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-jaeger",
+ "tokio",
 ]
 
 [[package]]

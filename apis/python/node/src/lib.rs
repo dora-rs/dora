@@ -69,6 +69,10 @@ impl PyDoraNode {
         Ok(self.rx_input.blocking_recv().map(PyInput))
     }
 
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
     pub fn send_output(&self, output_str: String, data: Vec<u8>) -> () {
         self.tx_output
             .blocking_send((output_str, data))
