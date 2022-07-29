@@ -8,3 +8,13 @@ edition = "2021"
 [dependencies]
 dora-node-api = { path = "../../rust/node" }
 pyo3 = "0.16"
+eyre = "0.6"
+pollster = "0.2"
+futures = "0.3.21"
+tokio = { version = "1.17.0", features = ["rt", "sync", "macros"] }
+serde_yaml = "0.8.23"
+
+
+[lib]
+name = "dora"
+crate-type = ["cdylib"]
