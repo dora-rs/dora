@@ -726,14 +726,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-python-binding"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "pyo3",
-]
-
-[[package]]
 name = "dora-runtime"
 version = "0.1.0"
 dependencies = [
