@@ -17,10 +17,12 @@ jobs:
           sudo apt-get install -y capnproto libcapnp-dev
       - name: "Check"
         run: cargo check --all
-      - name: "Build"
-        run: cargo build --all
+      - name: "Build" 
+        # Has to use `--no-default-features` to avoid crash. 
+        # See: https://pyo3.rs/latest/faq.html#i-cant-run-cargo-test-im-having-linker-issues-like-symbol-not-found-or-undefined-reference-to-_pyexc_systemerror
+        run: cargo build --all --no-default-features
       - name: "Test"
-        run: cargo test --all
+        run: cargo test --all --no-default-features
 
   clippy:
     name: "Clippy"
