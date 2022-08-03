@@ -89,10 +89,10 @@ impl Node {
         slf
     }
 
-    pub fn send_output(&self, output_str: String, data: Vec<u8>) -> Result<()> {
+    pub fn send_output(&self, output_str: String, data: &PyBytes) -> Result<()> {
         Ok(self
             .tx_output
-            .blocking_send((output_str, data))
+            .blocking_send((output_str, data.as_bytes().to_vec()))
             .wrap_err("Could not send output")?)
     }
 
