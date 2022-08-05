@@ -10,4 +10,5 @@ crate-type = ["staticlib"]
 
 [dependencies]
 dora-node-api = { path = "../../rust/node" }
+eyre = "0.6.8"
 futures = "0.3.21"
