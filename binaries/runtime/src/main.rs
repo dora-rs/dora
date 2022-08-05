@@ -4,19 +4,20 @@ use dora_core::descriptor::OperatorDefinition;
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer},
-    config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
+    config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId, UserInputMapping},
     STOP_TOPIC,
 };
 use eyre::{bail, eyre, Context};
 use futures::{
     stream::{self, FuturesUnordered},
-    FutureExt, StreamExt,
+    Future, FutureExt, StreamExt,
 };
 use futures_concurrency::Merge;
 use operator::{Operator, OperatorEvent};
 use std::{
     collections::{BTreeMap, HashMap},
     mem,
+    pin::Pin,
 };
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamMap};
@@ -171,34 +172,34 @@ async fn subscribe_operator<'a>(
     operator: &'a OperatorDefinition,
     communication: &'a dyn CommunicationLayer,
 ) -> Result<impl futures::Stream<Item = SubscribeEvent> + 'a, eyre::Error> {
-    let stop_messages = FuturesUnordered::new();
-    for input in operator.config.inputs.values() {
-        let InputMapping {
-            source, operator, ..
-        } = input;
-        let topic = match operator {
-            Some(operator) => format!("{source}/{operator}/{STOP_TOPIC}"),
-            None => format!("{source}/{STOP_TOPIC}"),
-        };
-        let sub = communication
-            .subscribe(&topic)
-            .await
-            .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-        stop_messages.push(sub.into_future());
+    let stop_messages: FuturesUnordered<Pin<Box<dyn Future<Output = ()>>>> =
+        FuturesUnordered::new();
+    for mapping in operator.config.inputs.values() {
+        match mapping {
+            InputMapping::User(UserInputMapping {
+                source, operator, ..
+            }) => {
+                let topic = match operator {
+                    Some(operator) => format!("{source}/{operator}/{STOP_TOPIC}"),
+                    None => format!("{source}/{STOP_TOPIC}"),
+                };
+                let sub = communication
+                    .subscribe(&topic)
+                    .await
+                    .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+                stop_messages.push(Box::pin(sub.into_future().map(|_| ())));
+            }
+            InputMapping::Timer { .. } => {
+                // dora timer inputs run forever
+                stop_messages.push(Box::pin(futures::future::pending()));
+            }
+        }
     }
-    let finished = Box::pin(stop_messages.all(|_| async { true }).shared());
+    let finished = Box::pin(stop_messages.all(|()| async { true }).shared());
 
     let mut streams = Vec::new();
     for (input, mapping) in &operator.config.inputs {
-        let InputMapping {
-            source,
-            operator: source_operator,
-            output,
-        } = mapping;
-        let topic = match source_operator {
-            Some(operator) => format!("{source}/{operator}/{output}"),
-            None => format!("{source}/{output}"),
-        };
+        let topic = mapping.to_string();
         let sub = communication
             .subscribe(&topic)
             .await
@@ -210,16 +211,15 @@ async fn subscribe_operator<'a>(
                 data,
             })
             .map(SubscribeEvent::Input)
-            .take_until(finished.clone())
-            .chain(stream::once(async {
-                SubscribeEvent::InputsStopped {
-                    target_operator: operator.id.clone(),
-                }
-            }));
+            .take_until(finished.clone());
         streams.push(stream);
     }
 
-    Ok(streams.merge())
+    Ok(streams.merge().chain(stream::once(async {
+        SubscribeEvent::InputsStopped {
+            target_operator: operator.id.clone(),
+        }
+    })))
 }
 
 async fn publish(

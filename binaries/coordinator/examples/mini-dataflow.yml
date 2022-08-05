@@ -38,20 +38,20 @@ nodes:
   - id: runtime-node
     operators:
       - id: op-1
-        shared-library: ../target/release/libexample_operator.so
+        shared-library: ../../target/release/libexample_operator.so
         inputs:
           random: random/number
           time: timer/time
         outputs:
           - timestamped-random
       - id: op-2
-        shared-library: ../runtime/examples/c-operator/operator.so
+        shared-library: ../../examples/c-operator/operator.so
         inputs:
           time: timer/time
         outputs:
           - counter
       - id: op-3
-        python: ../runtime/examples/python-operator/op.py
+        python: ../../examples/python-operator/op.py
         inputs:
           time: timer/time
           test: python-operator/counter
@@ -60,8 +60,9 @@ nodes:
 
   - id: python-operator
     operator:
-      python: ../runtime/examples/python-operator/op.py
+      python: ../../examples/python-operator/op.py
       inputs:
         time: timer/time
+        dora_time: dora/timer/millis/500
       outputs:
         - counter
