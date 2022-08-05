@@ -31,12 +31,12 @@ There are drawbacks too, for example:
 ```bash
 cargo build -p dora-runtime --release
 cargo build -p dora-coordinator --examples --release
-cargo build --manifest-path ../runtime/examples/example-operator/Cargo.toml --release
+cargo build --manifest-path ../examples/example-operator/Cargo.toml --release
 ```
 - Compile the C example operator through:
 ```bash
-cd ../runtime/examples/c-operator
-cp ../../../apis/c/operator/api.h .
+cd ../../examples/c-operator
+cp ../../apis/c/operator/api.h .
 clang -c operator.c
 clang -shared -v operator.o -o operator.so
 ```

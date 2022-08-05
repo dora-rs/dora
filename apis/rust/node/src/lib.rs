@@ -52,19 +52,8 @@ impl DoraNode {
 
     pub async fn inputs(&self) -> eyre::Result<impl futures::Stream<Item = Input> + '_> {
         let mut streams = Vec::new();
-        for (
-            input,
-            config::InputMapping {
-                source,
-                operator,
-                output,
-            },
-        ) in &self.node_config.inputs
-        {
-            let topic = match operator {
-                Some(operator) => format!("{source}/{operator}/{output}"),
-                None => format!("{source}/{output}"),
-            };
+        for (input, mapping) in &self.node_config.inputs {
+            let topic = mapping.to_string();
             let sub = self
                 .communication
                 .subscribe(&topic)
@@ -81,7 +70,7 @@ impl DoraNode {
             .node_config
             .inputs
             .values()
-            .map(|v| (&v.source, &v.operator))
+            .map(|v| (v.source(), v.operator()))
             .collect();
         for (source, operator) in &sources {
             let topic = match operator {
