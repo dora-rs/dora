@@ -3,7 +3,6 @@ from enum import Enum
 
 class DoraStatus(Enum):
     OK = 0
-    ERR = -1
     STOP = 1
 
 class Operator:
