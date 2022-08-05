@@ -8,6 +8,18 @@ use std::{
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 
+fn traceback(err: pyo3::PyErr) -> eyre::Report {
+    Python::with_gil(|py| {
+        eyre::Report::msg(format!(
+            "{}\n{err}",
+            err.traceback(py)
+                .expect("PyError should have a traceback")
+                .format()
+                .expect("Traceback could not be formatted")
+        ))
+    })
+}
+
 pub fn spawn(
     path: &Path,
     events_tx: Sender<OperatorEvent>,
@@ -47,14 +59,7 @@ pub fn spawn(
             .ok_or_else(|| eyre!("module path has no file stem"))?
             .to_str()
             .ok_or_else(|| eyre!("module file stem is not valid utf8"))?;
-        let module = py.import(module_name).or_else(|err: pyo3::PyErr| {
-            let trace = err
-                .traceback(py)
-                .expect("PyError should have a traceback")
-                .format()
-                .wrap_err("Traceback could not be formatted")?;
-            Err(eyre!("{trace}"))
-        })?;
+        let module = py.import(module_name).map_err(traceback)?;
         let operator_class = module
             .getattr("Operator")
             .wrap_err("no `Operator` class found in module")?;
@@ -62,14 +67,7 @@ pub fn spawn(
         let locals = [("Operator", operator_class)].into_py_dict(py);
         let operator = py
             .eval("Operator()", None, Some(locals))
-            .or_else(|err: pyo3::PyErr| {
-                let trace = err
-                    .traceback(py)
-                    .expect("PyError should have a traceback")
-                    .format()
-                    .wrap_err("Traceback could not be formatted")?;
-                Err(eyre!("{trace}"))
-            })?;
+            .map_err(traceback)?;
         Result::<_, eyre::Report>::Ok(Py::from(operator))
     };
 
@@ -89,14 +87,7 @@ pub fn spawn(
                             send_output.clone(),
                         ),
                     )
-                    .or_else(|err: pyo3::PyErr| {
-                        let trace = err
-                            .traceback(py)
-                            .expect("PyError should have a traceback")
-                            .format()
-                            .wrap_err("Traceback could not be formatted")?;
-                        Err(eyre!("{trace}"))
-                    })
+                    .map_err(traceback)
             })?;
         }
 
