@@ -79,9 +79,8 @@ pub fn spawn(
             let status: i32 = Python::with_gil(|py| status_val.extract(py))
                 .wrap_err("on_input has invalid return value")?;
             match status {
-                0 => {}                                    // ok
-                1 => break,                                // stop
-                -1 => bail!("on_input returned an error"), // err
+                0 => {}     // ok
+                1 => break, // stop
                 other => bail!("on_input returned invalid status {other}"),
             }
         }
