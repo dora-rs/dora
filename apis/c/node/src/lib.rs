@@ -1,3 +1,5 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
 use dora_node_api::{DoraNode, Input};
 use futures::{executor::block_on, Stream, StreamExt};
 use std::{pin::Pin, ptr, slice};
@@ -25,7 +27,7 @@ pub extern "C" fn init_dora_context_from_env() -> *mut () {
     Box::into_raw(Box::new(context)).cast()
 }
 
-pub extern "C" fn free_dora_context(context: *mut ()) {
+pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
     // drop all fields except for `node`
     let DoraContext { node, .. } = *context;
@@ -33,7 +35,7 @@ pub extern "C" fn free_dora_context(context: *mut ()) {
     let _ = unsafe { Box::from_raw(node as *const DoraNode as *mut DoraNode) };
 }
 
-pub extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
+pub unsafe extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     match block_on(context.inputs.next()) {
         Some(input) => Box::into_raw(Box::new(input)).cast(),
@@ -41,7 +43,7 @@ pub extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
     }
 }
 
-pub extern "C" fn read_dora_input_id(
+pub unsafe extern "C" fn read_dora_input_id(
     input: *const (),
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -56,7 +58,7 @@ pub extern "C" fn read_dora_input_id(
     }
 }
 
-pub extern "C" fn read_dora_input_data(
+pub unsafe extern "C" fn read_dora_input_data(
     input: *const (),
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -71,18 +73,18 @@ pub extern "C" fn read_dora_input_data(
     }
 }
 
-pub extern "C" fn free_dora_input(input: *mut ()) {
+pub unsafe extern "C" fn free_dora_input(input: *mut ()) {
     let _: Box<Input> = unsafe { Box::from_raw(input.cast()) };
 }
 
-pub extern "C" fn dora_send_output(
+pub unsafe extern "C" fn dora_send_output(
     context: *mut (),
     id_ptr: *const u8,
     id_len: usize,
     data_ptr: *const u8,
     data_len: usize,
 ) -> isize {
-    match try_send_output(context, id_ptr, id_len, data_ptr, data_len) {
+    match unsafe { try_send_output(context, id_ptr, id_len, data_ptr, data_len) } {
         Ok(()) => 0,
         Err(err) => {
             eprintln!("{err:?}");
@@ -91,7 +93,7 @@ pub extern "C" fn dora_send_output(
     }
 }
 
-fn try_send_output(
+unsafe fn try_send_output(
     context: *mut (),
     id_ptr: *const u8,
     id_len: usize,
