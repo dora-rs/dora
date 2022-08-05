@@ -701,6 +701,7 @@ name = "dora-node-api-c"
 version = "0.1.0"
 dependencies = [
  "dora-node-api",
+ "eyre",
  "futures",
 ]
 
