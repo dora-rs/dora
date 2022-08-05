@@ -207,9 +207,9 @@ impl<'de> Deserialize<'de> for InputMapping {
                     )))
                 }
                 None => {
-                    return Err(serde::de::Error::custom(format!(
-                        "dora input has invalid format"
-                    )))
+                    return Err(serde::de::Error::custom(
+                        "dora input has invalid format".to_string(),
+                    ))
                 }
             },
             _ => Self::User(UserInputMapping {

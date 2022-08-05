@@ -146,12 +146,7 @@ fn visualize_inputs(
     for (input_id, mapping) in inputs {
         match mapping {
             mapping @ InputMapping::Timer { .. } => {
-                writeln!(
-                    flowchart,
-                    "  {} -- {input_id} --> {target}",
-                    mapping.to_string()
-                )
-                .unwrap();
+                writeln!(flowchart, "  {} -- {input_id} --> {target}", mapping).unwrap();
             }
             InputMapping::User(mapping) => {
                 visualize_user_mapping(mapping, target, nodes, input_id, flowchart)

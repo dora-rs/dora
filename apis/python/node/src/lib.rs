@@ -77,6 +77,7 @@ impl Node {
         })
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> PyResult<Option<PyInput>> {
         self.__next__()
     }
@@ -90,10 +91,9 @@ impl Node {
     }
 
     pub fn send_output(&self, output_str: String, data: &PyBytes) -> Result<()> {
-        Ok(self
-            .tx_output
+        self.tx_output
             .blocking_send((output_str, data.as_bytes().to_vec()))
-            .wrap_err("Could not send output")?)
+            .wrap_err("Could not send output")
     }
 
     pub fn id(&self) -> String {

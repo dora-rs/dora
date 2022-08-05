@@ -110,7 +110,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
                 format!("dora/timer/{duration}")
             };
             let mut stream = IntervalStream::new(tokio::time::interval(interval));
-            while let Some(_) = stream.next().await {
+            while (stream.next().await).is_some() {
                 let publish = communication.publish(&topic, &[]);
                 publish
                     .await
