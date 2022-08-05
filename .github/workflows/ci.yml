@@ -17,8 +17,8 @@ jobs:
           sudo apt-get install -y capnproto libcapnp-dev
       - name: "Check"
         run: cargo check --all
-      - name: "Build"
-        run: cargo build --all
+      - name: "Build" 
+        run: cargo build --all 
       - name: "Test"
         run: cargo test --all
 
