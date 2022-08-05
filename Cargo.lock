@@ -697,6 +697,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-node-api-python"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "futures",
+ "pyo3",
+ "serde_yaml",
+ "tokio",
+]
+
+[[package]]
 name = "dora-operator-api"
 version = "0.1.0"
 dependencies = [
@@ -711,14 +723,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "dora-python-binding"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "pyo3",
 ]
 
 [[package]]

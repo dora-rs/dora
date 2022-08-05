@@ -138,6 +138,7 @@ impl Drop for DoraNode {
     }
 }
 
+#[derive(Debug)]
 pub struct Input {
     pub id: DataId,
     pub data: Vec<u8>,

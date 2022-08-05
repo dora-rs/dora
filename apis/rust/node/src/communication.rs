@@ -32,11 +32,11 @@ pub async fn init(
 }
 
 #[async_trait]
-pub trait CommunicationLayer {
+pub trait CommunicationLayer: Send + Sync {
     async fn subscribe<'a>(
         &'a self,
         topic: &str,
-    ) -> Result<Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>>, BoxError>;
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Vec<u8>> + Send + 'a>>, BoxError>;
 
     async fn publish(&self, topic: &str, data: &[u8]) -> Result<(), BoxError>;
 
@@ -61,12 +61,12 @@ impl CommunicationLayer for ZenohCommunicationLayer {
     async fn subscribe<'a>(
         &'a self,
         topic: &str,
-    ) -> Result<Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>>, BoxError> {
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Vec<u8>> + Send + 'a>>, BoxError> {
         zenoh::Session::subscribe(&self.zenoh, self.prefixed(topic))
             .reliable()
             .await
             .map(|s| {
-                let trait_object: Pin<Box<dyn futures::Stream<Item = Vec<u8>> + 'a>> =
+                let trait_object: Pin<Box<dyn futures::Stream<Item = Vec<u8>> + Send + 'a>> =
                     Box::pin(s.map(|s| s.value.payload.contiguous().into_owned()));
                 trait_object
             })
