@@ -690,7 +690,6 @@ dependencies = [
  "serde_yaml",
  "thiserror",
  "tokio",
- "tokio-stream",
  "tracing",
  "uuid",
  "zenoh",
