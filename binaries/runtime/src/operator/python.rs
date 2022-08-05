@@ -1,6 +1,6 @@
 use super::{OperatorEvent, OperatorInput};
 use eyre::{bail, eyre, Context};
-use pyo3::{pyclass, types::IntoPyDict, Py, Python};
+use pyo3::{pyclass, types::IntoPyDict, types::PyBytes, Py, Python};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -47,9 +47,14 @@ pub fn spawn(
             .ok_or_else(|| eyre!("module path has no file stem"))?
             .to_str()
             .ok_or_else(|| eyre!("module file stem is not valid utf8"))?;
-        let module = py
-            .import(module_name)
-            .wrap_err("failed to import Python module")?;
+        let module = py.import(module_name).or_else(|err: pyo3::PyErr| {
+            let trace = err
+                .traceback(py)
+                .expect("PyError should have a traceback")
+                .format()
+                .wrap_err("Traceback could not be formatted")?;
+            Err(eyre!("{trace}"))
+        })?;
         let operator_class = module
             .getattr("Operator")
             .wrap_err("no `Operator` class found in module")?;
@@ -57,7 +62,14 @@ pub fn spawn(
         let locals = [("Operator", operator_class)].into_py_dict(py);
         let operator = py
             .eval("Operator()", None, Some(locals))
-            .wrap_err("failed to create Operator instance")?;
+            .or_else(|err: pyo3::PyErr| {
+                let trace = err
+                    .traceback(py)
+                    .expect("PyError should have a traceback")
+                    .format()
+                    .wrap_err("Traceback could not be formatted")?;
+                Err(eyre!("{trace}"))
+            })?;
         Result::<_, eyre::Report>::Ok(Py::from(operator))
     };
 
@@ -66,14 +78,26 @@ pub fn spawn(
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
         while let Some(input) = inputs.blocking_recv() {
-            Python::with_gil(|py| {
-                operator.call_method1(
-                    py,
-                    "on_input",
-                    (input.id.to_string(), input.value, send_output.clone()),
-                )
-            })
-            .wrap_err("on_input failed")?;
+            Python::with_gil(|py| -> eyre::Result<_> {
+                operator
+                    .call_method1(
+                        py,
+                        "on_input",
+                        (
+                            input.id.to_string(),
+                            PyBytes::new(py, &input.value),
+                            send_output.clone(),
+                        ),
+                    )
+                    .or_else(|err: pyo3::PyErr| {
+                        let trace = err
+                            .traceback(py)
+                            .expect("PyError should have a traceback")
+                            .format()
+                            .wrap_err("Traceback could not be formatted")?;
+                        Err(eyre!("{trace}"))
+                    })
+            })?;
         }
 
         Python::with_gil(|py| {
@@ -125,7 +149,6 @@ mod callback_impl {
     #[pymethods]
     impl SendOutputCallback {
         fn __call__(&mut self, output: &str, data: &[u8]) -> PyResult<()> {
-            println!("RUNTIME received python output `{output}` with value `{data:?}`");
             let result = self.events_tx.blocking_send(OperatorEvent::Output {
                 id: output.to_owned().into(),
                 value: data.to_owned(),
