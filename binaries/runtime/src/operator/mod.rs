@@ -36,7 +36,7 @@ impl Operator {
                     )
                 })?;
             }
-            OperatorSource::Wasm(path) => {
+            OperatorSource::Wasm(_path) => {
                 eprintln!("WARNING: WASM operators are not supported yet");
             }
         }
