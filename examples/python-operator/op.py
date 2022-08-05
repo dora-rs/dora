@@ -2,7 +2,7 @@ from typing import Callable
 from enum import Enum
 
 class DoraStatus(Enum):
-    OK = 0
+    CONTINUE = 0
     ERR = -1
     STOP = 1
 
