@@ -1,15 +1,14 @@
 [workspace]
 members = [
-  "apis/rust/node",
-  "apis/rust/operator",
-  "apis/rust/operator/macros",
+  "apis/c/node",
   "apis/python/node",
-  "binaries/coordinator",
-  "binaries/runtime",
-  "libraries/extensions/message",
-  "libraries/extensions/telemetry/metrics",
-  "libraries/extensions/telemetry/tracing",
-  "libraries/core",
+  "apis/rust/*",
+  "apis/rust/operator/macros",
+  "binaries/*",
   "examples/example-operator",
+  "libraries/core",
+  "libraries/extensions/message",
+  "libraries/extensions/telemetry/*",
+  "libraries/extensions/telemetry/*",
   "libraries/extensions/zenoh-logger",
 ]
