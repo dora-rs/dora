@@ -13,7 +13,7 @@ nodes:
     custom:
       run: python examples/nodes/python/printer.py
       inputs:
-          time: static-string/string
+          string: static-string/string
           time2: rust-timer/time
   
   - id: rust-timer
