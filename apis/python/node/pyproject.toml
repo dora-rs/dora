@@ -1,0 +1,9 @@
+[build-system]
+requires = ["maturin>=0.12,<0.13"]
+build-backend = "maturin"
+
+[project]
+name = "dora"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
