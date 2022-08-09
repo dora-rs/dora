@@ -14,7 +14,13 @@ pub trait DoraOperator: Default {
         id: &str,
         data: &[u8],
         output_sender: &mut DoraOutputSender,
-    ) -> Result<(), ()>;
+    ) -> Result<DoraStatus, ()>;
+}
+
+#[repr(isize)]
+pub enum DoraStatus {
+    Continue = 0,
+    Stop = 1,
 }
 
 pub struct DoraOutputSender {

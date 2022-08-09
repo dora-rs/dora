@@ -32,7 +32,9 @@ pub fn spawn(
             operator.run()
         });
         match catch_unwind(closure) {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                let _ = events_tx.blocking_send(OperatorEvent::Finished);
+            }
             Ok(Err(err)) => {
                 let _ = events_tx.blocking_send(OperatorEvent::Error(err));
             }
@@ -95,8 +97,11 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     operator_context.raw,
                 )
             };
-            if result != 0 {
-                bail!("on_input failed with error code {result}");
+            match result {
+                0 => {}     // DoraStatus::Continue
+                1 => break, // DoraStatus::Stop
+                -1 => bail!("on_input failed"),
+                other => bail!("on_input finished with unexpected exit code {other}"),
             }
         }
         Ok(())
