@@ -8,7 +8,7 @@ mod python;
 mod shared_lib;
 
 pub struct Operator {
-    operator_task: Sender<OperatorInput>,
+    operator_task: Option<Sender<OperatorInput>>,
     definition: OperatorDefinition,
 }
 
@@ -41,18 +41,29 @@ impl Operator {
             }
         }
         Ok(Self {
-            operator_task,
+            operator_task: Some(operator_task),
             definition: operator_definition,
         })
     }
 
     pub fn handle_input(&mut self, id: DataId, value: Vec<u8>) -> eyre::Result<()> {
         self.operator_task
+            .as_mut()
+            .ok_or_else(|| {
+                eyre!(
+                    "input channel for {} was already closed",
+                    self.definition.id
+                )
+            })?
             .try_send(OperatorInput { id, value })
             .map_err(|err| match err {
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => eyre!("operator crashed"),
                 tokio::sync::mpsc::error::TrySendError::Full(_) => eyre!("operator queue full"),
             })
+    }
+
+    pub fn close_input_stream(&mut self) {
+        self.operator_task = None;
     }
 
     /// Get a reference to the operator's definition.
@@ -66,7 +77,7 @@ pub enum OperatorEvent {
     Output { id: DataId, value: Vec<u8> },
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
-    EndOfInput,
+    Finished,
 }
 
 pub struct OperatorInput {

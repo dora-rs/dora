@@ -60,9 +60,9 @@ nodes:
 
   - id: python-operator
     operator:
-      python: ../../examples/python-operator/op.py
+      python: ../../examples/python-operator/op2.py
       inputs:
         time: timer/time
-        dora_time: dora/timer/millis/500
+        dora_time: dora/timer/millis/50
       outputs:
         - counter

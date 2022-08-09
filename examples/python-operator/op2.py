@@ -2,7 +2,7 @@ from typing import Callable
 from enum import Enum
 
 class DoraStatus(Enum):
-    CONTINUE = 0
+    OK = 0
     STOP = 1
 
 class Operator:
@@ -33,4 +33,7 @@ class Operator:
         send_output("counter", (self.counter % 256).to_bytes(1, "little"))
         self.counter = self.counter + 1
 
-        return DoraStatus.OK
+        if self.counter > 500:
+            return DoraStatus.STOP
+        else:
+            return DoraStatus.OK
