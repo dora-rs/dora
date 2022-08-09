@@ -72,6 +72,7 @@ async fn build_c_operator(root: &Path) -> eyre::Result<()> {
     let mut compile = tokio::process::Command::new("clang");
     compile.arg("-c").arg("operator.c");
     compile.arg("-o").arg("build/operator.o");
+    compile.arg("-fPIC");
     if !compile.status().await?.success() {
         bail!("failed to compile c operator");
     };
