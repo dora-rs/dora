@@ -166,6 +166,18 @@ pub enum OperatorSource {
     Wasm(PathBuf),
 }
 
+impl OperatorSource {
+    pub fn canonicalize(&mut self) -> std::io::Result<()> {
+        let path = match self {
+            OperatorSource::SharedLibrary(path) => path,
+            OperatorSource::Python(path) => path,
+            OperatorSource::Wasm(path) => path,
+        };
+        *path = path.canonicalize()?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PythonOperatorConfig {
     pub path: PathBuf,
