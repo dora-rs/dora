@@ -1,12 +1,24 @@
 use super::{OperatorEvent, OperatorInput};
 use eyre::{bail, eyre, Context};
-use pyo3::{pyclass, types::IntoPyDict, Py, Python};
+use pyo3::{pyclass, types::IntoPyDict, types::PyBytes, Py, Python};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
     thread,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
+
+fn traceback(err: pyo3::PyErr) -> eyre::Report {
+    Python::with_gil(|py| {
+        eyre::Report::msg(format!(
+            "{}\n{err}",
+            err.traceback(py)
+                .expect("PyError should have a traceback")
+                .format()
+                .expect("Traceback could not be formatted")
+        ))
+    })
+}
 
 pub fn spawn(
     path: &Path,
@@ -47,9 +59,7 @@ pub fn spawn(
             .ok_or_else(|| eyre!("module path has no file stem"))?
             .to_str()
             .ok_or_else(|| eyre!("module file stem is not valid utf8"))?;
-        let module = py
-            .import(module_name)
-            .wrap_err("failed to import Python module")?;
+        let module = py.import(module_name).map_err(traceback)?;
         let operator_class = module
             .getattr("Operator")
             .wrap_err("no `Operator` class found in module")?;
@@ -57,7 +67,7 @@ pub fn spawn(
         let locals = [("Operator", operator_class)].into_py_dict(py);
         let operator = py
             .eval("Operator()", None, Some(locals))
-            .wrap_err("failed to create Operator instance")?;
+            .map_err(traceback)?;
         Result::<_, eyre::Report>::Ok(Py::from(operator))
     };
 
@@ -67,13 +77,18 @@ pub fn spawn(
 
         while let Some(input) = inputs.blocking_recv() {
             let status_enum = Python::with_gil(|py| {
-                operator.call_method1(
-                    py,
-                    "on_input",
-                    (input.id.to_string(), input.value, send_output.clone()),
-                )
-            })
-            .wrap_err("on_input failed")?;
+                operator
+                    .call_method1(
+                        py,
+                        "on_input",
+                        (
+                            input.id.to_string(),
+                            PyBytes::new(py, &input.value),
+                            send_output.clone(),
+                        ),
+                    )
+                    .map_err(traceback)
+            })?;
             let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
                 .wrap_err("on_input must have enum return value")?;
             let status: i32 = Python::with_gil(|py| status_val.extract(py))
@@ -136,7 +151,6 @@ mod callback_impl {
     #[pymethods]
     impl SendOutputCallback {
         fn __call__(&mut self, output: &str, data: &[u8]) -> PyResult<()> {
-            println!("RUNTIME received python output `{output}` with value `{data:?}`");
             let result = self.events_tx.blocking_send(OperatorEvent::Output {
                 id: output.to_owned().into(),
                 value: data.to_owned(),
