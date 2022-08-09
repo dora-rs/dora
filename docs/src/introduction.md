@@ -8,15 +8,15 @@ By using `dora`, you can define robotic applications as a graph of nodes that ca
 
 Composability as:
 - [x] `YAML` declarative programming
-- [ ] language-agnostic:
+- [x] language-agnostic:
   - [x] Rust
   - [x] C
-  - [ ] Python
-- [ ] Isolated operator and node that can be reused.
+  - [x] Python
+- [ ] Isolated operators and nodes that can be reused.
 
 Low latency as:
 - [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
-- [ ] Minimal abstraction close to the metal.
+- [ ] Minimal abstraction, close to the metal.
 
 Distributed as:
 - [x] PubSub communication with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
