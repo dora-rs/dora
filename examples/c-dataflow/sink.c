@@ -20,7 +20,7 @@ int main()
             break;
         }
 
-        char *id = (char *)0xdeadbeafcafebabe;
+        char *id;
         size_t id_len;
         read_dora_input_id(input, &id, &id_len);
 
