@@ -134,9 +134,14 @@ fn spawn_custom_node(
     communication: &dora_node_api::config::CommunicationConfig,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut args = node.run.split_ascii_whitespace();
-    let cmd = args
-        .next()
-        .ok_or_else(|| eyre!("`run` field must not be empty"))?;
+    let cmd = {
+        let raw = Path::new(
+            args.next()
+                .ok_or_else(|| eyre!("`run` field must not be empty"))?,
+        );
+        raw.canonicalize()
+            .wrap_err_with(|| format!("no node exists at `{}`", raw.display()))?
+    };
 
     let mut command = tokio::process::Command::new(cmd);
     command.args(args);
