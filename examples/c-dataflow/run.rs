@@ -48,6 +48,7 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
     clang.arg("-l").arg("dora_node_api_c");
     clang.arg("-l").arg("m");
     clang.arg("-l").arg("rt");
+    clang.arg("-l").arg("dl");
     clang.arg("-pthread");
     clang.arg("-L").arg(root.join("target").join("release"));
     clang.arg("--output").arg(Path::new("build").join(out_name));
