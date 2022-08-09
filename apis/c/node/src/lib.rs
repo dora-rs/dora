@@ -9,6 +9,7 @@ struct DoraContext {
     inputs: Pin<Box<dyn futures::Stream<Item = Input>>>,
 }
 
+#[no_mangle]
 pub extern "C" fn init_dora_context_from_env() -> *mut () {
     let context = match block_on(async {
         let node = DoraNode::init_from_env().await?;
@@ -27,6 +28,7 @@ pub extern "C" fn init_dora_context_from_env() -> *mut () {
     Box::into_raw(Box::new(context)).cast()
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
     // drop all fields except for `node`
@@ -35,6 +37,7 @@ pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
     let _ = unsafe { Box::from_raw(node as *const DoraNode as *mut DoraNode) };
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     match block_on(context.inputs.next()) {
@@ -43,6 +46,7 @@ pub unsafe extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn read_dora_input_id(
     input: *const (),
     out_ptr: *mut *const u8,
@@ -58,6 +62,7 @@ pub unsafe extern "C" fn read_dora_input_id(
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn read_dora_input_data(
     input: *const (),
     out_ptr: *mut *const u8,
@@ -73,10 +78,12 @@ pub unsafe extern "C" fn read_dora_input_data(
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn free_dora_input(input: *mut ()) {
     let _: Box<Input> = unsafe { Box::from_raw(input.cast()) };
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn dora_send_output(
     context: *mut (),
     id_ptr: *const u8,
