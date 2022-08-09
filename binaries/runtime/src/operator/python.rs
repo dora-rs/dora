@@ -76,7 +76,7 @@ pub fn spawn(
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
         while let Some(input) = inputs.blocking_recv() {
-            Python::with_gil(|py| -> eyre::Result<_> {
+            let status_enum = Python::with_gil(|py| {
                 operator
                     .call_method1(
                         py,
@@ -89,6 +89,15 @@ pub fn spawn(
                     )
                     .map_err(traceback)
             })?;
+            let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
+                .wrap_err("on_input must have enum return value")?;
+            let status: i32 = Python::with_gil(|py| status_val.extract(py))
+                .wrap_err("on_input has invalid return value")?;
+            match status {
+                0 => {}     // ok
+                1 => break, // stop
+                other => bail!("on_input returned invalid status {other}"),
+            }
         }
 
         Python::with_gil(|py| {
@@ -112,7 +121,9 @@ pub fn spawn(
         });
 
         match catch_unwind(closure) {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                let _ = events_tx.blocking_send(OperatorEvent::Finished);
+            }
             Ok(Err(err)) => {
                 let _ = events_tx.blocking_send(OperatorEvent::Error(err));
             }

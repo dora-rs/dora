@@ -46,5 +46,7 @@ async fn main() -> eyre::Result<()> {
         }
     }
 
+    println!("rate limit finished");
+
     Ok(())
 }

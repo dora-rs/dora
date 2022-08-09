@@ -1,6 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender};
+use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
 
 register_operator!(ExampleOperator);
 
@@ -15,7 +15,7 @@ impl DoraOperator for ExampleOperator {
         id: &str,
         data: &[u8],
         output_sender: &mut DoraOutputSender,
-    ) -> Result<(), ()> {
+    ) -> Result<DoraStatus, ()> {
         match id {
             "time" => {
                 let parsed = std::str::from_utf8(data).map_err(|_| ())?;
@@ -35,6 +35,6 @@ impl DoraOperator for ExampleOperator {
             }
             other => eprintln!("ignoring unexpected input {other}"),
         }
-        Ok(())
+        Ok(DoraStatus::Continue)
     }
 }
