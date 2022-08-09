@@ -98,11 +98,10 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
     }
 
     for interval in dora_timers {
-        let communication = communication.clone();
-        let task = tokio::spawn(async move {
-            let communication = communication::init(&communication)
-                .await
-                .wrap_err("failed to init communication layer")?;
+        let communication = communication::init(&communication)
+            .await
+            .wrap_err("failed to init communication layer")?;
+        tokio::spawn(async move {
             let topic = {
                 let duration = format_duration(interval);
                 format!("dora/timer/{duration}")
@@ -110,13 +109,9 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
             let mut stream = IntervalStream::new(tokio::time::interval(interval));
             while let Some(_) = stream.next().await {
                 let publish = communication.publish(&topic, &[]);
-                publish
-                    .await
-                    .wrap_err("failed to publish timer tick message")?;
+                publish.await.expect("failed to publish timer tick message");
             }
-            Ok(())
         });
-        tasks.push(task);
     }
 
     while let Some(task_result) = tasks.next().await {
