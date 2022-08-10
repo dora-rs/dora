@@ -1,15 +1,29 @@
 [workspace]
 members = [
-  "apis/rust/node",
-  "apis/rust/operator",
-  "apis/rust/operator/macros",
+  "apis/c/node",
   "apis/python/node",
-  "binaries/coordinator",
-  "binaries/runtime",
-  "libraries/extensions/message",
-  "libraries/extensions/telemetry/metrics",
-  "libraries/extensions/telemetry/tracing",
-  "libraries/core",
+  "apis/rust/*",
+  "apis/rust/operator/macros",
+  "binaries/*",
   "examples/example-operator",
+  "libraries/core",
+  "libraries/extensions/message",
+  "libraries/extensions/telemetry/*",
+  "libraries/extensions/telemetry/*",
   "libraries/extensions/zenoh-logger",
 ]
+
+[package]
+name = "dora-examples"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dev-dependencies]
+eyre = "0.6.8"
+tokio = "1.20.1"
+dora-coordinator = { path = "binaries/coordinator" }
+
+[[example]]
+name = "c-dataflow"
+path = "examples/c-dataflow/run.rs"
