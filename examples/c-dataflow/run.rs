@@ -3,12 +3,12 @@ use std::path::Path;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    std::env::set_current_dir(Path::new(file!()).parent().unwrap())
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
     tokio::fs::create_dir_all("build").await?;
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     build_package("dora-runtime").await?;
     build_package("dora-node-api-c").await?;
     build_c_node(root, "node.c", "c_node").await?;
