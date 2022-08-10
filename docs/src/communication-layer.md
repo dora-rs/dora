@@ -1,4 +1,4 @@
-# Middleware (communication) layer abstraction (MLA)
+# [Middleware (communication) layer abstraction (MLA)](https://github.com/dora-rs/dora/discussions/53)
 
 `dora` needs to implement MLA as a separate crate to provides a middleware abstraction layer that enables scalable, high performance communications for inter async tasks, intra-process (OS threads), interprocess communication on a single computer node or between different nodes in a computer network. MLA needs to support different communication patterns:
 - publish-subscribe push / push pattern - the published message is pushed to subscribers
@@ -29,4 +29,4 @@ MLA also needs to provide high level APIs:
 - send(key, msg, optional fields)
 - recv(key, optional fields)->value
 
-More info here: https://github.com/dora-rs/dora/discussions/53
+More info here: [#53](https://github.com/dora-rs/dora/discussions/53)

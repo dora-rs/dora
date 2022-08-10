@@ -8,7 +8,9 @@ The `dora-coordinator` is responsible for reading the dataflow descriptor file a
 
 Build it using:
 ```bash
-cargo build -p dora-coordinator --examples --release
+git clone https://github.com/dora-rs/dora.git
+cd dora
+cargo build -p dora-coordinator --release
 ```
 
 ### 2. Compile the dora-runtime for operators
@@ -16,4 +18,10 @@ cargo build -p dora-coordinator --examples --release
 The `dora-runtime` is responsible for managing a set of operators. 
 ```bash
 cargo build -p dora-runtime --release
+```
+
+### 3. Add those binaries to your path
+
+```bash
+export PATH=$PATH:$(pwd)/target/release
 ```
