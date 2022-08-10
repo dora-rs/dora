@@ -284,6 +284,8 @@ fn set_up_logger() -> Result<(), fern::InitError> {
         })
         .level(log::LevelFilter::Debug)
         .level_for("zenoh", log::LevelFilter::Warn)
+        .level_for("zenoh_transport", log::LevelFilter::Warn)
+        .level_for("zenoh_link_tcp", log::LevelFilter::Warn)
         .chain(std::io::stdout())
         .chain(fern::log_file("runtime.log")?)
         .apply()?;
