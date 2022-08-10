@@ -31,6 +31,21 @@ jobs:
           command: test
           args: --all
 
+  examples:
+    name: "Examples"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Cap'n Proto
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y capnproto libcapnp-dev
+      - name: "C Dataflow example"
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: --example c-dataflow
+
   clippy:
     name: "Clippy"
     runs-on: ubuntu-latest

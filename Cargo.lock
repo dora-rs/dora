@@ -658,6 +658,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-examples"
+version = "0.0.0"
+dependencies = [
+ "dora-coordinator",
+ "eyre",
+ "tokio",
+]
+
+[[package]]
 name = "dora-message"
 version = "0.1.0"
 dependencies = [
@@ -690,11 +699,19 @@ dependencies = [
  "serde_yaml",
  "thiserror",
  "tokio",
- "tokio-stream",
  "tracing",
  "uuid",
  "zenoh",
  "zenoh-config",
+]
+
+[[package]]
+name = "dora-node-api-c"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "futures",
 ]
 
 [[package]]
@@ -2741,10 +2758,11 @@ checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
 name = "tokio"
-version = "1.17.0"
+version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2af73ac49756f3f7c01172e34a23e5d0216f6c32333757c2c61feb2bbff5a5ee"
+checksum = "7a8325f63a7d4774dd041e363b2409ed1c5cbbd0f867795e661df066b2b0a581"
 dependencies = [
+ "autocfg 1.1.0",
  "bytes",
  "libc",
  "memchr",
