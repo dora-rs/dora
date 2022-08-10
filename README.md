@@ -20,7 +20,7 @@ Composability as:
 - [ ] language-agnostic:
   - [x] Rust
   - [x] C
-  - [ ] Python
+  - [x] Python
 - [ ] Isolated operator and node that can be reused.
 
 Low latency as:
