@@ -17,5 +17,43 @@ The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the fo
 
 ## Compile and Run
 
-The [`run.rs`](./run.rs) binary performs all required build steps and then starts the dataflow. It can be invoked through `cargo run --example c-dataflow`.
+To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all required build steps and then starts the dataflow. Use the following command to run it: `cargo run --example c-dataflow`.
 
+For a manual build, follow these steps:
+
+**Build the custom nodes:**
+
+- Create a `build` folder in this directory (i.e., next to the `node.c` file)
+- Copy the `node-api.h` header file from `../../apis/c/node` to `build`
+- Compile the `dora-node-api-c` crate into a static library.
+  - Run `cargo build -p dora-node-api-c --release`
+  - The resulting staticlib is then available under `../../target/release/libdora-node-api-c.a`.
+- Compile the `node.c` (e.g. using `clang`) and link the staticlib
+  - For example, use the following command:
+    ```
+    clang node.c -lm -lrt -ldl -pthread -ldora_node_api_c -L ../../target/release --output build/c_node
+    ```
+- Repeat the previous step for the `sink.c` executable
+
+**Build the operator:**
+
+- Copy the `operator-api.h` header file from `../../apis/c/operator` to `build`
+- Compile the `operator.c` file into a shared library.
+  - For example, use the following commands:
+    ```
+    clang -c operator.c -o build/operator.o -fPIC
+    clang -shared build/operator.o -o build/operator.so
+    ```
+
+**Build the dora coordinator and runtime:**
+
+- Build the `dora-coordinator` executable using `cargo build -p dora-coordinator --release`
+- Build the `dora-runtime` executable using `cargo build -p dora-runtime --release`
+
+**Run the dataflow:**
+
+- Start the `dora-coordinator`, passing the paths to the dataflow file and the `dora-runtime` as arguments:
+
+  ```
+  ../../target/release/dora-coordinator run dataflow.yml ../../target/release/dora-runtime
+  ```
