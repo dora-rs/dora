@@ -22,6 +22,8 @@ cargo build -p dora-runtime --release
 
 ### 3. Add those binaries to your path
 
+This step is optional. You can also refer to the executables using their full path or copy them somewhere else.
+
 ```bash
 export PATH=$PATH:$(pwd)/target/release
 ```
