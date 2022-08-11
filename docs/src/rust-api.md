@@ -1,6 +1,61 @@
 # Rust API
 
-## Node
+## Operator 
+
+The operator API is a framework for you to implement. The implemented operator will be managed by `dora`. This framework enable us to make optimisation and provide advanced features. It is the recommended way of using `dora`.
+
+An operator requires to be registered and implement the `DoraOperator` trait. It is composed of an `on_input` method that defines the behaviour of the operator when there is an input.
+
+```rust
+use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+
+register_operator!(ExampleOperator);
+
+#[derive(Debug, Default)]
+struct ExampleOperator {
+    time: Option<String>,
+}
+
+impl DoraOperator for ExampleOperator {
+    fn on_input(
+        &mut self,
+        id: &str,
+        data: &[u8],
+        output_sender: &mut DoraOutputSender,
+    ) -> Result<DoraStatus, ()> {
+```
+
+### Try it out!
+
+- Generate a new Rust library
+
+```bash
+cargo new example-operator --lib
+```
+
+`Cargo.toml`
+```toml
+{{#include ../../examples/example-operator/Cargo.toml}}
+```
+
+`src/lib.rs`
+```rust
+{{#include ../../examples/example-operator/src/lib.rs}}
+```
+
+- Build it:
+```bash
+cargo build --release
+```
+
+- Link it in your graph as:
+```yaml
+{{#include ../../binaries/coordinator/examples/mini-dataflow.yml:38:46}}
+```
+
+This example can be found in `examples`.
+
+## Custom Node
 
 The custom node API allow you to integrate `dora` into your application. It allows you to retrieve input and send output in any fashion you want. 
 #### `DoraNode::init_from_env()`
@@ -60,58 +115,3 @@ time = "0.3.9"
       outputs:
         - time
 ```
-
-## Operator 
-
-The operator API gives you a framework for operator that is going to be managed by `dora`. This framework enable us to make optimisation and provide advanced features.
-
-An operator requires to be registered and implement the `DoraOperator` trait, which is composed of an `on_input` method that defines the behaviour of the operator when there is an input.
-
-```rust
-use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
-
-register_operator!(ExampleOperator);
-
-#[derive(Debug, Default)]
-struct ExampleOperator {
-    time: Option<String>,
-}
-
-impl DoraOperator for ExampleOperator {
-    fn on_input(
-        &mut self,
-        id: &str,
-        data: &[u8],
-        output_sender: &mut DoraOutputSender,
-    ) -> Result<DoraStatus, ()> {
-```
-
-### Try it out!
-
-- Generate a new Rust library
-
-```bash
-cargo new example-operator --lib
-```
-
-`Cargo.toml`
-```toml
-{{#include ../../examples/example-operator/Cargo.toml}}
-```
-
-`src/lib.rs`
-```rust
-{{#include ../../examples/example-operator/src/lib.rs}}
-```
-
-- Build it:
-```bash
-cargo build --release
-```
-
-- Link it in your graph as:
-```yaml
-{{#include ../../binaries/coordinator/examples/mini-dataflow.yml:38:46}}
-```
-
-This example can be found in `examples`.
