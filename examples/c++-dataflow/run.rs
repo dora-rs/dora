@@ -10,6 +10,8 @@ async fn main() -> eyre::Result<()> {
     tokio::fs::create_dir_all(root.join("build")).await?;
 
     build_package("cxx-dataflow-example-node-rust-api").await?;
+    build_package("cxx-dataflow-example-operator-rust-api").await?;
+
     build_package("dora-node-api-c").await?;
     build_cxx_node(
         root,

@@ -17,3 +17,13 @@ nodes:
         tick: dora/timer/millis/300
       outputs:
         - counter
+
+  - id: runtime-node
+    operators:
+      - id: operator-rust-api
+        shared-library: ../../target/release/libcxx_dataflow_example_operator_rust_api.so
+        inputs:
+          counter_1: cxx-node-c-api/counter
+          counter_2: cxx-node-rust-api/counter
+        outputs:
+          - status
