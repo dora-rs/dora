@@ -1,0 +1,20 @@
+communication:
+  zenoh:
+    prefix: /example-python-dataflow
+
+nodes:
+  - id: node-1
+    operators:
+    - id: python_webcam
+      python: webcam_operator.py
+      inputs:
+        timer: dora/timer/millis/100
+      outputs:
+        - image
+
+  - id: node-2
+    operators:
+    - id: python_plot
+      python: plot_cv2.py
+      inputs:
+        image: node-1/python_webcam/image
