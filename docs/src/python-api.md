@@ -44,7 +44,7 @@ node = Node()
 
 #### `.next()` or `__next__()` as an iterator
 
-`.next()` gives you the next input that the node has received. It will return `None` if there is no input available.
+`.next()` gives you the next input that the node has received. It blocks until the next input becomes available. It will return `None` when all senders has been dropped.
 
 ```python
 input_id, value = node.next()
