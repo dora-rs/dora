@@ -66,6 +66,12 @@ impl std::fmt::Display for OperatorId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DataId(String);
 
+impl From<DataId> for String {
+    fn from(id: DataId) -> Self {
+        id.0
+    }
+}
+
 impl From<String> for DataId {
     fn from(id: String) -> Self {
         Self(id)

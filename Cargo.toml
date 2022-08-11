@@ -5,9 +5,8 @@ members = [
   "apis/rust/*",
   "apis/rust/operator/macros",
   "binaries/*",
-  "examples/rust-dataflow/operator",
-  "examples/rust-dataflow/node",
-  "examples/rust-dataflow/sink",
+  "examples/rust-dataflow/*",
+  "examples/c++-dataflow/*",
   "libraries/core",
   "libraries/extensions/message",
   "libraries/extensions/telemetry/*",
@@ -33,3 +32,7 @@ path = "examples/c-dataflow/run.rs"
 [[example]]
 name = "rust-dataflow"
 path = "examples/rust-dataflow/run.rs"
+
+[[example]]
+name = "cxx-dataflow"
+path = "examples/c++-dataflow/run.rs"
