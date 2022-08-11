@@ -40,6 +40,11 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get install -y capnproto libcapnp-dev
+      - name: "Rust Dataflow example"
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: --example rust-dataflow
       - name: "C Dataflow example"
         uses: actions-rs/cargo@v1
         with:

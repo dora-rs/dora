@@ -30,7 +30,6 @@ pub struct DoraOutputSender {
 
 impl DoraOutputSender {
     pub fn send(&mut self, id: &str, data: &[u8]) -> Result<(), isize> {
-        println!("operator sending output..");
         let result = unsafe {
             (self.output_fn_raw)(
                 id.as_ptr(),

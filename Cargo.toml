@@ -5,7 +5,9 @@ members = [
   "apis/rust/*",
   "apis/rust/operator/macros",
   "binaries/*",
-  "examples/example-operator",
+  "examples/rust-dataflow/operator",
+  "examples/rust-dataflow/node",
+  "examples/rust-dataflow/sink",
   "libraries/core",
   "libraries/extensions/message",
   "libraries/extensions/telemetry/*",
@@ -27,3 +29,7 @@ dora-coordinator = { path = "binaries/coordinator" }
 [[example]]
 name = "c-dataflow"
 path = "examples/c-dataflow/run.rs"
+
+[[example]]
+name = "rust-dataflow"
+path = "examples/rust-dataflow/run.rs"

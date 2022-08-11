@@ -1,5 +1,5 @@
 [package]
-name = "example-operator"
+name = "rust-dataflow-example-operator"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -10,4 +10,4 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-dora-operator-api = { path = "../../apis/rust/operator" }
+dora-operator-api = { path = "../../../apis/rust/operator" }
