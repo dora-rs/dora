@@ -23,7 +23,7 @@ mod ffi {
     }
 
     unsafe extern "C++" {
-        include!("cxx-dataflow-example-node/src/main.h");
+        include!("cxx-dataflow-example-node-rust-api/src/main.h");
 
         fn cxx_main(inputs: &mut Inputs, output_sender: &OutputSender);
     }
