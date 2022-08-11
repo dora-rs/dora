@@ -3,9 +3,16 @@ communication:
     prefix: /example-cxx-dataflow
 
 nodes:
-  - id: cxx-node
+  - id: cxx-node-rust-api
     custom:
-      run: ../../target/release/cxx-dataflow-example-node
+      run: ../../target/release/cxx-dataflow-example-node-rust-api
+      inputs:
+        tick: dora/timer/millis/300
+      outputs:
+        - counter
+  - id: cxx-node-c-api
+    custom:
+      run: build/node_c_api
       inputs:
         tick: dora/timer/millis/300
       outputs:
