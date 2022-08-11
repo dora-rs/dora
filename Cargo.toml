@@ -6,7 +6,7 @@ members = [
   "apis/rust/operator/macros",
   "binaries/*",
   "examples/rust-dataflow/*",
-  "examples/c++-dataflow/*",
+  "examples/c++-dataflow/*-rust-*",
   "libraries/core",
   "libraries/extensions/message",
   "libraries/extensions/telemetry/*",

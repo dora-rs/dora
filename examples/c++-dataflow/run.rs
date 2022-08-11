@@ -7,7 +7,16 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
+    tokio::fs::create_dir_all(root.join("build")).await?;
+
     build_package("cxx-dataflow-example-node-rust-api").await?;
+    build_package("dora-node-api-c").await?;
+    build_cxx_node(
+        root,
+        &Path::new("node-c-api").join("main.cc").canonicalize()?,
+        "node_c_api",
+    )
+    .await?;
     build_package("dora-runtime").await?;
 
     dora_coordinator::run(dora_coordinator::Command::Run {
@@ -26,6 +35,24 @@ async fn build_package(package: &str) -> eyre::Result<()> {
     cmd.arg("--package").arg(package);
     if !cmd.status().await?.success() {
         bail!("failed to build {package}");
+    };
+    Ok(())
+}
+
+async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Result<()> {
+    let mut clang = tokio::process::Command::new("clang++");
+    clang.arg(path);
+    clang.arg("-l").arg("dora_node_api_c");
+    clang.arg("-L").arg(root.join("target").join("release"));
+    clang
+        .arg("--output")
+        .arg(Path::new("../build").join(out_name));
+    if let Some(parent) = path.parent() {
+        clang.current_dir(parent);
+    }
+
+    if !clang.status().await?.success() {
+        bail!("failed to compile c++ node");
     };
     Ok(())
 }
