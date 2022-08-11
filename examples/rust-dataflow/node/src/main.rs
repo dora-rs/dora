@@ -5,13 +5,13 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let output = DataId::from("number".to_owned());
+    let output = DataId::from("random".to_owned());
 
     let operator = DoraNode::init_from_env().await?;
 
     let mut inputs = operator.inputs().await?;
 
-    loop {
+    for _ in 0..20 {
         let timeout = Duration::from_secs(3);
         let input = match tokio::time::timeout(timeout, inputs.next()).await {
             Ok(Some(input)) => input,
@@ -20,7 +20,7 @@ async fn main() -> eyre::Result<()> {
         };
 
         match input.id.as_str() {
-            "timestamp" => {
+            "tick" => {
                 let random: u64 = rand::random();
                 operator.send_output(&output, &random.to_le_bytes()).await?;
             }
