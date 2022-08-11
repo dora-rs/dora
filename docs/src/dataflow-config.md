@@ -96,56 +96,10 @@ Each operator must specify exactly one implementation. The implementation must f
 
 ## Example
 
-TODO:
-
-
 ```yaml
-nodes:
-  - id: main
-    name: Main Node
-    description: Implements the main task
-
-    operators:
-        # sources (only outputs)
-        - id: timer
-          name: Clock timer    # optional, human-readable name
-          description: Send the time.
-          shared_library: path/to/timer.so
-          outputs:
-          - time
-        - id: camera-uuid-1
-          name: Front camera
-          python: camera.py
-          outputs:
-          - image
-          - metadata
-        
-        # actions (inputs and outputs)
-        - id: timestamp
-          description: Add a watermark on the camera.
-          python: timestamp.py
-          inputs:
-            timestamp: timer/time
-            image: camera-uuid-1/image
-          outputs:
-            - image # with timestamp watermark
-
-        # sinks (only inputs)
-        - id: logger
-          description: Sink the data into the logger.
-          python: logger.py
-          inputs:
-            image: timestamp/image
-            camera: camera-uuid-2/metadata
-
-  - id: camera-uuid-2
-    name: Back camera
-    run: camera_driver --kind back
-    outputs:
-    - image
-    - metadata
-    
+{{#include ../../binaries/coordinator/examples/mini-dataflow.yml}}
 ```
+
 
 ## TODO: Integration with ROS 1/2
 

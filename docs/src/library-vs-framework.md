@@ -1,10 +1,4 @@
-# Rust Client Design
-
-## Brainstorm
-
-framework vs library
-
-### Framework
+# Framework
 
 - Runtime process
   - Talks with other runtime processes
@@ -27,7 +21,7 @@ framework vs library
     - by runtime -> aggregation specified in config file
     - by operator -> custom handling possible
 
-### Library
+# Library
 
 - All sources/operator/sinks are separate processes that link a runtime library
 - "Orchestrator" process

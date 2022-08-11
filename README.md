@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="./docs/design/logo.svg" width="400">
+    <img src="./docs/src/logo.svg" width="400">
 </p>
 
 <h3 align="center">
@@ -20,7 +20,7 @@ Composability as:
 - [ ] language-agnostic:
   - [x] Rust
   - [x] C
-  - [ ] Python
+  - [x] Python
 - [ ] Isolated operator and node that can be reused.
 
 Low latency as:
