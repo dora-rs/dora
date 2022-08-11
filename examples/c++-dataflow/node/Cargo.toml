@@ -1,0 +1,17 @@
+[package]
+name = "cxx-dataflow-example-node"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cxx = "1.0.73"
+dora-node-api = { version = "0.1.0", path = "../../../apis/rust/node" }
+eyre = "0.6.8"
+futures = "0.3.21"
+rand = "0.8.5"
+tokio = { version = "1.20.1", features = ["rt", "macros"] }
+
+[build-dependencies]
+cxx-build = "1.0.73"

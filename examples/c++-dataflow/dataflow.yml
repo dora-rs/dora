@@ -1,0 +1,12 @@
+communication:
+  zenoh:
+    prefix: /example-cxx-dataflow
+
+nodes:
+  - id: cxx-node
+    custom:
+      run: ../../target/release/cxx-dataflow-example-node
+      inputs:
+        tick: dora/timer/millis/300
+      outputs:
+        - counter
