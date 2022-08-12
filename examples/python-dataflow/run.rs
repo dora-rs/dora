@@ -37,7 +37,7 @@ async fn build_package(package: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn install_python_dependencies(root: &Path) -> eyre::Result<()> {
+async fn install_python_dependencies(_root: &Path) -> eyre::Result<()> {
     let mut install = tokio::process::Command::new("sh");
     install.arg("./install.sh");
     if !install.status().await?.success() {
