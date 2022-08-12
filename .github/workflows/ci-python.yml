@@ -23,5 +23,8 @@ jobs:
       - uses: actions/setup-python@v2
         with:
           python-version: 3.8.10
-      - name: "Install python dependencies"
-        run: examples/python-dataflow/install.sh
+      - name: "Python Dataflow example"
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: --example python-dataflow

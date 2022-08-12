@@ -13,9 +13,7 @@ class DoraStatus(Enum):
 
 class Operator:
     """
-    Example operator incrementing a counter every times its been called.
-
-    The current value of the counter is sent back to dora on `counter`.
+    Infering object from images
     """
 
     def __init__(self):
@@ -27,7 +25,7 @@ class Operator:
         value: bytes,
         send_output: Callable[[str, bytes], None],
     ) -> DoraStatus:
-        """Handle input by incrementing count by one.
+        """Handle image
 
         Args:
             input_id (str): Id of the input declared in the yaml configuration

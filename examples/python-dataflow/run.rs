@@ -1,5 +1,5 @@
 use eyre::{bail, Context};
-use std::path::Path;
+use std::{env, path::Path};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -11,8 +11,14 @@ async fn main() -> eyre::Result<()> {
 
     install_python_dependencies(root).await?;
 
+    let dataflow = if env::var("CI").is_ok() {
+        Path::new("dataflow_without_webcam.yml").to_owned()
+    } else {
+        Path::new("dataflow.yml").to_owned()
+    };
+
     dora_coordinator::run(dora_coordinator::Command::Run {
-        dataflow: Path::new("dataflow.yml").to_owned(),
+        dataflow,
         runtime: Some(root.join("target").join("release").join("dora-runtime")),
     })
     .await?;
