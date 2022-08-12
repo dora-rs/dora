@@ -1,8 +1,11 @@
+import os
 from enum import Enum
 from typing import Callable
 
 import cv2
 import numpy as np
+
+CI = os.environ.get("CI")
 
 
 class DoraStatus(Enum):
@@ -12,9 +15,7 @@ class DoraStatus(Enum):
 
 class Operator:
     """
-    Example operator incrementing a counter every times its been called.
-
-    The current value of the counter is sent back to dora on `counter`.
+    Plot image and bounding box
     """
 
     def __init__(self):
@@ -26,7 +27,8 @@ class Operator:
         value: bytes,
         send_output: Callable[[str, bytes], None],
     ) -> DoraStatus:
-        """Handle input by incrementing count by one.
+        """
+        Put image and bounding box on cv2 window.
 
         Args:
             input_id (str): Id of the input declared in the yaml configuration
@@ -57,9 +59,10 @@ class Operator:
                     (0, 255, 0),
                     2,
                 )
-            cv2.imshow("frame", self.image)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                return DoraStatus.STOP
+            if CI != "true":
+                cv2.imshow("frame", self.image)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    return DoraStatus.STOP
 
         return DoraStatus.CONTINUE
 
