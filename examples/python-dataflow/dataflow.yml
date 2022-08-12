@@ -3,18 +3,25 @@ communication:
     prefix: /example-python-dataflow
 
 nodes:
-  - id: node-1
-    operators:
-    - id: python_webcam
-      python: webcam_operator.py
+  - id: webcam
+    operator:
+      python: webcam.py
       inputs:
-        timer: dora/timer/millis/100
+        timer: dora/timer/millis/500
       outputs:
         - image
-
-  - id: node-2
-    operators:
-    - id: python_plot
-      python: plot_cv2.py
+  
+  - id: object_detection
+    operator:
+      python: object_detection.py
       inputs:
-        image: node-1/python_webcam/image
+        image: webcam/image
+      outputs:
+        - bbox
+
+  - id: plot
+    operator:
+      python: plot.py
+      inputs:
+        image: webcam/image
+        bbox: object_detection/bbox

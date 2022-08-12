@@ -18,7 +18,7 @@ class Operator:
     """
 
     def __init__(self):
-        self.counter = 0
+        self.image = []
 
     def on_input(
         self,
@@ -33,17 +33,34 @@ class Operator:
             value (bytes): Bytes message of the input
             send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         """
-        self.counter += 1
         if input_id == "image":
             frame = np.frombuffer(value, dtype="uint8")
             frame = np.reshape(frame, (480, 640, 3))
-            cv2.imshow("frame", frame)
+            self.image = frame
+        elif input_id == "bbox" and len(self.image) != 0:
+            bboxs = np.frombuffer(value, dtype="float32")
+            bboxs = np.reshape(bboxs, (-1, 6))
+            for bbox in bboxs:
+                [
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                    _confidence,
+                    _class_label,
+                ] = bbox
+                cv2.rectangle(
+                    self.image,
+                    (int(min_x), int(min_y)),
+                    (int(max_x), int(max_y)),
+                    (0, 255, 0),
+                    2,
+                )
+            cv2.imshow("frame", self.image)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 return DoraStatus.STOP
-        if self.counter > 20:
-            return DoraStatus.STOP
-        else:
-            return DoraStatus.CONTINUE
+
+        return DoraStatus.CONTINUE
 
     def drop_operator(self):
         cv2.destroyAllWindows()

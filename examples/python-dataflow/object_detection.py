@@ -1,7 +1,8 @@
 from enum import Enum
 from typing import Callable
 
-import cv2
+import numpy as np
+import torch
 
 
 class DoraStatus(Enum):
@@ -17,7 +18,7 @@ class Operator:
     """
 
     def __init__(self):
-        self.video_capture = cv2.VideoCapture(0)
+        self.model = torch.hub.load("ultralytics/yolov5", "yolov5n")
 
     def on_input(
         self,
@@ -33,13 +34,12 @@ class Operator:
             send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         """
 
-        ret, frame = self.video_capture.read()
-        if ret:
-            send_output("image", frame.tobytes())
-        else:
-            print("did not sent video")
+        frame = np.frombuffer(value, dtype="uint8")
+        frame = np.reshape(frame, (480, 640, 3))[
+            :, :, ::-1
+        ]  # OpenCV image (BGR to RGB)
 
+        results = self.model(frame)  # includes NMS
+        arrays = np.array(results.xyxy[0].cpu()).tobytes()
+        send_output("bbox", arrays)
         return DoraStatus.CONTINUE
-
-    def drop_operator(self):
-        self.video_capture.release()
