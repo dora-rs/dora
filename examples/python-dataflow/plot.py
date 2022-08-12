@@ -35,8 +35,9 @@ class Operator:
         """
         if input_id == "image":
             frame = np.frombuffer(value, dtype="uint8")
-            frame = np.reshape(frame, (480, 640, 3))
+            frame = cv2.imdecode(frame, -1)
             self.image = frame
+
         elif input_id == "bbox" and len(self.image) != 0:
             bboxs = np.frombuffer(value, dtype="float32")
             bboxs = np.reshape(bboxs, (-1, 6))
