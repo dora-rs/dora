@@ -1,0 +1,35 @@
+communication:
+  zenoh:
+    prefix: /example-cxx-dataflow
+
+nodes:
+  - id: cxx-node-rust-api
+    custom:
+      run: ../../target/release/cxx-dataflow-example-node-rust-api
+      inputs:
+        tick: dora/timer/millis/300
+      outputs:
+        - counter
+  - id: cxx-node-c-api
+    custom:
+      run: build/node_c_api
+      inputs:
+        tick: dora/timer/millis/300
+      outputs:
+        - counter
+
+  - id: runtime-node
+    operators:
+      - id: operator-rust-api
+        shared-library: ../../target/release/libcxx_dataflow_example_operator_rust_api.so
+        inputs:
+          counter_1: cxx-node-c-api/counter
+          counter_2: cxx-node-rust-api/counter
+        outputs:
+          - status
+      - id: operator-c-api
+        shared-library: build/operator_c_api.so
+        inputs:
+          op_status: runtime-node/operator-rust-api/status
+        outputs:
+          - half-status
