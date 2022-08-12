@@ -7,7 +7,7 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    tokio::fs::create_dir_all(root.join("build")).await?;
+    tokio::fs::create_dir_all("build").await?;
 
     build_package("cxx-dataflow-example-node-rust-api").await?;
     build_package("cxx-dataflow-example-operator-rust-api").await?;
@@ -19,6 +19,14 @@ async fn main() -> eyre::Result<()> {
         "node_c_api",
     )
     .await?;
+    build_cxx_operator(
+        &Path::new("operator-c-api")
+            .join("operator.cc")
+            .canonicalize()?,
+        "operator_c_api",
+    )
+    .await?;
+
     build_package("dora-runtime").await?;
 
     dora_coordinator::run(dora_coordinator::Command::Run {
@@ -56,5 +64,33 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
     if !clang.status().await?.success() {
         bail!("failed to compile c++ node");
     };
+    Ok(())
+}
+
+async fn build_cxx_operator(path: &Path, out_name: &str) -> eyre::Result<()> {
+    let object_file_path = Path::new("../build").join(out_name).with_extension("o");
+
+    let mut compile = tokio::process::Command::new("clang++");
+    compile.arg("-c").arg(path);
+    compile.arg("-o").arg(&object_file_path);
+    compile.arg("-fPIC");
+    if let Some(parent) = path.parent() {
+        compile.current_dir(parent);
+    }
+    if !compile.status().await?.success() {
+        bail!("failed to compile cxx operator");
+    };
+
+    let mut link = tokio::process::Command::new("clang++");
+    link.arg("-shared").arg(&object_file_path);
+    link.arg("-o")
+        .arg(Path::new("../build").join(out_name).with_extension("so"));
+    if let Some(parent) = path.parent() {
+        link.current_dir(parent);
+    }
+    if !link.status().await?.success() {
+        bail!("failed to create shared library from cxx operator (c api)");
+    };
+
     Ok(())
 }
