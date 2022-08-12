@@ -50,6 +50,11 @@ jobs:
         with:
           command: run
           args: --example c-dataflow
+      - name: "C++ Dataflow example"
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: --example cxx-dataflow
 
   clippy:
     name: "Clippy"
