@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import Callable
 
+import cv2
 import numpy as np
 import torch
 
@@ -35,9 +36,8 @@ class Operator:
         """
 
         frame = np.frombuffer(value, dtype="uint8")
-        frame = np.reshape(frame, (480, 640, 3))[
-            :, :, ::-1
-        ]  # OpenCV image (BGR to RGB)
+        frame = cv2.imdecode(frame, -1)
+        frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
 
         results = self.model(frame)  # includes NMS
         arrays = np.array(results.xyxy[0].cpu()).tobytes()
