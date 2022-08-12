@@ -1,6 +1,7 @@
 use dora_core::descriptor::{OperatorDefinition, OperatorSource};
 use dora_node_api::config::DataId;
 use eyre::{eyre, Context};
+use log::warn;
 use std::any::Any;
 use tokio::sync::mpsc::{self, Sender};
 
@@ -56,9 +57,12 @@ impl Operator {
                 )
             })?
             .try_send(OperatorInput { id, value })
-            .map_err(|err| match err {
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => eyre!("operator crashed"),
-                tokio::sync::mpsc::error::TrySendError::Full(_) => eyre!("operator queue full"),
+            .or_else(|err| match err {
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => Err(eyre!("operator crashed")),
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    warn!("operator queue full");
+                    Ok(())
+                }
             })
     }
 
