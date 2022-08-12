@@ -97,7 +97,7 @@ Each operator must specify exactly one implementation. The implementation must f
 ## Example
 
 ```yaml
-{{#include ../../binaries/coordinator/examples/mini-dataflow.yml}}
+{{#include ../../examples/rust-dataflow/dataflow.yml}}
 ```
 
 

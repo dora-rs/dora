@@ -14,7 +14,7 @@ cd my_first_dataflow
 [workspace]
 
 members = [
-    "source_timer",
+    "rust-dataflow-example-node",
 ]
 ```  
 
@@ -25,28 +25,50 @@ Let's write a node which sends the current time periodically. Let's make it afte
 - Generate a new Rust binary (application):
 
 ```bash
-cargo new source_timer
+cargo new rust-dataflow-example-node
 ```
 
 with `Cargo.toml`:
 ```toml
-[package]
-name = "rust-node"
-version = "0.1.0"
-edition = "2021"
-license = "Apache-2.0"
-
-[dependencies]
-dora-node-api = { git = "https://github.com/dora-rs/dora" }
-time = "0.3.9"
+{{#include ../../examples/rust-dataflow/node/Cargo.toml}}
 ```
 
 with `src/main.rs`:
 ```rust
-{{#include ../../binaries/coordinator/examples/nodes/rust/source_timer.rs}}
+{{#include ../../examples/rust-dataflow/node/src/main.rs}}
 ```
 
-### Write your second node 
+### Write your first operator 
+
+- Generate a new Rust library:
+
+```bash
+cargo new rust-dataflow-example-operator --lib
+```
+
+with `Cargo.toml`:
+```toml
+{{#include ../../examples/rust-dataflow/operator/Cargo.toml}}
+```
+
+with `src/lib.rs`:
+```rust
+{{#include ../../examples/rust-dataflow/operator/src/lib.rs}}
+```
+
+- And modify the root `Cargo.toml`:
+```toml=
+[workspace]
+
+members = [
+    "rust-dataflow-example-node",
+    "rust-dataflow-example-operator",
+]
+```
+
+
+
+### Write your sink node 
 
 Let's write a `logger` which will print incoming data.
 
@@ -58,20 +80,12 @@ cargo new sink_logger
 
 with `Cargo.toml`:
 ```toml
-[package]
-name = "sink_logger"
-version = "0.1.0"
-edition = "2021"
-license = "Apache-2.0"
-
-[dependencies]
-dora-node-api = { git = "https://github.com/dora-rs/dora" }
-time = "0.3.9"
+{{#include ../../examples/rust-dataflow/sink/Cargo.toml}}
 ```
 
 with `src/main.rs`:
 ```rust
-{{#include ../../binaries/coordinator/examples/nodes/rust/sink_logger.rs}}
+{{#include ../../examples/rust-dataflow/sink/src/main.rs}}
 ```
 
 - And modify the root `Cargo.toml`:
@@ -79,9 +93,16 @@ with `src/main.rs`:
 [workspace]
 
 members = [
-    "source_timer",
-    "sink_logger"
+    "rust-dataflow-example-node",
+    "rust-dataflow-example-operator",
+    "rust-dataflow-example-sink"
 ]
+```
+
+### Compile everything
+
+```bash
+cargo build --all --release
 ```
 
 
@@ -89,29 +110,14 @@ members = [
 
 Let's write the graph definition so that the nodes know who to communicate with.
 
-`mini-dataflow.yml`
+`dataflow.yml`
 ```yaml
-communication:
-  zenoh:
-    prefix: /foo
-
-nodes:
-  - id: timer
-    custom:
-      run: cargo run --release --bin source_timer
-      outputs:
-        - time
-
-  - id: logger
-    custom:
-      run: cargo run --release --bin sink_logger
-      inputs:
-        time: timer/time
+{{#include ../../examples/rust-dataflow/dataflow.yml}}
 ```
 
 ### Run it!
 
-- Run the `mini-dataflow`: 
+- Run the `dataflow`: 
 ```bash 
-dora-coordinator run mini-dataflow.yml
+dora-coordinator run dataflow.yml dora-runtime
 ```
