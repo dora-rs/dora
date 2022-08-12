@@ -53,6 +53,10 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
     let mut clang = tokio::process::Command::new("clang++");
     clang.arg(path);
     clang.arg("-l").arg("dora_node_api_c");
+    clang.arg("-l").arg("m");
+    clang.arg("-l").arg("rt");
+    clang.arg("-l").arg("dl");
+    clang.arg("-pthread");
     clang.arg("-L").arg(root.join("target").join("release"));
     clang
         .arg("--output")
