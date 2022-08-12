@@ -27,3 +27,9 @@ nodes:
           counter_2: cxx-node-rust-api/counter
         outputs:
           - status
+      - id: operator-c-api
+        shared-library: build/operator_c_api.so
+        inputs:
+          op_status: runtime-node/operator-rust-api/status
+        outputs:
+          - half-status
