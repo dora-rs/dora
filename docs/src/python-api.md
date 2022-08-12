@@ -19,14 +19,14 @@ class Operator:
 > For Python, we recommend to allocate the operator on a single runtime. A runtime will share the same GIL with several operators making those operators run almost sequentially. See: [https://docs.rs/pyo3/latest/pyo3/marker/struct.Python.html#deadlocks](https://docs.rs/pyo3/latest/pyo3/marker/struct.Python.html#deadlocks)
 ### Try it out!
 
-- Create an operator python file called `op.py`:
+- Create an operator python file called `object_detection.py`:
 ```python
-{{#include ../../examples/python-operator/op.py}}
+{{#include ../../examples/python-dataflow/object_detection.py}}
 ```
 
 - Link it in your graph as:
 ```yaml
-{{#include ../../binaries/coordinator/examples/graphs/mini-dataflow.yml:67:73}}
+{{#include ../../examples/python-dataflow/dataflow.yml:14:20}}
 ```
 
 ## Custom Node
@@ -74,12 +74,12 @@ pip install maturin
 maturin develop
 ```
 
-- Create a python file called `printer.py`:
+- Create a python file called `webcam.py`:
 ```python
-{{#include ../../binaries/coordinator/examples/nodes/python/printer.py}}
+{{#include ../../examples/python-dataflow/webcam.py}}
 ```
 
 - Link it in your graph as:
 ```yaml
-{{#include ../../binaries/coordinator/examples/graphs/python_test.yml:12:17}}
+{{#include ../../examples/python-dataflow/dataflow.yml:6:12}}
 ```
