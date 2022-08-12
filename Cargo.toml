@@ -36,3 +36,7 @@ path = "examples/rust-dataflow/run.rs"
 [[example]]
 name = "cxx-dataflow"
 path = "examples/c++-dataflow/run.rs"
+
+[[example]]
+name = "python-dataflow"
+path = "examples/python-dataflow/run.rs"

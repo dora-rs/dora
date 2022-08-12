@@ -3,9 +3,9 @@ communication:
     prefix: /example-python-dataflow
 
 nodes:
-  - id: webcam
+  - id: no_webcam
     custom:
-      run: ./webcam.py
+      run: ./no_webcam.py
       inputs:
         timer: dora/timer/millis/100
       outputs:
@@ -15,7 +15,7 @@ nodes:
     operator:
       python: object_detection.py
       inputs:
-        image: webcam/image
+        image: no_webcam/image
       outputs:
         - bbox
 
@@ -23,5 +23,5 @@ nodes:
     operator:
       python: plot.py
       inputs:
-        image: webcam/image
+        image: no_webcam/image
         bbox: object_detection/bbox
