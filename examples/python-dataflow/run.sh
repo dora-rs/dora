@@ -8,3 +8,5 @@ cd ../../../examples/python-dataflow
 
 # Dependencies
 pip install -r requirements.txt
+
+cargo run -p dora-coordinator --release -- run dataflow_without_webcam.yml
