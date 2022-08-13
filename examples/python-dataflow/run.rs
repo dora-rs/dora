@@ -9,19 +9,7 @@ async fn main() -> eyre::Result<()> {
 
     build_package("dora-runtime").await?;
 
-    install_python_dependencies(root).await?;
-
-    let dataflow = if env::var("CI").is_ok() {
-        Path::new("dataflow_without_webcam.yml").to_owned()
-    } else {
-        Path::new("dataflow.yml").to_owned()
-    };
-
-    dora_coordinator::run(dora_coordinator::Command::Run {
-        dataflow,
-        runtime: Some(root.join("target").join("release").join("dora-runtime")),
-    })
-    .await?;
+    run(root).await?;
 
     Ok(())
 }
@@ -37,11 +25,11 @@ async fn build_package(package: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn install_python_dependencies(_root: &Path) -> eyre::Result<()> {
-    let mut install = tokio::process::Command::new("sh");
-    install.arg("./install.sh");
-    if !install.status().await?.success() {
-        bail!("failed to create venv");
+async fn run(_root: &Path) -> eyre::Result<()> {
+    let mut run = tokio::process::Command::new("sh");
+    run.arg("./run.sh");
+    if !run.status().await?.success() {
+        bail!("failed to run python example.");
     };
     Ok(())
 }
