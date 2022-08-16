@@ -5,7 +5,11 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from utils import LABELS
+
 CI = os.environ.get("CI")
+
+font = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class DoraStatus(Enum):
@@ -49,8 +53,8 @@ class Operator:
                     min_y,
                     max_x,
                     max_y,
-                    _confidence,
-                    _class_label,
+                    confidence,
+                    label,
                 ] = bbox
                 cv2.rectangle(
                     self.image,
@@ -59,6 +63,18 @@ class Operator:
                     (0, 255, 0),
                     2,
                 )
+
+                cv2.putText(
+                    self.image,
+                    LABELS[int(label)] + f", {confidence:0.2f}",
+                    (int(max_x), int(max_y)),
+                    font,
+                    0.75,
+                    (0, 255, 0),
+                    2,
+                    1,
+                )
+
             if CI != "true":
                 cv2.imshow("frame", self.image)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
