@@ -1,0 +1,35 @@
+
+name: CI-python
+
+# Filter CI as this job will take time.
+on:
+  push:
+    paths:
+    - apis/python/**
+    - binaries/runtime/**
+  pull_request:
+    branches:
+    - main
+    paths:
+    - apis/python/**
+    - binaries/runtime/**
+    
+jobs:
+
+  examples:
+    name: "Python Examples"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Cap'n Proto
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y capnproto libcapnp-dev
+      - uses: actions/setup-python@v2
+        with:
+          python-version: 3.8.10
+      - name: "Python Dataflow example"
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: --example python-dataflow
