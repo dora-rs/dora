@@ -38,10 +38,6 @@ Distributed as:
 
 ---
 
-## 💻 Getting started
-
-- Check out [coordinator/README.md](coordinator/README.md)
-
 ## 🏁 Further reading
 
 - Check out [dora-drives](https://github.com/dora-rs/dora-drives) for a template of an autonomous vehicle within a simulation.
