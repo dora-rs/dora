@@ -22,7 +22,3 @@ time = "0.3.9"
 futures-concurrency = "2.0.3"
 rand = "0.8.5"
 dora-core = { version = "0.1.0", path = "../../libraries/core" }
-
-[[example]]
-name = "source_timer"
-path = "examples/nodes/rust/source_timer.rs"

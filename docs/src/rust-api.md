@@ -30,17 +30,17 @@ impl DoraOperator for ExampleOperator {
 - Generate a new Rust library
 
 ```bash
-cargo new example-operator --lib
+cargo new rust-dataflow-example-operator --lib
 ```
 
 `Cargo.toml`
 ```toml
-{{#include ../../examples/example-operator/Cargo.toml}}
+{{#include ../../examples/rust-dataflow/operator/Cargo.toml}}
 ```
 
 `src/lib.rs`
 ```rust
-{{#include ../../examples/example-operator/src/lib.rs}}
+{{#include ../../examples/rust-dataflow/operator/src/lib.rs}}
 ```
 
 - Build it:
@@ -50,7 +50,7 @@ cargo build --release
 
 - Link it in your graph as:
 ```yaml
-{{#include ../../binaries/coordinator/examples/mini-dataflow.yml:38:46}}
+{{#include ../../examples/rust-dataflow/dataflow.yml:13:21}}
 ```
 
 This example can be found in `examples`.
@@ -87,31 +87,19 @@ node.send_output(&data_id, data.as_bytes()).await?;
 - Generate a new Rust binary (application):
 
 ```bash
-cargo new source_timer
+cargo new rust-dataflow-example-node
 ```
 
 ```toml
-[package]
-name = "source_timer"
-version = "0.1.0"
-edition = "2021"
-license = "Apache-2.0"
-
-[dependencies]
-dora-node-api = { path = "../../apis/rust/node" }
-time = "0.3.9"
+{{#include ../../examples/rust-dataflow/node/Cargo.toml}}
 ```
 
 `src/main.rs`
 ```rust
-{{#include ../../binaries/coordinator/examples/nodes/rust/source_timer.rs}}
+{{#include ../../examples/rust-dataflow/node/src/main.rs}}
 ```
 
 - Link it in your graph as:
 ```yaml
-  - id: timer
-    custom:
-      run: cargo run --release
-      outputs:
-        - time
+{{#include ../../examples/rust-dataflow/dataflow.yml:6:12}}
 ```
