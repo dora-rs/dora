@@ -276,10 +276,12 @@ clang -shared build/operator.o -o build/operator.so
 <p>Link it in your graph as:</p>
 </li>
 </ul>
-<pre><code class="language-yaml">      - id: op-2
-        shared-library: ../../examples/c-operator/operator.so
+<pre><code class="language-yaml">  - id: runtime-node
+    operators:
+      - id: c_operator
+        shared-library: build/operator.so
         inputs:
-          time: timer/time
+          tick: c_node/tick
         outputs:
           - counter
 </code></pre>
@@ -356,15 +358,21 @@ int main()
 }
 </code></pre>
 <ul>
-<li>Create a <code>build</code> folder in this directory (i.e., next to the <code>node.c</code> file)</li>
-<li>Copy the <code>node-api.h</code> header file from <code>../../apis/c/node</code> to <code>build</code></li>
-<li>Compile the <code>dora-node-api-c</code> crate into a static library.
+<li>
+<p>Create a <code>build</code> folder in this directory (i.e., next to the <code>node.c</code> file)</p>
+</li>
+<li>
+<p>Copy the <code>node-api.h</code> header file from <code>../../apis/c/node</code> to <code>build</code></p>
+</li>
+<li>
+<p>Compile the <code>dora-node-api-c</code> crate into a static library.</p>
 <ul>
 <li>Run <code>cargo build -p dora-node-api-c --release</code></li>
 <li>The resulting staticlib is then available under <code>../../target/release/libdora-node-api-c.a</code>.</li>
 </ul>
 </li>
-<li>Compile the <code>node.c</code> (e.g. using <code>clang</code>) and link the staticlib
+<li>
+<p>Compile the <code>node.c</code> (e.g. using <code>clang</code>) and link the staticlib</p>
 <ul>
 <li>For example, use the following command:
 <pre><code>clang node.c -lm -lrt -ldl -pthread -ldora_node_api_c -L ../../target/release --output build/c_node
@@ -372,7 +380,18 @@ int main()
 </li>
 </ul>
 </li>
+<li>
+<p>Link it in your graph as:</p>
+</li>
 </ul>
+<pre><code class="language-yaml">  - id: c_node
+    custom:
+      run: build/c_node
+      inputs:
+        timer: dora/timer/secs/1
+      outputs:
+        - tick
+</code></pre>
 
                     </main>
 

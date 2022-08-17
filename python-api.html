@@ -160,14 +160,62 @@
 </blockquote>
 <h3 id="try-it-out"><a class="header" href="#try-it-out">Try it out!</a></h3>
 <ul>
-<li>Create an operator python file called <code>op.py</code>:</li>
+<li>Create an operator python file called <code>object_detection.py</code>:</li>
 </ul>
-<pre><code class="language-python">{{#include ../../examples/python-operator/op.py}}
+<pre><code class="language-python">from enum import Enum
+from typing import Callable
+
+import cv2
+import numpy as np
+import torch
+
+
+class DoraStatus(Enum):
+    CONTINUE = 0
+    STOP = 1
+
+
+class Operator:
+    &quot;&quot;&quot;
+    Infering object from images
+    &quot;&quot;&quot;
+
+    def __init__(self):
+        self.model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
+
+    def on_input(
+        self,
+        input_id: str,
+        value: bytes,
+        send_output: Callable[[str, bytes], None],
+    ) -&gt; DoraStatus:
+        &quot;&quot;&quot;Handle image
+
+        Args:
+            input_id (str): Id of the input declared in the yaml configuration
+            value (bytes): Bytes message of the input
+            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
+        &quot;&quot;&quot;
+
+        frame = np.frombuffer(value, dtype=&quot;uint8&quot;)
+        frame = cv2.imdecode(frame, -1)
+        frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+
+        results = self.model(frame)  # includes NMS
+        arrays = np.array(results.xyxy[0].cpu()).tobytes()
+        send_output(&quot;bbox&quot;, arrays)
+        return DoraStatus.CONTINUE
 </code></pre>
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">{{#include ../../binaries/coordinator/examples/graphs/mini-dataflow.yml:67:73}}
+<pre><code class="language-yaml">  - id: object_detection
+    operator:
+      python: object_detection.py
+      inputs:
+        image: webcam/image
+      outputs:
+        - bbox
 </code></pre>
 <h2 id="custom-node"><a class="header" href="#custom-node">Custom Node</a></h2>
 <p>The custom node API allow you to integrate <code>dora</code> into your application. It allows you to retrieve input and send output in any fashion you want.</p>
@@ -200,14 +248,42 @@ pip install maturin
 maturin develop
 </code></pre>
 <ul>
-<li>Create a python file called <code>printer.py</code>:</li>
+<li>Create a python file called <code>webcam.py</code>:</li>
 </ul>
-<pre><code class="language-python">{{#include ../../binaries/coordinator/examples/nodes/python/printer.py}}
+<pre><code class="language-python">#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import time
+
+import cv2
+from dora import Node
+
+node = Node()
+
+video_capture = cv2.VideoCapture(0)
+
+start = time.time()
+
+# Run for 20 seconds
+while time.time() - start &lt; 20:
+    # Wait next input
+    node.next()
+    ret, frame = video_capture.read()
+    if ret:
+        node.send_output(&quot;image&quot;, cv2.imencode(&quot;.jpg&quot;, frame)[1].tobytes())
+
+video_capture.release()
 </code></pre>
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">{{#include ../../binaries/coordinator/examples/graphs/python_test.yml:12:17}}
+<pre><code class="language-yaml">  - id: webcam
+    custom:
+      run: ./webcam.py
+      inputs:
+        timer: dora/timer/millis/100
+      outputs:
+        - image
 </code></pre>
 
                     </main>

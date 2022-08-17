@@ -219,72 +219,30 @@ deployment:
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-yaml">communication:
   zenoh:
-    prefix: /foo
+    prefix: /example-rust-dataflow
 
 nodes:
-  - id: timer
+  - id: rust-node
     custom:
-      run: cargo run --release --example example_source_timer
-      outputs:
-        - time
-
-  - id: rate-limited-timer
-    custom:
-      run: cargo run --release --example rate_limit -- --seconds 0.5
+      run: ../../target/release/rust-dataflow-example-node
       inputs:
-        data: timer/time
+        tick: dora/timer/millis/300
       outputs:
-        - rate_limited
-
-  - id: random
-    custom:
-      run: cargo run --release --example random_number
-      inputs:
-        timestamp: rate-limited-timer/rate_limited
-      outputs:
-        - number
-
-  - id: logger
-    custom:
-      run: cargo run --release --example example_sink_logger
-      inputs:
-        random: random/number
-        time: timer/time
-        timestamped-random: runtime-node/op-1/timestamped-random
-        c-counter: runtime-node/op-2/counter
-        python-counter: runtime-node/op-3/counter
-
+        - random
   - id: runtime-node
     operators:
-      - id: op-1
-        shared-library: ../../target/release/libexample_operator.so
+      - id: rust-operator
+        shared-library: ../../target/release/librust_dataflow_example_operator.so
         inputs:
-          random: random/number
-          time: timer/time
+          tick: dora/timer/millis/100
+          random: rust-node/random
         outputs:
-          - timestamped-random
-      - id: op-2
-        shared-library: ../../examples/c-operator/operator.so
-        inputs:
-          time: timer/time
-        outputs:
-          - counter
-      - id: op-3
-        python: ../../examples/python-operator/op.py
-        inputs:
-          time: timer/time
-          test: python-operator/counter
-        outputs:
-          - counter
-
-  - id: python-operator
-    operator:
-      python: ../../examples/python-operator/op2.py
+          - status
+  - id: rust-sink
+    custom:
+      run: ../../target/release/rust-dataflow-example-sink
       inputs:
-        time: timer/time
-        dora_time: dora/timer/millis/50
-      outputs:
-        - counter
+        message: runtime-node/rust-operator/status
 </code></pre>
 <h2 id="todo-integration-with-ros-12"><a class="header" href="#todo-integration-with-ros-12">TODO: Integration with ROS 1/2</a></h2>
 <p>To integrate dora-rs operators with ROS1 or ROS2 operators, we plan to provide special <em>bridge operators</em>. These operators act as a sink in one dataflow framework and push all messages to a different dataflow framework, where they act as source.</p>

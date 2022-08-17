@@ -172,16 +172,76 @@ impl DoraOperator for ExampleOperator {
 <ul>
 <li>Generate a new Rust library</li>
 </ul>
-<pre><code class="language-bash">cargo new example-operator --lib
+<pre><code class="language-bash">cargo new rust-dataflow-example-operator --lib
 </code></pre>
 <p><code>Cargo.toml</code></p>
-<pre><code class="language-toml">{{#include ../../examples/example-operator/Cargo.toml}}
+<pre><code class="language-toml">[package]
+name = &quot;rust-dataflow-example-operator&quot;
+version = &quot;0.1.0&quot;
+edition = &quot;2021&quot;
+license = &quot;Apache-2.0&quot;
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = [&quot;cdylib&quot;]
+
+[dependencies]
+dora-operator-api = { path = &quot;../../../apis/rust/operator&quot; }
 </code></pre>
 <p><code>src/lib.rs</code></p>
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>{{#include ../../examples/example-operator/src/lib.rs}}
+</span>#![warn(unsafe_op_in_unsafe_fn)]
+
+<span class="boring">fn main() {
+</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+use std::time::{Duration, Instant};
+
+register_operator!(ExampleOperator);
+
+#[derive(Debug, Default)]
+struct ExampleOperator {
+    ticks: usize,
+    last_random_at: Option&lt;Instant&gt;,
+}
+
+impl DoraOperator for ExampleOperator {
+    fn on_input(
+        &amp;mut self,
+        id: &amp;str,
+        data: &amp;[u8],
+        output_sender: &amp;mut DoraOutputSender,
+    ) -&gt; Result&lt;DoraStatus, ()&gt; {
+        match id {
+            &quot;tick&quot; =&gt; {
+                self.ticks += 1;
+            }
+            &quot;random&quot; =&gt; {
+                let parsed = {
+                    let data: [u8; 8] = data.try_into().map_err(|_| ())?;
+                    u64::from_le_bytes(data)
+                };
+                let output = format!(
+                    &quot;operator received random value {parsed} after {} ticks&quot;,
+                    self.ticks
+                );
+                output_sender
+                    .send(&quot;status&quot;, output.as_bytes())
+                    .map_err(|_| ())?;
+                self.last_random_at = Some(Instant::now());
+            }
+            other =&gt; eprintln!(&quot;ignoring unexpected input {other}&quot;),
+        }
+        if let Some(last_random_at) = self.last_random_at {
+            if last_random_at.elapsed() &gt; Duration::from_secs(1) {
+                // looks like the node sending the random values finished -&gt; exit too
+                return Ok(DoraStatus::Stop);
+            }
+        }
+        Ok(DoraStatus::Continue)
+    }
+}
 <span class="boring">}
 </span></code></pre></pre>
 <ul>
@@ -194,13 +254,13 @@ impl DoraOperator for ExampleOperator {
 </ul>
 <pre><code class="language-yaml">  - id: runtime-node
     operators:
-      - id: op-1
-        shared-library: ../../target/release/libexample_operator.so
+      - id: rust-operator
+        shared-library: ../../target/release/librust_dataflow_example_operator.so
         inputs:
-          random: random/number
-          time: timer/time
+          tick: dora/timer/millis/100
+          random: rust-node/random
         outputs:
-          - timestamped-random
+          - status
 </code></pre>
 <p>This example can be found in <code>examples</code>.</p>
 <h2 id="custom-node"><a class="header" href="#custom-node">Custom Node</a></h2>
@@ -233,34 +293,51 @@ impl DoraOperator for ExampleOperator {
 <ul>
 <li>Generate a new Rust binary (application):</li>
 </ul>
-<pre><code class="language-bash">cargo new source_timer
+<pre><code class="language-bash">cargo new rust-dataflow-example-node
 </code></pre>
 <pre><code class="language-toml">[package]
-name = &quot;source_timer&quot;
+name = &quot;rust-dataflow-example-node&quot;
 version = &quot;0.1.0&quot;
 edition = &quot;2021&quot;
-license = &quot;Apache-2.0&quot;
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { path = &quot;../../apis/rust/node&quot; }
-time = &quot;0.3.9&quot;
+dora-node-api = { version = &quot;0.1.0&quot;, path = &quot;../../../apis/rust/node&quot; }
+eyre = &quot;0.6.8&quot;
+futures = &quot;0.3.21&quot;
+rand = &quot;0.8.5&quot;
+tokio = { version = &quot;1.20.1&quot;, features = [&quot;rt&quot;, &quot;macros&quot;] }
 </code></pre>
 <p><code>src/main.rs</code></p>
 <pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, config::DataId, DoraNode};
+use eyre::bail;
+use futures::StreamExt;
 use std::time::Duration;
-use time::OffsetDateTime;
 
 #[tokio::main]
 async fn main() -&gt; eyre::Result&lt;()&gt; {
+    let output = DataId::from(&quot;random&quot;.to_owned());
+
     let operator = DoraNode::init_from_env().await?;
 
-    let mut interval = tokio::time::interval(Duration::from_millis(20));
+    let mut inputs = operator.inputs().await?;
 
-    let time_output = DataId::from(&quot;time&quot;.to_owned());
-    for _ in 0..400 {
-        interval.tick().await;
-        let now = OffsetDateTime::now_utc().to_string();
-        operator.send_output(&amp;time_output, now.as_bytes()).await?;
+    for _ in 0..20 {
+        let timeout = Duration::from_secs(3);
+        let input = match tokio::time::timeout(timeout, inputs.next()).await {
+            Ok(Some(input)) =&gt; input,
+            Ok(None) =&gt; break,
+            Err(_) =&gt; bail!(&quot;timeout while waiting for input&quot;),
+        };
+
+        match input.id.as_str() {
+            &quot;tick&quot; =&gt; {
+                let random: u64 = rand::random();
+                operator.send_output(&amp;output, &amp;random.to_le_bytes()).await?;
+            }
+            other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
+        }
     }
 
     Ok(())
@@ -269,11 +346,13 @@ async fn main() -&gt; eyre::Result&lt;()&gt; {
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">  - id: timer
+<pre><code class="language-yaml">  - id: rust-node
     custom:
-      run: cargo run --release
+      run: ../../target/release/rust-dataflow-example-node
+      inputs:
+        tick: dora/timer/millis/300
       outputs:
-        - time
+        - random
 </code></pre>
 
                     </main>
