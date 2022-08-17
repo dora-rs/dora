@@ -37,7 +37,7 @@ The custom node API allow you to integrate `dora` into your application. It allo
 `Node()` initiate a node from environment variables set by `dora-coordinator` 
 
 ```python
-from dora import Node()
+from dora import Node
 
 node = Node()
 ```
