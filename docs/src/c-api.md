@@ -55,7 +55,7 @@ int dora_on_input(
 
 - Link it in your graph as:
 ```yaml
-{{#include ../../binaries/coordinator/examples/mini-dataflow.yml:47:52}}
+{{#include ../../examples/c-dataflow/dataflow.yml:13:20}}
 ```
 
 ## Custom Node
@@ -105,3 +105,8 @@ dora_send_output(dora_context, out_id, strlen(out_id), &out_data, sizeof out_dat
 ```
 
 {{#include ../../examples/c-dataflow/README.md:26:35}}
+
+- Link it in your graph as:
+```yaml
+{{#include ../../examples/c-dataflow/dataflow.yml:6:12}}
+```

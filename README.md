@@ -13,6 +13,11 @@ Dataflow Oriented Robotic Architecture ⚡
 This project is in early development, and many features have yet to be implemented with breaking changes. Please don't take for granted the current design.
 
 ---
+## 📖 Documentation
+
+The documentation can be found here: [https://dora-rs.github.io/dora/](https://dora-rs.github.io/dora/) 
+
+---
 ## ✨ Features
 
 Composability as:
