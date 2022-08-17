@@ -162,42 +162,7 @@
 <ul>
 <li>Create an operator python file called <code>op.py</code>:</li>
 </ul>
-<pre><code class="language-python">from typing import Callable
-from enum import Enum
-
-class DoraStatus(Enum):
-    CONTINUE = 0
-    STOP = 1
-
-class Operator:
-    &quot;&quot;&quot;
-    Example operator incrementing a counter every times its been called.
-
-    The current value of the counter is sent back to dora on `counter`.
-    &quot;&quot;&quot;
-
-    def __init__(self, counter=0):
-        self.counter = counter
-
-    def on_input(
-        self,
-        input_id: str,
-        value: bytes,
-        send_output: Callable[[str, bytes], None],
-    ):
-        &quot;&quot;&quot;Handle input by incrementing count by one.
-
-        Args:
-            input_id (str): Id of the input declared in the yaml configuration
-            value (bytes): Bytes message of the input
-            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
-        &quot;&quot;&quot;
-        val_len = len(value)
-        print(f&quot;PYTHON received input {input_id}; value length: {val_len}&quot;)
-        send_output(&quot;counter&quot;, (self.counter % 256).to_bytes(1, &quot;little&quot;))
-        self.counter = self.counter + 1
-
-        return DoraStatus.OK
+<pre><code class="language-python">{{#include ../../examples/python-operator/op.py}}
 </code></pre>
 <ul>
 <li>Link it in your graph as:</li>
@@ -237,24 +202,12 @@ maturin develop
 <ul>
 <li>Create a python file called <code>printer.py</code>:</li>
 </ul>
-<pre><code class="language-python">from dora import Node
-
-node = Node()
-
-for id, value in node:
-    print(f&quot;From Python, id: {id}, value: {value}&quot;) if value is not [] else None
-
-print(&quot;printer finished&quot;)
+<pre><code class="language-python">{{#include ../../binaries/coordinator/examples/nodes/python/printer.py}}
 </code></pre>
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">  - id: python-printer
-    custom:
-      run: python examples/nodes/python/printer.py
-      inputs:
-          string: static-string/string
-          time2: rust-timer/time
+<pre><code class="language-yaml">{{#include ../../binaries/coordinator/examples/graphs/python_test.yml:12:17}}
 </code></pre>
 
                     </main>
