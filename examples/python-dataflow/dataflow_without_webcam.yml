@@ -1,0 +1,27 @@
+communication:
+  zenoh:
+    prefix: /example-python-no-webcam-dataflow
+
+nodes:
+  - id: no_webcam
+    custom:
+      run: ./no_webcam.py
+      inputs:
+        timer: dora/timer/millis/100
+      outputs:
+        - image
+  
+  - id: object_detection
+    operator:
+      python: object_detection.py
+      inputs:
+        image: no_webcam/image
+      outputs:
+        - bbox
+
+  - id: plot
+    operator:
+      python: plot.py
+      inputs:
+        image: no_webcam/image
+        bbox: object_detection/bbox
