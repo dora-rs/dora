@@ -138,7 +138,8 @@ fn spawn_custom_node(
             args.next()
                 .ok_or_else(|| eyre!("`run` field must not be empty"))?,
         );
-        raw.canonicalize()
+        let path = raw.with_extension(EXE_EXTENSION);
+        path.canonicalize()
             .wrap_err_with(|| format!("no node exists at `{}`", raw.display()))?
     };
 
