@@ -5,7 +5,10 @@ use dora_node_api::{
 };
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
-use std::path::{Path, PathBuf};
+use std::{
+    env::consts::EXE_EXTENSION,
+    path::{Path, PathBuf},
+};
 use tokio_stream::wrappers::IntervalStream;
 
 #[derive(Debug, Clone, clap::Parser)]
@@ -51,6 +54,7 @@ pub async fn run(command: Command) -> eyre::Result<()> {
 }
 
 async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()> {
+    let runtime = runtime.with_extension(EXE_EXTENSION);
     let descriptor = read_descriptor(&dataflow_path).await.wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
@@ -89,7 +93,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
             descriptor::CoreNodeKind::Runtime(node) => {
                 if !node.operators.is_empty() {
                     let result =
-                        spawn_runtime_node(runtime, node_id.clone(), &node, &communication)
+                        spawn_runtime_node(&runtime, node_id.clone(), &node, &communication)
                             .wrap_err_with(|| format!("failed to spawn runtime node {node_id}"))?;
                     tasks.push(result);
                 }
