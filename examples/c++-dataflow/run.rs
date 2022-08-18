@@ -88,7 +88,7 @@ async fn build_cxx_operator(path: &Path, out_name: &str) -> eyre::Result<()> {
     let mut link = tokio::process::Command::new("clang++");
     link.arg("-shared").arg(&object_file_path);
     link.arg("-o")
-        .arg(Path::new("../build").join(out_name).with_extension("so"));
+        .arg(Path::new("../build").join(format!("lib{out_name}.so")));
     if let Some(parent) = path.parent() {
         link.current_dir(parent);
     }

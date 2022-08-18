@@ -21,14 +21,14 @@ nodes:
   - id: runtime-node
     operators:
       - id: operator-rust-api
-        shared-library: ../../target/release/libcxx_dataflow_example_operator_rust_api.so
+        shared-library: ../../target/release/cxx_dataflow_example_operator_rust_api
         inputs:
           counter_1: cxx-node-c-api/counter
           counter_2: cxx-node-rust-api/counter
         outputs:
           - status
       - id: operator-c-api
-        shared-library: build/operator_c_api.so
+        shared-library: build/operator_c_api
         inputs:
           op_status: runtime-node/operator-rust-api/status
         outputs:
