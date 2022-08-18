@@ -79,7 +79,7 @@ async fn build_c_operator(root: &Path) -> eyre::Result<()> {
 
     let mut link = tokio::process::Command::new("clang");
     link.arg("-shared").arg("build/operator.o");
-    link.arg("-o").arg("build/operator.so");
+    link.arg("-o").arg("build/liboperator.so");
     if !link.status().await?.success() {
         bail!("failed to link c operator");
     };

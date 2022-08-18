@@ -42,7 +42,7 @@ For a manual build, follow these steps:
   - For example, use the following commands:
     ```
     clang -c operator.c -o build/operator.o -fPIC
-    clang -shared build/operator.o -o build/operator.so
+    clang -shared build/operator.o -o libbuild/operator.so
     ```
 
 **Build the dora coordinator and runtime:**
