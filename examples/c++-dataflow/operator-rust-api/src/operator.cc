@@ -1,5 +1,4 @@
 #include "operator.h"
-#include "cxx-dataflow-example-operator-rust-api/src/lib.rs.h"
 #include <iostream>
 
 Operator::Operator() {}
