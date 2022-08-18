@@ -27,6 +27,13 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: 1
           HOMEBREW_NO_BOTTLE_SOURCE_FALLBACK: 1
           HOMEBREW_NO_INSTALL_CLEANUP: 1
+      - name: Install Cap'n Proto (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install capnproto
+          echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: "Check"
         uses: actions-rs/cargo@v1
         with:
