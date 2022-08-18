@@ -1,6 +1,5 @@
 #pragma once
 #include "rust/cxx.h"
-#include "cxx-dataflow-example-operator-rust-api/src/lib.rs.h"
 #include <memory>
 
 class Operator
