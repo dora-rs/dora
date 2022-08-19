@@ -1,5 +1,5 @@
 use dora_core::descriptor::{OperatorDefinition, OperatorSource};
-use dora_node_api::config::DataId;
+use dora_node_api::{config::DataId, DoraInputContext};
 use eyre::{eyre, Context};
 use log::warn;
 use std::any::Any;
@@ -47,7 +47,12 @@ impl Operator {
         })
     }
 
-    pub fn handle_input(&mut self, id: DataId, value: Vec<u8>) -> eyre::Result<()> {
+    pub fn handle_input(
+        &mut self,
+        id: DataId,
+        value: Vec<u8>,
+        dora_context: DoraInputContext,
+    ) -> eyre::Result<()> {
         self.operator_task
             .as_mut()
             .ok_or_else(|| {
@@ -56,7 +61,11 @@ impl Operator {
                     self.definition.id
                 )
             })?
-            .try_send(OperatorInput { id, value })
+            .try_send(OperatorInput {
+                id,
+                value,
+                dora_context,
+            })
             .or_else(|err| match err {
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => Err(eyre!("operator crashed")),
                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
@@ -87,4 +96,5 @@ pub enum OperatorEvent {
 pub struct OperatorInput {
     id: DataId,
     value: Vec<u8>,
+    dora_context: DoraInputContext,
 }

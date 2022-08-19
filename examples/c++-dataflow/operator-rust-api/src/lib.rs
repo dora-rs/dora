@@ -1,6 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{self, register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+use dora_operator_api::{self, register_operator, DoraContext, DoraOperator, DoraStatus};
 
 #[cxx::bridge]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -31,10 +31,10 @@ mod ffi {
     }
 }
 
-pub struct OutputSender<'a>(&'a mut DoraOutputSender);
+pub struct OutputSender<'a>(&'a mut DoraContext);
 
 fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> i32 {
-    match sender.0.send(id, data) {
+    match sender.0.send_output(id, data) {
         Ok(()) => 0,
         Err(err_code) => err_code.try_into().unwrap(),
     }
@@ -59,7 +59,7 @@ impl DoraOperator for OperatorWrapper {
         &mut self,
         id: &str,
         data: &[u8],
-        output_sender: &mut DoraOutputSender,
+        output_sender: &mut DoraContext,
     ) -> Result<DoraStatus, ()> {
         let operator = self.operator.as_mut().unwrap();
         let mut output_sender = OutputSender(output_sender);

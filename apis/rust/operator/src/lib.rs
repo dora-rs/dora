@@ -13,7 +13,7 @@ pub trait DoraOperator: Default {
         &mut self,
         id: &str,
         data: &[u8],
-        output_sender: &mut DoraOutputSender,
+        output_sender: &mut DoraContext,
     ) -> Result<DoraStatus, ()>;
 }
 
@@ -23,25 +23,34 @@ pub enum DoraStatus {
     Stop = 1,
 }
 
-pub struct DoraOutputSender {
+pub struct DoraContext {
     output_fn_raw: OutputFnRaw,
-    output_context: *const c_void,
+    dora_context: *const c_void,
 }
 
-impl DoraOutputSender {
-    pub fn send(&mut self, id: &str, data: &[u8]) -> Result<(), isize> {
+impl DoraContext {
+    pub fn send_output(&mut self, id: &str, data: &[u8]) -> Result<(), isize> {
         let result = unsafe {
             (self.output_fn_raw)(
                 id.as_ptr(),
                 id.len(),
                 data.as_ptr(),
                 data.len(),
-                self.output_context,
+                self.dora_context,
             )
         };
         match result {
             0 => Ok(()),
             other => Err(other),
         }
+    }
+
+    pub fn opentelemetry_context(&self) -> &str {
+        let mut ptr = std::ptr::null();
+        let mut len = 0;
+        unsafe { raw::dora_context_get_opentelemetry(self.dora_context, &mut ptr, &mut len) };
+        assert!(!ptr.is_null());
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        std::str::from_utf8(bytes).unwrap()
     }
 }

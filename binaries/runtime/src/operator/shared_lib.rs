@@ -86,6 +86,12 @@ impl<'lib> SharedLibraryOperator<'lib> {
             };
             let (output_fn, output_ctx) = wrap_closure(&output);
 
+            let dora_context = SharedLibDoraContext {
+                output_ctx,
+                dora_context: input.dora_context,
+            };
+            let dora_context_ptr: *const _ = &dora_context;
+
             let result = unsafe {
                 (self.bindings.on_input)(
                     id_start,
@@ -93,7 +99,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     data_start,
                     data_len,
                     output_fn,
-                    output_ctx,
+                    dora_context_ptr.cast(),
                     operator_context.raw,
                 )
             };
@@ -140,7 +146,7 @@ where
         id_len: usize,
         data_start: *const u8,
         data_len: usize,
-        context: *const c_void,
+        dora_context: *const c_void,
     ) -> isize {
         let id_raw = unsafe { slice::from_raw_parts(id_start, id_len) };
         let data = unsafe { slice::from_raw_parts(data_start, data_len) };
@@ -148,7 +154,8 @@ where
             Ok(s) => s,
             Err(_) => return -1,
         };
-        unsafe { (*(context as *const F))(id, data) }
+        let context: &SharedLibDoraContext = unsafe { &*dora_context.cast() };
+        unsafe { (*(context.output_ctx as *const F))(id, data) }
     }
 
     (trampoline::<F>, closure as *const F as *const c_void)
@@ -188,7 +195,7 @@ type OnInputFn = unsafe extern "C" fn(
     data_start: *const u8,
     data_len: usize,
     output: OutputFn,
-    output_context: *const c_void,
+    dora_context: *const c_void,
     operator_context: *mut (),
 ) -> isize;
 
@@ -197,5 +204,24 @@ type OutputFn = unsafe extern "C" fn(
     id_len: usize,
     data_start: *const u8,
     data_len: usize,
-    output_context: *const c_void,
+    dora_context: *const c_void,
 ) -> isize;
+
+struct SharedLibDoraContext {
+    output_ctx: *const c_void,
+    dora_context: super::DoraInputContext,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn dora_context_get_opentelemetry(
+    dora_context: *const c_void,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) {
+    let context: &SharedLibDoraContext = unsafe { &*dora_context.cast() };
+    let s = &context.dora_context.open_telementry;
+    unsafe {
+        *out_ptr = s.as_ptr();
+        *out_len = s.len();
+    }
+}

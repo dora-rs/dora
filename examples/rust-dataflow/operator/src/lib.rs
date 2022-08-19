@@ -1,6 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+use dora_operator_api::{register_operator, DoraContext, DoraOperator, DoraStatus};
 use std::time::{Duration, Instant};
 
 register_operator!(ExampleOperator);
@@ -16,11 +16,12 @@ impl DoraOperator for ExampleOperator {
         &mut self,
         id: &str,
         data: &[u8],
-        output_sender: &mut DoraOutputSender,
+        dora_context: &mut DoraContext,
     ) -> Result<DoraStatus, ()> {
         match id {
             "tick" => {
                 self.ticks += 1;
+                dbg!(dora_context.opentelemetry_context());
             }
             "random" => {
                 let parsed = {
@@ -31,8 +32,8 @@ impl DoraOperator for ExampleOperator {
                     "operator received random value {parsed} after {} ticks",
                     self.ticks
                 );
-                output_sender
-                    .send("status", output.as_bytes())
+                dora_context
+                    .send_output("status", output.as_bytes())
                     .map_err(|_| ())?;
                 self.last_random_at = Some(Instant::now());
             }

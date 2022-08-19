@@ -1,13 +1,21 @@
 use std::{ffi::c_void, slice};
 
-use crate::{DoraOperator, DoraOutputSender};
+use crate::{DoraContext, DoraOperator};
+
+extern "C" {
+    pub fn dora_context_get_opentelemetry(
+        dora_context: *const c_void,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    );
+}
 
 pub type OutputFnRaw = unsafe extern "C" fn(
     id_start: *const u8,
     id_len: usize,
     data_start: *const u8,
     data_len: usize,
-    output_context: *const c_void,
+    dora_context: *const c_void,
 ) -> isize;
 
 pub unsafe fn dora_init_operator<O: DoraOperator>(operator_context: *mut *mut c_void) -> isize {
@@ -29,7 +37,7 @@ pub unsafe fn dora_on_input<O: DoraOperator>(
     data_start: *const u8,
     data_len: usize,
     output_fn_raw: OutputFnRaw,
-    output_context: *const c_void,
+    dora_context: *const c_void,
     operator_context: *mut c_void,
 ) -> isize {
     let id = match std::str::from_utf8(unsafe { slice::from_raw_parts(id_start, id_len) }) {
@@ -37,9 +45,9 @@ pub unsafe fn dora_on_input<O: DoraOperator>(
         Err(_) => return -1,
     };
     let data = unsafe { slice::from_raw_parts(data_start, data_len) };
-    let mut output_sender = DoraOutputSender {
+    let mut output_sender = DoraContext {
         output_fn_raw,
-        output_context,
+        dora_context,
     };
 
     let operator: &mut O = unsafe { &mut *operator_context.cast() };

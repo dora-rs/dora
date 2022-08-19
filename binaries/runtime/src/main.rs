@@ -5,7 +5,7 @@ use dora_node_api::{
     self,
     communication::{self, CommunicationLayer},
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId, UserInputMapping},
-    STOP_TOPIC,
+    DoraInputContext, STOP_TOPIC,
 };
 use eyre::{bail, eyre, Context};
 use futures::{
@@ -87,8 +87,14 @@ async fn main() -> eyre::Result<()> {
                         }
                     };
 
+                    // let deserialized = ...;
+                    let data = input.data; // TODO replace with `deserialized.data`
+                    let context = DoraInputContext {
+                        open_telementry: "dummy context".into(),
+                    }; // TODO replace with `deserialized.context`
+
                     operator
-                        .handle_input(input.id.clone(), input.data)
+                        .handle_input(input.id.clone(), data, context)
                         .wrap_err_with(|| {
                             format!(
                                 "operator {} failed to handle input {}",

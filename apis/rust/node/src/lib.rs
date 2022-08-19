@@ -62,6 +62,9 @@ impl DoraNode {
             streams.push(sub.map(|data| Input {
                 id: input.clone(),
                 data,
+                input_context: DoraInputContext {
+                    open_telementry: "TODO dummy".into(),
+                },
             }))
         }
 
@@ -140,6 +143,12 @@ impl Drop for DoraNode {
 pub struct Input {
     pub id: DataId,
     pub data: Vec<u8>,
+    pub input_context: DoraInputContext,
+}
+
+#[derive(Debug)]
+pub struct DoraInputContext {
+    pub open_telementry: String,
 }
 
 pub struct BoxError(Box<dyn std::error::Error + Send + Sync + 'static>);

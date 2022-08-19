@@ -23,6 +23,7 @@ async fn main() -> eyre::Result<()> {
             "tick" => {
                 let random: u64 = rand::random();
                 operator.send_output(&output, &random.to_le_bytes()).await?;
+                dbg!(input.input_context.open_telementry);
             }
             other => eprintln!("Ignoring unexpected input `{other}`"),
         }
