@@ -83,17 +83,17 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: --example rust-dataflow
+          args: --example rust-dataflow -vv
       - name: "C Dataflow example"
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: --example c-dataflow
+          args: --example c-dataflow -vv
       - name: "C++ Dataflow example"
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: --example cxx-dataflow
+          args: --example cxx-dataflow -vv
 
   clippy:
     name: "Clippy"
