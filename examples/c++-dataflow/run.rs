@@ -56,6 +56,7 @@ async fn build_package(package: &str) -> eyre::Result<()> {
 async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Result<()> {
     let mut clang = tokio::process::Command::new("clang++");
     clang.arg(path);
+    clang.arg("-std=c++11");
     clang.arg("-l").arg("dora_node_api_c");
     #[cfg(target_os = "linux")]
     {
@@ -97,6 +98,7 @@ async fn build_cxx_operator(path: &Path, out_name: &str) -> eyre::Result<()> {
 
     let mut compile = tokio::process::Command::new("clang++");
     compile.arg("-c").arg(path);
+    compile.arg("-std=c++11");
     compile.arg("-o").arg(&object_file_path);
     compile.arg("-fPIC");
     if let Some(parent) = path.parent() {
