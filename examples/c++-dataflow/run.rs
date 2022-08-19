@@ -128,6 +128,7 @@ async fn build_cxx_operator(path: &Path, out_name: &str) -> eyre::Result<()> {
     compile.arg("-c").arg(path);
     compile.arg("-std=c++14");
     compile.arg("-o").arg(&object_file_path);
+    #[cfg(unix)]
     compile.arg("-fPIC");
     if let Some(parent) = path.parent() {
         compile.current_dir(parent);
