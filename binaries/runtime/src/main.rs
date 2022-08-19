@@ -1,6 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_core::descriptor::OperatorDefinition;
+use dora_message::message_capnp;
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer},
@@ -87,14 +88,22 @@ async fn main() -> eyre::Result<()> {
                         }
                     };
 
-                    // let deserialized = ...;
-                    let data = input.data; // TODO replace with `deserialized.data`
+                    let deserialized = capnp::serialize::read_message(
+                        &mut input.data.as_slice(),
+                        capnp::message::ReaderOptions::new(),
+                    )
+                    .unwrap();
+                    let message = deserialized
+                        .get_root::<message_capnp::message::Reader>()
+                        .unwrap();
+                    let data = message.get_data().unwrap();
+                    let metadata = message.get_metadata().unwrap();
                     let context = DoraInputContext {
-                        open_telementry: "dummy context".into(),
-                    }; // TODO replace with `deserialized.context`
+                        otel_context: metadata.get_otel_context().unwrap().to_string(),
+                    };
 
                     operator
-                        .handle_input(input.id.clone(), data, context)
+                        .handle_input(input.id.clone(), data.to_vec(), context)
                         .wrap_err_with(|| {
                             format!(
                                 "operator {} failed to handle input {}",

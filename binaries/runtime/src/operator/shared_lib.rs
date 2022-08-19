@@ -1,4 +1,5 @@
 use super::{OperatorEvent, OperatorInput};
+use dora_message::serialize_message;
 use eyre::{bail, Context};
 use libloading::Symbol;
 use std::{
@@ -50,7 +51,6 @@ pub fn spawn(
 struct SharedLibraryOperator<'lib> {
     events_tx: Sender<OperatorEvent>,
     inputs: Receiver<OperatorInput>,
-
     bindings: Bindings<'lib>,
 }
 
@@ -77,7 +77,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let output = |id: &str, data: &[u8]| -> isize {
                 let result = self.events_tx.blocking_send(OperatorEvent::Output {
                     id: id.to_owned().into(),
-                    value: data.to_owned(),
+                    value: serialize_message(data, &input.dora_context.otel_context),
                 });
                 match result {
                     Ok(()) => 0,
@@ -219,7 +219,7 @@ pub unsafe extern "C" fn dora_context_get_opentelemetry(
     out_len: *mut usize,
 ) {
     let context: &SharedLibDoraContext = unsafe { &*dora_context.cast() };
-    let s = &context.dora_context.open_telementry;
+    let s = &context.dora_context.otel_context;
     unsafe {
         *out_ptr = s.as_ptr();
         *out_len = s.len();

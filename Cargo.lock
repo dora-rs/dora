@@ -827,8 +827,10 @@ dependencies = [
 name = "dora-runtime"
 version = "0.1.0"
 dependencies = [
+ "capnp",
  "clap 3.1.12",
  "dora-core",
+ "dora-message",
  "dora-node-api",
  "eyre",
  "fern",

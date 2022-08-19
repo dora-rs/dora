@@ -1,4 +1,5 @@
 use super::{OperatorEvent, OperatorInput};
+use dora_node_api::DoraInputContext;
 use eyre::{bail, eyre, Context};
 use pyo3::{pyclass, types::IntoPyDict, types::PyBytes, Py, Python};
 use std::{
@@ -32,10 +33,6 @@ pub fn spawn(
         .canonicalize()
         .wrap_err_with(|| format!("no file found at `{}`", path.display()))?;
     let path_cloned = path.clone();
-
-    let send_output = SendOutputCallback {
-        events_tx: events_tx.clone(),
-    };
 
     let init_operator = move |py: Python| {
         if let Some(parent_path) = path.parent() {
@@ -71,11 +68,18 @@ pub fn spawn(
         Result::<_, eyre::Report>::Ok(Py::from(operator))
     };
 
+    let loop_tx = events_tx.clone();
+
     let python_runner = move || {
         let operator =
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
         while let Some(input) = inputs.blocking_recv() {
+            let dora_context = DoraContext {
+                otel_context: input.dora_context,
+                events_tx: loop_tx.clone(),
+            };
+
             let status_enum = Python::with_gil(|py| {
                 operator
                     .call_method1(
@@ -84,7 +88,7 @@ pub fn spawn(
                         (
                             input.id.to_string(),
                             PyBytes::new(py, &input.value),
-                            send_output.clone(),
+                            dora_context,
                         ),
                     )
                     .map_err(traceback)
@@ -138,22 +142,24 @@ pub fn spawn(
 
 #[pyclass]
 #[derive(Clone)]
-struct SendOutputCallback {
+struct DoraContext {
     events_tx: Sender<OperatorEvent>,
+    otel_context: DoraInputContext,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
-    use super::SendOutputCallback;
+    use super::DoraContext;
     use crate::operator::OperatorEvent;
+    use dora_message::serialize_message;
     use pyo3::{pymethods, PyResult};
 
     #[pymethods]
-    impl SendOutputCallback {
+    impl DoraContext {
         fn __call__(&mut self, output: &str, data: &[u8]) -> PyResult<()> {
             let result = self.events_tx.blocking_send(OperatorEvent::Output {
                 id: output.to_owned().into(),
-                value: data.to_owned(),
+                value: serialize_message(data, &self.otel_context.otel_context),
             });
             result
                 .map_err(|_| eyre::eyre!("channel to dora runtime was closed unexpectedly").into())

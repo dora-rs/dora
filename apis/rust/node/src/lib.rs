@@ -63,7 +63,7 @@ impl DoraNode {
                 id: input.clone(),
                 data,
                 input_context: DoraInputContext {
-                    open_telementry: "TODO dummy".into(),
+                    otel_context: "TODO dummy".into(),
                 },
             }))
         }
@@ -146,9 +146,9 @@ pub struct Input {
     pub input_context: DoraInputContext,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DoraInputContext {
-    pub open_telementry: String,
+    pub otel_context: String,
 }
 
 pub struct BoxError(Box<dyn std::error::Error + Send + Sync + 'static>);
