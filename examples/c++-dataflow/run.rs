@@ -64,6 +64,16 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
         clang.arg("-l").arg("dl");
         clang.arg("-pthread");
     }
+    #[cfg(target_os = "windows")]
+    {
+        clang.arg("-lws2_32");
+        clang.arg("-lcrypto");
+        clang.arg("-lcrypto32");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        clang.arg("-stdlib=libstdc++");
+    }
     clang.arg("-L").arg(root.join("target").join("release"));
     clang
         .arg("--output")
