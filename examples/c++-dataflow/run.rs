@@ -67,8 +67,6 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
     #[cfg(target_os = "windows")]
     {
         clang.arg("-lws2_32");
-        clang.arg("-lcrypto");
-        clang.arg("-lcrypto32");
     }
     #[cfg(target_os = "macos")]
     {
