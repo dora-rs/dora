@@ -60,6 +60,9 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
     #[cfg(target_os = "windows")]
     {
         clang.arg("-lws2_32");
+        clang.arg("-Wl,-nodefaultlib:libcmt");
+        clang.arg("-D_DLL");
+        clang.arg("-lmsvcrt");
     }
     #[cfg(target_os = "macos")]
     {
