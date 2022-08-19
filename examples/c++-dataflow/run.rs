@@ -72,6 +72,9 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
         clang.arg("-lkernel32");
         clang.arg("-lws2_32");
         clang.arg("-lbcrypt");
+        clang.arg("-lschannel");
+        clang.arg("-lntdll");
+        clang.arg("-liphlpapi");
 
         clang.arg("-Wl,-nodefaultlib:libcmt");
         clang.arg("-D_DLL");
