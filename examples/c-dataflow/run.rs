@@ -64,6 +64,9 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
         clang.arg("-lkernel32");
         clang.arg("-lws2_32");
         clang.arg("-lbcrypt");
+        clang.arg("-lschannel");
+        clang.arg("-lntdll");
+        clang.arg("-liphlpapi");
 
         clang.arg("-Wl,-nodefaultlib:libcmt");
         clang.arg("-D_DLL");
