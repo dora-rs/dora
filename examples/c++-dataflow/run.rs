@@ -73,6 +73,7 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
     #[cfg(target_os = "macos")]
     {
         clang.arg("-framework").arg("CoreServices");
+        clang.arg("-framework").arg("Security");
         clang.arg("-l").arg("System");
         clang.arg("-l").arg("resolv");
         clang.arg("-l").arg("pthread");
