@@ -35,7 +35,11 @@ int main()
         free_dora_input(input);
     }
 
+    printf("node.c about to free dora context\n");
+
     free_dora_context(dora_context);
+
+    printf("node.c finished successful\n");
 
     return 0;
 }
