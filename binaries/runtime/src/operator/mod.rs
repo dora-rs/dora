@@ -1,15 +1,15 @@
 use dora_core::descriptor::{OperatorDefinition, OperatorSource};
-use dora_node_api::{config::DataId, DoraInputContext};
+use dora_node_api::{config::DataId, Message, Metadata};
 use eyre::{eyre, Context};
 use log::warn;
 use std::any::Any;
 use tokio::sync::mpsc::{self, Sender};
 
-mod python;
+// mod python;
 mod shared_lib;
 
 pub struct Operator {
-    operator_task: Option<Sender<OperatorInput>>,
+    operator_task: Option<Sender<Message>>,
     definition: OperatorDefinition,
 }
 
@@ -30,12 +30,7 @@ impl Operator {
                 })?;
             }
             OperatorSource::Python(path) => {
-                python::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
-                    format!(
-                        "failed ot spawn Python operator for {}",
-                        operator_definition.id
-                    )
-                })?;
+                unimplemented!();
             }
             OperatorSource::Wasm(_path) => {
                 eprintln!("WARNING: WASM operators are not supported yet");
@@ -47,12 +42,7 @@ impl Operator {
         })
     }
 
-    pub fn handle_input(
-        &mut self,
-        id: DataId,
-        value: Vec<u8>,
-        dora_context: DoraInputContext,
-    ) -> eyre::Result<()> {
+    pub fn handle_input(&mut self, metadata: Metadata, data: Vec<u8>) -> eyre::Result<()> {
         self.operator_task
             .as_mut()
             .ok_or_else(|| {
@@ -61,11 +51,7 @@ impl Operator {
                     self.definition.id
                 )
             })?
-            .try_send(OperatorInput {
-                id,
-                value,
-                dora_context,
-            })
+            .try_send(Message { metadata, data })
             .or_else(|err| match err {
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => Err(eyre!("operator crashed")),
                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
@@ -91,10 +77,4 @@ pub enum OperatorEvent {
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
     Finished,
-}
-
-pub struct OperatorInput {
-    id: DataId,
-    value: Vec<u8>,
-    dora_context: DoraInputContext,
 }

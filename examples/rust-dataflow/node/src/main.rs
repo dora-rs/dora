@@ -1,4 +1,4 @@
-use dora_node_api::{self, config::DataId, DoraNode};
+use dora_node_api::{self, config::DataId, DoraNode, Metadata};
 use eyre::bail;
 use futures::StreamExt;
 use std::time::Duration;
@@ -19,11 +19,19 @@ async fn main() -> eyre::Result<()> {
             Err(_) => bail!("timeout while waiting for input"),
         };
 
-        match input.id.as_str() {
+        match input.metadata.id.as_str() {
             "tick" => {
                 let random: u64 = rand::random();
-                operator.send_output(&output, &random.to_le_bytes()).await?;
-                dbg!(input.input_context.open_telementry);
+                operator
+                    .send_output(
+                        &Metadata {
+                            id: output.clone(),
+                            otel_context: input.metadata.otel_context.clone(),
+                        },
+                        &random.to_le_bytes(),
+                    )
+                    .await?;
+                dbg!(input.metadata.otel_context);
             }
             other => eprintln!("Ignoring unexpected input `{other}`"),
         }

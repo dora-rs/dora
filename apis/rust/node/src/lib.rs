@@ -1,5 +1,6 @@
 use communication::CommunicationLayer;
 use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
+use dora_message::{message_capnp, serialize_message};
 use eyre::WrapErr;
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use futures_concurrency::Merge;
@@ -50,7 +51,7 @@ impl DoraNode {
         })
     }
 
-    pub async fn inputs(&self) -> eyre::Result<impl futures::Stream<Item = Input> + '_> {
+    pub async fn inputs(&self) -> eyre::Result<impl futures::Stream<Item = Message> + '_> {
         let mut streams = Vec::new();
         for (input, mapping) in &self.node_config.inputs {
             let topic = mapping.to_string();
@@ -59,12 +60,24 @@ impl DoraNode {
                 .subscribe(&topic)
                 .await
                 .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-            streams.push(sub.map(|data| Input {
-                id: input.clone(),
-                data,
-                input_context: DoraInputContext {
-                    otel_context: "TODO dummy".into(),
-                },
+            streams.push(sub.map(|data| {
+                let deserialized = capnp::serialize::read_message(
+                    &mut data.as_slice(),
+                    capnp::message::ReaderOptions::new(),
+                )
+                .unwrap();
+                let message = deserialized
+                    .get_root::<message_capnp::message::Reader>()
+                    .unwrap();
+                let data = message.get_data().unwrap().to_vec();
+                let metadata = message.get_metadata().unwrap();
+                // TODO: Clean Metadata
+                let metadata = Metadata {
+                    id: input.clone(),
+                    otel_context: metadata.get_otel_context().unwrap().to_string(),
+                };
+
+                Message { data, metadata }
             }))
         }
 
@@ -97,18 +110,18 @@ impl DoraNode {
         Ok(streams.merge().take_until(finished))
     }
 
-    pub async fn send_output(&self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {
-        if !self.node_config.outputs.contains(output_id) {
+    pub async fn send_output(&self, metadata: &Metadata, data: &[u8]) -> eyre::Result<()> {
+        if !self.node_config.outputs.contains(&metadata.id) {
             eyre::bail!("unknown output");
         }
 
         let self_id = &self.id;
 
-        let topic = format!("{self_id}/{output_id}");
+        let topic = format!("{self_id}/{}", metadata.id);
         self.communication
-            .publish(&topic, data)
+            .publish(&topic, &serialize_message(data, &metadata.otel_context))
             .await
-            .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
+            .wrap_err_with(|| format!("failed to send data for output {}", metadata.id))?;
         Ok(())
     }
 
@@ -140,14 +153,14 @@ impl Drop for DoraNode {
 }
 
 #[derive(Debug)]
-pub struct Input {
-    pub id: DataId,
+pub struct Message {
     pub data: Vec<u8>,
-    pub input_context: DoraInputContext,
+    pub metadata: Metadata,
 }
 
 #[derive(Debug, Clone)]
-pub struct DoraInputContext {
+pub struct Metadata {
+    pub id: DataId,
     pub otel_context: String,
 }
 

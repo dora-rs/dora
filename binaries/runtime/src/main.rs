@@ -6,7 +6,7 @@ use dora_node_api::{
     self,
     communication::{self, CommunicationLayer},
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId, UserInputMapping},
-    DoraInputContext, STOP_TOPIC,
+    Message, Metadata, STOP_TOPIC,
 };
 use eyre::{bail, eyre, Context};
 use futures::{
@@ -98,12 +98,13 @@ async fn main() -> eyre::Result<()> {
                         .unwrap();
                     let data = message.get_data().unwrap();
                     let metadata = message.get_metadata().unwrap();
-                    let context = DoraInputContext {
+                    let metadata = Metadata {
+                        id: input.id.clone(),
                         otel_context: metadata.get_otel_context().unwrap().to_string(),
                     };
 
                     operator
-                        .handle_input(input.id.clone(), data.to_vec(), context)
+                        .handle_input(metadata, data.to_vec())
                         .wrap_err_with(|| {
                             format!(
                                 "operator {} failed to handle input {}",

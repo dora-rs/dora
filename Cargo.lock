@@ -714,6 +714,7 @@ dependencies = [
  "bincode",
  "clap 3.1.12",
  "dora-core",
+ "dora-message",
  "dora-node-api",
  "eyre",
  "futures",
@@ -770,6 +771,8 @@ name = "dora-node-api"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "capnp",
+ "dora-message",
  "eyre",
  "futures",
  "futures-concurrency",
@@ -810,6 +813,7 @@ dependencies = [
 name = "dora-operator-api"
 version = "0.1.0"
 dependencies = [
+ "dora-node-api",
  "dora-operator-api-macros",
 ]
 

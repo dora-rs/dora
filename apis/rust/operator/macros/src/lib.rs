@@ -42,8 +42,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
     let on_input = quote! {
         #[no_mangle]
         pub unsafe extern "C" fn dora_on_input(
-            id_start: *const u8,
-            id_len: usize,
+            metadata: *const std::ffi::c_void,
             data_start: *const u8,
             data_len: usize,
             output_fn_raw: dora_operator_api::raw::OutputFnRaw,
@@ -51,8 +50,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
             operator_context: *mut std::ffi::c_void,
         ) -> isize {
             dora_operator_api::raw::dora_on_input::<#operator_ty>(
-                id_start,
-                id_len,
+                metadata,
                 data_start,
                 data_len,
                 output_fn_raw,

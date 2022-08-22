@@ -1,5 +1,6 @@
-use super::{OperatorEvent, OperatorInput};
+use super::OperatorEvent;
 use dora_message::serialize_message;
+use dora_node_api::{Message, Metadata};
 use eyre::{bail, Context};
 use libloading::Symbol;
 use std::{
@@ -13,7 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 pub fn spawn(
     path: &Path,
     events_tx: Sender<OperatorEvent>,
-    inputs: Receiver<OperatorInput>,
+    inputs: Receiver<Message>,
 ) -> eyre::Result<()> {
     let library = unsafe {
         libloading::Library::new(path)
@@ -50,7 +51,7 @@ pub fn spawn(
 
 struct SharedLibraryOperator<'lib> {
     events_tx: Sender<OperatorEvent>,
-    inputs: Receiver<OperatorInput>,
+    inputs: Receiver<Message>,
     bindings: Bindings<'lib>,
 }
 
@@ -69,15 +70,13 @@ impl<'lib> SharedLibraryOperator<'lib> {
         };
 
         while let Some(input) = self.inputs.blocking_recv() {
-            let id_start = input.id.as_bytes().as_ptr();
-            let id_len = input.id.as_bytes().len();
-            let data_start = input.value.as_slice().as_ptr();
-            let data_len = input.value.len();
+            let data_start = input.data.as_slice().as_ptr();
+            let data_len = input.data.len();
 
-            let output = |id: &str, data: &[u8]| -> isize {
+            let output = |metadata: &Metadata, data: &[u8]| -> isize {
                 let result = self.events_tx.blocking_send(OperatorEvent::Output {
-                    id: id.to_owned().into(),
-                    value: serialize_message(data, &input.dora_context.otel_context),
+                    id: metadata.id.to_owned().into(),
+                    value: serialize_message(data, &input.metadata.otel_context),
                 });
                 match result {
                     Ok(()) => 0,
@@ -86,16 +85,13 @@ impl<'lib> SharedLibraryOperator<'lib> {
             };
             let (output_fn, output_ctx) = wrap_closure(&output);
 
-            let dora_context = SharedLibDoraContext {
-                output_ctx,
-                dora_context: input.dora_context,
-            };
+            let dora_context = SharedLibDoraContext { output_ctx };
+            let metadata_ptr: *const _ = &input.metadata;
             let dora_context_ptr: *const _ = &dora_context;
 
             let result = unsafe {
                 (self.bindings.on_input)(
-                    id_start,
-                    id_len,
+                    metadata_ptr.cast(),
                     data_start,
                     data_len,
                     output_fn,
@@ -131,7 +127,7 @@ impl<'lib> Drop for OperatorContext<'lib> {
 /// must be passed as when invoking the trampoline function.
 fn wrap_closure<F>(closure: &F) -> (OutputFn, *const c_void)
 where
-    F: Fn(&str, &[u8]) -> isize,
+    F: Fn(&Metadata, &[u8]) -> isize,
 {
     /// Rust closures are just compiler-generated structs with a `call` method. This
     /// trampoline function is generic over the closure type, which means that the
@@ -141,21 +137,16 @@ where
     /// The trampoline function expects the pointer to the corresponding closure
     /// struct as `context` argument. It casts that pointer back to a closure
     /// struct pointer and invokes its call method.
-    unsafe extern "C" fn trampoline<F: Fn(&str, &[u8]) -> isize>(
-        id_start: *const u8,
-        id_len: usize,
+    unsafe extern "C" fn trampoline<F: Fn(&Metadata, &[u8]) -> isize>(
+        metadata: *const c_void,
         data_start: *const u8,
         data_len: usize,
         dora_context: *const c_void,
     ) -> isize {
-        let id_raw = unsafe { slice::from_raw_parts(id_start, id_len) };
+        let metadata: &Metadata = unsafe { &*metadata.cast() };
         let data = unsafe { slice::from_raw_parts(data_start, data_len) };
-        let id = match std::str::from_utf8(id_raw) {
-            Ok(s) => s,
-            Err(_) => return -1,
-        };
         let context: &SharedLibDoraContext = unsafe { &*dora_context.cast() };
-        unsafe { (*(context.output_ctx as *const F))(id, data) }
+        unsafe { (*(context.output_ctx as *const F))(metadata, data) }
     }
 
     (trampoline::<F>, closure as *const F as *const c_void)
@@ -190,8 +181,7 @@ type InitFn = unsafe extern "C" fn(operator_context: *mut *mut ()) -> isize;
 type OperatorContextDropFn = unsafe extern "C" fn(operator_context: *mut ());
 
 type OnInputFn = unsafe extern "C" fn(
-    id_start: *const u8,
-    id_len: usize,
+    metadata: *const c_void,
     data_start: *const u8,
     data_len: usize,
     output: OutputFn,
@@ -200,8 +190,7 @@ type OnInputFn = unsafe extern "C" fn(
 ) -> isize;
 
 type OutputFn = unsafe extern "C" fn(
-    id_start: *const u8,
-    id_len: usize,
+    metadata: *const c_void,
     data_start: *const u8,
     data_len: usize,
     dora_context: *const c_void,
@@ -209,17 +198,16 @@ type OutputFn = unsafe extern "C" fn(
 
 struct SharedLibDoraContext {
     output_ctx: *const c_void,
-    dora_context: super::DoraInputContext,
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn dora_context_get_opentelemetry(
-    dora_context: *const c_void,
+pub unsafe extern "C" fn metadata_get_opentelemetry(
+    metadata: *mut c_void,
     out_ptr: *mut *const u8,
     out_len: *mut usize,
 ) {
-    let context: &SharedLibDoraContext = unsafe { &*dora_context.cast() };
-    let s = &context.dora_context.otel_context;
+    let metadata: &Metadata = unsafe { &*metadata.cast() };
+    let s = &metadata.otel_context;
     unsafe {
         *out_ptr = s.as_ptr();
         *out_len = s.len();

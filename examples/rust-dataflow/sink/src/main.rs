@@ -17,7 +17,7 @@ async fn main() -> eyre::Result<()> {
             Err(_) => bail!("timeout while waiting for input"),
         };
 
-        match input.id.as_str() {
+        match input.metadata.id.as_str() {
             "message" => {
                 let received_string = String::from_utf8(input.data)
                     .wrap_err("received message was not utf8-encoded")?;

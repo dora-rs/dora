@@ -1,17 +1,19 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
 
-pub use dora_operator_api_macros::register_operator;
-use raw::OutputFnRaw;
 use std::ffi::c_void;
 
+pub use dora_node_api::config::DataId;
+pub use dora_node_api::Metadata;
+pub use dora_operator_api_macros::register_operator;
+use raw::OutputFnRaw;
 pub mod raw;
 
 pub trait DoraOperator: Default {
     #[allow(clippy::result_unit_err)] // we use a () error type only for testing
     fn on_input(
         &mut self,
-        id: &str,
+        metadata: &Metadata,
         data: &[u8],
         output_sender: &mut DoraContext,
     ) -> Result<DoraStatus, ()>;
@@ -29,11 +31,12 @@ pub struct DoraContext {
 }
 
 impl DoraContext {
-    pub fn send_output(&mut self, id: &str, data: &[u8]) -> Result<(), isize> {
+    pub fn send_output(&self, metadata: Metadata, data: &[u8]) -> Result<(), isize> {
+        let ptr: *mut Metadata = Box::leak(Box::new(metadata));
+        let type_erased_ptr: *mut c_void = ptr.cast();
         let result = unsafe {
             (self.output_fn_raw)(
-                id.as_ptr(),
-                id.len(),
+                type_erased_ptr,
                 data.as_ptr(),
                 data.len(),
                 self.dora_context,
@@ -43,14 +46,5 @@ impl DoraContext {
             0 => Ok(()),
             other => Err(other),
         }
-    }
-
-    pub fn opentelemetry_context(&self) -> &str {
-        let mut ptr = std::ptr::null();
-        let mut len = 0;
-        unsafe { raw::dora_context_get_opentelemetry(self.dora_context, &mut ptr, &mut len) };
-        assert!(!ptr.is_null());
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        std::str::from_utf8(bytes).unwrap()
     }
 }

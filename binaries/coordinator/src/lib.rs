@@ -1,4 +1,5 @@
 use dora_core::descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor};
+use dora_message::serialize_message;
 use dora_node_api::{
     communication,
     config::{format_duration, NodeId},
@@ -108,7 +109,8 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
             };
             let mut stream = IntervalStream::new(tokio::time::interval(interval));
             while let Some(_) = stream.next().await {
-                let publish = communication.publish(&topic, &[]);
+                let message = serialize_message(&[], "Ticker context");
+                let publish = communication.publish(&topic, &message);
                 publish.await.expect("failed to publish timer tick message");
             }
         });
