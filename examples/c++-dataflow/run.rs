@@ -137,16 +137,32 @@ async fn build_cxx_operator(path: &Path, out_name: &str) -> eyre::Result<()> {
         bail!("failed to compile cxx operator");
     };
 
-    let mut link = tokio::process::Command::new("clang++");
-    link.arg("-shared").arg(&object_file_path);
-    link.arg("-o")
-        .arg(Path::new("../build").join(library_filename(out_name)));
-    if let Some(parent) = path.parent() {
-        link.current_dir(parent);
+    let out_path = Path::new("../build").join(library_filename(out_name));
+    #[cfg(unix)]
+    {
+        let mut link = tokio::process::Command::new("clang++");
+        link.arg("-shared").arg(&object_file_path);
+        link.arg("-o").arg(out_path);
+        if let Some(parent) = path.parent() {
+            link.current_dir(parent);
+        }
+        if !link.status().await?.success() {
+            bail!("failed to create shared library from cxx operator (c api)");
+        };
     }
-    if !link.status().await?.success() {
-        bail!("failed to create shared library from cxx operator (c api)");
-    };
+    #[cfg(windows)]
+    {
+        let mut link = tokio::process::Command::new("LINK.EXE");
+        link.arg("/DLL");
+        link.arg(format!("/OUT:{}", out_path.display()));
+        link.arg(&object_file_path);
+        if let Some(parent) = path.parent() {
+            link.current_dir(parent);
+        }
+        if !link.status().await?.success() {
+            bail!("failed to link c++ operator (c api)");
+        };
+    }
 
     Ok(())
 }
