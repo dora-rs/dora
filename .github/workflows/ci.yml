@@ -83,6 +83,7 @@ jobs:
         uses: actions-rs/cargo@v1
         env:
           RUSTFLAGS: "--print link-args"
+        timeout-minutes: 30
         with:
           command: run
           args: --example rust-dataflow
@@ -90,6 +91,7 @@ jobs:
         uses: actions-rs/cargo@v1
         env:
           RUSTFLAGS: "--print link-args"
+        timeout-minutes: 15
         with:
           command: run
           args: --example c-dataflow
@@ -97,6 +99,7 @@ jobs:
         uses: actions-rs/cargo@v1
         env:
           RUSTFLAGS: "--print link-args"
+        timeout-minutes: 15
         with:
           command: run
           args: --example cxx-dataflow
