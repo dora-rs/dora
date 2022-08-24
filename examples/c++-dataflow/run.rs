@@ -19,14 +19,12 @@ async fn main() -> eyre::Result<()> {
     build_package("dora-node-api-c").await?;
     build_cxx_node(
         root,
-        &Path::new("node-c-api").join("main.cc").canonicalize()?,
+        &dunce::canonicalize(Path::new("node-c-api").join("main.cc"))?,
         "node_c_api",
     )
     .await?;
     build_cxx_operator(
-        &Path::new("operator-c-api")
-            .join("operator.cc")
-            .canonicalize()?,
+        &dunce::canonicalize(Path::new("operator-c-api").join("operator.cc"))?,
         "operator_c_api",
     )
     .await?;

@@ -24,6 +24,7 @@ license = "Apache-2.0"
 eyre = "0.6.8"
 tokio = "1.20.1"
 dora-coordinator = { path = "binaries/coordinator" }
+dunce = "1.0.2"
 
 [[example]]
 name = "c-dataflow"
