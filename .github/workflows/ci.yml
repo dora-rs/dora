@@ -81,8 +81,6 @@ jobs:
 
       - name: "Build examples"
         uses: actions-rs/cargo@v1
-        env:
-          RUSTFLAGS: "--print link-args"
         timeout-minutes: 30
         with:
           command: build
@@ -90,24 +88,18 @@ jobs:
 
       - name: "Rust Dataflow example"
         uses: actions-rs/cargo@v1
-        env:
-          RUSTFLAGS: "--print link-args"
         timeout-minutes: 30
         with:
           command: run
           args: --example rust-dataflow
       - name: "C Dataflow example"
         uses: actions-rs/cargo@v1
-        env:
-          RUSTFLAGS: "--print link-args"
         timeout-minutes: 15
         with:
           command: run
           args: --example c-dataflow
       - name: "C++ Dataflow example"
         uses: actions-rs/cargo@v1
-        env:
-          RUSTFLAGS: "--print link-args"
         timeout-minutes: 15
         with:
           command: run
