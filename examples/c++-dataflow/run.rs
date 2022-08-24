@@ -1,6 +1,6 @@
 use eyre::{bail, Context};
 use std::{
-    env::consts::{DLL_PREFIX, DLL_SUFFIX},
+    env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
     ffi::{OsStr, OsString},
     path::Path,
 };
@@ -110,7 +110,7 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
     clang.arg("-L").arg(root.join("target").join("release"));
     clang
         .arg("--output")
-        .arg(Path::new("../build").join(out_name));
+        .arg(Path::new("../build").join(format!("{out_name}{EXE_SUFFIX}")));
     if let Some(parent) = path.parent() {
         clang.current_dir(parent);
     }
