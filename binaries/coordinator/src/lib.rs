@@ -140,7 +140,7 @@ fn spawn_custom_node(
         );
         let path = raw.with_extension(EXE_EXTENSION);
         path.canonicalize()
-            .wrap_err_with(|| format!("no node exists at `{}`", raw.display()))?
+            .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?
     };
 
     let mut command = tokio::process::Command::new(cmd);
