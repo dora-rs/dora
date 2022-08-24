@@ -4,14 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifdef _WIN32
-#define EXPORT __declspec(dllexport)
-#endif
-#ifdef __unix__
-#define EXPORT
-#endif
-
-EXPORT int dora_init_operator(void **operator_context)
+int dora_init_operator(void **operator_context)
 {
     void *context = malloc(1);
     char *context_char = (char *)context;
@@ -22,12 +15,12 @@ EXPORT int dora_init_operator(void **operator_context)
     return 0;
 }
 
-EXPORT void dora_drop_operator(void *operator_context)
+void dora_drop_operator(void *operator_context)
 {
     free(operator_context);
 }
 
-EXPORT int dora_on_input(
+int dora_on_input(
     const char *id_start,
     size_t id_len,
     const char *data_start,

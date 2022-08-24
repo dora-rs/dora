@@ -1,10 +1,17 @@
 #include <stddef.h>
 
-int dora_init_operator(void **operator_context);
+#ifdef _WIN32
+#define EXPORT __declspec(dllexport)
+#endif
+#ifdef __unix__
+#define EXPORT
+#endif
 
-void dora_drop_operator(void *operator_context);
+EXPORT int dora_init_operator(void **operator_context);
 
-int dora_on_input(
+EXPORT void dora_drop_operator(void *operator_context);
+
+EXPORT int dora_on_input(
     const char *id_start,
     size_t id_len,
     const char *data_start,
