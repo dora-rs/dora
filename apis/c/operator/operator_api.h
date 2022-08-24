@@ -2,8 +2,7 @@
 
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
-#endif
-#ifdef __unix__
+#else
 #define EXPORT
 #endif
 
