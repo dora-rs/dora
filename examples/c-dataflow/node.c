@@ -27,6 +27,11 @@ int main()
     {
         printf("[c node] waiting for next input\n");
         void *input = dora_next_input(dora_context);
+        if (input == NULL)
+        {
+            printf("[c node] ERROR: unexpected end of input\n");
+            return -1;
+        }
 
         char *data;
         size_t data_len;
