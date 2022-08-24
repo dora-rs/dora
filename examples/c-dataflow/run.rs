@@ -129,26 +129,14 @@ async fn build_c_operator(root: &Path) -> eyre::Result<()> {
         bail!("failed to compile c operator");
     };
 
-    let out_path = Path::new("build").join(library_filename("operator"));
-    #[cfg(unix)]
-    {
-        let mut link = tokio::process::Command::new("clang");
-        link.arg("-shared").arg("build/operator.o");
-        link.arg("-o").arg(out_path);
-        if !link.status().await?.success() {
-            bail!("failed to link c operator");
-        };
-    }
-    #[cfg(windows)]
-    {
-        let mut link = tokio::process::Command::new("LINK.EXE");
-        link.arg("/DLL");
-        link.arg(format!("/OUT:{}", out_path.display()));
-        link.arg("build/operator.o");
-        if !link.status().await?.success() {
-            bail!("failed to link c operator");
-        };
-    }
+    let mut link = tokio::process::Command::new("clang");
+    link.arg("-shared").arg("build/operator.o");
+    link.arg("-o")
+        .arg(Path::new("build").join(library_filename("operator")));
+    if !link.status().await?.success() {
+        bail!("failed to link c operator");
+    };
+
     Ok(())
 }
 
