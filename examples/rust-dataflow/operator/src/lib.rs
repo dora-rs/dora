@@ -17,23 +17,21 @@ impl DoraOperator for ExampleOperator {
         id: &str,
         data: &[u8],
         output_sender: &mut DoraOutputSender,
-    ) -> Result<DoraStatus, ()> {
+    ) -> Result<DoraStatus, String> {
         match id {
             "tick" => {
                 self.ticks += 1;
             }
             "random" => {
                 let parsed = {
-                    let data: [u8; 8] = data.try_into().map_err(|_| ())?;
+                    let data: [u8; 8] = data.try_into().map_err(|_| "unexpected random data")?;
                     u64::from_le_bytes(data)
                 };
                 let output = format!(
                     "operator received random value {parsed} after {} ticks",
                     self.ticks
                 );
-                output_sender
-                    .send("status", output.as_bytes())
-                    .map_err(|_| ())?;
+                output_sender.send("status".into(), output.into_bytes())?;
                 self.last_random_at = Some(Instant::now());
             }
             other => eprintln!("ignoring unexpected input {other}"),
