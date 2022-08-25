@@ -1,0 +1,11 @@
+[package]
+name = "dora-operator-api-types"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies.safer-ffi]
+git = "https://github.com/phil-opp/safer_ffi.git"
+branch = "from-instead-of-into"
+features = ["proc_macros"]

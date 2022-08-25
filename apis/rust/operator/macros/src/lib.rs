@@ -27,39 +27,40 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
 
     let init = quote! {
         #[no_mangle]
-        pub unsafe extern "C" fn dora_init_operator(operator_context: *mut *mut std::ffi::c_void) -> isize {
-            dora_operator_api::raw::dora_init_operator::<#operator_ty>(operator_context)
+        pub unsafe extern "C" fn dora_init_operator() -> dora_operator_api::types::InitResult {
+            dora_operator_api::raw::dora_init_operator::<#operator_ty>()
         }
+
+        const _DORA_INIT_OPERATOR: dora_operator_api::types::DoraInitOperator =
+            dora_operator_api::types::DoraInitOperator(dora_init_operator);
     };
 
     let drop = quote! {
         #[no_mangle]
-        pub unsafe extern "C" fn dora_drop_operator(operator_context: *mut std::ffi::c_void) {
+        pub unsafe extern "C" fn dora_drop_operator(operator_context: *mut std::ffi::c_void)
+            -> dora_operator_api::types::DoraResult
+        {
             dora_operator_api::raw::dora_drop_operator::<#operator_ty>(operator_context)
         }
+
+        const _DORA_DROP_OPERATOR: dora_operator_api::types::DoraDropOperator =
+            dora_operator_api::types::DoraDropOperator(dora_drop_operator);
     };
 
     let on_input = quote! {
         #[no_mangle]
         pub unsafe extern "C" fn dora_on_input(
-            id_start: *const u8,
-            id_len: usize,
-            data_start: *const u8,
-            data_len: usize,
-            output_fn_raw: dora_operator_api::raw::OutputFnRaw,
-            output_context: *const std::ffi::c_void,
+            input: &dora_operator_api::types::Input,
+            send_output: dora_operator_api::types::SendOutput<'_>,
             operator_context: *mut std::ffi::c_void,
-        ) -> isize {
+        ) -> dora_operator_api::types::OnInputResult {
             dora_operator_api::raw::dora_on_input::<#operator_ty>(
-                id_start,
-                id_len,
-                data_start,
-                data_len,
-                output_fn_raw,
-                output_context,
-                operator_context,
+                input, send_output, operator_context
             )
         }
+
+        const _DORA_ON_INPUT: dora_operator_api::types::DoraOnInput =
+            dora_operator_api::types::DoraOnInput(dora_on_input);
     };
 
     Ok(quote! {
