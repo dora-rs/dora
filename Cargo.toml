@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "apis/c/node",
+  "apis/c/*",
   "apis/python/node",
   "apis/rust/*",
   "apis/rust/operator/macros",

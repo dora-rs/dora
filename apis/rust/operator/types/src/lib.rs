@@ -104,3 +104,9 @@ pub enum DoraStatus {
     Continue = 0,
     Stop = 1,
 }
+
+pub fn generate_headers(target_file: &Path) -> ::std::io::Result<()> {
+    ::safer_ffi::headers::builder()
+        .to_file(target_file)?
+        .generate()
+}

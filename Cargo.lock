@@ -836,6 +836,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-operator-api-c"
+version = "0.1.0"
+dependencies = [
+ "dora-operator-api-types",
+]
+
+[[package]]
 name = "dora-operator-api-macros"
 version = "0.1.0"
 dependencies = [
@@ -1157,6 +1164,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb19fe8de3ea0920d282f7b77dd4227aea6b8b999b42cdf0ca41b2472b14443a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "git-version"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1396,6 +1414,28 @@ name = "integer-encoding"
 version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e85a1509a128c855368e135cffcde7eac17d8e1083f41e2b98c58bc1a5074be"
+
+[[package]]
+name = "inventory"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0eb5160c60ba1e809707918ee329adb99d222888155835c6feedba19f6c3fd4"
+dependencies = [
+ "ctor",
+ "ghost",
+ "inventory-impl",
+]
+
+[[package]]
+name = "inventory-impl"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e41b53715c6f0c4be49510bb82dee2c1e51c8586d885abe65396e82ed518548"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "ipnetwork"
@@ -2699,6 +2739,7 @@ name = "safer-ffi"
 version = "0.1.0"
 source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
+ "inventory",
  "libc",
  "macro_rules_attribute",
  "mini_paste",
