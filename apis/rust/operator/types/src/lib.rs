@@ -1,11 +1,18 @@
+#![deny(elided_lifetimes_in_paths)] // required for safer-ffi
+
 pub use safer_ffi;
-use safer_ffi::{closure::RefDynFnMut1, derive_ReprC};
+use safer_ffi::{closure::ArcDynFn1, derive_ReprC, ffi_export};
+use std::path::Path;
 
 #[derive_ReprC]
-#[repr(transparent)]
-pub struct DoraInitOperator(pub unsafe extern "C" fn() -> InitResult);
+#[ffi_export]
+#[repr(C)]
+pub struct DoraInitOperator {
+    pub init_operator: unsafe extern "C" fn() -> InitResult,
+}
 
 #[derive_ReprC]
+#[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
 pub struct InitResult {
@@ -13,12 +20,14 @@ pub struct InitResult {
     pub operator_context: *mut std::ffi::c_void,
 }
 #[derive_ReprC]
-#[repr(transparent)]
-pub struct DoraDropOperator(
-    pub unsafe extern "C" fn(operator_context: *mut std::ffi::c_void) -> DoraResult,
-);
+#[ffi_export]
+#[repr(C)]
+pub struct DoraDropOperator {
+    pub drop_operator: unsafe extern "C" fn(operator_context: *mut std::ffi::c_void) -> DoraResult,
+}
 
 #[derive_ReprC]
+#[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
 pub struct DoraResult {
@@ -26,16 +35,25 @@ pub struct DoraResult {
 }
 
 #[derive_ReprC]
+#[ffi_export]
+#[repr(C)]
+pub struct DoraOnInput {
+    pub on_input: OnInputFn,
+}
+
+#[derive_ReprC]
+#[ffi_export]
 #[repr(transparent)]
-pub struct DoraOnInput(
+pub struct OnInputFn(
     pub  unsafe extern "C" fn(
         input: &Input,
-        send_output: SendOutput<'_>,
+        send_output: SendOutput,
         operator_context: *mut std::ffi::c_void,
     ) -> OnInputResult,
 );
 
 #[derive_ReprC]
+#[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
 pub struct Input {
@@ -45,6 +63,7 @@ pub struct Input {
 }
 
 #[derive_ReprC]
+#[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
 pub struct Metadata {
@@ -52,10 +71,14 @@ pub struct Metadata {
 }
 
 #[derive_ReprC]
-#[repr(transparent)]
-pub struct SendOutput<'a>(pub RefDynFnMut1<'a, DoraResult, Output>);
+#[ffi_export]
+#[repr(C)]
+pub struct SendOutput {
+    pub send_output: ArcDynFn1<DoraResult, Output>,
+}
 
 #[derive_ReprC]
+#[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
 pub struct Output {
@@ -65,6 +88,7 @@ pub struct Output {
 }
 
 #[derive_ReprC]
+#[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
 pub struct OnInputResult {
@@ -73,6 +97,7 @@ pub struct OnInputResult {
 }
 
 #[derive_ReprC]
+#[ffi_export]
 #[derive(Debug)]
 #[repr(u8)]
 pub enum DoraStatus {
