@@ -139,7 +139,7 @@ typedef struct SendOutput {
 /** <No documentation available> */
 typedef struct DoraOnInput {
     /** <No documentation available> */
-    OnInputResult_t (*on_input)(Input_t const *, SendOutput_t, void *);
+    OnInputResult_t (*on_input)(Input_t const *, SendOutput_t const *, void *);
 } DoraOnInput_t;
 
 

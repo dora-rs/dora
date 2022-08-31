@@ -47,7 +47,7 @@ pub struct DoraOnInput {
 pub struct OnInputFn(
     pub  unsafe extern "C" fn(
         input: &Input,
-        send_output: SendOutput,
+        send_output: &SendOutput,
         operator_context: *mut std::ffi::c_void,
     ) -> OnInputResult,
 );
