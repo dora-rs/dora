@@ -1,4 +1,4 @@
-#include "operator.h"
+#include "cxx-dataflow-example-operator-rust-api/src/operator.h"
 #include "cxx-dataflow-example-operator-rust-api/src/lib.rs.h"
 #include <iostream>
 

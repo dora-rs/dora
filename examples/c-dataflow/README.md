@@ -31,8 +31,19 @@ For a manual build, follow these steps:
 - Compile the `node.c` (e.g. using `clang`) and link the staticlib
   - For example, use the following command:
     ```
-    clang node.c -lm -lrt -ldl -pthread -ldora_node_api_c -L ../../target/release --output build/c_node
+    clang node.c <FLAGS> -ldora_node_api_c -L ../../target/release --output build/c_node
     ```
+  - The `<FLAGS>` depend on the operating system and the libraries that the C node uses. The following flags are required for each OS:
+    - Linux: `-lm -lrt -ldl -pthread`
+    - macOS: `-framework CoreServices -framework Security -l System -l resolv -l pthread -l c -l m`
+    - Windows:
+      ```
+      -ladvapi32 -luserenv -lkernel32 -lws2_32 -lbcrypt -lncrypt -lschannel -lntdll -liphlpapi
+      -lcfgmgr32 -lcredui -lcrypt32 -lcryptnet -lfwpuclnt -lgdi32 -lmsimg32 -lmswsock -lole32
+      -lopengl32 -lsecur32 -lshell32 -lsynchronization -luser32 -lwinspool
+      -Wl,-nodefaultlib:libcmt -D_DLL -lmsvcrt
+      ```
+      Also: On Windows, the output file should have an `.exe` extension: `--output build/c_node.exe`
 - Repeat the previous step for the `sink.c` executable
 
 **Build the operator:**
@@ -41,9 +52,10 @@ For a manual build, follow these steps:
 - Compile the `operator.c` file into a shared library.
   - For example, use the following commands:
     ```
-    clang -c operator.c -o build/operator.o -fPIC
-    clang -shared build/operator.o -o build/operator.so
+    clang -c operator.c -o build/operator.o -fdeclspec -fPIC
+    clang -shared build/operator.o -o build/liboperator.so
     ```
+    Omit the `-fPIC` argument on Windows. Replace the `liboperator.so` name with the shared library standard library prefix/extensions used on your OS, e.g. `.dll` on Windows.
 
 **Build the dora coordinator and runtime:**
 

@@ -1,4 +1,4 @@
-#include "main.h"
+#include "cxx-dataflow-example-node-rust-api/src/main.h"
 
 #include <iostream>
 #include <vector>

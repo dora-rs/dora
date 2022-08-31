@@ -79,7 +79,7 @@ Operators are defined through the following format:
     - output_1
   
   ## ONE OF:
-  shared_library: "path/to/shared_lib.so"
+  shared_library: "path/to/shared_lib" # file extension and `lib` prefix are added automatically
   python: "path/to/python_file.py"
   wasm: "path/to/wasm_file.wasm"
 ```
