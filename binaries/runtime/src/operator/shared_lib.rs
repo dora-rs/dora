@@ -1,5 +1,5 @@
 use super::{OperatorEvent, OperatorInput};
-use eyre::{bail, Context};
+use eyre::{bail, eyre, Context};
 use libloading::Symbol;
 use std::{
     ffi::c_void,
@@ -14,8 +14,21 @@ pub fn spawn(
     events_tx: Sender<OperatorEvent>,
     inputs: Receiver<OperatorInput>,
 ) -> eyre::Result<()> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| eyre!("shared library path has no file name"))?
+        .to_str()
+        .ok_or_else(|| eyre!("shared library file name is not valid UTF8"))?;
+    if file_name.starts_with("lib") {
+        bail!("Shared library file name must not start with `lib`, prefix is added automatically");
+    }
+    if path.extension().is_some() {
+        bail!("Shared library file name must have no extension, it is added automatically");
+    }
+    let path = path.with_file_name(libloading::library_filename(file_name));
+
     let library = unsafe {
-        libloading::Library::new(path)
+        libloading::Library::new(&path)
             .wrap_err_with(|| format!("failed to load shared library at `{}`", path.display()))?
     };
 
