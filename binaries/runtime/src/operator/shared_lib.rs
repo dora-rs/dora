@@ -1,6 +1,6 @@
 use super::{OperatorEvent, OperatorInput};
 use dora_operator_api_types::{
-    safer_ffi::closure::RefDynFnMut1, DoraDropOperator, DoraInitOperator, DoraOnInput, DoraResult,
+    safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraOnInput, DoraResult,
     DoraStatus, InitResult, Metadata, OnInputResult, Output, SendOutput,
 };
 use eyre::{bail, Context};
@@ -9,6 +9,7 @@ use std::{
     ffi::c_void,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
+    sync::Arc,
     thread,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -64,7 +65,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let InitResult {
                 result,
                 operator_context,
-            } = unsafe { (self.bindings.init_operator)() };
+            } = unsafe { (self.bindings.init_operator.init_operator)() };
             let raw = match result.error {
                 Some(error) => bail!("init_operator failed: {}", String::from(error)),
                 None => operator_context,
@@ -75,6 +76,22 @@ impl<'lib> SharedLibraryOperator<'lib> {
             }
         };
 
+        let closure_events_tx = self.events_tx.clone();
+        let send_output_closure = Arc::new(move |output: Output| {
+            let id: String = output.id.into();
+            let result = closure_events_tx.blocking_send(OperatorEvent::Output {
+                id: id.into(),
+                value: output.data.into(),
+            });
+
+            let error = match result {
+                Ok(()) => None,
+                Err(_) => Some(String::from("runtime process closed unexpectedly").into()),
+            };
+
+            DoraResult { error }
+        });
+
         while let Some(input) = self.inputs.blocking_recv() {
             let operator_input = dora_operator_api_types::Input {
                 id: String::from(input.id).into(),
@@ -84,26 +101,18 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 },
             };
 
-            let mut send_output_closure = |output: Output| {
-                let id: String = output.id.into();
-                let result = self.events_tx.blocking_send(OperatorEvent::Output {
-                    id: id.into(),
-                    value: output.data.into(),
-                });
-
-                let error = match result {
-                    Ok(()) => None,
-                    Err(_) => Some(String::from("runtime process closed unexpectedly").into()),
-                };
-
-                DoraResult { error }
+            let send_output = SendOutput {
+                send_output: ArcDynFn1::new(send_output_closure.clone()),
             };
-            let send_output = SendOutput(RefDynFnMut1::new(&mut send_output_closure));
             let OnInputResult {
                 result: DoraResult { error },
                 status,
             } = unsafe {
-                (self.bindings.on_input)(&operator_input, send_output, operator_context.raw)
+                (self.bindings.on_input.on_input)(
+                    &operator_input,
+                    send_output,
+                    operator_context.raw,
+                )
             };
             match error {
                 Some(error) => bail!("on_input failed: {}", String::from(error)),
@@ -124,7 +133,7 @@ struct OperatorContext<'lib> {
 
 impl<'lib> Drop for OperatorContext<'lib> {
     fn drop(&mut self) {
-        unsafe { (self.drop_fn)(self.raw) };
+        unsafe { (self.drop_fn.drop_operator)(self.raw) };
     }
 }
 

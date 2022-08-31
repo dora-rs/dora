@@ -18,11 +18,11 @@ pub trait DoraOperator: Default {
     ) -> Result<DoraStatus, String>;
 }
 
-pub struct DoraOutputSender<'a>(SendOutput<'a>);
+pub struct DoraOutputSender(SendOutput);
 
-impl<'a> DoraOutputSender<'a> {
+impl DoraOutputSender {
     pub fn send(&mut self, id: String, data: Vec<u8>) -> Result<(), String> {
-        let result = self.0 .0.call(Output {
+        let result = self.0.send_output.call(Output {
             id: id.into(),
             data: data.into(),
             metadata: Metadata {
