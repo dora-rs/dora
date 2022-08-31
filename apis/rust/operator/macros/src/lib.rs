@@ -27,7 +27,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
 
     let init = quote! {
         #[no_mangle]
-        pub unsafe extern "C" fn dora_init_operator() -> dora_operator_api::types::InitResult {
+        pub unsafe extern "C" fn dora_init_operator() -> dora_operator_api::types::DoraInitResult {
             dora_operator_api::raw::dora_init_operator::<#operator_ty>()
         }
 
