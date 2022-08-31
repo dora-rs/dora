@@ -1660,7 +1660,7 @@ dependencies = [
 [[package]]
 name = "napi-dispatcher"
 version = "0.1.0"
-source = "git+https://github.com/phil-opp/safer_ffi.git?branch=from-instead-of-into#22a005fdf64517bec012f8a62878b864ad20906a"
+source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
  "napi",
  "napi-dispatcher-nodejs-derive",
@@ -1670,7 +1670,7 @@ dependencies = [
 [[package]]
 name = "napi-dispatcher-nodejs-derive"
 version = "0.1.0"
-source = "git+https://github.com/phil-opp/safer_ffi.git?branch=from-instead-of-into#22a005fdf64517bec012f8a62878b864ad20906a"
+source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
  "napi-derive",
  "napi-dispatcher-nodejs-derive-proc_macros",
@@ -1679,7 +1679,7 @@ dependencies = [
 [[package]]
 name = "napi-dispatcher-nodejs-derive-proc_macros"
 version = "0.1.0"
-source = "git+https://github.com/phil-opp/safer_ffi.git?branch=from-instead-of-into#22a005fdf64517bec012f8a62878b864ad20906a"
+source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1689,7 +1689,7 @@ dependencies = [
 [[package]]
 name = "napi-dispatcher-wasm"
 version = "0.1.0"
-source = "git+https://github.com/phil-opp/safer_ffi.git?branch=from-instead-of-into#22a005fdf64517bec012f8a62878b864ad20906a"
+source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
  "js-sys",
  "napi-dispatcher-wasm-proc_macros",
@@ -1702,7 +1702,7 @@ dependencies = [
 [[package]]
 name = "napi-dispatcher-wasm-proc_macros"
 version = "0.1.0"
-source = "git+https://github.com/phil-opp/safer_ffi.git?branch=from-instead-of-into#22a005fdf64517bec012f8a62878b864ad20906a"
+source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2697,7 +2697,7 @@ checksum = "73b4b750c782965c211b42f022f59af1fbceabdd026623714f104152f1ec149f"
 [[package]]
 name = "safer-ffi"
 version = "0.1.0"
-source = "git+https://github.com/phil-opp/safer_ffi.git?branch=from-instead-of-into#22a005fdf64517bec012f8a62878b864ad20906a"
+source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
  "libc",
  "macro_rules_attribute",
@@ -2712,7 +2712,7 @@ dependencies = [
 [[package]]
 name = "safer_ffi-proc_macros"
 version = "0.1.0-rc1"
-source = "git+https://github.com/phil-opp/safer_ffi.git?branch=from-instead-of-into#22a005fdf64517bec012f8a62878b864ad20906a"
+source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
 dependencies = [
  "macro_rules_attribute",
  "prettyplease",
