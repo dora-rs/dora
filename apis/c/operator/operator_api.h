@@ -8,13 +8,6 @@ extern "C"
 #include <stddef.h>
 #include "operator_types.h"
 
-    void __dora_type_assertions()
-    {
-        DoraInitOperator_t __dora_init_operator = {.init_operator = dora_init_operator};
-        DoraDropOperator_t __dora_drop_operator = {.drop_operator = dora_drop_operator};
-        DoraOnInput_t __dora_on_input = {.on_input = dora_on_input};
-    }
-
     DoraInitResult_t dora_init_operator(void);
 
     DoraResult_t dora_drop_operator(void *operator_context);
@@ -24,6 +17,12 @@ extern "C"
         SendOutput_t send_output,
         void *operator_context);
 
+    void __dora_type_assertions()
+    {
+        DoraInitOperator_t __dora_init_operator = {.init_operator = dora_init_operator};
+        DoraDropOperator_t __dora_drop_operator = {.drop_operator = dora_drop_operator};
+        DoraOnInput_t __dora_on_input = {.on_input = dora_on_input};
+    }
 #ifdef __cplusplus
 } /* extern \"C\" */
 #endif
