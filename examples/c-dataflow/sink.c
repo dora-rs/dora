@@ -5,18 +5,24 @@
 
 int main()
 {
+    printf("[c sink] Hello World\n");
+
     void *dora_context = init_dora_context_from_env();
     if (dora_context == NULL)
     {
         fprintf(stderr, "failed to init dora context\n");
         return -1;
+
+        printf("[c sink] dora context initialized\n");
     }
 
     while (1)
     {
+        printf("[c sink] waiting for next input\n");
         void *input = dora_next_input(dora_context);
         if (input == NULL)
         {
+            printf("[c sink] end of input\n");
             break;
         }
 
@@ -38,6 +44,8 @@ int main()
     }
 
     free_dora_context(dora_context);
+
+    printf("[c sink] finished successfully\n");
 
     return 0;
 }

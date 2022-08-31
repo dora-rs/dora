@@ -24,7 +24,7 @@ impl Operator {
             OperatorSource::SharedLibrary(path) => {
                 shared_lib::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
                     format!(
-                        "failed ot spawn shared library operator for {}",
+                        "failed to spawn shared library operator for {}",
                         operator_definition.id
                     )
                 })?;
@@ -32,7 +32,7 @@ impl Operator {
             OperatorSource::Python(path) => {
                 python::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
                     format!(
-                        "failed ot spawn Python operator for {}",
+                        "failed to spawn Python operator for {}",
                         operator_definition.id
                     )
                 })?;
