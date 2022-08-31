@@ -1,0 +1,9 @@
+[package]
+name = "dora-operator-api-c"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "C API implemetation for Dora Operator"
+
+[build-dependencies]
+dora-operator-api-types = { path = "../../rust/operator/types" }

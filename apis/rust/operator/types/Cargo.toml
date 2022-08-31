@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies.safer-ffi]
 git = "https://github.com/getditto/safer_ffi.git"
-features = ["proc_macros"]
+features = ["proc_macros", "headers"]
