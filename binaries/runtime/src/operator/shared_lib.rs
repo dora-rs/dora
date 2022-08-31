@@ -110,7 +110,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             } = unsafe {
                 (self.bindings.on_input.on_input)(
                     &operator_input,
-                    send_output,
+                    &send_output,
                     operator_context.raw,
                 )
             };
