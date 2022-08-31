@@ -1,6 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{self, register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+use ffi::SendOutputResult;
 
 #[cxx::bridge]
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -10,10 +11,14 @@ mod ffi {
         stop: bool,
     }
 
-    extern "Rust" {
-        type OutputSender<'a>;
+    struct SendOutputResult {
+        error: String,
+    }
 
-        fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> i32;
+    extern "Rust" {
+        type OutputSender<'a, 'b>;
+
+        fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> SendOutputResult;
     }
 
     unsafe extern "C++" {
@@ -31,13 +36,15 @@ mod ffi {
     }
 }
 
-pub struct OutputSender<'a>(&'a mut DoraOutputSender);
+pub struct OutputSender<'a, 'b>(&'a mut DoraOutputSender<'b>);
 
-fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> i32 {
-    match sender.0.send(id, data) {
-        Ok(()) => 0,
-        Err(err_code) => err_code.try_into().unwrap(),
-    }
+fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> SendOutputResult {
+    let error = sender
+        .0
+        .send(id.into(), data.to_owned())
+        .err()
+        .unwrap_or_default();
+    SendOutputResult { error }
 }
 
 register_operator!(OperatorWrapper);
@@ -60,7 +67,7 @@ impl DoraOperator for OperatorWrapper {
         id: &str,
         data: &[u8],
         output_sender: &mut DoraOutputSender,
-    ) -> Result<DoraStatus, ()> {
+    ) -> Result<DoraStatus, std::string::String> {
         let operator = self.operator.as_mut().unwrap();
         let mut output_sender = OutputSender(output_sender);
 
@@ -71,7 +78,7 @@ impl DoraOperator for OperatorWrapper {
                 true => DoraStatus::Stop,
             })
         } else {
-            Err(())
+            Err(result.error)
         }
     }
 }

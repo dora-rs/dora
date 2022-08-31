@@ -13,6 +13,7 @@ async fn main() -> eyre::Result<()> {
     build_package("cxx-dataflow-example-operator-rust-api").await?;
 
     build_package("dora-node-api-c").await?;
+    build_package("dora-operator-api-c").await?;
     build_cxx_node(
         root,
         &Path::new("node-c-api").join("main.cc").canonicalize()?,
