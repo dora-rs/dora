@@ -450,7 +450,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: rust-operator
-        shared-library: ../../target/release/librust_dataflow_example_operator.so
+        shared-library: ../../target/release/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
@@ -560,7 +560,7 @@ deployment:
     - output_1
   
   ## ONE OF:
-  shared_library: &quot;path/to/shared_lib.so&quot;
+  shared_library: &quot;path/to/shared_lib&quot; # file extension and `lib` prefix are added automatically
   python: &quot;path/to/python_file.py&quot;
   wasm: &quot;path/to/wasm_file.wasm&quot;
 </code></pre>
@@ -588,7 +588,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: rust-operator
-        shared-library: ../../target/release/librust_dataflow_example_operator.so
+        shared-library: ../../target/release/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
@@ -715,7 +715,7 @@ impl DoraOperator for ExampleOperator {
 <pre><code class="language-yaml">  - id: runtime-node
     operators:
       - id: rust-operator
-        shared-library: ../../target/release/librust_dataflow_example_operator.so
+        shared-library: ../../target/release/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
@@ -929,28 +929,21 @@ int dora_on_input(
     return 0;
 }
 </code></pre>
-<ul>
-<li>
-<p>Copy the <code>operator-api.h</code> header file from <code>../../apis/c/operator</code> to <code>build</code></p>
-</li>
-<li>
-<p>Compile the <code>operator.c</code> file into a shared library.</p>
-<ul>
-<li>For example, use the following commands:
-<pre><code>clang -c operator.c -o build/operator.o -fPIC
-clang -shared build/operator.o -o build/operator.so
+<pre><code>  ```
+  -ladvapi32 -luserenv -lkernel32 -lws2_32 -lbcrypt -lncrypt -lschannel -lntdll -liphlpapi
+  -lcfgmgr32 -lcredui -lcrypt32 -lcryptnet -lfwpuclnt -lgdi32 -lmsimg32 -lmswsock -lole32
+  -lopengl32 -lsecur32 -lshell32 -lsynchronization -luser32 -lwinspool
+  -Wl,-nodefaultlib:libcmt -D_DLL -lmsvcrt
+  ```
+  Also: On Windows, the output file should have an `.exe` extension: `--output build/c_node.exe`
 </code></pre>
-</li>
-</ul>
-</li>
-<li>
-<p>Link it in your graph as:</p>
-</li>
+<ul>
+<li>Link it in your graph as:</li>
 </ul>
 <pre><code class="language-yaml">  - id: runtime-node
     operators:
       - id: c_operator
-        shared-library: build/operator.so
+        shared-library: build/operator
         inputs:
           tick: c_node/tick
         outputs:
@@ -1000,6 +993,8 @@ dora_send_output(dora_context, out_id, strlen(out_id), &amp;out_data, sizeof out
 
 int main()
 {
+    printf(&quot;[c node] Hello World\n&quot;);
+
     void *dora_context = init_dora_context_from_env();
     if (dora_context == NULL)
     {
@@ -1007,9 +1002,17 @@ int main()
         return -1;
     }
 
+    printf(&quot;[c node] dora context initialized\n&quot;);
+
     for (char i = 0; i &lt; 10; i++)
     {
+        printf(&quot;[c node] waiting for next input\n&quot;);
         void *input = dora_next_input(dora_context);
+        if (input == NULL)
+        {
+            printf(&quot;[c node] ERROR: unexpected end of input\n&quot;);
+            return -1;
+        }
 
         char *data;
         size_t data_len;
@@ -1023,7 +1026,11 @@ int main()
         free_dora_input(input);
     }
 
+    printf(&quot;[c node] received 10 inputs\n&quot;);
+
     free_dora_context(dora_context);
+
+    printf(&quot;[c node] finished successfully\n&quot;);
 
     return 0;
 }
@@ -1046,7 +1053,7 @@ int main()
 <p>Compile the <code>node.c</code> (e.g. using <code>clang</code>) and link the staticlib</p>
 <ul>
 <li>For example, use the following command:
-<pre><code>clang node.c -lm -lrt -ldl -pthread -ldora_node_api_c -L ../../target/release --output build/c_node
+<pre><code>clang node.c &lt;FLAGS&gt; -ldora_node_api_c -L ../../target/release --output build/c_node
 </code></pre>
 </li>
 </ul>

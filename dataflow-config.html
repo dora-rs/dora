@@ -204,7 +204,7 @@ deployment:
     - output_1
   
   ## ONE OF:
-  shared_library: &quot;path/to/shared_lib.so&quot;
+  shared_library: &quot;path/to/shared_lib&quot; # file extension and `lib` prefix are added automatically
   python: &quot;path/to/python_file.py&quot;
   wasm: &quot;path/to/wasm_file.wasm&quot;
 </code></pre>
@@ -232,7 +232,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: rust-operator
-        shared-library: ../../target/release/librust_dataflow_example_operator.so
+        shared-library: ../../target/release/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random

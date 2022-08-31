@@ -255,7 +255,7 @@ impl DoraOperator for ExampleOperator {
 <pre><code class="language-yaml">  - id: runtime-node
     operators:
       - id: rust-operator
-        shared-library: ../../target/release/librust_dataflow_example_operator.so
+        shared-library: ../../target/release/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
