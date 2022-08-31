@@ -14,7 +14,7 @@ extern "C"
 
     OnInputResult_t dora_on_input(
         const Input_t *input,
-        SendOutput_t send_output,
+        const SendOutput_t *send_output,
         void *operator_context);
 
     void __dora_type_assertions()
