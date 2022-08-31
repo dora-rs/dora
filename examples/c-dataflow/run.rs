@@ -11,9 +11,10 @@ async fn main() -> eyre::Result<()> {
 
     build_package("dora-runtime").await?;
     build_package("dora-node-api-c").await?;
+    build_package("dora-operator-api-c").await?;
     build_c_node(root, "node.c", "c_node").await?;
     build_c_node(root, "sink.c", "c_sink").await?;
-    build_c_operator(root).await?;
+    build_c_operator().await?;
 
     dora_coordinator::run(dora_coordinator::Command::Run {
         dataflow: Path::new("dataflow.yml").to_owned(),
@@ -36,13 +37,6 @@ async fn build_package(package: &str) -> eyre::Result<()> {
 }
 
 async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<()> {
-    // copy header file
-    tokio::fs::copy(
-        root.join("apis").join("c").join("node").join("node_api.h"),
-        Path::new("build").join("node_api.h"),
-    )
-    .await?;
-
     let mut clang = tokio::process::Command::new("clang");
     clang.arg(name);
     clang.arg("-l").arg("dora_node_api_c");
@@ -58,17 +52,7 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
     Ok(())
 }
 
-async fn build_c_operator(root: &Path) -> eyre::Result<()> {
-    // copy header file
-    tokio::fs::copy(
-        root.join("apis")
-            .join("c")
-            .join("operator")
-            .join("operator_api.h"),
-        Path::new("build").join("operator_api.h"),
-    )
-    .await?;
-
+async fn build_c_operator() -> eyre::Result<()> {
     let mut compile = tokio::process::Command::new("clang");
     compile.arg("-c").arg("operator.c");
     compile.arg("-o").arg("build/operator.o");

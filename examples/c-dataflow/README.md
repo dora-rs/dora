@@ -24,7 +24,6 @@ For a manual build, follow these steps:
 **Build the custom nodes:**
 
 - Create a `build` folder in this directory (i.e., next to the `node.c` file)
-- Copy the `node-api.h` header file from `../../apis/c/node` to `build`
 - Compile the `dora-node-api-c` crate into a static library.
   - Run `cargo build -p dora-node-api-c --release`
   - The resulting staticlib is then available under `../../target/release/libdora-node-api-c.a`.
@@ -37,7 +36,6 @@ For a manual build, follow these steps:
 
 **Build the operator:**
 
-- Copy the `operator-api.h` header file from `../../apis/c/operator` to `build`
 - Compile the `operator.c` file into a shared library.
   - For example, use the following commands:
     ```
