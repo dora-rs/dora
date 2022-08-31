@@ -6,6 +6,7 @@ extern "C"
 #include <memory>
 #include <iostream>
 #include <vector>
+#include <string.h>
 
 class Operator
 {
@@ -15,39 +16,32 @@ public:
 
 Operator::Operator() {}
 
-extern "C" int dora_init_operator(void **operator_context)
+extern "C" DoraInitResult_t dora_init_operator()
 {
     Operator *op = std::make_unique<Operator>().release();
-    *operator_context = (void *)op;
 
-    return 0;
+    DoraInitResult_t result = {.operator_context = (void *)op};
+    return result;
 }
 
-extern "C" void dora_drop_operator(void *operator_context)
+extern "C" DoraResult_t dora_drop_operator(void *operator_context)
 {
     delete (Operator *)operator_context;
+    return {};
 }
 
-extern "C" int dora_on_input(
-    const char *id_start,
-    size_t id_len,
-    const char *data_start,
-    size_t data_len,
-    const int (*output_fn_raw)(const char *id_start,
-                               size_t id_len,
-                               const char *data_start,
-                               size_t data_len,
-                               const void *output_context),
-    void *output_context,
-    const void *operator_context)
+extern "C" OnInputResult_t dora_on_input(
+    const Input_t *input,
+    const SendOutput_t *send_output,
+    void *operator_context)
 {
 
-    std::string id(id_start, id_len);
+    std::string id((char *)input->id.ptr, input->id.len);
 
     std::vector<unsigned char> data;
-    for (size_t i = 0; i < data_len; i++)
+    for (size_t i = 0; i < input->data.len; i++)
     {
-        data.push_back(*(data_start + i));
+        data.push_back(*(input->data.ptr + i));
     }
 
     std::cout
@@ -58,14 +52,22 @@ extern "C" int dora_on_input(
     }
     std::cout << "]" << std::endl;
 
-    char out = data[0] / 2;
-    std::string out_id = "half-status";
-    int result = output_fn_raw(&out_id[0], out_id.length(), &out, 1, output_context);
-    if (result != 0)
-    {
-        std::cerr << "failed to send output" << std::endl;
-        return 1;
-    }
+    const char *out_id = "half-status";
+    char *out_id_heap = strdup(out_id);
 
-    return 0;
+    size_t out_data_len = 1;
+    uint8_t *out_data_heap = (uint8_t *)malloc(out_data_len);
+    *out_data_heap = data[0] / 2;
+
+    Output_t output = {.id = {
+                           .ptr = (uint8_t *)out_id_heap,
+                           .len = strlen(out_id_heap),
+                           .cap = strlen(out_id_heap) + 1,
+                       },
+                       .data = {.ptr = out_data_heap, .len = out_data_len, .cap = out_data_len}};
+
+    DoraResult_t send_result = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
+
+    OnInputResult_t result = {.result = send_result, .status = DORA_STATUS_CONTINUE};
+    return result;
 }
