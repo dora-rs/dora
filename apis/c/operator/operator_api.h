@@ -8,11 +8,17 @@ extern "C"
 #include <stddef.h>
 #include "operator_types.h"
 
-    DoraInitResult_t dora_init_operator(void);
+#ifdef _WIN32
+#define EXPORT __declspec(dllexport)
+#else
+#define EXPORT
+#endif
 
-    DoraResult_t dora_drop_operator(void *operator_context);
+    EXPORT DoraInitResult_t dora_init_operator(void);
 
-    OnInputResult_t dora_on_input(
+    EXPORT DoraResult_t dora_drop_operator(void *operator_context);
+
+    EXPORT OnInputResult_t dora_on_input(
         const Input_t *input,
         const SendOutput_t *send_output,
         void *operator_context);
