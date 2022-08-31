@@ -8,14 +8,14 @@ use std::path::Path;
 #[ffi_export]
 #[repr(C)]
 pub struct DoraInitOperator {
-    pub init_operator: unsafe extern "C" fn() -> InitResult,
+    pub init_operator: unsafe extern "C" fn() -> DoraInitResult,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
-pub struct InitResult {
+pub struct DoraInitResult {
     pub result: DoraResult,
     pub operator_context: *mut std::ffi::c_void,
 }

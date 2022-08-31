@@ -1,7 +1,7 @@
 use super::{OperatorEvent, OperatorInput};
 use dora_operator_api_types::{
-    safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraOnInput, DoraResult,
-    DoraStatus, InitResult, Metadata, OnInputResult, Output, SendOutput,
+    safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
+    DoraResult, DoraStatus, Metadata, OnInputResult, Output, SendOutput,
 };
 use eyre::{bail, Context};
 use libloading::Symbol;
@@ -62,7 +62,7 @@ struct SharedLibraryOperator<'lib> {
 impl<'lib> SharedLibraryOperator<'lib> {
     fn run(mut self) -> eyre::Result<()> {
         let operator_context = {
-            let InitResult {
+            let DoraInitResult {
                 result,
                 operator_context,
             } = unsafe { (self.bindings.init_operator.init_operator)() };
