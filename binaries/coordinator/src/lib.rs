@@ -64,7 +64,12 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
 
     let nodes = descriptor.resolve_aliases();
     let dora_timers = collect_dora_timers(&nodes);
-    let mut communication_config = descriptor.communication;
+    let communication_config = {
+        let mut config = descriptor.communication;
+        // add uuid as prefix to ensure isolation
+        config.add_topic_prefix(&uuid::Uuid::new_v4().to_string());
+        config
+    };
 
     if nodes
         .iter()
@@ -76,9 +81,6 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
             runtime.display()
         );
     }
-
-    // add uuid as prefix to ensure isolation
-    communication_config.add_topic_prefix(&uuid::Uuid::new_v4().to_string());
 
     let mut tasks = FuturesUnordered::new();
     for node in nodes {
