@@ -271,7 +271,7 @@ pub enum CommunicationConfig {
     },
     Iceoryx {
         app_name_prefix: String,
-        #[serde(skip)]
+        #[serde(default)]
         topic_prefix: String,
     },
 }
