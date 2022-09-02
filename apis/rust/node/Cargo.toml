@@ -19,8 +19,10 @@ tracing = "0.1.33"
 uuid = "0.8.2"
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", optional = true }
 zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git", optional = true }
-iceoryx-rs = { git = "https://github.com/eclipse-iceoryx/iceoryx-rs.git", optional = true }
 flume = "0.10.14"
+
+[target.'cfg(unix)'.dependencies]
+iceoryx-rs = { git = "https://github.com/eclipse-iceoryx/iceoryx-rs.git", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.17.0", features = ["rt"] }
