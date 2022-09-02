@@ -10,10 +10,8 @@ license = "Apache-2.0"
 dora-node-api = { path = "../../rust/node" }
 pyo3 = { version = "0.16", features = ["eyre", "abi3-py38"] }
 eyre = "0.6"
-futures = "0.3.21"
-tokio = { version = "1.17.0", features = ["rt", "sync", "macros"] }
 serde_yaml = "0.8.23"
-
+flume = "0.10.14"
 
 [lib]
 name = "dora"
