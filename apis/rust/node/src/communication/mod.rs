@@ -12,7 +12,7 @@ use std::{
 #[doc(hidden)]
 pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 
-#[cfg(feature = "iceoryx")]
+#[cfg(all(unix, feature = "iceoryx"))]
 pub mod iceoryx;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
@@ -38,7 +38,7 @@ pub fn init(
                 of `dora-node-api` was disabled"
             )
         }
-        #[cfg(feature = "iceoryx")]
+        #[cfg(all(unix, feature = "iceoryx"))]
         CommunicationConfig::Iceoryx {
             app_name_prefix,
             topic_prefix,
@@ -49,7 +49,7 @@ pub fn init(
 
             Ok(Box::new(layer))
         }
-        #[cfg(not(feature = "iceoryx"))]
+        #[cfg(not(all(unix, feature = "iceoryx")))]
         CommunicationConfig::Iceoryx { .. } => {
             eyre::bail!(
                 "cannot parse iceoryx config because the compile-time `iceoryx` feature \
