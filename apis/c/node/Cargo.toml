@@ -10,6 +10,10 @@ license = "Apache-2.0"
 crate-type = ["staticlib"]
 
 [dependencies]
-dora-node-api = { path = "../../rust/node" }
 eyre = "0.6.8"
 flume = "0.10.14"
+
+[dependencies.dora-node-api]
+default-features = false
+path = "../../rust/node"
+features = ["zenoh"]

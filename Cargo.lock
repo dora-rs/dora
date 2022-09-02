@@ -684,9 +684,7 @@ dependencies = [
  "cxx-build",
  "dora-node-api",
  "eyre",
- "futures",
  "rand",
- "tokio",
 ]
 
 [[package]]
