@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 
-void cxx_main(Inputs &inputs, const OutputSender &output_sender)
+void cxx_main(Inputs &inputs, OutputSender &output_sender)
 {
     std::cout << "HELLO FROM C++" << std::endl;
     unsigned char counter = 0;
