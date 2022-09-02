@@ -105,6 +105,18 @@ jobs:
           command: run
           args: --example cxx-dataflow
 
+      - name: "Start RouDi (iceoryx)"
+        if: runner.os != 'Windows'
+        run: find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec {} \; &
+
+      - name: "Rust iceoryx example"
+        if: runner.os != 'Windows'
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 30
+        with:
+          command: run
+          args: --example iceoryx
+
   clippy:
     name: "Clippy"
     runs-on: ubuntu-latest
