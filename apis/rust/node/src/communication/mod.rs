@@ -3,6 +3,7 @@ use crate::{
     BoxError,
 };
 use eyre::{eyre, Context};
+pub use flume::Receiver;
 use std::{
     collections::{BTreeMap, HashMap},
     mem, thread,
@@ -11,13 +12,16 @@ use std::{
 #[doc(hidden)]
 pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 
+#[cfg(feature = "iceoryx")]
 pub mod iceoryx;
+#[cfg(feature = "zenoh")]
 pub mod zenoh;
 
 pub fn init(
     communication_config: &CommunicationConfig,
 ) -> eyre::Result<Box<dyn CommunicationLayer>> {
     match communication_config {
+        #[cfg(feature = "zenoh")]
         CommunicationConfig::Zenoh {
             config: zenoh_config,
             prefix: zenoh_prefix,
@@ -27,6 +31,14 @@ pub fn init(
 
             Ok(Box::new(layer))
         }
+        #[cfg(not(feature = "zenoh"))]
+        CommunicationConfig::Zenoh { .. } => {
+            eyre::bail!(
+                "cannot parse zenoh config because the compile-time `zenoh` feature \
+                of `dora-node-api` was disabled"
+            )
+        }
+        #[cfg(feature = "iceoryx")]
         CommunicationConfig::Iceoryx {
             app_name_prefix,
             topic_prefix,
@@ -36,6 +48,13 @@ pub fn init(
             let layer = iceoryx::IceoryxCommunicationLayer::init(app_name_prefix, topic_prefix)?;
 
             Ok(Box::new(layer))
+        }
+        #[cfg(not(feature = "iceoryx"))]
+        CommunicationConfig::Iceoryx { .. } => {
+            eyre::bail!(
+                "cannot parse iceoryx config because the compile-time `iceoryx` feature \
+                of `dora-node-api` was disabled"
+            )
         }
     }
 }
