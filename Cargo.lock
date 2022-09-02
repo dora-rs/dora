@@ -868,10 +868,9 @@ version = "0.1.0"
 dependencies = [
  "dora-node-api",
  "eyre",
- "futures",
+ "flume",
  "pyo3",
  "serde_yaml",
- "tokio",
 ]
 
 [[package]]
