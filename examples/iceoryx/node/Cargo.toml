@@ -1,15 +1,11 @@
 [package]
-name = "dora-node-api-c"
+name = "iceoryx-example-node"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-crate-type = ["staticlib"]
-
 [dependencies]
-dora-node-api = { path = "../../rust/node" }
+dora-node-api = { version = "0.1.0", path = "../../../apis/rust/node" }
 eyre = "0.6.8"
-flume = "0.10.14"
+rand = "0.8.5"

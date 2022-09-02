@@ -1,23 +1,28 @@
-use super::{OperatorEvent, OperatorInput};
+use super::OperatorEvent;
+use dora_node_api::{communication::Publisher, config::DataId, BoxError};
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
     DoraResult, DoraStatus, Metadata, OnInputResult, Output, SendOutput,
 };
 use eyre::{bail, eyre, Context};
+use flume::Receiver;
 use libloading::Symbol;
 use std::{
+    collections::HashMap,
     ffi::c_void,
+    ops::Deref,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
     sync::Arc,
     thread,
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 
 pub fn spawn(
     path: &Path,
     events_tx: Sender<OperatorEvent>,
-    inputs: Receiver<OperatorInput>,
+    inputs: Receiver<dora_node_api::Input>,
+    publishers: HashMap<DataId, Box<dyn Publisher>>,
 ) -> eyre::Result<()> {
     let file_name = path
         .file_name()
@@ -41,13 +46,9 @@ pub fn spawn(
         let closure = AssertUnwindSafe(|| {
             let bindings = Bindings::init(&library).context("failed to init operator")?;
 
-            let operator = SharedLibraryOperator {
-                events_tx: events_tx.clone(),
-                inputs,
-                bindings,
-            };
+            let operator = SharedLibraryOperator { inputs, bindings };
 
-            operator.run()
+            operator.run(publishers)
         });
         match catch_unwind(closure) {
             Ok(Ok(())) => {
@@ -66,14 +67,13 @@ pub fn spawn(
 }
 
 struct SharedLibraryOperator<'lib> {
-    events_tx: Sender<OperatorEvent>,
-    inputs: Receiver<OperatorInput>,
+    inputs: Receiver<dora_node_api::Input>,
 
     bindings: Bindings<'lib>,
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
-    fn run(mut self) -> eyre::Result<()> {
+    fn run(self, publishers: HashMap<DataId, Box<dyn Publisher>>) -> eyre::Result<()> {
         let operator_context = {
             let DoraInitResult {
                 result,
@@ -89,13 +89,17 @@ impl<'lib> SharedLibraryOperator<'lib> {
             }
         };
 
-        let closure_events_tx = self.events_tx.clone();
         let send_output_closure = Arc::new(move |output: Output| {
-            let id: String = output.id.into();
-            let result = closure_events_tx.blocking_send(OperatorEvent::Output {
-                id: id.into(),
-                value: output.data.into(),
-            });
+            let result = match publishers.get(output.id.deref()) {
+                Some(publisher) => publisher.publish(&output.data),
+                None => Err(BoxError(
+                    eyre!(
+                        "unexpected output {} (not defined in dataflow config)",
+                        output.id.deref()
+                    )
+                    .into(),
+                )),
+            };
 
             let error = match result {
                 Ok(()) => None,
@@ -105,10 +109,10 @@ impl<'lib> SharedLibraryOperator<'lib> {
             DoraResult { error }
         });
 
-        while let Some(input) = self.inputs.blocking_recv() {
+        while let Ok(input) = self.inputs.recv() {
             let operator_input = dora_operator_api_types::Input {
                 id: String::from(input.id).into(),
-                data: input.value.into(),
+                data: input.data.into(),
                 metadata: Metadata {
                     open_telemetry_context: String::new().into(),
                 },

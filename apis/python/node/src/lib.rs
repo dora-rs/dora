@@ -1,7 +1,6 @@
 use dora_node_api::config::{DataId, NodeId};
 use dora_node_api::{DoraNode, Input};
 use eyre::{Context, Result};
-use futures::StreamExt;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -42,32 +41,31 @@ impl Node {
         // It would have been difficult to expose the FutureStream of Dora directly.
         thread::spawn(move || -> Result<()> {
             let rt = tokio::runtime::Builder::new_multi_thread().build()?;
-            rt.block_on(async move {
-                let node = Arc::new(DoraNode::init_from_env().await?);
-                let _node = node.clone();
-                let receive_handle = tokio::spawn(async move {
-                    let mut inputs = _node.inputs().await.unwrap();
-                    while let Some(input) = inputs.next().await {
-                        tx_input.send(input).await?
-                    }
-                    Result::<_, eyre::Error>::Ok(())
-                });
-                let send_handle = tokio::spawn(async move {
-                    while let Some((output_str, data)) = rx_output.recv().await {
-                        let output_id = DataId::from(output_str);
-                        node.send_output(&output_id, data.as_slice()).await?
-                    }
-                    Result::<_, eyre::Error>::Ok(())
-                });
-                let (receiver, sender) = tokio::join!(receive_handle, send_handle);
-                receiver
-                    .wrap_err("Handle to the receiver failed")?
-                    .wrap_err("Receiving messages from receiver channel failed")?;
-                sender
-                    .wrap_err("Handle to the sender failed")?
-                    .wrap_err("Sending messages using sender channel failed")?;
-                Ok(())
-            })
+
+            let node = Arc::new(DoraNode::init_from_env()?);
+            let _node = node.clone();
+            let receive_handle = tokio::task::spawn_blocking(async move {
+                let mut inputs = _node.inputs().unwrap();
+                while let Ok(input) = inputs.recv() {
+                    tx_input.blocking_send(input)?
+                }
+                Result::<_, eyre::Error>::Ok(())
+            });
+            let send_handle = tokio::task::spawn_blocking(async move {
+                while let Some((output_str, data)) = rx_output.recv().await {
+                    let output_id = DataId::from(output_str);
+                    node.send_output(&output_id, data.as_slice())?
+                }
+                Result::<_, eyre::Error>::Ok(())
+            });
+            let (receiver, sender) = tokio::join!(receive_handle, send_handle);
+            receiver
+                .wrap_err("Handle to the receiver failed")?
+                .wrap_err("Receiving messages from receiver channel failed")?;
+            sender
+                .wrap_err("Handle to the sender failed")?
+                .wrap_err("Sending messages using sender channel failed")?;
+            Ok(())
         });
 
         Ok(Node {
