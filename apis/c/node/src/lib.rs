@@ -1,12 +1,11 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use dora_node_api::{DoraNode, Input};
-use futures::{executor::block_on, Stream, StreamExt};
-use std::{pin::Pin, ptr, slice};
+use std::{ptr, slice};
 
 struct DoraContext {
-    node: &'static DoraNode,
-    inputs: Pin<Box<dyn futures::Stream<Item = Input>>>,
+    node: &'static mut DoraNode,
+    inputs: flume::Receiver<Input>,
 }
 
 /// Initializes a dora context from the environment variables that were set by
@@ -20,12 +19,13 @@ struct DoraContext {
 /// On error, a null pointer is returned.
 #[no_mangle]
 pub extern "C" fn init_dora_context_from_env() -> *mut () {
-    let context = match block_on(async {
-        let node = DoraNode::init_from_env().await?;
+    let context = || {
+        let node = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));
-        let inputs: Pin<Box<dyn Stream<Item = Input>>> = Box::pin(node.inputs().await?);
+        let inputs = node.inputs()?;
         Ok(DoraContext { node, inputs })
-    }) {
+    };
+    let context = match context() {
         Ok(n) => n,
         Err(err) => {
             let err: eyre::Error = err;
@@ -71,9 +71,9 @@ pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
 #[no_mangle]
 pub unsafe extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
-    match block_on(context.inputs.next()) {
-        Some(input) => Box::into_raw(Box::new(input)).cast(),
-        None => ptr::null_mut(),
+    match context.inputs.recv() {
+        Ok(input) => Box::into_raw(Box::new(input)).cast(),
+        Err(flume::RecvError::Disconnected) => ptr::null_mut(),
     }
 }
 
@@ -191,5 +191,5 @@ unsafe fn try_send_output(
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-    block_on(context.node.send_output(&output_id, data))
+    context.node.send_output(&output_id, data)
 }

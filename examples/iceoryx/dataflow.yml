@@ -1,0 +1,26 @@
+communication:
+  iceoryx:
+    app_name_prefix: dora-iceoryx-example
+
+nodes:
+  - id: rust-node
+    custom:
+      run: ../../target/debug/iceoryx-example-node
+      inputs:
+        tick: dora/timer/millis/300
+      outputs:
+        - random
+  - id: runtime-node
+    operators:
+      - id: rust-operator
+        shared-library: ../../target/debug/iceoryx_example_operator
+        inputs:
+          tick: dora/timer/millis/100
+          random: rust-node/random
+        outputs:
+          - status
+  - id: rust-sink
+    custom:
+      run: ../../target/debug/iceoryx-example-sink
+      inputs:
+        message: runtime-node/rust-operator/status

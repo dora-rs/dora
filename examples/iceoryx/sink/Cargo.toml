@@ -1,5 +1,5 @@
 [package]
-name = "rust-dataflow-example-sink"
+name = "iceoryx-example-sink"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 dora-node-api = { version = "0.1.0", path = "../../../apis/rust/node" }
 eyre = "0.6.8"
+futures = "0.3.21"
+tokio = { version = "1.20.1", features = ["macros"] }

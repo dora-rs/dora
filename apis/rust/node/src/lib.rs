@@ -1,15 +1,10 @@
-use communication::CommunicationLayer;
+pub use communication::Input;
+use communication::{CommunicationLayer, STOP_TOPIC};
 use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 use eyre::WrapErr;
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
-use futures_concurrency::Merge;
-use std::collections::HashSet;
 
 pub mod communication;
 pub mod config;
-
-#[doc(hidden)]
-pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
 
 pub struct DoraNode {
     id: NodeId,
@@ -18,7 +13,7 @@ pub struct DoraNode {
 }
 
 impl DoraNode {
-    pub async fn init_from_env() -> eyre::Result<Self> {
+    pub fn init_from_env() -> eyre::Result<Self> {
         let id = {
             let raw =
                 std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
@@ -34,15 +29,15 @@ impl DoraNode {
                 .wrap_err("env variable DORA_COMMUNICATION_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize communication config")?
         };
-        Self::init(id, node_config, communication_config).await
+        Self::init(id, node_config, communication_config)
     }
 
-    pub async fn init(
+    pub fn init(
         id: NodeId,
         node_config: NodeRunConfig,
         communication_config: CommunicationConfig,
     ) -> eyre::Result<Self> {
-        let communication = communication::init(&communication_config).await?;
+        let communication = communication::init(&communication_config)?;
         Ok(Self {
             id,
             node_config,
@@ -50,51 +45,11 @@ impl DoraNode {
         })
     }
 
-    pub async fn inputs(&self) -> eyre::Result<impl futures::Stream<Item = Input> + '_> {
-        let mut streams = Vec::new();
-        for (input, mapping) in &self.node_config.inputs {
-            let topic = mapping.to_string();
-            let sub = self
-                .communication
-                .subscribe(&topic)
-                .await
-                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-            streams.push(sub.map(|data| Input {
-                id: input.clone(),
-                data,
-            }))
-        }
-
-        let stop_messages = FuturesUnordered::new();
-        let sources: HashSet<_> = self
-            .node_config
-            .inputs
-            .values()
-            .map(|v| (v.source(), v.operator()))
-            .collect();
-        for (source, operator) in &sources {
-            let topic = match operator {
-                Some(operator) => format!("{source}/{operator}/{STOP_TOPIC}"),
-                None => format!("{source}/{STOP_TOPIC}"),
-            };
-            let sub = self
-                .communication
-                .subscribe(&topic)
-                .await
-                .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
-            stop_messages.push(sub.into_future());
-        }
-        let node_id = self.id.clone();
-        let finished = Box::pin(
-            stop_messages
-                .all(|_| async { true })
-                .map(move |_| println!("all inputs finished for node {node_id}")),
-        );
-
-        Ok(streams.merge().take_until(finished))
+    pub fn inputs(&mut self) -> eyre::Result<flume::Receiver<Input>> {
+        self.communication.subscribe_all(&self.node_config.inputs)
     }
 
-    pub async fn send_output(&self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {
+    pub fn send_output(&mut self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {
         if !self.node_config.outputs.contains(output_id) {
             eyre::bail!("unknown output");
         }
@@ -103,8 +58,9 @@ impl DoraNode {
 
         let topic = format!("{self_id}/{output_id}");
         self.communication
-            .publish(&topic, data)
-            .await
+            .publisher(&topic)
+            .wrap_err_with(|| format!("failed create publisher for output {output_id}"))?
+            .publish(data)
             .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         Ok(())
     }
@@ -124,8 +80,14 @@ impl Drop for DoraNode {
         let topic = format!("{self_id}/{STOP_TOPIC}");
         let result = self
             .communication
-            .publish_sync(&topic, &[])
-            .wrap_err_with(|| format!("failed to send stop message for source `{self_id}`"));
+            .publisher(&topic)
+            .wrap_err_with(|| {
+                format!("failed to create publisher for stop message for node `{self_id}`")
+            })
+            .and_then(|p| {
+                p.publish(&[])
+                    .wrap_err_with(|| format!("failed to send stop message for node `{self_id}`"))
+            });
         match result {
             Ok(()) => println!("sent stop message for {self_id}"),
             Err(err) => {
@@ -136,13 +98,7 @@ impl Drop for DoraNode {
     }
 }
 
-#[derive(Debug)]
-pub struct Input {
-    pub id: DataId,
-    pub data: Vec<u8>,
-}
-
-pub struct BoxError(Box<dyn std::error::Error + Send + Sync + 'static>);
+pub struct BoxError(pub Box<dyn std::error::Error + Send + Sync + 'static>);
 
 impl std::fmt::Debug for BoxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -166,16 +122,6 @@ impl std::error::Error for BoxError {
 mod tests {
     use super::*;
 
-    fn run<F, O>(future: F) -> O
-    where
-        F: std::future::Future<Output = O>,
-    {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        rt.block_on(future)
-    }
-
     #[test]
     fn no_op_operator() {
         let id = uuid::Uuid::new_v4().to_string().into();
@@ -188,12 +134,9 @@ mod tests {
             prefix: format!("/{}", uuid::Uuid::new_v4()),
         };
 
-        run(async {
-            let operator = DoraNode::init(id, node_config, communication_config)
-                .await
-                .unwrap();
-            let mut inputs = operator.inputs().await.unwrap();
-            assert!(inputs.next().await.is_none());
-        });
+        let mut node = DoraNode::init(id, node_config, communication_config).unwrap();
+
+        let inputs = node.inputs().unwrap();
+        assert!(inputs.recv().is_err());
     }
 }
