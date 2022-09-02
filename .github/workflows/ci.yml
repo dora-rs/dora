@@ -15,11 +15,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v2
-      - name: Install Cap'n Proto (Linux)
+        name: Install Cap'n Proto and libacl-dev (Linux)
         if: runner.os == 'Linux'
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y capnproto libcapnp-dev
+          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
       - name: Install Cap'n Proto (macOS)
         if: runner.os == 'macOS'
         run: brew install capnp
@@ -60,11 +60,11 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Install Cap'n Proto (Linux)
+      - name: Install Cap'n Proto and libacl-dev (Linux)
         if: runner.os == 'Linux'
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y capnproto libcapnp-dev
+          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
       - name: Install Cap'n Proto (macOS)
         if: runner.os == 'macOS'
         run: brew install capnp
@@ -110,10 +110,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - name: Install Cap'n Proto
+        name: Install Cap'n Proto and libacl-dev
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y capnproto libcapnp-dev
+          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
       - name: "Clippy"
         uses: actions-rs/cargo@v1
         with:
