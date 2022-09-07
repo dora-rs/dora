@@ -1,6 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use dora_node_api::{DoraNode, Input};
+use eyre::Context;
 use std::{ptr, slice};
 
 struct DoraContext {
@@ -19,13 +20,14 @@ struct DoraContext {
 /// On error, a null pointer is returned.
 #[no_mangle]
 pub extern "C" fn init_dora_context_from_env() -> *mut () {
+    println!("init_dora_context_from_env");
     let context = || {
         let node = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));
         let inputs = node.inputs()?;
-        Ok(DoraContext { node, inputs })
+        Result::<_, eyre::Report>::Ok(DoraContext { node, inputs })
     };
-    let context = match context() {
+    let context = match context().context("failed to initialize node") {
         Ok(n) => n,
         Err(err) => {
             let err: eyre::Error = err;
@@ -46,7 +48,9 @@ pub extern "C" fn init_dora_context_from_env() -> *mut () {
 /// freeing, the pointer must not be used anymore.
 #[no_mangle]
 pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
+    println!("free_dora_context");
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
+    println!("free_dora_context: node_id = {}", context.node.id());
     // drop all fields except for `node`
     let DoraContext { node, .. } = *context;
     // convert the `'static` reference back to a Box, then drop it
