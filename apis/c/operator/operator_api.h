@@ -1,4 +1,12 @@
+#ifndef __RUST_DORA_OPERATOR_API_C_WRAPPER__
+#define __RUST_DORA_OPERATOR_API_C_WRAPPER__
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
 #include <stddef.h>
+#include "operator_types.h"
 
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
@@ -6,19 +14,23 @@
 #define EXPORT
 #endif
 
-EXPORT int dora_init_operator(void **operator_context);
+    EXPORT DoraInitResult_t dora_init_operator(void);
 
-EXPORT void dora_drop_operator(void *operator_context);
+    EXPORT DoraResult_t dora_drop_operator(void *operator_context);
 
-EXPORT int dora_on_input(
-    const char *id_start,
-    size_t id_len,
-    const char *data_start,
-    size_t data_len,
-    const int (*output_fn_raw)(const char *id_start,
-                               size_t id_len,
-                               const char *data_start,
-                               size_t data_len,
-                               const void *output_context),
-    void *output_context,
-    const void *operator_context);
+    EXPORT OnInputResult_t dora_on_input(
+        const Input_t *input,
+        const SendOutput_t *send_output,
+        void *operator_context);
+
+    void __dora_type_assertions()
+    {
+        DoraInitOperator_t __dora_init_operator = {.init_operator = dora_init_operator};
+        DoraDropOperator_t __dora_drop_operator = {.drop_operator = dora_drop_operator};
+        DoraOnInput_t __dora_on_input = {.on_input = dora_on_input};
+    }
+#ifdef __cplusplus
+} /* extern \"C\" */
+#endif
+
+#endif /* __RUST_DORA_OPERATOR_API_C_WRAPPER__ */

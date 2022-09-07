@@ -9,6 +9,7 @@ license = "Apache-2.0"
 [dependencies]
 clap = { version = "3.1.12", features = ["derive"] }
 dora-node-api = { path = "../../apis/rust/node" }
+dora-operator-api-types = { path = "../../apis/rust/operator/types" }
 dora-core = { version = "0.1.0", path = "../../libraries/core" }
 eyre = "0.6.8"
 futures = "0.3.21"

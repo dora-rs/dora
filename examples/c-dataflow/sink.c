@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
-#include "build/node_api.h"
+#include "../../apis/c/node/node_api.h"
 
 int main()
 {
