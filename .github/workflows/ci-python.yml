@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - name: Install Cap'n Proto
+      - name: Install Cap'n Proto and libacl-dev
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y capnproto libcapnp-dev
+          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
       - uses: actions/setup-python@v2
         with:
           python-version: 3.8.10
