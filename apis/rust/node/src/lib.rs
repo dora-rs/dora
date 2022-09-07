@@ -89,9 +89,8 @@ impl Drop for DoraNode {
                     .wrap_err_with(|| format!("failed to send stop message for node `{self_id}`"))
             });
         match result {
-            Ok(()) => println!("sent stop message for {self_id}"),
+            Ok(()) => tracing::info!("sent stop message for {self_id}"),
             Err(err) => {
-                println!("error sending stop message for {self_id}: {err:?}");
                 tracing::error!("{err:?}")
             }
         }
