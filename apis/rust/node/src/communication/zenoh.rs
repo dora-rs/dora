@@ -1,6 +1,6 @@
 use super::{CommunicationLayer, Publisher, Subscriber};
 use crate::BoxError;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use zenoh::{
     prelude::{EntityFactory, Priority, Receiver as _, SplitBuffer, ZFuture},
     publication::CongestionControl,
@@ -50,6 +50,17 @@ impl CommunicationLayer for ZenohCommunicationLayer {
             .map_err(|err| BoxError(err.into()))?;
 
         Ok(Box::new(ZenohReceiver(subscriber)))
+    }
+}
+
+impl Drop for ZenohCommunicationLayer {
+    fn drop(&mut self) {
+        // wait a bit before closing to ensure that remaining published
+        // messages are sent out
+        //
+        // TODO: create a minimal example to reproduce the dropped messages
+        // and report this issue in the zenoh repo
+        std::thread::sleep(Duration::from_secs_f32(1.0));
     }
 }
 
