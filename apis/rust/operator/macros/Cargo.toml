@@ -17,3 +17,4 @@ proc-macro2 = "1.0.32"
 
 [dev-dependencies]
 dora-operator-api = { path = ".." }
+dora-operator-api-types = { path = "../types" }

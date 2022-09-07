@@ -1,11 +1,16 @@
 use super::{OperatorEvent, OperatorInput};
+use dora_operator_api_types::{
+    safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
+    DoraResult, DoraStatus, Metadata, OnInputResult, Output, SendOutput,
+};
 use eyre::{bail, eyre, Context};
 use libloading::Symbol;
 use std::{
     ffi::c_void,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
-    ptr, slice, thread,
+    sync::Arc,
+    thread,
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 
@@ -70,51 +75,64 @@ struct SharedLibraryOperator<'lib> {
 impl<'lib> SharedLibraryOperator<'lib> {
     fn run(mut self) -> eyre::Result<()> {
         let operator_context = {
-            let mut raw = ptr::null_mut();
-            let result = unsafe { (self.bindings.init_operator)(&mut raw) };
-            if result != 0 {
-                bail!("init_operator failed with error code {result}");
-            }
+            let DoraInitResult {
+                result,
+                operator_context,
+            } = unsafe { (self.bindings.init_operator.init_operator)() };
+            let raw = match result.error {
+                Some(error) => bail!("init_operator failed: {}", String::from(error)),
+                None => operator_context,
+            };
             OperatorContext {
                 raw,
                 drop_fn: self.bindings.drop_operator.clone(),
             }
         };
 
-        while let Some(input) = self.inputs.blocking_recv() {
-            let id_start = input.id.as_bytes().as_ptr();
-            let id_len = input.id.as_bytes().len();
-            let data_start = input.value.as_slice().as_ptr();
-            let data_len = input.value.len();
+        let closure_events_tx = self.events_tx.clone();
+        let send_output_closure = Arc::new(move |output: Output| {
+            let id: String = output.id.into();
+            let result = closure_events_tx.blocking_send(OperatorEvent::Output {
+                id: id.into(),
+                value: output.data.into(),
+            });
 
-            let output = |id: &str, data: &[u8]| -> isize {
-                let result = self.events_tx.blocking_send(OperatorEvent::Output {
-                    id: id.to_owned().into(),
-                    value: data.to_owned(),
-                });
-                match result {
-                    Ok(()) => 0,
-                    Err(_) => -1,
-                }
+            let error = match result {
+                Ok(()) => None,
+                Err(_) => Some(String::from("runtime process closed unexpectedly").into()),
             };
-            let (output_fn, output_ctx) = wrap_closure(&output);
 
-            let result = unsafe {
-                (self.bindings.on_input)(
-                    id_start,
-                    id_len,
-                    data_start,
-                    data_len,
-                    output_fn,
-                    output_ctx,
+            DoraResult { error }
+        });
+
+        while let Some(input) = self.inputs.blocking_recv() {
+            let operator_input = dora_operator_api_types::Input {
+                id: String::from(input.id).into(),
+                data: input.value.into(),
+                metadata: Metadata {
+                    open_telemetry_context: String::new().into(),
+                },
+            };
+
+            let send_output = SendOutput {
+                send_output: ArcDynFn1::new(send_output_closure.clone()),
+            };
+            let OnInputResult {
+                result: DoraResult { error },
+                status,
+            } = unsafe {
+                (self.bindings.on_input.on_input)(
+                    &operator_input,
+                    &send_output,
                     operator_context.raw,
                 )
             };
-            match result {
-                0 => {}     // DoraStatus::Continue
-                1 => break, // DoraStatus::Stop
-                -1 => bail!("on_input failed"),
-                other => bail!("on_input finished with unexpected exit code {other}"),
+            match error {
+                Some(error) => bail!("on_input failed: {}", String::from(error)),
+                None => match status {
+                    DoraStatus::Continue => {}
+                    DoraStatus::Stop => break,
+                },
             }
         }
         Ok(())
@@ -122,55 +140,20 @@ impl<'lib> SharedLibraryOperator<'lib> {
 }
 
 struct OperatorContext<'lib> {
-    raw: *mut (),
-    drop_fn: Symbol<'lib, OperatorContextDropFn>,
+    raw: *mut c_void,
+    drop_fn: Symbol<'lib, DoraDropOperator>,
 }
 
 impl<'lib> Drop for OperatorContext<'lib> {
     fn drop(&mut self) {
-        unsafe { (self.drop_fn)(self.raw) };
+        unsafe { (self.drop_fn.drop_operator)(self.raw) };
     }
-}
-
-/// Wrap a closure with an FFI-compatible trampoline function.
-///
-/// Returns a C compatible trampoline function and a data pointer that
-/// must be passed as when invoking the trampoline function.
-fn wrap_closure<F>(closure: &F) -> (OutputFn, *const c_void)
-where
-    F: Fn(&str, &[u8]) -> isize,
-{
-    /// Rust closures are just compiler-generated structs with a `call` method. This
-    /// trampoline function is generic over the closure type, which means that the
-    /// compiler's monomorphization step creates a different copy of that function
-    /// for each closure type.
-    ///
-    /// The trampoline function expects the pointer to the corresponding closure
-    /// struct as `context` argument. It casts that pointer back to a closure
-    /// struct pointer and invokes its call method.
-    unsafe extern "C" fn trampoline<F: Fn(&str, &[u8]) -> isize>(
-        id_start: *const u8,
-        id_len: usize,
-        data_start: *const u8,
-        data_len: usize,
-        context: *const c_void,
-    ) -> isize {
-        let id_raw = unsafe { slice::from_raw_parts(id_start, id_len) };
-        let data = unsafe { slice::from_raw_parts(data_start, data_len) };
-        let id = match std::str::from_utf8(id_raw) {
-            Ok(s) => s,
-            Err(_) => return -1,
-        };
-        unsafe { (*(context as *const F))(id, data) }
-    }
-
-    (trampoline::<F>, closure as *const F as *const c_void)
 }
 
 struct Bindings<'lib> {
-    init_operator: Symbol<'lib, InitFn>,
-    drop_operator: Symbol<'lib, OperatorContextDropFn>,
-    on_input: Symbol<'lib, OnInputFn>,
+    init_operator: Symbol<'lib, DoraInitOperator>,
+    drop_operator: Symbol<'lib, DoraDropOperator>,
+    on_input: Symbol<'lib, DoraOnInput>,
 }
 
 impl<'lib> Bindings<'lib> {
@@ -191,24 +174,3 @@ impl<'lib> Bindings<'lib> {
         Ok(bindings)
     }
 }
-
-type InitFn = unsafe extern "C" fn(operator_context: *mut *mut ()) -> isize;
-type OperatorContextDropFn = unsafe extern "C" fn(operator_context: *mut ());
-
-type OnInputFn = unsafe extern "C" fn(
-    id_start: *const u8,
-    id_len: usize,
-    data_start: *const u8,
-    data_len: usize,
-    output: OutputFn,
-    output_context: *const c_void,
-    operator_context: *mut (),
-) -> isize;
-
-type OutputFn = unsafe extern "C" fn(
-    id_start: *const u8,
-    id_len: usize,
-    data_start: *const u8,
-    data_len: usize,
-    output_context: *const c_void,
-) -> isize;

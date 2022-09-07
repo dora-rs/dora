@@ -2,8 +2,9 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub use dora_operator_api_macros::register_operator;
-use raw::OutputFnRaw;
-use std::ffi::c_void;
+pub use dora_operator_api_types as types;
+pub use types::DoraStatus;
+use types::{Metadata, Output, SendOutput};
 
 pub mod raw;
 
@@ -14,34 +15,23 @@ pub trait DoraOperator: Default {
         id: &str,
         data: &[u8],
         output_sender: &mut DoraOutputSender,
-    ) -> Result<DoraStatus, ()>;
+    ) -> Result<DoraStatus, String>;
 }
 
-#[repr(isize)]
-pub enum DoraStatus {
-    Continue = 0,
-    Stop = 1,
-}
+pub struct DoraOutputSender<'a>(&'a SendOutput);
 
-pub struct DoraOutputSender {
-    output_fn_raw: OutputFnRaw,
-    output_context: *const c_void,
-}
-
-impl DoraOutputSender {
-    pub fn send(&mut self, id: &str, data: &[u8]) -> Result<(), isize> {
-        let result = unsafe {
-            (self.output_fn_raw)(
-                id.as_ptr(),
-                id.len(),
-                data.as_ptr(),
-                data.len(),
-                self.output_context,
-            )
-        };
-        match result {
-            0 => Ok(()),
-            other => Err(other),
+impl DoraOutputSender<'_> {
+    pub fn send(&mut self, id: String, data: Vec<u8>) -> Result<(), String> {
+        let result = self.0.send_output.call(Output {
+            id: id.into(),
+            data: data.into(),
+            metadata: Metadata {
+                open_telemetry_context: String::new().into(), // TODO
+            },
+        });
+        match result.error {
+            None => Ok(()),
+            Some(error) => Err(error.into()),
         }
     }
 }
