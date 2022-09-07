@@ -60,7 +60,7 @@ impl Drop for ZenohCommunicationLayer {
         //
         // TODO: create a minimal example to reproduce the dropped messages
         // and report this issue in the zenoh repo
-        std::thread::sleep(Duration::from_secs_f32(1.0));
+        std::thread::sleep(Duration::from_secs_f32(2.0));
     }
 }
 
