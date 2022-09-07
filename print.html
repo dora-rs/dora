@@ -316,23 +316,21 @@ impl DoraOperator for ExampleOperator {
         id: &amp;str,
         data: &amp;[u8],
         output_sender: &amp;mut DoraOutputSender,
-    ) -&gt; Result&lt;DoraStatus, ()&gt; {
+    ) -&gt; Result&lt;DoraStatus, String&gt; {
         match id {
             &quot;tick&quot; =&gt; {
                 self.ticks += 1;
             }
             &quot;random&quot; =&gt; {
                 let parsed = {
-                    let data: [u8; 8] = data.try_into().map_err(|_| ())?;
+                    let data: [u8; 8] = data.try_into().map_err(|_| &quot;unexpected random data&quot;)?;
                     u64::from_le_bytes(data)
                 };
                 let output = format!(
                     &quot;operator received random value {parsed} after {} ticks&quot;,
                     self.ticks
                 );
-                output_sender
-                    .send(&quot;status&quot;, output.as_bytes())
-                    .map_err(|_| ())?;
+                output_sender.send(&quot;status&quot;.into(), output.into_bytes())?;
                 self.last_random_at = Some(Instant::now());
             }
             other =&gt; eprintln!(&quot;ignoring unexpected input {other}&quot;),
@@ -672,23 +670,21 @@ impl DoraOperator for ExampleOperator {
         id: &amp;str,
         data: &amp;[u8],
         output_sender: &amp;mut DoraOutputSender,
-    ) -&gt; Result&lt;DoraStatus, ()&gt; {
+    ) -&gt; Result&lt;DoraStatus, String&gt; {
         match id {
             &quot;tick&quot; =&gt; {
                 self.ticks += 1;
             }
             &quot;random&quot; =&gt; {
                 let parsed = {
-                    let data: [u8; 8] = data.try_into().map_err(|_| ())?;
+                    let data: [u8; 8] = data.try_into().map_err(|_| &quot;unexpected random data&quot;)?;
                     u64::from_le_bytes(data)
                 };
                 let output = format!(
                     &quot;operator received random value {parsed} after {} ticks&quot;,
                     self.ticks
                 );
-                output_sender
-                    .send(&quot;status&quot;, output.as_bytes())
-                    .map_err(|_| ())?;
+                output_sender.send(&quot;status&quot;.into(), output.into_bytes())?;
                 self.last_random_at = Some(Instant::now());
             }
             other =&gt; eprintln!(&quot;ignoring unexpected input {other}&quot;),
@@ -859,78 +855,78 @@ int dora_on_input(
 <ul>
 <li>Create an <code>operator.c</code> file:</li>
 </ul>
-<pre><code class="language-c">#include &quot;build/operator_api.h&quot;
+<pre><code class="language-c">#include &quot;../../apis/c/operator/operator_api.h&quot;
 #include &lt;assert.h&gt;
 #include &lt;string.h&gt;
 #include &lt;stdio.h&gt;
 #include &lt;stdlib.h&gt;
 
-int dora_init_operator(void **operator_context)
+DoraInitResult_t dora_init_operator(void)
 {
     void *context = malloc(1);
     char *context_char = (char *)context;
     *context_char = 0;
 
-    *operator_context = context;
-
-    return 0;
+    DoraInitResult_t result = {.operator_context = context};
+    return result;
 }
 
-void dora_drop_operator(void *operator_context)
+DoraResult_t dora_drop_operator(void *operator_context)
 {
     free(operator_context);
+
+    DoraResult_t result = {};
+    return result;
 }
 
-int dora_on_input(
-    const char *id_start,
-    size_t id_len,
-    const char *data_start,
-    size_t data_len,
-    const int (*output_fn_raw)(const char *id_start,
-                               size_t id_len,
-                               const char *data_start,
-                               size_t data_len,
-                               const void *output_context),
-    void *output_context,
-    const void *operator_context)
+OnInputResult_t dora_on_input(
+    const Input_t *input,
+    const SendOutput_t *send_output,
+    void *operator_context)
 {
     char *counter = (char *)operator_context;
 
-    char id[id_len + 1];
-    memcpy(id, id_start, id_len);
-    id[id_len] = 0;
+    char id[input-&gt;id.len + 1];
+    memcpy(id, input-&gt;id.ptr, input-&gt;id.len);
+    id[input-&gt;id.len] = 0;
 
     if (strcmp(id, &quot;tick&quot;) == 0)
     {
-        char data[data_len + 1];
-        memcpy(data, data_start, data_len);
-        data[data_len] = 0;
+        char data[input-&gt;data.len + 1];
+        memcpy(data, input-&gt;data.ptr, input-&gt;data.len);
+        data[input-&gt;data.len] = 0;
 
         *counter += 1;
         printf(&quot;C operator received tick input with data `%s`, counter: %i\n&quot;, data, *counter);
 
         char *out_id = &quot;counter&quot;;
+        char *out_id_heap = strdup(out_id);
 
-        char out_data[100];
-        int count = snprintf(out_data, sizeof(out_data), &quot;The current counter value is %d&quot;, *counter);
+        int data_alloc_size = 100;
+        char *out_data = (char *)malloc(data_alloc_size);
+        int count = snprintf(out_data, data_alloc_size, &quot;The current counter value is %d&quot;, *counter);
         assert(count &gt;= 0 &amp;&amp; count &lt; 100);
 
-        int res = (output_fn_raw)(out_id, strlen(out_id), out_data, strlen(out_data), output_context);
-        if (res != 0)
-        {
-            printf(&quot;C operator failed to send output\n&quot;);
-        }
+        Output_t output = {.id = {
+                               .ptr = (uint8_t *)out_id_heap,
+                               .len = strlen(out_id_heap),
+                               .cap = strlen(out_id_heap) + 1,
+                           },
+                           .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
+        DoraResult_t res = (send_output-&gt;send_output.call)(send_output-&gt;send_output.env_ptr, output);
+
+        OnInputResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
+        return result;
     }
     else
     {
         printf(&quot;C operator received unexpected input %s, context: %i\n&quot;, id, *counter);
+        OnInputResult_t result = {.status = DORA_STATUS_CONTINUE};
+        return result;
     }
-
-    return 0;
 }
 </code></pre>
-<pre><code>  ```
-  -ladvapi32 -luserenv -lkernel32 -lws2_32 -lbcrypt -lncrypt -lschannel -lntdll -liphlpapi
+<pre><code>  -ladvapi32 -luserenv -lkernel32 -lws2_32 -lbcrypt -lncrypt -lschannel -lntdll -liphlpapi
   -lcfgmgr32 -lcredui -lcrypt32 -lcryptnet -lfwpuclnt -lgdi32 -lmsimg32 -lmswsock -lole32
   -lopengl32 -lsecur32 -lshell32 -lsynchronization -luser32 -lwinspool
   -Wl,-nodefaultlib:libcmt -D_DLL -lmsvcrt
@@ -938,7 +934,12 @@ int dora_on_input(
   Also: On Windows, the output file should have an `.exe` extension: `--output build/c_node.exe`
 </code></pre>
 <ul>
-<li>Link it in your graph as:</li>
+<li>
+<p>Repeat the previous step for the <code>sink.c</code> executable</p>
+</li>
+<li>
+<p>Link it in your graph as:</p>
+</li>
 </ul>
 <pre><code class="language-yaml">  - id: runtime-node
     operators:
@@ -982,7 +983,7 @@ dora_send_output(dora_context, out_id, strlen(out_id), &amp;out_data, sizeof out
 <pre><code class="language-c">#include &lt;stdio.h&gt;
 #include &lt;string.h&gt;
 #include &lt;assert.h&gt;
-#include &quot;build/node_api.h&quot;
+#include &quot;../../apis/c/node/node_api.h&quot;
 
 // sleep
 #ifdef _WIN32
@@ -1040,9 +1041,6 @@ int main()
 <p>Create a <code>build</code> folder in this directory (i.e., next to the <code>node.c</code> file)</p>
 </li>
 <li>
-<p>Copy the <code>node-api.h</code> header file from <code>../../apis/c/node</code> to <code>build</code></p>
-</li>
-<li>
 <p>Compile the <code>dora-node-api-c</code> crate into a static library.</p>
 <ul>
 <li>Run <code>cargo build -p dora-node-api-c --release</code></li>
@@ -1056,6 +1054,7 @@ int main()
 <pre><code>clang node.c &lt;FLAGS&gt; -ldora_node_api_c -L ../../target/release --output build/c_node
 </code></pre>
 </li>
+<li>The <code>&lt;FLAGS&gt;</code> depend on the operating system and the libraries that the C node uses. The following flags are required for each OS:</li>
 </ul>
 </li>
 <li>
