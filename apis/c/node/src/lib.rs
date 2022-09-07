@@ -2,7 +2,7 @@
 
 use dora_node_api::{DoraNode, Input};
 use eyre::Context;
-use std::{ptr, slice};
+use std::{ffi::c_void, ptr, slice};
 
 struct DoraContext {
     node: &'static mut DoraNode,
@@ -19,7 +19,7 @@ struct DoraContext {
 ///
 /// On error, a null pointer is returned.
 #[no_mangle]
-pub extern "C" fn init_dora_context_from_env() -> *mut () {
+pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
     println!("init_dora_context_from_env");
     let context = || {
         let node = DoraNode::init_from_env()?;
@@ -47,7 +47,7 @@ pub extern "C" fn init_dora_context_from_env() -> *mut () {
 /// as arguments. Each context pointer must be freed exactly once. After
 /// freeing, the pointer must not be used anymore.
 #[no_mangle]
-pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
+pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
     println!("free_dora_context");
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
     println!("free_dora_context: node_id = {}", context.node.id());
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
 /// [`init_dora_context_from_env`]. The context must be still valid, i.e., not
 /// freed yet.
 #[no_mangle]
-pub unsafe extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
+pub unsafe extern "C" fn dora_next_input(context: *mut c_void) -> *mut c_void {
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     match context.inputs.recv() {
         Ok(input) => Box::into_raw(Box::new(input)).cast(),
@@ -148,7 +148,7 @@ pub unsafe extern "C" fn read_dora_input_data(
 /// This also applies to the `read_dora_input_*` functions, which return
 /// pointers into the original input structure.
 #[no_mangle]
-pub unsafe extern "C" fn free_dora_input(input: *mut ()) {
+pub unsafe extern "C" fn free_dora_input(input: *mut c_void) {
     let _: Box<Input> = unsafe { Box::from_raw(input.cast()) };
 }
 
@@ -169,7 +169,7 @@ pub unsafe extern "C" fn free_dora_input(input: *mut ()) {
 ///   a byte array.
 #[no_mangle]
 pub unsafe extern "C" fn dora_send_output(
-    context: *mut (),
+    context: *mut c_void,
     id_ptr: *const u8,
     id_len: usize,
     data_ptr: *const u8,
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn dora_send_output(
 }
 
 unsafe fn try_send_output(
-    context: *mut (),
+    context: *mut c_void,
     id_ptr: *const u8,
     id_len: usize,
     data_ptr: *const u8,
