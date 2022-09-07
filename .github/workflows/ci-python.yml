@@ -1,21 +1,16 @@
-
 name: CI-python
 
 # Filter CI as this job will take time.
 on:
   push:
     paths:
-    - apis/python/**
-    - binaries/runtime/**
+      - apis/python/**
+      - binaries/runtime/**
   pull_request:
     branches:
-    - main
-    paths:
-    - apis/python/**
-    - binaries/runtime/**
-    
-jobs:
+      - main
 
+jobs:
   examples:
     name: "Python Examples"
     runs-on: ubuntu-latest
