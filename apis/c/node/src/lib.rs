@@ -20,7 +20,6 @@ struct DoraContext {
 /// On error, a null pointer is returned.
 #[no_mangle]
 pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
-    println!("init_dora_context_from_env");
     let context = || {
         let node = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));
@@ -48,9 +47,7 @@ pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
 /// freeing, the pointer must not be used anymore.
 #[no_mangle]
 pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
-    println!("free_dora_context");
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
-    println!("free_dora_context: node_id = {}", context.node.id());
     // drop all fields except for `node`
     let DoraContext { node, .. } = *context;
     // convert the `'static` reference back to a Box, then drop it
