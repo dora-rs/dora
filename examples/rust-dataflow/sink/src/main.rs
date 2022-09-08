@@ -6,12 +6,7 @@ fn main() -> eyre::Result<()> {
 
     let inputs = operator.inputs()?;
 
-    loop {
-        let input = match inputs.recv() {
-            Ok(input) => input,
-            Err(_) => break,
-        };
-
+    while let Ok(input) = inputs.recv() {
         match input.id.as_str() {
             "message" => {
                 let received_string = String::from_utf8(input.data)
