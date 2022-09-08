@@ -7,27 +7,37 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 /// Enables local communication based on `iceoryx`.
 pub struct IceoryxCommunicationLayer {
-    topic_prefix: Arc<String>,
+    group_name: String,
+    instance_name: String,
     publishers: HashMap<String, Arc<iceoryx_rs::Publisher<[u8]>>>,
 }
 
 impl IceoryxCommunicationLayer {
     /// Initializes a new `iceoryx` connection with default configuration.
     ///
-    /// The given `app_name` must be unique. The `topic_prefix` is used as _instance name_
-    /// when using the [`publisher`][Self::publisher] and [`subscriber`][Self::subscribe]
-    /// methods.
+    /// The given `app_name` must be unique. The `group_name` and
+    /// `instance_name` arguments are used to create an `iceoryx`
+    /// `ServiceDescription` in combination wiith topic names given to the
+    /// [`publisher`][Self::publisher] and [`subscriber`][Self::subscribe]
+    /// methods. See the
+    /// [`iceoryx` documentation](https://iceoryx.io/v2.0.1/getting-started/overview/#creating-service-descriptions-for-topics)
+    /// for details.
     ///
     /// Note: In order to use iceoryx, you need to start its broker deamon called
     /// [_RouDi_](https://iceoryx.io/v2.0.2/getting-started/overview/#roudi) first.
     /// Its executable name is `iox-roudi`. See the
     /// [`iceoryx` installation chapter](https://iceoryx.io/v2.0.2/getting-started/installation/)
     /// for ways to install it.
-    pub fn init(app_name: String, topic_prefix: String) -> Result<Self, BoxError> {
+    pub fn init(
+        app_name: String,
+        group_name: String,
+        instance_name: String,
+    ) -> Result<Self, BoxError> {
         iceoryx_rs::Runtime::init(&app_name);
 
         Ok(Self {
-            topic_prefix: Arc::new(topic_prefix.clone()),
+            group_name,
+            instance_name,
             publishers: Default::default(),
         })
     }
@@ -41,8 +51,9 @@ impl IceoryxCommunicationLayer {
         match self.publishers.get(topic) {
             Some(p) => Ok(p.clone()),
             None => {
-                let publisher = Self::create_publisher(&self.topic_prefix, topic)
-                    .context("failed to create iceoryx publisher")?;
+                let publisher =
+                    Self::create_publisher(&self.group_name, &self.instance_name, topic)
+                        .context("failed to create iceoryx publisher")?;
 
                 let publisher = Arc::new(publisher);
                 self.publishers.insert(topic.to_owned(), publisher.clone());
@@ -52,10 +63,11 @@ impl IceoryxCommunicationLayer {
     }
 
     fn create_publisher(
-        topic_prefix: &str,
+        group: &str,
+        instance: &str,
         topic: &str,
     ) -> Result<iceoryx_rs::Publisher<[u8]>, iceoryx_rs::IceoryxError> {
-        iceoryx_rs::PublisherBuilder::new("dora", &topic_prefix, &topic).create()
+        iceoryx_rs::PublisherBuilder::new(group, instance, topic).create()
     }
 }
 
@@ -70,7 +82,7 @@ impl CommunicationLayer for IceoryxCommunicationLayer {
 
     fn subscribe(&mut self, topic: &str) -> Result<Box<dyn Subscriber>, crate::BoxError> {
         let (subscriber, token) =
-            iceoryx_rs::SubscriberBuilder::new("dora", &self.topic_prefix, topic)
+            iceoryx_rs::SubscriberBuilder::new(&self.group_name, &self.instance_name, topic)
                 .queue_capacity(5)
                 .create_mt()
                 .context("failed to create iceoryx subscriber")
