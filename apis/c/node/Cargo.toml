@@ -15,4 +15,5 @@ flume = "0.10.14"
 
 [dependencies.dora-node-api]
 default-features = false
+features = ["zenoh"]
 path = "../../rust/node"
