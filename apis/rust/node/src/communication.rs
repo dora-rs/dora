@@ -7,9 +7,10 @@ use crate::{
 use eyre::Context;
 use std::{
     collections::{BTreeMap, HashSet},
-    mem, thread,
+    mem,
+    ops::Deref,
+    thread,
 };
-use uuid::Uuid;
 
 #[doc(hidden)]
 pub const STOP_TOPIC: &str = "__dora_rs_internal__operator_stopped";
@@ -24,7 +25,7 @@ pub fn init(
             prefix: zenoh_prefix,
         } => {
             let layer = communication_layer_pub_sub::zenoh::ZenohCommunicationLayer::init(
-                zenoh_config.clone(),
+                zenoh_config.deref().clone(),
                 zenoh_prefix.clone(),
             )
             .map_err(|err| eyre::eyre!(err))?;
@@ -44,7 +45,7 @@ pub fn init(
             topic_prefix,
         } => {
             let app_name_prefix = app_name_prefix.clone();
-            let app_name = format!("{app_name_prefix}-{}", Uuid::new_v4());
+            let app_name = format!("{app_name_prefix}-{}", uuid::Uuid::new_v4());
             let instance_name = topic_prefix.clone();
             let layer = communication_layer_pub_sub::iceoryx::IceoryxCommunicationLayer::init(
                 app_name,

@@ -267,7 +267,7 @@ pub struct UserInputMapping {
 pub enum CommunicationConfig {
     Zenoh {
         #[serde(default)]
-        config: zenoh_config::Config,
+        config: Box<zenoh_config::Config>,
         prefix: String,
     },
     Iceoryx {
@@ -288,7 +288,7 @@ impl CommunicationConfig {
             }
             CommunicationConfig::Iceoryx { topic_prefix, .. } => {
                 if !topic_prefix.is_empty() {
-                    topic_prefix.push_str("-");
+                    topic_prefix.push('-');
                 }
                 topic_prefix.push_str(prefix);
             }
