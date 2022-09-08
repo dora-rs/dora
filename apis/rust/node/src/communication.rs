@@ -1,11 +1,9 @@
+pub use communication_layer_pub_sub::{CommunicationLayer, Publisher, Subscriber};
+
 use crate::{
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
     BoxError,
 };
-use communication_layer_pub_sub::{
-    iceoryx::IceoryxCommunicationLayer, zenoh::ZenohCommunicationLayer,
-};
-pub use communication_layer_pub_sub::{CommunicationLayer, Publisher, Subscriber};
 use eyre::Context;
 use std::{
     collections::{BTreeMap, HashSet},
@@ -25,8 +23,11 @@ pub fn init(
             config: zenoh_config,
             prefix: zenoh_prefix,
         } => {
-            let layer = ZenohCommunicationLayer::init(zenoh_config.clone(), zenoh_prefix.clone())
-                .map_err(|err| eyre::eyre!(err))?;
+            let layer = communication_layer_pub_sub::zenoh::ZenohCommunicationLayer::init(
+                zenoh_config.clone(),
+                zenoh_prefix.clone(),
+            )
+            .map_err(|err| eyre::eyre!(err))?;
 
             Ok(Box::new(layer))
         }
@@ -45,8 +46,12 @@ pub fn init(
             let app_name_prefix = app_name_prefix.clone();
             let app_name = format!("{app_name_prefix}-{}", Uuid::new_v4());
             let instance_name = topic_prefix.clone();
-            let layer = IceoryxCommunicationLayer::init(app_name, "dora".into(), instance_name)
-                .map_err(|err| eyre::eyre!(err))?;
+            let layer = communication_layer_pub_sub::iceoryx::IceoryxCommunicationLayer::init(
+                app_name,
+                "dora".into(),
+                instance_name,
+            )
+            .map_err(|err| eyre::eyre!(err))?;
 
             Ok(Box::new(layer))
         }
