@@ -43,9 +43,9 @@ pub fn init(
             topic_prefix,
         } => {
             let app_name_prefix = app_name_prefix.clone();
-            let topic_prefix = topic_prefix.clone();
             let app_name = format!("{app_name_prefix}-{}", Uuid::new_v4());
-            let layer = IceoryxCommunicationLayer::init(app_name, topic_prefix)
+            let instance_name = topic_prefix.clone();
+            let layer = IceoryxCommunicationLayer::init(app_name, "dora".into(), instance_name)
                 .map_err(|err| eyre::eyre!(err))?;
 
             Ok(Box::new(layer))
