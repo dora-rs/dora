@@ -5,7 +5,7 @@ communication:
 nodes:
   - id: cxx-node-rust-api
     custom:
-      run: ../../target/release/cxx-dataflow-example-node-rust-api
+      run: ../../target/debug/cxx-dataflow-example-node-rust-api
       inputs:
         tick: dora/timer/millis/300
       outputs:
@@ -21,7 +21,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: operator-rust-api
-        shared-library: ../../target/release/cxx_dataflow_example_operator_rust_api
+        shared-library: ../../target/debug/cxx_dataflow_example_operator_rust_api
         inputs:
           counter_1: cxx-node-c-api/counter
           counter_2: cxx-node-rust-api/counter

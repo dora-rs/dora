@@ -64,7 +64,12 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
 
     let nodes = descriptor.resolve_aliases();
     let dora_timers = collect_dora_timers(&nodes);
-    let mut communication = descriptor.communication;
+    let communication_config = {
+        let mut config = descriptor.communication;
+        // add uuid as prefix to ensure isolation
+        config.add_topic_prefix(&uuid::Uuid::new_v4().to_string());
+        config
+    };
 
     if nodes
         .iter()
@@ -77,23 +82,20 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
         );
     }
 
-    // add uuid as prefix to ensure isolation
-    communication.add_topic_prefix(&uuid::Uuid::new_v4().to_string());
-
     let mut tasks = FuturesUnordered::new();
     for node in nodes {
         let node_id = node.id.clone();
 
         match node.kind {
             descriptor::CoreNodeKind::Custom(node) => {
-                let result = spawn_custom_node(node_id.clone(), &node, &communication)
+                let result = spawn_custom_node(node_id.clone(), &node, &communication_config)
                     .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
                 tasks.push(result);
             }
             descriptor::CoreNodeKind::Runtime(node) => {
                 if !node.operators.is_empty() {
                     let result =
-                        spawn_runtime_node(&runtime, node_id.clone(), &node, &communication)
+                        spawn_runtime_node(&runtime, node_id.clone(), &node, &communication_config)
                             .wrap_err_with(|| format!("failed to spawn runtime node {node_id}"))?;
                     tasks.push(result);
                 }
@@ -102,9 +104,12 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
     }
 
     for interval in dora_timers {
-        let communication = communication::init(&communication)
-            .await
-            .wrap_err("failed to init communication layer")?;
+        let communication_config = communication_config.clone();
+        let mut communication =
+            tokio::task::spawn_blocking(move || communication::init(&communication_config))
+                .await
+                .wrap_err("failed to join communication layer init task")?
+                .wrap_err("failed to init communication layer")?;
         tokio::spawn(async move {
             let topic = {
                 let duration = format_duration(interval);
@@ -112,8 +117,11 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
             };
             let mut stream = IntervalStream::new(tokio::time::interval(interval));
             while let Some(_) = stream.next().await {
-                let publish = communication.publish(&topic, &[]);
-                publish.await.expect("failed to publish timer tick message");
+                communication
+                    .publisher(&topic)
+                    .unwrap()
+                    .publish(&[])
+                    .expect("failed to publish timer tick message");
             }
         });
     }

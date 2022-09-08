@@ -8,6 +8,7 @@ members = [
   "binaries/*",
   "examples/rust-dataflow/*",
   "examples/c++-dataflow/*-rust-*",
+  "examples/iceoryx/*",
   "libraries/core",
   "libraries/extensions/message",
   "libraries/extensions/telemetry/*",
@@ -42,3 +43,7 @@ path = "examples/c++-dataflow/run.rs"
 [[example]]
 name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
+
+[[example]]
+name = "iceoryx"
+path = "examples/iceoryx/run.rs"

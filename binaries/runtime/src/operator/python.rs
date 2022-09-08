@@ -1,12 +1,15 @@
-use super::{OperatorEvent, OperatorInput};
+use super::OperatorEvent;
+use dora_node_api::{communication::Publisher, config::DataId};
 use eyre::{bail, eyre, Context};
 use pyo3::{pyclass, types::IntoPyDict, types::PyBytes, Py, Python};
 use std::{
+    collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
+    sync::Arc,
     thread,
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
     Python::with_gil(|py| {
@@ -23,7 +26,8 @@ fn traceback(err: pyo3::PyErr) -> eyre::Report {
 pub fn spawn(
     path: &Path,
     events_tx: Sender<OperatorEvent>,
-    mut inputs: Receiver<OperatorInput>,
+    inputs: flume::Receiver<dora_node_api::Input>,
+    publishers: HashMap<DataId, Box<dyn Publisher>>,
 ) -> eyre::Result<()> {
     if !path.exists() {
         bail!("No python file exists at {}", path.display());
@@ -34,7 +38,7 @@ pub fn spawn(
     let path_cloned = path.clone();
 
     let send_output = SendOutputCallback {
-        events_tx: events_tx.clone(),
+        publishers: Arc::new(publishers),
     };
 
     let init_operator = move |py: Python| {
@@ -75,7 +79,7 @@ pub fn spawn(
         let operator =
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
-        while let Some(input) = inputs.blocking_recv() {
+        while let Ok(input) = inputs.recv() {
             let status_enum = Python::with_gil(|py| {
                 operator
                     .call_method1(
@@ -83,7 +87,7 @@ pub fn spawn(
                         "on_input",
                         (
                             input.id.to_string(),
-                            PyBytes::new(py, &input.value),
+                            PyBytes::new(py, &input.data),
                             send_output.clone(),
                         ),
                     )
@@ -139,24 +143,25 @@ pub fn spawn(
 #[pyclass]
 #[derive(Clone)]
 struct SendOutputCallback {
-    events_tx: Sender<OperatorEvent>,
+    publishers: Arc<HashMap<DataId, Box<dyn Publisher>>>,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
     use super::SendOutputCallback;
-    use crate::operator::OperatorEvent;
+    use eyre::{eyre, Context};
     use pyo3::{pymethods, PyResult};
 
     #[pymethods]
     impl SendOutputCallback {
         fn __call__(&mut self, output: &str, data: &[u8]) -> PyResult<()> {
-            let result = self.events_tx.blocking_send(OperatorEvent::Output {
-                id: output.to_owned().into(),
-                value: data.to_owned(),
-            });
-            result
-                .map_err(|_| eyre::eyre!("channel to dora runtime was closed unexpectedly").into())
+            match self.publishers.get(output) {
+                Some(publisher) => publisher.publish(data).context("publish failed"),
+                None => Err(eyre!(
+                    "unexpected output {output} (not defined in dataflow config)"
+                )),
+            }
+            .map_err(|err| err.into())
         }
     }
 }
