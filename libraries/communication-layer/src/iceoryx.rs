@@ -1,19 +1,29 @@
-use eyre::Context;
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use uuid::Uuid;
-
-use crate::BoxError;
+//! Provides [`IceoryxCommunicationLayer`] to communicate over `iceoryx`.
 
 use super::{CommunicationLayer, Publisher, Subscriber};
+use crate::BoxError;
+use eyre::Context;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
+/// Enables local communication based on `iceoryx`.
 pub struct IceoryxCommunicationLayer {
     topic_prefix: Arc<String>,
     publishers: HashMap<String, Arc<iceoryx_rs::Publisher<[u8]>>>,
 }
 
 impl IceoryxCommunicationLayer {
-    pub fn init(app_name_prefix: String, topic_prefix: String) -> eyre::Result<Self> {
-        let app_name = format!("{app_name_prefix}-{}", Uuid::new_v4());
+    /// Initializes a new `iceoryx` connection with default configuration.
+    ///
+    /// The given `app_name` must be unique. The `topic_prefix` is used as _instance name_
+    /// when using the [`publisher`][Self::publisher] and [`subscriber`][Self::subscribe]
+    /// methods.
+    ///
+    /// Note: In order to use iceoryx, you need to start its broker deamon called
+    /// [_RouDi_](https://iceoryx.io/v2.0.2/getting-started/overview/#roudi) first.
+    /// Its executable name is `iox-roudi`. See the
+    /// [`iceoryx` installation chapter](https://iceoryx.io/v2.0.2/getting-started/installation/)
+    /// for ways to install it.
+    pub fn init(app_name: String, topic_prefix: String) -> Result<Self, BoxError> {
         iceoryx_rs::Runtime::init(&app_name);
 
         Ok(Self {
@@ -53,7 +63,7 @@ impl CommunicationLayer for IceoryxCommunicationLayer {
     fn publisher(&mut self, topic: &str) -> Result<Box<dyn Publisher>, crate::BoxError> {
         let publisher = self
             .get_or_create_publisher(topic)
-            .map_err(|err| BoxError(err.into()))?;
+            .map_err(BoxError::from)?;
 
         Ok(Box::new(IceoryxPublisher { publisher }))
     }
@@ -64,7 +74,7 @@ impl CommunicationLayer for IceoryxCommunicationLayer {
                 .queue_capacity(5)
                 .create_mt()
                 .context("failed to create iceoryx subscriber")
-                .map_err(|err| BoxError(err.into()))?;
+                .map_err(BoxError::from)?;
         let receiver = subscriber.get_sample_receiver(token);
 
         Ok(Box::new(IceoryxReceiver { receiver }))
@@ -72,7 +82,7 @@ impl CommunicationLayer for IceoryxCommunicationLayer {
 }
 
 #[derive(Clone)]
-pub struct IceoryxPublisher {
+struct IceoryxPublisher {
     publisher: Arc<iceoryx_rs::Publisher<[u8]>>,
 }
 
@@ -82,18 +92,18 @@ impl Publisher for IceoryxPublisher {
             .publisher
             .loan_slice(data.len())
             .context("failed to loan iceoryx slice for publishing")
-            .map_err(|err| BoxError(err.into()))?;
+            .map_err(BoxError::from)?;
         sample.copy_from_slice(data);
         self.publisher.publish(sample);
         Ok(())
     }
 
-    fn boxed_clone(&self) -> Box<dyn Publisher> {
+    fn dyn_clone(&self) -> Box<dyn Publisher> {
         Box::new(self.clone())
     }
 }
 
-pub struct IceoryxReceiver {
+struct IceoryxReceiver {
     receiver: iceoryx_rs::mt::SampleReceiver<[u8]>,
 }
 

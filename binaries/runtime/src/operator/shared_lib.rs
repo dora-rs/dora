@@ -1,5 +1,5 @@
 use super::OperatorEvent;
-use dora_node_api::{communication::Publisher, config::DataId, BoxError};
+use dora_node_api::{communication::Publisher, config::DataId};
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
     DoraResult, DoraStatus, Metadata, OnInputResult, Output, SendOutput,
@@ -92,13 +92,11 @@ impl<'lib> SharedLibraryOperator<'lib> {
         let send_output_closure = Arc::new(move |output: Output| {
             let result = match publishers.get(output.id.deref()) {
                 Some(publisher) => publisher.publish(&output.data),
-                None => Err(BoxError(
-                    eyre!(
-                        "unexpected output {} (not defined in dataflow config)",
-                        output.id.deref()
-                    )
-                    .into(),
-                )),
+                None => Err(eyre!(
+                    "unexpected output {} (not defined in dataflow config)",
+                    output.id.deref()
+                )
+                .into()),
             };
 
             let error = match result {
