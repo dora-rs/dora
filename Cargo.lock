@@ -506,6 +506,56 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5827cebf4670468b8772dd191856768aedcb1b0278a04f989f7766351917b9dc"
 
 [[package]]
+name = "cpp"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec5e86d4f6547f0218ad923d9508244a71ef83b763196e6698b4f70f3595185"
+dependencies = [
+ "cpp_macros",
+]
+
+[[package]]
+name = "cpp_build"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f4d303b8ec35fb3afd7e963e2c898117f1e49930becb703e4a7ac528ad2dd0"
+dependencies = [
+ "cc",
+ "cpp_common",
+ "lazy_static",
+ "proc-macro2",
+ "regex",
+ "syn",
+ "unicode-xid",
+]
+
+[[package]]
+name = "cpp_common"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76071bb9c8c4dd2b5eb209907deab7b031323cf1be3dfdc6ec5d37f4f187d8a1"
+dependencies = [
+ "lazy_static",
+ "proc-macro2",
+ "syn",
+]
+
+[[package]]
+name = "cpp_macros"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fdaa01904c12a8989dbfa110b41ef27efc432ac9934f691b9732f01cb64dc01"
+dependencies = [
+ "aho-corasick",
+ "byteorder",
+ "cpp_common",
+ "lazy_static",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -634,9 +684,7 @@ dependencies = [
  "cxx-build",
  "dora-node-api",
  "eyre",
- "futures",
  "rand",
- "tokio",
 ]
 
 [[package]]
@@ -791,11 +839,9 @@ dependencies = [
 name = "dora-node-api"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "eyre",
- "futures",
- "futures-concurrency",
- "futures-time",
+ "flume",
+ "iceoryx-rs",
  "once_cell",
  "serde",
  "serde_yaml",
@@ -813,7 +859,7 @@ version = "0.1.0"
 dependencies = [
  "dora-node-api",
  "eyre",
- "futures",
+ "flume",
 ]
 
 [[package]]
@@ -822,10 +868,9 @@ version = "0.1.0"
 dependencies = [
  "dora-node-api",
  "eyre",
- "futures",
+ "flume",
  "pyo3",
  "serde_yaml",
- "tokio",
 ]
 
 [[package]]
@@ -871,6 +916,7 @@ dependencies = [
  "dora-operator-api-types",
  "eyre",
  "fern",
+ "flume",
  "futures",
  "futures-concurrency",
  "libloading",
@@ -975,9 +1021,9 @@ dependencies = [
 
 [[package]]
 name = "flume"
-version = "0.10.12"
+version = "0.10.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843c03199d0c0ca54bc1ea90ac0d507274c28abcc4f691ae8b4eaa375087c76a"
+checksum = "1657b4441c3403d9f7b3409e47575237dac27b1b5726df654a6ecbf92f0f7577"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -1098,18 +1144,6 @@ name = "futures-task"
 version = "0.3.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c66a976bf5909d801bbef33416c41372779507e7a6b3a5e25e4749c58f776a"
-
-[[package]]
-name = "futures-time"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "553673e17c187f65e79ed63a9e58b148560fd5982e1d739f37913f320139edb0"
-dependencies = [
- "async-channel",
- "async-io",
- "futures-core",
- "pin-project-lite",
-]
 
 [[package]]
 name = "futures-util"
@@ -1369,6 +1403,51 @@ dependencies = [
  "pin-project-lite",
  "tokio",
  "tokio-io-timeout",
+]
+
+[[package]]
+name = "iceoryx-example-node"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "rand",
+]
+
+[[package]]
+name = "iceoryx-example-operator"
+version = "0.1.0"
+dependencies = [
+ "dora-operator-api",
+]
+
+[[package]]
+name = "iceoryx-example-sink"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "futures",
+ "tokio",
+]
+
+[[package]]
+name = "iceoryx-rs"
+version = "0.1.0"
+source = "git+https://github.com/eclipse-iceoryx/iceoryx-rs.git#68fbd034a77c6ed98cb75a939d406429ef26b0dd"
+dependencies = [
+ "iceoryx-sys",
+ "thiserror",
+]
+
+[[package]]
+name = "iceoryx-sys"
+version = "0.1.0"
+source = "git+https://github.com/eclipse-iceoryx/iceoryx-rs.git#68fbd034a77c6ed98cb75a939d406429ef26b0dd"
+dependencies = [
+ "cpp",
+ "cpp_build",
+ "thiserror",
 ]
 
 [[package]]
@@ -2658,8 +2737,6 @@ version = "0.1.0"
 dependencies = [
  "dora-node-api",
  "eyre",
- "futures",
- "tokio",
 ]
 
 [[package]]
@@ -3217,9 +3294,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-stream"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50145484efff8818b5ccd256697f36863f587da82cf8b409c53adf1e840798e3"
+checksum = "df54d54117d6fdc4e4fea40fe1e4e566b3505700e148a6827e59b34b0d2600d9"
 dependencies = [
  "futures-core",
  "pin-project-lite",

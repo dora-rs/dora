@@ -1,19 +1,13 @@
-use dora_node_api::config::{DataId, NodeId};
-use dora_node_api::{DoraNode, Input};
+use dora_node_api::{config::NodeId, DoraNode, Input};
 use eyre::{Context, Result};
-use futures::StreamExt;
-use pyo3::prelude::*;
-use pyo3::types::PyBytes;
-use std::sync::Arc;
-use std::thread;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::{Receiver, Sender};
+use flume::Receiver;
+use pyo3::{prelude::*, types::PyBytes};
 
 #[pyclass]
 pub struct Node {
     id: NodeId,
-    pub rx_input: Receiver<Input>,
-    pub tx_output: Sender<(String, Vec<u8>)>,
+    inputs: Receiver<Input>,
+    node: DoraNode,
 }
 
 pub struct PyInput(Input);
@@ -34,47 +28,10 @@ impl Node {
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
 
-        let (tx_input, rx_input) = mpsc::channel(1);
-        let (tx_output, mut rx_output) = mpsc::channel::<(String, Vec<u8>)>(1);
+        let mut node = DoraNode::init_from_env()?;
+        let inputs = node.inputs()?;
 
-        // Dispatching a tokio threadpool enables us to conveniently use Dora Future stream
-        // through tokio channel.
-        // It would have been difficult to expose the FutureStream of Dora directly.
-        thread::spawn(move || -> Result<()> {
-            let rt = tokio::runtime::Builder::new_multi_thread().build()?;
-            rt.block_on(async move {
-                let node = Arc::new(DoraNode::init_from_env().await?);
-                let _node = node.clone();
-                let receive_handle = tokio::spawn(async move {
-                    let mut inputs = _node.inputs().await.unwrap();
-                    while let Some(input) = inputs.next().await {
-                        tx_input.send(input).await?
-                    }
-                    Result::<_, eyre::Error>::Ok(())
-                });
-                let send_handle = tokio::spawn(async move {
-                    while let Some((output_str, data)) = rx_output.recv().await {
-                        let output_id = DataId::from(output_str);
-                        node.send_output(&output_id, data.as_slice()).await?
-                    }
-                    Result::<_, eyre::Error>::Ok(())
-                });
-                let (receiver, sender) = tokio::join!(receive_handle, send_handle);
-                receiver
-                    .wrap_err("Handle to the receiver failed")?
-                    .wrap_err("Receiving messages from receiver channel failed")?;
-                sender
-                    .wrap_err("Handle to the sender failed")?
-                    .wrap_err("Sending messages using sender channel failed")?;
-                Ok(())
-            })
-        });
-
-        Ok(Node {
-            id,
-            rx_input,
-            tx_output,
-        })
+        Ok(Node { id, inputs, node })
     }
 
     #[allow(clippy::should_implement_trait)]
@@ -83,16 +40,16 @@ impl Node {
     }
 
     pub fn __next__(&mut self) -> PyResult<Option<PyInput>> {
-        Ok(self.rx_input.blocking_recv().map(PyInput))
+        Ok(self.inputs.recv().ok().map(PyInput))
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
-    pub fn send_output(&self, output_str: String, data: &PyBytes) -> Result<()> {
-        self.tx_output
-            .blocking_send((output_str, data.as_bytes().to_vec()))
+    pub fn send_output(&mut self, output_id: String, data: &PyBytes) -> Result<()> {
+        self.node
+            .send_output(&output_id.into(), data.as_bytes())
             .wrap_err("Could not send output")
     }
 

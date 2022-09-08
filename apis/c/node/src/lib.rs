@@ -1,12 +1,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use dora_node_api::{DoraNode, Input};
-use futures::{executor::block_on, Stream, StreamExt};
-use std::{pin::Pin, ptr, slice};
+use eyre::Context;
+use std::{ffi::c_void, ptr, slice};
 
 struct DoraContext {
-    node: &'static DoraNode,
-    inputs: Pin<Box<dyn futures::Stream<Item = Input>>>,
+    node: &'static mut DoraNode,
+    inputs: flume::Receiver<Input>,
 }
 
 /// Initializes a dora context from the environment variables that were set by
@@ -19,13 +19,14 @@ struct DoraContext {
 ///
 /// On error, a null pointer is returned.
 #[no_mangle]
-pub extern "C" fn init_dora_context_from_env() -> *mut () {
-    let context = match block_on(async {
-        let node = DoraNode::init_from_env().await?;
+pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
+    let context = || {
+        let node = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));
-        let inputs: Pin<Box<dyn Stream<Item = Input>>> = Box::pin(node.inputs().await?);
-        Ok(DoraContext { node, inputs })
-    }) {
+        let inputs = node.inputs()?;
+        Result::<_, eyre::Report>::Ok(DoraContext { node, inputs })
+    };
+    let context = match context().context("failed to initialize node") {
         Ok(n) => n,
         Err(err) => {
             let err: eyre::Error = err;
@@ -45,7 +46,7 @@ pub extern "C" fn init_dora_context_from_env() -> *mut () {
 /// as arguments. Each context pointer must be freed exactly once. After
 /// freeing, the pointer must not be used anymore.
 #[no_mangle]
-pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
+pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
     // drop all fields except for `node`
     let DoraContext { node, .. } = *context;
@@ -69,11 +70,11 @@ pub unsafe extern "C" fn free_dora_context(context: *mut ()) {
 /// [`init_dora_context_from_env`]. The context must be still valid, i.e., not
 /// freed yet.
 #[no_mangle]
-pub unsafe extern "C" fn dora_next_input(context: *mut ()) -> *mut () {
+pub unsafe extern "C" fn dora_next_input(context: *mut c_void) -> *mut c_void {
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
-    match block_on(context.inputs.next()) {
-        Some(input) => Box::into_raw(Box::new(input)).cast(),
-        None => ptr::null_mut(),
+    match context.inputs.recv() {
+        Ok(input) => Box::into_raw(Box::new(input)).cast(),
+        Err(flume::RecvError::Disconnected) => ptr::null_mut(),
     }
 }
 
@@ -144,7 +145,7 @@ pub unsafe extern "C" fn read_dora_input_data(
 /// This also applies to the `read_dora_input_*` functions, which return
 /// pointers into the original input structure.
 #[no_mangle]
-pub unsafe extern "C" fn free_dora_input(input: *mut ()) {
+pub unsafe extern "C" fn free_dora_input(input: *mut c_void) {
     let _: Box<Input> = unsafe { Box::from_raw(input.cast()) };
 }
 
@@ -165,7 +166,7 @@ pub unsafe extern "C" fn free_dora_input(input: *mut ()) {
 ///   a byte array.
 #[no_mangle]
 pub unsafe extern "C" fn dora_send_output(
-    context: *mut (),
+    context: *mut c_void,
     id_ptr: *const u8,
     id_len: usize,
     data_ptr: *const u8,
@@ -181,7 +182,7 @@ pub unsafe extern "C" fn dora_send_output(
 }
 
 unsafe fn try_send_output(
-    context: *mut (),
+    context: *mut c_void,
     id_ptr: *const u8,
     id_len: usize,
     data_ptr: *const u8,
@@ -191,5 +192,5 @@ unsafe fn try_send_output(
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-    block_on(context.node.send_output(&output_id, data))
+    context.node.send_output(&output_id, data)
 }

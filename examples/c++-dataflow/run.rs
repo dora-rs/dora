@@ -34,7 +34,7 @@ async fn main() -> eyre::Result<()> {
 
     dora_coordinator::run(dora_coordinator::Command::Run {
         dataflow: Path::new("dataflow.yml").to_owned(),
-        runtime: Some(root.join("target").join("release").join("dora-runtime")),
+        runtime: Some(root.join("target").join("debug").join("dora-runtime")),
     })
     .await?;
 
@@ -44,7 +44,7 @@ async fn main() -> eyre::Result<()> {
 async fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("build").arg("--release");
+    cmd.arg("build");
     cmd.arg("--package").arg(package);
     if !cmd.status().await?.success() {
         bail!("failed to build {package}");
@@ -106,7 +106,7 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
         clang.arg("-l").arg("c");
         clang.arg("-l").arg("m");
     }
-    clang.arg("-L").arg(root.join("target").join("release"));
+    clang.arg("-L").arg(root.join("target").join("debug"));
     clang
         .arg("--output")
         .arg(Path::new("../build").join(format!("{out_name}{EXE_SUFFIX}")));

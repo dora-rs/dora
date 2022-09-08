@@ -1,90 +1,69 @@
 use dora_core::descriptor::{OperatorDefinition, OperatorSource};
-use dora_node_api::config::DataId;
-use eyre::{eyre, Context};
-use log::warn;
+use dora_node_api::{communication::CommunicationLayer, config::NodeId};
+use eyre::Context;
 use std::any::Any;
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::Sender;
 
 mod python;
 mod shared_lib;
 
-pub struct Operator {
-    operator_task: Option<Sender<OperatorInput>>,
-    definition: OperatorDefinition,
-}
+pub fn spawn_operator(
+    node_id: &NodeId,
+    operator_definition: OperatorDefinition,
+    events_tx: Sender<OperatorEvent>,
+    communication: &mut dyn CommunicationLayer,
+) -> eyre::Result<()> {
+    let inputs = communication
+        .subscribe_all(&operator_definition.config.inputs)
+        .wrap_err_with(|| {
+            format!(
+                "failed to subscribe to inputs of operator {}",
+                operator_definition.id
+            )
+        })?;
 
-impl Operator {
-    pub async fn init(
-        operator_definition: OperatorDefinition,
-        events_tx: Sender<OperatorEvent>,
-    ) -> eyre::Result<Self> {
-        let (operator_task, operator_rx) = mpsc::channel(10);
-
-        match &operator_definition.config.source {
-            OperatorSource::SharedLibrary(path) => {
-                shared_lib::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
-                    format!(
-                        "failed to spawn shared library operator for {}",
-                        operator_definition.id
-                    )
-                })?;
-            }
-            OperatorSource::Python(path) => {
-                python::spawn(path, events_tx, operator_rx).wrap_err_with(|| {
-                    format!(
-                        "failed to spawn Python operator for {}",
-                        operator_definition.id
-                    )
-                })?;
-            }
-            OperatorSource::Wasm(_path) => {
-                eprintln!("WARNING: WASM operators are not supported yet");
-            }
-        }
-        Ok(Self {
-            operator_task: Some(operator_task),
-            definition: operator_definition,
+    let publishers = operator_definition
+        .config
+        .outputs
+        .iter()
+        .map(|output_id| {
+            let topic = format!(
+                "{node_id}/{operator_id}/{output_id}",
+                operator_id = operator_definition.id
+            );
+            communication
+                .publisher(&topic)
+                .wrap_err_with(|| format!("failed to create publisher for output {output_id}"))
+                .map(|p| (output_id.to_owned(), p))
         })
-    }
+        .collect::<Result<_, _>>()?;
 
-    pub fn handle_input(&mut self, id: DataId, value: Vec<u8>) -> eyre::Result<()> {
-        self.operator_task
-            .as_mut()
-            .ok_or_else(|| {
-                eyre!(
-                    "input channel for {} was already closed",
-                    self.definition.id
+    match &operator_definition.config.source {
+        OperatorSource::SharedLibrary(path) => {
+            shared_lib::spawn(path, events_tx, inputs, publishers).wrap_err_with(|| {
+                format!(
+                    "failed to spawn shared library operator for {}",
+                    operator_definition.id
                 )
-            })?
-            .try_send(OperatorInput { id, value })
-            .or_else(|err| match err {
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => Err(eyre!("operator crashed")),
-                tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                    warn!("operator queue full");
-                    Ok(())
-                }
-            })
+            })?;
+        }
+        OperatorSource::Python(path) => {
+            python::spawn(path, events_tx, inputs, publishers).wrap_err_with(|| {
+                format!(
+                    "failed to spawn Python operator for {}",
+                    operator_definition.id
+                )
+            })?;
+        }
+        OperatorSource::Wasm(_path) => {
+            eprintln!("WARNING: WASM operators are not supported yet");
+        }
     }
-
-    pub fn close_input_stream(&mut self) {
-        self.operator_task = None;
-    }
-
-    /// Get a reference to the operator's definition.
-    #[must_use]
-    pub fn definition(&self) -> &OperatorDefinition {
-        &self.definition
-    }
+    Ok(())
 }
 
 pub enum OperatorEvent {
-    Output { id: DataId, value: Vec<u8> },
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
     Finished,
-}
-
-pub struct OperatorInput {
-    id: DataId,
-    value: Vec<u8>,
 }

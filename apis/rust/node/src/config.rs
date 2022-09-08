@@ -1,6 +1,7 @@
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     fmt::{self, Write as _},
@@ -88,6 +89,30 @@ impl std::ops::Deref for DataId {
     type Target = String;
 
     fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<String> for DataId {
+    fn as_ref(&self) -> &String {
+        &self.0
+    }
+}
+
+impl AsRef<str> for DataId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<String> for DataId {
+    fn borrow(&self) -> &String {
+        &self.0
+    }
+}
+
+impl Borrow<str> for DataId {
+    fn borrow(&self) -> &str {
         &self.0
     }
 }
@@ -244,6 +269,11 @@ pub enum CommunicationConfig {
         config: zenoh_config::Config,
         prefix: String,
     },
+    Iceoryx {
+        app_name_prefix: String,
+        #[serde(default)]
+        topic_prefix: String,
+    },
 }
 
 impl CommunicationConfig {
@@ -254,6 +284,12 @@ impl CommunicationConfig {
                 ..
             } => {
                 write!(zenoh_prefix, "/{}", prefix).unwrap();
+            }
+            CommunicationConfig::Iceoryx { topic_prefix, .. } => {
+                if !topic_prefix.is_empty() {
+                    topic_prefix.push_str("-");
+                }
+                topic_prefix.push_str(prefix);
             }
         }
     }

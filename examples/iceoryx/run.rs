@@ -7,9 +7,9 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    build_package("rust-dataflow-example-node").await?;
-    build_package("rust-dataflow-example-operator").await?;
-    build_package("rust-dataflow-example-sink").await?;
+    build_package("iceoryx-example-node").await?;
+    build_package("iceoryx-example-operator").await?;
+    build_package("iceoryx-example-sink").await?;
     build_package("dora-runtime").await?;
 
     dora_coordinator::run(dora_coordinator::Command::Run {
