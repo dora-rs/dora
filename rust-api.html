@@ -253,7 +253,7 @@ impl DoraOperator for ExampleOperator {
 <pre><code class="language-yaml">  - id: runtime-node
     operators:
       - id: rust-operator
-        shared-library: ../../target/release/rust_dataflow_example_operator
+        shared-library: ../../target/debug/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
@@ -309,30 +309,24 @@ tokio = { version = &quot;1.20.1&quot;, features = [&quot;rt&quot;, &quot;macros
 </code></pre>
 <p><code>src/main.rs</code></p>
 <pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, config::DataId, DoraNode};
-use eyre::bail;
-use futures::StreamExt;
-use std::time::Duration;
 
-#[tokio::main]
-async fn main() -&gt; eyre::Result&lt;()&gt; {
+fn main() -&gt; eyre::Result&lt;()&gt; {
     let output = DataId::from(&quot;random&quot;.to_owned());
 
-    let operator = DoraNode::init_from_env().await?;
+    let mut operator = DoraNode::init_from_env()?;
 
-    let mut inputs = operator.inputs().await?;
+    let inputs = operator.inputs()?;
 
     for _ in 0..20 {
-        let timeout = Duration::from_secs(3);
-        let input = match tokio::time::timeout(timeout, inputs.next()).await {
-            Ok(Some(input)) =&gt; input,
-            Ok(None) =&gt; break,
-            Err(_) =&gt; bail!(&quot;timeout while waiting for input&quot;),
+        let input = match inputs.recv() {
+            Ok(input) =&gt; input,
+            Err(_) =&gt; break,
         };
 
         match input.id.as_str() {
             &quot;tick&quot; =&gt; {
                 let random: u64 = rand::random();
-                operator.send_output(&amp;output, &amp;random.to_le_bytes()).await?;
+                operator.send_output(&amp;output, &amp;random.to_le_bytes())?;
             }
             other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
         }
@@ -346,7 +340,7 @@ async fn main() -&gt; eyre::Result&lt;()&gt; {
 </ul>
 <pre><code class="language-yaml">  - id: rust-node
     custom:
-      run: ../../target/release/rust-dataflow-example-node
+      run: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:

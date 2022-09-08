@@ -175,7 +175,7 @@ deployment:
       # ... (see below)
 
   # OR:
-  custom:    
+  custom:
     run: path/to/timestamp
     env:
       - ENVIRONMENT_VARIABLE_1: true
@@ -202,7 +202,7 @@ deployment:
     input_2: custom_node_1/output_1
   outputs:
     - output_1
-  
+
   ## ONE OF:
   shared_library: &quot;path/to/shared_lib&quot; # file extension and `lib` prefix are added automatically
   python: &quot;path/to/python_file.py&quot;
@@ -224,7 +224,7 @@ deployment:
 nodes:
   - id: rust-node
     custom:
-      run: ../../target/release/rust-dataflow-example-node
+      run: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:
@@ -232,7 +232,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: rust-operator
-        shared-library: ../../target/release/rust_dataflow_example_operator
+        shared-library: ../../target/debug/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
@@ -240,10 +240,38 @@ nodes:
           - status
   - id: rust-sink
     custom:
-      run: ../../target/release/rust-dataflow-example-sink
+      run: ../../target/debug/rust-dataflow-example-sink
       inputs:
         message: runtime-node/rust-operator/status
 </code></pre>
+<h2 id="communication"><a class="header" href="#communication">Communication</a></h2>
+<p>The mandatory <code>communication</code> key specifies how dora nodes and operators should communicate with each other. Dora supports the following backends:</p>
+<ul>
+<li>
+<p><strong><a href="https://zenoh.io/">Zenoh</a>:</strong> The zenoh project implements a distributed publisher/subscriber system with automated routing. To communicate over zenoh, add the following key to your dataflow configuration:</p>
+<pre><code class="language-yaml">communication:
+  zenoh:
+    prefix: /some-unique-prefix
+</code></pre>
+<p>The specified <code>prefix</code> is added to all pub/sub topics. It is useful for filtering messages (e.g. in a logger) when other applications use <code>zenoh</code> in parallel. Dora will extend the given prefix with a newly generated UUID on each run, to ensure that multiple instances of the same dataflow run concurrently without interfering with each other.</p>
+<p>Zenoh is quite flexible and can be easily scaled to distributed deployment. It does not require any extra setup since it supports peer-to-peer communication without an external broker. The drawback of zenoh is that it is still in an early stage of development, so it might still have reliability and performance issues.</p>
+<p><em>Note:</em> Dora currently only supports local deployments, so interacting with remote nodes/operators is not possible yet.</p>
+</li>
+<li>
+<p><strong><a href="https://iceoryx.io/">Iceoryx</a>:</strong> The Eclipse iceoryx™ project provides an IPC middleware based on shared memory. It is very fast, but it only supports local communication. To use iceoryx as the communication backend, set the  <code>communication</code> field to the following:</p>
+<pre><code class="language-yaml">communication:
+  iceoryx:
+    app_name_prefix: dora-iceoryx-example
+</code></pre>
+<p>The <code>app_name_prefix</code> defines a prefix for the <em>application name</em> that the dataflow will use. An additional UUID will be added to that prefix to ensure that the application name remains unique even if multiple instances of the same dataflow are running.</p>
+<p>In order to use iceoryx, you need to start its broker deamon called <a href="https://iceoryx.io/v2.0.2/getting-started/overview/#roudi"><em>RouDi</em></a>. Its executable name is <code>iox-roudi</code>. There are two ways to obtain it:</p>
+<ul>
+<li>Follow the <a href="https://iceoryx.io/v2.0.2/getting-started/installation/">iceoryx installation chapter</a></li>
+<li>Clone the <code>dora-rs</code> project and build its iceoryx example using <code>cargo build --example iceoryx</code>. After building, you can find the <code>iox-roudi</code> executable inside the <code>target</code> directory using the following command: <code>find target -type f -wholename &quot;*/iox-roudi&quot;</code>.</li>
+</ul>
+<p>Run the <code>iox-roudi</code> executable to start the iceoryx broker deamon. Afterwards, you should be able to run your dataflow.</p>
+</li>
+</ul>
 <h2 id="todo-integration-with-ros-12"><a class="header" href="#todo-integration-with-ros-12">TODO: Integration with ROS 1/2</a></h2>
 <p>To integrate dora-rs operators with ROS1 or ROS2 operators, we plan to provide special <em>bridge operators</em>. These operators act as a sink in one dataflow framework and push all messages to a different dataflow framework, where they act as source.</p>
 <p>For example, we plan to provide a <code>to_ros_2</code> operator, which takes a single <code>data</code> input, which is then published to a specified ROS 2 dataflow.</p>
