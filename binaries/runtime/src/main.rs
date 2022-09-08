@@ -100,6 +100,7 @@ async fn run(
                             tokio::task::spawn_blocking(move || stop_publisher.publish(&[]))
                                 .await
                                 .wrap_err("failed to join stop publish task")?
+                                .map_err(|err| eyre::eyre!(err))
                                 .with_context(|| {
                                     format!(
                                         "failed to send stop message for operator `{node_id}/{id}`"
@@ -131,6 +132,7 @@ fn publisher(
     let topic = format!("{self_id}/{operator_id}/{output_id}");
     communication
         .publisher(&topic)
+        .map_err(|err| eyre::eyre!(err))
         .wrap_err_with(|| format!("failed to create publisher for output {output_id}"))
 }
 

@@ -1,5 +1,8 @@
 pub use communication::Input;
-use communication::{CommunicationLayer, STOP_TOPIC};
+pub use flume::Receiver;
+
+use communication::STOP_TOPIC;
+use communication_layer_pub_sub::CommunicationLayer;
 use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 use eyre::WrapErr;
 
@@ -46,7 +49,7 @@ impl DoraNode {
     }
 
     pub fn inputs(&mut self) -> eyre::Result<flume::Receiver<Input>> {
-        self.communication.subscribe_all(&self.node_config.inputs)
+        communication::subscribe_all(self.communication.as_mut(), &self.node_config.inputs)
     }
 
     pub fn send_output(&mut self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {
@@ -59,8 +62,10 @@ impl DoraNode {
         let topic = format!("{self_id}/{output_id}");
         self.communication
             .publisher(&topic)
+            .map_err(|err| eyre::eyre!(err))
             .wrap_err_with(|| format!("failed create publisher for output {output_id}"))?
             .publish(data)
+            .map_err(|err| eyre::eyre!(err))
             .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         Ok(())
     }
@@ -81,11 +86,13 @@ impl Drop for DoraNode {
         let result = self
             .communication
             .publisher(&topic)
+            .map_err(|err| eyre::eyre!(err))
             .wrap_err_with(|| {
                 format!("failed to create publisher for stop message for node `{self_id}`")
             })
             .and_then(|p| {
                 p.publish(&[])
+                    .map_err(|err| eyre::eyre!(err))
                     .wrap_err_with(|| format!("failed to send stop message for node `{self_id}`"))
             });
         match result {
@@ -97,25 +104,7 @@ impl Drop for DoraNode {
     }
 }
 
-pub struct BoxError(pub Box<dyn std::error::Error + Send + Sync + 'static>);
-
-impl std::fmt::Debug for BoxError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl std::fmt::Display for BoxError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl std::error::Error for BoxError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
-    }
-}
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,4 @@
-use dora_node_api::{self, communication::Receiver, DoraNode, Input};
+use dora_node_api::{self, DoraNode, Input, Receiver};
 
 #[cxx::bridge]
 mod ffi {
