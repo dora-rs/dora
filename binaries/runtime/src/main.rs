@@ -19,7 +19,7 @@ use tokio_stream::{wrappers::ReceiverStream, StreamMap};
 mod operator;
 
 fn main() -> eyre::Result<()> {
-    set_up_logger()?;
+    set_up_tracing().context("failed to set up tracing subscriber")?;
 
     let node_id = {
         let raw =
@@ -94,7 +94,7 @@ async fn run(
                     OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
                     OperatorEvent::Finished => {
                         if let Some(stop_publisher) = operator_stop_publishers.remove(&id) {
-                            println!("operator {node_id}/{id} finished");
+                            tracing::info!("operator {node_id}/{id} finished");
                             stopped_operators.insert(id.clone());
                             // send stopped message
                             tokio::task::spawn_blocking(move || stop_publisher.publish(&[]))
@@ -110,7 +110,7 @@ async fn run(
                                 break;
                             }
                         } else {
-                            log::warn!("no stop publisher for {id}");
+                            tracing::warn!("no stop publisher for {id}");
                         }
                     }
                 }
@@ -143,22 +143,11 @@ enum Event {
     },
 }
 
-fn set_up_logger() -> Result<(), fern::InitError> {
-    fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "    [{}][{}] {}",
-                record.target(),
-                record.level(),
-                message
-            ))
-        })
-        .level(log::LevelFilter::Debug)
-        .level_for("zenoh", log::LevelFilter::Warn)
-        .level_for("zenoh_transport", log::LevelFilter::Warn)
-        .level_for("zenoh_link_tcp", log::LevelFilter::Warn)
-        .chain(std::io::stdout())
-        .chain(fern::log_file("runtime.log")?)
-        .apply()?;
-    Ok(())
+fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+    let stdout_log = tracing_subscriber::fmt::layer().pretty();
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
 }

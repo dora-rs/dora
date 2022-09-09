@@ -137,6 +137,7 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
     Ok(())
 }
 
+#[tracing::instrument]
 fn spawn_custom_node(
     node_id: NodeId,
     node: &descriptor::CustomNode,
@@ -180,7 +181,7 @@ fn spawn_custom_node(
     let result = tokio::spawn(async move {
         let status = child.wait().await.context("child process failed")?;
         if status.success() {
-            println!("node {node_id} finished");
+            tracing::info!("node {node_id} finished");
             Ok(())
         } else if let Some(code) = status.code() {
             Err(eyre!("node {node_id} failed with exit code: {code}"))
@@ -191,6 +192,7 @@ fn spawn_custom_node(
     Ok(result)
 }
 
+#[tracing::instrument(skip(node))]
 fn spawn_runtime_node(
     runtime: &Path,
     node_id: NodeId,
@@ -211,7 +213,7 @@ fn spawn_runtime_node(
     let result = tokio::spawn(async move {
         let status = child.wait().await.context("child process failed")?;
         if status.success() {
-            println!("runtime node {node_id} finished");
+            tracing::info!("runtime node {node_id} finished");
             Ok(())
         } else if let Some(code) = status.code() {
             Err(eyre!(
