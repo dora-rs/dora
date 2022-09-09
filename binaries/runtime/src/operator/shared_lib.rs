@@ -90,14 +90,32 @@ impl<'lib> SharedLibraryOperator<'lib> {
         };
 
         let send_output_closure = Arc::new(move |output: Output| {
-            let result = match publishers.get(output.id.deref()) {
-                Some(publisher) => publisher.publish(&output.data),
+            let Output {
+                id,
+                data,
+                metadata: Metadata {
+                    open_telemetry_context,
+                },
+            } = output;
+            let message = dora_node_api::Message {
+                data: Vec::from(data).into(),
+                metadata: dora_node_api::Metadata {
+                    open_telemetry_context: String::from(open_telemetry_context).into(),
+                    ..Default::default()
+                },
+            };
+
+            let data = dora_message::serialize_message(&message)
+                .context(format!("failed to serialize `{}` message", id.deref()))
+                .map_err(|err| err.into());
+            let result = data.and_then(|data| match publishers.get(id.deref()) {
+                Some(publisher) => publisher.publish(&data),
                 None => Err(eyre!(
                     "unexpected output {} (not defined in dataflow config)",
-                    output.id.deref()
+                    id.deref()
                 )
                 .into()),
-            };
+            });
 
             let error = match result {
                 Ok(()) => None,
@@ -110,7 +128,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
         while let Ok(input) = self.inputs.recv() {
             let operator_input = dora_operator_api_types::Input {
                 id: String::from(input.id).into(),
-                data: input.data.into(),
+                data: input.message.data.into_owned().into(),
                 metadata: Metadata {
                     open_telemetry_context: String::new().into(),
                 },

@@ -24,3 +24,4 @@ log = "0.4.17"
 fern = "0.6.1"
 pyo3 = { version = "0.16.5", features = ["auto-initialize", "eyre"] }
 flume = "0.10.14"
+dora-message = { path = "../../libraries/extensions/message" }
