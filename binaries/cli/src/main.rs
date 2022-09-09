@@ -1,4 +1,7 @@
 use clap::Parser;
+use std::path::PathBuf;
+
+mod graph;
 
 #[derive(Debug, clap::Parser)]
 #[clap(version)]
@@ -10,7 +13,7 @@ struct Args {
 #[derive(Debug, clap::Subcommand)]
 enum Command {
     Check,
-    Graph,
+    Graph { dataflow: PathBuf },
     Build,
     Templates,
     Dashboard,
@@ -24,12 +27,12 @@ enum Command {
     Upgrade,
 }
 
-fn main() {
+fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
     match args.command {
         Command::Check => todo!(),
-        Command::Graph => todo!(),
+        Command::Graph { dataflow } => graph::run(dataflow)?,
         Command::Build => todo!(),
         Command::Templates => todo!(),
         Command::Dashboard => todo!(),
@@ -42,4 +45,6 @@ fn main() {
         Command::Get => todo!(),
         Command::Upgrade => todo!(),
     }
+
+    Ok(())
 }
