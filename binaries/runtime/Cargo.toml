@@ -8,7 +8,10 @@ license = "Apache-2.0"
 
 [dependencies]
 clap = { version = "3.1.12", features = ["derive"] }
-dora-node-api = { path = "../../apis/rust/node" }
+dora-node-api = { path = "../../apis/rust/node", default-features = false, features = [
+    "zenoh",
+    "iceoryx",
+] }
 dora-operator-api-types = { path = "../../apis/rust/operator/types" }
 dora-core = { version = "0.1.0", path = "../../libraries/core" }
 eyre = "0.6.8"
@@ -20,8 +23,9 @@ tokio = { version = "1.17.0", features = ["full"] }
 tokio-stream = "0.1.8"
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
 zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
-log = "0.4.17"
 fern = "0.6.1"
 pyo3 = { version = "0.16.5", features = ["auto-initialize", "eyre"] }
 flume = "0.10.14"
 dora-message = { path = "../../libraries/message" }
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"

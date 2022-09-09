@@ -12,6 +12,7 @@ crate-type = ["staticlib"]
 [dependencies]
 eyre = "0.6.8"
 flume = "0.10.14"
+tracing = "0.1.33"
 
 [dependencies.dora-node-api]
 default-features = false
