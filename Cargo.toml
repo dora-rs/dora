@@ -10,8 +10,8 @@ members = [
   "examples/c++-dataflow/*-rust-*",
   "examples/iceoryx/*",
   "libraries/core",
+  "libraries/communication-layer",
   "libraries/extensions/message",
-  "libraries/extensions/telemetry/*",
   "libraries/extensions/telemetry/*",
   "libraries/extensions/zenoh-logger",
 ]

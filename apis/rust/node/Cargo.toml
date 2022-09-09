@@ -6,8 +6,8 @@ license = "Apache-2.0"
 
 [features]
 default = ["zenoh", "iceoryx"]
-zenoh = ["dep:zenoh", "dep:zenoh-config"]
-iceoryx = ["dep:iceoryx-rs"]
+zenoh = ["communication-layer-pub-sub/zenoh"]
+iceoryx = ["communication-layer-pub-sub/iceoryx"]
 
 [dependencies]
 eyre = "0.6.7"
@@ -16,13 +16,9 @@ serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.8.23"
 thiserror = "1.0.30"
 tracing = "0.1.33"
-uuid = "0.8.2"
-zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", optional = true }
-zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git", optional = true }
 flume = "0.10.14"
-
-[target.'cfg(unix)'.dependencies]
-iceoryx-rs = { git = "https://github.com/eclipse-iceoryx/iceoryx-rs.git", optional = true }
+communication-layer-pub-sub = { path = "../../../libraries/communication-layer", default-features = false }
+uuid = { version = "1.1.2", features = ["v4"] }
 
 [dev-dependencies]
 tokio = { version = "1.17.0", features = ["rt"] }

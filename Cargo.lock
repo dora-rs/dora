@@ -475,6 +475,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "communication-layer-pub-sub"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "iceoryx-rs",
+ "zenoh",
+ "zenoh-config",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -794,7 +804,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.1",
- "uuid",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -839,18 +849,16 @@ dependencies = [
 name = "dora-node-api"
 version = "0.1.0"
 dependencies = [
+ "communication-layer-pub-sub",
  "eyre",
  "flume",
- "iceoryx-rs",
  "once_cell",
  "serde",
  "serde_yaml",
  "thiserror",
  "tokio",
  "tracing",
- "uuid",
- "zenoh",
- "zenoh-config",
+ "uuid 1.1.2",
 ]
 
 [[package]]
@@ -3478,7 +3486,7 @@ dependencies = [
  "lazy_static",
  "log",
  "serde",
- "uuid",
+ "uuid 0.8.2",
 ]
 
 [[package]]
@@ -3583,6 +3591,15 @@ name = "uuid"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
+dependencies = [
+ "getrandom",
+]
+
+[[package]]
+name = "uuid"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd6469f4314d5f1ffec476e05f17cc9a78bc7a27a6a857842170bdf8d6f98d2f"
 dependencies = [
  "getrandom",
 ]
@@ -3918,7 +3935,7 @@ dependencies = [
  "socket2",
  "stop-token",
  "uhlc",
- "uuid",
+ "uuid 0.8.2",
  "vec_map",
  "zenoh-buffers",
  "zenoh-cfg-properties",
@@ -4130,7 +4147,7 @@ dependencies = [
  "futures",
  "log",
  "nix 0.23.1",
- "uuid",
+ "uuid 0.8.2",
  "zenoh-core",
  "zenoh-link-commons",
  "zenoh-protocol-core",
@@ -4191,7 +4208,7 @@ dependencies = [
  "lazy_static",
  "serde",
  "uhlc",
- "uuid",
+ "uuid 0.8.2",
  "zenoh-core",
 ]
 
