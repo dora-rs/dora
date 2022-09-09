@@ -1,4 +1,6 @@
 pub use communication::Input;
+use dora_message::serialize_message;
+pub use dora_message::{Message, Metadata};
 pub use flume::Receiver;
 
 use communication::STOP_TOPIC;
@@ -52,10 +54,12 @@ impl DoraNode {
         communication::subscribe_all(self.communication.as_mut(), &self.node_config.inputs)
     }
 
-    pub fn send_output(&mut self, output_id: &DataId, data: &[u8]) -> eyre::Result<()> {
+    pub fn send_output(&mut self, output_id: &DataId, message: &Message) -> eyre::Result<()> {
         if !self.node_config.outputs.contains(output_id) {
             eyre::bail!("unknown output");
         }
+        let data = serialize_message(message)
+            .with_context(|| format!("failed to serialize `{}` message", output_id))?;
 
         let self_id = &self.id;
 
@@ -64,7 +68,7 @@ impl DoraNode {
             .publisher(&topic)
             .map_err(|err| eyre::eyre!(err))
             .wrap_err_with(|| format!("failed create publisher for output {output_id}"))?
-            .publish(data)
+            .publish(&data)
             .map_err(|err| eyre::eyre!(err))
             .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         Ok(())

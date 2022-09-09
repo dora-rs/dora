@@ -9,7 +9,6 @@ struct Metadata {
 
 
 struct Message {
-  id @0 :UInt32;
-  metadata @1 :Metadata;
-  data @2 :Data;
+  metadata @0 :Metadata;
+  data @1 :Data;
 }
