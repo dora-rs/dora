@@ -1,0 +1,21 @@
+[package]
+name = "communication-layer-pub-sub"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["zenoh", "iceoryx"]
+zenoh = ["dep:zenoh", "dep:zenoh-config"]
+iceoryx = ["dep:iceoryx-rs"]
+
+[dependencies]
+eyre = "0.6.8"
+zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", optional = true }
+zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+iceoryx-rs = { git = "https://github.com/eclipse-iceoryx/iceoryx-rs.git", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,5 +1,8 @@
 use dora_core::descriptor::{OperatorDefinition, OperatorSource};
-use dora_node_api::{communication::CommunicationLayer, config::NodeId};
+use dora_node_api::{
+    communication::{self, CommunicationLayer},
+    config::NodeId,
+};
 use eyre::Context;
 use std::any::Any;
 use tokio::sync::mpsc::Sender;
@@ -13,8 +16,7 @@ pub fn spawn_operator(
     events_tx: Sender<OperatorEvent>,
     communication: &mut dyn CommunicationLayer,
 ) -> eyre::Result<()> {
-    let inputs = communication
-        .subscribe_all(&operator_definition.config.inputs)
+    let inputs = communication::subscribe_all(communication, &operator_definition.config.inputs)
         .wrap_err_with(|| {
             format!(
                 "failed to subscribe to inputs of operator {}",
@@ -33,6 +35,7 @@ pub fn spawn_operator(
             );
             communication
                 .publisher(&topic)
+                .map_err(|err| eyre::eyre!(err))
                 .wrap_err_with(|| format!("failed to create publisher for output {output_id}"))
                 .map(|p| (output_id.to_owned(), p))
         })

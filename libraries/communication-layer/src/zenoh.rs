@@ -1,3 +1,7 @@
+//! Provides [`ZenohCommunicationLayer`] to communicate over `zenoh`.
+
+pub use zenoh_config;
+
 use super::{CommunicationLayer, Publisher, Subscriber};
 use crate::BoxError;
 use std::{sync::Arc, time::Duration};
@@ -6,16 +10,22 @@ use zenoh::{
     publication::CongestionControl,
 };
 
+/// Allows communication over `zenoh`.
 pub struct ZenohCommunicationLayer {
     zenoh: Arc<zenoh::Session>,
     topic_prefix: String,
 }
 
 impl ZenohCommunicationLayer {
-    pub fn init(config: zenoh_config::Config, prefix: String) -> eyre::Result<Self> {
+    /// Initializes a new `zenoh` session with the given configuration.
+    ///
+    /// The `prefix` is added to all topic names when using the [`publisher`][Self::publisher]
+    /// and [`subscriber`][Self::subscribe] methods. Pass an empty string if no prefix is
+    /// desired.
+    pub fn init(config: zenoh_config::Config, prefix: String) -> Result<Self, BoxError> {
         let zenoh = ::zenoh::open(config)
             .wait()
-            .map_err(|err| BoxError(err.into()))?
+            .map_err(BoxError::from)?
             .into_arc();
         Ok(Self {
             zenoh,
@@ -29,14 +39,14 @@ impl ZenohCommunicationLayer {
 }
 
 impl CommunicationLayer for ZenohCommunicationLayer {
-    fn publisher(&mut self, topic: &str) -> Result<Box<dyn Publisher>, crate::BoxError> {
+    fn publisher(&mut self, topic: &str) -> Result<Box<dyn Publisher>, BoxError> {
         let publisher = self
             .zenoh
             .publish(self.prefixed(topic))
             .congestion_control(CongestionControl::Block)
             .priority(Priority::RealTime)
             .wait()
-            .map_err(|err| BoxError(err.into()))?;
+            .map_err(BoxError::from)?;
 
         Ok(Box::new(ZenohPublisher { publisher }))
     }
@@ -47,7 +57,7 @@ impl CommunicationLayer for ZenohCommunicationLayer {
             .subscribe(self.prefixed(topic))
             .reliable()
             .wait()
-            .map_err(|err| BoxError(err.into()))?;
+            .map_err(BoxError::from)?;
 
         Ok(Box::new(ZenohReceiver(subscriber)))
     }
@@ -65,29 +75,27 @@ impl Drop for ZenohCommunicationLayer {
 }
 
 #[derive(Clone)]
-pub struct ZenohPublisher {
+struct ZenohPublisher {
     publisher: zenoh::publication::Publisher<'static>,
 }
 
 impl Publisher for ZenohPublisher {
-    fn publish(&self, data: &[u8]) -> Result<(), crate::BoxError> {
-        self.publisher
-            .send(data)
-            .map_err(|err| BoxError(err.into()))
+    fn publish(&self, data: &[u8]) -> Result<(), BoxError> {
+        self.publisher.send(data).map_err(BoxError::from)
     }
 
-    fn boxed_clone(&self) -> Box<dyn Publisher> {
+    fn dyn_clone(&self) -> Box<dyn Publisher> {
         Box::new(self.clone())
     }
 }
 
-pub struct ZenohReceiver(zenoh::subscriber::Subscriber<'static>);
+struct ZenohReceiver(zenoh::subscriber::Subscriber<'static>);
 
 impl Subscriber for ZenohReceiver {
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, crate::BoxError> {
+    fn recv(&mut self) -> Result<Option<Vec<u8>>, BoxError> {
         match self.0.recv() {
             Ok(sample) => Ok(Some(sample.value.payload.contiguous().into_owned())),
-            Err(flume::RecvError::Disconnected) => Ok(None),
+            Err(_) => Ok(None),
         }
     }
 }

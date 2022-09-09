@@ -156,7 +156,10 @@ mod callback_impl {
     impl SendOutputCallback {
         fn __call__(&mut self, output: &str, data: &[u8]) -> PyResult<()> {
             match self.publishers.get(output) {
-                Some(publisher) => publisher.publish(data).context("publish failed"),
+                Some(publisher) => publisher
+                    .publish(data)
+                    .map_err(|err| eyre::eyre!(err))
+                    .context("publish failed"),
                 None => Err(eyre!(
                     "unexpected output {output} (not defined in dataflow config)"
                 )),
