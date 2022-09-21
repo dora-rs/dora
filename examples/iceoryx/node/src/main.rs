@@ -16,7 +16,8 @@ fn main() -> eyre::Result<()> {
         match input.id.as_str() {
             "tick" => {
                 let random: u64 = rand::random();
-                operator.send_output(&output, &random.to_le_bytes())?;
+                let data: &[u8] = &random.to_le_bytes();
+                operator.send_output(&output, &data.into())?;
             }
             other => eprintln!("Ignoring unexpected input `{other}`"),
         }

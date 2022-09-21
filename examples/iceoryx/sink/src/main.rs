@@ -9,7 +9,7 @@ fn main() -> eyre::Result<()> {
     while let Ok(input) = inputs.recv() {
         match input.id.as_str() {
             "message" => {
-                let received_string = String::from_utf8(input.data)
+                let received_string = String::from_utf8(input.message.data.into())
                     .wrap_err("received message was not utf8-encoded")?;
                 println!("received message: {}", received_string);
                 if !received_string.starts_with("operator received random value ") {
