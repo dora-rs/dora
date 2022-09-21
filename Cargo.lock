@@ -370,9 +370,9 @@ checksum = "c1db59621ec70f09c5e9b597b220c7a2b43611f4710dc03ceb8748637775692c"
 
 [[package]]
 name = "capnp"
-version = "0.14.6"
+version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21d5d7da973146f1720672faa44f1523cc8f923636190ca1a931c7bc8834de68"
+checksum = "b1b5dbbbfbae370eb9e9e86fb86b572acf4d5e0072e44636758cae3fe6ba6015"
 
 [[package]]
 name = "capnpc"
@@ -793,6 +793,7 @@ dependencies = [
  "bincode",
  "clap 3.1.12",
  "dora-core",
+ "dora-message",
  "dora-node-api",
  "eyre",
  "futures",
@@ -849,7 +850,9 @@ dependencies = [
 name = "dora-node-api"
 version = "0.1.0"
 dependencies = [
+ "capnp",
  "communication-layer-pub-sub",
+ "dora-message",
  "eyre",
  "flume",
  "once_cell",
@@ -920,6 +923,7 @@ version = "0.1.0"
 dependencies = [
  "clap 3.1.12",
  "dora-core",
+ "dora-message",
  "dora-node-api",
  "dora-operator-api-types",
  "eyre",

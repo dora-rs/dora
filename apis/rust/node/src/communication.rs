@@ -1,4 +1,5 @@
 pub use communication_layer_pub_sub::{CommunicationLayer, Publisher, Subscriber};
+use dora_message::{deserialize_message, Message, Metadata};
 
 use crate::{
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
@@ -83,10 +84,18 @@ pub fn subscribe_all(
         thread::spawn(move || loop {
             let event = match sub.recv().transpose() {
                 None => break,
-                Some(Ok(data)) => InputEvent::Input(Input {
-                    id: input_id.clone(),
-                    data,
-                }),
+                Some(Ok(data)) => {
+                    match deserialize_message(&data)
+                        .with_context(|| format!("failed to deserialize `{input_id}` message"))
+                    {
+                        Ok(message) => InputEvent::Input(Input {
+                            id: input_id.clone(),
+                            // TODO: make this zero-copy by operating on borrowed data
+                            message: message.into_owned(),
+                        }),
+                        Err(err) => InputEvent::ParseMessageError(err.into()),
+                    }
+                }
                 Some(Err(err)) => InputEvent::Error(err),
             };
             match sender.send(event) {
@@ -133,7 +142,7 @@ pub fn subscribe_all(
     let (combined_tx, combined) = flume::bounded(1);
     thread::spawn(move || loop {
         match inputs_rx.recv() {
-            Ok(InputEvent::Input(input)) => match combined_tx.send(input) {
+            Ok(InputEvent::Input(message)) => match combined_tx.send(message) {
                 Ok(()) => {}
                 Err(flume::SendError(_)) => break,
             },
@@ -142,6 +151,9 @@ pub fn subscribe_all(
                 if sources.is_empty() {
                     break;
                 }
+            }
+            Ok(InputEvent::ParseMessageError(err)) => {
+                tracing::warn!("{err}");
             }
             Ok(InputEvent::Error(err)) => panic!("{err}"),
             Err(_) => break,
@@ -158,10 +170,21 @@ enum InputEvent {
         operator: Option<OperatorId>,
     },
     Error(BoxError),
+    ParseMessageError(BoxError),
 }
 
 #[derive(Debug)]
 pub struct Input {
     pub id: DataId,
-    pub data: Vec<u8>,
+    pub message: Message<'static>,
+}
+
+impl Input {
+    pub fn data(&self) -> &[u8] {
+        &self.message.data
+    }
+
+    pub fn metadata(&self) -> &Metadata {
+        &self.message.metadata
+    }
 }
