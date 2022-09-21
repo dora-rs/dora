@@ -10,6 +10,7 @@ use tokio::sync::mpsc::Sender;
 mod python;
 mod shared_lib;
 
+#[tracing::instrument(skip(communication))]
 pub fn spawn_operator(
     node_id: &NodeId,
     operator_definition: OperatorDefinition,
@@ -59,7 +60,7 @@ pub fn spawn_operator(
             })?;
         }
         OperatorSource::Wasm(_path) => {
-            eprintln!("WARNING: WASM operators are not supported yet");
+            tracing::error!("WASM operators are not supported yet");
         }
     }
     Ok(())

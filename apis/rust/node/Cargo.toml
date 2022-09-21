@@ -5,9 +5,10 @@ edition = "2021"
 license = "Apache-2.0"
 
 [features]
-default = ["zenoh", "iceoryx"]
+default = ["zenoh", "iceoryx", "tracing-subscriber"]
 zenoh = ["communication-layer-pub-sub/zenoh"]
 iceoryx = ["communication-layer-pub-sub/iceoryx"]
+tracing-subscriber = ["dep:tracing-subscriber"]
 
 [dependencies]
 eyre = "0.6.7"
@@ -16,6 +17,7 @@ serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.8.23"
 thiserror = "1.0.30"
 tracing = "0.1.33"
+tracing-subscriber = { version = "0.3.15", optional = true }
 flume = "0.10.14"
 communication-layer-pub-sub = { path = "../../../libraries/communication-layer", default-features = false }
 uuid = { version = "1.1.2", features = ["v4"] }

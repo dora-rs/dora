@@ -19,6 +19,9 @@ pub struct DoraNode {
 
 impl DoraNode {
     pub fn init_from_env() -> eyre::Result<Self> {
+        #[cfg(feature = "tracing-subscriber")]
+        set_up_tracing().context("failed to set up tracing subscriber")?;
+
         let id = {
             let raw =
                 std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
@@ -84,6 +87,7 @@ impl DoraNode {
 }
 
 impl Drop for DoraNode {
+    #[tracing::instrument(skip(self), fields(self.id = %self.id))]
     fn drop(&mut self) {
         let self_id = &self.id;
         let topic = format!("{self_id}/{STOP_TOPIC}");
@@ -109,6 +113,16 @@ impl Drop for DoraNode {
 }
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+#[cfg(feature = "tracing-subscriber")]
+fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+    let stdout_log = tracing_subscriber::fmt::layer().pretty();
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
+}
 
 #[cfg(test)]
 mod tests {
