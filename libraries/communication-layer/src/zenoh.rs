@@ -80,12 +80,31 @@ struct ZenohPublisher {
 }
 
 impl Publisher for ZenohPublisher {
-    fn publish(&self, data: &[u8]) -> Result<(), BoxError> {
-        self.publisher.send(data).map_err(BoxError::from)
+    fn prepare(&self, len: usize) -> Result<Box<dyn crate::Sample>, BoxError> {
+        Ok(Box::new(ZenohSample {
+            sample: vec![0; len],
+            publisher: self.publisher.clone(),
+        }))
     }
 
     fn dyn_clone(&self) -> Box<dyn Publisher> {
         Box::new(self.clone())
+    }
+}
+
+#[derive(Clone)]
+struct ZenohSample {
+    sample: Vec<u8>,
+    publisher: zenoh::publication::Publisher<'static>,
+}
+
+impl<'a> crate::Sample<'a> for ZenohSample {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.sample
+    }
+
+    fn publish(self: Box<Self>) -> Result<(), BoxError> {
+        self.publisher.send(self.sample).map_err(BoxError::from)
     }
 }
 
