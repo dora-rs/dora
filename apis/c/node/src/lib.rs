@@ -30,7 +30,7 @@ pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
         Ok(n) => n,
         Err(err) => {
             let err: eyre::Error = err;
-            eprintln!("{err:?}");
+            tracing::error!("{err:?}");
             return ptr::null_mut();
         }
     };
@@ -175,7 +175,7 @@ pub unsafe extern "C" fn dora_send_output(
     match unsafe { try_send_output(context, id_ptr, id_len, data_ptr, data_len) } {
         Ok(()) => 0,
         Err(err) => {
-            eprintln!("{err:?}");
+            tracing::error!("{err:?}");
             -1
         }
     }
