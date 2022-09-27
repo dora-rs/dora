@@ -89,7 +89,7 @@ pub fn spawn(
                         "on_input",
                         (
                             input.id.to_string(),
-                            PyBytes::new(py, &input.message.data),
+                            PyBytes::new(py, &input.data()),
                             send_output.clone(),
                         ),
                     )

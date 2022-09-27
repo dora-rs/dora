@@ -13,6 +13,8 @@
 //!   based on shared memory. It is very fast, but it only supports local communication. To use
 //!   iceoryx, use the [`IceoryxCommunicationLayer`][iceoryx::IceoryxCommunicationLayer] struct.
 
+use std::{borrow::Cow, fmt::Debug};
+
 #[cfg(all(unix, feature = "iceoryx"))]
 pub mod iceoryx;
 #[cfg(feature = "zenoh")]
@@ -39,7 +41,7 @@ pub trait Publisher: Send + Sync {
     /// This function makes it possible to construct messages without
     /// any additional copying. The returned [`Sample`] is initialized
     /// with zeros.
-    fn prepare(&self, len: usize) -> Result<Box<dyn Sample + '_>, BoxError>;
+    fn prepare(&self, len: usize) -> Result<Box<dyn PublishSample + '_>, BoxError>;
 
     /// Clone this publisher, returning the clone as a
     /// [trait object](https://doc.rust-lang.org/book/ch17-02-trait-objects.html).
@@ -59,7 +61,7 @@ pub trait Publisher: Send + Sync {
 }
 
 /// A prepared message constructed by [`Publisher::prepare`].
-pub trait Sample<'a>: Send + Sync {
+pub trait PublishSample<'a>: Send + Sync {
     /// Gets a reference to the prepared message.
     ///
     /// Makes it possible to construct the message in-place.
@@ -80,5 +82,9 @@ pub trait Subscriber: Send + Sync {
     ///
     /// Depending on the chosen communication backend, some messages might be dropped if
     /// the publisher is faster than the subscriber.
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, BoxError>;
+    fn recv(&mut self) -> Result<Option<Box<dyn ReceivedSample>>, BoxError>;
+}
+
+pub trait ReceivedSample: Send + Sync {
+    fn get(&self) -> Cow<[u8]>;
 }

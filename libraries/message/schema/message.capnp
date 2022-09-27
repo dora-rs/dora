@@ -6,9 +6,3 @@ struct Metadata {
   deadline @2 :UInt64;
   otelContext @3 :Text; # OpenTelemetry Context allowing shared context between nodes.
 }
-
-
-struct Message {
-  metadata @0 :Metadata;
-  data @1 :Data;
-}

@@ -3,8 +3,8 @@
 pub use zenoh_config;
 
 use super::{CommunicationLayer, Publisher, Subscriber};
-use crate::BoxError;
-use std::{sync::Arc, time::Duration};
+use crate::{BoxError, ReceivedSample};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 use zenoh::{
     prelude::{EntityFactory, Priority, Receiver as _, SplitBuffer, ZFuture},
     publication::CongestionControl,
@@ -80,8 +80,8 @@ struct ZenohPublisher {
 }
 
 impl Publisher for ZenohPublisher {
-    fn prepare(&self, len: usize) -> Result<Box<dyn crate::Sample>, BoxError> {
-        Ok(Box::new(ZenohSample {
+    fn prepare(&self, len: usize) -> Result<Box<dyn crate::PublishSample>, BoxError> {
+        Ok(Box::new(ZenohPublishSample {
             sample: vec![0; len],
             publisher: self.publisher.clone(),
         }))
@@ -93,12 +93,12 @@ impl Publisher for ZenohPublisher {
 }
 
 #[derive(Clone)]
-struct ZenohSample {
+struct ZenohPublishSample {
     sample: Vec<u8>,
     publisher: zenoh::publication::Publisher<'static>,
 }
 
-impl<'a> crate::Sample<'a> for ZenohSample {
+impl<'a> crate::PublishSample<'a> for ZenohPublishSample {
     fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.sample
     }
@@ -111,10 +111,22 @@ impl<'a> crate::Sample<'a> for ZenohSample {
 struct ZenohReceiver(zenoh::subscriber::Subscriber<'static>);
 
 impl Subscriber for ZenohReceiver {
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, BoxError> {
+    fn recv(&mut self) -> Result<Option<Box<dyn ReceivedSample>>, BoxError> {
         match self.0.recv() {
-            Ok(sample) => Ok(Some(sample.value.payload.contiguous().into_owned())),
+            Ok(sample) => Ok(Some(Box::new(ZenohReceivedSample {
+                sample: sample.value.payload,
+            }))),
             Err(_) => Ok(None),
         }
+    }
+}
+
+struct ZenohReceivedSample {
+    sample: zenoh::buf::ZBuf,
+}
+
+impl ReceivedSample for ZenohReceivedSample {
+    fn get(&self) -> Cow<[u8]> {
+        self.sample.contiguous()
     }
 }
