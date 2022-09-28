@@ -85,7 +85,9 @@ impl DoraNode {
         let mut sample = publisher
             .prepare(full_len)
             .map_err(|err| eyre::eyre!(err))?;
-        data(sample.as_mut_slice());
+        let raw = sample.as_mut_slice();
+        raw[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
+        data(&mut raw[serialized_metadata.len()..]);
         sample
             .publish()
             .map_err(|err| eyre::eyre!(err))
