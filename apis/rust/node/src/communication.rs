@@ -100,7 +100,7 @@ pub fn subscribe_all(
                                 sample,
                             },
                         }),
-                        Err(err) => InputEvent::ParseMessageError(err.into()),
+                        Err(err) => InputEvent::ParseMessageError(err),
                     }
                 }
                 Some(Err(err)) => InputEvent::Error(err),
@@ -160,7 +160,7 @@ pub fn subscribe_all(
                 }
             }
             Ok(InputEvent::ParseMessageError(err)) => {
-                tracing::warn!("{err}");
+                tracing::warn!("{err:?}");
             }
             Ok(InputEvent::Error(err)) => panic!("{err}"),
             Err(_) => break,
@@ -177,7 +177,7 @@ enum InputEvent {
         operator: Option<OperatorId>,
     },
     Error(BoxError),
-    ParseMessageError(BoxError),
+    ParseMessageError(eyre::Report),
 }
 
 pub struct Input {
