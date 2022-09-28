@@ -16,11 +16,7 @@ pub struct PyInput(Input);
 
 impl IntoPy<PyObject> for PyInput {
     fn into_py(self, py: Python) -> PyObject {
-        (
-            self.0.id.to_string(),
-            PyBytes::new(py, &self.0.message.data),
-        )
-            .into_py(py)
+        (self.0.id.to_string(), PyBytes::new(py, &self.0.data())).into_py(py)
     }
 }
 
@@ -54,8 +50,11 @@ impl Node {
     }
 
     pub fn send_output(&mut self, output_id: String, data: &PyBytes) -> Result<()> {
+        let data = &data.as_bytes();
         self.node
-            .send_output(&output_id.into(), &data.as_bytes().into())
+            .send_output(&output_id.into(), &Default::default(), data.len(), |out| {
+                out.copy_from_slice(data);
+            })
             .wrap_err("Could not send output")
     }
 
