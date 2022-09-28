@@ -192,9 +192,10 @@ unsafe fn try_send_output(
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-    context
+    let mut output = context
         .node
-        .send_output(&output_id, &Default::default(), data.len(), |out| {
-            out.copy_from_slice(data);
-        })
+        .prepare_output(&output_id, &Default::default(), data.len())?;
+    output.data_mut().copy_from_slice(data);
+    output.send()?;
+    Ok(())
 }

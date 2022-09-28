@@ -41,7 +41,7 @@ pub trait Publisher: Send + Sync {
     /// This function makes it possible to construct messages without
     /// any additional copying. The returned [`Sample`] is initialized
     /// with zeros.
-    fn prepare(&self, len: usize) -> Result<Box<dyn PublishSample + '_>, BoxError>;
+    fn prepare(&self, len: usize) -> Result<Box<dyn PublishSample>, BoxError>;
 
     /// Clone this publisher, returning the clone as a
     /// [trait object](https://doc.rust-lang.org/book/ch17-02-trait-objects.html).
@@ -61,7 +61,7 @@ pub trait Publisher: Send + Sync {
 }
 
 /// A prepared message constructed by [`Publisher::prepare`].
-pub trait PublishSample<'a>: Send + Sync {
+pub trait PublishSample: Send + Sync {
     /// Gets a reference to the prepared message.
     ///
     /// Makes it possible to construct the message in-place.

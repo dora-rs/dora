@@ -98,7 +98,7 @@ struct ZenohPublishSample {
     publisher: zenoh::publication::Publisher<'static>,
 }
 
-impl<'a> crate::PublishSample<'a> for ZenohPublishSample {
+impl crate::PublishSample for ZenohPublishSample {
     fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.sample
     }

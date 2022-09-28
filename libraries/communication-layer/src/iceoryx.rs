@@ -99,10 +99,10 @@ struct IceoryxPublisher {
 }
 
 impl Publisher for IceoryxPublisher {
-    fn prepare(&self, len: usize) -> Result<Box<dyn crate::PublishSample + '_>, BoxError> {
+    fn prepare(&self, len: usize) -> Result<Box<dyn crate::PublishSample>, BoxError> {
         let sample = self
             .publisher
-            .loan_slice(len)
+            .loan_slice_arc(len)
             .context("failed to loan iceoryx slice for publishing")
             .map_err(BoxError::from)?;
         Ok(Box::new(IceoryxPublishSample {
@@ -116,18 +116,18 @@ impl Publisher for IceoryxPublisher {
     }
 }
 
-struct IceoryxPublishSample<'a> {
+struct IceoryxPublishSample {
     publisher: Arc<iceoryx_rs::Publisher<[u8]>>,
-    sample: iceoryx_rs::SampleMut<'a, [u8]>,
+    sample: iceoryx_rs::SampleMutArc<[u8]>,
 }
 
-impl<'a> crate::PublishSample<'a> for IceoryxPublishSample<'a> {
+impl crate::PublishSample for IceoryxPublishSample {
     fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.sample
     }
 
     fn publish(self: Box<Self>) -> Result<(), BoxError> {
-        self.publisher.publish(self.sample);
+        self.publisher.publish_arc(self.sample);
         Ok(())
     }
 }

@@ -1452,7 +1452,7 @@ dependencies = [
 [[package]]
 name = "iceoryx-rs"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-iceoryx/iceoryx-rs.git#68fbd034a77c6ed98cb75a939d406429ef26b0dd"
+source = "git+https://github.com/phil-opp/iceoryx-rs.git?branch=arc-sample#8f97a4015eb95463250e6c7c97fdb9cebdda4b5b"
 dependencies = [
  "iceoryx-sys",
  "thiserror",
@@ -1461,7 +1461,7 @@ dependencies = [
 [[package]]
 name = "iceoryx-sys"
 version = "0.1.0"
-source = "git+https://github.com/eclipse-iceoryx/iceoryx-rs.git#68fbd034a77c6ed98cb75a939d406429ef26b0dd"
+source = "git+https://github.com/phil-opp/iceoryx-rs.git?branch=arc-sample#8f97a4015eb95463250e6c7c97fdb9cebdda4b5b"
 dependencies = [
  "cpp",
  "cpp_build",

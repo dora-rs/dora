@@ -51,11 +51,13 @@ fn next_input(inputs: &mut Inputs) -> ffi::DoraInput {
 pub struct OutputSender<'a>(&'a mut DoraNode);
 
 fn send_output(sender: &mut OutputSender, id: String, data: &[u8]) -> ffi::DoraResult {
-    let result = sender
+    let output = sender
         .0
-        .send_output(&id.into(), &Default::default(), data.len(), |out| {
-            out.copy_from_slice(data)
-        });
+        .prepare_output(&id.into(), &Default::default(), data.len());
+    let result = output.and_then(|mut output| {
+        output.data_mut().copy_from_slice(data);
+        output.send()
+    });
     let error = match result {
         Ok(()) => String::new(),
         Err(err) => format!("{err:?}"),

@@ -3,7 +3,7 @@ pub use dora_message::Metadata;
 pub use flume::Receiver;
 
 use communication::STOP_TOPIC;
-use communication_layer_pub_sub::CommunicationLayer;
+use communication_layer_pub_sub::{CommunicationLayer, PublishSample};
 use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 use eyre::WrapErr;
 
@@ -56,16 +56,12 @@ impl DoraNode {
         communication::subscribe_all(self.communication.as_mut(), &self.node_config.inputs)
     }
 
-    pub fn send_output<F>(
+    pub fn prepare_output(
         &mut self,
         output_id: &DataId,
         metadata: &Metadata,
         data_len: usize,
-        data: F,
-    ) -> eyre::Result<()>
-    where
-        F: FnOnce(&mut [u8]),
-    {
+    ) -> eyre::Result<Output> {
         if !self.node_config.outputs.contains(output_id) {
             eyre::bail!("unknown output");
         }
@@ -85,14 +81,12 @@ impl DoraNode {
         let mut sample = publisher
             .prepare(full_len)
             .map_err(|err| eyre::eyre!(err))?;
-        let raw = sample.as_mut_slice();
-        raw[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
-        data(&mut raw[serialized_metadata.len()..]);
-        sample
-            .publish()
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
-        Ok(())
+        sample.as_mut_slice()[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
+
+        Ok(Output {
+            sample,
+            offset: serialized_metadata.len(),
+        })
     }
 
     pub fn id(&self) -> &NodeId {
@@ -101,6 +95,24 @@ impl DoraNode {
 
     pub fn node_config(&self) -> &NodeRunConfig {
         &self.node_config
+    }
+}
+
+pub struct Output {
+    sample: Box<dyn PublishSample>,
+    offset: usize,
+}
+
+impl Output {
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.sample.as_mut_slice()[self.offset..]
+    }
+
+    pub fn send(self) -> eyre::Result<()> {
+        self.sample
+            .publish()
+            .map_err(|err| eyre::eyre!(err))
+            .wrap_err_with(|| format!("failed to send output"))
     }
 }
 

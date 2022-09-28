@@ -51,11 +51,11 @@ impl Node {
 
     pub fn send_output(&mut self, output_id: String, data: &PyBytes) -> Result<()> {
         let data = &data.as_bytes();
-        self.node
-            .send_output(&output_id.into(), &Default::default(), data.len(), |out| {
-                out.copy_from_slice(data);
-            })
-            .wrap_err("Could not send output")
+        let mut output =
+            self.node
+                .prepare_output(&output_id.into(), &Default::default(), data.len())?;
+        output.data_mut().copy_from_slice(data);
+        output.send().wrap_err("Could not send output")
     }
 
     pub fn id(&self) -> String {
