@@ -1,5 +1,5 @@
-pub use dora_node_api::config::OperatorId;
-use dora_node_api::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig};
+use dora_node_api::config::{CommunicationConfig, NodeRunConfig};
+pub use dora_node_api::config::{DataId, InputMapping, NodeId, OperatorId, UserInputMapping};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;

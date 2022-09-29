@@ -2,6 +2,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 mod build;
+mod check;
 mod graph;
 
 #[derive(Debug, clap::Parser)]
@@ -13,9 +14,16 @@ struct Args {
 
 #[derive(Debug, clap::Subcommand)]
 enum Command {
-    Check,
-    Graph { dataflow: PathBuf },
-    Build { dataflow: PathBuf },
+    Check {
+        dataflow: PathBuf,
+        runtime_path: PathBuf,
+    },
+    Graph {
+        dataflow: PathBuf,
+    },
+    Build {
+        dataflow: PathBuf,
+    },
     Templates,
     Dashboard,
     Start,
@@ -32,7 +40,10 @@ fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Check => todo!(),
+        Command::Check {
+            dataflow,
+            runtime_path,
+        } => check::check(&dataflow, &runtime_path)?,
         Command::Graph { dataflow } => {
             let visualized = graph::visualize_as_mermaid(dataflow)?;
             println!("{visualized}");
