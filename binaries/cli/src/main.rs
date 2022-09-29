@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+mod build;
 mod graph;
 
 #[derive(Debug, clap::Parser)]
@@ -14,7 +15,7 @@ struct Args {
 enum Command {
     Check,
     Graph { dataflow: PathBuf },
-    Build,
+    Build { dataflow: PathBuf },
     Templates,
     Dashboard,
     Start,
@@ -32,8 +33,17 @@ fn main() -> eyre::Result<()> {
 
     match args.command {
         Command::Check => todo!(),
-        Command::Graph { dataflow } => graph::run(dataflow)?,
-        Command::Build => todo!(),
+        Command::Graph { dataflow } => {
+            let visualized = graph::visualize_as_mermaid(dataflow)?;
+            println!("{visualized}");
+            println!(
+                "Paste the above output on https://mermaid.live/ or in a \
+                ```mermaid code block on GitHub to display it."
+            );
+        }
+        Command::Build { dataflow } => {
+            build::build(&dataflow)?;
+        }
         Command::Templates => todo!(),
         Command::Dashboard => todo!(),
         Command::Start => todo!(),
