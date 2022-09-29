@@ -1,6 +1,5 @@
-use dora_node_api::config::{
-    CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId,
-};
+pub use dora_node_api::config::OperatorId;
+use dora_node_api::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -20,10 +19,11 @@ pub struct Descriptor {
     pub communication: CommunicationConfig,
     pub nodes: Vec<Node>,
 }
+pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl Descriptor {
     pub fn resolve_aliases(&self) -> Vec<ResolvedNode> {
-        let default_op_id = OperatorId::from("op".to_string());
+        let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
 
         let single_operator_nodes: HashMap<_, _> = self
             .nodes
@@ -158,6 +158,9 @@ pub struct OperatorConfig {
 
     #[serde(flatten)]
     pub source: OperatorSource,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -194,6 +197,8 @@ pub struct CustomNode {
     pub run: String,
     pub env: Option<BTreeMap<String, EnvValue>>,
     pub working_directory: Option<BTreeMap<String, EnvValue>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
