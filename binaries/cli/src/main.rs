@@ -24,6 +24,8 @@ enum Command {
         dataflow: PathBuf,
         #[clap(long, action)]
         mermaid: bool,
+        #[clap(long, action)]
+        open: bool,
     },
     Build {
         dataflow: PathBuf,
@@ -48,7 +50,11 @@ fn main() -> eyre::Result<()> {
             dataflow,
             runtime_path,
         } => check::check(&dataflow, &runtime_path)?,
-        Command::Graph { dataflow, mermaid } => {
+        Command::Graph {
+            dataflow,
+            mermaid,
+            open,
+        } => {
             if mermaid {
                 let visualized = graph::visualize_as_mermaid(&dataflow)?;
                 println!("{visualized}");
@@ -61,14 +67,17 @@ fn main() -> eyre::Result<()> {
                 let mut file = NamedTempFile::new().context("failed to create temp file")?;
                 file.as_file_mut().write_all(html.as_bytes())?;
 
-                let path = file.path();
+                let path = file.path().to_owned();
+                file.keep()?;
 
                 println!(
                     "View graph by opening the following in your browser:\n  file://{}",
                     path.display()
                 );
 
-                file.keep()?;
+                if open {
+                    webbrowser::open(path.as_os_str().to_str().unwrap())?;
+                }
             }
         }
         Command::Build { dataflow } => {
