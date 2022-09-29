@@ -1,5 +1,7 @@
 use clap::Parser;
-use std::path::PathBuf;
+use eyre::Context;
+use std::{io::Write, path::PathBuf};
+use tempfile::NamedTempFile;
 
 mod build;
 mod check;
@@ -20,6 +22,8 @@ enum Command {
     },
     Graph {
         dataflow: PathBuf,
+        #[clap(long, action)]
+        mermaid: bool,
     },
     Build {
         dataflow: PathBuf,
@@ -44,13 +48,28 @@ fn main() -> eyre::Result<()> {
             dataflow,
             runtime_path,
         } => check::check(&dataflow, &runtime_path)?,
-        Command::Graph { dataflow } => {
-            let visualized = graph::visualize_as_mermaid(dataflow)?;
-            println!("{visualized}");
-            println!(
-                "Paste the above output on https://mermaid.live/ or in a \
-                ```mermaid code block on GitHub to display it."
-            );
+        Command::Graph { dataflow, mermaid } => {
+            if mermaid {
+                let visualized = graph::visualize_as_mermaid(&dataflow)?;
+                println!("{visualized}");
+                println!(
+                    "Paste the above output on https://mermaid.live/ or in a \
+                    ```mermaid code block on GitHub to display it."
+                );
+            } else {
+                let html = graph::visualize_as_html(&dataflow)?;
+                let mut file = NamedTempFile::new().context("failed to create temp file")?;
+                file.as_file_mut().write_all(html.as_bytes())?;
+
+                let path = file.path();
+
+                println!(
+                    "View graph by opening the following in your browser:\n  file://{}",
+                    path.display()
+                );
+
+                file.keep()?;
+            }
         }
         Command::Build { dataflow } => {
             build::build(&dataflow)?;

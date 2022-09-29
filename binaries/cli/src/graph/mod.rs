@@ -1,12 +1,16 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
 
 use dora_core::descriptor::Descriptor;
 use eyre::Context;
 
-pub fn visualize_as_mermaid(dataflow: PathBuf) -> eyre::Result<String> {
+const MERMAID_TEMPLATE: &str = include_str!("mermaid-template.html");
+
+pub fn visualize_as_html(dataflow: &Path) -> eyre::Result<String> {
+    let mermaid = visualize_as_mermaid(dataflow)?;
+    Ok(MERMAID_TEMPLATE.replacen("____insert____", &mermaid, 1))
+}
+
+pub fn visualize_as_mermaid(dataflow: &Path) -> eyre::Result<String> {
     let descriptor = read_descriptor(&dataflow)
         .with_context(|| format!("failed to read dataflow at `{}`", dataflow.display()))?;
     let visualized = descriptor
