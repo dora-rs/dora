@@ -14,3 +14,4 @@ clap = { version = "3.2.20", features = ["derive"] }
 eyre = "0.6.8"
 dora-core = { path = "../../libraries/core" }
 serde_yaml = "0.9.11"
+tempfile = "3.3.0"

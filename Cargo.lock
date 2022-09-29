@@ -794,6 +794,7 @@ dependencies = [
  "dora-core",
  "eyre",
  "serde_yaml 0.9.11",
+ "tempfile",
 ]
 
 [[package]]
