@@ -24,7 +24,7 @@ DoraResult_t dora_drop_operator(void *operator_context)
 
 OnInputResult_t dora_on_input(
     const Input_t *input,
-    const SendOutput_t *send_output,
+    const PrepareOutput_t *prepare_output,
     void *operator_context)
 {
     char *counter = (char *)operator_context;
@@ -50,16 +50,27 @@ OnInputResult_t dora_on_input(
         int count = snprintf(out_data, data_alloc_size, "The current counter value is %d", *counter);
         assert(count >= 0 && count < 100);
 
-        Output_t output = {.id = {
-                               .ptr = (uint8_t *)out_id_heap,
-                               .len = strlen(out_id_heap),
-                               .cap = strlen(out_id_heap) + 1,
-                           },
-                           .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
-        DoraResult_t res = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
+        OutputMetadata_t output_meta = {.id = {
+                                            .ptr = (uint8_t *)out_id_heap,
+                                            .len = strlen(out_id_heap),
+                                            .cap = strlen(out_id_heap) + 1,
+                                        },
+                                        .data_len = strlen(out_data)};
+        PrepareOutputResult_t res = (prepare_output->prepare_output.call)(prepare_output->prepare_output.env_ptr, output_meta);
+        if (res.result.error.len == 0)
+        {
+            slice_raw_uint8_t data = res.output.data_mut.call(res.output.data_mut.env_ptr);
+            memcpy(data.ptr, out_data, data.len);
+            DoraResult_t send_result = res.output.send.call(res.output.send.env_ptr);
 
-        OnInputResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
-        return result;
+            OnInputResult_t result = {.result = send_result, .status = DORA_STATUS_CONTINUE};
+            return result;
+        }
+        else
+        {
+            OnInputResult_t result = {.result = res.result, .status = DORA_STATUS_CONTINUE};
+            return result;
+        }
     }
     else
     {

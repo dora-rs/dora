@@ -31,7 +31,9 @@ impl DoraOperator for ExampleOperator {
                     "operator received random value {parsed} after {} ticks",
                     self.ticks
                 );
-                output_sender.send("status".into(), output.into_bytes())?;
+                let mut sample = output_sender.prepare("status".into(), output.len())?;
+                sample.data_mut().copy_from_slice(output.as_bytes());
+                sample.send()?;
                 self.last_random_at = Some(Instant::now());
             }
             other => eprintln!("ignoring unexpected input {other}"),

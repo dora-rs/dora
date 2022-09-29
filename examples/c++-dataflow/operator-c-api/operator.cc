@@ -32,7 +32,7 @@ extern "C" DoraResult_t dora_drop_operator(void *operator_context)
 
 extern "C" OnInputResult_t dora_on_input(
     const Input_t *input,
-    const SendOutput_t *send_output,
+    const PrepareOutput_t *prepare_output,
     void *operator_context)
 {
 
@@ -56,18 +56,24 @@ extern "C" OnInputResult_t dora_on_input(
     char *out_id_heap = strdup(out_id);
 
     size_t out_data_len = 1;
-    uint8_t *out_data_heap = (uint8_t *)malloc(out_data_len);
-    *out_data_heap = data[0] / 2;
 
-    Output_t output = {.id = {
-                           .ptr = (uint8_t *)out_id_heap,
-                           .len = strlen(out_id_heap),
-                           .cap = strlen(out_id_heap) + 1,
-                       },
-                       .data = {.ptr = out_data_heap, .len = out_data_len, .cap = out_data_len}};
+    OutputMetadata_t output_meta = {.id = {
+                                        .ptr = (uint8_t *)out_id_heap,
+                                        .len = strlen(out_id_heap),
+                                        .cap = strlen(out_id_heap) + 1,
+                                    },
+                                    .data_len = out_data_len};
 
-    DoraResult_t send_result = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
+    PrepareOutputResult_t prepare_result = (prepare_output->prepare_output.call)(prepare_output->prepare_output.env_ptr, output_meta);
+    DoraResult_t dora_result = prepare_result.result;
+    if (dora_result.error.len == 0)
+    {
+        auto output = prepare_result.output;
+        auto out_data = output.data_mut.call(output.data_mut.env_ptr);
+        *out_data.ptr = data[0] / 2;
+        dora_result = output.send.call(output.send.env_ptr);
+    }
 
-    OnInputResult_t result = {.result = send_result, .status = DORA_STATUS_CONTINUE};
+    OnInputResult_t result = {.result = dora_result, .status = DORA_STATUS_CONTINUE};
     return result;
 }

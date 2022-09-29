@@ -101,45 +101,127 @@ typedef struct Input {
     Metadata_t metadata;
 } Input_t;
 
-/** <No documentation available> */
-typedef struct Output {
-    /** <No documentation available> */
-    Vec_uint8_t id;
+/** \brief
+ *  Like [`slice_ref`] and [`slice_mut`], but with any lifetime attached
+ *  whatsoever.
+ *
+ *  It is only intended to be used as the parameter of a **callback** that
+ *  locally borrows it, due to limitations of the [`ReprC`][
+ *  `trait@crate::layout::ReprC`] design _w.r.t._ higher-rank trait bounds.
+ *
+ *  # C layout (for some given type T)
+ *
+ *  ```c
+ *  typedef struct {
+ *  // Cannot be NULL
+ *  T * ptr;
+ *  size_t len;
+ *  } slice_T;
+ *  ```
+ *
+ *  # Nullable pointer?
+ *
+ *  If you want to support the above typedef, but where the `ptr` field is
+ *  allowed to be `NULL` (with the contents of `len` then being undefined)
+ *  use the `Option< slice_ptr<_> >` type.
+ */
+typedef struct slice_raw_uint8 {
+    /** \brief
+     *  Pointer to the first element (if any).
+     */
+    uint8_t * ptr;
 
-    /** <No documentation available> */
-    Vec_uint8_t data;
-
-    /** <No documentation available> */
-    Metadata_t metadata;
-} Output_t;
+    /** \brief
+     *  Element count
+     */
+    size_t len;
+} slice_raw_uint8_t;
 
 /** \brief
- *  `Arc<dyn Send + Sync + Fn(A1) -> Ret>`
+ *  `Box<dyn 'static + Send + FnMut() -> Ret>`
  */
-typedef struct ArcDynFn1_DoraResult_Output {
+typedef struct BoxDynFnMut0_slice_raw_uint8 {
     /** <No documentation available> */
     void * env_ptr;
 
     /** <No documentation available> */
-    DoraResult_t (*call)(void *, Output_t);
+    slice_raw_uint8_t (*call)(void *);
+
+    /** <No documentation available> */
+    void (*free)(void *);
+} BoxDynFnMut0_slice_raw_uint8_t;
+
+/** \brief
+ *  `Box<dyn 'static + Send + FnMut() -> Ret>`
+ */
+typedef struct BoxDynFnMut0_DoraResult {
+    /** <No documentation available> */
+    void * env_ptr;
+
+    /** <No documentation available> */
+    DoraResult_t (*call)(void *);
+
+    /** <No documentation available> */
+    void (*free)(void *);
+} BoxDynFnMut0_DoraResult_t;
+
+/** <No documentation available> */
+typedef struct Output {
+    /** <No documentation available> */
+    BoxDynFnMut0_slice_raw_uint8_t data_mut;
+
+    /** <No documentation available> */
+    BoxDynFnMut0_DoraResult_t send;
+} Output_t;
+
+/** <No documentation available> */
+typedef struct PrepareOutputResult {
+    /** <No documentation available> */
+    DoraResult_t result;
+
+    /** <No documentation available> */
+    Output_t output;
+} PrepareOutputResult_t;
+
+/** <No documentation available> */
+typedef struct OutputMetadata {
+    /** <No documentation available> */
+    Vec_uint8_t id;
+
+    /** <No documentation available> */
+    Metadata_t metadata;
+
+    /** <No documentation available> */
+    size_t data_len;
+} OutputMetadata_t;
+
+/** \brief
+ *  `Arc<dyn Send + Sync + Fn(A1) -> Ret>`
+ */
+typedef struct ArcDynFn1_PrepareOutputResult_OutputMetadata {
+    /** <No documentation available> */
+    void * env_ptr;
+
+    /** <No documentation available> */
+    PrepareOutputResult_t (*call)(void *, OutputMetadata_t);
 
     /** <No documentation available> */
     void (*release)(void *);
 
     /** <No documentation available> */
     void (*retain)(void *);
-} ArcDynFn1_DoraResult_Output_t;
+} ArcDynFn1_PrepareOutputResult_OutputMetadata_t;
 
 /** <No documentation available> */
-typedef struct SendOutput {
+typedef struct PrepareOutput {
     /** <No documentation available> */
-    ArcDynFn1_DoraResult_Output_t send_output;
-} SendOutput_t;
+    ArcDynFn1_PrepareOutputResult_OutputMetadata_t prepare_output;
+} PrepareOutput_t;
 
 /** <No documentation available> */
 typedef struct DoraOnInput {
     /** <No documentation available> */
-    OnInputResult_t (*on_input)(Input_t const *, SendOutput_t const *, void *);
+    OnInputResult_t (*on_input)(Input_t const *, PrepareOutput_t const *, void *);
 } DoraOnInput_t;
 
 

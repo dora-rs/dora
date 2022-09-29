@@ -39,11 +39,12 @@ mod ffi {
 pub struct OutputSender<'a, 'b>(&'a mut DoraOutputSender<'b>);
 
 fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> SendOutputResult {
-    let error = sender
-        .0
-        .send(id.into(), data.to_owned())
-        .err()
-        .unwrap_or_default();
+    let mut result = || {
+        let mut sample = sender.0.prepare(id.into(), data.len())?;
+        sample.data_mut().copy_from_slice(data);
+        sample.send()
+    };
+    let error = result().err().unwrap_or_default();
     SendOutputResult { error }
 }
 

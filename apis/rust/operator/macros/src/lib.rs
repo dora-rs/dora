@@ -53,11 +53,11 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
         #[no_mangle]
         pub unsafe extern "C" fn dora_on_input(
             input: &dora_operator_api::types::Input,
-            send_output: &dora_operator_api::types::SendOutput,
+            prepare_output: &dora_operator_api::types::PrepareOutput,
             operator_context: *mut std::ffi::c_void,
         ) -> dora_operator_api::types::OnInputResult {
             dora_operator_api::raw::dora_on_input::<#operator_ty>(
-                input, send_output, operator_context
+                input, prepare_output, operator_context
             )
         }
 

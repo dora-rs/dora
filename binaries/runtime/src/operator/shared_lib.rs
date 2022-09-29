@@ -1,8 +1,13 @@
 use super::OperatorEvent;
 use dora_node_api::{communication::Publisher, config::DataId};
 use dora_operator_api_types::{
-    safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
-    DoraResult, DoraStatus, Metadata, OnInputResult, Output, SendOutput,
+    safer_ffi::{
+        self,
+        closure::{ArcDynFn1, BoxDynFnMut0},
+        slice::slice_raw,
+    },
+    DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput, DoraResult, DoraStatus,
+    Metadata, OnInputResult, Output, OutputMetadata, PrepareOutput, PrepareOutputResult,
 };
 use eyre::{bail, eyre, Context};
 use flume::Receiver;
@@ -13,7 +18,8 @@ use std::{
     ops::Deref,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
-    sync::Arc,
+    ptr::NonNull,
+    sync::{Arc, Mutex},
     thread,
 };
 use tokio::sync::mpsc::Sender;
@@ -89,10 +95,10 @@ impl<'lib> SharedLibraryOperator<'lib> {
             }
         };
 
-        let send_output_closure = Arc::new(move |output: Output| {
-            let Output {
+        let prepare_output_closure = Arc::new(move |output: OutputMetadata| {
+            let OutputMetadata {
                 id,
-                data,
+                data_len,
                 metadata: Metadata {
                     open_telemetry_context,
                 },
@@ -102,29 +108,72 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 ..Default::default()
             };
 
-            let message = metadata
-                .serialize()
-                .context(format!("failed to serialize `{}` metadata", id.deref()))
-                .map_err(|err| err.into());
+            let prepare = || {
+                let serialized_metadata = metadata
+                    .serialize()
+                    .context(format!("failed to serialize `{}` metadata", id.deref()))?;
+                let data_offset = serialized_metadata.len();
 
-            let result = message.and_then(|mut message| match publishers.get(id.deref()) {
-                Some(publisher) => {
-                    message.extend_from_slice(&data); // TODO avoid copy
-                    publisher.publish(&message)
+                match publishers.get(id.deref()) {
+                    Some(publisher) => {
+                        let mut sample = publisher
+                            .prepare(data_offset + data_len)
+                            .map_err(|err| eyre!(err))
+                            .context("prepare failed")?;
+                        sample.as_mut_slice()[..data_offset].copy_from_slice(&serialized_metadata);
+
+                        let shared = Arc::new(Mutex::new(Some(sample)));
+
+                        let shared_clone = shared.clone();
+                        let data_mut = BoxDynFnMut0::new(Box::new(move || {
+                            let mut sample = shared_clone.try_lock().unwrap();
+                            let slice = &mut sample.as_mut().unwrap().as_mut_slice()[data_offset..];
+                            slice_raw::from(safer_ffi::slice::Mut::from(slice))
+                        }));
+
+                        let send = BoxDynFnMut0::new(Box::new(move || {
+                            let sample = shared.try_lock().unwrap().take();
+                            let result = match sample {
+                                Some(sample) => sample.publish(),
+                                None => Err("send was called multiple times".into()),
+                            };
+                            let error = match result {
+                                Ok(()) => None,
+                                Err(err) => Some(err.to_string().into()),
+                            };
+                            DoraResult { error }
+                        }));
+
+                        Result::<_, eyre::Error>::Ok(Output { data_mut, send })
+                    }
+                    None => Err(eyre!(
+                        "unexpected output {} (not defined in dataflow config)",
+                        id.deref()
+                    )
+                    .into()),
                 }
-                None => Err(eyre!(
-                    "unexpected output {} (not defined in dataflow config)",
-                    id.deref()
-                )
-                .into()),
-            });
-
-            let error = match result {
-                Ok(()) => None,
-                Err(_) => Some(String::from("runtime process closed unexpectedly").into()),
             };
 
-            DoraResult { error }
+            match prepare() {
+                Ok(output) => PrepareOutputResult {
+                    result: DoraResult { error: None },
+                    output,
+                },
+                Err(_) => PrepareOutputResult {
+                    result: DoraResult {
+                        error: Some(String::from("runtime process closed unexpectedly").into()),
+                    },
+                    output: Output {
+                        data_mut: BoxDynFnMut0::new(Box::new(|| slice_raw {
+                            ptr: NonNull::new(1 as *mut u8).unwrap(),
+                            len: 0,
+                        })),
+                        send: BoxDynFnMut0::new(Box::new(|| DoraResult {
+                            error: Some("prepare output failed".to_owned().into()),
+                        })),
+                    },
+                },
+            }
         });
 
         while let Ok(input) = self.inputs.recv() {
@@ -136,8 +185,8 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 },
             };
 
-            let send_output = SendOutput {
-                send_output: ArcDynFn1::new(send_output_closure.clone()),
+            let send_output = PrepareOutput {
+                prepare_output: ArcDynFn1::new(prepare_output_closure.clone()),
             };
             let OnInputResult {
                 result: DoraResult { error },

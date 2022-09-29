@@ -20,7 +20,7 @@ extern "C"
 
     EXPORT OnInputResult_t dora_on_input(
         const Input_t *input,
-        const SendOutput_t *send_output,
+        const PrepareOutput_t *send_output,
         void *operator_context);
 
     void __dora_type_assertions()

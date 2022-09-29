@@ -1,7 +1,11 @@
 #![deny(elided_lifetimes_in_paths)] // required for safer-ffi
+#![allow(non_snake_case)] // required for safer-ffi
 
 pub use safer_ffi;
-use safer_ffi::{closure::ArcDynFn1, derive_ReprC, ffi_export};
+use safer_ffi::{
+    closure::{ArcDynFn1, BoxDynFnMut0},
+    derive_ReprC, ffi_export,
+};
 use std::path::Path;
 
 #[derive_ReprC]
@@ -47,7 +51,7 @@ pub struct DoraOnInput {
 pub struct OnInputFn(
     pub  unsafe extern "C" fn(
         input: &Input,
-        send_output: &SendOutput,
+        send_output: &PrepareOutput,
         operator_context: *mut std::ffi::c_void,
     ) -> OnInputResult,
 );
@@ -73,8 +77,27 @@ pub struct Metadata {
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct SendOutput {
-    pub send_output: ArcDynFn1<DoraResult, Output>,
+pub struct PrepareOutput {
+    pub prepare_output: ArcDynFn1<PrepareOutputResult, OutputMetadata>,
+}
+
+#[derive_ReprC]
+#[ffi_export]
+#[repr(C)]
+#[derive(Debug)]
+pub struct OutputMetadata {
+    pub id: safer_ffi::String,
+    pub metadata: Metadata,
+    pub data_len: usize,
+}
+
+#[derive_ReprC]
+#[ffi_export]
+#[repr(C)]
+#[derive(Debug)]
+pub struct PrepareOutputResult {
+    pub result: DoraResult,
+    pub output: Output,
 }
 
 #[derive_ReprC]
@@ -82,9 +105,8 @@ pub struct SendOutput {
 #[repr(C)]
 #[derive(Debug)]
 pub struct Output {
-    pub id: safer_ffi::String,
-    pub data: safer_ffi::Vec<u8>,
-    pub metadata: Metadata,
+    pub data_mut: BoxDynFnMut0<safer_ffi::slice::slice_raw<u8>>,
+    pub send: BoxDynFnMut0<DoraResult>,
 }
 
 #[derive_ReprC]
