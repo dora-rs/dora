@@ -7,7 +7,7 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     match args.lang {
         crate::Lang::Rust => rust::create(args),
         crate::Lang::Python => python::create(args),
-        crate::Lang::C => todo!(),
+        crate::Lang::C => c::create(args),
         crate::Lang::Cxx => todo!(),
     }
 }
