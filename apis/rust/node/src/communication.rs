@@ -1,5 +1,6 @@
+use communication_layer_pub_sub::ReceivedSample;
 pub use communication_layer_pub_sub::{CommunicationLayer, Publisher, Subscriber};
-use dora_message::{deserialize_message, Message, Metadata};
+use dora_message::Metadata;
 
 use crate::{
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
@@ -7,6 +8,7 @@ use crate::{
 };
 use eyre::Context;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashSet},
     mem,
     ops::Deref,
@@ -84,16 +86,21 @@ pub fn subscribe_all(
         thread::spawn(move || loop {
             let event = match sub.recv().transpose() {
                 None => break,
-                Some(Ok(data)) => {
-                    match deserialize_message(&data)
-                        .with_context(|| format!("failed to deserialize `{input_id}` message"))
-                    {
-                        Ok(message) => InputEvent::Input(Input {
+                Some(Ok(sample)) => {
+                    let mut raw: &[u8] = &sample.get();
+                    let full_len = raw.len();
+                    match Metadata::deserialize(&mut raw).with_context(|| {
+                        format!("failed to deserialize metadata for `{input_id}` message")
+                    }) {
+                        Ok(metadata) => InputEvent::Input(Input {
                             id: input_id.clone(),
-                            // TODO: make this zero-copy by operating on borrowed data
-                            message: message.into_owned(),
+                            metadata,
+                            data: Data {
+                                offset: full_len - raw.len(),
+                                sample,
+                            },
                         }),
-                        Err(err) => InputEvent::ParseMessageError(err.into()),
+                        Err(err) => InputEvent::ParseMessageError(err),
                     }
                 }
                 Some(Err(err)) => InputEvent::Error(err),
@@ -153,7 +160,7 @@ pub fn subscribe_all(
                 }
             }
             Ok(InputEvent::ParseMessageError(err)) => {
-                tracing::warn!("{err}");
+                tracing::warn!("{err:?}");
             }
             Ok(InputEvent::Error(err)) => panic!("{err}"),
             Err(_) => break,
@@ -170,21 +177,39 @@ enum InputEvent {
         operator: Option<OperatorId>,
     },
     Error(BoxError),
-    ParseMessageError(BoxError),
+    ParseMessageError(eyre::Report),
 }
 
-#[derive(Debug)]
 pub struct Input {
     pub id: DataId,
-    pub message: Message<'static>,
+    pub metadata: Metadata<'static>,
+    pub data: Data,
 }
 
 impl Input {
-    pub fn data(&self) -> &[u8] {
-        &self.message.data
+    pub fn data(&self) -> Cow<[u8]> {
+        self.data.get()
     }
 
     pub fn metadata(&self) -> &Metadata {
-        &self.message.metadata
+        &self.metadata
+    }
+}
+
+pub struct Data {
+    sample: Box<dyn ReceivedSample>,
+    offset: usize,
+}
+
+impl Data {
+    fn get(&self) -> Cow<[u8]> {
+        match self.sample.get() {
+            std::borrow::Cow::Borrowed(data) => Cow::Borrowed(&data[self.offset..]),
+            std::borrow::Cow::Owned(mut data) => {
+                // TODO avoid copy caused by moving the remaining elements to the front
+                data.drain(..self.offset);
+                Cow::Owned(data)
+            }
+        }
     }
 }
