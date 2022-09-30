@@ -47,12 +47,19 @@ jobs:
           command: build
           args: --release -p dora-runtime -p dora-coordinator -p dora-cli
 
-      - name: "Prepare iceoryx (Unix)"
+      - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: |
+          mkdir archive
+          cd archive
+          cp target/release/dora-runtime .
+          cp target/release/dora-coordinator .
+          cp target/release/dora .
           mkdir iceoryx
           find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec cp {} iceoryx \;
           find target -type f -wholename "*/iceoryx-install/share/doc/iceoryx_posh/LICENSE" -exec cp {} iceoryx \;
+          zip -r ../archive.zip .
+          cd ..
 
       - name: Create Archive (Unix)
         if: runner.os == 'Linux' || runner.os == 'macOS'
