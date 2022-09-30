@@ -49,11 +49,11 @@ jobs:
 
       - name: Create Archive (Linux)
         if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: zip --junk-paths archive.zip target/release/dora-runtime target/release/dora-coordinator target/release/dora-cli
+        run: zip --junk-paths archive.zip target/release/dora-runtime target/release/dora-coordinator target/release/dora
       - name: Create Archive (Windows)
         if: runner.os == 'Windows'
         shell: powershell
-        run: Compress-Archive target/release/dora-runtime.exe,target/release/dora-coordinator.exe,target/release/dora-cli.exe archive.zip
+        run: Compress-Archive target/release/dora-runtime.exe,target/release/dora-coordinator.exe,target/release/dora.exe archive.zip
 
       - name: "Upload release asset"
         uses: actions/upload-release-asset@v1.0.1
