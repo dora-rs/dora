@@ -1,9 +1,9 @@
 //! Provides [`IceoryxCommunicationLayer`] to communicate over `iceoryx`.
 
 use super::{CommunicationLayer, Publisher, Subscriber};
-use crate::BoxError;
+use crate::{BoxError, ReceivedSample};
 use eyre::Context;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
 
 /// Enables local communication based on `iceoryx`.
 pub struct IceoryxCommunicationLayer {
@@ -99,19 +99,36 @@ struct IceoryxPublisher {
 }
 
 impl Publisher for IceoryxPublisher {
-    fn publish(&self, data: &[u8]) -> Result<(), crate::BoxError> {
-        let mut sample = self
+    fn prepare(&self, len: usize) -> Result<Box<dyn crate::PublishSample + '_>, BoxError> {
+        let sample = self
             .publisher
-            .loan_slice(data.len())
+            .loan_slice(len)
             .context("failed to loan iceoryx slice for publishing")
             .map_err(BoxError::from)?;
-        sample.copy_from_slice(data);
-        self.publisher.publish(sample);
-        Ok(())
+        Ok(Box::new(IceoryxPublishSample {
+            sample,
+            publisher: self.publisher.clone(),
+        }))
     }
 
     fn dyn_clone(&self) -> Box<dyn Publisher> {
         Box::new(self.clone())
+    }
+}
+
+struct IceoryxPublishSample<'a> {
+    publisher: Arc<iceoryx_rs::Publisher<[u8]>>,
+    sample: iceoryx_rs::SampleMut<'a, [u8]>,
+}
+
+impl<'a> crate::PublishSample<'a> for IceoryxPublishSample<'a> {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.sample
+    }
+
+    fn publish(self: Box<Self>) -> Result<(), BoxError> {
+        self.publisher.publish(self.sample);
+        Ok(())
     }
 }
 
@@ -120,12 +137,22 @@ struct IceoryxReceiver {
 }
 
 impl Subscriber for IceoryxReceiver {
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, crate::BoxError> {
+    fn recv(&mut self) -> Result<Option<Box<dyn ReceivedSample>>, BoxError> {
         self.receiver
             .wait_for_samples(Duration::from_secs(u64::MAX));
         match self.receiver.take() {
-            Some(sample) => Ok(Some(sample.to_owned())),
+            Some(sample) => Ok(Some(Box::new(IceoryxReceivedSample { sample }))),
             None => Ok(None),
         }
+    }
+}
+
+struct IceoryxReceivedSample {
+    sample: iceoryx_rs::Sample<[u8], iceoryx_sys::SubscriberArc>,
+}
+
+impl ReceivedSample for IceoryxReceivedSample {
+    fn get(&self) -> Cow<[u8]> {
+        Cow::Borrowed(&self.sample)
     }
 }

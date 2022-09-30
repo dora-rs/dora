@@ -480,6 +480,7 @@ version = "0.1.0"
 dependencies = [
  "eyre",
  "iceoryx-rs",
+ "iceoryx-sys",
  "zenoh",
  "zenoh-config",
 ]

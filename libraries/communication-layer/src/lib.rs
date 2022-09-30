@@ -13,6 +13,8 @@
 //!   based on shared memory. It is very fast, but it only supports local communication. To use
 //!   iceoryx, use the [`IceoryxCommunicationLayer`][iceoryx::IceoryxCommunicationLayer] struct.
 
+use std::{borrow::Cow, fmt::Debug};
+
 #[cfg(all(unix, feature = "iceoryx"))]
 pub mod iceoryx;
 #[cfg(feature = "zenoh")]
@@ -30,16 +32,46 @@ pub trait CommunicationLayer: Send + Sync {
 }
 
 /// Allows publishing messages to subscribers.
+///
+/// The messages is published to the topic that was used to create the publisher
+/// (see [`CommunicationLayer::publisher`]).
 pub trait Publisher: Send + Sync {
-    /// Publish the given data to subscribers.
+    /// Prepare memory for publishing a message with the given length.
     ///
-    /// The data is published to the topic that was used to create this publisher
-    /// (see [`CommunicationLayer::publisher`]).
-    fn publish(&self, data: &[u8]) -> Result<(), BoxError>;
+    /// This function makes it possible to construct messages without
+    /// any additional copying. The returned [`Sample`] is initialized
+    /// with zeros.
+    fn prepare(&self, len: usize) -> Result<Box<dyn PublishSample + '_>, BoxError>;
 
     /// Clone this publisher, returning the clone as a
     /// [trait object](https://doc.rust-lang.org/book/ch17-02-trait-objects.html).
     fn dyn_clone(&self) -> Box<dyn Publisher>;
+
+    /// Publishes the gives message to subscribers.
+    ///
+    /// Depending on the backend, this method might need to copy the data, which can
+    /// decrease performance. To avoid this, the [`prepare`](Publisher::prepare) function
+    /// can be used to construct the message in-place.
+    fn publish(&self, data: &[u8]) -> Result<(), BoxError> {
+        let mut sample = self.prepare(data.len())?;
+        sample.as_mut_slice().copy_from_slice(&data);
+        sample.publish()?;
+        Ok(())
+    }
+}
+
+/// A prepared message constructed by [`Publisher::prepare`].
+pub trait PublishSample<'a>: Send + Sync {
+    /// Gets a reference to the prepared message.
+    ///
+    /// Makes it possible to construct the message in-place.
+    fn as_mut_slice(&mut self) -> &mut [u8];
+
+    /// Publish this sample to subscribers.
+    ///
+    /// The sample is published to the topic that was used to create the corresponding publisher
+    /// (see [`CommunicationLayer::publisher`]).
+    fn publish(self: Box<Self>) -> Result<(), BoxError>;
 }
 
 /// Allows receiving messages published on a topic.
@@ -50,5 +82,9 @@ pub trait Subscriber: Send + Sync {
     ///
     /// Depending on the chosen communication backend, some messages might be dropped if
     /// the publisher is faster than the subscriber.
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, BoxError>;
+    fn recv(&mut self) -> Result<Option<Box<dyn ReceivedSample>>, BoxError>;
+}
+
+pub trait ReceivedSample: Send + Sync {
+    fn get(&self) -> Cow<[u8]>;
 }

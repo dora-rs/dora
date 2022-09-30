@@ -97,19 +97,21 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     open_telemetry_context,
                 },
             } = output;
-            let message = dora_node_api::Message {
-                data: Vec::from(data).into(),
-                metadata: dora_node_api::Metadata {
-                    open_telemetry_context: String::from(open_telemetry_context).into(),
-                    ..Default::default()
-                },
+            let metadata = dora_node_api::Metadata {
+                open_telemetry_context: String::from(open_telemetry_context).into(),
+                ..Default::default()
             };
 
-            let data = dora_message::serialize_message(&message)
-                .context(format!("failed to serialize `{}` message", id.deref()))
+            let message = metadata
+                .serialize()
+                .context(format!("failed to serialize `{}` metadata", id.deref()))
                 .map_err(|err| err.into());
-            let result = data.and_then(|data| match publishers.get(id.deref()) {
-                Some(publisher) => publisher.publish(&data),
+
+            let result = message.and_then(|mut message| match publishers.get(id.deref()) {
+                Some(publisher) => {
+                    message.extend_from_slice(&data); // TODO avoid copy
+                    publisher.publish(&message)
+                }
                 None => Err(eyre!(
                     "unexpected output {} (not defined in dataflow config)",
                     id.deref()
@@ -127,8 +129,8 @@ impl<'lib> SharedLibraryOperator<'lib> {
 
         while let Ok(input) = self.inputs.recv() {
             let operator_input = dora_operator_api_types::Input {
+                data: input.data().into_owned().into(),
                 id: String::from(input.id).into(),
-                data: input.message.data.into_owned().into(),
                 metadata: Metadata {
                     open_telemetry_context: String::new().into(),
                 },

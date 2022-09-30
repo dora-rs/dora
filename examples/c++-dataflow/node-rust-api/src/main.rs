@@ -31,11 +31,15 @@ pub struct Inputs(Receiver<Input>);
 
 fn next_input(inputs: &mut Inputs) -> ffi::DoraInput {
     match inputs.0.recv() {
-        Ok(input) => ffi::DoraInput {
-            end_of_input: false,
-            id: input.id.into(),
-            data: input.message.data.into(),
-        },
+        Ok(input) => {
+            let id = input.id.clone().into();
+            let data = input.data();
+            ffi::DoraInput {
+                end_of_input: false,
+                id,
+                data: data.into_owned(),
+            }
+        }
         Err(_) => ffi::DoraInput {
             end_of_input: true,
             id: String::new(),
@@ -47,7 +51,12 @@ fn next_input(inputs: &mut Inputs) -> ffi::DoraInput {
 pub struct OutputSender<'a>(&'a mut DoraNode);
 
 fn send_output(sender: &mut OutputSender, id: String, data: &[u8]) -> ffi::DoraResult {
-    let error = match sender.0.send_output(&id.into(), &data.into()) {
+    let result = sender
+        .0
+        .send_output(&id.into(), &Default::default(), data.len(), |out| {
+            out.copy_from_slice(data)
+        });
+    let error = match result {
         Ok(()) => String::new(),
         Err(err) => format!("{err:?}"),
     };
