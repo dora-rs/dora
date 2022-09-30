@@ -6,6 +6,7 @@ use tempfile::NamedTempFile;
 mod build;
 mod check;
 mod graph;
+mod template;
 
 #[derive(Debug, clap::Parser)]
 #[clap(version)]
@@ -30,7 +31,10 @@ enum Command {
     Build {
         dataflow: PathBuf,
     },
-    Templates,
+    New {
+        #[clap(flatten)]
+        args: CommandNew,
+    },
     Dashboard,
     Start,
     Stop,
@@ -40,6 +44,30 @@ enum Command {
     List,
     Get,
     Upgrade,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct CommandNew {
+    #[clap(long, value_enum, default_value_t = Kind::Operator)]
+    kind: Kind,
+    #[clap(long, value_enum, default_value_t = Lang::Rust)]
+    lang: Lang,
+    name: String,
+    path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Kind {
+    Operator,
+    CustomNode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Lang {
+    Rust,
+    Python,
+    C,
+    Cxx,
 }
 
 fn main() -> eyre::Result<()> {
@@ -83,7 +111,7 @@ fn main() -> eyre::Result<()> {
         Command::Build { dataflow } => {
             build::build(&dataflow)?;
         }
-        Command::Templates => todo!(),
+        Command::New { args } => template::create(args)?,
         Command::Dashboard => todo!(),
         Command::Start => todo!(),
         Command::Stop => todo!(),
