@@ -51,13 +51,13 @@ jobs:
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: |
           mkdir archive
+          cp target/release/dora-runtime archive
+          cp target/release/dora-coordinator archive
+          cp target/release/dora archive
+          mkdir archive/iceoryx
+          find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec cp {} archive/iceoryx \;
+          find target -type f -wholename "*/iceoryx-install/share/doc/iceoryx_posh/LICENSE" -exec cp {} archive/iceoryx \;
           cd archive
-          cp target/release/dora-runtime .
-          cp target/release/dora-coordinator .
-          cp target/release/dora .
-          mkdir iceoryx
-          find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec cp {} iceoryx \;
-          find target -type f -wholename "*/iceoryx-install/share/doc/iceoryx_posh/LICENSE" -exec cp {} iceoryx \;
           zip -r ../archive.zip .
           cd ..
 
