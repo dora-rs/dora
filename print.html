@@ -258,7 +258,9 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
             &quot;tick&quot; =&gt; {
                 let random: u64 = rand::random();
                 let data: &amp;[u8] = &amp;random.to_le_bytes();
-                operator.send_output(&amp;output, &amp;data.into())?;
+                operator.send_output(&amp;output, input.metadata(), data.len(), |out| {
+                    out.copy_from_slice(data);
+                })?;
             }
             other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
         }
@@ -382,8 +384,9 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
     while let Ok(input) = inputs.recv() {
         match input.id.as_str() {
             &quot;message&quot; =&gt; {
-                let received_string = String::from_utf8(input.message.data.into())
-                    .wrap_err(&quot;received message was not utf8-encoded&quot;)?;
+                let data = input.data();
+                let received_string =
+                    std::str::from_utf8(&amp;data).wrap_err(&quot;received message was not utf8-encoded&quot;)?;
                 println!(&quot;received message: {}&quot;, received_string);
                 if !received_string.starts_with(&quot;operator received random value &quot;) {
                     bail!(&quot;unexpected message format (should start with 'operator received random value')&quot;)
@@ -796,7 +799,9 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
             &quot;tick&quot; =&gt; {
                 let random: u64 = rand::random();
                 let data: &amp;[u8] = &amp;random.to_le_bytes();
-                operator.send_output(&amp;output, &amp;data.into())?;
+                operator.send_output(&amp;output, input.metadata(), data.len(), |out| {
+                    out.copy_from_slice(data);
+                })?;
             }
             other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
         }
