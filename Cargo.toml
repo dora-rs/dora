@@ -1,19 +1,36 @@
 [workspace]
 members = [
-  "apis/c/*",
-  "apis/python/node",
-  "apis/rust/*",
-  "apis/rust/operator/macros",
-  "apis/rust/operator/types",
-  "binaries/*",
-  "examples/rust-dataflow/*",
-  "examples/c++-dataflow/*-rust-*",
-  "examples/iceoryx/*",
-  "libraries/communication-layer",
-  "libraries/core",
-  "libraries/message",
-  "libraries/extensions/telemetry/*",
-  "libraries/extensions/zenoh-logger",
+    "apis/c/*",
+    "apis/python/node",
+    "apis/rust/*",
+    "apis/rust/operator/macros",
+    "apis/rust/operator/types",
+    "binaries/*",
+    "examples/rust-dataflow/*",
+    "examples/c++-dataflow/*-rust-*",
+    "examples/iceoryx/*",
+    "libraries/communication-layer",
+    "libraries/core",
+    "libraries/message",
+    "libraries/extensions/telemetry/*",
+    "libraries/extensions/zenoh-logger",
+]
+
+# Removing Python Node from default-members as it creates name collision
+# See: https://github.com/rust-lang/cargo/issues/6313
+default-members = [
+    "apis/c/*",
+    "apis/rust/*",
+    "apis/rust/operator/macros",
+    "apis/rust/operator/types",
+    "binaries/*",
+    "examples/rust-dataflow/*",
+    "examples/c++-dataflow/*-rust-*",
+    "examples/iceoryx/*",
+    "libraries/communication-layer",
+    "libraries/core",
+    "libraries/message",
+    "libraries/extensions/telemetry/*",
 ]
 
 [package]
