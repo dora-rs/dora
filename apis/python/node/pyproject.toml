@@ -1,9 +1,9 @@
 [build-system]
-requires = ["maturin>=0.13,<0.14"]
+requires = ["maturin>=0.13.2,<0.14"]
 build-backend = "maturin"
 
 [project]
-name = "dora"
+name = "dora-rs"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
