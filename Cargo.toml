@@ -19,6 +19,7 @@ members = [
 # Removing Python Node from default-members as it creates name collision
 # See: https://github.com/rust-lang/cargo/issues/6313
 default-members = [
+    ".",
     "apis/c/*",
     "apis/rust/*",
     "apis/rust/operator/macros",
