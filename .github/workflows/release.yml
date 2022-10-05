@@ -53,7 +53,7 @@ jobs:
           mkdir archive
           cp target/release/dora-runtime archive
           cp target/release/dora-coordinator archive
-          cp target/release/dora archive
+          cp target/release/dora-cli archive/dora
           mkdir archive/iceoryx
           find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec cp {} archive/iceoryx \;
           find target -type f -wholename "*/iceoryx-install/share/doc/iceoryx_posh/LICENSE" -exec cp {} archive/iceoryx \;
@@ -61,13 +61,15 @@ jobs:
           zip -r ../archive.zip .
           cd ..
 
-      - name: Create Archive (Unix)
-        if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: zip --junk-paths archive.zip target/release/dora-runtime target/release/dora-coordinator target/release/dora iceoryx
       - name: Create Archive (Windows)
         if: runner.os == 'Windows'
         shell: powershell
-        run: Compress-Archive target/release/dora-runtime.exe,target/release/dora-coordinator.exe,target/release/dora.exe archive.zip
+        run: |
+          New-Item -Path archive -ItemType Directory
+          Copy-Item target/release/dora-runtime.exe -Destination archive
+          Copy-Item target/release/dora-coordinator.exe -Destination archive
+          Copy-Item target/release/dora-cli.exe -Destination archive/dora.exe
+          Compress-Archive -Path archive\* -DestinationPath archive.zip
 
       - name: "Upload release asset"
         uses: actions/upload-release-asset@v1.0.1
