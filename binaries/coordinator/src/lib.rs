@@ -14,8 +14,6 @@ use tokio_stream::wrappers::IntervalStream;
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora coordinator")]
 pub enum Command {
-    #[clap(about = "Print Graph")]
-    Visualize { dataflow: PathBuf },
     #[clap(about = "Run dataflow pipeline")]
     Run {
         dataflow: PathBuf,
@@ -25,17 +23,6 @@ pub enum Command {
 
 pub async fn run(command: Command) -> eyre::Result<()> {
     match command {
-        Command::Visualize { dataflow: file } => {
-            let descriptor = read_descriptor(&file).await?;
-            let visualized = descriptor
-                .visualize_as_mermaid()
-                .context("failed to visualize descriptor")?;
-            println!("{visualized}");
-            println!(
-                "Paste the above output on https://mermaid.live/ or in a \
-        ```mermaid code block on GitHub to display it."
-            );
-        }
         Command::Run { dataflow, runtime } => {
             let runtime_path = runtime.unwrap_or_else(|| {
                 std::env::args()

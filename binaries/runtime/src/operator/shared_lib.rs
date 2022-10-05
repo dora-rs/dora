@@ -1,4 +1,5 @@
 use super::OperatorEvent;
+use dora_core::adjust_shared_library_path;
 use dora_node_api::{communication::Publisher, config::DataId};
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
@@ -24,18 +25,7 @@ pub fn spawn(
     inputs: Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
 ) -> eyre::Result<()> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| eyre!("shared library path has no file name"))?
-        .to_str()
-        .ok_or_else(|| eyre!("shared library file name is not valid UTF8"))?;
-    if file_name.starts_with("lib") {
-        bail!("Shared library file name must not start with `lib`, prefix is added automatically");
-    }
-    if path.extension().is_some() {
-        bail!("Shared library file name must have no extension, it is added automatically");
-    }
-    let path = path.with_file_name(libloading::library_filename(file_name));
+    let path = adjust_shared_library_path(path)?;
 
     let library = unsafe {
         libloading::Library::new(&path)
