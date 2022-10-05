@@ -1,6 +1,6 @@
 communication:
   zenoh:
-    prefix: /example-python-no-webcam-dataflow
+    prefix: example-python-no-webcam-dataflow
 
 nodes:
   - id: no_webcam
@@ -10,7 +10,7 @@ nodes:
         timer: dora/timer/millis/100
       outputs:
         - image
-  
+
   - id: object_detection
     operator:
       python: object_detection.py
