@@ -38,14 +38,17 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: check
+          args: --all
       - name: "Build"
         uses: actions-rs/cargo@v1
         with:
           command: build
+          args: --all
       - name: "Test"
         uses: actions-rs/cargo@v1
         with:
           command: test
+          args: --all
 
   examples:
     name: "Examples"

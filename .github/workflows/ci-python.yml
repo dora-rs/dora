@@ -23,21 +23,6 @@ jobs:
       - uses: actions/setup-python@v2
         with:
           python-version: 3.8.10
-      - name: "Check"
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: -p dora-node-api-python 
-      - name: "Build"
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: -p dora-node-api-python 
-      - name: "Test"
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: -p dora-node-api-python 
       - name: "Python Dataflow example"
         uses: actions-rs/cargo@v1
         with:
