@@ -224,6 +224,7 @@ deployment:
 nodes:
   - id: rust-node
     custom:
+      build: cargo build -p rust-dataflow-example-node
       run: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
@@ -232,6 +233,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: rust-operator
+        build: cargo build -p rust-dataflow-example-operator
         shared-library: ../../target/debug/rust_dataflow_example_operator
         inputs:
           tick: dora/timer/millis/100
@@ -240,6 +242,7 @@ nodes:
           - status
   - id: rust-sink
     custom:
+      build: cargo build -p rust-dataflow-example-sink
       run: ../../target/debug/rust-dataflow-example-sink
       inputs:
         message: runtime-node/rust-operator/status
