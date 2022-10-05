@@ -17,7 +17,7 @@ tokio = { version = "1.17.0", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util"] }
 tokio-util = { version = "0.7.1", features = ["codec"] }
 clap = { version = "3.1.8", features = ["derive"] }
-uuid = "0.8.2"
+uuid = { version = "0.8.2", features = ["v4"] }
 time = "0.3.9"
 futures-concurrency = "2.0.3"
 rand = "0.8.5"
