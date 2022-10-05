@@ -97,18 +97,17 @@ async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()
                 .await
                 .wrap_err("failed to join communication layer init task")?
                 .wrap_err("failed to init communication layer")?;
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let topic = {
                 let duration = format_duration(interval);
                 format!("dora/timer/{duration}")
             };
             let metadata = dora_message::Metadata::default();
             let data = metadata.serialize().unwrap();
-            let mut stream = IntervalStream::new(tokio::time::interval(interval));
-            while (stream.next().await).is_some() {
-                communication
-                    .publisher(&topic)
-                    .unwrap()
+            let publisher = communication.publisher(&topic).unwrap();
+            loop {
+                std::thread::sleep(interval);
+                publisher
                     .publish(&data)
                     .expect("failed to publish timer tick message");
             }
