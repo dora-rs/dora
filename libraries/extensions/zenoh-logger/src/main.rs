@@ -5,7 +5,7 @@ fn main() {
         .res_sync()
         .unwrap();
     let sub = zenoh
-        .declare_subscriber("/**")
+        .declare_subscriber("**")
         .reliable()
         .res_sync()
         .unwrap();
