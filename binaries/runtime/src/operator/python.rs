@@ -150,18 +150,68 @@ struct SendOutputCallback {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
+
+    use std::borrow::Cow;
+
     use super::SendOutputCallback;
+    use dora_message::Metadata;
     use eyre::{eyre, Context};
-    use pyo3::{pymethods, PyResult};
+    use pyo3::{
+        pymethods,
+        types::{PyBytes, PyDict},
+        PyResult,
+    };
+    use tracing::warn;
 
     #[pymethods]
     impl SendOutputCallback {
-        fn __call__(&mut self, output: &str, data: &[u8]) -> PyResult<()> {
+        fn __call__(
+            &mut self,
+            output: &str,
+            data: &PyBytes,
+            metadata: Option<&PyDict>,
+        ) -> PyResult<()> {
             match self.publishers.get(output) {
-                Some(publisher) => publisher
-                    .publish(data)
-                    .map_err(|err| eyre::eyre!(err))
-                    .context("publish failed"),
+                Some(publisher) => {
+                    let mut default_metadata = Metadata::default();
+                    if let Some(metadata) = metadata {
+                        for (key, value) in metadata.iter() {
+                            match key.extract::<&str>().context("Parsing metadata keys")? {
+                                "metadata_version" => {
+                                    default_metadata.metadata_version = value
+                                        .extract()
+                                        .context("parsing metadata version failed")?;
+                                }
+                                "watermark" => {
+                                    default_metadata.watermark =
+                                        value.extract().context("parsing watermark failed")?;
+                                }
+                                "deadline" => {
+                                    default_metadata.deadline =
+                                        value.extract().context("parsing deadline failed")?;
+                                }
+                                "open_telemetry_context" => {
+                                    let otel_context: &str = value
+                                        .extract()
+                                        .context("parsing open telemetry context failed")?;
+                                    default_metadata.open_telemetry_context =
+                                        Cow::Borrowed(otel_context);
+                                }
+                                _ => warn!("Unexpected key argument for metadata"),
+                            }
+                        }
+                    };
+                    let message = default_metadata
+                        .serialize()
+                        .context(format!("failed to serialize `{}` metadata", output));
+                    message.and_then(|mut message| {
+                        message.extend_from_slice(data.as_bytes());
+                        publisher
+                            .publish(&message)
+                            .map_err(|err| eyre::eyre!(err))
+                            .context("publish failed")
+                    })
+                }
                 None => Err(eyre!(
                     "unexpected output {output} (not defined in dataflow config)"
                 )),
