@@ -5,14 +5,15 @@ edition = "2021"
 
 [features]
 default = ["zenoh", "iceoryx"]
-zenoh = ["dep:zenoh", "dep:zenoh-config"]
+zenoh = ["dep:zenoh"]
 iceoryx = ["dep:iceoryx-rs", "dep:iceoryx-sys"]
 
 [dependencies]
 eyre = "0.6.8"
 flume = "0.10.14"
-zenoh = { version = "0.6.0-beta.1", optional = true }
-zenoh-config = { version = "0.6.0-beta.1", optional = true }
+zenoh = { version = "0.6.0-beta.1", default-features = false, features = [
+    "transport_tcp",
+], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 iceoryx-rs = { git = "https://github.com/eclipse-iceoryx/iceoryx-rs.git", optional = true }

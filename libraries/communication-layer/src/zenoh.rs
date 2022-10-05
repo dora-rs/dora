@@ -1,12 +1,11 @@
 //! Provides [`ZenohCommunicationLayer`] to communicate over `zenoh`.
 
-pub use zenoh_config;
-
 use super::{CommunicationLayer, Publisher, Subscriber};
 use crate::{BoxError, ReceivedSample};
 use std::{borrow::Cow, sync::Arc, time::Duration};
+pub use zenoh::config as zenoh_config;
 use zenoh::{
-    prelude::{sync::SyncResolve, Priority, SessionDeclarations, SplitBuffer},
+    prelude::{sync::SyncResolve, Config, Priority, SessionDeclarations, SplitBuffer},
     publication::CongestionControl,
 };
 
@@ -22,7 +21,7 @@ impl ZenohCommunicationLayer {
     /// The `prefix` is added to all topic names when using the [`publisher`][Self::publisher]
     /// and [`subscriber`][Self::subscribe] methods. Pass an empty string if no prefix is
     /// desired.
-    pub fn init(config: zenoh_config::Config, prefix: String) -> Result<Self, BoxError> {
+    pub fn init(config: Config, prefix: String) -> Result<Self, BoxError> {
         let zenoh = ::zenoh::open(config)
             .res_sync()
             .map_err(BoxError::from)?

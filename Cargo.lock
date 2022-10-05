@@ -475,7 +475,6 @@ dependencies = [
  "iceoryx-rs",
  "iceoryx-sys",
  "zenoh",
- "zenoh-config",
 ]
 
 [[package]]
@@ -980,8 +979,6 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
- "zenoh",
- "zenoh-config",
 ]
 
 [[package]]
