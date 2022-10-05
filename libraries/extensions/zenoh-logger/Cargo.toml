@@ -7,5 +7,5 @@ license = "Apache-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
-zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
+zenoh = "0.6.0-beta.1"
+zenoh-config = "0.6.0-beta.1"

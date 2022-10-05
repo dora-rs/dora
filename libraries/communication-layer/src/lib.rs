@@ -13,7 +13,7 @@
 //!   based on shared memory. It is very fast, but it only supports local communication. To use
 //!   iceoryx, use the [`IceoryxCommunicationLayer`][iceoryx::IceoryxCommunicationLayer] struct.
 
-use std::{borrow::Cow, fmt::Debug};
+use std::borrow::Cow;
 
 #[cfg(all(unix, feature = "iceoryx"))]
 pub mod iceoryx;

@@ -21,8 +21,8 @@ libloading = "0.7.3"
 serde_yaml = "0.8.23"
 tokio = { version = "1.17.0", features = ["full"] }
 tokio-stream = "0.1.8"
-zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
-zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
+zenoh = "0.6.0-beta.1"
+zenoh-config = "0.6.0-beta.1"
 fern = "0.6.1"
 pyo3 = { version = "0.16.5", features = ["auto-initialize", "eyre"] }
 flume = "0.10.14"

@@ -6,7 +6,7 @@ use super::{CommunicationLayer, Publisher, Subscriber};
 use crate::{BoxError, ReceivedSample};
 use std::{borrow::Cow, sync::Arc, time::Duration};
 use zenoh::{
-    prelude::{EntityFactory, Priority, Receiver as _, SplitBuffer, ZFuture},
+    prelude::{sync::SyncResolve, Priority, SessionDeclarations, SplitBuffer},
     publication::CongestionControl,
 };
 
@@ -24,7 +24,7 @@ impl ZenohCommunicationLayer {
     /// desired.
     pub fn init(config: zenoh_config::Config, prefix: String) -> Result<Self, BoxError> {
         let zenoh = ::zenoh::open(config)
-            .wait()
+            .res_sync()
             .map_err(BoxError::from)?
             .into_arc();
         Ok(Self {
@@ -42,10 +42,10 @@ impl CommunicationLayer for ZenohCommunicationLayer {
     fn publisher(&mut self, topic: &str) -> Result<Box<dyn Publisher>, BoxError> {
         let publisher = self
             .zenoh
-            .publish(self.prefixed(topic))
+            .declare_publisher(self.prefixed(topic))
             .congestion_control(CongestionControl::Block)
             .priority(Priority::RealTime)
-            .wait()
+            .res_sync()
             .map_err(BoxError::from)?;
 
         Ok(Box::new(ZenohPublisher { publisher }))
@@ -54,9 +54,9 @@ impl CommunicationLayer for ZenohCommunicationLayer {
     fn subscribe(&mut self, topic: &str) -> Result<Box<dyn Subscriber>, BoxError> {
         let subscriber = self
             .zenoh
-            .subscribe(self.prefixed(topic))
+            .declare_subscriber(self.prefixed(topic))
             .reliable()
-            .wait()
+            .res_sync()
             .map_err(BoxError::from)?;
 
         Ok(Box::new(ZenohReceiver(subscriber)))
@@ -104,11 +104,16 @@ impl<'a> crate::PublishSample<'a> for ZenohPublishSample {
     }
 
     fn publish(self: Box<Self>) -> Result<(), BoxError> {
-        self.publisher.send(self.sample).map_err(BoxError::from)
+        self.publisher
+            .put(self.sample)
+            .res_sync()
+            .map_err(BoxError::from)
     }
 }
 
-struct ZenohReceiver(zenoh::subscriber::Subscriber<'static>);
+struct ZenohReceiver(
+    zenoh::subscriber::Subscriber<'static, flume::Receiver<zenoh::sample::Sample>>,
+);
 
 impl Subscriber for ZenohReceiver {
     fn recv(&mut self) -> Result<Option<Box<dyn ReceivedSample>>, BoxError> {
@@ -122,7 +127,7 @@ impl Subscriber for ZenohReceiver {
 }
 
 struct ZenohReceivedSample {
-    sample: zenoh::buf::ZBuf,
+    sample: zenoh::buffers::ZBuf,
 }
 
 impl ReceivedSample for ZenohReceivedSample {
