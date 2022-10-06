@@ -75,7 +75,7 @@ class Operator:
                 )
 
             if CI != "true":
-                cv2.imshow("frame", self.image, input["metadata"])
+                cv2.imshow("frame", self.image)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     return DoraStatus.STOP
 
