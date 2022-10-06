@@ -27,25 +27,24 @@ class Operator:
 
     def on_input(
         self,
-        input_id: str,
-        value: bytes,
+        input: dict,
         send_output: Callable[[str, bytes], None],
     ) -> DoraStatus:
         """
         Put image and bounding box on cv2 window.
 
         Args:
-            input_id (str): Id of the input declared in the yaml configuration
-            value (bytes): Bytes message of the input
+            input["id"] (str): Id of the input declared in the yaml configuration
+            input["data"] (bytes): Bytes message of the input
             send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         """
-        if input_id == "image":
-            frame = np.frombuffer(value, dtype="uint8")
+        if input["id"] == "image":
+            frame = np.frombuffer(input["data"], dtype="uint8")
             frame = cv2.imdecode(frame, -1)
             self.image = frame
 
-        elif input_id == "bbox" and len(self.image) != 0:
-            bboxs = np.frombuffer(value, dtype="float32")
+        elif input["id"] == "bbox" and len(self.image) != 0:
+            bboxs = np.frombuffer(input["data"], dtype="float32")
             bboxs = np.reshape(bboxs, (-1, 6))
             for bbox in bboxs:
                 [
@@ -76,7 +75,7 @@ class Operator:
                 )
 
             if CI != "true":
-                cv2.imshow("frame", self.image)
+                cv2.imshow("frame", self.image, input["metadata"])
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     return DoraStatus.STOP
 

@@ -21,8 +21,7 @@ class Operator:
 
     def on_input(
         self,
-        input_id: str,
-        value: bytes,
+        input: dict,
         send_output: Callable[[str, bytes], None],
     ) -> DoraStatus:
         """Handle image
@@ -33,11 +32,11 @@ class Operator:
             send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         """
 
-        frame = np.frombuffer(value, dtype="uint8")
+        frame = np.frombuffer(input["data"], dtype="uint8")
         frame = cv2.imdecode(frame, -1)
         frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
 
         results = self.model(frame)  # includes NMS
         arrays = np.array(results.xyxy[0].cpu()).tobytes()
-        send_output("bbox", arrays)
+        send_output("bbox", arrays, input["metadata"])
         return DoraStatus.CONTINUE
