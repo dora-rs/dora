@@ -42,5 +42,4 @@ thop>=0.1.1  # FLOPs computation
 # pycocotools>=2.0  # COCO mAP
 # roboflow
 
-dora-rs
 opencv-python>=4.1.1
