@@ -2,9 +2,10 @@
 
 use super::OperatorEvent;
 use dora_node_api::{communication::Publisher, config::DataId};
+#[cfg(feature = "tracing")]
 use dora_tracing::{deserialize_context, serialize_context};
 use eyre::{bail, eyre, Context};
-
+#[cfg(feature = "tracing")]
 use opentelemetry::{
     sdk::trace,
     trace::{TraceContextExt, Tracer},
@@ -43,7 +44,7 @@ pub fn spawn(
     events_tx: Sender<OperatorEvent>,
     inputs: flume::Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
-    tracer: trace::Tracer,
+    #[cfg(feature = "tracing")] tracer: trace::Tracer,
 ) -> eyre::Result<()> {
     if !path.exists() {
         bail!("No python file exists at {}", path.display());
@@ -96,14 +97,18 @@ pub fn spawn(
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
         while let Ok(input) = inputs.recv() {
+            #[cfg(feature = "tracing")]
             let span = tracer.start_with_context(
-                format!("tracing.inputs"),
+                format!("{}", input.id),
                 &deserialize_context(&input.metadata.open_telemetry_context.to_string()),
             );
-            let cx = OtelContext::current_with_span(span);
+            #[cfg(feature = "tracing")]
+            let cx = serialize_context(&OtelContext::current_with_span(span));
+            #[cfg(not(feature = "tracing"))]
+            let cx = "";
             let status_enum = Python::with_gil(|py| {
                 let metadata = PyDict::new(py);
-                metadata.set_item("open_telemetry_context", serialize_context(&cx))?;
+                metadata.set_item("open_telemetry_context", &cx)?;
                 let input_dict = PyDict::new(py);
 
                 input_dict.set_item("id", input.id.as_str())?;
