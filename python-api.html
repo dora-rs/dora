@@ -185,25 +185,23 @@ class Operator:
 
     def on_input(
         self,
-        input_id: str,
-        value: bytes,
+        dora_input: dict,
         send_output: Callable[[str, bytes], None],
     ) -&gt; DoraStatus:
         &quot;&quot;&quot;Handle image
 
         Args:
-            input_id (str): Id of the input declared in the yaml configuration
-            value (bytes): Bytes message of the input
+            dora_input (dict): Dict containing the &quot;id&quot;, &quot;data&quot;, and &quot;metadata&quot;
             send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         &quot;&quot;&quot;
 
-        frame = np.frombuffer(value, dtype=&quot;uint8&quot;)
+        frame = np.frombuffer(dora_input[&quot;data&quot;], dtype=&quot;uint8&quot;)
         frame = cv2.imdecode(frame, -1)
         frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
 
         results = self.model(frame)  # includes NMS
         arrays = np.array(results.xyxy[0].cpu()).tobytes()
-        send_output(&quot;bbox&quot;, arrays)
+        send_output(&quot;bbox&quot;, arrays, dora_input[&quot;metadata&quot;])
         return DoraStatus.CONTINUE
 </code></pre>
 <ul>
@@ -266,7 +264,7 @@ start = time.time()
 
 # Run for 20 seconds
 while time.time() - start &lt; 20:
-    # Wait next input
+    # Wait next dora_input
     node.next()
     ret, frame = video_capture.read()
     if ret:
@@ -281,7 +279,7 @@ video_capture.release()
     custom:
       run: ./webcam.py
       inputs:
-        timer: dora/timer/millis/100
+        tick: dora/timer/millis/100
       outputs:
         - image
 </code></pre>
