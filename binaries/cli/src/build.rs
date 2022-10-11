@@ -18,19 +18,20 @@ pub fn build(dataflow: &Path) -> eyre::Result<()> {
         match &node.kind {
             dora_core::descriptor::NodeKind::Runtime(runtime_node) => {
                 for operator in &runtime_node.operators {
-                    run_build_command(operator.config.build.as_deref(), working_dir)
-                        .with_context(|| {
+                    run_build_command(operator.config.build.as_deref(), working_dir).with_context(
+                        || {
                             format!(
                                 "build command failed for operator `{}/{}`",
                                 node.id, operator.id
                             )
-                        })?;
+                        },
+                    )?;
                 }
             }
             dora_core::descriptor::NodeKind::Custom(custom_node) => {
-                run_build_command(custom_node.build.as_deref(), working_dir).with_context(
-                    || format!("build command failed for custom node `{}`", node.id),
-                )?
+                run_build_command(custom_node.build.as_deref(), working_dir).with_context(|| {
+                    format!("build command failed for custom node `{}`", node.id)
+                })?
             }
             dora_core::descriptor::NodeKind::Operator(operator) => {
                 run_build_command(operator.config.build.as_deref(), working_dir).with_context(
