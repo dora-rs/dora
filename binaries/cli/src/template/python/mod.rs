@@ -14,10 +14,10 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     }
 }
 
-fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+fn create_operator(_name: String, _path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     todo!()
 }
 
-fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+fn create_custom_node(_name: String, _path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     todo!()
 }
