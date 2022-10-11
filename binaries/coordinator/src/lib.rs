@@ -10,7 +10,9 @@ mod run;
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora coordinator")]
 pub struct Args {
+    #[clap(long)]
     pub runtime: Option<PathBuf>,
+    #[clap(long)]
     pub run_dataflow: Option<PathBuf>,
 }
 
