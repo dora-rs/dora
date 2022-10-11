@@ -19,9 +19,9 @@ tokio-util = { version = "0.7.1", features = ["codec"] }
 clap = { version = "3.1.8", features = ["derive"] }
 uuid = "0.8.2"
 time = "0.3.9"
-futures-concurrency = "2.0.3"
 rand = "0.8.5"
 dora-core = { version = "0.1.0", path = "../../libraries/core" }
 dora-message = { path = "../../libraries/message" }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
+futures-concurrency = "5.0.1"
