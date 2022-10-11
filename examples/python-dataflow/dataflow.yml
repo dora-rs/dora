@@ -7,7 +7,7 @@ nodes:
     custom:
       run: ./webcam.py
       inputs:
-        timer: dora/timer/millis/100
+        tick: dora/timer/millis/100
       outputs:
         - image
   

@@ -16,7 +16,7 @@ node = Node()
 start = time.time()
 
 while time.time() - start < 20:
-    # Wait next input
+    # Wait next dora_input
     node.next()
     node.send_output("image", arr.tobytes())
 
