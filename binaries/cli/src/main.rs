@@ -42,7 +42,9 @@ enum Command {
     Dashboard,
     Up,
     Destroy,
-    Start,
+    Start {
+        dataflow: PathBuf,
+    },
     Stop,
     Logs,
     Metrics,
@@ -122,7 +124,23 @@ fn main() -> eyre::Result<()> {
         Command::New { args } => template::create(args)?,
         Command::Dashboard => todo!(),
         Command::Up => todo!(),
-        Command::Start => todo!(),
+        Command::Start { dataflow } => {
+            let canonicalized = dataflow
+                .canonicalize()
+                .wrap_err("given dataflow file does not exist")?;
+            let path = &canonicalized
+                .to_str()
+                .ok_or_else(|| eyre!("dataflow path must be valid UTF-8"))?;
+
+            let publisher = zenoh_control_session(&mut session)?
+                .publisher(ZENOH_CONTROL_START_DATAFLOW)
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to create publisher for start dataflow message")?;
+            publisher
+                .publish(path.as_bytes())
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to publish start dataflow message")?;
+        }
         Command::Stop => todo!(),
         Command::Destroy => {
             let publisher = zenoh_control_session(&mut session)?
