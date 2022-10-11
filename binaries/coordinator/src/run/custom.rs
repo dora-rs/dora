@@ -9,6 +9,7 @@ pub(super) fn spawn_custom_node(
     node_id: NodeId,
     node: &descriptor::CustomNode,
     communication: &dora_node_api::config::CommunicationConfig,
+    working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut args = node.run.split_ascii_whitespace();
     let cmd = {
@@ -21,7 +22,9 @@ pub(super) fn spawn_custom_node(
         } else {
             raw.to_owned()
         };
-        path.canonicalize()
+        working_dir
+            .join(&path)
+            .canonicalize()
             .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?
     };
 
@@ -33,6 +36,7 @@ pub(super) fn spawn_custom_node(
         serde_yaml::to_string(&node.run_config)
             .wrap_err("failed to serialize custom node run config")?,
     );
+    command.current_dir(working_dir);
 
     // Injecting the env variable defined in the `yaml` into
     // the node runtime.

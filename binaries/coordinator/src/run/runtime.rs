@@ -10,6 +10,7 @@ pub fn spawn_runtime_node(
     node_id: NodeId,
     node: &descriptor::RuntimeNode,
     communication: &dora_node_api::config::CommunicationConfig,
+    working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut command = tokio::process::Command::new(runtime);
     command_init_common_env(&mut command, &node_id, communication)?;
@@ -18,6 +19,7 @@ pub fn spawn_runtime_node(
         serde_yaml::to_string(&node.operators)
             .wrap_err("failed to serialize custom node run config")?,
     );
+    command.current_dir(working_dir);
 
     let mut child = command
         .spawn()

@@ -1,7 +1,7 @@
 use self::{custom::spawn_custom_node, runtime::spawn_runtime_node};
 use dora_core::descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor, NodeId};
 use dora_node_api::{communication, config::format_duration};
-use eyre::{bail, WrapErr};
+use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::{
     env::consts::EXE_EXTENSION,
@@ -20,6 +20,13 @@ pub async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Resul
             dataflow_path.display()
         )
     })?;
+
+    let working_dir = dataflow_path
+        .canonicalize()
+        .context("failed to canoncialize dataflow path")?
+        .parent()
+        .ok_or_else(|| eyre!("canonicalized dataflow path has no parent"))?
+        .to_owned();
 
     let nodes = descriptor.resolve_aliases();
     let dora_timers = collect_dora_timers(&nodes);
@@ -47,15 +54,21 @@ pub async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Resul
 
         match node.kind {
             descriptor::CoreNodeKind::Custom(node) => {
-                let result = spawn_custom_node(node_id.clone(), &node, &communication_config)
-                    .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
+                let result =
+                    spawn_custom_node(node_id.clone(), &node, &communication_config, &working_dir)
+                        .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
                 tasks.push(result);
             }
             descriptor::CoreNodeKind::Runtime(node) => {
                 if !node.operators.is_empty() {
-                    let result =
-                        spawn_runtime_node(&runtime, node_id.clone(), &node, &communication_config)
-                            .wrap_err_with(|| format!("failed to spawn runtime node {node_id}"))?;
+                    let result = spawn_runtime_node(
+                        &runtime,
+                        node_id.clone(),
+                        &node,
+                        &communication_config,
+                        &working_dir,
+                    )
+                    .wrap_err_with(|| format!("failed to spawn runtime node {node_id}"))?;
                     tasks.push(result);
                 }
             }
