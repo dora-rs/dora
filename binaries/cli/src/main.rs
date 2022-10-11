@@ -1,6 +1,8 @@
 use clap::Parser;
-use communication_layer_pub_sub::CommunicationLayer;
-use dora_core::topics::{ZENOH_CONTROL_PREFIX, ZENOH_CONTROL_STOP_ALL};
+use communication_layer_pub_sub::{zenoh::ZenohCommunicationLayer, CommunicationLayer};
+use dora_core::topics::{
+    ZENOH_CONTROL_PREFIX, ZENOH_CONTROL_START_DATAFLOW, ZENOH_CONTROL_STOP_ALL,
+};
 use eyre::{eyre, Context};
 use std::{io::Write, path::PathBuf};
 use tempfile::NamedTempFile;
@@ -77,13 +79,7 @@ enum Lang {
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
 
-    let mut zenoh_control_session =
-        communication_layer_pub_sub::zenoh::ZenohCommunicationLayer::init(
-            Default::default(),
-            ZENOH_CONTROL_PREFIX.into(),
-        )
-        .map_err(|err| eyre!(err))
-        .wrap_err("failed to open zenoh control session")?;
+    let mut session = None;
 
     match args.command {
         Command::Check {
@@ -129,7 +125,7 @@ fn main() -> eyre::Result<()> {
         Command::Start => todo!(),
         Command::Stop => todo!(),
         Command::Destroy => {
-            let publisher = zenoh_control_session
+            let publisher = zenoh_control_session(&mut session)?
                 .publisher(ZENOH_CONTROL_STOP_ALL)
                 .map_err(|err| eyre!(err))
                 .wrap_err("failed to create publisher for stop message")?;
@@ -147,4 +143,17 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+fn zenoh_control_session(
+    session: &mut Option<ZenohCommunicationLayer>,
+) -> eyre::Result<&mut ZenohCommunicationLayer> {
+    Ok(match session {
+        Some(session) => session,
+        None => session.insert(
+            ZenohCommunicationLayer::init(Default::default(), ZENOH_CONTROL_PREFIX.into())
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to open zenoh control session")?,
+        ),
+    })
 }
