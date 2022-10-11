@@ -13,7 +13,7 @@ mod custom;
 mod runtime;
 
 pub async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Result<()> {
-    let runtime = runtime.with_extension(EXE_EXTENSION);
+    let mut runtime = runtime.with_extension(EXE_EXTENSION);
     let descriptor = read_descriptor(&dataflow_path).await.wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
@@ -40,12 +40,19 @@ pub async fn run_dataflow(dataflow_path: PathBuf, runtime: &Path) -> eyre::Resul
     if nodes
         .iter()
         .any(|n| matches!(n.kind, CoreNodeKind::Runtime(_)))
-        && !runtime.is_file()
     {
-        bail!(
-            "There is no runtime at {}, or it is not a file",
-            runtime.display()
-        );
+        match runtime.canonicalize() {
+            Ok(path) => {
+                runtime = path;
+            }
+            Err(err) => {
+                let err = eyre!(err).wrap_err(format!(
+                    "There is no runtime at {}, or it is not a file",
+                    runtime.display()
+                ));
+                bail!("{err:?}")
+            }
+        }
     }
 
     let mut tasks = FuturesUnordered::new();
