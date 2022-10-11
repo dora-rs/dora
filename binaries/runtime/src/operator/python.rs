@@ -2,8 +2,22 @@
 
 use super::OperatorEvent;
 use dora_node_api::{communication::Publisher, config::DataId};
+#[cfg(feature = "tracing")]
+use dora_tracing::{deserialize_context, serialize_context};
 use eyre::{bail, eyre, Context};
-use pyo3::{pyclass, types::IntoPyDict, types::PyBytes, Py, Python};
+#[cfg(feature = "tracing")]
+use opentelemetry::{
+    sdk::trace,
+    trace::{TraceContextExt, Tracer},
+    Context as OtelContext,
+};
+
+use pyo3::{
+    pyclass,
+    types::IntoPyDict,
+    types::{PyBytes, PyDict},
+    Py, Python,
+};
 use std::{
     collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
@@ -30,6 +44,7 @@ pub fn spawn(
     events_tx: Sender<OperatorEvent>,
     inputs: flume::Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
+    #[cfg(feature = "tracing")] tracer: trace::Tracer,
 ) -> eyre::Result<()> {
     if !path.exists() {
         bail!("No python file exists at {}", path.display());
@@ -82,17 +97,26 @@ pub fn spawn(
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
         while let Ok(input) = inputs.recv() {
+            #[cfg(feature = "tracing")]
+            let span = tracer.start_with_context(
+                format!("{}", input.id),
+                &deserialize_context(&input.metadata.open_telemetry_context.to_string()),
+            );
+            #[cfg(feature = "tracing")]
+            let cx = serialize_context(&OtelContext::current_with_span(span));
+            #[cfg(not(feature = "tracing"))]
+            let cx = "";
             let status_enum = Python::with_gil(|py| {
+                let metadata = PyDict::new(py);
+                metadata.set_item("open_telemetry_context", &cx)?;
+                let input_dict = PyDict::new(py);
+
+                input_dict.set_item("id", input.id.as_str())?;
+                input_dict.set_item("data", PyBytes::new(py, &input.data()))?;
+                input_dict.set_item("metadata", metadata)?;
+
                 operator
-                    .call_method1(
-                        py,
-                        "on_input",
-                        (
-                            input.id.to_string(),
-                            PyBytes::new(py, &input.data()),
-                            send_output.clone(),
-                        ),
-                    )
+                    .call_method1(py, "on_input", (input_dict, send_output.clone()))
                     .map_err(traceback)
             })?;
             let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
