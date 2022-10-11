@@ -30,7 +30,7 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     }
 
     // create directories
-    let root = path.as_deref().unwrap_or(Path::new(&name));
+    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
     fs::create_dir(&root)
         .with_context(|| format!("failed to create directory `{}`", root.display()))?;
 
@@ -63,7 +63,7 @@ fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::E
     }
 
     // create directories
-    let root = path.as_deref().unwrap_or(Path::new(&name));
+    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
     fs::create_dir(&root)
         .with_context(|| format!("failed to create directory `{}`", root.display()))?;
 
