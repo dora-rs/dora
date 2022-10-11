@@ -1,11 +1,11 @@
+use eyre::{bail, eyre};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX},
     path::Path,
 };
 
-use eyre::{bail, eyre};
-
 pub mod descriptor;
+pub mod topics;
 
 pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyre::ErrReport> {
     let file_name = path

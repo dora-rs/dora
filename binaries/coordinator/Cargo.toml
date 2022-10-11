@@ -13,7 +13,7 @@ eyre = "0.6.7"
 futures = "0.3.21"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.8.23"
-tokio = { version = "1.17.0", features = ["full"] }
+tokio = { version = "1.21.2", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util"] }
 tokio-util = { version = "0.7.1", features = ["codec"] }
 clap = { version = "3.1.8", features = ["derive"] }
@@ -25,3 +25,6 @@ dora-message = { path = "../../libraries/message" }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
 futures-concurrency = "5.0.1"
+communication-layer-pub-sub = { path = "../../libraries/communication-layer", default-features = false, features = [
+    "zenoh",
+] }
