@@ -54,7 +54,7 @@ pub trait Publisher: Send + Sync {
     /// can be used to construct the message in-place.
     fn publish(&self, data: &[u8]) -> Result<(), BoxError> {
         let mut sample = self.prepare(data.len())?;
-        sample.as_mut_slice().copy_from_slice(&data);
+        sample.as_mut_slice().copy_from_slice(data);
         sample.publish()?;
         Ok(())
     }
