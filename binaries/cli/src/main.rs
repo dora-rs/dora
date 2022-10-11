@@ -1,5 +1,7 @@
 use clap::Parser;
-use eyre::Context;
+use communication_layer_pub_sub::CommunicationLayer;
+use dora_core::topics::{ZENOH_CONTROL_PREFIX, ZENOH_CONTROL_STOP_ALL};
+use eyre::{eyre, Context};
 use std::{io::Write, path::PathBuf};
 use tempfile::NamedTempFile;
 
@@ -36,6 +38,8 @@ enum Command {
         args: CommandNew,
     },
     Dashboard,
+    Up,
+    Destroy,
     Start,
     Stop,
     Logs,
@@ -72,6 +76,14 @@ enum Lang {
 
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
+
+    let mut zenoh_control_session =
+        communication_layer_pub_sub::zenoh::ZenohCommunicationLayer::init(
+            Default::default(),
+            ZENOH_CONTROL_PREFIX.into(),
+        )
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to open zenoh control session")?;
 
     match args.command {
         Command::Check {
@@ -113,8 +125,19 @@ fn main() -> eyre::Result<()> {
         }
         Command::New { args } => template::create(args)?,
         Command::Dashboard => todo!(),
+        Command::Up => todo!(),
         Command::Start => todo!(),
         Command::Stop => todo!(),
+        Command::Destroy => {
+            let publisher = zenoh_control_session
+                .publisher(ZENOH_CONTROL_STOP_ALL)
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to create publisher for stop message")?;
+            publisher
+                .publish(&[])
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to publish stop message")?;
+        }
         Command::Logs => todo!(),
         Command::Metrics => todo!(),
         Command::Stats => todo!(),
