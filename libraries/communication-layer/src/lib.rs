@@ -13,7 +13,7 @@
 //!   based on shared memory. It is very fast, but it only supports local communication. To use
 //!   iceoryx, use the [`IceoryxCommunicationLayer`][iceoryx::IceoryxCommunicationLayer] struct.
 
-use std::{borrow::Cow, fmt::Debug};
+use std::borrow::Cow;
 
 #[cfg(all(unix, feature = "iceoryx"))]
 pub mod iceoryx;
@@ -54,7 +54,7 @@ pub trait Publisher: Send + Sync {
     /// can be used to construct the message in-place.
     fn publish(&self, data: &[u8]) -> Result<(), BoxError> {
         let mut sample = self.prepare(data.len())?;
-        sample.as_mut_slice().copy_from_slice(&data);
+        sample.as_mut_slice().copy_from_slice(data);
         sample.publish()?;
         Ok(())
     }
@@ -85,6 +85,8 @@ pub trait Subscriber: Send + Sync {
     fn recv(&mut self) -> Result<Option<Box<dyn ReceivedSample>>, BoxError>;
 }
 
+/// A message received from the communication layer.
 pub trait ReceivedSample: Send + Sync {
+    /// Access the message's data.
     fn get(&self) -> Cow<[u8]>;
 }
