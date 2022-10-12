@@ -15,10 +15,12 @@ dora-node-api = { path = "../../apis/rust/node", default-features = false, featu
 dora-operator-api-types = { path = "../../apis/rust/operator/types" }
 dora-core = { version = "0.1.0", path = "../../libraries/core" }
 dora-tracing = { path = "../../libraries/extensions/telemetry/tracing", optional = true }
+dora-metrics = { path = "../../libraries/extensions/telemetry/metrics", optional = true }
 opentelemetry = { version = "0.17", features = [
     "rt-tokio",
     "metrics",
 ], optional = true }
+opentelemetry-system-metrics = { version = "0.1.1", optional = true }
 eyre = "0.6.8"
 futures = "0.3.21"
 futures-concurrency = "2.0.3"
@@ -37,3 +39,4 @@ tracing-subscriber = "0.3.15"
 
 [features]
 tracing = ["opentelemetry", "dora-tracing"]
+metrics = ["opentelemetry", "opentelemetry-system-metrics", "dora-metrics"]
