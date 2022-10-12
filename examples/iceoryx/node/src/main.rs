@@ -18,7 +18,7 @@ fn main() -> eyre::Result<()> {
                 let random: u64 = rand::random();
                 let data: &[u8] = &random.to_le_bytes();
                 operator.send_output(&output, input.metadata(), data.len(), |out| {
-                    out.copy_from_slice(&data);
+                    out.copy_from_slice(data);
                 })?;
             }
             other => eprintln!("Ignoring unexpected input `{other}`"),

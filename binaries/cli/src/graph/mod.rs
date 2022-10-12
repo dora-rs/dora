@@ -11,7 +11,7 @@ pub fn visualize_as_html(dataflow: &Path) -> eyre::Result<String> {
 }
 
 pub fn visualize_as_mermaid(dataflow: &Path) -> eyre::Result<String> {
-    let descriptor = read_descriptor(&dataflow)
+    let descriptor = read_descriptor(dataflow)
         .with_context(|| format!("failed to read dataflow at `{}`", dataflow.display()))?;
     let visualized = descriptor
         .visualize_as_mermaid()
