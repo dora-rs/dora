@@ -4,8 +4,8 @@ use eyre::Context;
 async fn main() -> eyre::Result<()> {
     set_up_tracing().context("failed to set up tracing subscriber")?;
 
-    let command = clap::Parser::parse();
-    dora_coordinator::run(command).await
+    let args = clap::Parser::parse();
+    dora_coordinator::run(args).await
 }
 
 fn set_up_tracing() -> eyre::Result<()> {
