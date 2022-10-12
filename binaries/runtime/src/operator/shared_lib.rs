@@ -1,21 +1,13 @@
-use super::OperatorEvent;
+use super::{OperatorEvent, Tracer};
 use dora_core::adjust_shared_library_path;
 use dora_node_api::{communication::Publisher, config::DataId};
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
     DoraResult, DoraStatus, Metadata, OnInputResult, Output, SendOutput,
 };
-#[cfg(feature = "tracing")]
-use dora_tracing::{deserialize_context, serialize_context};
 use eyre::{bail, eyre, Context};
 use flume::Receiver;
 use libloading::Symbol;
-#[cfg(feature = "tracing")]
-use opentelemetry::{
-    sdk::trace,
-    trace::{TraceContextExt, Tracer},
-    Context as OtelContext,
-};
 use std::{
     collections::HashMap,
     ffi::c_void,
@@ -32,7 +24,7 @@ pub fn spawn(
     events_tx: Sender<OperatorEvent>,
     inputs: Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
-    #[cfg(feature = "tracing")] tracer: trace::Tracer,
+    tracer: Tracer,
 ) -> eyre::Result<()> {
     let path = adjust_shared_library_path(path)?;
 
@@ -47,11 +39,7 @@ pub fn spawn(
 
             let operator = SharedLibraryOperator { inputs, bindings };
 
-            operator.run(
-                publishers,
-                #[cfg(feature = "tracing")]
-                tracer,
-            )
+            operator.run(publishers, tracer)
         });
         match catch_unwind(closure) {
             Ok(Ok(())) => {
@@ -79,7 +67,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
     fn run(
         self,
         publishers: HashMap<DataId, Box<dyn Publisher>>,
-        #[cfg(feature = "tracing")] tracer: trace::Tracer,
+        tracer: Tracer,
     ) -> eyre::Result<()> {
         let operator_context = {
             let DoraInitResult {
@@ -136,14 +124,24 @@ impl<'lib> SharedLibraryOperator<'lib> {
 
         while let Ok(input) = self.inputs.recv() {
             #[cfg(feature = "tracing")]
-            let span = tracer.start_with_context(
-                format!("{}", input.id),
-                &deserialize_context(&input.metadata.open_telemetry_context.to_string()),
-            );
-            #[cfg(feature = "tracing")]
-            let cx = serialize_context(&OtelContext::current_with_span(span));
+            let cx = {
+                use dora_tracing::{deserialize_context, serialize_context};
+                use opentelemetry::{
+                    trace::{TraceContextExt, Tracer},
+                    Context as OtelContext,
+                };
+
+                let span = tracer.start_with_context(
+                    format!("{}", input.id),
+                    &deserialize_context(&input.metadata.open_telemetry_context.to_string()),
+                );
+                serialize_context(&OtelContext::current_with_span(span))
+            };
             #[cfg(not(feature = "tracing"))]
-            let cx = "";
+            let cx = {
+                let () = tracer;
+                ""
+            };
             let operator_input = dora_operator_api_types::Input {
                 data: input.data().into_owned().into(),
                 id: String::from(input.id).into(),
