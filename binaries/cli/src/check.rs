@@ -8,7 +8,7 @@ use std::{env::consts::EXE_EXTENSION, path::Path};
 
 pub fn check(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
     let runtime = runtime.with_extension(EXE_EXTENSION);
-    let descriptor = read_descriptor(&dataflow_path).wrap_err_with(|| {
+    let descriptor = read_descriptor(dataflow_path).wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
             dataflow_path.display()
@@ -108,7 +108,7 @@ fn check_input(
     nodes: &[dora_core::descriptor::ResolvedNode],
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
-    Ok(match mapping {
+    match mapping {
         InputMapping::Timer { interval: _ } => {}
         InputMapping::User(UserInputMapping {
             source,
@@ -162,5 +162,6 @@ fn check_input(
                 }
             }
         }
-    })
+    };
+    Ok(())
 }

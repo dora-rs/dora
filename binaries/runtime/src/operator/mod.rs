@@ -9,6 +9,8 @@ use tokio::sync::mpsc::Sender;
 
 mod python;
 mod shared_lib;
+#[cfg(feature = "tracing")]
+use dora_tracing::init_tracing;
 
 #[tracing::instrument(skip(communication))]
 pub fn spawn_operator(
@@ -42,9 +44,21 @@ pub fn spawn_operator(
         })
         .collect::<Result<_, _>>()?;
 
+    #[cfg(feature = "tracing")]
+    let tracer = init_tracing(format!("{node_id}/{}", operator_definition.id).as_str())
+        .wrap_err("could not initiate tracing for operator")?;
+
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(path) => {
-            shared_lib::spawn(path, events_tx, inputs, publishers).wrap_err_with(|| {
+            shared_lib::spawn(
+                path,
+                events_tx,
+                inputs,
+                publishers,
+                #[cfg(feature = "tracing")]
+                tracer,
+            )
+            .wrap_err_with(|| {
                 format!(
                     "failed to spawn shared library operator for {}",
                     operator_definition.id
@@ -52,7 +66,15 @@ pub fn spawn_operator(
             })?;
         }
         OperatorSource::Python(path) => {
-            python::spawn(path, events_tx, inputs, publishers).wrap_err_with(|| {
+            python::spawn(
+                path,
+                events_tx,
+                inputs,
+                publishers,
+                #[cfg(feature = "tracing")]
+                tracer,
+            )
+            .wrap_err_with(|| {
                 format!(
                     "failed to spawn Python operator for {}",
                     operator_definition.id
