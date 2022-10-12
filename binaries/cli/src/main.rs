@@ -1,5 +1,9 @@
 use clap::Parser;
-use eyre::Context;
+use communication_layer_pub_sub::{zenoh::ZenohCommunicationLayer, CommunicationLayer};
+use dora_core::topics::{
+    ZENOH_CONTROL_PREFIX, ZENOH_CONTROL_START_DATAFLOW, ZENOH_CONTROL_STOP_ALL,
+};
+use eyre::{eyre, Context};
 use std::{io::Write, path::PathBuf};
 use tempfile::NamedTempFile;
 
@@ -36,7 +40,11 @@ enum Command {
         args: CommandNew,
     },
     Dashboard,
-    Start,
+    Up,
+    Destroy,
+    Start {
+        dataflow: PathBuf,
+    },
     Stop,
     Logs,
     Metrics,
@@ -72,6 +80,8 @@ enum Lang {
 
 fn main() -> eyre::Result<()> {
     let args = Args::parse();
+
+    let mut session = None;
 
     match args.command {
         Command::Check {
@@ -113,8 +123,35 @@ fn main() -> eyre::Result<()> {
         }
         Command::New { args } => template::create(args)?,
         Command::Dashboard => todo!(),
-        Command::Start => todo!(),
+        Command::Up => todo!(),
+        Command::Start { dataflow } => {
+            let canonicalized = dataflow
+                .canonicalize()
+                .wrap_err("given dataflow file does not exist")?;
+            let path = &canonicalized
+                .to_str()
+                .ok_or_else(|| eyre!("dataflow path must be valid UTF-8"))?;
+
+            let publisher = zenoh_control_session(&mut session)?
+                .publisher(ZENOH_CONTROL_START_DATAFLOW)
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to create publisher for start dataflow message")?;
+            publisher
+                .publish(path.as_bytes())
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to publish start dataflow message")?;
+        }
         Command::Stop => todo!(),
+        Command::Destroy => {
+            let publisher = zenoh_control_session(&mut session)?
+                .publisher(ZENOH_CONTROL_STOP_ALL)
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to create publisher for stop message")?;
+            publisher
+                .publish(&[])
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to publish stop message")?;
+        }
         Command::Logs => todo!(),
         Command::Metrics => todo!(),
         Command::Stats => todo!(),
@@ -124,4 +161,17 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+fn zenoh_control_session(
+    session: &mut Option<ZenohCommunicationLayer>,
+) -> eyre::Result<&mut ZenohCommunicationLayer> {
+    Ok(match session {
+        Some(session) => session,
+        None => session.insert(
+            ZenohCommunicationLayer::init(Default::default(), ZENOH_CONTROL_PREFIX.into())
+                .map_err(|err| eyre!(err))
+                .wrap_err("failed to open zenoh control session")?,
+        ),
+    })
 }

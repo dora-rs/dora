@@ -29,5 +29,5 @@ install.sh
 - Start the `dora-coordinator`, passing the paths to the dataflow file and the `dora-runtime` as arguments:
 
 ```
-../../target/release/dora-coordinator run dataflow.yml ../../target/release/dora-runtime
+../../target/release/dora-coordinator --run-dataflow dataflow.yml ../../target/release/dora-runtime
 ```
