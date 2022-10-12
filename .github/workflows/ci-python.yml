@@ -7,8 +7,6 @@ on:
       - apis/python/**
       - binaries/runtime/**
   pull_request:
-    branches:
-      - main
 
 jobs:
   examples:
