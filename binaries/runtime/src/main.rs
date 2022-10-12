@@ -18,13 +18,6 @@ use tokio_stream::{wrappers::ReceiverStream, StreamMap};
 
 mod operator;
 
-#[cfg(feature = "metrics")]
-use dora_metrics::init_meter;
-#[cfg(feature = "metrics")]
-use opentelemetry::global;
-#[cfg(feature = "metrics")]
-use opentelemetry_system_metrics::init_process_observer;
-
 fn main() -> eyre::Result<()> {
     set_up_tracing().context("failed to set up tracing subscriber")?;
 
@@ -90,13 +83,16 @@ async fn run(
     mut operator_stop_publishers: HashMap<OperatorId, Box<dyn Publisher>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
-    let _started = init_meter();
+    let _started = {
+        use dora_metrics::init_meter;
+        use opentelemetry::global;
+        use opentelemetry_system_metrics::init_process_observer;
 
-    #[cfg(feature = "metrics")]
-    let meter = global::meter(Box::leak(node_id.to_string().into_boxed_str()));
-
-    #[cfg(feature = "metrics")]
-    init_process_observer(meter);
+        let _started = init_meter();
+        let meter = global::meter(Box::leak(node_id.to_string().into_boxed_str()));
+        init_process_observer(meter);
+        _started
+    };
 
     let mut stopped_operators = BTreeSet::new();
 
