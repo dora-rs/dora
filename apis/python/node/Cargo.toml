@@ -8,6 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 dora-node-api = { path = "../../rust/node" }
+dora-operator-api-python = { path = "../operator" }
 pyo3 = { version = "0.16", features = ["eyre", "abi3-py37"] }
 eyre = "0.6"
 serde_yaml = "0.8.23"

@@ -12,6 +12,7 @@ dora-node-api = { path = "../../apis/rust/node", default-features = false, featu
     "zenoh",
     "iceoryx",
 ] }
+dora-operator-api-python = { path = "../../apis/python/operator" }
 dora-operator-api-types = { path = "../../apis/rust/operator/types" }
 dora-core = { version = "0.1.0", path = "../../libraries/core" }
 dora-tracing = { path = "../../libraries/extensions/telemetry/tracing", optional = true }
