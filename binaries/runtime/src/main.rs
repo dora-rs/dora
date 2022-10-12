@@ -83,7 +83,7 @@ async fn run(
     mut operator_stop_publishers: HashMap<OperatorId, Box<dyn Publisher>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
-    {
+    let _started = {
         use dora_metrics::init_meter;
         use opentelemetry::global;
         use opentelemetry_system_metrics::init_process_observer;
@@ -91,7 +91,8 @@ async fn run(
         let _started = init_meter();
         let meter = global::meter(Box::leak(node_id.to_string().into_boxed_str()));
         init_process_observer(meter);
-    }
+        _started
+    };
 
     let mut stopped_operators = BTreeSet::new();
 
