@@ -131,6 +131,16 @@ jobs:
         with:
           command: clippy
           args: --all
+      - name: "Clippy (tracing feature)"
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --all --features tracing
+      - name: "Clippy (metrics feature)"
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --all --features metrics
 
   rustfmt:
     name: "Formatting"
