@@ -150,8 +150,7 @@
 <pre><code class="language-python">class Operator:
     def on_input(
         self,
-        input_id: str,
-        value: bytes,
+        dora_input: dict,
         send_output: Callable[[str, bytes], None],
     ) -&gt; DoraStatus:
 </code></pre>
@@ -225,25 +224,21 @@ node = Node()
 </code></pre>
 <h4 id="next-or-__next__-as-an-iterator"><a class="header" href="#next-or-__next__-as-an-iterator"><code>.next()</code> or <code>__next__()</code> as an iterator</a></h4>
 <p><code>.next()</code> gives you the next input that the node has received. It blocks until the next input becomes available. It will return <code>None</code> when all senders has been dropped.</p>
-<pre><code class="language-python">input_id, value = node.next()
+<pre><code class="language-python">input_id, value, metadata = node.next()
 
 # or
 
-for input_id, value in node:
+for input_id, value, metadata in node:
 </code></pre>
 <h4 id="send_outputoutput_id-data"><a class="header" href="#send_outputoutput_id-data"><code>.send_output(output_id, data)</code></a></h4>
 <p><code>send_output</code> send data from the node.</p>
-<pre><code class="language-python">node.send_output(&quot;string&quot;, b&quot;string&quot;)
+<pre><code class="language-python">node.send_output(&quot;string&quot;, b&quot;string&quot;, {&quot;open_telemetry_context&quot;: &quot;7632e76&quot;})
 </code></pre>
 <h3 id="try-it-out-1"><a class="header" href="#try-it-out-1">Try it out!</a></h3>
 <ul>
 <li>Install python node API:</li>
 </ul>
-<pre><code class="language-bash">cd apis/python/node
-python3 -m venv .env
-source .env/bin/activate
-pip install maturin
-maturin develop
+<pre><code class="language-bash">pip install dora-rs
 </code></pre>
 <ul>
 <li>Create a python file called <code>webcam.py</code>:</li>
