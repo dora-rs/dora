@@ -2,6 +2,7 @@
 members = [
     "apis/c/*",
     "apis/python/node",
+    "apis/python/operator",
     "apis/rust/*",
     "apis/rust/operator/macros",
     "apis/rust/operator/types",
