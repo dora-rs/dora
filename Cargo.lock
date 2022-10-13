@@ -992,6 +992,7 @@ name = "dora-node-api-python"
 version = "0.1.0"
 dependencies = [
  "dora-node-api",
+ "dora-operator-api-python",
  "eyre",
  "flume",
  "pyo3",
@@ -1025,6 +1026,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-operator-api-python"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "flume",
+ "pyo3",
+ "serde_yaml 0.8.23",
+]
+
+[[package]]
 name = "dora-operator-api-types"
 version = "0.1.0"
 dependencies = [
@@ -1040,6 +1052,7 @@ dependencies = [
  "dora-message",
  "dora-metrics",
  "dora-node-api",
+ "dora-operator-api-python",
  "dora-operator-api-types",
  "dora-tracing",
  "eyre",

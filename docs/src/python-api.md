@@ -10,8 +10,7 @@ An operator requires an `on_input` method and requires to return a `DoraStatus` 
 class Operator:
     def on_input(
         self,
-        input_id: str,
-        value: bytes,
+        dora_input: dict,
         send_output: Callable[[str, bytes], None],
     ) -> DoraStatus:
 ```
@@ -47,11 +46,11 @@ node = Node()
 `.next()` gives you the next input that the node has received. It blocks until the next input becomes available. It will return `None` when all senders has been dropped.
 
 ```python
-input_id, value = node.next()
+input_id, value, metadata = node.next()
 
 # or
 
-for input_id, value in node:
+for input_id, value, metadata in node:
 ```
 
 #### `.send_output(output_id, data)`
@@ -59,19 +58,14 @@ for input_id, value in node:
 `send_output` send data from the node.
 
 ```python
-node.send_output("string", b"string")
+node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
 ```
-
 
 ### Try it out!
 
 - Install python node API:
 ```bash
-cd apis/python/node
-python3 -m venv .env
-source .env/bin/activate
-pip install maturin
-maturin develop
+pip install dora-rs
 ```
 
 - Create a python file called `webcam.py`:

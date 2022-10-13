@@ -2,6 +2,7 @@
 
 use super::{OperatorEvent, Tracer};
 use dora_node_api::{communication::Publisher, config::DataId};
+use dora_operator_api_python::metadata_to_pydict;
 use eyre::{bail, eyre, Context};
 use pyo3::{
     pyclass,
@@ -10,6 +11,7 @@ use pyo3::{
     Py, Python,
 };
 use std::{
+    borrow::Cow,
     collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -87,7 +89,7 @@ pub fn spawn(
         let operator =
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
-        while let Ok(input) = inputs.recv() {
+        while let Ok(mut input) = inputs.recv() {
             #[cfg(feature = "tracing")]
             let cx = {
                 use dora_tracing::{deserialize_context, serialize_context};
@@ -107,14 +109,14 @@ pub fn spawn(
                 let () = tracer;
                 ""
             };
+            input.metadata.open_telemetry_context = Cow::Borrowed(cx);
+
             let status_enum = Python::with_gil(|py| {
-                let metadata = PyDict::new(py);
-                metadata.set_item("open_telemetry_context", &cx)?;
                 let input_dict = PyDict::new(py);
 
                 input_dict.set_item("id", input.id.as_str())?;
                 input_dict.set_item("data", PyBytes::new(py, &input.data()))?;
-                input_dict.set_item("metadata", metadata)?;
+                input_dict.set_item("metadata", metadata_to_pydict(input.metadata(), py))?;
 
                 operator
                     .call_method1(py, "on_input", (input_dict, send_output.clone()))
@@ -176,17 +178,14 @@ struct SendOutputCallback {
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
 
-    use std::borrow::Cow;
-
     use super::SendOutputCallback;
-    use dora_message::Metadata;
+    use dora_operator_api_python::pydict_to_metadata;
     use eyre::{eyre, Context};
     use pyo3::{
         pymethods,
         types::{PyBytes, PyDict},
         PyResult,
     };
-    use tracing::warn;
 
     #[pymethods]
     impl SendOutputCallback {
@@ -198,35 +197,7 @@ mod callback_impl {
         ) -> PyResult<()> {
             match self.publishers.get(output) {
                 Some(publisher) => {
-                    let mut default_metadata = Metadata::default();
-                    if let Some(metadata) = metadata {
-                        for (key, value) in metadata.iter() {
-                            match key.extract::<&str>().context("Parsing metadata keys")? {
-                                "metadata_version" => {
-                                    default_metadata.metadata_version = value
-                                        .extract()
-                                        .context("parsing metadata version failed")?;
-                                }
-                                "watermark" => {
-                                    default_metadata.watermark =
-                                        value.extract().context("parsing watermark failed")?;
-                                }
-                                "deadline" => {
-                                    default_metadata.deadline =
-                                        value.extract().context("parsing deadline failed")?;
-                                }
-                                "open_telemetry_context" => {
-                                    let otel_context: &str = value
-                                        .extract()
-                                        .context("parsing open telemetry context failed")?;
-                                    default_metadata.open_telemetry_context =
-                                        Cow::Borrowed(otel_context);
-                                }
-                                _ => warn!("Unexpected key argument for metadata"),
-                            }
-                        }
-                    };
-                    let message = default_metadata
+                    let message = pydict_to_metadata(metadata)?
                         .serialize()
                         .context(format!("failed to serialize `{}` metadata", output));
                     message.and_then(|mut message| {
