@@ -4,6 +4,7 @@ use super::{OperatorEvent, Tracer};
 use dora_node_api::{communication::Publisher, config::DataId};
 use dora_operator_api_python::metadata_to_pydict;
 use eyre::{bail, eyre, Context};
+use opentelemetry::trace::TraceContextExt;
 use pyo3::{
     pyclass,
     types::IntoPyDict,
@@ -91,25 +92,23 @@ pub fn spawn(
 
         while let Ok(mut input) = inputs.recv() {
             #[cfg(feature = "tracing")]
-            let cx = {
+            let (_child_cx, string_cx) = {
                 use dora_tracing::{deserialize_context, serialize_context};
-                use opentelemetry::{
-                    trace::{TraceContextExt, Tracer},
-                    Context as OtelContext,
-                };
+                use opentelemetry::{trace::Tracer, Context as OtelContext};
+                let cx = deserialize_context(&input.metadata.open_telemetry_context.to_string());
+                let span = tracer.start_with_context(format!("{}", input.id), &cx);
 
-                let span = tracer.start_with_context(
-                    format!("{}", input.id),
-                    &deserialize_context(&input.metadata.open_telemetry_context.to_string()),
-                );
-                serialize_context(&OtelContext::current_with_span(span))
+                let child_cx = OtelContext::current_with_span(span);
+                let string_cx = serialize_context(&child_cx);
+                (child_cx, string_cx)
             };
+
             #[cfg(not(feature = "tracing"))]
-            let cx = {
+            let string_cx = {
                 let () = tracer;
-                ""
+                "".to_string()
             };
-            input.metadata.open_telemetry_context = Cow::Borrowed(cx);
+            input.metadata.open_telemetry_context = Cow::Owned(string_cx);
 
             let status_enum = Python::with_gil(|py| {
                 let input_dict = PyDict::new(py);

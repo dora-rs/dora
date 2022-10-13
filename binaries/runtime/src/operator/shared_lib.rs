@@ -124,7 +124,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
 
         while let Ok(input) = self.inputs.recv() {
             #[cfg(feature = "tracing")]
-            let cx = {
+            let (_child_cx, string_cx) = {
                 use dora_tracing::{deserialize_context, serialize_context};
                 use opentelemetry::{
                     trace::{TraceContextExt, Tracer},
@@ -135,18 +135,20 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     format!("{}", input.id),
                     &deserialize_context(&input.metadata.open_telemetry_context.to_string()),
                 );
-                serialize_context(&OtelContext::current_with_span(span))
+                let child_cx = OtelContext::current_with_span(span);
+                let string_cx = serialize_context(&child_cx);
+                (child_cx, string_cx)
             };
             #[cfg(not(feature = "tracing"))]
-            let cx = {
+            let string_cx = {
                 let () = tracer;
-                ""
+                "".to_string()
             };
             let operator_input = dora_operator_api_types::Input {
                 data: input.data().into_owned().into(),
                 id: String::from(input.id).into(),
                 metadata: Metadata {
-                    open_telemetry_context: cx.to_string().into(),
+                    open_telemetry_context: string_cx.into(),
                 },
             };
 
