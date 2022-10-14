@@ -4,7 +4,7 @@ use dora_node_api::Metadata;
 use eyre::{Context, Result};
 use pyo3::{prelude::*, types::PyDict};
 
-pub fn pydict_to_metadata<'a>(dict: Option<&'a PyDict>) -> Result<Metadata<'a>> {
+pub fn pydict_to_metadata(dict: Option<&PyDict>) -> Result<Metadata> {
     let mut default_metadata = Metadata::default();
     if let Some(metadata) = dict {
         for (key, value) in metadata.iter() {

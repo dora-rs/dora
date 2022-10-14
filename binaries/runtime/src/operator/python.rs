@@ -96,7 +96,7 @@ pub fn spawn(
                 use opentelemetry::trace::TraceContextExt;
                 use opentelemetry::{trace::Tracer, Context as OtelContext};
 
-                let cx = deserialize_context(&input.metadata.open_telemetry_context.to_string());
+                let cx = deserialize_context(&input.metadata.open_telemetry_context);
                 let span = tracer.start_with_context(format!("{}", input.id), &cx);
 
                 let child_cx = OtelContext::current_with_span(span);
