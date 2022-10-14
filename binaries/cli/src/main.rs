@@ -1,5 +1,8 @@
 use clap::Parser;
-use dora_core::topics::{StartDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START};
+use dora_core::topics::{
+    StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
+    ZENOH_CONTROL_STOP,
+};
 use eyre::{bail, eyre, Context};
 use std::{io::Write, path::PathBuf, sync::Arc};
 use tempfile::NamedTempFile;
@@ -46,7 +49,9 @@ enum Command {
     Start {
         dataflow: PathBuf,
     },
-    Stop,
+    Stop {
+        uuid: String,
+    },
     Logs,
     Metrics,
     Stats,
@@ -126,7 +131,7 @@ fn main() -> eyre::Result<()> {
         Command::Dashboard => todo!(),
         Command::Up => todo!(),
         Command::Start { dataflow } => start_dataflow(dataflow, &mut session)?,
-        Command::Stop => todo!(),
+        Command::Stop { uuid } => stop_dataflow(uuid, &mut session)?,
         Command::Destroy => destroy(&mut session)?,
         Command::Logs => todo!(),
         Command::Metrics => todo!(),
@@ -165,10 +170,37 @@ fn start_dataflow(
         serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
     match result {
         StartDataflowResult::Ok { uuid } => {
-            println!("Started dataflow under ID `{uuid}`");
+            println!("Started dataflow with UUID `{uuid}`");
             Ok(())
         }
         StartDataflowResult::Error(err) => bail!(err),
+    }
+}
+
+fn stop_dataflow(
+    uuid: String,
+    session: &mut Option<Arc<zenoh::Session>>,
+) -> Result<(), eyre::ErrReport> {
+    let reply_receiver = zenoh_control_session(session)?
+        .get(Selector {
+            key_selector: ZENOH_CONTROL_STOP.into(),
+            value_selector: uuid.as_str().into(),
+        })
+        .wait()
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to create publisher for start dataflow message")?;
+    let reply = reply_receiver
+        .recv()
+        .wrap_err("failed to receive reply from coordinator")?;
+    let raw = reply.sample.value.payload.contiguous();
+    let result: StopDataflowResult =
+        serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
+    match result {
+        StopDataflowResult::Ok => {
+            println!("Stopped dataflow with UUID `{uuid}`");
+            Ok(())
+        }
+        StopDataflowResult::Error(err) => bail!(err),
     }
 }
 
