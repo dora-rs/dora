@@ -17,7 +17,7 @@ async fn main() -> eyre::Result<()> {
 async fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("build").arg("--release");
+    cmd.arg("build");
     cmd.arg("--package").arg(package);
     if !cmd.status().await?.success() {
         bail!("failed to build {package}");
