@@ -2,11 +2,11 @@ use dora_node_api::config::{CommunicationConfig, NodeRunConfig};
 pub use dora_node_api::config::{DataId, InputMapping, NodeId, OperatorId, UserInputMapping};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
 };
+use std::{fmt, iter};
 pub use visualize::collect_dora_timers;
 
 mod visualize;
@@ -57,23 +57,7 @@ impl Descriptor {
                 }
             }
 
-            // resolve nodes
-            let kind = match node.kind {
-                NodeKind::Custom(node) => CoreNodeKind::Custom(node),
-                NodeKind::Runtime(node) => CoreNodeKind::Runtime(node),
-                NodeKind::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
-                    operators: vec![OperatorDefinition {
-                        id: op.id.unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config,
-                    }],
-                }),
-            };
-            resolved.push(ResolvedNode {
-                id: node.id,
-                name: node.name,
-                description: node.description,
-                kind,
-            });
+            resolved.extend(node.resolve());
         }
         resolved
     }
@@ -89,11 +73,36 @@ impl Descriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clone_ids: Vec<NodeId>,
     pub name: Option<String>,
     pub description: Option<String>,
 
     #[serde(flatten)]
     pub kind: NodeKind,
+}
+
+impl Node {
+    pub fn resolve(&self) -> impl Iterator<Item = ResolvedNode> {
+        let kind = match &self.kind {
+            NodeKind::Custom(node) => CoreNodeKind::Custom(node.clone()),
+            NodeKind::Runtime(node) => CoreNodeKind::Runtime(node.resolve()),
+            NodeKind::Operator(op) => CoreNodeKind::Runtime(op.resolve()),
+        };
+        let resolved = ResolvedNode {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            kind,
+        };
+
+        iter::once(self.id.clone())
+            .chain(self.clone_ids.clone())
+            .map(move |id| ResolvedNode {
+                id,
+                ..resolved.clone()
+            })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,22 +115,19 @@ pub enum NodeKind {
     Operator(SingleOperatorDefinition),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ResolvedNode {
     pub id: NodeId,
     pub name: Option<String>,
     pub description: Option<String>,
 
-    #[serde(flatten)]
     pub kind: CoreNodeKind,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum CoreNodeKind {
     /// Dora runtime node
-    #[serde(rename = "operators")]
-    Runtime(RuntimeNode),
+    Runtime(ResolvedRuntimeNode),
     Custom(CustomNode),
 }
 
@@ -131,8 +137,46 @@ pub struct RuntimeNode {
     pub operators: Vec<OperatorDefinition>,
 }
 
+impl RuntimeNode {
+    fn resolve(&self) -> ResolvedRuntimeNode {
+        let mut resolved = Vec::new();
+        for operator in &self.operators {
+            resolved.extend(operator.resolve());
+        }
+        ResolvedRuntimeNode {
+            operators: resolved,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedRuntimeNode {
+    pub operators: Vec<ResolvedOperatorDefinition>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OperatorDefinition {
+    pub id: OperatorId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clone_ids: Vec<OperatorId>,
+    #[serde(flatten)]
+    pub config: OperatorConfig,
+}
+
+impl OperatorDefinition {
+    fn resolve(&self) -> impl Iterator<Item = ResolvedOperatorDefinition> {
+        let config = self.config.clone();
+        iter::once(self.id.clone())
+            .chain(self.clone_ids.clone())
+            .map(move |id| ResolvedOperatorDefinition {
+                id,
+                config: config.clone(),
+            })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ResolvedOperatorDefinition {
     pub id: OperatorId,
     #[serde(flatten)]
     pub config: OperatorConfig,
@@ -142,8 +186,26 @@ pub struct OperatorDefinition {
 pub struct SingleOperatorDefinition {
     /// ID is optional if there is only a single operator.
     pub id: Option<OperatorId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clone_ids: Vec<OperatorId>,
     #[serde(flatten)]
     pub config: OperatorConfig,
+}
+
+impl SingleOperatorDefinition {
+    fn resolve(&self) -> ResolvedRuntimeNode {
+        let operator = OperatorDefinition {
+            id: self
+                .id
+                .clone()
+                .unwrap_or_else(|| OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string())),
+            clone_ids: self.clone_ids.clone(),
+            config: self.config.clone(),
+        };
+        ResolvedRuntimeNode {
+            operators: operator.resolve().collect(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

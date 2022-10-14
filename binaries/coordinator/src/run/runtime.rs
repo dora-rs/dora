@@ -8,7 +8,7 @@ use std::path::Path;
 pub fn spawn_runtime_node(
     runtime: &Path,
     node_id: NodeId,
-    node: &descriptor::RuntimeNode,
+    node: &descriptor::ResolvedRuntimeNode,
     communication: &dora_node_api::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
