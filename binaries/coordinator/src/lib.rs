@@ -1,9 +1,17 @@
 use crate::run::spawn_dataflow;
-use dora_core::topics::{StartDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START};
-use eyre::{bail, WrapErr};
+use dora_core::topics::{
+    StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
+    ZENOH_CONTROL_STOP,
+};
+use dora_node_api::{communication, config::CommunicationConfig};
+use eyre::{bail, eyre, WrapErr};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
-use std::path::{Path, PathBuf};
+use run::{await_tasks, SpawnedDataflow};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 use zenoh::prelude::Sample;
@@ -51,9 +59,9 @@ pub async fn run(args: Args) -> eyre::Result<()> {
 }
 
 async fn start(runtime_path: &Path) -> eyre::Result<()> {
-    let (dataflow_errors_tx, dataflow_errors) = tokio::sync::mpsc::channel(2);
-    let mut dataflow_errors_tx = Some(dataflow_errors_tx);
-    let dataflow_error_events = ReceiverStream::new(dataflow_errors).map(Event::DataflowError);
+    let (dataflow_events_tx, dataflow_events) = tokio::sync::mpsc::channel(2);
+    let mut dataflow_events_tx = Some(dataflow_events_tx);
+    let dataflow_error_events = ReceiverStream::new(dataflow_events);
 
     let (control_events, control_events_abort) = futures::stream::abortable(
         control::control_events()
@@ -63,21 +71,38 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 
     let mut events = (dataflow_error_events, control_events).merge();
 
+    let mut running_dataflows = HashMap::new();
+
     while let Some(event) = events.next().await {
         match event {
-            Event::DataflowError(err) => {
-                tracing::error!("{err:?}");
-            }
+            Event::Dataflow { uuid, event } => match event {
+                DataflowEvent::Finished { result } => {
+                    running_dataflows.remove(&uuid);
+                    match result {
+                        Ok(()) => {
+                            tracing::info!("dataflow `{uuid}` finished successully");
+                        }
+                        Err(err) => {
+                            let err = err.wrap_err(format!("error occured in dataflow `{uuid}`"));
+                            tracing::error!("{err:?}");
+                        }
+                    }
+                }
+            },
+
             Event::Control(query) => match query.key_selector().as_str() {
                 ZENOH_CONTROL_START => {
                     let dataflow_path = query.value_selector();
                     let result =
-                        start_dataflow(Path::new(dataflow_path), runtime_path, &dataflow_errors_tx)
+                        start_dataflow(Path::new(dataflow_path), runtime_path, &dataflow_events_tx)
                             .await;
                     let reply = match result {
-                        Ok(uuid) => StartDataflowResult::Ok {
-                            uuid: uuid.to_string(),
-                        },
+                        Ok((uuid, communication_config)) => {
+                            running_dataflows.insert(uuid, communication_config);
+                            StartDataflowResult::Ok {
+                                uuid: uuid.to_string(),
+                            }
+                        }
                         Err(err) => {
                             tracing::error!("{err:?}");
                             StartDataflowResult::Error(format!("{err:?}"))
@@ -93,7 +118,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                     control_events_abort.abort();
 
                     // ensure that no new dataflows can be started
-                    dataflow_errors_tx = None;
+                    dataflow_events_tx = None;
 
                     query.reply_async(Sample::new("", "")).await;
                 }
@@ -112,33 +137,40 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 async fn start_dataflow(
     path: &Path,
     runtime_path: &Path,
-    dataflow_errors_tx: &Option<tokio::sync::mpsc::Sender<eyre::ErrReport>>,
-) -> eyre::Result<Uuid> {
+    dataflow_events_tx: &Option<tokio::sync::mpsc::Sender<Event>>,
+) -> eyre::Result<(Uuid, CommunicationConfig)> {
     let runtime_path = runtime_path.to_owned();
-    let dataflow_errors_tx = match dataflow_errors_tx {
+    let dataflow_events_tx = match dataflow_events_tx {
         Some(channel) => channel.clone(),
         None => bail!("cannot start new dataflow after receiving stop command"),
     };
-    let dataflow = spawn_dataflow(&runtime_path, &path).await?;
-    let uuid = dataflow.uuid;
+    let SpawnedDataflow {
+        uuid,
+        communication_config,
+        tasks,
+    } = spawn_dataflow(&runtime_path, &path).await?;
     let path = path.to_owned();
     let task = async move {
-        let result = dataflow
-            .await_tasks()
+        let result = await_tasks(tasks)
             .await
             .wrap_err_with(|| format!("failed to run dataflow at {}", path.display()));
-        match result {
-            Ok(()) => {}
-            Err(err) => {
-                let _ = dataflow_errors_tx.send(err).await;
-            }
-        }
+
+        let _ = dataflow_events_tx
+            .send(Event::Dataflow {
+                uuid,
+                event: DataflowEvent::Finished { result },
+            })
+            .await;
     };
     tokio::spawn(task);
-    Ok(uuid)
+    Ok((uuid, communication_config))
 }
 
 enum Event {
-    DataflowError(eyre::Report),
+    Dataflow { uuid: Uuid, event: DataflowEvent },
     Control(zenoh::queryable::Query),
+}
+
+enum DataflowEvent {
+    Finished { result: eyre::Result<()> },
 }

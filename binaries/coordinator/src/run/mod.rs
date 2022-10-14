@@ -1,6 +1,9 @@
 use self::{custom::spawn_custom_node, runtime::spawn_runtime_node};
 use dora_core::descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor, NodeId};
-use dora_node_api::{communication, config::format_duration};
+use dora_node_api::{
+    communication,
+    config::{format_duration, CommunicationConfig},
+};
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::{env::consts::EXE_EXTENSION, path::Path};
@@ -11,10 +14,8 @@ mod custom;
 mod runtime;
 
 pub async fn run_dataflow(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
-    spawn_dataflow(runtime, dataflow_path)
-        .await?
-        .await_tasks()
-        .await
+    let tasks = spawn_dataflow(runtime, dataflow_path).await?.tasks;
+    await_tasks(tasks).await
 }
 
 pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Result<SpawnedDataflow> {
@@ -107,23 +108,28 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
             }
         });
     }
-    Ok(SpawnedDataflow { tasks, uuid })
+    Ok(SpawnedDataflow {
+        tasks,
+        communication_config,
+        uuid,
+    })
 }
 
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
+    pub communication_config: CommunicationConfig,
     pub tasks: FuturesUnordered<tokio::task::JoinHandle<Result<(), eyre::ErrReport>>>,
 }
 
-impl SpawnedDataflow {
-    pub async fn await_tasks(mut self) -> eyre::Result<()> {
-        while let Some(task_result) = self.tasks.next().await {
-            task_result
-                .wrap_err("failed to join async task")?
-                .wrap_err("custom node failed")?;
-        }
-        Ok(())
+pub async fn await_tasks(
+    mut tasks: FuturesUnordered<tokio::task::JoinHandle<Result<(), eyre::ErrReport>>>,
+) -> eyre::Result<()> {
+    while let Some(task_result) = tasks.next().await {
+        task_result
+            .wrap_err("failed to join async task")?
+            .wrap_err("custom node failed")?;
     }
+    Ok(())
 }
 
 async fn read_descriptor(file: &Path) -> Result<Descriptor, eyre::Error> {
