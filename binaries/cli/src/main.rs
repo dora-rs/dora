@@ -1,10 +1,10 @@
 use clap::Parser;
 use dora_core::topics::{
-    StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
-    ZENOH_CONTROL_STOP,
+    StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_LIST,
+    ZENOH_CONTROL_START, ZENOH_CONTROL_STOP,
 };
 use eyre::{bail, eyre, Context};
-use std::{io::Write, path::PathBuf, sync::Arc};
+use std::{io::Write, ops::Deref, path::PathBuf, sync::Arc};
 use tempfile::NamedTempFile;
 use zenoh::{
     prelude::{Receiver, Selector, SplitBuffer},
@@ -131,12 +131,12 @@ fn main() -> eyre::Result<()> {
         Command::Dashboard => todo!(),
         Command::Up => todo!(),
         Command::Start { dataflow } => start_dataflow(dataflow, &mut session)?,
+        Command::List => list(&mut session)?,
         Command::Stop { uuid } => stop_dataflow(uuid, &mut session)?,
         Command::Destroy => destroy(&mut session)?,
         Command::Logs => todo!(),
         Command::Metrics => todo!(),
         Command::Stats => todo!(),
-        Command::List => todo!(),
         Command::Get => todo!(),
         Command::Upgrade => todo!(),
     }
@@ -209,10 +209,26 @@ fn destroy(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), eyre::ErrRep
         .get(ZENOH_CONTROL_DESTROY)
         .wait()
         .map_err(|err| eyre!(err))
-        .wrap_err("failed to create publisher for start dataflow message")?;
+        .wrap_err("failed to create publisher for destroy message")?;
     reply_receiver
         .recv()
         .wrap_err("failed to receive reply from coordinator")?;
+    Ok(())
+}
+
+fn list(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), eyre::ErrReport> {
+    let reply_receiver = zenoh_control_session(session)?
+        .get(ZENOH_CONTROL_LIST)
+        .wait()
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to create publisher for list message")?;
+    let reply = reply_receiver
+        .recv()
+        .wrap_err("failed to receive reply from coordinator")?;
+    let raw = reply.sample.value.payload.contiguous();
+    let reply_string = std::str::from_utf8(raw.deref()).wrap_err("reply is not valid UTF8")?;
+    println!("{reply_string}");
+
     Ok(())
 }
 
