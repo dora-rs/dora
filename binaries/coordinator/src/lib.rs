@@ -119,29 +119,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                     let stop = async {
                         let uuid =
                             Uuid::parse_str(query.value_selector()).wrap_err("not a valid UUID")?;
-                        let communication_config = match running_dataflows.get(&uuid) {
-                            Some(config) => config.clone(),
-                            None => bail!("No running dataflow found with UUID `{uuid}`"),
-                        };
-
-                        let mut communication = tokio::task::spawn_blocking(move || {
-                            communication::init(&communication_config)
-                        })
-                        .await
-                        .wrap_err("failed to join communication layer init task")?
-                        .wrap_err("failed to init communication layer")?;
-
-                        tracing::info!("sending stop message to dataflow `{uuid}`");
-
-                        tokio::task::spawn_blocking(move || {
-                            let metadata = dora_message::Metadata::default();
-                            let data = metadata.serialize().unwrap();
-                            communication.publisher(topics::MANUAL_STOP)?.publish(&data)
-                        })
-                        .await
-                        .wrap_err("failed to join stop publish task")?
-                        .map_err(|err| eyre!(err))
-                        .wrap_err("failed to send stop message")?;
+                        stop_dataflow(&running_dataflows, uuid).await?;
 
                         Result::<_, eyre::Report>::Ok(())
                     };
@@ -162,6 +140,11 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                     // ensure that no new dataflows can be started
                     dataflow_events_tx = None;
 
+                    // stop all running dataflows
+                    for &uuid in running_dataflows.keys() {
+                        stop_dataflow(&running_dataflows, uuid).await?;
+                    }
+
                     query.reply_async(Sample::new("", "")).await;
                 }
                 _ => {
@@ -173,6 +156,32 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 
     tracing::info!("stopped");
 
+    Ok(())
+}
+
+async fn stop_dataflow(
+    running_dataflows: &HashMap<Uuid, CommunicationConfig>,
+    uuid: Uuid,
+) -> eyre::Result<()> {
+    let communication_config = match running_dataflows.get(&uuid) {
+        Some(config) => config.clone(),
+        None => bail!("No running dataflow found with UUID `{uuid}`"),
+    };
+    let mut communication =
+        tokio::task::spawn_blocking(move || communication::init(&communication_config))
+            .await
+            .wrap_err("failed to join communication layer init task")?
+            .wrap_err("failed to init communication layer")?;
+    tracing::info!("sending stop message to dataflow `{uuid}`");
+    tokio::task::spawn_blocking(move || {
+        let metadata = dora_message::Metadata::default();
+        let data = metadata.serialize().unwrap();
+        communication.publisher(topics::MANUAL_STOP)?.publish(&data)
+    })
+    .await
+    .wrap_err("failed to join stop publish task")?
+    .map_err(|err| eyre!(err))
+    .wrap_err("failed to send stop message")?;
     Ok(())
 }
 
