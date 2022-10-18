@@ -1,9 +1,12 @@
 use crate::run::spawn_dataflow;
-use dora_core::topics::{
-    StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
-    ZENOH_CONTROL_STOP,
+use dora_core::{
+    config::CommunicationConfig,
+    topics::{
+        StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
+        ZENOH_CONTROL_STOP,
+    },
 };
-use dora_node_api::{communication, config::CommunicationConfig};
+use dora_node_api::communication;
 use eyre::{bail, eyre, WrapErr};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
@@ -188,7 +191,7 @@ async fn start_dataflow(
         uuid,
         communication_config,
         tasks,
-    } = spawn_dataflow(&runtime_path, &path).await?;
+    } = spawn_dataflow(&runtime_path, path).await?;
     let path = path.to_owned();
     let task = async move {
         let result = await_tasks(tasks)

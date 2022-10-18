@@ -1,5 +1,3 @@
-use dora_node_api::config::{CommunicationConfig, NodeRunConfig};
-pub use dora_node_api::config::{DataId, InputMapping, NodeId, OperatorId, UserInputMapping};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -8,6 +6,8 @@ use std::{
     path::PathBuf,
 };
 pub use visualize::collect_dora_timers;
+
+use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
 
 mod visualize;
 

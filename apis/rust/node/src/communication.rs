@@ -1,11 +1,8 @@
+use crate::BoxError;
 use communication_layer_pub_sub::ReceivedSample;
 pub use communication_layer_pub_sub::{CommunicationLayer, Publisher, Subscriber};
+use dora_core::config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId};
 use dora_message::Metadata;
-
-use crate::{
-    config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
-    BoxError,
-};
 use eyre::Context;
 use std::{
     borrow::Cow,

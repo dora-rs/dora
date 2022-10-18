@@ -1,8 +1,8 @@
-use dora_core::descriptor::{OperatorDefinition, OperatorSource};
-use dora_node_api::{
-    communication::{self, CommunicationLayer},
+use dora_core::{
     config::NodeId,
+    descriptor::{OperatorDefinition, OperatorSource},
 };
+use dora_node_api::communication::{self, CommunicationLayer};
 use eyre::Context;
 #[cfg(feature = "tracing")]
 use opentelemetry::sdk::trace::Tracer;

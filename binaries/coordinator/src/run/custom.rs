@@ -1,6 +1,5 @@
 use super::command_init_common_env;
-use dora_core::descriptor;
-use dora_node_api::config::NodeId;
+use dora_core::{config::NodeId, descriptor};
 use eyre::{eyre, WrapErr};
 use std::{env::consts::EXE_EXTENSION, path::Path};
 
@@ -8,7 +7,7 @@ use std::{env::consts::EXE_EXTENSION, path::Path};
 pub(super) fn spawn_custom_node(
     node_id: NodeId,
     node: &descriptor::CustomNode,
-    communication: &dora_node_api::config::CommunicationConfig,
+    communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut args = node.run.split_ascii_whitespace();
