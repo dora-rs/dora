@@ -17,9 +17,14 @@ fn main() -> eyre::Result<()> {
             "tick" => {
                 let random: u64 = rand::random();
                 let data: &[u8] = &random.to_le_bytes();
-                operator.send_output(&output, input.metadata(), data.len(), |out| {
-                    out.copy_from_slice(data);
-                })?;
+                operator.send_output(
+                    &output,
+                    input.metadata().parameters.clone(),
+                    data.len(),
+                    |out| {
+                        out.copy_from_slice(data);
+                    },
+                )?;
             }
             other => eprintln!("Ignoring unexpected input `{other}`"),
         }

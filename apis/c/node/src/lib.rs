@@ -194,7 +194,7 @@ unsafe fn try_send_output(
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
     context
         .node
-        .send_output(&output_id, &Default::default(), data.len(), |out| {
+        .send_output(&output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
         })
 }
