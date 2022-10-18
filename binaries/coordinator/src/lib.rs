@@ -2,7 +2,7 @@ use crate::run::spawn_dataflow;
 use dora_core::{
     config::CommunicationConfig,
     topics::{
-        StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
+        self, StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
         ZENOH_CONTROL_STOP,
     },
 };
@@ -134,10 +134,9 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                         tracing::info!("sending stop message to dataflow `{uuid}`");
 
                         tokio::task::spawn_blocking(move || {
-                            let topic = format!("dora/stoop");
                             let metadata = dora_message::Metadata::default();
                             let data = metadata.serialize().unwrap();
-                            communication.publisher(&topic)?.publish(&data)
+                            communication.publisher(topics::MANUAL_STOP)?.publish(&data)
                         })
                         .await
                         .wrap_err("failed to join stop publish task")?
