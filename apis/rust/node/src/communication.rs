@@ -1,13 +1,15 @@
 use crate::BoxError;
 use communication_layer_pub_sub::ReceivedSample;
 pub use communication_layer_pub_sub::{CommunicationLayer, Publisher, Subscriber};
-use dora_core::config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId};
+use dora_core::{
+    config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
+    topics,
+};
 use dora_message::Metadata;
 use eyre::Context;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashSet},
-    mem,
     ops::Deref,
     thread,
 };
@@ -141,7 +143,28 @@ pub fn subscribe_all(
             }
         });
     }
-    mem::drop(inputs_tx);
+
+    // subscribe to topic for manual stops
+    {
+        let topic = topics::MANUAL_STOP;
+        let mut sub = communication
+            .subscribe(topic)
+            .map_err(|err| eyre::eyre!(err))
+            .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+
+        let sender = inputs_tx;
+        thread::spawn(move || loop {
+            let event = match sub.recv().transpose() {
+                None => break,
+                Some(Ok(_)) => InputEvent::ManualStop,
+                Some(Err(err)) => InputEvent::Error(err),
+            };
+            match sender.send(event) {
+                Ok(()) => {}
+                Err(flume::SendError(_)) => break,
+            }
+        });
+    }
 
     let (combined_tx, combined) = flume::bounded(1);
     thread::spawn(move || loop {
@@ -155,6 +178,10 @@ pub fn subscribe_all(
                 if sources.is_empty() {
                     break;
                 }
+            }
+            Ok(InputEvent::ManualStop) => {
+                tracing::info!("received manual stop message");
+                break;
             }
             Ok(InputEvent::ParseMessageError(err)) => {
                 tracing::warn!("{err:?}");
@@ -173,6 +200,7 @@ enum InputEvent {
         source: NodeId,
         operator: Option<OperatorId>,
     },
+    ManualStop,
     Error(BoxError),
     ParseMessageError(eyre::Report),
 }
