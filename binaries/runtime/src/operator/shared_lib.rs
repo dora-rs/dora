@@ -1,5 +1,6 @@
 use super::{OperatorEvent, Tracer};
 use dora_core::adjust_shared_library_path;
+use dora_message::uhlc;
 use dora_node_api::{communication::Publisher, config::DataId};
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
@@ -32,12 +33,17 @@ pub fn spawn(
         libloading::Library::new(&path)
             .wrap_err_with(|| format!("failed to load shared library at `{}`", path.display()))?
     };
+    let hlc = uhlc::HLC::default();
 
     thread::spawn(move || {
         let closure = AssertUnwindSafe(|| {
             let bindings = Bindings::init(&library).context("failed to init operator")?;
 
-            let operator = SharedLibraryOperator { inputs, bindings };
+            let operator = SharedLibraryOperator {
+                inputs,
+                bindings,
+                hlc,
+            };
 
             operator.run(publishers, tracer)
         });
@@ -61,6 +67,7 @@ struct SharedLibraryOperator<'lib> {
     inputs: Receiver<dora_node_api::Input>,
 
     bindings: Bindings<'lib>,
+    hlc: uhlc::HLC,
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
@@ -92,10 +99,9 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     open_telemetry_context,
                 },
             } = output;
-            let metadata = dora_node_api::Metadata {
-                open_telemetry_context: String::from(open_telemetry_context).into(),
-                ..Default::default()
-            };
+            let mut metadata = dora_node_api::Metadata::new(self.hlc.new_timestamp());
+            metadata.parameters.open_telemetry_context =
+                String::from(open_telemetry_context).into();
 
             let message = metadata
                 .serialize()

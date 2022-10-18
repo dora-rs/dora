@@ -1,18 +1,14 @@
 use std::borrow::Cow;
 
-use dora_node_api::Metadata;
+use dora_node_api::{Metadata, MetadataParameters};
 use eyre::{Context, Result};
 use pyo3::{prelude::*, types::PyDict};
 
-pub fn pydict_to_metadata(dict: Option<&PyDict>) -> Result<Metadata> {
-    let mut default_metadata = Metadata::default();
+pub fn pydict_to_metadata(dict: Option<&PyDict>) -> Result<MetadataParameters> {
+    let mut default_metadata = MetadataParameters::default();
     if let Some(metadata) = dict {
         for (key, value) in metadata.iter() {
             match key.extract::<&str>().context("Parsing metadata keys")? {
-                "metadata_version" => {
-                    default_metadata.metadata_version =
-                        value.extract().context("parsing metadata version failed")?;
-                }
                 "watermark" => {
                     default_metadata.watermark =
                         value.extract().context("parsing watermark failed")?;
@@ -36,8 +32,11 @@ pub fn pydict_to_metadata(dict: Option<&PyDict>) -> Result<Metadata> {
 
 pub fn metadata_to_pydict<'a>(metadata: &'a Metadata, py: Python<'a>) -> &'a PyDict {
     let dict = PyDict::new(py);
-    dict.set_item("open_telemetry_context", &metadata.open_telemetry_context)
-        .wrap_err("could not make metadata a python dictionary item")
-        .unwrap();
+    dict.set_item(
+        "open_telemetry_context",
+        &metadata.parameters.open_telemetry_context,
+    )
+    .wrap_err("could not make metadata a python dictionary item")
+    .unwrap();
     dict
 }
