@@ -925,10 +925,11 @@ dependencies = [
 name = "dora-core"
 version = "0.1.0"
 dependencies = [
- "dora-node-api",
  "eyre",
+ "once_cell",
  "serde",
  "serde_yaml 0.9.11",
+ "zenoh-config",
 ]
 
 [[package]]
@@ -966,6 +967,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "communication-layer-pub-sub",
+ "dora-core",
  "dora-message",
  "eyre",
  "flume",

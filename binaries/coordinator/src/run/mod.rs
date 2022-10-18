@@ -1,9 +1,9 @@
 use self::{custom::spawn_custom_node, runtime::spawn_runtime_node};
-use dora_core::descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor, NodeId};
-use dora_node_api::{
-    communication,
-    config::{format_duration, CommunicationConfig},
+use dora_core::{
+    config::{format_duration, CommunicationConfig, NodeId},
+    descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor},
 };
+use dora_node_api::communication;
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::{env::consts::EXE_EXTENSION, path::Path};
@@ -20,7 +20,7 @@ pub async fn run_dataflow(dataflow_path: &Path, runtime: &Path) -> eyre::Result<
 
 pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Result<SpawnedDataflow> {
     let mut runtime = runtime.with_extension(EXE_EXTENSION);
-    let descriptor = read_descriptor(&dataflow_path).await.wrap_err_with(|| {
+    let descriptor = read_descriptor(dataflow_path).await.wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
             dataflow_path.display()
@@ -144,7 +144,7 @@ async fn read_descriptor(file: &Path) -> Result<Descriptor, eyre::Error> {
 fn command_init_common_env(
     command: &mut tokio::process::Command,
     node_id: &NodeId,
-    communication: &dora_node_api::config::CommunicationConfig,
+    communication: &dora_core::config::CommunicationConfig,
 ) -> Result<(), eyre::Error> {
     command.env(
         "DORA_NODE_ID",
