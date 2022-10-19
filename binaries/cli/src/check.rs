@@ -55,22 +55,24 @@ pub fn check(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
             }
             descriptor::CoreNodeKind::Runtime(node) => {
                 for operator_definition in &node.operators {
-                    match &operator_definition.config.source {
-                        OperatorSource::SharedLibrary(path) => {
-                            let path = adjust_shared_library_path(path)?;
+                    if let Some(path) = operator_definition.config.source.as_local_path() {
+                        match &operator_definition.config.source {
+                            OperatorSource::SharedLibrary(_) => {
+                                let path = adjust_shared_library_path(path)?;
 
-                            if !base.join(&path).exists() {
-                                bail!("no shared library at `{}`", path.display());
+                                if !base.join(&path).exists() {
+                                    bail!("no shared library at `{}`", path.display());
+                                }
                             }
-                        }
-                        OperatorSource::Python(path) => {
-                            if !base.join(&path).exists() {
-                                bail!("no Python library at `{}`", path.display());
+                            OperatorSource::Python(_) => {
+                                if !base.join(&path).exists() {
+                                    bail!("no Python library at `{}`", path.display());
+                                }
                             }
-                        }
-                        OperatorSource::Wasm(path) => {
-                            if !base.join(&path).exists() {
-                                bail!("no WASM library at `{}`", path.display());
+                            OperatorSource::Wasm(_) => {
+                                if !base.join(&path).exists() {
+                                    bail!("no WASM library at `{}`", path.display());
+                                }
                             }
                         }
                     }

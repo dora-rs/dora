@@ -1,13 +1,14 @@
+use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::os::unix::prelude::OsStrExt;
+use std::path::Path;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
 };
 pub use visualize::collect_dora_timers;
-
-use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
 
 mod visualize;
 
@@ -166,20 +167,52 @@ pub struct OperatorConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
-    SharedLibrary(PathBuf),
-    Python(PathBuf),
-    Wasm(PathBuf),
+    SharedLibrary(#[serde(with = "http_serde::uri")] http::Uri),
+    Python(#[serde(with = "http_serde::uri")] http::Uri),
+    Wasm(#[serde(with = "http_serde::uri")] http::Uri),
 }
 
 impl OperatorSource {
+    pub fn as_local_path(&self) -> Option<&Path> {
+        let uri = self.uri();
+        Self::uri_as_local_path(uri)
+    }
+
     pub fn canonicalize(&mut self) -> std::io::Result<()> {
-        let path = match self {
-            OperatorSource::SharedLibrary(path) => path,
-            OperatorSource::Python(path) => path,
-            OperatorSource::Wasm(path) => path,
-        };
-        *path = path.canonicalize()?;
+        if let Some(path) = self.as_local_path() {
+            *self.uri_mut() = path
+                .canonicalize()?
+                .as_os_str()
+                .as_bytes()
+                .try_into()
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        }
         Ok(())
+    }
+
+    fn uri(&self) -> &http::Uri {
+        match self {
+            OperatorSource::SharedLibrary(uri) => uri,
+            OperatorSource::Python(uri) => uri,
+            OperatorSource::Wasm(uri) => uri,
+        }
+    }
+
+    fn uri_mut(&mut self) -> &mut http::Uri {
+        match self {
+            OperatorSource::SharedLibrary(uri) => uri,
+            OperatorSource::Python(uri) => uri,
+            OperatorSource::Wasm(uri) => uri,
+        }
+    }
+
+    pub fn uri_as_local_path(uri: &http::Uri) -> Option<&Path> {
+        if uri.path() == uri {
+            // URI is a local path
+            Some(Path::new(uri.path()))
+        } else {
+            None
+        }
     }
 }
 

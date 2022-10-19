@@ -1,5 +1,5 @@
-use super::{OperatorEvent, Tracer};
-use dora_core::{adjust_shared_library_path, config::DataId};
+use super::{download_file, OperatorEvent, Tracer};
+use dora_core::{adjust_shared_library_path, config::DataId, descriptor::OperatorSource};
 use dora_node_api::communication::Publisher;
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
@@ -13,20 +13,28 @@ use std::{
     ffi::c_void,
     ops::Deref,
     panic::{catch_unwind, AssertUnwindSafe},
-    path::Path,
     sync::Arc,
     thread,
 };
 use tokio::sync::mpsc::Sender;
 
 pub fn spawn(
-    path: &Path,
+    uri: &http::Uri,
     events_tx: Sender<OperatorEvent>,
     inputs: Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
-    let path = adjust_shared_library_path(path)?;
+    let mut temp_file = None;
+    let path = if let Some(path) = OperatorSource::uri_as_local_path(&uri) {
+        adjust_shared_library_path(path)?
+    } else {
+        // try to download the shared library
+        let tmp = download_file(uri).wrap_err("failed to download shared library operator")?;
+        let path = tmp.path().to_owned();
+        temp_file = Some(tmp);
+        path
+    };
 
     let library = unsafe {
         libloading::Library::new(&path)
@@ -35,6 +43,8 @@ pub fn spawn(
 
     thread::spawn(move || {
         let closure = AssertUnwindSafe(|| {
+            let _temp_file = temp_file;
+
             let bindings = Bindings::init(&library).context("failed to init operator")?;
 
             let operator = SharedLibraryOperator { inputs, bindings };
