@@ -308,7 +308,7 @@ rand = &quot;0.8.5&quot;
 tokio = { version = &quot;1.20.1&quot;, features = [&quot;rt&quot;, &quot;macros&quot;] }
 </code></pre>
 <p><code>src/main.rs</code></p>
-<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, config::DataId, DoraNode};
+<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, core::config::DataId, DoraNode};
 
 fn main() -&gt; eyre::Result&lt;()&gt; {
     let output = DataId::from(&quot;random&quot;.to_owned());
