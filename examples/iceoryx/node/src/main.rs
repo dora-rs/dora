@@ -1,4 +1,4 @@
-use dora_node_api::{self, config::DataId, DoraNode};
+use dora_node_api::{self, core::config::DataId, DoraNode};
 
 fn main() -> eyre::Result<()> {
     let output = DataId::from("random".to_owned());

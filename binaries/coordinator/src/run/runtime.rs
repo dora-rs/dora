@@ -1,6 +1,5 @@
 use super::command_init_common_env;
-use dora_core::descriptor;
-use dora_node_api::config::NodeId;
+use dora_core::{config::NodeId, descriptor};
 use eyre::{eyre, WrapErr};
 use std::path::Path;
 
@@ -9,7 +8,7 @@ pub fn spawn_runtime_node(
     runtime: &Path,
     node_id: NodeId,
     node: &descriptor::RuntimeNode,
-    communication: &dora_node_api::config::CommunicationConfig,
+    communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
     let mut command = tokio::process::Command::new(runtime);

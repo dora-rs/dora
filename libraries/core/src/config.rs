@@ -1,4 +1,3 @@
-use communication_layer_pub_sub::zenoh::zenoh_config;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -9,15 +8,6 @@ use std::{
     str::FromStr,
     time::Duration,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeRunConfig {
-    #[serde(default)]
-    pub inputs: BTreeMap<DataId, InputMapping>,
-    #[serde(default)]
-    pub outputs: BTreeSet<DataId>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NodeId(String);
@@ -160,22 +150,6 @@ impl fmt::Display for InputMapping {
     }
 }
 
-pub struct FormattedDuration(pub Duration);
-
-impl fmt::Display for FormattedDuration {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0.subsec_millis() == 0 {
-            write!(f, "secs/{}", self.0.as_secs())
-        } else {
-            write!(f, "millis/{}", self.0.as_millis())
-        }
-    }
-}
-
-pub fn format_duration(interval: Duration) -> FormattedDuration {
-    FormattedDuration(interval)
-}
-
 impl Serialize for InputMapping {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -260,6 +234,31 @@ pub struct UserInputMapping {
     pub source: NodeId,
     pub operator: Option<OperatorId>,
     pub output: DataId,
+}
+
+pub struct FormattedDuration(pub Duration);
+
+impl fmt::Display for FormattedDuration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.subsec_millis() == 0 {
+            write!(f, "secs/{}", self.0.as_secs())
+        } else {
+            write!(f, "millis/{}", self.0.as_millis())
+        }
+    }
+}
+
+pub fn format_duration(interval: Duration) -> FormattedDuration {
+    FormattedDuration(interval)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeRunConfig {
+    #[serde(default)]
+    pub inputs: BTreeMap<DataId, InputMapping>,
+    #[serde(default)]
+    pub outputs: BTreeSet<DataId>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

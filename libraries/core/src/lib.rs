@@ -4,6 +4,7 @@ use std::{
     path::Path,
 };
 
+pub mod config;
 pub mod descriptor;
 pub mod topics;
 
