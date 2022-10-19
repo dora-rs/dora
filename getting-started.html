@@ -202,9 +202,14 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
             &quot;tick&quot; =&gt; {
                 let random: u64 = rand::random();
                 let data: &amp;[u8] = &amp;random.to_le_bytes();
-                operator.send_output(&amp;output, input.metadata(), data.len(), |out| {
-                    out.copy_from_slice(data);
-                })?;
+                operator.send_output(
+                    &amp;output,
+                    input.metadata().parameters.clone(),
+                    data.len(),
+                    |out| {
+                        out.copy_from_slice(data);
+                    },
+                )?;
             }
             other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
         }
