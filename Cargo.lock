@@ -926,8 +926,6 @@ name = "dora-core"
 version = "0.1.0"
 dependencies = [
  "eyre",
- "http",
- "http-serde",
  "once_cell",
  "serde",
  "serde_yaml 0.9.11",
@@ -1066,7 +1064,6 @@ dependencies = [
  "flume",
  "futures",
  "futures-concurrency 2.0.3",
- "http",
  "libloading",
  "opentelemetry",
  "opentelemetry-system-metrics",
@@ -1536,16 +1533,6 @@ dependencies = [
  "bytes",
  "http",
  "pin-project-lite",
-]
-
-[[package]]
-name = "http-serde"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e272971f774ba29341db2f686255ff8a979365a26fb9e4277f6b6d9ec0cdd5e"
-dependencies = [
- "http",
- "serde",
 ]
 
 [[package]]

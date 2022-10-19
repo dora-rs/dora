@@ -55,23 +55,25 @@ pub fn spawn_operator(
     let tracer = ();
 
     match &operator_definition.config.source {
-        OperatorSource::SharedLibrary(uri) => {
-            shared_lib::spawn(uri, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
-                format!(
-                    "failed to spawn shared library operator for {}",
-                    operator_definition.id
-                )
-            })?;
+        OperatorSource::SharedLibrary(source) => {
+            shared_lib::spawn(source, events_tx, inputs, publishers, tracer).wrap_err_with(
+                || {
+                    format!(
+                        "failed to spawn shared library operator for {}",
+                        operator_definition.id
+                    )
+                },
+            )?;
         }
-        OperatorSource::Python(uri) => {
-            python::spawn(uri, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
+        OperatorSource::Python(source) => {
+            python::spawn(source, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
                 format!(
                     "failed to spawn Python operator for {}",
                     operator_definition.id
                 )
             })?;
         }
-        OperatorSource::Wasm(_uri) => {
+        OperatorSource::Wasm(_) => {
             tracing::error!("WASM operators are not supported yet");
         }
     }
@@ -84,12 +86,14 @@ pub enum OperatorEvent {
     Finished,
 }
 
-fn download_file(uri: &http::Uri) -> Result<tempfile::NamedTempFile, eyre::ErrReport> {
-    let uri_str = uri.to_string();
+fn download_file<T>(url: T) -> Result<tempfile::NamedTempFile, eyre::ErrReport>
+where
+    T: reqwest::IntoUrl + std::fmt::Display + Copy,
+{
     let response = tokio::runtime::Handle::current().block_on(async {
-        reqwest::get(&uri_str)
+        reqwest::get(url)
             .await
-            .wrap_err_with(|| format!("failed to request operator from `{uri_str}`"))?
+            .wrap_err_with(|| format!("failed to request operator from `{url}`"))?
             .bytes()
             .await
             .wrap_err("failed to read operator from `{uri}`")

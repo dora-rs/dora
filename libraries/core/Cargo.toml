@@ -12,5 +12,3 @@ serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.9.11"
 once_cell = "1.13.0"
 zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
-http = "0.2.8"
-http-serde = "1.1.2"

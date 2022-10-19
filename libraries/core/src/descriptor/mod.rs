@@ -1,11 +1,8 @@
 use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
-use eyre::eyre;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt;
-use std::path::Path;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    fmt,
     path::PathBuf,
 };
 pub use visualize::collect_dora_timers;
@@ -167,57 +164,14 @@ pub struct OperatorConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
-    SharedLibrary(#[serde(with = "http_serde::uri")] http::Uri),
-    Python(#[serde(with = "http_serde::uri")] http::Uri),
-    Wasm(#[serde(with = "http_serde::uri")] http::Uri),
+    SharedLibrary(String),
+    Python(String),
+    Wasm(String),
 }
 
 impl OperatorSource {
-    pub fn as_local_path(&self) -> Option<&Path> {
-        let uri = self.uri();
-        Self::uri_as_local_path(uri)
-    }
-
-    pub fn canonicalize(&mut self) -> std::io::Result<()> {
-        if let Some(path) = self.as_local_path() {
-            *self.uri_mut() = path
-                .canonicalize()?
-                .to_str()
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        eyre!("operator path is invalid utf8"),
-                    )
-                })?
-                .try_into()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-        }
-        Ok(())
-    }
-
-    fn uri(&self) -> &http::Uri {
-        match self {
-            OperatorSource::SharedLibrary(uri) => uri,
-            OperatorSource::Python(uri) => uri,
-            OperatorSource::Wasm(uri) => uri,
-        }
-    }
-
-    fn uri_mut(&mut self) -> &mut http::Uri {
-        match self {
-            OperatorSource::SharedLibrary(uri) => uri,
-            OperatorSource::Python(uri) => uri,
-            OperatorSource::Wasm(uri) => uri,
-        }
-    }
-
-    pub fn uri_as_local_path(uri: &http::Uri) -> Option<&Path> {
-        if uri.path() == uri {
-            // URI is a local path
-            Some(Path::new(uri.path()))
-        } else {
-            None
-        }
+    pub fn is_url(source: &str) -> bool {
+        source.contains("://")
     }
 }
 
