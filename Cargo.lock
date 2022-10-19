@@ -902,6 +902,7 @@ dependencies = [
  "bincode",
  "clap 3.2.20",
  "dora-core",
+ "dora-download",
  "dora-message",
  "dora-node-api",
  "eyre",
@@ -930,6 +931,16 @@ dependencies = [
  "serde",
  "serde_yaml 0.9.11",
  "zenoh-config",
+]
+
+[[package]]
+name = "dora-download"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "reqwest",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1053,6 +1064,7 @@ version = "0.1.0"
 dependencies = [
  "clap 3.2.20",
  "dora-core",
+ "dora-download",
  "dora-message",
  "dora-metrics",
  "dora-node-api",
@@ -1068,9 +1080,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-system-metrics",
  "pyo3",
- "reqwest",
  "serde_yaml 0.8.23",
- "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",

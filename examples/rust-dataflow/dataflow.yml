@@ -6,7 +6,7 @@ nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
-      run: ../../target/debug/rust-dataflow-example-node
+      source: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:
@@ -24,6 +24,6 @@ nodes:
   - id: rust-sink
     custom:
       build: cargo build -p rust-dataflow-example-sink
-      run: ../../target/debug/rust-dataflow-example-sink
+      source: ../../target/debug/rust-dataflow-example-sink
       inputs:
         message: runtime-node/rust-operator/status

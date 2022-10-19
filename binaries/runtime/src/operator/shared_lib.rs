@@ -1,5 +1,6 @@
-use super::{download_file, OperatorEvent, Tracer};
-use dora_core::{adjust_shared_library_path, config::DataId, descriptor::OperatorSource};
+use super::{OperatorEvent, Tracer};
+use dora_core::{adjust_shared_library_path, config::DataId, descriptor::source_is_url};
+use dora_download::download_file;
 use dora_node_api::communication::Publisher;
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
@@ -27,7 +28,7 @@ pub fn spawn(
     tracer: Tracer,
 ) -> eyre::Result<()> {
     let mut temp_file = None;
-    let path = if OperatorSource::is_url(source) {
+    let path = if source_is_url(source) {
         // try to download the shared library
         let tmp = download_file(source).wrap_err("failed to download shared library operator")?;
         let path = tmp.path().to_owned();

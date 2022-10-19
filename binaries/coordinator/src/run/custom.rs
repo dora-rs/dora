@@ -1,5 +1,9 @@
 use super::command_init_common_env;
-use dora_core::{config::NodeId, descriptor};
+use dora_core::{
+    config::NodeId,
+    descriptor::{self, source_is_url},
+};
+use dora_download::download_file;
 use eyre::{eyre, WrapErr};
 use std::{env::consts::EXE_EXTENSION, path::Path};
 
@@ -10,25 +14,31 @@ pub(super) fn spawn_custom_node(
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let mut args = node.run.split_ascii_whitespace();
-    let cmd = {
-        let raw = Path::new(
-            args.next()
-                .ok_or_else(|| eyre!("`run` field must not be empty"))?,
-        );
-        let path = if raw.extension().is_none() {
+    let mut temp_file = None;
+    let path = if source_is_url(&node.source) {
+        // try to download the shared library
+        let tmp = download_file(&node.source).wrap_err("failed to download custom node")?;
+        let path = tmp.path().to_owned();
+        temp_file = Some(tmp);
+        path
+    } else {
+        let raw = Path::new(&node.source);
+        if raw.extension().is_none() {
             raw.with_extension(EXE_EXTENSION)
         } else {
             raw.to_owned()
-        };
-        working_dir
-            .join(&path)
-            .canonicalize()
-            .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?
+        }
     };
 
+    let cmd = working_dir
+        .join(&path)
+        .canonicalize()
+        .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?;
+
     let mut command = tokio::process::Command::new(cmd);
-    command.args(args);
+    if let Some(args) = &node.args {
+        command.args(args.split_ascii_whitespace());
+    }
     command_init_common_env(&mut command, &node_id, communication)?;
     command.env(
         "DORA_NODE_RUN_CONFIG",
@@ -45,11 +55,16 @@ pub(super) fn spawn_custom_node(
         }
     }
 
-    let mut child = command
-        .spawn()
-        .wrap_err_with(|| format!("failed to run command `{}`", &node.run))?;
+    let mut child = command.spawn().wrap_err_with(|| {
+        format!(
+            "failed to run executable `{}` with args `{}`",
+            node.source,
+            node.args.as_deref().unwrap_or_default()
+        )
+    })?;
     let result = tokio::spawn(async move {
         let status = child.wait().await.context("child process failed")?;
+        std::mem::drop(temp_file);
         if status.success() {
             tracing::info!("node {node_id} finished");
             Ok(())

@@ -169,10 +169,8 @@ pub enum OperatorSource {
     Wasm(String),
 }
 
-impl OperatorSource {
-    pub fn is_url(source: &str) -> bool {
-        source.contains("://")
-    }
+pub fn source_is_url(source: &str) -> bool {
+    source.contains("://")
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -186,7 +184,9 @@ pub struct PythonOperatorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomNode {
-    pub run: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
     pub working_directory: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
