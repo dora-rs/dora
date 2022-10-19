@@ -1,14 +1,13 @@
 pub use communication::Input;
-pub use dora_message::{uhlc, Metadata, MetadataParameters};
-pub use flume::Receiver;
-
 use communication::STOP_TOPIC;
 use communication_layer_pub_sub::CommunicationLayer;
-use config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
+pub use dora_core as core;
+use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
+pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
+pub use flume::Receiver;
 
 pub mod communication;
-pub mod config;
 
 pub struct DoraNode {
     id: NodeId,
@@ -147,6 +146,8 @@ fn set_up_tracing() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use dora_core::config;
+
     use super::*;
 
     #[test]

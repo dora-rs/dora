@@ -1,7 +1,8 @@
 use crate::graph::read_descriptor;
 use dora_core::{
     adjust_shared_library_path,
-    descriptor::{self, CoreNodeKind, InputMapping, OperatorSource, UserInputMapping},
+    config::{InputMapping, UserInputMapping},
+    descriptor::{self, CoreNodeKind, OperatorSource},
 };
 use eyre::{bail, eyre, Context};
 use std::{env::consts::EXE_EXTENSION, path::Path};
