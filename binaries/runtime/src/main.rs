@@ -1,10 +1,12 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_core::descriptor::OperatorDefinition;
+use dora_core::{
+    config::{CommunicationConfig, DataId, NodeId, OperatorId},
+    descriptor::OperatorDefinition,
+};
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer, Publisher, STOP_TOPIC},
-    config::{CommunicationConfig, DataId, NodeId, OperatorId},
 };
 use eyre::{bail, Context};
 use futures::{Stream, StreamExt};

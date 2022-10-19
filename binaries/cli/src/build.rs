@@ -1,5 +1,5 @@
 use crate::graph;
-use dora_core::descriptor::{OperatorId, SINGLE_OPERATOR_DEFAULT_ID};
+use dora_core::{config::OperatorId, descriptor::SINGLE_OPERATOR_DEFAULT_ID};
 use eyre::{eyre, Context};
 use std::{path::Path, process::Command};
 

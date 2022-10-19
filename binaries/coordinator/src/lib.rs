@@ -1,8 +1,23 @@
-use eyre::WrapErr;
+use crate::run::spawn_dataflow;
+use dora_core::{
+    config::CommunicationConfig,
+    topics::{
+        self, StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
+        ZENOH_CONTROL_STOP,
+    },
+};
+use dora_node_api::communication;
+use eyre::{bail, eyre, WrapErr};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
-use std::path::{Path, PathBuf};
+use run::{await_tasks, SpawnedDataflow};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use tokio_stream::wrappers::ReceiverStream;
+use uuid::Uuid;
+use zenoh::prelude::Sample;
 
 mod control;
 mod run;
@@ -33,7 +48,7 @@ pub async fn run(args: Args) -> eyre::Result<()> {
     match run_dataflow {
         Some(path) => {
             // start the given dataflow directly
-            run::run_dataflow(path.clone(), &runtime_path)
+            run::run_dataflow(&path, &runtime_path)
                 .await
                 .wrap_err_with(|| format!("failed to run dataflow at {}", path.display()))?;
         }
@@ -47,62 +62,95 @@ pub async fn run(args: Args) -> eyre::Result<()> {
 }
 
 async fn start(runtime_path: &Path) -> eyre::Result<()> {
-    let (dataflow_errors_tx, dataflow_errors) = tokio::sync::mpsc::channel(2);
-    let mut dataflow_errors_tx = Some(dataflow_errors_tx);
-    let dataflow_error_events = ReceiverStream::new(dataflow_errors).map(Event::DataflowError);
+    let (dataflow_events_tx, dataflow_events) = tokio::sync::mpsc::channel(2);
+    let mut dataflow_events_tx = Some(dataflow_events_tx);
+    let dataflow_error_events = ReceiverStream::new(dataflow_events);
 
-    let control_events = control::control_events();
+    let (control_events, control_events_abort) = futures::stream::abortable(
+        control::control_events()
+            .await
+            .wrap_err("failed to create control events")?,
+    );
 
     let mut events = (dataflow_error_events, control_events).merge();
 
+    let mut running_dataflows = HashMap::new();
+
     while let Some(event) = events.next().await {
-        let mut stop = false;
         match event {
-            Event::DataflowError(err) => {
-                tracing::error!("{err:?}");
-            }
-            Event::ParseError(err) => {
-                let err = err.wrap_err("failed to parse message");
-                tracing::error!("{err:?}");
-            }
-            Event::ControlChannelError(err) => {
-                let err = err.wrap_err("Stopping because of fatal control channel error");
-                tracing::error!("{err:?}");
-                stop = true;
-            }
-            Event::StartDataflow { path } => {
-                let runtime_path = runtime_path.to_owned();
-                let dataflow_errors_tx = match &dataflow_errors_tx {
-                    Some(channel) => channel.clone(),
-                    None => {
-                        tracing::error!("cannot start new dataflow after receiving stop command");
-                        continue;
-                    }
-                };
-                let task = async move {
-                    let result = run::run_dataflow(path.clone(), &runtime_path)
-                        .await
-                        .wrap_err_with(|| format!("failed to run dataflow at {}", path.display()));
+            Event::Dataflow { uuid, event } => match event {
+                DataflowEvent::Finished { result } => {
+                    running_dataflows.remove(&uuid);
                     match result {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            tracing::info!("dataflow `{uuid}` finished successully");
+                        }
                         Err(err) => {
-                            let _ = dataflow_errors_tx.send(err).await;
+                            let err = err.wrap_err(format!("error occured in dataflow `{uuid}`"));
+                            tracing::error!("{err:?}");
                         }
                     }
-                };
-                tokio::spawn(task);
-            }
-            Event::Stop => {
-                tracing::info!("Received stop command");
-                stop = true;
-            }
-        }
+                }
+            },
 
-        if stop {
-            tracing::info!("stopping...");
+            Event::Control(query) => match query.key_selector().as_str() {
+                ZENOH_CONTROL_START => {
+                    let dataflow_path = query.value_selector();
+                    let result =
+                        start_dataflow(Path::new(dataflow_path), runtime_path, &dataflow_events_tx)
+                            .await;
+                    let reply = match result {
+                        Ok((uuid, communication_config)) => {
+                            running_dataflows.insert(uuid, communication_config);
+                            StartDataflowResult::Ok {
+                                uuid: uuid.to_string(),
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!("{err:?}");
+                            StartDataflowResult::Error(format!("{err:?}"))
+                        }
+                    };
+                    query
+                        .reply_async(Sample::new("", serde_json::to_string(&reply).unwrap()))
+                        .await;
+                }
+                ZENOH_CONTROL_STOP => {
+                    let stop = async {
+                        let uuid =
+                            Uuid::parse_str(query.value_selector()).wrap_err("not a valid UUID")?;
+                        stop_dataflow(&running_dataflows, uuid).await?;
 
-            // ensure that no new dataflows can be started
-            dataflow_errors_tx = None;
+                        Result::<_, eyre::Report>::Ok(())
+                    };
+                    let reply = match stop.await {
+                        Ok(()) => StopDataflowResult::Ok,
+                        Err(err) => StopDataflowResult::Error(format!("{err:?}")),
+                    };
+
+                    query
+                        .reply_async(Sample::new("", serde_json::to_string(&reply).unwrap()))
+                        .await;
+                }
+                ZENOH_CONTROL_DESTROY => {
+                    tracing::info!("Received stop command");
+
+                    control_events_abort.abort();
+
+                    // ensure that no new dataflows can be started
+                    dataflow_events_tx = None;
+
+                    // stop all running dataflows
+                    for &uuid in running_dataflows.keys() {
+                        stop_dataflow(&running_dataflows, uuid).await?;
+                    }
+
+                    query.reply_async(Sample::new("", "")).await;
+                }
+                _ => {
+                    query.reply_async(Sample::new("error", "invalid")).await;
+                }
+            },
         }
     }
 
@@ -111,10 +159,69 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+async fn stop_dataflow(
+    running_dataflows: &HashMap<Uuid, CommunicationConfig>,
+    uuid: Uuid,
+) -> eyre::Result<()> {
+    let communication_config = match running_dataflows.get(&uuid) {
+        Some(config) => config.clone(),
+        None => bail!("No running dataflow found with UUID `{uuid}`"),
+    };
+    let mut communication =
+        tokio::task::spawn_blocking(move || communication::init(&communication_config))
+            .await
+            .wrap_err("failed to join communication layer init task")?
+            .wrap_err("failed to init communication layer")?;
+    tracing::info!("sending stop message to dataflow `{uuid}`");
+    tokio::task::spawn_blocking(move || {
+        let metadata = dora_message::Metadata::default();
+        let data = metadata.serialize().unwrap();
+        communication.publisher(topics::MANUAL_STOP)?.publish(&data)
+    })
+    .await
+    .wrap_err("failed to join stop publish task")?
+    .map_err(|err| eyre!(err))
+    .wrap_err("failed to send stop message")?;
+    Ok(())
+}
+
+async fn start_dataflow(
+    path: &Path,
+    runtime_path: &Path,
+    dataflow_events_tx: &Option<tokio::sync::mpsc::Sender<Event>>,
+) -> eyre::Result<(Uuid, CommunicationConfig)> {
+    let runtime_path = runtime_path.to_owned();
+    let dataflow_events_tx = match dataflow_events_tx {
+        Some(channel) => channel.clone(),
+        None => bail!("cannot start new dataflow after receiving stop command"),
+    };
+    let SpawnedDataflow {
+        uuid,
+        communication_config,
+        tasks,
+    } = spawn_dataflow(&runtime_path, path).await?;
+    let path = path.to_owned();
+    let task = async move {
+        let result = await_tasks(tasks)
+            .await
+            .wrap_err_with(|| format!("failed to run dataflow at {}", path.display()));
+
+        let _ = dataflow_events_tx
+            .send(Event::Dataflow {
+                uuid,
+                event: DataflowEvent::Finished { result },
+            })
+            .await;
+    };
+    tokio::spawn(task);
+    Ok((uuid, communication_config))
+}
+
 enum Event {
-    DataflowError(eyre::Report),
-    ControlChannelError(eyre::Report),
-    StartDataflow { path: PathBuf },
-    ParseError(eyre::Report),
-    Stop,
+    Dataflow { uuid: Uuid, event: DataflowEvent },
+    Control(zenoh::queryable::Query),
+}
+
+enum DataflowEvent {
+    Finished { result: eyre::Result<()> },
 }
