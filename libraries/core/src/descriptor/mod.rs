@@ -1,8 +1,8 @@
 use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
+use eyre::eyre;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::os::unix::prelude::OsStrExt;
 use std::path::Path;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -182,8 +182,13 @@ impl OperatorSource {
         if let Some(path) = self.as_local_path() {
             *self.uri_mut() = path
                 .canonicalize()?
-                .as_os_str()
-                .as_bytes()
+                .to_str()
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        eyre!("operator path is invalid utf8"),
+                    )
+                })?
                 .try_into()
                 .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
         }
