@@ -174,7 +174,8 @@ async fn stop_dataflow(
             .wrap_err("failed to init communication layer")?;
     tracing::info!("sending stop message to dataflow `{uuid}`");
     tokio::task::spawn_blocking(move || {
-        let metadata = dora_message::Metadata::default();
+        let hlc = dora_message::uhlc::HLC::default();
+        let metadata = dora_message::Metadata::new(hlc.new_timestamp());
         let data = metadata.serialize().unwrap();
         communication.publisher(topics::MANUAL_STOP)?.publish(&data)
     })
