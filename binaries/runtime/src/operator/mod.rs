@@ -6,7 +6,7 @@ use dora_node_api::communication::{self, CommunicationLayer};
 use eyre::Context;
 #[cfg(feature = "tracing")]
 use opentelemetry::sdk::trace::Tracer;
-use std::any::Any;
+use std::{any::Any, io::Write};
 use tokio::sync::mpsc::Sender;
 
 #[cfg(not(feature = "tracing"))]
@@ -55,23 +55,23 @@ pub fn spawn_operator(
     let tracer = ();
 
     match &operator_definition.config.source {
-        OperatorSource::SharedLibrary(path) => {
-            shared_lib::spawn(path, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
+        OperatorSource::SharedLibrary(uri) => {
+            shared_lib::spawn(uri, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
                 format!(
                     "failed to spawn shared library operator for {}",
                     operator_definition.id
                 )
             })?;
         }
-        OperatorSource::Python(path) => {
-            python::spawn(path, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
+        OperatorSource::Python(uri) => {
+            python::spawn(uri, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
                 format!(
                     "failed to spawn Python operator for {}",
                     operator_definition.id
                 )
             })?;
         }
-        OperatorSource::Wasm(_path) => {
+        OperatorSource::Wasm(_uri) => {
             tracing::error!("WASM operators are not supported yet");
         }
     }
@@ -82,4 +82,22 @@ pub enum OperatorEvent {
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
     Finished,
+}
+
+fn download_file(uri: &http::Uri) -> Result<tempfile::NamedTempFile, eyre::ErrReport> {
+    let uri_str = uri.to_string();
+    let response = tokio::runtime::Handle::current().block_on(async {
+        reqwest::get(&uri_str)
+            .await
+            .wrap_err_with(|| format!("failed to request operator from `{uri_str}`"))?
+            .bytes()
+            .await
+            .wrap_err("failed to read operator from `{uri}`")
+    })?;
+    let mut tmp =
+        tempfile::NamedTempFile::new().wrap_err("failed to create temp file for operator")?;
+    tmp.as_file_mut()
+        .write_all(&response)
+        .wrap_err("failed to write downloaded operator to file")?;
+    Ok(tmp)
 }
