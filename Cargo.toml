@@ -13,6 +13,7 @@ members = [
     "libraries/communication-layer",
     "libraries/core",
     "libraries/message",
+    "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/zenoh-logger",
 ]

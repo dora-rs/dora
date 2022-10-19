@@ -5,7 +5,7 @@ communication:
 nodes:
   - id: rust-node
     custom:
-      run: ../../target/debug/iceoryx-example-node
+      source: ../../target/debug/iceoryx-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:
@@ -21,6 +21,6 @@ nodes:
           - status
   - id: rust-sink
     custom:
-      run: ../../target/debug/iceoryx-example-sink
+      source: ../../target/debug/iceoryx-example-sink
       inputs:
         message: runtime-node/rust-operator/status

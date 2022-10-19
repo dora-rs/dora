@@ -5,12 +5,12 @@ communication:
 nodes:
   - id: no_webcam
     custom:
-      run: ./no_webcam.py
+      source: ./no_webcam.py
       inputs:
         tick: dora/timer/millis/100
       outputs:
         - image
-  
+
   - id: object_detection
     operator:
       python: object_detection.py
