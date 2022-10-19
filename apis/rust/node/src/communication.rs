@@ -11,6 +11,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashSet},
     ops::Deref,
+    sync::Arc,
     thread,
 };
 
@@ -73,6 +74,7 @@ pub fn subscribe_all(
     inputs: &BTreeMap<DataId, InputMapping>,
 ) -> eyre::Result<flume::Receiver<Input>> {
     let (inputs_tx, inputs_rx) = flume::bounded(10);
+    let inputs_tx = Arc::new(inputs_tx);
     for (input, mapping) in inputs {
         let topic = mapping.to_string();
         let mut sub = communication
@@ -152,16 +154,23 @@ pub fn subscribe_all(
             .map_err(|err| eyre::eyre!(err))
             .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
 
-        let sender = inputs_tx;
+        // only keep a weak reference to the sender because we don't want to
+        // prevent it from being closed (e.g. when all sources are closed)
+        let sender = Arc::downgrade(&inputs_tx);
+        std::mem::drop(inputs_tx);
+
         thread::spawn(move || loop {
             let event = match sub.recv().transpose() {
                 None => break,
                 Some(Ok(_)) => InputEvent::ManualStop,
                 Some(Err(err)) => InputEvent::Error(err),
             };
-            match sender.send(event) {
-                Ok(()) => {}
-                Err(flume::SendError(_)) => break,
+            match sender.upgrade() {
+                Some(sender) => match sender.send(event) {
+                    Ok(()) => {}
+                    Err(flume::SendError(_)) => break,
+                },
+                None => break,
             }
         });
     }
