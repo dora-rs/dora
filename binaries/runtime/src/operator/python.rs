@@ -15,6 +15,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     panic::{catch_unwind, AssertUnwindSafe},
+    path::Path,
     sync::Arc,
     thread,
 };
@@ -33,21 +34,21 @@ fn traceback(err: pyo3::PyErr) -> eyre::Report {
 }
 
 pub fn spawn(
-    uri: &http::Uri,
+    source: &str,
     events_tx: Sender<OperatorEvent>,
     inputs: flume::Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
     let mut temp_file = None;
-    let path = if let Some(path) = OperatorSource::uri_as_local_path(uri) {
-        path.to_owned()
-    } else {
-        // try to download the Python file
-        let tmp = download_file(uri).wrap_err("failed to download Python operator")?;
+    let path = if OperatorSource::is_url(source) {
+        // try to download the shared library
+        let tmp = download_file(source).wrap_err("failed to download Python operator")?;
         let path = tmp.path().to_owned();
         temp_file = Some(tmp);
         path
+    } else {
+        Path::new(source).to_owned()
     };
 
     if !path.exists() {

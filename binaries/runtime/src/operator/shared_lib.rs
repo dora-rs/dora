@@ -13,27 +13,28 @@ use std::{
     ffi::c_void,
     ops::Deref,
     panic::{catch_unwind, AssertUnwindSafe},
+    path::Path,
     sync::Arc,
     thread,
 };
 use tokio::sync::mpsc::Sender;
 
 pub fn spawn(
-    uri: &http::Uri,
+    source: &str,
     events_tx: Sender<OperatorEvent>,
     inputs: Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
     let mut temp_file = None;
-    let path = if let Some(path) = OperatorSource::uri_as_local_path(&uri) {
-        adjust_shared_library_path(path)?
-    } else {
+    let path = if OperatorSource::is_url(source) {
         // try to download the shared library
-        let tmp = download_file(uri).wrap_err("failed to download shared library operator")?;
+        let tmp = download_file(source).wrap_err("failed to download shared library operator")?;
         let path = tmp.path().to_owned();
         temp_file = Some(tmp);
         path
+    } else {
+        adjust_shared_library_path(Path::new(source))?
     };
 
     let library = unsafe {

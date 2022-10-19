@@ -55,23 +55,32 @@ pub fn check(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
             }
             descriptor::CoreNodeKind::Runtime(node) => {
                 for operator_definition in &node.operators {
-                    if let Some(path) = operator_definition.config.source.as_local_path() {
-                        match &operator_definition.config.source {
-                            OperatorSource::SharedLibrary(_) => {
-                                let path = adjust_shared_library_path(path)?;
-
+                    match &operator_definition.config.source {
+                        OperatorSource::SharedLibrary(path) => {
+                            if OperatorSource::is_url(path) {
+                                todo!("check URL");
+                            } else {
+                                let path = adjust_shared_library_path(Path::new(&path))?;
                                 if !base.join(&path).exists() {
                                     bail!("no shared library at `{}`", path.display());
                                 }
                             }
-                            OperatorSource::Python(_) => {
+                        }
+                        OperatorSource::Python(path) => {
+                            if OperatorSource::is_url(path) {
+                                todo!("check URL");
+                            } else {
                                 if !base.join(&path).exists() {
-                                    bail!("no Python library at `{}`", path.display());
+                                    bail!("no Python library at `{path}`");
                                 }
                             }
-                            OperatorSource::Wasm(_) => {
+                        }
+                        OperatorSource::Wasm(path) => {
+                            if OperatorSource::is_url(path) {
+                                todo!("check URL");
+                            } else {
                                 if !base.join(&path).exists() {
-                                    bail!("no WASM library at `{}`", path.display());
+                                    bail!("no WASM library at `{path}`");
                                 }
                             }
                         }
