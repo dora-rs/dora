@@ -16,6 +16,5 @@ dora-core = { path = "../../libraries/core" }
 serde_yaml = "0.9.11"
 tempfile = "3.3.0"
 webbrowser = "0.8.0"
-communication-layer-pub-sub = { path = "../../libraries/communication-layer", default-features = false, features = [
-    "zenoh",
-] }
+zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
+serde_json = "1.0.86"

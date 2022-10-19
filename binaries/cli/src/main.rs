@@ -1,11 +1,15 @@
 use clap::Parser;
-use communication_layer_pub_sub::{zenoh::ZenohCommunicationLayer, CommunicationLayer};
 use dora_core::topics::{
-    ZENOH_CONTROL_PREFIX, ZENOH_CONTROL_START_DATAFLOW, ZENOH_CONTROL_STOP_ALL,
+    StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
+    ZENOH_CONTROL_STOP,
 };
-use eyre::{eyre, Context};
-use std::{io::Write, path::PathBuf};
+use eyre::{bail, eyre, Context};
+use std::{io::Write, path::PathBuf, sync::Arc};
 use tempfile::NamedTempFile;
+use zenoh::{
+    prelude::{Receiver, Selector, SplitBuffer},
+    sync::ZFuture,
+};
 
 mod build;
 mod check;
@@ -45,7 +49,9 @@ enum Command {
     Start {
         dataflow: PathBuf,
     },
-    Stop,
+    Stop {
+        uuid: String,
+    },
     Logs,
     Metrics,
     Stats,
@@ -124,34 +130,9 @@ fn main() -> eyre::Result<()> {
         Command::New { args } => template::create(args)?,
         Command::Dashboard => todo!(),
         Command::Up => todo!(),
-        Command::Start { dataflow } => {
-            let canonicalized = dataflow
-                .canonicalize()
-                .wrap_err("given dataflow file does not exist")?;
-            let path = &canonicalized
-                .to_str()
-                .ok_or_else(|| eyre!("dataflow path must be valid UTF-8"))?;
-
-            let publisher = zenoh_control_session(&mut session)?
-                .publisher(ZENOH_CONTROL_START_DATAFLOW)
-                .map_err(|err| eyre!(err))
-                .wrap_err("failed to create publisher for start dataflow message")?;
-            publisher
-                .publish(path.as_bytes())
-                .map_err(|err| eyre!(err))
-                .wrap_err("failed to publish start dataflow message")?;
-        }
-        Command::Stop => todo!(),
-        Command::Destroy => {
-            let publisher = zenoh_control_session(&mut session)?
-                .publisher(ZENOH_CONTROL_STOP_ALL)
-                .map_err(|err| eyre!(err))
-                .wrap_err("failed to create publisher for stop message")?;
-            publisher
-                .publish(&[])
-                .map_err(|err| eyre!(err))
-                .wrap_err("failed to publish stop message")?;
-        }
+        Command::Start { dataflow } => start_dataflow(dataflow, &mut session)?,
+        Command::Stop { uuid } => stop_dataflow(uuid, &mut session)?,
+        Command::Destroy => destroy(&mut session)?,
         Command::Logs => todo!(),
         Command::Metrics => todo!(),
         Command::Stats => todo!(),
@@ -163,15 +144,88 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+fn start_dataflow(
+    dataflow: PathBuf,
+    session: &mut Option<Arc<zenoh::Session>>,
+) -> Result<(), eyre::ErrReport> {
+    let canonicalized = dataflow
+        .canonicalize()
+        .wrap_err("given dataflow file does not exist")?;
+    let path = canonicalized
+        .to_str()
+        .ok_or_else(|| eyre!("dataflow path must be valid UTF-8"))?;
+    let reply_receiver = zenoh_control_session(session)?
+        .get(Selector {
+            key_selector: ZENOH_CONTROL_START.into(),
+            value_selector: path.into(),
+        })
+        .wait()
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to create publisher for start dataflow message")?;
+    let reply = reply_receiver
+        .recv()
+        .wrap_err("failed to receive reply from coordinator")?;
+    let raw = reply.sample.value.payload.contiguous();
+    let result: StartDataflowResult =
+        serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
+    match result {
+        StartDataflowResult::Ok { uuid } => {
+            println!("Started dataflow with UUID `{uuid}`");
+            Ok(())
+        }
+        StartDataflowResult::Error(err) => bail!(err),
+    }
+}
+
+fn stop_dataflow(
+    uuid: String,
+    session: &mut Option<Arc<zenoh::Session>>,
+) -> Result<(), eyre::ErrReport> {
+    let reply_receiver = zenoh_control_session(session)?
+        .get(Selector {
+            key_selector: ZENOH_CONTROL_STOP.into(),
+            value_selector: uuid.as_str().into(),
+        })
+        .wait()
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to create publisher for start dataflow message")?;
+    let reply = reply_receiver
+        .recv()
+        .wrap_err("failed to receive reply from coordinator")?;
+    let raw = reply.sample.value.payload.contiguous();
+    let result: StopDataflowResult =
+        serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
+    match result {
+        StopDataflowResult::Ok => {
+            println!("Stopped dataflow with UUID `{uuid}`");
+            Ok(())
+        }
+        StopDataflowResult::Error(err) => bail!(err),
+    }
+}
+
+fn destroy(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), eyre::ErrReport> {
+    let reply_receiver = zenoh_control_session(session)?
+        .get(ZENOH_CONTROL_DESTROY)
+        .wait()
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to create publisher for start dataflow message")?;
+    reply_receiver
+        .recv()
+        .wrap_err("failed to receive reply from coordinator")?;
+    Ok(())
+}
+
 fn zenoh_control_session(
-    session: &mut Option<ZenohCommunicationLayer>,
-) -> eyre::Result<&mut ZenohCommunicationLayer> {
+    session: &mut Option<Arc<zenoh::Session>>,
+) -> eyre::Result<&Arc<zenoh::Session>> {
     Ok(match session {
         Some(session) => session,
         None => session.insert(
-            ZenohCommunicationLayer::init(Default::default(), ZENOH_CONTROL_PREFIX.into())
-                .map_err(|err| eyre!(err))
-                .wrap_err("failed to open zenoh control session")?,
+            zenoh::open(zenoh::config::Config::default())
+                .wait()
+                .map_err(|err| eyre!(err))?
+                .into_arc(),
         ),
     })
 }

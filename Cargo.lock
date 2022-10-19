@@ -886,12 +886,13 @@ name = "dora-cli"
 version = "0.1.0"
 dependencies = [
  "clap 4.0.3",
- "communication-layer-pub-sub",
  "dora-core",
  "eyre",
+ "serde_json",
  "serde_yaml 0.9.11",
  "tempfile",
  "webbrowser",
+ "zenoh",
 ]
 
 [[package]]
@@ -900,7 +901,6 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "clap 3.2.20",
- "communication-layer-pub-sub",
  "dora-core",
  "dora-message",
  "dora-node-api",
@@ -909,6 +909,7 @@ dependencies = [
  "futures-concurrency 5.0.1",
  "rand",
  "serde",
+ "serde_json",
  "serde_yaml 0.8.23",
  "time",
  "tokio",
@@ -917,16 +918,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid 0.8.2",
+ "zenoh",
 ]
 
 [[package]]
 name = "dora-core"
 version = "0.1.0"
 dependencies = [
- "dora-node-api",
  "eyre",
+ "once_cell",
  "serde",
  "serde_yaml 0.9.11",
+ "zenoh-config",
 ]
 
 [[package]]
@@ -964,6 +967,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "communication-layer-pub-sub",
+ "dora-core",
  "dora-message",
  "eyre",
  "flume",
@@ -3234,9 +3238,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.79"
+version = "1.0.86"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e8d9fa5c3b304765ce1fd9c4c8a3de2c8db365a5b91be52f186efc675681d95"
+checksum = "41feea4228a6f1cd09ec7a3593a682276702cd67b5273544757dae23c096f074"
 dependencies = [
  "itoa",
  "ryu",

@@ -1,17 +1,17 @@
+use crate::BoxError;
 use communication_layer_pub_sub::ReceivedSample;
 pub use communication_layer_pub_sub::{CommunicationLayer, Publisher, Subscriber};
-use dora_message::Metadata;
-
-use crate::{
+use dora_core::{
     config::{CommunicationConfig, DataId, InputMapping, NodeId, OperatorId},
-    BoxError,
+    topics,
 };
+use dora_message::Metadata;
 use eyre::Context;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashSet},
-    mem,
     ops::Deref,
+    sync::Arc,
     thread,
 };
 
@@ -74,6 +74,7 @@ pub fn subscribe_all(
     inputs: &BTreeMap<DataId, InputMapping>,
 ) -> eyre::Result<flume::Receiver<Input>> {
     let (inputs_tx, inputs_rx) = flume::bounded(10);
+    let inputs_tx = Arc::new(inputs_tx);
     for (input, mapping) in inputs {
         let topic = mapping.to_string();
         let mut sub = communication
@@ -144,7 +145,35 @@ pub fn subscribe_all(
             }
         });
     }
-    mem::drop(inputs_tx);
+
+    // subscribe to topic for manual stops
+    {
+        let topic = topics::MANUAL_STOP;
+        let mut sub = communication
+            .subscribe(topic)
+            .map_err(|err| eyre::eyre!(err))
+            .wrap_err_with(|| format!("failed to subscribe on {topic}"))?;
+
+        // only keep a weak reference to the sender because we don't want to
+        // prevent it from being closed (e.g. when all sources are closed)
+        let sender = Arc::downgrade(&inputs_tx);
+        std::mem::drop(inputs_tx);
+
+        thread::spawn(move || loop {
+            let event = match sub.recv().transpose() {
+                None => break,
+                Some(Ok(_)) => InputEvent::ManualStop,
+                Some(Err(err)) => InputEvent::Error(err),
+            };
+            match sender.upgrade() {
+                Some(sender) => match sender.send(event) {
+                    Ok(()) => {}
+                    Err(flume::SendError(_)) => break,
+                },
+                None => break,
+            }
+        });
+    }
 
     let (combined_tx, combined) = flume::bounded(1);
     thread::spawn(move || loop {
@@ -158,6 +187,10 @@ pub fn subscribe_all(
                 if sources.is_empty() {
                     break;
                 }
+            }
+            Ok(InputEvent::ManualStop) => {
+                tracing::info!("received manual stop message");
+                break;
             }
             Ok(InputEvent::ParseMessageError(err)) => {
                 tracing::warn!("{err:?}");
@@ -176,6 +209,7 @@ enum InputEvent {
         source: NodeId,
         operator: Option<OperatorId>,
     },
+    ManualStop,
     Error(BoxError),
     ParseMessageError(eyre::Report),
 }
