@@ -29,12 +29,52 @@ pub fn spawn_runtime_node(
             tracing::info!("runtime node {node_id} finished");
             Ok(())
         } else if let Some(code) = status.code() {
-            Err(eyre!(
-                "runtime node {node_id} failed with exit code: {code}"
-            ))
+            if let Some(meaning) = exit_code_meaning(code) {
+                Err(eyre!(
+                    "runtime node {node_id} failed with exit code: {code}, meaning: {meaning}"
+                ))
+            } else {
+                Err(eyre!(
+                    "runtime node {node_id} failed with exit code: {code} with unknwon meaning."
+                ))
+            }
         } else {
             Err(eyre!("runtime node {node_id} failed (unknown exit code)"))
         }
     });
     Ok(result)
+}
+
+fn exit_code_meaning(code: i32) -> Option<String> {
+    if cfg!(unix) {
+        let meaning = match code {
+            0 => "Success",
+            1 => "Catchall for general errors",
+            2 => "Misuse of shell built-ins",
+            64 => "Usage Error",
+            65 => "Data Error",
+            66 => "No Input",
+            67 => "No User",
+            68 => "No Host",
+            69 => "Service Unavailable",
+            70 => "Software Error",
+            71 => "OS Error",
+            72 => "OS File Error",
+            73 => "Cannot Create",
+            74 => "IO Error",
+            75 => "Temporary Failure",
+            76 => "Protocol Error",
+            77 => "No Permission",
+            78 => "Config Error",
+            126 => "Command invoked cannot execute",
+            127 => "Command not found",
+            128 => "Invalid argument to `exit`",
+            256.. => "Exit status out of range",
+            _ => "Unknown Error code.",
+        }
+        .to_string();
+        Some(meaning)
+    } else {
+        None
+    }
 }
