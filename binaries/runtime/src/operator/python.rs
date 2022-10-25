@@ -52,7 +52,11 @@ pub fn spawn(
             .join(node_id.to_string())
             .join(operator_id.to_string());
         // try to download the shared library
-        download_file(source, &target_path).wrap_err("failed to download Python operator")?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(download_file(source, &target_path))
+            .wrap_err("failed to download Python operator")?;
         target_path
     } else {
         Path::new(source).to_owned()
