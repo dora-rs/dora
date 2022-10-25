@@ -14,13 +14,13 @@ pub(super) fn spawn_custom_node(
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let mut temp_file = None;
     let path = if source_is_url(&node.source) {
         // try to download the shared library
-        let tmp = download_file(&node.source).wrap_err("failed to download custom node")?;
-        let path = tmp.path().to_owned();
-        temp_file = Some(tmp);
-        path
+        let target_path = Path::new("build")
+            .join(node_id.to_string())
+            .with_extension(EXE_EXTENSION);
+        download_file(&node.source, &target_path).wrap_err("failed to download custom node")?;
+        target_path
     } else {
         let raw = Path::new(&node.source);
         if raw.extension().is_none() {
@@ -64,7 +64,6 @@ pub(super) fn spawn_custom_node(
     })?;
     let result = tokio::spawn(async move {
         let status = child.wait().await.context("child process failed")?;
-        std::mem::drop(temp_file);
         if status.success() {
             tracing::info!("node {node_id} finished");
             Ok(())
