@@ -5,7 +5,7 @@ pub fn download_file<T>(url: T) -> Result<tempfile::NamedTempFile, eyre::ErrRepo
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,
 {
-    let response = tokio::runtime::Handle::current().block_on(async {
+    let response = futures::executor::block_on(async {
         reqwest::get(url)
             .await
             .wrap_err_with(|| format!("failed to request operator from `{url}`"))?
