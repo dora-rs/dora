@@ -432,7 +432,7 @@ nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
-      run: ../../target/debug/rust-dataflow-example-node
+      source: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:
@@ -450,7 +450,7 @@ nodes:
   - id: rust-sink
     custom:
       build: cargo build -p rust-dataflow-example-sink
-      run: ../../target/debug/rust-dataflow-example-sink
+      source: ../../target/debug/rust-dataflow-example-sink
       inputs:
         message: runtime-node/rust-operator/status
 </code></pre>
@@ -573,7 +573,7 @@ nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
-      run: ../../target/debug/rust-dataflow-example-node
+      source: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:
@@ -591,7 +591,7 @@ nodes:
   - id: rust-sink
     custom:
       build: cargo build -p rust-dataflow-example-sink
-      run: ../../target/debug/rust-dataflow-example-sink
+      source: ../../target/debug/rust-dataflow-example-sink
       inputs:
         message: runtime-node/rust-operator/status
 </code></pre>
@@ -832,7 +832,7 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
 <pre><code class="language-yaml">  - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
-      run: ../../target/debug/rust-dataflow-example-node
+      source: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:
@@ -1090,7 +1090,7 @@ int main()
 </ul>
 <pre><code class="language-yaml">  - id: c_node
     custom:
-      run: build/c_node
+      source: build/c_node
       inputs:
         timer: dora/timer/secs/1
       outputs:
@@ -1225,7 +1225,7 @@ video_capture.release()
 </ul>
 <pre><code class="language-yaml">  - id: webcam
     custom:
-      run: ./webcam.py
+      source: ./webcam.py
       inputs:
         tick: dora/timer/millis/100
       outputs:

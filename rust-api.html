@@ -349,7 +349,7 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
 <pre><code class="language-yaml">  - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
-      run: ../../target/debug/rust-dataflow-example-node
+      source: ../../target/debug/rust-dataflow-example-node
       inputs:
         tick: dora/timer/millis/300
       outputs:
