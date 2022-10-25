@@ -4,6 +4,7 @@ pub const ZENOH_CONTROL_QUERYABLE: &str = "dora_control/*";
 pub const ZENOH_CONTROL_START: &str = "dora_control/start";
 pub const ZENOH_CONTROL_STOP: &str = "dora_control/stop";
 pub const ZENOH_CONTROL_DESTROY: &str = "dora_control/destroy";
+pub const ZENOH_CONTROL_LIST: &str = "dora_control/list";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum StartDataflowResult {
