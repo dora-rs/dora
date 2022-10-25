@@ -37,6 +37,7 @@ flume = "0.10.14"
 dora-message = { path = "../../libraries/message" }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
+dora-download = { path = "../../libraries/extensions/download" }
 
 [features]
 tracing = ["opentelemetry", "dora-tracing"]

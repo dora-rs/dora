@@ -1,13 +1,11 @@
+use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    fmt,
     path::PathBuf,
 };
 pub use visualize::collect_dora_timers;
-
-use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
 
 mod visualize;
 
@@ -166,21 +164,13 @@ pub struct OperatorConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
-    SharedLibrary(PathBuf),
-    Python(PathBuf),
-    Wasm(PathBuf),
+    SharedLibrary(String),
+    Python(String),
+    Wasm(String),
 }
 
-impl OperatorSource {
-    pub fn canonicalize(&mut self) -> std::io::Result<()> {
-        let path = match self {
-            OperatorSource::SharedLibrary(path) => path,
-            OperatorSource::Python(path) => path,
-            OperatorSource::Wasm(path) => path,
-        };
-        *path = path.canonicalize()?;
-        Ok(())
-    }
+pub fn source_is_url(source: &str) -> bool {
+    source.contains("://")
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -194,7 +184,9 @@ pub struct PythonOperatorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomNode {
-    pub run: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
     pub working_directory: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -13,6 +13,7 @@ members = [
     "libraries/communication-layer",
     "libraries/core",
     "libraries/message",
+    "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/zenoh-logger",
 ]
@@ -36,6 +37,10 @@ path = "examples/c-dataflow/run.rs"
 [[example]]
 name = "rust-dataflow"
 path = "examples/rust-dataflow/run.rs"
+
+[[example]]
+name = "rust-dataflow-url"
+path = "examples/rust-dataflow-url/run.rs"
 
 [[example]]
 name = "cxx-dataflow"

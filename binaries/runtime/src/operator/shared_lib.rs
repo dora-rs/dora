@@ -1,5 +1,10 @@
 use super::{OperatorEvent, Tracer};
-use dora_core::{adjust_shared_library_path, config::DataId};
+use dora_core::{
+    adjust_shared_library_path,
+    config::{DataId, NodeId, OperatorId},
+    descriptor::source_is_url,
+};
+use dora_download::download_file;
 use dora_message::uhlc;
 use dora_node_api::communication::Publisher;
 use dora_operator_api_types::{
@@ -21,13 +26,30 @@ use std::{
 use tokio::sync::mpsc::Sender;
 
 pub fn spawn(
-    path: &Path,
+    node_id: &NodeId,
+    operator_id: &OperatorId,
+    source: &str,
     events_tx: Sender<OperatorEvent>,
     inputs: Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
-    let path = adjust_shared_library_path(path)?;
+    let path = if source_is_url(source) {
+        let target_path = adjust_shared_library_path(
+            &Path::new("build")
+                .join(node_id.to_string())
+                .join(operator_id.to_string()),
+        )?;
+        // try to download the shared library
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(download_file(source, &target_path))
+            .wrap_err("failed to download shared library operator")?;
+        target_path
+    } else {
+        adjust_shared_library_path(Path::new(source))?
+    };
 
     let library = unsafe {
         libloading::Library::new(&path)

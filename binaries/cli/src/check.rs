@@ -2,7 +2,7 @@ use crate::graph::read_descriptor;
 use dora_core::{
     adjust_shared_library_path,
     config::{InputMapping, UserInputMapping},
-    descriptor::{self, CoreNodeKind, OperatorSource},
+    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
 };
 use eyre::{bail, eyre, Context};
 use std::{env::consts::EXE_EXTENSION, path::Path};
@@ -39,15 +39,15 @@ pub fn check(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
     for node in &nodes {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(node) => {
-                let mut args = node.run.split_ascii_whitespace();
-                let raw = Path::new(
-                    args.next()
-                        .ok_or_else(|| eyre!("`run` field must not be empty"))?,
-                );
-                let path = if raw.extension().is_none() {
-                    raw.with_extension(EXE_EXTENSION)
+                let path = if source_is_url(&node.source) {
+                    todo!("check URL");
                 } else {
-                    raw.to_owned()
+                    let raw = Path::new(&node.source);
+                    if raw.extension().is_none() {
+                        raw.with_extension(EXE_EXTENSION)
+                    } else {
+                        raw.to_owned()
+                    }
                 };
                 base.join(&path)
                     .canonicalize()
@@ -57,20 +57,31 @@ pub fn check(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
                 for operator_definition in &node.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
-                            let path = adjust_shared_library_path(path)?;
-
-                            if !base.join(&path).exists() {
-                                bail!("no shared library at `{}`", path.display());
+                            if source_is_url(path) {
+                                todo!("check URL");
+                            } else {
+                                let path = adjust_shared_library_path(Path::new(&path))?;
+                                if !base.join(&path).exists() {
+                                    bail!("no shared library at `{}`", path.display());
+                                }
                             }
                         }
                         OperatorSource::Python(path) => {
-                            if !base.join(&path).exists() {
-                                bail!("no Python library at `{}`", path.display());
+                            if source_is_url(path) {
+                                todo!("check URL");
+                            } else {
+                                if !base.join(&path).exists() {
+                                    bail!("no Python library at `{path}`");
+                                }
                             }
                         }
                         OperatorSource::Wasm(path) => {
-                            if !base.join(&path).exists() {
-                                bail!("no WASM library at `{}`", path.display());
+                            if source_is_url(path) {
+                                todo!("check URL");
+                            } else {
+                                if !base.join(&path).exists() {
+                                    bail!("no WASM library at `{path}`");
+                                }
                             }
                         }
                     }
