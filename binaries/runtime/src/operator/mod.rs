@@ -55,23 +55,41 @@ pub fn spawn_operator(
     let tracer = ();
 
     match &operator_definition.config.source {
-        OperatorSource::SharedLibrary(path) => {
-            shared_lib::spawn(path, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
+        OperatorSource::SharedLibrary(source) => {
+            shared_lib::spawn(
+                node_id,
+                &operator_definition.id,
+                source,
+                events_tx,
+                inputs,
+                publishers,
+                tracer,
+            )
+            .wrap_err_with(|| {
                 format!(
                     "failed to spawn shared library operator for {}",
                     operator_definition.id
                 )
             })?;
         }
-        OperatorSource::Python(path) => {
-            python::spawn(path, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
+        OperatorSource::Python(source) => {
+            python::spawn(
+                node_id,
+                &operator_definition.id,
+                source,
+                events_tx,
+                inputs,
+                publishers,
+                tracer,
+            )
+            .wrap_err_with(|| {
                 format!(
                     "failed to spawn Python operator for {}",
                     operator_definition.id
                 )
             })?;
         }
-        OperatorSource::Wasm(_path) => {
+        OperatorSource::Wasm(_) => {
             tracing::error!("WASM operators are not supported yet");
         }
     }
