@@ -5,6 +5,7 @@ use dora_core::{
     descriptor::source_is_url,
 };
 use dora_download::download_file;
+use dora_message::uhlc;
 use dora_node_api::communication::Publisher;
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnInput,
@@ -51,12 +52,17 @@ pub fn spawn(
         libloading::Library::new(&path)
             .wrap_err_with(|| format!("failed to load shared library at `{}`", path.display()))?
     };
+    let hlc = uhlc::HLC::default();
 
     thread::spawn(move || {
         let closure = AssertUnwindSafe(|| {
             let bindings = Bindings::init(&library).context("failed to init operator")?;
 
-            let operator = SharedLibraryOperator { inputs, bindings };
+            let operator = SharedLibraryOperator {
+                inputs,
+                bindings,
+                hlc,
+            };
 
             operator.run(publishers, tracer)
         });
@@ -80,6 +86,7 @@ struct SharedLibraryOperator<'lib> {
     inputs: Receiver<dora_node_api::Input>,
 
     bindings: Bindings<'lib>,
+    hlc: uhlc::HLC,
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
@@ -111,10 +118,9 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     open_telemetry_context,
                 },
             } = output;
-            let metadata = dora_node_api::Metadata {
-                open_telemetry_context: String::from(open_telemetry_context).into(),
-                ..Default::default()
-            };
+            let mut metadata = dora_node_api::Metadata::new(self.hlc.new_timestamp());
+            metadata.parameters.open_telemetry_context =
+                String::from(open_telemetry_context).into();
 
             let message = metadata
                 .serialize()
@@ -152,7 +158,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
 
                 let span = tracer.start_with_context(
                     format!("{}", input.id),
-                    &deserialize_context(&input.metadata.open_telemetry_context),
+                    &deserialize_context(&input.metadata.parameters.open_telemetry_context),
                 );
                 let child_cx = OtelContext::current_with_span(span);
                 let string_cx = serialize_context(&child_cx);

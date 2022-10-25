@@ -67,7 +67,7 @@ impl Node {
         let data = &data.as_bytes();
         let metadata = pydict_to_metadata(metadata)?;
         self.node
-            .send_output(&output_id.into(), &metadata, data.len(), |out| {
+            .send_output(&output_id.into(), metadata, data.len(), |out| {
                 out.copy_from_slice(data);
             })
             .wrap_err("Could not send output")
