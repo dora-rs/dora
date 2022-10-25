@@ -96,10 +96,11 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
                 let duration = format_duration(interval);
                 format!("dora/timer/{duration}")
             };
-            let metadata = dora_message::Metadata::default();
-            let data = metadata.serialize().unwrap();
+            let hlc = dora_message::uhlc::HLC::default();
             let mut stream = IntervalStream::new(tokio::time::interval(interval));
             while (stream.next().await).is_some() {
+                let metadata = dora_message::Metadata::new(hlc.new_timestamp());
+                let data = metadata.serialize().unwrap();
                 communication
                     .publisher(&topic)
                     .unwrap()

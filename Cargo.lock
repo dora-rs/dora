@@ -959,6 +959,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnpc",
+ "uhlc 0.5.1",
 ]
 
 [[package]]
@@ -4029,6 +4030,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "uhlc"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7908438f98a5824af02b34c2b31fb369c5764ef835d26df0badbb9897fb28245"
+dependencies = [
+ "hex",
+ "humantime",
+ "lazy_static",
+ "log",
+ "serde",
+ "uuid 1.1.2",
+]
+
+[[package]]
 name = "unicode-bidi"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4576,7 +4591,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "stop-token",
- "uhlc",
+ "uhlc 0.4.1",
  "uuid 0.8.2",
  "vec_map",
  "zenoh-buffers",
@@ -4835,7 +4850,7 @@ version = "0.6.0-dev.0"
 source = "git+https://github.com/eclipse-zenoh/zenoh.git#79a136e4fd90b11ff5d775ced981af53c4f1071b"
 dependencies = [
  "log",
- "uhlc",
+ "uhlc 0.4.1",
  "zenoh-buffers",
  "zenoh-core",
  "zenoh-protocol-core",
@@ -4849,7 +4864,7 @@ dependencies = [
  "hex",
  "lazy_static",
  "serde",
- "uhlc",
+ "uhlc 0.4.1",
  "uuid 0.8.2",
  "zenoh-core",
 ]
