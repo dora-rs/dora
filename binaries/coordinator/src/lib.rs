@@ -2,8 +2,8 @@ use crate::run::spawn_dataflow;
 use dora_core::{
     config::CommunicationConfig,
     topics::{
-        self, StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_START,
-        ZENOH_CONTROL_STOP,
+        self, StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_LIST,
+        ZENOH_CONTROL_START, ZENOH_CONTROL_STOP,
     },
 };
 use dora_node_api::communication;
@@ -13,6 +13,7 @@ use futures_concurrency::stream::Merge;
 use run::{await_tasks, SpawnedDataflow};
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     path::{Path, PathBuf},
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -64,7 +65,7 @@ pub async fn run(args: Args) -> eyre::Result<()> {
 async fn start(runtime_path: &Path) -> eyre::Result<()> {
     let (dataflow_events_tx, dataflow_events) = tokio::sync::mpsc::channel(2);
     let mut dataflow_events_tx = Some(dataflow_events_tx);
-    let dataflow_error_events = ReceiverStream::new(dataflow_events);
+    let dataflow_events = ReceiverStream::new(dataflow_events);
 
     let (control_events, control_events_abort) = futures::stream::abortable(
         control::control_events()
@@ -72,7 +73,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
             .wrap_err("failed to create control events")?,
     );
 
-    let mut events = (dataflow_error_events, control_events).merge();
+    let mut events = (dataflow_events, control_events).merge();
 
     let mut running_dataflows = HashMap::new();
 
@@ -83,7 +84,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                     running_dataflows.remove(&uuid);
                     match result {
                         Ok(()) => {
-                            tracing::info!("dataflow `{uuid}` finished successully");
+                            tracing::info!("dataflow `{uuid}` finished successfully");
                         }
                         Err(err) => {
                             let err = err.wrap_err(format!("error occured in dataflow `{uuid}`"));
@@ -146,6 +147,20 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                     }
 
                     query.reply_async(Sample::new("", "")).await;
+                }
+                ZENOH_CONTROL_LIST => {
+                    let mut output = String::new();
+
+                    if running_dataflows.is_empty() {
+                        writeln!(output, "No running dataflows")?;
+                    } else {
+                        writeln!(output, "Running dataflows:")?;
+                        for uuid in running_dataflows.keys() {
+                            writeln!(output, "- {uuid}")?;
+                        }
+                    }
+
+                    query.reply_async(Sample::new("", output)).await;
                 }
                 _ => {
                     query.reply_async(Sample::new("error", "invalid")).await;
