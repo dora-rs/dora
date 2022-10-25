@@ -938,9 +938,9 @@ name = "dora-download"
 version = "0.1.0"
 dependencies = [
  "eyre",
- "futures",
  "reqwest",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

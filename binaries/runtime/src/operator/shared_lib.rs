@@ -41,7 +41,10 @@ pub fn spawn(
                 .join(operator_id.to_string()),
         )?;
         // try to download the shared library
-        download_file(source, &target_path)
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(download_file(source, &target_path))
             .wrap_err("failed to download shared library operator")?;
         target_path
     } else {

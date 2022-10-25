@@ -8,7 +8,7 @@ use eyre::{eyre, WrapErr};
 use std::{env::consts::EXE_EXTENSION, path::Path};
 
 #[tracing::instrument]
-pub(super) fn spawn_custom_node(
+pub(super) async fn spawn_custom_node(
     node_id: NodeId,
     node: &descriptor::CustomNode,
     communication: &dora_core::config::CommunicationConfig,
@@ -19,7 +19,9 @@ pub(super) fn spawn_custom_node(
         let target_path = Path::new("build")
             .join(node_id.to_string())
             .with_extension(EXE_EXTENSION);
-        download_file(&node.source, &target_path).wrap_err("failed to download custom node")?;
+        download_file(&node.source, &target_path)
+            .await
+            .wrap_err("failed to download custom node")?;
         target_path
     } else {
         let raw = Path::new(&node.source);
