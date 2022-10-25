@@ -1,5 +1,9 @@
 use super::{OperatorEvent, Tracer};
-use dora_core::{adjust_shared_library_path, config::DataId, descriptor::source_is_url};
+use dora_core::{
+    adjust_shared_library_path,
+    config::{DataId, NodeId, OperatorId},
+    descriptor::source_is_url,
+};
 use dora_download::download_file;
 use dora_node_api::communication::Publisher;
 use dora_operator_api_types::{
@@ -21,19 +25,24 @@ use std::{
 use tokio::sync::mpsc::Sender;
 
 pub fn spawn(
+    node_id: &NodeId,
+    operator_id: &OperatorId,
     source: &str,
     events_tx: Sender<OperatorEvent>,
     inputs: Receiver<dora_node_api::Input>,
     publishers: HashMap<DataId, Box<dyn Publisher>>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
-    let mut temp_file = None;
     let path = if source_is_url(source) {
+        let target_path = adjust_shared_library_path(
+            &Path::new("build")
+                .join(node_id.to_string())
+                .join(operator_id.to_string()),
+        )?;
         // try to download the shared library
-        let tmp = download_file(source).wrap_err("failed to download shared library operator")?;
-        let path = tmp.path().to_owned();
-        temp_file = Some(tmp);
-        path
+        download_file(source, &target_path)
+            .wrap_err("failed to download shared library operator")?;
+        target_path
     } else {
         adjust_shared_library_path(Path::new(source))?
     };
@@ -45,8 +54,6 @@ pub fn spawn(
 
     thread::spawn(move || {
         let closure = AssertUnwindSafe(|| {
-            let _temp_file = temp_file;
-
             let bindings = Bindings::init(&library).context("failed to init operator")?;
 
             let operator = SharedLibraryOperator { inputs, bindings };

@@ -56,17 +56,33 @@ pub fn spawn_operator(
 
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
-            shared_lib::spawn(source, events_tx, inputs, publishers, tracer).wrap_err_with(
-                || {
-                    format!(
-                        "failed to spawn shared library operator for {}",
-                        operator_definition.id
-                    )
-                },
-            )?;
+            shared_lib::spawn(
+                node_id,
+                &operator_definition.id,
+                source,
+                events_tx,
+                inputs,
+                publishers,
+                tracer,
+            )
+            .wrap_err_with(|| {
+                format!(
+                    "failed to spawn shared library operator for {}",
+                    operator_definition.id
+                )
+            })?;
         }
         OperatorSource::Python(source) => {
-            python::spawn(source, events_tx, inputs, publishers, tracer).wrap_err_with(|| {
+            python::spawn(
+                node_id,
+                &operator_definition.id,
+                source,
+                events_tx,
+                inputs,
+                publishers,
+                tracer,
+            )
+            .wrap_err_with(|| {
                 format!(
                     "failed to spawn Python operator for {}",
                     operator_definition.id
