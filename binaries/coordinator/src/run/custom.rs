@@ -58,7 +58,7 @@ pub(super) fn spawn_custom_node(
     let mut child = command.spawn().wrap_err_with(|| {
         format!(
             "failed to run executable `{}` with args `{}`",
-            node.source,
+            path.display(),
             node.args.as_deref().unwrap_or_default()
         )
     })?;
