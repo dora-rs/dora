@@ -1,0 +1,27 @@
+communication:
+  zenoh:
+    prefix: /example-rust-dataflow
+
+nodes:
+  - id: rust-node
+    custom:
+      source: https://github.com/dora-rs/dora/releases/download/v0.0.0-test.4/rust-dataflow-example-node
+      inputs:
+        tick: dora/timer/millis/300
+      outputs:
+        - random
+  - id: runtime-node
+    operators:
+      - id: rust-operator
+        shared-library: https://github.com/dora-rs/dora/releases/download/v0.0.0-test.4/librust_dataflow_example_operator.so
+        inputs:
+          tick: dora/timer/millis/100
+          random: rust-node/random
+        outputs:
+          - status
+  - id: rust-sink
+    custom:
+      build: cargo build -p rust-dataflow-example-sink
+      source: ../../target/debug/rust-dataflow-example-sink
+      inputs:
+        message: runtime-node/rust-operator/status
