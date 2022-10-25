@@ -2,6 +2,7 @@
 
 use super::{OperatorEvent, Tracer};
 use dora_core::config::DataId;
+use dora_message::uhlc;
 use dora_node_api::communication::Publisher;
 use dora_operator_api_python::metadata_to_pydict;
 use eyre::{bail, eyre, Context};
@@ -50,6 +51,7 @@ pub fn spawn(
 
     let send_output = SendOutputCallback {
         publishers: Arc::new(publishers),
+        hlc: Arc::new(uhlc::HLC::default()),
     };
 
     let init_operator = move |py: Python| {
@@ -97,7 +99,7 @@ pub fn spawn(
                 use opentelemetry::trace::TraceContextExt;
                 use opentelemetry::{trace::Tracer, Context as OtelContext};
 
-                let cx = deserialize_context(&input.metadata.open_telemetry_context);
+                let cx = deserialize_context(&input.metadata.parameters.open_telemetry_context);
                 let span = tracer.start_with_context(format!("{}", input.id), &cx);
 
                 let child_cx = OtelContext::current_with_span(span);
@@ -110,7 +112,7 @@ pub fn spawn(
                 let () = tracer;
                 "".to_string()
             };
-            input.metadata.open_telemetry_context = Cow::Owned(string_cx);
+            input.metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
 
             let status_enum = Python::with_gil(|py| {
                 let input_dict = PyDict::new(py);
@@ -174,12 +176,14 @@ pub fn spawn(
 #[derive(Clone)]
 struct SendOutputCallback {
     publishers: Arc<HashMap<DataId, Box<dyn Publisher>>>,
+    hlc: Arc<uhlc::HLC>,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
 
     use super::SendOutputCallback;
+    use dora_message::Metadata;
     use dora_operator_api_python::pydict_to_metadata;
     use eyre::{eyre, Context};
     use pyo3::{
@@ -198,7 +202,9 @@ mod callback_impl {
         ) -> PyResult<()> {
             match self.publishers.get(output) {
                 Some(publisher) => {
-                    let message = pydict_to_metadata(metadata)?
+                    let parameters = pydict_to_metadata(metadata)?;
+                    let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
+                    let message = metadata
                         .serialize()
                         .context(format!("failed to serialize `{}` metadata", output));
                     message.and_then(|mut message| {

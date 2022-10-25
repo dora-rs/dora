@@ -3,7 +3,7 @@ use communication::STOP_TOPIC;
 use communication_layer_pub_sub::CommunicationLayer;
 pub use dora_core as core;
 use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
-pub use dora_message::Metadata;
+pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
 pub use flume::Receiver;
 
@@ -13,6 +13,7 @@ pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
     communication: Box<dyn CommunicationLayer>,
+    hlc: uhlc::HLC,
 }
 
 impl DoraNode {
@@ -48,6 +49,7 @@ impl DoraNode {
             id,
             node_config,
             communication,
+            hlc: uhlc::HLC::default(),
         })
     }
 
@@ -58,7 +60,7 @@ impl DoraNode {
     pub fn send_output<F>(
         &mut self,
         output_id: &DataId,
-        metadata: &Metadata,
+        parameters: MetadataParameters,
         data_len: usize,
         data: F,
     ) -> eyre::Result<()>
@@ -68,6 +70,7 @@ impl DoraNode {
         if !self.node_config.outputs.contains(output_id) {
             eyre::bail!("unknown output");
         }
+        let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
         let serialized_metadata = metadata
             .serialize()
             .with_context(|| format!("failed to serialize `{}` message", output_id))?;
