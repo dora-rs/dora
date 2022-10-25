@@ -118,6 +118,25 @@ jobs:
           command: run
           args: --example iceoryx
 
+  examples-remote:
+    name: "Examples (Remote)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Cap'n Proto and libacl-dev (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
+
+      - name: "Remote Rust Dataflow example"
+        uses: actions-rs/cargo@v1
+        timeout-minutes: 30
+        with:
+          command: run
+          args: --example rust-dataflow-url
+
   clippy:
     name: "Clippy"
     runs-on: ubuntu-latest
