@@ -162,6 +162,8 @@ pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Res
         };
     }
 
+    check_environment()?;
+
     Ok(())
 }
 
