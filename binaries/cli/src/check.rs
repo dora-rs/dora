@@ -11,6 +11,8 @@ use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 use zenoh::{prelude::Receiver, sync::ZFuture};
 
 pub fn check_environment() -> eyre::Result<()> {
+    let mut error_occured = false;
+
     let mut control_session = None;
 
     let color_choice = if atty::is(atty::Stream::Stdout) {
@@ -35,13 +37,19 @@ pub fn check_environment() -> eyre::Result<()> {
         Err(_) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
             writeln!(stdout, "not running")?;
+            error_occured = true;
         }
     }
     let _ = stdout.reset();
 
     // check whether roudi is running
-
     // TODO, blocked on https://github.com/eclipse-iceoryx/iceoryx-rs/issues/62
+
+    writeln!(stdout)?;
+
+    if error_occured {
+        bail!("Environment check failed.");
+    }
 
     Ok(())
 }

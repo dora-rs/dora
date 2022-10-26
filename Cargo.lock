@@ -887,7 +887,6 @@ version = "0.1.0"
 dependencies = [
  "atty",
  "clap 4.0.3",
- "communication-layer-pub-sub",
  "dora-core",
  "eyre",
  "serde_json",
