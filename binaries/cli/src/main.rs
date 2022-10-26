@@ -26,8 +26,10 @@ struct Args {
 #[derive(Debug, clap::Subcommand)]
 enum Command {
     Check {
-        dataflow: PathBuf,
-        runtime_path: PathBuf,
+        #[clap(long)]
+        dataflow: Option<PathBuf>,
+        #[clap(long)]
+        runtime_path: Option<PathBuf>,
     },
     Graph {
         dataflow: PathBuf,
@@ -93,7 +95,10 @@ fn main() -> eyre::Result<()> {
         Command::Check {
             dataflow,
             runtime_path,
-        } => check::check(&dataflow, &runtime_path)?,
+        } => match dataflow {
+            Some(dataflow) => check::check_dataflow(&dataflow, runtime_path.as_deref())?,
+            None => check::check_environment()?,
+        },
         Command::Graph {
             dataflow,
             mermaid,

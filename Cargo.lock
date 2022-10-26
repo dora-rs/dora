@@ -885,12 +885,16 @@ dependencies = [
 name = "dora-cli"
 version = "0.1.0"
 dependencies = [
+ "atty",
  "clap 4.0.3",
+ "communication-layer-pub-sub",
  "dora-core",
  "eyre",
  "serde_json",
  "serde_yaml 0.9.11",
  "tempfile",
+ "termcolor",
+ "uuid 1.2.1",
  "webbrowser",
  "zenoh",
 ]
@@ -990,7 +994,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid 1.1.2",
+ "uuid 1.2.1",
 ]
 
 [[package]]
@@ -4040,7 +4044,7 @@ dependencies = [
  "lazy_static",
  "log",
  "serde",
- "uuid 1.1.2",
+ "uuid 1.2.1",
 ]
 
 [[package]]
@@ -4157,9 +4161,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.1.2"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd6469f4314d5f1ffec476e05f17cc9a78bc7a27a6a857842170bdf8d6f98d2f"
+checksum = "feb41e78f93363bb2df8b0e86a2ca30eed7806ea16ea0c790d757cf93f79be83"
 dependencies = [
  "getrandom",
 ]
