@@ -1,0 +1,2 @@
+[workspace]
+members = ["op-1", "op-2", "node-1"]
