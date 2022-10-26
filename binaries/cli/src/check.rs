@@ -7,6 +7,7 @@ use dora_core::{
 };
 use eyre::{bail, eyre, Context};
 use std::{env::consts::EXE_EXTENSION, io::Write, path::Path};
+use sysinfo::SystemExt;
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 use zenoh::{prelude::Receiver, sync::ZFuture};
 
@@ -43,8 +44,19 @@ pub fn check_environment() -> eyre::Result<()> {
     let _ = stdout.reset();
 
     // check whether roudi is running
-    // TODO, blocked on https://github.com/eclipse-iceoryx/iceoryx-rs/issues/62
-
+    write!(stdout, "Iceoryx Daemon: ")?;
+    let system = sysinfo::System::new_all();
+    match system.processes_by_exact_name("iox-roudi").next() {
+        Some(_) => {
+            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
+            writeln!(stdout, "ok")?;
+        }
+        None => {
+            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+            writeln!(stdout, "not running")?;
+            error_occured = true;
+        }
+    }
     writeln!(stdout)?;
 
     if error_occured {
