@@ -1,14 +1,52 @@
-use crate::graph::read_descriptor;
+use crate::{graph::read_descriptor, zenoh_control_session};
 use dora_core::{
     adjust_shared_library_path,
     config::{InputMapping, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
+    topics::ZENOH_CONTROL_LIST,
 };
 use eyre::{bail, eyre, Context};
-use std::{env::consts::EXE_EXTENSION, path::Path};
+use std::{env::consts::EXE_EXTENSION, io::Write, path::Path};
+use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
+use zenoh::{prelude::Receiver, sync::ZFuture};
 
-pub fn check(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
-    let runtime = runtime.with_extension(EXE_EXTENSION);
+pub fn check_environment() -> eyre::Result<()> {
+    let mut control_session = None;
+
+    let color_choice = if atty::is(atty::Stream::Stdout) {
+        ColorChoice::Auto
+    } else {
+        ColorChoice::Never
+    };
+    let mut stdout = termcolor::StandardStream::stdout(color_choice);
+
+    // check whether coordinator is running
+    let reply_receiver = zenoh_control_session(&mut control_session)?
+        .get(ZENOH_CONTROL_LIST)
+        .wait()
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to create publisher for list message")?;
+    write!(stdout, "Dora Coordinator: ")?;
+    match reply_receiver.recv() {
+        Ok(_) => {
+            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
+            writeln!(stdout, "ok")?;
+        }
+        Err(_) => {
+            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+            writeln!(stdout, "not running")?;
+        }
+    }
+    let _ = stdout.reset();
+
+    // check whether roudi is running
+
+    // TODO, blocked on https://github.com/eclipse-iceoryx/iceoryx-rs/issues/62
+
+    Ok(())
+}
+
+pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Result<()> {
     let descriptor = read_descriptor(dataflow_path).wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
@@ -27,12 +65,16 @@ pub fn check(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
     if nodes
         .iter()
         .any(|n| matches!(n.kind, CoreNodeKind::Runtime(_)))
-        && !runtime.is_file()
     {
-        bail!(
-            "There is no runtime at {}, or it is not a file",
-            runtime.display()
-        );
+        let runtime = runtime
+            .unwrap_or_else(|| Path::new("dora-runtime"))
+            .with_extension(EXE_EXTENSION);
+        if !runtime.is_file() {
+            bail!(
+                "There is no runtime at {}, or it is not a file",
+                runtime.display()
+            );
+        }
     }
 
     // check that nodes and operators exist
