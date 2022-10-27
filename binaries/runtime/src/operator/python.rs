@@ -157,7 +157,9 @@ pub fn spawn(
             }
         }
 
-        Python::with_gil(|py| {
+        // Dropping the operator using Python garbage collector. 
+        // Locking the GIL for immediate release.
+        Python::with_gil(|_py| {
             drop(operator);
         });
 
