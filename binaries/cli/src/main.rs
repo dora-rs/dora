@@ -4,8 +4,7 @@ use dora_core::topics::{
     ZENOH_CONTROL_START, ZENOH_CONTROL_STOP,
 };
 use eyre::{bail, eyre, Context};
-use std::{io::Write, ops::Deref, path::PathBuf, sync::Arc};
-use tempfile::NamedTempFile;
+use std::{ops::Deref, path::PathBuf, sync::Arc};
 use zenoh::{
     prelude::{Receiver, Selector, SplitBuffer},
     sync::ZFuture,
@@ -99,30 +98,7 @@ fn main() -> eyre::Result<()> {
             mermaid,
             open,
         } => {
-            if mermaid {
-                let visualized = graph::visualize_as_mermaid(&dataflow)?;
-                println!("{visualized}");
-                println!(
-                    "Paste the above output on https://mermaid.live/ or in a \
-                    ```mermaid code block on GitHub to display it."
-                );
-            } else {
-                let html = graph::visualize_as_html(&dataflow)?;
-                let mut file = NamedTempFile::new().context("failed to create temp file")?;
-                file.as_file_mut().write_all(html.as_bytes())?;
-
-                let path = file.path().to_owned();
-                file.keep()?;
-
-                println!(
-                    "View graph by opening the following in your browser:\n  file://{}",
-                    path.display()
-                );
-
-                if open {
-                    webbrowser::open(path.as_os_str().to_str().unwrap())?;
-                }
-            }
+            graph::create(dataflow, mermaid, open)?;
         }
         Command::Build { dataflow } => {
             build::build(&dataflow)?;
