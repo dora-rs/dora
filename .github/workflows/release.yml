@@ -46,7 +46,7 @@ jobs:
         timeout-minutes: 30
         with:
           command: build
-          args: --release -p dora-runtime -p dora-coordinator -p dora-cli
+          args: --release -p dora-runtime -p dora-coordinator -p dora-cli -p dora-node-api-cxx
 
       - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
@@ -58,6 +58,10 @@ jobs:
           mkdir archive/iceoryx
           find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec cp {} archive/iceoryx \;
           find target -type f -wholename "*/iceoryx-install/share/doc/iceoryx_posh/LICENSE" -exec cp {} archive/iceoryx \;
+          mkdir archive/c++
+          cp target/release/libdora_node_api_cxx.a archive/c++
+          cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.cc archive/c++/bridge.cc
+          cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.h archive/c++/dora-node-api.h
           cd archive
           zip -r ../archive.zip .
           cd ..
@@ -82,7 +86,7 @@ jobs:
           asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
           asset_content_type: application/zip
 
-      # Publish Dora Node Python API 
+      # Publish Dora Node Python API
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
