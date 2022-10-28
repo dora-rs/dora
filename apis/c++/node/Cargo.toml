@@ -1,15 +1,19 @@
 [package]
-name = "cxx-dataflow-example-node-rust-api"
+name = "dora-node-api-cxx"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+crate-type = ["staticlib"]
+
 [dependencies]
 cxx = "1.0.73"
-dora-node-api = { version = "0.1.0", path = "../../../apis/rust/node" }
+dora-node-api = { version = "0.1.0", path = "../../../apis/rust/node", default-features = false, features = [
+    "zenoh",
+] }
 eyre = "0.6.8"
-rand = "0.8.5"
 
 [build-dependencies]
 cxx-build = "1.0.73"

@@ -8,20 +8,46 @@ use std::{
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target = root.join("target");
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
     tokio::fs::create_dir_all("build").await?;
+    let build_dir = Path::new("build");
 
-    build_package("cxx-dataflow-example-node-rust-api").await?;
     build_package("cxx-dataflow-example-operator-rust-api").await?;
+
+    build_package("dora-node-api-cxx").await?;
+    let cxxbridge = target
+        .join("cxxbridge")
+        .join("dora-node-api-cxx")
+        .join("src");
+    tokio::fs::copy(cxxbridge.join("lib.rs.cc"), build_dir.join("bridge.cc")).await?;
+    tokio::fs::copy(
+        cxxbridge.join("lib.rs.h"),
+        build_dir.join("dora-node-api.h"),
+    )
+    .await?;
 
     build_package("dora-node-api-c").await?;
     build_package("dora-operator-api-c").await?;
     build_cxx_node(
         root,
-        &dunce::canonicalize(Path::new("node-c-api").join("main.cc"))?,
+        &[
+            &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
+            &dunce::canonicalize(build_dir.join("bridge.cc"))?,
+        ],
+        "node_rust_api",
+        &["-l", "dora_node_api_cxx"],
+    )
+    .await?;
+    build_cxx_node(
+        root,
+        &[&dunce::canonicalize(
+            Path::new("node-c-api").join("main.cc"),
+        )?],
         "node_c_api",
+        &["-l", "dora_node_api_c"],
     )
     .await?;
     build_cxx_operator(
@@ -52,11 +78,16 @@ async fn build_package(package: &str) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Result<()> {
+async fn build_cxx_node(
+    root: &Path,
+    paths: &[&Path],
+    out_name: &str,
+    args: &[&str],
+) -> eyre::Result<()> {
     let mut clang = tokio::process::Command::new("clang++");
-    clang.arg(path);
-    clang.arg("-std=c++14");
-    clang.arg("-l").arg("dora_node_api_c");
+    clang.args(paths);
+    clang.arg("-std=c++17");
+    clang.args(args);
     #[cfg(target_os = "linux")]
     {
         clang.arg("-l").arg("m");
@@ -110,7 +141,7 @@ async fn build_cxx_node(root: &Path, path: &Path, out_name: &str) -> eyre::Resul
     clang
         .arg("--output")
         .arg(Path::new("../build").join(format!("{out_name}{EXE_SUFFIX}")));
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = paths[0].parent() {
         clang.current_dir(parent);
     }
 
@@ -125,7 +156,7 @@ async fn build_cxx_operator(path: &Path, out_name: &str) -> eyre::Result<()> {
 
     let mut compile = tokio::process::Command::new("clang++");
     compile.arg("-c").arg(path);
-    compile.arg("-std=c++14");
+    compile.arg("-std=c++17");
     compile.arg("-o").arg(&object_file_path);
     #[cfg(unix)]
     compile.arg("-fPIC");
