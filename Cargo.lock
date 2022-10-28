@@ -747,17 +747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxx-dataflow-example-node-rust-api"
-version = "0.1.0"
-dependencies = [
- "cxx",
- "cxx-build",
- "dora-node-api",
- "eyre",
- "rand",
-]
-
-[[package]]
 name = "cxx-dataflow-example-operator-rust-api"
 version = "0.1.0"
 dependencies = [
@@ -1005,6 +994,16 @@ dependencies = [
  "eyre",
  "flume",
  "tracing",
+]
+
+[[package]]
+name = "dora-node-api-cxx"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "dora-node-api",
+ "eyre",
 ]
 
 [[package]]

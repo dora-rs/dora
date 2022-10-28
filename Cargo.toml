@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apis/c/*",
+    "apis/c++/*",
     "apis/python/node",
     "apis/python/operator",
     "apis/rust/*",
@@ -8,7 +9,7 @@ members = [
     "apis/rust/operator/types",
     "binaries/*",
     "examples/rust-dataflow/*",
-    "examples/c++-dataflow/*-rust-*",
+    "examples/c++-dataflow/operator-rust-api",
     "examples/iceoryx/*",
     "libraries/communication-layer",
     "libraries/core",
