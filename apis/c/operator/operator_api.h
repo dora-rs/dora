@@ -23,7 +23,7 @@ extern "C"
         const SendOutput_t *send_output,
         void *operator_context);
 
-    void __dora_type_assertions()
+    static void __dora_type_assertions()
     {
         DoraInitOperator_t __dora_init_operator = {.init_operator = dora_init_operator};
         DoraDropOperator_t __dora_drop_operator = {.drop_operator = dora_drop_operator};

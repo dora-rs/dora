@@ -21,7 +21,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: operator-rust-api
-        shared-library: ../../target/debug/cxx_dataflow_example_operator_rust_api
+        shared-library: build/operator_rust_api
         inputs:
           counter_1: cxx-node-c-api/counter
           counter_2: cxx-node-rust-api/counter
