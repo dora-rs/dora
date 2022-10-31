@@ -81,5 +81,5 @@ class Operator:
 
         return DoraStatus.CONTINUE
 
-    def drop_operator(self):
+    def __del__(self):
         cv2.destroyAllWindows()

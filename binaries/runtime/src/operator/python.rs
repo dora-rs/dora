@@ -157,16 +157,11 @@ pub fn spawn(
             }
         }
 
-        Python::with_gil(|py| {
-            let operator = operator.as_ref(py);
-            if operator
-                .hasattr("drop_operator")
-                .wrap_err("failed to look for drop_operator")?
-            {
-                operator.call_method0("drop_operator")?;
-            }
-            Result::<_, eyre::Report>::Ok(())
-        })?;
+        // Dropping the operator using Python garbage collector.
+        // Locking the GIL for immediate release.
+        Python::with_gil(|_py| {
+            drop(operator);
+        });
 
         Result::<_, eyre::Report>::Ok(())
     };
