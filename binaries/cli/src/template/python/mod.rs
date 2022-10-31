@@ -1,4 +1,8 @@
-use std::path::PathBuf;
+use eyre::Context;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     let crate::CommandNew {
@@ -14,10 +18,41 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     }
 }
 
-fn create_operator(_name: String, _path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
-    todo!()
-}
+fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+    const OPERATOR_PY: &str = include_str!("operator/operator-template.py");
 
-fn create_custom_node(_name: String, _path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
-    todo!()
+    // create directories
+    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
+    fs::create_dir(&root)
+        .with_context(|| format!("failed to create directory `{}`", root.display()))?;
+
+    let operator_path = root.join("operator.py");
+    fs::write(&operator_path, OPERATOR_PY)
+        .with_context(|| format!("failed to write `{}`", operator_path.display()))?;
+
+    println!(
+        "Created new Python operator `{name}` at {}",
+        Path::new(".").join(root).display()
+    );
+
+    Ok(())
+}
+fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+    const NODE_PY: &str = include_str!("node/node-template.py");
+
+    // create directories
+    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
+    fs::create_dir(&root)
+        .with_context(|| format!("failed to create directory `{}`", root.display()))?;
+
+    let node_path = root.join("node.py");
+    fs::write(&node_path, NODE_PY)
+        .with_context(|| format!("failed to write `{}`", node_path.display()))?;
+
+    println!(
+        "Created new Python node `{name}` at {}",
+        Path::new(".").join(root).display()
+    );
+
+    Ok(())
 }
