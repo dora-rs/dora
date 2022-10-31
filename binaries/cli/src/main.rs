@@ -151,7 +151,7 @@ fn start_dataflow(
         serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
     match result {
         StartDataflowResult::Ok { uuid } => {
-            println!("Started dataflow with UUID `{uuid}`");
+            println!("{uuid}");
             Ok(())
         }
         StartDataflowResult::Error(err) => bail!(err),
@@ -177,10 +177,7 @@ fn stop_dataflow(
     let result: StopDataflowResult =
         serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
     match result {
-        StopDataflowResult::Ok => {
-            println!("Stopped dataflow with UUID `{uuid}`");
-            Ok(())
-        }
+        StopDataflowResult::Ok => Ok(()),
         StopDataflowResult::Error(err) => bail!(err),
     }
 }
