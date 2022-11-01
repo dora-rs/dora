@@ -64,6 +64,7 @@ impl Descriptor {
                         id: op.id.unwrap_or_else(|| default_op_id.clone()),
                         config: op.config,
                     }],
+                    env: op.env,
                 }),
             };
             resolved.push(ResolvedNode {
@@ -124,9 +125,9 @@ pub enum CoreNodeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
 pub struct RuntimeNode {
     pub operators: Vec<OperatorDefinition>,
+    pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -142,6 +143,7 @@ pub struct SingleOperatorDefinition {
     pub id: Option<OperatorId>,
     #[serde(flatten)]
     pub config: OperatorConfig,
+    pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

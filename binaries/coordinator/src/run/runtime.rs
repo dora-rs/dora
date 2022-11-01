@@ -18,6 +18,15 @@ pub fn spawn_runtime_node(
         serde_yaml::to_string(&node.operators)
             .wrap_err("failed to serialize custom node run config")?,
     );
+
+    // Injecting the env variable defined in the `yaml` into
+    // the node runtime.
+    if let Some(envs) = &node.env {
+        for (key, value) in envs {
+            command.env(key, value.to_string());
+        }
+    }
+
     command.current_dir(working_dir);
 
     let mut child = command
