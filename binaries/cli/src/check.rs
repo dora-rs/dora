@@ -14,8 +14,6 @@ use zenoh::{prelude::Receiver, sync::ZFuture};
 pub fn check_environment() -> eyre::Result<()> {
     let mut error_occured = false;
 
-    let mut control_session = None;
-
     let color_choice = if atty::is(atty::Stream::Stdout) {
         ColorChoice::Auto
     } else {
@@ -24,22 +22,15 @@ pub fn check_environment() -> eyre::Result<()> {
     let mut stdout = termcolor::StandardStream::stdout(color_choice);
 
     // check whether coordinator is running
-    let reply_receiver = zenoh_control_session(&mut control_session)?
-        .get(ZENOH_CONTROL_LIST)
-        .wait()
-        .map_err(|err| eyre!(err))
-        .wrap_err("failed to create publisher for list message")?;
+
     write!(stdout, "Dora Coordinator: ")?;
-    match reply_receiver.recv() {
-        Ok(_) => {
-            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
-            writeln!(stdout, "ok")?;
-        }
-        Err(_) => {
-            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
-            writeln!(stdout, "not running")?;
-            error_occured = true;
-        }
+    if coordinator_running()? {
+        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
+        writeln!(stdout, "ok")?;
+    } else {
+        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+        writeln!(stdout, "not running")?;
+        error_occured = true;
     }
     let _ = stdout.reset();
 
@@ -64,6 +55,16 @@ pub fn check_environment() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+pub fn coordinator_running() -> Result<bool, eyre::ErrReport> {
+    let mut control_session = None;
+    let reply_receiver = zenoh_control_session(&mut control_session)?
+        .get(ZENOH_CONTROL_LIST)
+        .wait()
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to create publisher for list message")?;
+    Ok(reply_receiver.recv().is_ok())
 }
 
 pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Result<()> {
