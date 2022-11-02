@@ -80,7 +80,6 @@ async fn main() -> eyre::Result<()> {
         ],
         "operator_rust_api",
         &[
-            "-Wl,--export-dynamic-symbol,dora_on_input",
             "-l",
             "dora_operator_api_cxx",
             "-L",
