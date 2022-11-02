@@ -15,7 +15,7 @@ impl DoraOperator for ExampleOperator {
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, String> {
         match id {
-            other => eprintln!("ignoring unexpected input {other}"),
+            other => eprintln!("Received input {other}"),
         }
         Ok(DoraStatus::Continue)
     }
