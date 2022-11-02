@@ -1,5 +1,4 @@
 use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
-use std::time::{Duration, Instant};
 
 register_operator!(ExampleOperator);
 
