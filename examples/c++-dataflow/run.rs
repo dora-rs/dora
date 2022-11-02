@@ -127,7 +127,6 @@ async fn build_cxx_node(
     let mut clang = tokio::process::Command::new("clang++");
     clang.args(paths);
     clang.arg("-std=c++17");
-    clang.args(args);
     #[cfg(target_os = "linux")]
     {
         clang.arg("-l").arg("m");
@@ -177,6 +176,7 @@ async fn build_cxx_node(
         clang.arg("-l").arg("c");
         clang.arg("-l").arg("m");
     }
+    clang.args(args);
     clang.arg("-L").arg(root.join("target").join("debug"));
     clang
         .arg("--output")
