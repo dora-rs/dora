@@ -1,13 +1,17 @@
 use super::command_init_common_env;
-use dora_core::{config::NodeId, descriptor};
+use dora_core::{
+    config::NodeId,
+    descriptor::{self, EnvValue},
+};
 use eyre::{eyre, WrapErr};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 #[tracing::instrument(skip(node))]
 pub fn spawn_runtime_node(
     runtime: &Path,
     node_id: NodeId,
     node: &descriptor::RuntimeNode,
+    envs: &Option<BTreeMap<String, EnvValue>>,
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
@@ -21,7 +25,7 @@ pub fn spawn_runtime_node(
 
     // Injecting the env variable defined in the `yaml` into
     // the node runtime.
-    if let Some(envs) = &node.env {
+    if let Some(envs) = &envs {
         for (key, value) in envs {
             command.env(key, value.to_string());
         }

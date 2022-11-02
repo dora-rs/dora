@@ -64,13 +64,13 @@ impl Descriptor {
                         id: op.id.unwrap_or_else(|| default_op_id.clone()),
                         config: op.config,
                     }],
-                    env: op.env,
                 }),
             };
             resolved.push(ResolvedNode {
                 id: node.id,
                 name: node.name,
                 description: node.description,
+                env: node.env,
                 kind,
             });
         }
@@ -90,6 +90,7 @@ pub struct Node {
     pub id: NodeId,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(flatten)]
     pub kind: NodeKind,
@@ -110,6 +111,7 @@ pub struct ResolvedNode {
     pub id: NodeId,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
@@ -125,9 +127,9 @@ pub enum CoreNodeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct RuntimeNode {
     pub operators: Vec<OperatorDefinition>,
-    pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -143,7 +145,6 @@ pub struct SingleOperatorDefinition {
     pub id: Option<OperatorId>,
     #[serde(flatten)]
     pub config: OperatorConfig,
-    pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -189,7 +190,6 @@ pub struct CustomNode {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    pub env: Option<BTreeMap<String, EnvValue>>,
     pub working_directory: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
