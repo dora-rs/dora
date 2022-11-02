@@ -44,9 +44,9 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
 
-    create_operator("op-1".into(), Some(root.join("op-1")))?;
-    create_operator("op-2".into(), Some(root.join("op-2")))?;
-    create_custom_node("node-1".into(), Some(root.join("node-1")))?;
+    create_operator("op_1".into(), Some(root.join("op_1")))?;
+    create_operator("op_2".into(), Some(root.join("op_2")))?;
+    create_custom_node("node_1".into(), Some(root.join("node_1")))?;
 
     println!(
         "Created new Rust dataflow at `{name}` at {}",
@@ -62,6 +62,12 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
     if name.contains('/') {
         bail!("operator name must not contain `/` separators");
+    }
+    if name.contains('-') {
+        bail!(
+            "operator name must not contain `-` separators as 
+        it get replaced by `_` as a static library."
+        );
     }
     if !name.is_ascii() {
         bail!("operator name must be ASCII");
