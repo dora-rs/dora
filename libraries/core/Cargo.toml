@@ -11,4 +11,4 @@ eyre = "0.6.8"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.9.11"
 once_cell = "1.13.0"
-zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git" }
+zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a136e4fd90b11ff5d775ced981af53c4f1071b" }
