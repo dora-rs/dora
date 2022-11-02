@@ -63,19 +63,25 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
         let node_id = node.id.clone();
 
         match node.kind {
-            descriptor::CoreNodeKind::Custom(node) => {
-                let result =
-                    spawn_custom_node(node_id.clone(), &node, &communication_config, &working_dir)
-                        .await
-                        .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
+            descriptor::CoreNodeKind::Custom(custom) => {
+                let result = spawn_custom_node(
+                    node_id.clone(),
+                    &custom,
+                    &node.env,
+                    &communication_config,
+                    &working_dir,
+                )
+                .await
+                .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
                 tasks.push(result);
             }
-            descriptor::CoreNodeKind::Runtime(node) => {
-                if !node.operators.is_empty() {
+            descriptor::CoreNodeKind::Runtime(runtime_node) => {
+                if !runtime_node.operators.is_empty() {
                     let result = spawn_runtime_node(
                         &runtime,
                         node_id.clone(),
-                        &node,
+                        &runtime_node,
+                        &node.env,
                         &communication_config,
                         &working_dir,
                     )

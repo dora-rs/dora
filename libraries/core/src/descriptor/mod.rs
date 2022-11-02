@@ -70,6 +70,7 @@ impl Descriptor {
                 id: node.id,
                 name: node.name,
                 description: node.description,
+                env: node.env,
                 kind,
             });
         }
@@ -89,6 +90,7 @@ pub struct Node {
     pub id: NodeId,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(flatten)]
     pub kind: NodeKind,
@@ -109,6 +111,7 @@ pub struct ResolvedNode {
     pub id: NodeId,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
@@ -187,7 +190,6 @@ pub struct CustomNode {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    pub env: Option<BTreeMap<String, EnvValue>>,
     pub working_directory: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,

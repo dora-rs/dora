@@ -69,7 +69,7 @@ fn visualize_node(node: &ResolvedNode, flowchart: &mut String) {
     let node_id = &node.id;
     match &node.kind {
         CoreNodeKind::Custom(node) => visualize_custom_node(node_id, node, flowchart),
-        CoreNodeKind::Runtime(RuntimeNode { operators }) => {
+        CoreNodeKind::Runtime(RuntimeNode { operators, .. }) => {
             visualize_runtime_node(node_id, operators, flowchart)
         }
     }
@@ -124,7 +124,7 @@ fn visualize_node_inputs(
             flowchart,
             nodes,
         ),
-        CoreNodeKind::Runtime(RuntimeNode { operators }) => {
+        CoreNodeKind::Runtime(RuntimeNode { operators, .. }) => {
             for operator in operators {
                 visualize_inputs(
                     &format!("{node_id}/{}", operator.id),
@@ -181,7 +181,7 @@ fn visualize_user_mapping(
                     source_found = true;
                 }
             }
-            (CoreNodeKind::Runtime(RuntimeNode { operators }), Some(operator_id)) => {
+            (CoreNodeKind::Runtime(RuntimeNode { operators, .. }), Some(operator_id)) => {
                 if let Some(operator) = operators.iter().find(|o| &o.id == operator_id) {
                     if operator.config.outputs.contains(output) {
                         let data = if output == input_id {
