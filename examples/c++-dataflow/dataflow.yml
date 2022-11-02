@@ -5,7 +5,7 @@ communication:
 nodes:
   - id: cxx-node-rust-api
     custom:
-      source: ../../target/debug/cxx-dataflow-example-node-rust-api
+      source: build/node_rust_api
       inputs:
         tick: dora/timer/millis/300
       outputs:

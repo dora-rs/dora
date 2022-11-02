@@ -1,20 +1,22 @@
-#include "cxx-dataflow-example-node-rust-api/src/main.h"
+#include "../build/dora-node-api.h"
 
 #include <iostream>
 #include <vector>
 
-void cxx_main(Inputs &inputs, OutputSender &output_sender)
+int main()
 {
     std::cout << "HELLO FROM C++" << std::endl;
     unsigned char counter = 0;
 
+    auto dora_node = init_dora_node();
+
     for (int i = 0; i < 20; i++)
     {
 
-        auto input = next_input(inputs);
+        auto input = next_input(dora_node.inputs);
         if (input.end_of_input)
         {
-            return;
+            break;
         }
         counter += 1;
 
@@ -22,12 +24,14 @@ void cxx_main(Inputs &inputs, OutputSender &output_sender)
 
         std::vector<unsigned char> out_vec{counter};
         rust::Slice<const uint8_t> out_slice{out_vec.data(), out_vec.size()};
-        auto result = send_output(output_sender, "counter", out_slice);
+        auto result = send_output(dora_node.send_output, "counter", out_slice);
         auto error = std::string(result.error);
         if (!error.empty())
         {
             std::cerr << "Error: " << error << std::endl;
-            return;
+            return -1;
         }
     }
+
+    return 0;
 }
