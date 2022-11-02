@@ -9,6 +9,7 @@ fn build_runtime() {
     capnpc::CompilerCommand::new()
         .src_prefix("schema")
         .file("schema/message.capnp")
+        .output_path("src")
         .run()
         .expect("schema compiler command");
 }
