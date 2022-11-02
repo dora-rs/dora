@@ -15,6 +15,7 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     match kind {
         crate::Kind::Operator => create_operator(name, path),
         crate::Kind::CustomNode => create_custom_node(name, path),
+        crate::Kind::Dataflow => todo!(),
     }
 }
 
