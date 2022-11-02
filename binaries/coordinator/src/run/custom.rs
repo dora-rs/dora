@@ -1,16 +1,17 @@
 use super::command_init_common_env;
 use dora_core::{
     config::NodeId,
-    descriptor::{self, source_is_url},
+    descriptor::{self, source_is_url, EnvValue},
 };
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
-use std::{env::consts::EXE_EXTENSION, path::Path};
+use std::{collections::BTreeMap, env::consts::EXE_EXTENSION, path::Path};
 
 #[tracing::instrument]
 pub(super) async fn spawn_custom_node(
     node_id: NodeId,
     node: &descriptor::CustomNode,
+    envs: &Option<BTreeMap<String, EnvValue>>,
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
@@ -51,7 +52,7 @@ pub(super) async fn spawn_custom_node(
 
     // Injecting the env variable defined in the `yaml` into
     // the node runtime.
-    if let Some(envs) = &node.env {
+    if let Some(envs) = envs {
         for (key, value) in envs {
             command.env(key, value.to_string());
         }
