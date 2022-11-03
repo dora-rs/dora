@@ -45,7 +45,7 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
         .iter()
         .any(|n| matches!(n.kind, CoreNodeKind::Runtime(_)))
     {
-        match runtime.canonicalize() {
+        match which::which(runtime.as_os_str()) {
             Ok(path) => {
                 runtime = path;
             }

@@ -28,3 +28,4 @@ futures-concurrency = "5.0.1"
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a136e4fd90b11ff5d775ced981af53c4f1071b" }
 serde_json = "1.0.86"
 dora-download = { path = "../../libraries/extensions/download" }
+which = "4.3.0"
