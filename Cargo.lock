@@ -924,6 +924,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_yaml 0.9.11",
+ "which",
  "zenoh-config",
 ]
 
