@@ -1,9 +1,11 @@
 use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
+use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    env::consts::EXE_EXTENSION,
     fmt,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 pub use visualize::collect_dora_timers;
 
@@ -174,6 +176,25 @@ pub enum OperatorSource {
 
 pub fn source_is_url(source: &str) -> bool {
     source.contains("://")
+}
+
+pub fn source_is_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
+    let path = Path::new(&source);
+    if path.extension().is_none() {
+        path.with_extension(EXE_EXTENSION)
+    } else {
+        path.to_owned()
+    };
+
+    // Search path within current working directory
+    if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
+        Ok(abs_path)
+    // Search path within $PATH
+    } else if let Ok(abs_path) = which::which(path) {
+        Ok(abs_path)
+    } else {
+        bail!("Could not find source path.")
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
