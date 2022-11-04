@@ -35,6 +35,10 @@ class Operator:
                 STOP means that the operator stop listening for inputs.
 
         """
+        print(
+            f"Received input {dora_input['id']}, with data: {dora_input['data']}"
+        )
+
         return DoraStatus.CONTINUE
 
     def __del__(self):
