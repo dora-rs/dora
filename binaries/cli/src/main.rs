@@ -54,7 +54,10 @@ enum Command {
         #[clap(long)]
         coordinator_path: Option<PathBuf>,
     },
-    Destroy,
+    Destroy {
+        #[clap(long)]
+        config: Option<PathBuf>,
+    },
     Start {
         dataflow: PathBuf,
     },
@@ -131,7 +134,7 @@ fn main() -> eyre::Result<()> {
         Command::Start { dataflow } => start_dataflow(dataflow, &mut session)?,
         Command::List => list(&mut session)?,
         Command::Stop { uuid } => stop_dataflow(uuid, &mut session)?,
-        Command::Destroy => up::destroy(&mut session)?,
+        Command::Destroy { config } => up::destroy(config.as_deref(), &mut session)?,
         Command::Logs => todo!(),
         Command::Metrics => todo!(),
         Command::Stats => todo!(),
