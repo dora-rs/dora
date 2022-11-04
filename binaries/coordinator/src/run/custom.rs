@@ -1,7 +1,7 @@
 use super::command_init_common_env;
 use dora_core::{
     config::NodeId,
-    descriptor::{self, source_is_path, source_is_url, EnvValue},
+    descriptor::{self, resolve_path, source_is_url, EnvValue},
 };
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
@@ -15,13 +15,10 @@ pub(super) async fn spawn_custom_node(
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let mut is_path = source_is_path(&node.source, working_dir);
+    let mut resolved_path = resolve_path(&node.source, working_dir);
 
-    // Use path if node.source correspond to a path
-    let mut command = if let Ok(path) = &is_path {
-        tokio::process::Command::new(path)
     // Use url if node.source is a url
-    } else if source_is_url(&node.source) {
+    let mut command = if source_is_url(&node.source) {
         // try to download the shared library
         let target_path = Path::new("build")
             .join(node_id.to_string())
@@ -29,8 +26,11 @@ pub(super) async fn spawn_custom_node(
         download_file(&node.source, &target_path)
             .await
             .wrap_err("failed to download custom node")?;
-        is_path = Ok(target_path.clone());
+        resolved_path = Ok(target_path.clone());
         tokio::process::Command::new(target_path)
+    // Use path if node.source correspond to a path
+    } else if let Ok(path) = &resolved_path {
+        tokio::process::Command::new(path)
     // Use node.source as a command if it is not in path and is not a url
     } else if cfg!(target_os = "windows") {
         let mut cmd = tokio::process::Command::new("cmd");
@@ -68,7 +68,7 @@ pub(super) async fn spawn_custom_node(
     }
 
     let mut child = command.spawn().wrap_err_with(|| {
-        if let Ok(path) = is_path {
+        if let Ok(path) = resolved_path {
             format!(
                 "failed to run source path: `{}` with args `{}`",
                 path.display(),
