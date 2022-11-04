@@ -1,5 +1,5 @@
 use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
-use eyre::{bail, Context, Result};
+use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -178,7 +178,7 @@ pub fn source_is_url(source: &str) -> bool {
     source.contains("://")
 }
 
-pub fn source_is_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
+pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = Path::new(&source);
     if path.extension().is_none() {
         path.with_extension(EXE_EXTENSION)
