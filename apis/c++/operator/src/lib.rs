@@ -1,3 +1,4 @@
+#![cfg(not(test))]
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{self, register_operator, DoraOperator, DoraOutputSender, DoraStatus};
