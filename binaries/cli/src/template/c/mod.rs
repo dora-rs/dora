@@ -39,9 +39,9 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     fs::write(&dataflow_yml_path, &dataflow_yml)
         .with_context(|| format!("failed to write `{}`", dataflow_yml_path.display()))?;
 
-    create_operator("op-1".into(), Some(root.join("op-1")))?;
-    create_operator("op-2".into(), Some(root.join("op-2")))?;
-    create_custom_node("node-1".into(), Some(root.join("node-1")))?;
+    create_operator("op_1".into(), Some(root.join("op_1")))?;
+    create_operator("op_2".into(), Some(root.join("op_2")))?;
+    create_custom_node("node_1".into(), Some(root.join("node_1")))?;
 
     println!(
         "Created new C dataflow at `{name}` at {}",
@@ -57,6 +57,9 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
     if name.contains('/') {
         bail!("operator name must not contain `/` separators");
+    }
+    if name.contains('-') {
+        bail!("operator name must not contain `-` separators");
     }
     if !name.is_ascii() {
         bail!("operator name must be ASCII");

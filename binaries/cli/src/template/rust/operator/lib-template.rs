@@ -1,5 +1,4 @@
 use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
-use std::time::{Duration, Instant};
 
 register_operator!(ExampleOperator);
 
@@ -16,7 +15,7 @@ impl DoraOperator for ExampleOperator {
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, String> {
         match id {
-            other => eprintln!("ignoring unexpected input {other}"),
+            other => eprintln!("Received input {other}"),
         }
         Ok(DoraStatus::Continue)
     }
