@@ -4,8 +4,10 @@ use dora_core::{
     descriptor::{self, resolve_path, source_is_url, EnvValue},
 };
 use dora_download::download_file;
-use eyre::{eyre, WrapErr};
-use std::{collections::BTreeMap, env::consts::EXE_EXTENSION, path::Path};
+use eyre::{bail, eyre, WrapErr};
+use std::{collections::BTreeMap, env::consts::EXE_EXTENSION, path::Path, str::FromStr};
+
+const SHELL_SOURCE: &str = "shell";
 
 #[tracing::instrument]
 pub(super) async fn spawn_custom_node(
@@ -15,10 +17,7 @@ pub(super) async fn spawn_custom_node(
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let mut resolved_path = resolve_path(&node.source, working_dir);
-
-    // Use url if node.source is a url
-    let mut command = if source_is_url(&node.source) {
+    let mut resolved_path = if source_is_url(&node.source) {
         // try to download the shared library
         let target_path = Path::new("build")
             .join(node_id.to_string())
@@ -26,30 +25,30 @@ pub(super) async fn spawn_custom_node(
         download_file(&node.source, &target_path)
             .await
             .wrap_err("failed to download custom node")?;
-        resolved_path = Ok(target_path.clone());
-        tokio::process::Command::new(target_path)
-    // Use path if node.source correspond to a path
-    } else if let Ok(path) = &resolved_path {
-        tokio::process::Command::new(path)
-    // Use node.source as a command if it is not in path and is not a url
-    } else if cfg!(target_os = "windows") {
-        let mut cmd = tokio::process::Command::new("cmd");
-        cmd.args(["/C", &node.source]);
-        cmd
+        Ok(target_path.clone())
     } else {
-        let mut cmd = tokio::process::Command::new("sh");
-
-        // Argument are passed in the command string.
-        // Arguments passed after string enclosure will be ignored.
-        cmd.args([
-            "-c",
-            &format!("{} {}", node.source, &node.args.clone().unwrap_or_default()),
-        ]);
-        cmd
+        resolve_path(&node.source, working_dir)
     };
-    if let Some(args) = &node.args {
-        command.args(args.split_ascii_whitespace());
-    }
+
+    let mut command = if let Ok(path) = &resolved_path {
+        let mut command = tokio::process::Command::new(path);
+        if let Some(args) = &node.args {
+            command.args(args.split_ascii_whitespace());
+        }
+        command
+    } else if node.source == SHELL_SOURCE {
+        if cfg!(target_os = "windows") {
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.args(["/C", &node.args.clone().unwrap_or_default()]);
+            cmd
+        } else {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(["-c", &node.args.clone().unwrap_or_default()]);
+            cmd
+        }
+    } else {
+        bail!("could not understand node source: {}", node.source);
+    };
 
     command_init_common_env(&mut command, &node_id, communication)?;
     command.env(
