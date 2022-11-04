@@ -878,6 +878,7 @@ dependencies = [
  "clap 4.0.3",
  "dora-core",
  "eyre",
+ "serde",
  "serde_json",
  "serde_yaml 0.9.11",
  "sysinfo 0.26.6",

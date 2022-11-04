@@ -13,6 +13,7 @@ path = "src/main.rs"
 clap = { version = "4.0.3", features = ["derive"] }
 eyre = "0.6.8"
 dora-core = { path = "../../libraries/core" }
+serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.9.11"
 tempfile = "3.3.0"
 webbrowser = "0.8.0"

@@ -48,6 +48,8 @@ enum Command {
     Dashboard,
     Up {
         #[clap(long)]
+        config: Option<PathBuf>,
+        #[clap(long)]
         roudi_path: Option<PathBuf>,
         #[clap(long)]
         coordinator_path: Option<PathBuf>,
@@ -118,9 +120,14 @@ fn main() -> eyre::Result<()> {
         Command::New { args } => template::create(args)?,
         Command::Dashboard => todo!(),
         Command::Up {
+            config,
             roudi_path,
             coordinator_path,
-        } => up::up(roudi_path.as_deref(), coordinator_path.as_deref())?,
+        } => up::up(
+            config.as_deref(),
+            roudi_path.as_deref(),
+            coordinator_path.as_deref(),
+        )?,
         Command::Start { dataflow } => start_dataflow(dataflow, &mut session)?,
         Command::List => list(&mut session)?,
         Command::Stop { uuid } => stop_dataflow(uuid, &mut session)?,
