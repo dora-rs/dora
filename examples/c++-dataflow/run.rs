@@ -249,6 +249,7 @@ async fn build_cxx_operator(
         link.arg("-Wl,-nodefaultlib:libcmt");
         link.arg("-D_DLL");
         link.arg("-lmsvcrt");
+        link.arg("-fms-runtime-lib=static");
     }
     link.arg("-o")
         .arg(Path::new("../build").join(library_filename(out_name)));
