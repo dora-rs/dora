@@ -218,6 +218,38 @@ async fn build_cxx_operator(
     let mut link = tokio::process::Command::new("clang++");
     link.arg("-shared").args(&object_file_paths);
     link.args(link_args);
+    #[cfg(target_os = "windows")]
+    {
+        link.arg("-ladvapi32");
+        link.arg("-luserenv");
+        link.arg("-lkernel32");
+        link.arg("-lws2_32");
+        link.arg("-lbcrypt");
+        link.arg("-lncrypt");
+        link.arg("-lschannel");
+        link.arg("-lntdll");
+        link.arg("-liphlpapi");
+
+        link.arg("-lcfgmgr32");
+        link.arg("-lcredui");
+        link.arg("-lcrypt32");
+        link.arg("-lcryptnet");
+        link.arg("-lfwpuclnt");
+        link.arg("-lgdi32");
+        link.arg("-lmsimg32");
+        link.arg("-lmswsock");
+        link.arg("-lole32");
+        link.arg("-lopengl32");
+        link.arg("-lsecur32");
+        link.arg("-lshell32");
+        link.arg("-lsynchronization");
+        link.arg("-luser32");
+        link.arg("-lwinspool");
+
+        link.arg("-Wl,-nodefaultlib:libcmt");
+        link.arg("-D_DLL");
+        link.arg("-lmsvcrt");
+    }
     link.arg("-o")
         .arg(Path::new("../build").join(library_filename(out_name)));
     if let Some(parent) = paths[0].parent() {
