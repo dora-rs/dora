@@ -69,7 +69,7 @@ enum Command {
 
 #[derive(Debug, clap::Args)]
 pub struct CommandNew {
-    #[clap(long, value_enum, default_value_t = Kind::Operator)]
+    #[clap(long, value_enum, default_value_t = Kind::Dataflow)]
     kind: Kind,
     #[clap(long, value_enum, default_value_t = Lang::Rust)]
     lang: Lang,
