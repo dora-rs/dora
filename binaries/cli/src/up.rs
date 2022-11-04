@@ -1,17 +1,49 @@
 use crate::{check::coordinator_running, zenoh_control_session};
 use dora_core::topics::ZENOH_CONTROL_DESTROY;
 use eyre::{bail, eyre, Context};
-use std::{path::Path, process::Command, sync::Arc};
+use std::{fs, path::Path, process::Command, sync::Arc};
 use sysinfo::{ProcessExt, SystemExt};
 use zenoh::{prelude::Receiver, sync::ZFuture};
 
-pub(crate) fn up(roudi: Option<&Path>, coordinator: Option<&Path>) -> eyre::Result<()> {
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct UpConfig {
+    iceoryx: bool,
+}
+
+impl Default for UpConfig {
+    fn default() -> Self {
+        Self { iceoryx: true }
+    }
+}
+
+pub(crate) fn up(
+    config_path: Option<&Path>,
+    roudi: Option<&Path>,
+    coordinator: Option<&Path>,
+) -> eyre::Result<()> {
+    let config = {
+        let path =
+            config_path.or_else(|| Some(Path::new("dora-config.yml")).filter(|p| p.exists()));
+        match path {
+            Some(path) => {
+                let raw = fs::read_to_string(path)
+                    .with_context(|| format!("failed to read `{}`", path.display()))?;
+                serde_yaml::from_str(&raw)
+                    .with_context(|| format!("failed to parse `{}`", path.display()))?
+            }
+            None => Default::default(),
+        }
+    };
+    let UpConfig { iceoryx } = config;
+
     if !coordinator_running()? {
         start_coordinator(coordinator).wrap_err("failed to start dora-coordinator")?;
     }
 
-    // try to start roudi
-    start_roudi(roudi).wrap_err("failed to start iceoryx roudi daemon")?;
+    if iceoryx {
+        // try to start roudi
+        start_roudi(roudi).wrap_err("failed to start iceoryx roudi daemon")?;
+    }
 
     Ok(())
 }
