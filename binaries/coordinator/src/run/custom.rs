@@ -5,7 +5,7 @@ use dora_core::{
 };
 use dora_download::download_file;
 use eyre::{bail, eyre, WrapErr};
-use std::{collections::BTreeMap, env::consts::EXE_EXTENSION, path::Path, str::FromStr};
+use std::{collections::BTreeMap, env::consts::EXE_EXTENSION, path::Path};
 
 const SHELL_SOURCE: &str = "shell";
 
@@ -17,7 +17,7 @@ pub(super) async fn spawn_custom_node(
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let mut resolved_path = if source_is_url(&node.source) {
+    let resolved_path = if source_is_url(&node.source) {
         // try to download the shared library
         let target_path = Path::new("build")
             .join(node_id.to_string())
