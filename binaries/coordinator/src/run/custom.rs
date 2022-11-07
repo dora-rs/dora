@@ -1,11 +1,13 @@
 use super::command_init_common_env;
 use dora_core::{
     config::NodeId,
-    descriptor::{self, source_is_url, EnvValue},
+    descriptor::{self, resolve_path, source_is_url, EnvValue},
 };
 use dora_download::download_file;
-use eyre::{eyre, WrapErr};
+use eyre::{bail, eyre, WrapErr};
 use std::{collections::BTreeMap, env::consts::EXE_EXTENSION, path::Path};
+
+const SHELL_SOURCE: &str = "shell";
 
 #[tracing::instrument]
 pub(super) async fn spawn_custom_node(
@@ -15,7 +17,7 @@ pub(super) async fn spawn_custom_node(
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let path = if source_is_url(&node.source) {
+    let resolved_path = if source_is_url(&node.source) {
         // try to download the shared library
         let target_path = Path::new("build")
             .join(node_id.to_string())
@@ -23,25 +25,31 @@ pub(super) async fn spawn_custom_node(
         download_file(&node.source, &target_path)
             .await
             .wrap_err("failed to download custom node")?;
-        target_path
+        Ok(target_path.clone())
     } else {
-        let raw = Path::new(&node.source);
-        if raw.extension().is_none() {
-            raw.with_extension(EXE_EXTENSION)
-        } else {
-            raw.to_owned()
-        }
+        resolve_path(&node.source, working_dir)
     };
 
-    let cmd = working_dir
-        .join(&path)
-        .canonicalize()
-        .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?;
+    let mut command = if let Ok(path) = &resolved_path {
+        let mut command = tokio::process::Command::new(path);
+        if let Some(args) = &node.args {
+            command.args(args.split_ascii_whitespace());
+        }
+        command
+    } else if node.source == SHELL_SOURCE {
+        if cfg!(target_os = "windows") {
+            let mut cmd = tokio::process::Command::new("cmd");
+            cmd.args(["/C", &node.args.clone().unwrap_or_default()]);
+            cmd
+        } else {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.args(["-c", &node.args.clone().unwrap_or_default()]);
+            cmd
+        }
+    } else {
+        bail!("could not understand node source: {}", node.source);
+    };
 
-    let mut command = tokio::process::Command::new(cmd);
-    if let Some(args) = &node.args {
-        command.args(args.split_ascii_whitespace());
-    }
     command_init_common_env(&mut command, &node_id, communication)?;
     command.env(
         "DORA_NODE_RUN_CONFIG",
@@ -59,11 +67,19 @@ pub(super) async fn spawn_custom_node(
     }
 
     let mut child = command.spawn().wrap_err_with(|| {
-        format!(
-            "failed to run executable `{}` with args `{}`",
-            path.display(),
-            node.args.as_deref().unwrap_or_default()
-        )
+        if let Ok(path) = resolved_path {
+            format!(
+                "failed to run source path: `{}` with args `{}`",
+                path.display(),
+                node.args.as_deref().unwrap_or_default()
+            )
+        } else {
+            format!(
+                "failed to run command: `{}` with args `{}`",
+                node.source,
+                node.args.as_deref().unwrap_or_default()
+            )
+        }
     })?;
     let result = tokio::spawn(async move {
         let status = child.wait().await.context("child process failed")?;
