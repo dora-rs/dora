@@ -18,25 +18,138 @@ This project is in early development, and many features have yet to be implement
 The documentation can be found here: [https://dora-rs.github.io/dora/](https://dora-rs.github.io/dora/) 
 
 ---
+
+## Getting started
+
+
+1. Install `dora` binaries
+
+For linux
+```bash
+## install precompile dora
+wget https://github.com/dora-rs/dora/releases/download/v0.1.0/dora-v0.1.0-x86_64-Linux.zip
+unzip dora-v0.0.0-test-pr-120.2-x86_64-Linux.zip
+PATH=$PATH:$(pwd)
+```
+
+<details>
+  <summary> For Macos </summary>
+
+```bash
+## install precompile dora
+wget https://github.com/dora-rs/dora/releases/download/v0.1.0/dora-v0.1.0-x86_64-macOS.zip
+unzip dora-v0.0.0-test-pr-120.2-x86_64-macOS.zip
+PATH=$PATH:$(pwd)
+```
+
+</details>
+
+<details>
+  <summary> For Windows </summary>
+
+```bash
+## install precompile dora
+wget https://github.com/dora-rs/dora/releases/download/v0.1.0/dora-v0.1.0-x86_64-Windows.zip
+unzip dora-v0.0.0-test-pr-120.2-x86_64-Windows.zip
+PATH=$PATH:$(pwd)
+```
+
+</details>
+
+> This is `x86_64` only for the moment.
+
+2. Create a new dataflow
+
+```bash
+dora new abc_project --lang python
+cd abc_project
+```
+
+This creates the following `abc_project` directory
+```bash
+.
+├── dataflow.yml
+├── node_1
+│   └── node_1.py
+├── op_1
+│   └── op_1.py
+└── op_2
+    └── op_2.py
+```
+
+3. Start `dora-coordinator` in a separate terminal window
+```bash
+# New terminal window
+dora up 
+```
+
+4. Start your dataflow
+```bash
+# Other window
+dora start dataflow.yml
+# Output: c95d118b-cded-4531-a0e4-cd85b7c3916c
+```
+
+5. You will see in your `dora-coordinator` window operators receiving ticks.
+```bash
+Received input tick, with data: b''
+Received input tick, with data: b''
+Received input tick, with data: b''
+...
+```
+
+6. Stop your dataflow
+```bash
+dora stop c95d118b-cded-4531-a0e4-cd85b7c3916c
+```
+
+7. You can then modify the different operators or nodes.
+
+8. You can also download already implemented operators by putting links in the dataflow. This example will launch a webcam plot stream. 
+
+```yaml
+communication:
+  zenoh:
+    prefix: /abc_project
+
+nodes:
+  - id: op_1
+    operator:
+      python: https://raw.githubusercontent.com/dora-rs/dora-drives/main/operators/webcam.py
+      inputs:
+        tick: dora/timer/millis/100
+      outputs:
+        - image
+  - id: op_2
+    operator:
+      python: https://raw.githubusercontent.com/dora-rs/dora-drives/main/physicals/plot.py
+      inputs:
+        image: op_1/image 
+```
+> Make sure to have a webcam and cv2 install via: `pip install opencv-python`
+---
+
 ## ✨ Features
 
 Composability as:
 - [x] `YAML` declarative programming
-- [ ] language-agnostic:
+- [x] language-agnostic:
   - [x] Rust
   - [x] C
+  - [x] C++
   - [x] Python
-- [ ] Isolated operator and node that can be reused.
+- [x] Isolated operators and custom nodes that can be reused.
 
 Low latency as:
 - [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
-- [ ] Minimal abstraction close to the metal.
+- [x] PubSub communication with [`iceoryx`](https://iceoryx.io/v1.0.1/)
 
 Distributed as:
 - [x] PubSub communication with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
 - [x] Distributed telemetry with [`opentelemetry`](https://github.com/open-telemetry/opentelemetry-rust)
 
 ---
+
 
 ## 🏁 Further reading
 
