@@ -7,10 +7,11 @@ use dora_core::{
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer, Publisher, STOP_TOPIC},
+    manual_stop_publisher,
 };
 use eyre::{bail, Context};
 use futures::{Stream, StreamExt};
-use operator::{spawn_operator, OperatorEvent};
+use operator::{spawn_operator, OperatorEvent, StopReason};
 use std::{
     collections::{BTreeSet, HashMap},
     mem,
@@ -76,6 +77,7 @@ fn main() -> eyre::Result<()> {
         node_id,
         operator_events,
         operator_stop_publishers,
+        communication.as_mut(),
     ))
 }
 
@@ -83,6 +85,7 @@ async fn run(
     node_id: NodeId,
     mut events: impl Stream<Item = Event> + Unpin,
     mut operator_stop_publishers: HashMap<OperatorId, Box<dyn Publisher>>,
+    communication: &mut dyn CommunicationLayer,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
     let _started = {
@@ -106,9 +109,17 @@ async fn run(
                         bail!(err.wrap_err(format!("operator {id} failed")))
                     }
                     OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
-                    OperatorEvent::Finished => {
+                    OperatorEvent::Finished { reason } => {
+                        if let StopReason::ExplicitStopAll = reason {
+                            let manual_stop_publisher = manual_stop_publisher(communication)?;
+                            tokio::task::spawn_blocking(manual_stop_publisher)
+                                .await
+                                .wrap_err("failed to join stop publish task")?
+                                .map_err(|err| eyre::eyre!(err))
+                                .wrap_err("failed to send stop message")?;
+                        }
                         if let Some(stop_publisher) = operator_stop_publishers.remove(&id) {
-                            tracing::info!("operator {node_id}/{id} finished");
+                            tracing::info!("operator {node_id}/{id} finished ({reason:?})");
                             stopped_operators.insert(id.clone());
                             // send stopped message
                             tokio::task::spawn_blocking(move || stop_publisher.publish(&[]))

@@ -1,4 +1,4 @@
-use super::{OperatorEvent, Tracer};
+use super::{OperatorEvent, StopReason, Tracer};
 use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
@@ -70,8 +70,8 @@ pub fn spawn(
             operator.run(publishers, tracer)
         });
         match catch_unwind(closure) {
-            Ok(Ok(())) => {
-                let _ = events_tx.blocking_send(OperatorEvent::Finished);
+            Ok(Ok(reason)) => {
+                let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
             }
             Ok(Err(err)) => {
                 let _ = events_tx.blocking_send(OperatorEvent::Error(err));
@@ -97,7 +97,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
         self,
         publishers: HashMap<DataId, Box<dyn Publisher>>,
         tracer: Tracer,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
                 result,
@@ -150,7 +150,10 @@ impl<'lib> SharedLibraryOperator<'lib> {
             DoraResult { error }
         });
 
-        while let Ok(input) = self.inputs.recv() {
+        let reason = loop {
+            let Ok(input) = self.inputs.recv() else {
+                break StopReason::InputsClosed
+            };
             #[cfg(feature = "tracing")]
             let (_child_cx, string_cx) = {
                 use dora_tracing::{deserialize_context, serialize_context};
@@ -197,11 +200,12 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 Some(error) => bail!("on_input failed: {}", String::from(error)),
                 None => match status {
                     DoraStatus::Continue => {}
-                    DoraStatus::Stop => break,
+                    DoraStatus::Stop => break StopReason::ExplicitStop,
+                    DoraStatus::StopAll => break StopReason::ExplicitStopAll,
                 },
             }
-        }
-        Ok(())
+        };
+        Ok(reason)
     }
 }
 
