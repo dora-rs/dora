@@ -103,6 +103,7 @@ Received input tick, with data: b''
 ```bash
 dora stop c95d118b-cded-4531-a0e4-cd85b7c3916c
 ```
+(Pass the ID returned by `dora start` here.)
 
 7. You can then modify the different operators or nodes.
 
