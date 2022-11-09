@@ -187,7 +187,7 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     };
 
     // Search path within current working directory
-    if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
+    if let Ok(abs_path) = working_dir.join(path).canonicalize() {
         Ok(abs_path)
     // Search path within $PATH
     } else if let Ok(abs_path) = which::which(path) {
