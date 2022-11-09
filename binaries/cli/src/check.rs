@@ -132,19 +132,15 @@ pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Res
                         OperatorSource::Python(path) => {
                             if source_is_url(path) {
                                 todo!("check URL");
-                            } else {
-                                if !base.join(&path).exists() {
-                                    bail!("no Python library at `{path}`");
-                                }
+                            } else if !base.join(path).exists() {
+                                bail!("no Python library at `{path}`");
                             }
                         }
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
                                 todo!("check URL");
-                            } else {
-                                if !base.join(&path).exists() {
-                                    bail!("no WASM library at `{path}`");
-                                }
+                            } else if !base.join(path).exists() {
+                                bail!("no WASM library at `{path}`");
                             }
                         }
                     }
