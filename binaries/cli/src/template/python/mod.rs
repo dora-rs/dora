@@ -22,6 +22,12 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
 fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const OPERATOR_PY: &str = include_str!("operator/operator-template.py");
 
+    if name.contains('/') {
+        bail!("Operator name must not contain `/` separators");
+    }
+    if name.contains('.') {
+        bail!("Operator name must not contain `.` to not be confused for an extension");
+    }
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
     fs::create_dir(&root)

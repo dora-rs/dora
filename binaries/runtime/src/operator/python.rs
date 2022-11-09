@@ -50,7 +50,7 @@ pub fn spawn(
     let path = if source_is_url(source) {
         let target_path = Path::new("build")
             .join(node_id.to_string())
-            .join(operator_id.to_string());
+            .join(format!("{}.py", operator_id.to_string()));
         // try to download the shared library
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

@@ -5,7 +5,7 @@ communication:
 nodes:
   - id: op_1
     operator:
-      python: op_2/op_2.py
+      python: op_1/op_1.py
       inputs:
         tick: dora/timer/millis/100
       outputs:
@@ -20,7 +20,8 @@ nodes:
 
   - id: custom-node_1
     custom:
-      source: ./node_1/node_1.py
+      source: python
+      args: ./node_1/node_1.py
       inputs:
         tick: dora/timer/secs/1
         input-1: op_1/some-output
