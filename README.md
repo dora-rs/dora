@@ -89,6 +89,7 @@ dora up
 dora start dataflow.yml
 # Output: c95d118b-cded-4531-a0e4-cd85b7c3916c
 ```
+The output is the unique ID of the dataflow instance, which can be used to control it through the `dora` CLI.
 
 5. You will see in your `dora-coordinator` window operators receiving ticks.
 ```bash
