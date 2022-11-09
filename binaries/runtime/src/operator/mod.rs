@@ -52,6 +52,7 @@ pub fn spawn_operator(
         dora_tracing::init_tracing(format!("{node_id}/{}", operator_definition.id).as_str())
             .wrap_err("could not initiate tracing for operator")?;
     #[cfg(not(feature = "tracing"))]
+    #[allow(clippy::let_unit_value)]
     let tracer = ();
 
     match &operator_definition.config.source {
