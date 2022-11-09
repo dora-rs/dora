@@ -105,7 +105,12 @@ dora stop c95d118b-cded-4531-a0e4-cd85b7c3916c
 ```
 (Pass the ID returned by `dora start` here.)
 
-7. You can then modify the different operators or nodes.
+7. You can then add or modify operators or nodes. For adding nodes easily, you can use the `dora` CLI again:
+
+- Run `dora new --kind operator --lang Rust <name>` to create a new Rust operator named `<name>`.
+- Run `dora new --kind custom-node --lang Rust <name>` to create a new custom node named `<name>`.
+
+You need to add the created operators/nodes to your dataflow YAML file.
 
 8. You can also download already implemented operators by putting links in the dataflow. This example will launch a webcam plot stream. 
 
