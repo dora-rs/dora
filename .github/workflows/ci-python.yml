@@ -13,7 +13,7 @@ jobs:
     name: "Python Examples"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install Cap'n Proto and libacl-dev
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -21,8 +21,10 @@ jobs:
       - uses: actions/setup-python@v2
         with:
           python-version: 3.8.10
+
+      - uses: phil-opp/rust-problem-matchers@node-16
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
+
       - name: "Python Dataflow example"
-        uses: actions-rs/cargo@v1
-        with:
-          command: run
-          args: --example python-dataflow
+        run: cargo run --example python-dataflow
