@@ -1,22 +1,46 @@
 use crate::{check::coordinator_running, zenoh_control_session};
 use dora_core::topics::ZENOH_CONTROL_DESTROY;
 use eyre::{bail, eyre, Context};
-use std::{path::Path, process::Command, sync::Arc};
+use std::{fs, path::Path, process::Command, sync::Arc};
 use sysinfo::{ProcessExt, SystemExt};
 use zenoh::{prelude::Receiver, sync::ZFuture};
 
-pub(crate) fn up(roudi: Option<&Path>, coordinator: Option<&Path>) -> eyre::Result<()> {
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct UpConfig {
+    iceoryx: bool,
+}
+
+impl Default for UpConfig {
+    fn default() -> Self {
+        Self { iceoryx: true }
+    }
+}
+
+pub(crate) fn up(
+    config_path: Option<&Path>,
+    roudi: Option<&Path>,
+    coordinator: Option<&Path>,
+) -> eyre::Result<()> {
+    let UpConfig { iceoryx } = parse_dora_config(config_path)?;
+
     if !coordinator_running()? {
         start_coordinator(coordinator).wrap_err("failed to start dora-coordinator")?;
     }
 
-    // try to start roudi
-    start_roudi(roudi).wrap_err("failed to start iceoryx roudi daemon")?;
+    if iceoryx {
+        // try to start roudi
+        start_roudi(roudi).wrap_err("failed to start iceoryx roudi daemon")?;
+    }
 
     Ok(())
 }
 
-pub(crate) fn destroy(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), eyre::ErrReport> {
+pub(crate) fn destroy(
+    config_path: Option<&Path>,
+    session: &mut Option<Arc<zenoh::Session>>,
+) -> Result<(), eyre::ErrReport> {
+    let UpConfig { iceoryx } = parse_dora_config(config_path)?;
+
     if coordinator_running()? {
         // send destroy command to dora-coordinator
         let reply_receiver = zenoh_control_session(session)?
@@ -32,24 +56,40 @@ pub(crate) fn destroy(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), e
         eprintln!("The dora-coordinator is not running");
     }
 
-    // kill iox-roudi process
-    let system = sysinfo::System::new_all();
-    let processes: Vec<_> = system.processes_by_exact_name("iox-roudi").collect();
-    if processes.is_empty() {
-        eprintln!("No `iox-roudi` process found");
-    } else if processes.len() == 1 {
-        let process = processes[0];
-        let success = process.kill();
-        if success {
-            println!("Killed `iox-roudi` process");
+    if iceoryx {
+        // kill iox-roudi process
+        let system = sysinfo::System::new_all();
+        let processes: Vec<_> = system.processes_by_exact_name("iox-roudi").collect();
+        if processes.is_empty() {
+            eprintln!("No `iox-roudi` process found");
+        } else if processes.len() == 1 {
+            let process = processes[0];
+            let success = process.kill();
+            if success {
+                println!("Killed `iox-roudi` process");
+            } else {
+                bail!("failed to kill iox-roudi process");
+            }
         } else {
-            bail!("failed to kill iox-roudi process");
+            bail!("multiple iox-roudi processes found, please kill the correct processes manually");
         }
-    } else {
-        bail!("multiple iox-roudi processes found, please kill the correct processes manually");
     }
 
     Ok(())
+}
+
+fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrReport> {
+    let path = config_path.or_else(|| Some(Path::new("dora-config.yml")).filter(|p| p.exists()));
+    let config = match path {
+        Some(path) => {
+            let raw = fs::read_to_string(path)
+                .with_context(|| format!("failed to read `{}`", path.display()))?;
+            serde_yaml::from_str(&raw)
+                .with_context(|| format!("failed to parse `{}`", path.display()))?
+        }
+        None => Default::default(),
+    };
+    Ok(config)
 }
 
 fn start_coordinator(coordinator: Option<&Path>) -> eyre::Result<()> {
