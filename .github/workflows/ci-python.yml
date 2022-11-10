@@ -13,7 +13,7 @@ jobs:
     name: "Python Examples"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install Cap'n Proto and libacl-dev
         run: |
           export DEBIAN_FRONTEND=noninteractive

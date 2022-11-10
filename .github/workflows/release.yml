@@ -20,7 +20,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - name: Install Cap'n Proto and libacl-dev (Linux)
         if: runner.os == 'Linux'
@@ -82,7 +82,7 @@ jobs:
           asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
           asset_content_type: application/zip
 
-      # Publish Dora Node Python API 
+      # Publish Dora Node Python API
       - name: Set up Python
         uses: actions/setup-python@v2
         with:

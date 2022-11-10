@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install Cap'n Proto and libacl-dev (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -59,7 +59,7 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - name: Install Cap'n Proto and libacl-dev (Linux)
         if: runner.os == 'Linux'
@@ -122,7 +122,7 @@ jobs:
     name: "Examples (Remote)"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - name: Install Cap'n Proto and libacl-dev (Linux)
         if: runner.os == 'Linux'
@@ -141,7 +141,7 @@ jobs:
     name: "Clippy"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install Cap'n Proto and libacl-dev
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -166,7 +166,7 @@ jobs:
     name: "Formatting"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: "rustfmt"
         run: cargo fmt --all -- --check
 
@@ -174,7 +174,7 @@ jobs:
     name: "License Checks"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - run: cargo install cargo-lichking
       - name: "Check dependency licenses"
         run: cargo lichking check
