@@ -937,6 +937,7 @@ dependencies = [
  "reqwest",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
