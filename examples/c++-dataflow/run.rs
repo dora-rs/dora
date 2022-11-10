@@ -7,6 +7,11 @@ use std::{
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    if cfg!(windows) {
+        eprintln!("The c++ example does not work on Windows currently because of a linker error");
+        return Ok(());
+    }
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let target = root.join("target");
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -15,17 +20,40 @@ async fn main() -> eyre::Result<()> {
     tokio::fs::create_dir_all("build").await?;
     let build_dir = Path::new("build");
 
-    build_package("cxx-dataflow-example-operator-rust-api").await?;
+    build_package("dora-operator-api-cxx").await?;
+    let operator_cxxbridge = target
+        .join("cxxbridge")
+        .join("dora-operator-api-cxx")
+        .join("src");
+    tokio::fs::copy(
+        operator_cxxbridge.join("lib.rs.cc"),
+        build_dir.join("operator-bridge.cc"),
+    )
+    .await?;
+    tokio::fs::copy(
+        operator_cxxbridge.join("lib.rs.h"),
+        build_dir.join("dora-operator-api.h"),
+    )
+    .await?;
 
     build_package("dora-node-api-cxx").await?;
-    let cxxbridge = target
+    let node_cxxbridge = target
         .join("cxxbridge")
         .join("dora-node-api-cxx")
         .join("src");
-    tokio::fs::copy(cxxbridge.join("lib.rs.cc"), build_dir.join("bridge.cc")).await?;
     tokio::fs::copy(
-        cxxbridge.join("lib.rs.h"),
+        node_cxxbridge.join("lib.rs.cc"),
+        build_dir.join("node-bridge.cc"),
+    )
+    .await?;
+    tokio::fs::copy(
+        node_cxxbridge.join("lib.rs.h"),
         build_dir.join("dora-node-api.h"),
+    )
+    .await?;
+    tokio::fs::write(
+        build_dir.join("operator.h"),
+        r###"#include "../operator-rust-api/operator.h""###,
     )
     .await?;
 
@@ -35,7 +63,7 @@ async fn main() -> eyre::Result<()> {
         root,
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
-            &dunce::canonicalize(build_dir.join("bridge.cc"))?,
+            &dunce::canonicalize(build_dir.join("node-bridge.cc"))?,
         ],
         "node_rust_api",
         &["-l", "dora_node_api_cxx"],
@@ -51,8 +79,25 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
     build_cxx_operator(
-        &dunce::canonicalize(Path::new("operator-c-api").join("operator.cc"))?,
+        &[
+            &dunce::canonicalize(Path::new("operator-rust-api").join("operator.cc"))?,
+            &dunce::canonicalize(build_dir.join("operator-bridge.cc"))?,
+        ],
+        "operator_rust_api",
+        &[
+            "-l",
+            "dora_operator_api_cxx",
+            "-L",
+            &root.join("target").join("debug").to_str().unwrap(),
+        ],
+    )
+    .await?;
+    build_cxx_operator(
+        &[&dunce::canonicalize(
+            Path::new("operator-c-api").join("operator.cc"),
+        )?],
         "operator_c_api",
+        &[],
     )
     .await?;
 
@@ -87,7 +132,6 @@ async fn build_cxx_node(
     let mut clang = tokio::process::Command::new("clang++");
     clang.args(paths);
     clang.arg("-std=c++17");
-    clang.args(args);
     #[cfg(target_os = "linux")]
     {
         clang.arg("-l").arg("m");
@@ -137,6 +181,7 @@ async fn build_cxx_node(
         clang.arg("-l").arg("c");
         clang.arg("-l").arg("m");
     }
+    clang.args(args);
     clang.arg("-L").arg(root.join("target").join("debug"));
     clang
         .arg("--output")
@@ -151,27 +196,69 @@ async fn build_cxx_node(
     Ok(())
 }
 
-async fn build_cxx_operator(path: &Path, out_name: &str) -> eyre::Result<()> {
-    let object_file_path = Path::new("../build").join(out_name).with_extension("o");
+async fn build_cxx_operator(
+    paths: &[&Path],
+    out_name: &str,
+    link_args: &[&str],
+) -> eyre::Result<()> {
+    let mut object_file_paths = Vec::new();
 
-    let mut compile = tokio::process::Command::new("clang++");
-    compile.arg("-c").arg(path);
-    compile.arg("-std=c++17");
-    compile.arg("-o").arg(&object_file_path);
-    #[cfg(unix)]
-    compile.arg("-fPIC");
-    if let Some(parent) = path.parent() {
-        compile.current_dir(parent);
+    for path in paths {
+        let mut compile = tokio::process::Command::new("clang++");
+        compile.arg("-c").arg(path);
+        compile.arg("-std=c++17");
+        let object_file_path = path.with_extension("o");
+        compile.arg("-o").arg(&object_file_path);
+        #[cfg(unix)]
+        compile.arg("-fPIC");
+        if let Some(parent) = path.parent() {
+            compile.current_dir(parent);
+        }
+        if !compile.status().await?.success() {
+            bail!("failed to compile cxx operator");
+        };
+        object_file_paths.push(object_file_path);
     }
-    if !compile.status().await?.success() {
-        bail!("failed to compile cxx operator");
-    };
 
     let mut link = tokio::process::Command::new("clang++");
-    link.arg("-shared").arg(&object_file_path);
+    link.arg("-shared").args(&object_file_paths);
+    link.args(link_args);
+    #[cfg(target_os = "windows")]
+    {
+        link.arg("-ladvapi32");
+        link.arg("-luserenv");
+        link.arg("-lkernel32");
+        link.arg("-lws2_32");
+        link.arg("-lbcrypt");
+        link.arg("-lncrypt");
+        link.arg("-lschannel");
+        link.arg("-lntdll");
+        link.arg("-liphlpapi");
+
+        link.arg("-lcfgmgr32");
+        link.arg("-lcredui");
+        link.arg("-lcrypt32");
+        link.arg("-lcryptnet");
+        link.arg("-lfwpuclnt");
+        link.arg("-lgdi32");
+        link.arg("-lmsimg32");
+        link.arg("-lmswsock");
+        link.arg("-lole32");
+        link.arg("-lopengl32");
+        link.arg("-lsecur32");
+        link.arg("-lshell32");
+        link.arg("-lsynchronization");
+        link.arg("-luser32");
+        link.arg("-lwinspool");
+
+        link.arg("-Wl,-nodefaultlib:libcmt");
+        link.arg("-D_DLL");
+        link.arg("-lmsvcrt");
+        link.arg("-fms-runtime-lib=static");
+    }
     link.arg("-o")
         .arg(Path::new("../build").join(library_filename(out_name)));
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = paths[0].parent() {
         link.current_dir(parent);
     }
     if !link.status().await?.success() {

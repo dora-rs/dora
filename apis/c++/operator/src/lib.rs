@@ -1,28 +1,30 @@
+#![cfg(not(test))]
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{self, register_operator, DoraOperator, DoraOutputSender, DoraStatus};
-use ffi::SendOutputResult;
+use ffi::DoraSendOutputResult;
 
 #[cxx::bridge]
 #[allow(unsafe_op_in_unsafe_fn)]
 mod ffi {
-    struct OnInputResult {
+    struct DoraOnInputResult {
         error: String,
         stop: bool,
     }
 
-    struct SendOutputResult {
+    struct DoraSendOutputResult {
         error: String,
     }
 
     extern "Rust" {
         type OutputSender<'a, 'b>;
 
-        fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> SendOutputResult;
+        fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> DoraSendOutputResult;
     }
 
     unsafe extern "C++" {
-        include!("cxx-dataflow-example-operator-rust-api/src/operator.h");
+        include!("operator.h");
+
         type Operator;
 
         fn new_operator() -> UniquePtr<Operator>;
@@ -32,19 +34,19 @@ mod ffi {
             id: &str,
             data: &[u8],
             output_sender: &mut OutputSender,
-        ) -> OnInputResult;
+        ) -> DoraOnInputResult;
     }
 }
 
 pub struct OutputSender<'a, 'b>(&'a mut DoraOutputSender<'b>);
 
-fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> SendOutputResult {
+fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> DoraSendOutputResult {
     let error = sender
         .0
         .send(id.into(), data.to_owned())
         .err()
         .unwrap_or_default();
-    SendOutputResult { error }
+    DoraSendOutputResult { error }
 }
 
 register_operator!(OperatorWrapper);
