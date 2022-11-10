@@ -103,6 +103,7 @@ pub struct OnInputResult {
 pub enum DoraStatus {
     Continue = 0,
     Stop = 1,
+    StopAll = 2,
 }
 
 pub fn generate_headers(target_file: &Path) -> ::std::io::Result<()> {

@@ -1,7 +1,7 @@
 pub use communication::Input;
 use communication::STOP_TOPIC;
 use communication_layer_pub_sub::CommunicationLayer;
-pub use dora_core as core;
+pub use dora_core;
 use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
@@ -142,6 +142,19 @@ fn set_up_tracing() -> eyre::Result<()> {
     let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to set tracing global subscriber")
+}
+
+#[must_use]
+pub fn manual_stop_publisher(
+    communication: &mut dyn CommunicationLayer,
+) -> eyre::Result<impl FnOnce() -> Result<(), BoxError>> {
+    let hlc = dora_message::uhlc::HLC::default();
+    let metadata = dora_message::Metadata::new(hlc.new_timestamp());
+    let data = metadata.serialize().unwrap();
+    let publisher = communication
+        .publisher(dora_core::topics::MANUAL_STOP)
+        .map_err(|err| eyre::eyre!(err))?;
+    Ok(move || publisher.publish(&data))
 }
 
 #[cfg(test)]

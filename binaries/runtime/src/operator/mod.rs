@@ -100,5 +100,12 @@ pub fn spawn_operator(
 pub enum OperatorEvent {
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
-    Finished,
+    Finished { reason: StopReason },
+}
+
+#[derive(Debug)]
+pub enum StopReason {
+    InputsClosed,
+    ExplicitStop,
+    ExplicitStopAll,
 }

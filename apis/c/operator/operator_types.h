@@ -68,6 +68,8 @@ enum DoraStatus {
     DORA_STATUS_CONTINUE = 0,
     /** <No documentation available> */
     DORA_STATUS_STOP = 1,
+    /** <No documentation available> */
+    DORA_STATUS_STOP_ALL = 2,
 }
 #ifndef DOXYGEN
 ; typedef uint8_t
