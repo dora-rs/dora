@@ -7,6 +7,11 @@ use std::{
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    if cfg!(windows) {
+        eprintln!("The c++ example does not work on Windows currently because of a linker error");
+        return Ok(());
+    }
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let target = root.join("target");
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
