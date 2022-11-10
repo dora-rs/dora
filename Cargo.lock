@@ -747,19 +747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cxx-dataflow-example-operator-rust-api"
-version = "0.1.0"
-dependencies = [
- "cxx",
- "cxx-build",
- "dora-operator-api",
- "eyre",
- "futures",
- "rand",
- "tokio",
-]
-
-[[package]]
 name = "cxxbridge-flags"
 version = "1.0.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1034,6 +1021,19 @@ name = "dora-operator-api-c"
 version = "0.1.0"
 dependencies = [
  "dora-operator-api-types",
+]
+
+[[package]]
+name = "dora-operator-api-cxx"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "dora-operator-api",
+ "eyre",
+ "futures",
+ "rand",
+ "tokio",
 ]
 
 [[package]]
