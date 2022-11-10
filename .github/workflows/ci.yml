@@ -36,6 +36,9 @@ jobs:
           echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - uses: r7kamura/rust-problem-matchers@v1
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
+
       - name: "Check"
         run: cargo check --all
       - name: "Build"
@@ -73,6 +76,8 @@ jobs:
           echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - uses: r7kamura/rust-problem-matchers@v1
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
 
       - name: "Build examples"
         timeout-minutes: 30
@@ -110,6 +115,8 @@ jobs:
           sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
 
       - uses: r7kamura/rust-problem-matchers@v1
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
 
       - name: "Remote Rust Dataflow example"
         timeout-minutes: 30
@@ -126,6 +133,8 @@ jobs:
           sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
 
       - uses: r7kamura/rust-problem-matchers@v1
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
 
       - name: "Clippy"
         run: cargo clippy --all
@@ -148,6 +157,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
+      - uses: r7kamura/rust-problem-matchers@v1
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
+
       - run: cargo install cargo-lichking
       - name: "Check dependency licenses"
         run: cargo lichking check
