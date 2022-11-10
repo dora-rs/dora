@@ -20,7 +20,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - name: Install Cap'n Proto and libacl-dev (Linux)
         if: runner.os == 'Linux'
@@ -41,12 +41,11 @@ jobs:
           choco install capnproto
           echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - uses: phil-opp/rust-problem-matchers@node-16
+
       - name: "Build binaries"
-        uses: actions-rs/cargo@v1
         timeout-minutes: 30
-        with:
-          command: build
-          args: --release -p dora-runtime -p dora-coordinator -p dora-cli
+        run: cargo build --release -p dora-runtime -p dora-coordinator -p dora-cli
 
       - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
@@ -82,7 +81,7 @@ jobs:
           asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
           asset_content_type: application/zip
 
-      # Publish Dora Node Python API 
+      # Publish Dora Node Python API
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
