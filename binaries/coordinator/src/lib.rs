@@ -2,11 +2,11 @@ use crate::run::spawn_dataflow;
 use dora_core::{
     config::CommunicationConfig,
     topics::{
-        self, StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_LIST,
+        StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_LIST,
         ZENOH_CONTROL_START, ZENOH_CONTROL_STOP,
     },
 };
-use dora_node_api::communication;
+use dora_node_api::{communication, manual_stop_publisher};
 use eyre::{bail, eyre, WrapErr};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
@@ -188,16 +188,12 @@ async fn stop_dataflow(
             .wrap_err("failed to join communication layer init task")?
             .wrap_err("failed to init communication layer")?;
     tracing::info!("sending stop message to dataflow `{uuid}`");
-    tokio::task::spawn_blocking(move || {
-        let hlc = dora_message::uhlc::HLC::default();
-        let metadata = dora_message::Metadata::new(hlc.new_timestamp());
-        let data = metadata.serialize().unwrap();
-        communication.publisher(topics::MANUAL_STOP)?.publish(&data)
-    })
-    .await
-    .wrap_err("failed to join stop publish task")?
-    .map_err(|err| eyre!(err))
-    .wrap_err("failed to send stop message")?;
+    let manual_stop_publisher = manual_stop_publisher(communication.as_mut())?;
+    tokio::task::spawn_blocking(move || manual_stop_publisher())
+        .await
+        .wrap_err("failed to join stop publish task")?
+        .map_err(|err| eyre!(err))
+        .wrap_err("failed to send stop message")?;
     Ok(())
 }
 
