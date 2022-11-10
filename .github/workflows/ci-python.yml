@@ -21,8 +21,6 @@ jobs:
       - uses: actions/setup-python@v2
         with:
           python-version: 3.8.10
+      - uses: r7kamura/rust-problem-matchers@v1
       - name: "Python Dataflow example"
-        uses: actions-rs/cargo@v1
-        with:
-          command: run
-          args: --example python-dataflow
+        run: cargo run --example python-dataflow

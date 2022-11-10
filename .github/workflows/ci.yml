@@ -35,21 +35,13 @@ jobs:
           choco install capnproto
           echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - uses: r7kamura/rust-problem-matchers@v1
       - name: "Check"
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all
+        run: cargo check --all
       - name: "Build"
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --all
+        run: cargo build --all
       - name: "Test"
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all
+        run: cargo test --all
 
   examples:
     name: "Examples"
@@ -80,31 +72,21 @@ jobs:
           choco install capnproto
           echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - uses: r7kamura/rust-problem-matchers@v1
+
       - name: "Build examples"
-        uses: actions-rs/cargo@v1
         timeout-minutes: 30
-        with:
-          command: build
-          args: --examples
+        run: cargo build --examples
 
       - name: "Rust Dataflow example"
-        uses: actions-rs/cargo@v1
         timeout-minutes: 30
-        with:
-          command: run
-          args: --example rust-dataflow
+        run: cargo run --example rust-dataflow
       - name: "C Dataflow example"
-        uses: actions-rs/cargo@v1
         timeout-minutes: 15
-        with:
-          command: run
-          args: --example c-dataflow
+        run: cargo run --example c-dataflow
       - name: "C++ Dataflow example"
-        uses: actions-rs/cargo@v1
         timeout-minutes: 15
-        with:
-          command: run
-          args: --example cxx-dataflow
+        run: cargo run --example cxx-dataflow
 
       - name: "Start RouDi (iceoryx)"
         if: runner.os != 'Windows'
@@ -112,11 +94,8 @@ jobs:
 
       - name: "Rust iceoryx example"
         if: runner.os != 'Windows'
-        uses: actions-rs/cargo@v1
         timeout-minutes: 30
-        with:
-          command: run
-          args: --example iceoryx
+        run: cargo run --example iceoryx
 
   examples-remote:
     name: "Examples (Remote)"
@@ -130,12 +109,11 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
 
+      - uses: r7kamura/rust-problem-matchers@v1
+
       - name: "Remote Rust Dataflow example"
-        uses: actions-rs/cargo@v1
         timeout-minutes: 30
-        with:
-          command: run
-          args: --example rust-dataflow-url
+        run: cargo run --example rust-dataflow-url
 
   clippy:
     name: "Clippy"
@@ -146,27 +124,22 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
+
+      - uses: r7kamura/rust-problem-matchers@v1
+
       - name: "Clippy"
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --all
+        run: cargo clippy --all
       - name: "Clippy (tracing feature)"
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --all --features tracing
+        run: cargo clippy --all --features tracing
       - name: "Clippy (metrics feature)"
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --all --features metrics
+        run: cargo clippy --all --features metrics
 
   rustfmt:
     name: "Formatting"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - uses: r7kamura/rust-problem-matchers@v1
       - name: "rustfmt"
         run: cargo fmt --all -- --check
 

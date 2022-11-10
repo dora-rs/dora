@@ -41,12 +41,11 @@ jobs:
           choco install capnproto
           echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - uses: r7kamura/rust-problem-matchers@v1
+
       - name: "Build binaries"
-        uses: actions-rs/cargo@v1
         timeout-minutes: 30
-        with:
-          command: build
-          args: --release -p dora-runtime -p dora-coordinator -p dora-cli
+        run: cargo build --release -p dora-runtime -p dora-coordinator -p dora-cli
 
       - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
