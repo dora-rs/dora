@@ -3,14 +3,14 @@ use eyre::Context;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
-use tracing::warn;
+use tracing::info;
 
 pub async fn download_file<T>(url: T, target_path: &Path) -> Result<(), eyre::ErrReport>
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,
 {
     if target_path.exists() {
-        warn!("Using cache: {:?}", target_path.to_str());
+        info!("Using cache: {:?}", target_path.to_str());
         return Ok(());
     }
 
