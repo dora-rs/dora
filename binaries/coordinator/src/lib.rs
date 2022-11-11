@@ -157,7 +157,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                     };
                     let _ = reply_sender.send(reply);
                 }
-                ControlEvent::Error(err) => return Err(err),
+                ControlEvent::Error(err) => tracing::error!("{err:?}"),
             },
         }
     }
