@@ -3,7 +3,7 @@ use eyre::Context;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
-use tracing::log::warn;
+use tracing::warn;
 
 pub async fn download_file<T>(url: T, target_path: &Path) -> Result<(), eyre::ErrReport>
 where
