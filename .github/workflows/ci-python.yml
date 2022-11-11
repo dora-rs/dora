@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: 3.8.10
 
-      - uses: r7kamura/rust-problem-matchers@v1
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
 
