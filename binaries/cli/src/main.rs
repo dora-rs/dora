@@ -5,6 +5,7 @@ use dora_core::topics::{
 };
 use eyre::{bail, eyre, Context};
 use std::{ops::Deref, path::PathBuf, sync::Arc};
+use uuid::Uuid;
 use zenoh::{
     prelude::{Receiver, Selector, SplitBuffer},
     sync::ZFuture,
@@ -62,7 +63,7 @@ enum Command {
         dataflow: PathBuf,
     },
     Stop {
-        uuid: String,
+        uuid: Option<String>,
     },
     Logs,
     Metrics,
@@ -133,7 +134,10 @@ fn main() -> eyre::Result<()> {
         )?,
         Command::Start { dataflow } => start_dataflow(dataflow, &mut session)?,
         Command::List => list(&mut session)?,
-        Command::Stop { uuid } => stop_dataflow(uuid, &mut session)?,
+        Command::Stop { uuid } => match uuid {
+            Some(uuid) => stop_dataflow(uuid.parse().wrap_err("not a valid UUID")?, &mut session)?,
+            None => stop_dataflow_interactive(&mut session)?,
+        },
         Command::Destroy { config } => up::destroy(config.as_deref(), &mut session)?,
         Command::Logs => todo!(),
         Command::Metrics => todo!(),
@@ -178,14 +182,26 @@ fn start_dataflow(
     }
 }
 
+fn stop_dataflow_interactive(session: &mut Option<Arc<zenoh::Session>>) -> eyre::Result<()> {
+    let uuids = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    if uuids.is_empty() {
+        eprintln!("No dataflows are running");
+    } else {
+        let selection = inquire::Select::new("Choose dataflow to stop:", uuids).prompt()?;
+        stop_dataflow(selection, session)?;
+    }
+
+    Ok(())
+}
+
 fn stop_dataflow(
-    uuid: String,
+    uuid: Uuid,
     session: &mut Option<Arc<zenoh::Session>>,
 ) -> Result<(), eyre::ErrReport> {
     let reply_receiver = zenoh_control_session(session)?
         .get(Selector {
             key_selector: ZENOH_CONTROL_STOP.into(),
-            value_selector: uuid.as_str().into(),
+            value_selector: uuid.to_string().into(),
         })
         .wait()
         .map_err(|err| eyre!(err))
@@ -202,7 +218,24 @@ fn stop_dataflow(
     }
 }
 
-fn list(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), eyre::ErrReport> {
+fn list(session: &mut Option<Arc<zenoh::Session>>) -> eyre::Result<()> {
+    let uuids = query_running_dataflows(session)?;
+
+    if uuids.is_empty() {
+        eprintln!("No dataflows are running");
+    } else {
+        println!("Running dataflows:");
+        for uuid in uuids {
+            println!("- {uuid}");
+        }
+    }
+
+    Ok(())
+}
+
+fn query_running_dataflows(
+    session: &mut Option<Arc<zenoh::Session>>,
+) -> Result<Vec<Uuid>, eyre::ErrReport> {
     let reply_receiver = zenoh_control_session(session)?
         .get(ZENOH_CONTROL_LIST)
         .wait()
@@ -213,9 +246,13 @@ fn list(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), eyre::ErrReport
         .wrap_err("failed to receive reply from coordinator")?;
     let raw = reply.sample.value.payload.contiguous();
     let reply_string = std::str::from_utf8(raw.deref()).wrap_err("reply is not valid UTF8")?;
-    println!("{reply_string}");
+    let uuids = reply_string
+        .lines()
+        .map(Uuid::try_from)
+        .collect::<Result<_, _>>()
+        .wrap_err("failed to parse UUIDs returned by coordinator")?;
 
-    Ok(())
+    Ok(uuids)
 }
 
 fn zenoh_control_session(
