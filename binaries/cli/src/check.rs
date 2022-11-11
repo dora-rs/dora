@@ -1,15 +1,14 @@
-use crate::{graph::read_descriptor, zenoh_control_session};
+use crate::{control_connection, graph::read_descriptor};
 use dora_core::{
     adjust_shared_library_path,
     config::{InputMapping, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
-    topics::ZENOH_CONTROL_LIST,
+    topics::ControlRequest,
 };
 use eyre::{bail, eyre, Context};
 use std::{env::consts::EXE_EXTENSION, io::Write, path::Path};
 use sysinfo::SystemExt;
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
-use zenoh::{prelude::Receiver, sync::ZFuture};
 
 pub fn check_environment() -> eyre::Result<()> {
     let mut error_occured = false;
@@ -59,12 +58,9 @@ pub fn check_environment() -> eyre::Result<()> {
 
 pub fn coordinator_running() -> Result<bool, eyre::ErrReport> {
     let mut control_session = None;
-    let reply_receiver = zenoh_control_session(&mut control_session)?
-        .get(ZENOH_CONTROL_LIST)
-        .wait()
-        .map_err(|err| eyre!(err))
-        .wrap_err("failed to create publisher for list message")?;
-    Ok(reply_receiver.recv().is_ok())
+    let reply = control_connection(&mut control_session)?
+        .request(&serde_json::to_vec(&ControlRequest::List).unwrap());
+    Ok(reply.is_ok())
 }
 
 pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Result<()> {

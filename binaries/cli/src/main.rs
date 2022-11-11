@@ -1,14 +1,11 @@
 use clap::Parser;
+use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_core::topics::{
-    StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_LIST, ZENOH_CONTROL_START,
-    ZENOH_CONTROL_STOP,
+    control_socket_addr, ControlRequest, StartDataflowResult, StopDataflowResult,
 };
-use eyre::{bail, eyre, Context};
-use std::{ops::Deref, path::PathBuf, sync::Arc};
-use zenoh::{
-    prelude::{Receiver, Selector, SplitBuffer},
-    sync::ZFuture,
-};
+use eyre::{bail, Context};
+use std::path::PathBuf;
+use uuid::Uuid;
 
 mod build;
 mod check;
@@ -62,7 +59,7 @@ enum Command {
         dataflow: PathBuf,
     },
     Stop {
-        uuid: String,
+        uuid: Uuid,
     },
     Logs,
     Metrics,
@@ -147,28 +144,22 @@ fn main() -> eyre::Result<()> {
 
 fn start_dataflow(
     dataflow: PathBuf,
-    session: &mut Option<Arc<zenoh::Session>>,
+    session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<(), eyre::ErrReport> {
     let canonicalized = dataflow
         .canonicalize()
         .wrap_err("given dataflow file does not exist")?;
-    let path = canonicalized
-        .to_str()
-        .ok_or_else(|| eyre!("dataflow path must be valid UTF-8"))?;
-    let reply_receiver = zenoh_control_session(session)?
-        .get(Selector {
-            key_selector: ZENOH_CONTROL_START.into(),
-            value_selector: path.into(),
-        })
-        .wait()
-        .map_err(|err| eyre!(err))
-        .wrap_err("failed to create publisher for start dataflow message")?;
-    let reply = reply_receiver
-        .recv()
-        .wrap_err("failed to receive reply from coordinator")?;
-    let raw = reply.sample.value.payload.contiguous();
+    let reply_raw = control_connection(session)?
+        .request(
+            &serde_json::to_vec(&ControlRequest::Start {
+                dataflow_path: canonicalized,
+            })
+            .unwrap(),
+        )
+        .wrap_err("failed to send start dataflow message")?;
+
     let result: StartDataflowResult =
-        serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         StartDataflowResult::Ok { uuid } => {
             println!("{uuid}");
@@ -179,55 +170,40 @@ fn start_dataflow(
 }
 
 fn stop_dataflow(
-    uuid: String,
-    session: &mut Option<Arc<zenoh::Session>>,
+    uuid: Uuid,
+    session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<(), eyre::ErrReport> {
-    let reply_receiver = zenoh_control_session(session)?
-        .get(Selector {
-            key_selector: ZENOH_CONTROL_STOP.into(),
-            value_selector: uuid.as_str().into(),
-        })
-        .wait()
-        .map_err(|err| eyre!(err))
-        .wrap_err("failed to create publisher for start dataflow message")?;
-    let reply = reply_receiver
-        .recv()
-        .wrap_err("failed to receive reply from coordinator")?;
-    let raw = reply.sample.value.payload.contiguous();
+    let reply_raw = control_connection(session)?
+        .request(
+            &serde_json::to_vec(&ControlRequest::Stop {
+                dataflow_uuid: uuid,
+            })
+            .unwrap(),
+        )
+        .wrap_err("failed to send dataflow stop message")?;
     let result: StopDataflowResult =
-        serde_json::from_slice(&raw).wrap_err("failed to parse reply")?;
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         StopDataflowResult::Ok => Ok(()),
         StopDataflowResult::Error(err) => bail!(err),
     }
 }
 
-fn list(session: &mut Option<Arc<zenoh::Session>>) -> Result<(), eyre::ErrReport> {
-    let reply_receiver = zenoh_control_session(session)?
-        .get(ZENOH_CONTROL_LIST)
-        .wait()
-        .map_err(|err| eyre!(err))
-        .wrap_err("failed to create publisher for list message")?;
-    let reply = reply_receiver
-        .recv()
-        .wrap_err("failed to receive reply from coordinator")?;
-    let raw = reply.sample.value.payload.contiguous();
-    let reply_string = std::str::from_utf8(raw.deref()).wrap_err("reply is not valid UTF8")?;
+fn list(session: &mut Option<Box<TcpRequestReplyConnection>>) -> Result<(), eyre::ErrReport> {
+    let reply_raw = control_connection(session)?
+        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
+        .wrap_err("failed to send list message")?;
+    let reply_string = std::str::from_utf8(&reply_raw).wrap_err("reply is not valid UTF8")?;
     println!("{reply_string}");
 
     Ok(())
 }
 
-fn zenoh_control_session(
-    session: &mut Option<Arc<zenoh::Session>>,
-) -> eyre::Result<&Arc<zenoh::Session>> {
+fn control_connection(
+    session: &mut Option<Box<TcpRequestReplyConnection>>,
+) -> eyre::Result<&mut Box<TcpRequestReplyConnection>> {
     Ok(match session {
         Some(session) => session,
-        None => session.insert(
-            zenoh::open(zenoh::config::Config::default())
-                .wait()
-                .map_err(|err| eyre!(err))?
-                .into_arc(),
-        ),
+        None => session.insert(TcpLayer::new().connect(control_socket_addr())?),
     })
 }
