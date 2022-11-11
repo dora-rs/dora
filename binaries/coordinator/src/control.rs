@@ -9,14 +9,13 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
-use uuid::Uuid;
 
 pub(crate) async fn control_events(
     control_listen_addr: SocketAddr,
 ) -> eyre::Result<impl Stream<Item = Event>> {
     let (tx, rx) = mpsc::channel(10);
 
-    tokio::task::spawn_blocking(move || listen(control_listen_addr, tx));
+    std::thread::spawn(move || listen(control_listen_addr, tx));
 
     Ok(ReceiverStream::new(rx).map(Event::Control))
 }
@@ -38,7 +37,7 @@ fn listen(control_listen_addr: SocketAddr, tx: mpsc::Sender<ControlEvent>) {
         match connection.wrap_err("failed to connect") {
             Ok(connection) => {
                 let tx = tx.clone();
-                tokio::task::spawn_blocking(|| handle_requests(connection, tx));
+                std::thread::spawn(|| handle_requests(connection, tx));
             }
             Err(err) => {
                 if tx.blocking_send(err.into()).is_err() {
