@@ -151,13 +151,8 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                 ZENOH_CONTROL_LIST => {
                     let mut output = String::new();
 
-                    if running_dataflows.is_empty() {
-                        writeln!(output, "No running dataflows")?;
-                    } else {
-                        writeln!(output, "Running dataflows:")?;
-                        for uuid in running_dataflows.keys() {
-                            writeln!(output, "- {uuid}")?;
-                        }
+                    for uuid in running_dataflows.keys() {
+                        writeln!(output, "{uuid}")?;
                     }
 
                     query.reply_async(Sample::new("", output)).await;
