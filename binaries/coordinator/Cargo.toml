@@ -17,7 +17,7 @@ tokio = { version = "1.21.2", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util"] }
 tokio-util = { version = "0.7.1", features = ["codec"] }
 clap = { version = "3.1.8", features = ["derive"] }
-uuid = "0.8.2"
+uuid = { version = "1.2.1" }
 time = "0.3.9"
 rand = "0.8.5"
 dora-core = { version = "0.1.0", path = "../../libraries/core" }
@@ -29,3 +29,5 @@ zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a136e4fd9
 serde_json = "1.0.86"
 dora-download = { path = "../../libraries/extensions/download" }
 which = "4.3.0"
+communication-layer-request-reply = { path = "../../libraries/communication-layer/request-reply" }
+thiserror = "1.0.37"

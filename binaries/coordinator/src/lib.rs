@@ -1,10 +1,8 @@
 use crate::run::spawn_dataflow;
+use control::ControlEvent;
 use dora_core::{
     config::CommunicationConfig,
-    topics::{
-        StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_LIST,
-        ZENOH_CONTROL_START, ZENOH_CONTROL_STOP,
-    },
+    topics::{control_socket_addr, ControlRequest, StartDataflowResult, StopDataflowResult},
 };
 use dora_node_api::{communication, manual_stop_publisher};
 use eyre::{bail, eyre, WrapErr};
@@ -18,7 +16,6 @@ use std::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
-use zenoh::prelude::Sample;
 
 mod control;
 mod run;
@@ -68,7 +65,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     let dataflow_events = ReceiverStream::new(dataflow_events);
 
     let (control_events, control_events_abort) = futures::stream::abortable(
-        control::control_events()
+        control::control_events(control_socket_addr())
             .await
             .wrap_err("failed to create control events")?,
     );
@@ -94,72 +91,68 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                 }
             },
 
-            Event::Control(query) => match query.key_selector().as_str() {
-                ZENOH_CONTROL_START => {
-                    let dataflow_path = query.value_selector();
-                    let result =
-                        start_dataflow(Path::new(dataflow_path), runtime_path, &dataflow_events_tx)
-                            .await;
-                    let reply = match result {
-                        Ok((uuid, communication_config)) => {
-                            running_dataflows.insert(uuid, communication_config);
-                            StartDataflowResult::Ok {
-                                uuid: uuid.to_string(),
+            Event::Control(event) => match event {
+                ControlEvent::IncomingRequest {
+                    request,
+                    reply_sender,
+                } => {
+                    let reply = match request {
+                        ControlRequest::Start { dataflow_path } => {
+                            let result =
+                                start_dataflow(&dataflow_path, runtime_path, &dataflow_events_tx)
+                                    .await;
+                            let reply = match result {
+                                Ok((uuid, communication_config)) => {
+                                    running_dataflows.insert(uuid, communication_config);
+                                    StartDataflowResult::Ok { uuid }
+                                }
+                                Err(err) => {
+                                    tracing::error!("{err:?}");
+                                    StartDataflowResult::Error(format!("{err:?}"))
+                                }
+                            };
+                            serde_json::to_vec(&reply).unwrap()
+                        }
+                        ControlRequest::Stop { dataflow_uuid } => {
+                            let stop = async {
+                                stop_dataflow(&running_dataflows, dataflow_uuid).await?;
+                                Result::<_, eyre::Report>::Ok(())
+                            };
+                            let reply = match stop.await {
+                                Ok(()) => StopDataflowResult::Ok,
+                                Err(err) => StopDataflowResult::Error(format!("{err:?}")),
+                            };
+
+                            serde_json::to_vec(&reply).unwrap()
+                        }
+                        ControlRequest::Destroy => {
+                            tracing::info!("Received destroy command");
+
+                            control_events_abort.abort();
+
+                            // ensure that no new dataflows can be started
+                            dataflow_events_tx = None;
+
+                            // stop all running dataflows
+                            for &uuid in running_dataflows.keys() {
+                                stop_dataflow(&running_dataflows, uuid).await?;
                             }
+
+                            b"ok".as_slice().into()
                         }
-                        Err(err) => {
-                            tracing::error!("{err:?}");
-                            StartDataflowResult::Error(format!("{err:?}"))
+                        ControlRequest::List => {
+                            let mut output = String::new();
+
+                            for uuid in running_dataflows.keys() {
+                                writeln!(output, "{uuid}")?;
+                            }
+
+                            output.into_bytes()
                         }
                     };
-                    query
-                        .reply_async(Sample::new("", serde_json::to_string(&reply).unwrap()))
-                        .await;
+                    let _ = reply_sender.send(reply);
                 }
-                ZENOH_CONTROL_STOP => {
-                    let stop = async {
-                        let uuid =
-                            Uuid::parse_str(query.value_selector()).wrap_err("not a valid UUID")?;
-                        stop_dataflow(&running_dataflows, uuid).await?;
-
-                        Result::<_, eyre::Report>::Ok(())
-                    };
-                    let reply = match stop.await {
-                        Ok(()) => StopDataflowResult::Ok,
-                        Err(err) => StopDataflowResult::Error(format!("{err:?}")),
-                    };
-
-                    query
-                        .reply_async(Sample::new("", serde_json::to_string(&reply).unwrap()))
-                        .await;
-                }
-                ZENOH_CONTROL_DESTROY => {
-                    tracing::info!("Received stop command");
-
-                    control_events_abort.abort();
-
-                    // ensure that no new dataflows can be started
-                    dataflow_events_tx = None;
-
-                    // stop all running dataflows
-                    for &uuid in running_dataflows.keys() {
-                        stop_dataflow(&running_dataflows, uuid).await?;
-                    }
-
-                    query.reply_async(Sample::new("", "")).await;
-                }
-                ZENOH_CONTROL_LIST => {
-                    let mut output = String::new();
-
-                    for uuid in running_dataflows.keys() {
-                        writeln!(output, "{uuid}")?;
-                    }
-
-                    query.reply_async(Sample::new("", output)).await;
-                }
-                _ => {
-                    query.reply_async(Sample::new("error", "invalid")).await;
-                }
+                ControlEvent::Error(err) => tracing::error!("{err:?}"),
             },
         }
     }
@@ -226,7 +219,7 @@ async fn start_dataflow(
 
 enum Event {
     Dataflow { uuid: Uuid, event: DataflowEvent },
-    Control(zenoh::queryable::Query),
+    Control(ControlEvent),
 }
 
 enum DataflowEvent {
