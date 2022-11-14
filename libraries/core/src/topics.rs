@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
@@ -12,8 +13,16 @@ pub fn control_socket_addr() -> SocketAddr {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
-    Start { dataflow_path: PathBuf },
-    Stop { dataflow_uuid: Uuid },
+    Start {
+        dataflow_path: PathBuf,
+        name: Option<String>,
+    },
+    Stop {
+        dataflow_uuid: Uuid,
+    },
+    StopByName {
+        name: String,
+    },
     Destroy,
     List,
 }
@@ -28,4 +37,26 @@ pub enum StartDataflowResult {
 pub enum StopDataflowResult {
     Ok,
     Error(String),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ListDataflowResult {
+    Ok { dataflows: Vec<DataflowId> },
+    Error(String),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DataflowId {
+    pub uuid: Uuid,
+    pub name: Option<String>,
+}
+
+impl Display for DataflowId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(name) = &self.name {
+            write!(f, "{name} {}", self.uuid)
+        } else {
+            write!(f, "<unnamed> {}", self.uuid)
+        }
+    }
 }
