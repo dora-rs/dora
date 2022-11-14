@@ -2,7 +2,10 @@ use crate::run::spawn_dataflow;
 use control::ControlEvent;
 use dora_core::{
     config::CommunicationConfig,
-    topics::{control_socket_addr, ControlRequest, StartDataflowResult, StopDataflowResult},
+    topics::{
+        control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
+        StopDataflowResult,
+    },
 };
 use dora_node_api::{communication, manual_stop_publisher};
 use eyre::{bail, eyre, WrapErr};
@@ -11,7 +14,6 @@ use futures_concurrency::stream::Merge;
 use run::{await_tasks, SpawnedDataflow};
 use std::{
     collections::HashMap,
-    fmt::Write as _,
     path::{Path, PathBuf},
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -97,13 +99,21 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                     reply_sender,
                 } => {
                     let reply = match request {
-                        ControlRequest::Start { dataflow_path } => {
-                            let result =
-                                start_dataflow(&dataflow_path, runtime_path, &dataflow_events_tx)
-                                    .await;
+                        ControlRequest::Start {
+                            dataflow_path,
+                            name,
+                        } => {
+                            let result = start_dataflow(
+                                &dataflow_path,
+                                name,
+                                runtime_path,
+                                &dataflow_events_tx,
+                            )
+                            .await;
                             let reply = match result {
-                                Ok((uuid, communication_config)) => {
-                                    running_dataflows.insert(uuid, communication_config);
+                                Ok(dataflow) => {
+                                    let uuid = dataflow.uuid;
+                                    running_dataflows.insert(uuid, dataflow);
                                     StartDataflowResult::Ok { uuid }
                                 }
                                 Err(err) => {
@@ -115,6 +125,26 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                         }
                         ControlRequest::Stop { dataflow_uuid } => {
                             let stop = async {
+                                stop_dataflow(&running_dataflows, dataflow_uuid).await?;
+                                Result::<_, eyre::Report>::Ok(())
+                            };
+                            let reply = match stop.await {
+                                Ok(()) => StopDataflowResult::Ok,
+                                Err(err) => StopDataflowResult::Error(format!("{err:?}")),
+                            };
+
+                            serde_json::to_vec(&reply).unwrap()
+                        }
+                        ControlRequest::StopByName { name } => {
+                            let stop = async {
+                                let dataflow_uuid = running_dataflows
+                                    .iter()
+                                    .find(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+                                    .map(|(k, _)| k)
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        eyre!("no running dataflow with name `{name}`")
+                                    })?;
                                 stop_dataflow(&running_dataflows, dataflow_uuid).await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
@@ -141,13 +171,20 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                             b"ok".as_slice().into()
                         }
                         ControlRequest::List => {
-                            let mut output = String::new();
+                            let mut dataflows: Vec<_> = running_dataflows.values().collect();
+                            dataflows.sort();
 
-                            for uuid in running_dataflows.keys() {
-                                writeln!(output, "{uuid}")?;
-                            }
+                            let reply = ListDataflowResult::Ok {
+                                dataflows: dataflows
+                                    .into_iter()
+                                    .map(|d| DataflowId {
+                                        uuid: d.uuid,
+                                        name: d.name.clone(),
+                                    })
+                                    .collect(),
+                            };
 
-                            output.into_bytes()
+                            serde_json::to_vec(&reply).unwrap()
                         }
                     };
                     let _ = reply_sender.send(reply);
@@ -162,12 +199,46 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+struct RunningDataflow {
+    name: Option<String>,
+    uuid: Uuid,
+    communication_config: CommunicationConfig,
+}
+
+impl PartialEq for RunningDataflow {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.uuid == other.uuid
+    }
+}
+
+impl Eq for RunningDataflow {}
+
+impl PartialOrd for RunningDataflow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.name.partial_cmp(&other.name) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => return ord,
+        }
+        self.uuid.partial_cmp(&other.uuid)
+    }
+}
+
+impl Ord for RunningDataflow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.name.cmp(&other.name) {
+            core::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.uuid.cmp(&other.uuid)
+    }
+}
+
 async fn stop_dataflow(
-    running_dataflows: &HashMap<Uuid, CommunicationConfig>,
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
     uuid: Uuid,
 ) -> eyre::Result<()> {
     let communication_config = match running_dataflows.get(&uuid) {
-        Some(config) => config.clone(),
+        Some(dataflow) => dataflow.communication_config.clone(),
         None => bail!("No running dataflow found with UUID `{uuid}`"),
     };
     let mut communication =
@@ -187,9 +258,10 @@ async fn stop_dataflow(
 
 async fn start_dataflow(
     path: &Path,
+    name: Option<String>,
     runtime_path: &Path,
     dataflow_events_tx: &Option<tokio::sync::mpsc::Sender<Event>>,
-) -> eyre::Result<(Uuid, CommunicationConfig)> {
+) -> eyre::Result<RunningDataflow> {
     let runtime_path = runtime_path.to_owned();
     let dataflow_events_tx = match dataflow_events_tx {
         Some(channel) => channel.clone(),
@@ -214,7 +286,11 @@ async fn start_dataflow(
             .await;
     };
     tokio::spawn(task);
-    Ok((uuid, communication_config))
+    Ok(RunningDataflow {
+        uuid,
+        name,
+        communication_config,
+    })
 }
 
 enum Event {

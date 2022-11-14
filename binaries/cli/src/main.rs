@@ -1,7 +1,8 @@
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_core::topics::{
-    control_socket_addr, ControlRequest, StartDataflowResult, StopDataflowResult,
+    control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
+    StopDataflowResult,
 };
 use eyre::{bail, Context};
 use std::path::PathBuf;
@@ -57,9 +58,13 @@ enum Command {
     },
     Start {
         dataflow: PathBuf,
+        #[clap(long)]
+        name: Option<String>,
     },
     Stop {
         uuid: Option<Uuid>,
+        #[clap(long)]
+        name: Option<String>,
     },
     Logs,
     Metrics,
@@ -128,11 +133,12 @@ fn main() -> eyre::Result<()> {
             roudi_path.as_deref(),
             coordinator_path.as_deref(),
         )?,
-        Command::Start { dataflow } => start_dataflow(dataflow, &mut session)?,
+        Command::Start { dataflow, name } => start_dataflow(dataflow, name, &mut session)?,
         Command::List => list(&mut session)?,
-        Command::Stop { uuid } => match uuid {
-            Some(uuid) => stop_dataflow(uuid, &mut session)?,
-            None => stop_dataflow_interactive(&mut session)?,
+        Command::Stop { uuid, name } => match (uuid, name) {
+            (Some(uuid), _) => stop_dataflow(uuid, &mut session)?,
+            (None, Some(name)) => stop_dataflow_by_name(name, &mut session)?,
+            (None, None) => stop_dataflow_interactive(&mut session)?,
         },
         Command::Destroy { config } => up::destroy(config.as_deref(), &mut session)?,
         Command::Logs => todo!(),
@@ -147,6 +153,7 @@ fn main() -> eyre::Result<()> {
 
 fn start_dataflow(
     dataflow: PathBuf,
+    name: Option<String>,
     session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<(), eyre::ErrReport> {
     let canonicalized = dataflow
@@ -156,6 +163,7 @@ fn start_dataflow(
         .request(
             &serde_json::to_vec(&ControlRequest::Start {
                 dataflow_path: canonicalized,
+                name,
             })
             .unwrap(),
         )
@@ -180,7 +188,7 @@ fn stop_dataflow_interactive(
         eprintln!("No dataflows are running");
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", uuids).prompt()?;
-        stop_dataflow(selection, session)?;
+        stop_dataflow(selection.uuid, session)?;
     }
 
     Ok(())
@@ -206,15 +214,30 @@ fn stop_dataflow(
     }
 }
 
-fn list(session: &mut Option<Box<TcpRequestReplyConnection>>) -> Result<(), eyre::ErrReport> {
-    let uuids = query_running_dataflows(session)?;
+fn stop_dataflow_by_name(
+    name: String,
+    session: &mut Option<Box<TcpRequestReplyConnection>>,
+) -> Result<(), eyre::ErrReport> {
+    let reply_raw = control_connection(session)?
+        .request(&serde_json::to_vec(&ControlRequest::StopByName { name }).unwrap())
+        .wrap_err("failed to send dataflow stop_by_name message")?;
+    let result: StopDataflowResult =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    match result {
+        StopDataflowResult::Ok => Ok(()),
+        StopDataflowResult::Error(err) => bail!(err),
+    }
+}
 
-    if uuids.is_empty() {
+fn list(session: &mut Option<Box<TcpRequestReplyConnection>>) -> Result<(), eyre::ErrReport> {
+    let ids = query_running_dataflows(session)?;
+
+    if ids.is_empty() {
         eprintln!("No dataflows are running");
     } else {
         println!("Running dataflows:");
-        for uuid in uuids {
-            println!("- {uuid}");
+        for id in ids {
+            println!("- {id}");
         }
     }
 
@@ -223,19 +246,18 @@ fn list(session: &mut Option<Box<TcpRequestReplyConnection>>) -> Result<(), eyre
 
 fn query_running_dataflows(
     session: &mut Option<Box<TcpRequestReplyConnection>>,
-) -> Result<Vec<Uuid>, eyre::ErrReport> {
+) -> Result<Vec<DataflowId>, eyre::ErrReport> {
     let reply_raw = control_connection(session)?
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send list message")?;
-    let reply_string = std::str::from_utf8(&reply_raw).wrap_err("reply is not valid UTF8")?;
+    let reply: ListDataflowResult =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    let ids = match reply {
+        ListDataflowResult::Ok { dataflows } => dataflows,
+        ListDataflowResult::Error(err) => bail!(err),
+    };
 
-    let uuids = reply_string
-        .lines()
-        .map(Uuid::try_from)
-        .collect::<Result<_, _>>()
-        .wrap_err("failed to parse UUIDs returned by coordinator")?;
-
-    Ok(uuids)
+    Ok(ids)
 }
 
 fn control_connection(
