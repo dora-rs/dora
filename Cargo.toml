@@ -10,7 +10,7 @@ members = [
     "binaries/*",
     "examples/rust-dataflow/*",
     "examples/iceoryx/*",
-    "libraries/communication-layer",
+    "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
     "libraries/extensions/download",

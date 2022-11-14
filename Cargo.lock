@@ -539,6 +539,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "communication-layer-request-reply"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -888,6 +895,7 @@ version = "0.1.0"
 dependencies = [
  "atty",
  "clap 4.0.3",
+ "communication-layer-request-reply",
  "dora-core",
  "eyre",
  "inquire",
@@ -899,7 +907,6 @@ dependencies = [
  "termcolor",
  "uuid 1.2.1",
  "webbrowser",
- "zenoh",
 ]
 
 [[package]]
@@ -908,6 +915,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "clap 3.2.20",
+ "communication-layer-request-reply",
  "dora-core",
  "dora-download",
  "dora-message",
@@ -919,13 +927,14 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml 0.8.23",
+ "thiserror",
  "time",
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.1",
  "tracing",
  "tracing-subscriber",
- "uuid 0.8.2",
+ "uuid 1.2.1",
  "which",
  "zenoh",
 ]
@@ -938,6 +947,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_yaml 0.9.11",
+ "uuid 1.2.1",
  "which",
  "zenoh-config",
 ]
@@ -3778,18 +3788,18 @@ checksum = "b1141d4d61095b28419e22cb0bbf02755f5e54e0526f97f1e3d1d160e60885fb"
 
 [[package]]
 name = "thiserror"
-version = "1.0.30"
+version = "1.0.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "854babe52e4df1653706b98fcfc05843010039b406875930a70e4d9644e5c417"
+checksum = "10deb33631e3c9018b9baf9dcbbc4f737320d2b576bac10f6aefa048fa407e3e"
 dependencies = [
  "thiserror-impl",
 ]
 
 [[package]]
 name = "thiserror-impl"
-version = "1.0.30"
+version = "1.0.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa32fd3f627f367fe16f893e2597ae3c05020f8bba2666a4e6ea73d377e5714b"
+checksum = "982d17546b47146b28f7c22e3d08465f6b8903d0ea13c1660d9d84a6e7adcdbb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4260,6 +4270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "feb41e78f93363bb2df8b0e86a2ca30eed7806ea16ea0c790d757cf93f79be83"
 dependencies = [
  "getrandom",
+ "serde",
 ]
 
 [[package]]

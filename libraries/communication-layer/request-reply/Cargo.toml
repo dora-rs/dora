@@ -1,0 +1,13 @@
+[package]
+name = "communication-layer-request-reply"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+
+[dependencies]
+eyre = "0.6.8"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
