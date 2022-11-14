@@ -3,11 +3,17 @@ use eyre::Context;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
+use tracing::info;
 
 pub async fn download_file<T>(url: T, target_path: &Path) -> Result<(), eyre::ErrReport>
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,
 {
+    if target_path.exists() {
+        info!("Using cache: {:?}", target_path.to_str());
+        return Ok(());
+    }
+
     if let Some(parent) = target_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
