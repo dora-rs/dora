@@ -54,9 +54,9 @@ pub struct DataflowId {
 impl Display for DataflowId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(name) = &self.name {
-            write!(f, "{name} {}", self.uuid)
+            write!(f, "[{name}] {}", self.uuid)
         } else {
-            write!(f, "<unnamed> {}", self.uuid)
+            write!(f, "[<unnamed>] {}", self.uuid)
         }
     }
 }
