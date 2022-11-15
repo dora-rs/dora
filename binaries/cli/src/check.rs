@@ -58,9 +58,8 @@ pub fn check_environment() -> eyre::Result<()> {
 
 pub fn coordinator_running() -> Result<bool, eyre::ErrReport> {
     let mut control_session = None;
-    let reply = control_connection(&mut control_session)?
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap());
-    Ok(reply.is_ok())
+    let connected = control_connection(&mut control_session).is_ok();
+    Ok(connected)
 }
 
 pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Result<()> {
