@@ -66,15 +66,62 @@ jobs:
       - name: "C++ Dataflow example"
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
-
       - name: "Start RouDi (iceoryx)"
         if: runner.os != 'Windows'
         run: find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec {} \; &
-
       - name: "Rust iceoryx example"
         if: runner.os != 'Windows'
         timeout-minutes: 30
         run: cargo run --example iceoryx
+
+  CLI:
+    name: "CLI Test"
+    strategy:
+      matrix:
+        platform: [ubuntu-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install libacl-dev (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y libacl1-dev
+
+      - name: "Build cli and binaries"
+        timeout-minutes: 30
+        run: cargo build --all
+
+      - name: "Test dora `up`"
+        run: |
+            echo "$(pwd)/target/debug" >> $GITHUB_PATH
+            find $(pwd) -type f  -wholename "*/iceoryx-install/bin/iox-roudi" | head -n 1 | xargs dirname >> $GITHUB_PATH
+            cargo run -p dora-cli -- up
+
+      - name: "Test dora `check`"
+        run: cargo run -p dora-cli -- check
+
+      - name: "Test dora `list"
+        run: cargo run -p dora-cli -- list
+
+      - name: "Test new command"
+        run: |
+            cargo run -p dora-cli -- new test_project
+            cd test_project
+
+      - name: "Test start and stop command"
+        timeout-minutes: 30
+        run: |
+            cargo build --all
+            UUID=$(../target/debug/dora-cli start dataflow.yml)
+            sleep 10
+            ../target/debug/dora-cli stop $UUID
+            cd .. 
+
+      - name: "Test dora `destroy"
+        run: cargo run -p dora-cli -- destroy
 
   examples-remote:
     name: "Examples (Remote)"
