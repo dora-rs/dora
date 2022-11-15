@@ -1,9 +1,10 @@
 use crate::run::spawn_dataflow;
+use control::ControlEvent;
 use dora_core::{
     config::CommunicationConfig,
     topics::{
-        StartDataflowResult, StopDataflowResult, ZENOH_CONTROL_DESTROY, ZENOH_CONTROL_LIST,
-        ZENOH_CONTROL_START, ZENOH_CONTROL_STOP,
+        control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
+        StopDataflowResult,
     },
 };
 use dora_node_api::{communication, manual_stop_publisher};
@@ -13,12 +14,10 @@ use futures_concurrency::stream::Merge;
 use run::{await_tasks, SpawnedDataflow};
 use std::{
     collections::HashMap,
-    fmt::Write as _,
     path::{Path, PathBuf},
 };
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
-use zenoh::prelude::Sample;
 
 mod control;
 mod run;
@@ -68,7 +67,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     let dataflow_events = ReceiverStream::new(dataflow_events);
 
     let (control_events, control_events_abort) = futures::stream::abortable(
-        control::control_events()
+        control::control_events(control_socket_addr())
             .await
             .wrap_err("failed to create control events")?,
     );
@@ -94,77 +93,121 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                 }
             },
 
-            Event::Control(query) => match query.key_selector().as_str() {
-                ZENOH_CONTROL_START => {
-                    let dataflow_path = query.value_selector();
-                    let result =
-                        start_dataflow(Path::new(dataflow_path), runtime_path, &dataflow_events_tx)
-                            .await;
-                    let reply = match result {
-                        Ok((uuid, communication_config)) => {
-                            running_dataflows.insert(uuid, communication_config);
-                            StartDataflowResult::Ok {
-                                uuid: uuid.to_string(),
+            Event::Control(event) => match event {
+                ControlEvent::IncomingRequest {
+                    request,
+                    reply_sender,
+                } => {
+                    let reply = match request {
+                        ControlRequest::Start {
+                            dataflow_path,
+                            name,
+                        } => {
+                            let inner = async {
+                                if let Some(name) = name.as_deref() {
+                                    // check that name is unique
+                                    if running_dataflows
+                                        .values()
+                                        .any(|d: &RunningDataflow| d.name.as_deref() == Some(name))
+                                    {
+                                        bail!("there is already a running dataflow with name `{name}`");
+                                    }
+                                }
+                                let dataflow = start_dataflow(
+                                    &dataflow_path,
+                                    name,
+                                    runtime_path,
+                                    &dataflow_events_tx,
+                                )
+                                .await?;
+                                Ok(dataflow)
+                            };
+                            let reply = match inner.await {
+                                Ok(dataflow) => {
+                                    let uuid = dataflow.uuid;
+                                    running_dataflows.insert(uuid, dataflow);
+                                    StartDataflowResult::Ok { uuid }
+                                }
+                                Err(err) => {
+                                    tracing::error!("{err:?}");
+                                    StartDataflowResult::Error(format!("{err:?}"))
+                                }
+                            };
+                            serde_json::to_vec(&reply).unwrap()
+                        }
+                        ControlRequest::Stop { dataflow_uuid } => {
+                            let stop = async {
+                                stop_dataflow(&running_dataflows, dataflow_uuid).await?;
+                                Result::<_, eyre::Report>::Ok(())
+                            };
+                            let reply = match stop.await {
+                                Ok(()) => StopDataflowResult::Ok,
+                                Err(err) => StopDataflowResult::Error(format!("{err:?}")),
+                            };
+
+                            serde_json::to_vec(&reply).unwrap()
+                        }
+                        ControlRequest::StopByName { name } => {
+                            let stop = async {
+                                let uuids: Vec<_> = running_dataflows
+                                    .iter()
+                                    .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+                                    .map(|(k, _)| k)
+                                    .copied()
+                                    .collect();
+                                let dataflow_uuid = if uuids.is_empty() {
+                                    bail!("no running dataflow with name `{name}`");
+                                } else if let [uuid] = uuids.as_slice() {
+                                    *uuid
+                                } else {
+                                    bail!("multiple dataflows found with name `{name}`");
+                                };
+
+                                stop_dataflow(&running_dataflows, dataflow_uuid).await?;
+                                Result::<_, eyre::Report>::Ok(())
+                            };
+                            let reply = match stop.await {
+                                Ok(()) => StopDataflowResult::Ok,
+                                Err(err) => StopDataflowResult::Error(format!("{err:?}")),
+                            };
+
+                            serde_json::to_vec(&reply).unwrap()
+                        }
+                        ControlRequest::Destroy => {
+                            tracing::info!("Received destroy command");
+
+                            control_events_abort.abort();
+
+                            // ensure that no new dataflows can be started
+                            dataflow_events_tx = None;
+
+                            // stop all running dataflows
+                            for &uuid in running_dataflows.keys() {
+                                stop_dataflow(&running_dataflows, uuid).await?;
                             }
+
+                            b"ok".as_slice().into()
                         }
-                        Err(err) => {
-                            tracing::error!("{err:?}");
-                            StartDataflowResult::Error(format!("{err:?}"))
+                        ControlRequest::List => {
+                            let mut dataflows: Vec<_> = running_dataflows.values().collect();
+                            dataflows.sort();
+
+                            let reply = ListDataflowResult::Ok {
+                                dataflows: dataflows
+                                    .into_iter()
+                                    .map(|d| DataflowId {
+                                        uuid: d.uuid,
+                                        name: d.name.clone(),
+                                    })
+                                    .collect(),
+                            };
+
+                            serde_json::to_vec(&reply).unwrap()
                         }
                     };
-                    query
-                        .reply_async(Sample::new("", serde_json::to_string(&reply).unwrap()))
-                        .await;
+                    let _ = reply_sender.send(reply);
                 }
-                ZENOH_CONTROL_STOP => {
-                    let stop = async {
-                        let uuid =
-                            Uuid::parse_str(query.value_selector()).wrap_err("not a valid UUID")?;
-                        stop_dataflow(&running_dataflows, uuid).await?;
-
-                        Result::<_, eyre::Report>::Ok(())
-                    };
-                    let reply = match stop.await {
-                        Ok(()) => StopDataflowResult::Ok,
-                        Err(err) => StopDataflowResult::Error(format!("{err:?}")),
-                    };
-
-                    query
-                        .reply_async(Sample::new("", serde_json::to_string(&reply).unwrap()))
-                        .await;
-                }
-                ZENOH_CONTROL_DESTROY => {
-                    tracing::info!("Received stop command");
-
-                    control_events_abort.abort();
-
-                    // ensure that no new dataflows can be started
-                    dataflow_events_tx = None;
-
-                    // stop all running dataflows
-                    for &uuid in running_dataflows.keys() {
-                        stop_dataflow(&running_dataflows, uuid).await?;
-                    }
-
-                    query.reply_async(Sample::new("", "")).await;
-                }
-                ZENOH_CONTROL_LIST => {
-                    let mut output = String::new();
-
-                    if running_dataflows.is_empty() {
-                        writeln!(output, "No running dataflows")?;
-                    } else {
-                        writeln!(output, "Running dataflows:")?;
-                        for uuid in running_dataflows.keys() {
-                            writeln!(output, "- {uuid}")?;
-                        }
-                    }
-
-                    query.reply_async(Sample::new("", output)).await;
-                }
-                _ => {
-                    query.reply_async(Sample::new("error", "invalid")).await;
-                }
+                ControlEvent::Error(err) => tracing::error!("{err:?}"),
             },
         }
     }
@@ -174,12 +217,46 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+struct RunningDataflow {
+    name: Option<String>,
+    uuid: Uuid,
+    communication_config: CommunicationConfig,
+}
+
+impl PartialEq for RunningDataflow {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.uuid == other.uuid
+    }
+}
+
+impl Eq for RunningDataflow {}
+
+impl PartialOrd for RunningDataflow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.name.partial_cmp(&other.name) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => return ord,
+        }
+        self.uuid.partial_cmp(&other.uuid)
+    }
+}
+
+impl Ord for RunningDataflow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.name.cmp(&other.name) {
+            core::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.uuid.cmp(&other.uuid)
+    }
+}
+
 async fn stop_dataflow(
-    running_dataflows: &HashMap<Uuid, CommunicationConfig>,
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
     uuid: Uuid,
 ) -> eyre::Result<()> {
     let communication_config = match running_dataflows.get(&uuid) {
-        Some(config) => config.clone(),
+        Some(dataflow) => dataflow.communication_config.clone(),
         None => bail!("No running dataflow found with UUID `{uuid}`"),
     };
     let mut communication =
@@ -199,9 +276,10 @@ async fn stop_dataflow(
 
 async fn start_dataflow(
     path: &Path,
+    name: Option<String>,
     runtime_path: &Path,
     dataflow_events_tx: &Option<tokio::sync::mpsc::Sender<Event>>,
-) -> eyre::Result<(Uuid, CommunicationConfig)> {
+) -> eyre::Result<RunningDataflow> {
     let runtime_path = runtime_path.to_owned();
     let dataflow_events_tx = match dataflow_events_tx {
         Some(channel) => channel.clone(),
@@ -226,12 +304,16 @@ async fn start_dataflow(
             .await;
     };
     tokio::spawn(task);
-    Ok((uuid, communication_config))
+    Ok(RunningDataflow {
+        uuid,
+        name,
+        communication_config,
+    })
 }
 
 enum Event {
     Dataflow { uuid: Uuid, event: DataflowEvent },
-    Control(zenoh::queryable::Query),
+    Control(ControlEvent),
 }
 
 enum DataflowEvent {

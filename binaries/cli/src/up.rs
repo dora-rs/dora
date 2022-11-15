@@ -1,9 +1,9 @@
-use crate::{check::coordinator_running, zenoh_control_session};
-use dora_core::topics::ZENOH_CONTROL_DESTROY;
-use eyre::{bail, eyre, Context};
-use std::{fs, path::Path, process::Command, sync::Arc};
+use crate::{check::coordinator_running, control_connection};
+use communication_layer_request_reply::TcpRequestReplyConnection;
+use dora_core::topics::ControlRequest;
+use eyre::{bail, Context};
+use std::{fs, path::Path, process::Command};
 use sysinfo::{ProcessExt, SystemExt};
-use zenoh::{prelude::Receiver, sync::ZFuture};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct UpConfig {
@@ -37,20 +37,15 @@ pub(crate) fn up(
 
 pub(crate) fn destroy(
     config_path: Option<&Path>,
-    session: &mut Option<Arc<zenoh::Session>>,
+    session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig { iceoryx } = parse_dora_config(config_path)?;
 
     if coordinator_running()? {
         // send destroy command to dora-coordinator
-        let reply_receiver = zenoh_control_session(session)?
-            .get(ZENOH_CONTROL_DESTROY)
-            .wait()
-            .map_err(|err| eyre!(err))
-            .wrap_err("failed to create publisher for destroy message")?;
-        reply_receiver
-            .recv()
-            .wrap_err("failed to receive reply from coordinator")?;
+        control_connection(session)?
+            .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
+            .wrap_err("failed to send destroy message")?;
         println!("Send destroy command to dora-coordinator");
     } else {
         eprintln!("The dora-coordinator is not running");
