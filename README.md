@@ -22,24 +22,24 @@ The documentation can be found here: [https://dora-rs.github.io/dora/](https://d
 ## Getting started
 
 
-1. Install `dora` binaries
+1. Install `dora` binaries from GitHub releases
 
 For linux
 ```bash
-## install precompile dora
-wget https://github.com/dora-rs/dora/releases/download/v0.1.0/dora-v0.1.0-x86_64-Linux.zip
-unzip dora-v0.0.0-test-pr-120.2-x86_64-Linux.zip
+wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Linux.zip
+unzip dora-<version>-x86_64-Linux.zip
 PATH=$PATH:$(pwd)
+dora --help
 ```
 
 <details>
   <summary> For Macos </summary>
 
 ```bash
-## install precompile dora
-wget https://github.com/dora-rs/dora/releases/download/v0.1.0/dora-v0.1.0-x86_64-macOS.zip
-unzip dora-v0.0.0-test-pr-120.2-x86_64-macOS.zip
+wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-macOS.zip
+unzip dora-<version>-x86_64-macOS.zip
 PATH=$PATH:$(pwd)
+dora --help
 ```
 
 </details>
@@ -48,10 +48,10 @@ PATH=$PATH:$(pwd)
   <summary> For Windows </summary>
 
 ```bash
-## install precompile dora
-wget https://github.com/dora-rs/dora/releases/download/v0.1.0/dora-v0.1.0-x86_64-Windows.zip
-unzip dora-v0.0.0-test-pr-120.2-x86_64-Windows.zip
+wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Windows.zip
+unzip dora-<version>-x86_64-Windows.zip
 PATH=$PATH:$(pwd)
+dora --help
 ```
 
 </details>
