@@ -28,7 +28,7 @@ For linux
 ```bash
 wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Linux.zip
 unzip dora-<version>-x86_64-Linux.zip
-PATH=$PATH:$(pwd)
+PATH=$PATH:$(pwd):$(pwd)/iceoryx
 dora --help
 ```
 
@@ -38,7 +38,7 @@ dora --help
 ```bash
 wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-macOS.zip
 unzip dora-<version>-x86_64-macOS.zip
-PATH=$PATH:$(pwd)
+PATH=$PATH:$(pwd):$(pwd)/iceoryx
 dora --help
 ```
 
@@ -50,7 +50,7 @@ dora --help
 ```bash
 wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Windows.zip
 unzip dora-<version>-x86_64-Windows.zip
-PATH=$PATH:$(pwd)
+PATH=$PATH:$(pwd):$(pwd)/iceoryx
 dora --help
 ```
 
