@@ -1,7 +1,7 @@
 use super::command_init_common_env;
 use dora_core::{
     config::NodeId,
-    descriptor::{self, EnvValue},
+    descriptor::{self, EnvValue, OperatorSource},
 };
 use eyre::{eyre, WrapErr};
 use std::{collections::BTreeMap, path::Path};
@@ -15,7 +15,21 @@ pub fn spawn_runtime_node(
     communication: &dora_core::config::CommunicationConfig,
     working_dir: &Path,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<(), eyre::Error>>> {
-    let mut command = tokio::process::Command::new(runtime);
+    let has_python_operator = node
+        .operators
+        .iter()
+        .any(|x| matches!(x.config.source, OperatorSource::Python { .. }));
+
+    let mut command = if has_python_operator {
+        // Use Python Runtime if runtime is
+        let mut command = tokio::process::Command::new("python3");
+        command.args(["-c", "import dora; dora.start_runtime()"]);
+        command
+    } else {
+        let command = tokio::process::Command::new(runtime);
+        command
+    };
+
     command_init_common_env(&mut command, &node_id, communication)?;
     command.env(
         "DORA_OPERATORS",

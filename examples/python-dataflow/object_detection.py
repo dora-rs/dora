@@ -34,8 +34,10 @@ class Operator:
         frame = np.frombuffer(dora_input["data"], dtype="uint8")
         frame = cv2.imdecode(frame, -1)
         frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
-
+        print("before model")
         results = self.model(frame)  # includes NMS
+        print("after model")
         arrays = np.array(results.xyxy[0].cpu()).tobytes()
         send_output("bbox", arrays, dora_input["metadata"])
+        print("after send output")
         return DoraStatus.CONTINUE

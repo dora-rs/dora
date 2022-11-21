@@ -202,14 +202,15 @@ struct SendOutputCallback {
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
 
+    use std::thread::sleep;
+
     use super::SendOutputCallback;
     use dora_message::Metadata;
     use dora_operator_api_python::pydict_to_metadata;
-    use eyre::{eyre, Context};
+    use eyre::{eyre, Context, Result};
     use pyo3::{
         pymethods,
         types::{PyBytes, PyDict},
-        PyResult,
     };
 
     #[pymethods]
@@ -219,27 +220,28 @@ mod callback_impl {
             output: &str,
             data: &PyBytes,
             metadata: Option<&PyDict>,
-        ) -> PyResult<()> {
-            match self.publishers.get(output) {
-                Some(publisher) => {
-                    let parameters = pydict_to_metadata(metadata)?;
-                    let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
-                    let message = metadata
-                        .serialize()
-                        .context(format!("failed to serialize `{}` metadata", output));
-                    message.and_then(|mut message| {
-                        message.extend_from_slice(data.as_bytes());
-                        publisher
-                            .publish(&message)
-                            .map_err(|err| eyre::eyre!(err))
-                            .context("publish failed")
-                    })
-                }
-                None => Err(eyre!(
-                    "unexpected output {output} (not defined in dataflow config)"
-                )),
-            }
-            .map_err(|err| err.into())
+        ) -> Result<()> {
+            //let data = data.as_bytes();
+            //let parameters = pydict_to_metadata(metadata).wrap_err("Could not parse metadata.")?;
+            //let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
+            //let mut message = metadata
+            //.serialize()
+            //.context(format!("failed to serialize `{}` metadata", output))?;
+
+            //match self.publishers.get(output) {
+            //Some(publisher) => {
+            //message.extend_from_slice(data);
+
+            //publisher
+            //.publish(&message)
+            //.map_err(|err| eyre::eyre!(err))
+            //.context("publish failed")
+            //}
+            //None => Err(eyre!(
+            //"unexpected output {output} (not defined in dataflow config)"
+            //)),
+            //}
+            Ok(())
         }
     }
 }
