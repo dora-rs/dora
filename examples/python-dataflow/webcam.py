@@ -13,7 +13,7 @@ video_capture = cv2.VideoCapture(0)
 start = time.time()
 
 # Run for 20 seconds
-while time.time() - start < 20:
+while time.time() - start < 10:
     # Wait next dora_input
     node.next()
     ret, frame = video_capture.read()

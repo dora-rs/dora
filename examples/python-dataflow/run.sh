@@ -1,5 +1,5 @@
-python3 -m venv .env
-. $(pwd)/.env/bin/activate
+#python3 -m venv .env
+# . $(pwd)/.env/bin/activate
 # Dev dependencies
 pip install maturin
 cd ../../apis/python/node
@@ -10,4 +10,4 @@ cd ../../../examples/python-dataflow
 pip install --upgrade pip
 pip install -r requirements.txt
 
-cargo run -p dora-coordinator -- --run-dataflow dataflow_without_webcam.yml
+cargo run -p dora-coordinator -- --run-dataflow dataflow.yml

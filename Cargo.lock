@@ -1039,6 +1039,7 @@ version = "0.1.0"
 dependencies = [
  "dora-node-api",
  "dora-operator-api-python",
+ "dora-runtime",
  "eyre",
  "flume",
  "pyo3",
