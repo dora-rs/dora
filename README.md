@@ -86,6 +86,11 @@ dora up
 4. Start your dataflow
 ```bash
 # Other window
+
+## Install the different requirements
+dora build dataflow.yml
+
+## Start the dataflow
 dora start dataflow.yml
 # Output: c95d118b-cded-4531-a0e4-cd85b7c3916c
 ```
@@ -112,7 +117,7 @@ dora stop c95d118b-cded-4531-a0e4-cd85b7c3916c
 
 You need to add the created operators/nodes to your dataflow YAML file.
 
-8. You can also download already implemented operators by putting links in the dataflow. This example will launch a webcam plot stream. 
+8. You can also download already implemented operators by putting links in the dataflow. This example will launch a webcam plot stream.
 
 ```yaml
 communication:
@@ -123,6 +128,7 @@ nodes:
   - id: op_1
     operator:
       python: https://raw.githubusercontent.com/dora-rs/dora-drives/main/operators/webcam.py
+      build: python3 -m pip install opencv-python
       inputs:
         tick: dora/timer/millis/100
       outputs:
@@ -130,10 +136,19 @@ nodes:
   - id: op_2
     operator:
       python: https://raw.githubusercontent.com/dora-rs/dora-drives/main/physicals/plot.py
+      build: python3 -m pip install opencv-python
       inputs:
         image: op_1/image 
 ```
-> Make sure to have a webcam and cv2 install via: `pip install opencv-python`
+
+4. Start your dataflow
+```bash
+## Install opencv-python requirements specified in the build field of the dataflow.
+dora build dataflow.yml
+
+## Start the dataflow
+dora start dataflow.yml
+```
 ---
 
 ## ✨ Features

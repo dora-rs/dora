@@ -22,6 +22,7 @@ nodes:
     custom:
       source: python
       args: ./node_1/node_1.py
+      build: python -m pip install dora-rs
       inputs:
         tick: dora/timer/secs/1
         input-1: op_1/some-output
