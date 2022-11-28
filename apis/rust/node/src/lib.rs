@@ -1,6 +1,7 @@
 pub use communication::Input;
 use communication::STOP_TOPIC;
 use communication_layer_pub_sub::CommunicationLayer;
+use daemon::DaemonConnection;
 pub use dora_core;
 use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
@@ -8,6 +9,7 @@ use eyre::WrapErr;
 pub use flume::Receiver;
 
 pub mod communication;
+pub mod daemon;
 
 pub struct DoraNode {
     id: NodeId,
@@ -44,6 +46,9 @@ impl DoraNode {
         node_config: NodeRunConfig,
         communication_config: CommunicationConfig,
     ) -> eyre::Result<Self> {
+        let daemon =
+            DaemonConnection::init(id.clone()).wrap_err("failed to connect to dora-daemon")?;
+
         let communication = communication::init(&communication_config)?;
         Ok(Self {
             id,
