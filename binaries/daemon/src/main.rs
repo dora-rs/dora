@@ -1,4 +1,4 @@
-use dora_core::topics::DORA_DAEMON_PORT_DEFAULT;
+use dora_core::{config::NodeId, daemon_messages, topics::DORA_DAEMON_PORT_DEFAULT};
 use eyre::{eyre, Context};
 use futures_concurrency::stream::Merge;
 use shared_memory::ShmemConf;
@@ -41,7 +41,7 @@ async fn main() -> eyre::Result<()> {
             .unwrap_or_else(Event::ConnectError)
     });
     let (node_events_tx, node_events_rx) = mpsc::channel(10);
-    let node_events = ReceiverStream::new(node_events_rx).map(Event::Node);
+    let node_events = ReceiverStream::new(node_events_rx);
 
     let mut events = (new_connections, node_events).merge();
 
@@ -52,6 +52,7 @@ async fn main() -> eyre::Result<()> {
         match event {
             Event::NewConnection(mut connection) => {
                 let events_tx = node_events_tx.clone();
+                let mut id = None;
                 tokio::spawn(async move {
                     loop {
                         let raw = match tcp_receive(&mut connection).await {
@@ -64,7 +65,7 @@ async fn main() -> eyre::Result<()> {
                                 continue;
                             }
                         };
-                        let event = match serde_json::from_slice(&raw)
+                        let message: daemon_messages::Request = match serde_json::from_slice(&raw)
                             .wrap_err("failed to deserialize node message")
                         {
                             Ok(e) => e,
@@ -72,6 +73,51 @@ async fn main() -> eyre::Result<()> {
                                 tracing::warn!("{err:?}");
                                 continue;
                             }
+                        };
+
+                        let node_event = match message {
+                            daemon_messages::Request::Register { node_id } => {
+                                id = Some(node_id);
+
+                                let reply = daemon_messages::Reply::RegisterResult(Ok(()));
+                                let serialized = serde_json::to_vec(&reply)
+                                    .wrap_err("failed to serialize register result");
+
+                                let send_result = match serialized {
+                                    Err(err) => {
+                                        tracing::warn!("{err:?}");
+                                        continue;
+                                    }
+                                    Ok(m) => tcp_send(&mut connection, &m).await,
+                                };
+
+                                match send_result {
+                                    Ok(()) => continue,
+                                    Err(err) => {
+                                        tracing::warn!("{err:?}");
+                                        break; // close connection
+                                    }
+                                }
+                            }
+                            daemon_messages::Request::PrepareOutputMessage { len } => {
+                                NodeEvent::PrepareOutputMessage { len }
+                            }
+                            daemon_messages::Request::SendOutMessage { id } => {
+                                NodeEvent::SendOutMessage { id }
+                            }
+                        };
+                        let event = Event::Node {
+                            id: match &id {
+                                Some(id) => id.clone(),
+                                None => {
+                                    tracing::warn!(
+                                        "Ignoring node event because no register \
+                                        message was sent yet: {node_event:?}"
+                                    );
+                                    continue;
+                                }
+                            },
+                            event: node_event,
                         };
                         let Ok(()) = events_tx.send(event).await else {
                             break;
@@ -82,7 +128,7 @@ async fn main() -> eyre::Result<()> {
             Event::ConnectError(err) => {
                 tracing::warn!("{:?}", err.wrap_err("failed to connect"));
             }
-            Event::Node(event) => match event {
+            Event::Node { id, event } => match event {
                 NodeEvent::PrepareOutputMessage { len } => {
                     let memory = ShmemConf::new()
                         .size(len)
@@ -115,11 +161,11 @@ async fn main() -> eyre::Result<()> {
 enum Event {
     NewConnection(TcpStream),
     ConnectError(eyre::Report),
-    Node(NodeEvent),
+    Node { id: NodeId, event: NodeEvent },
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-enum NodeEvent {
+#[derive(Debug)]
+pub enum NodeEvent {
     PrepareOutputMessage { len: usize },
     SendOutMessage { id: MessageId },
 }
