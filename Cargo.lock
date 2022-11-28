@@ -968,6 +968,7 @@ dependencies = [
 name = "dora-daemon"
 version = "0.1.0"
 dependencies = [
+ "dora-core",
  "eyre",
  "futures-concurrency 7.0.0",
  "serde",
