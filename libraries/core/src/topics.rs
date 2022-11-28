@@ -5,6 +5,8 @@ use std::{
 };
 use uuid::Uuid;
 
+pub const DORA_DAEMON_PORT_DEFAULT: u16 = 0xD02A;
+
 pub const MANUAL_STOP: &str = "dora/stop";
 
 pub fn control_socket_addr() -> SocketAddr {

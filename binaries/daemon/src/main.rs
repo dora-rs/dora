@@ -1,3 +1,4 @@
+use dora_core::topics::DORA_DAEMON_PORT_DEFAULT;
 use eyre::{eyre, Context};
 use futures_concurrency::stream::Merge;
 use shared_memory::ShmemConf;
@@ -12,20 +13,23 @@ use tokio_stream::{
     StreamExt,
 };
 
-const PORT: u16 = 0xD02A;
-
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
 
     let localhost = Ipv4Addr::new(127, 0, 0, 1);
-    let socket = match TcpListener::bind((localhost, PORT)).await {
+    let socket = match TcpListener::bind((localhost, DORA_DAEMON_PORT_DEFAULT)).await {
         Ok(socket) => socket,
         Err(err) if err.kind() == ErrorKind::AddrInUse => {
-            eyre::bail!("port {PORT} is already in use. Is `dora-daemon` already running?");
+            eyre::bail!(
+                "port {DORA_DAEMON_PORT_DEFAULT} is already in use. \
+                Is `dora-daemon` already running?"
+            );
         }
         Err(err) => {
-            return Err(eyre::Report::new(err).wrap_err(format!("failed to listen on port {PORT}")))
+            return Err(eyre::Report::new(err).wrap_err(format!(
+                "failed to listen on port {DORA_DAEMON_PORT_DEFAULT}"
+            )))
         }
     };
 
