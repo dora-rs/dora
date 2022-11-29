@@ -1,6 +1,6 @@
 communication:
-  iceoryx:
-    app_name_prefix: example-python-dataflow
+  zenoh:
+    prefix: /example-python-dataflow
 
 nodes:
   - id: webcam
