@@ -24,7 +24,7 @@ class Operator:
 
     def __init__(self):
         self.image = []
-        self.bbox = []
+        self.bboxs = []
 
     def on_input(
         self,

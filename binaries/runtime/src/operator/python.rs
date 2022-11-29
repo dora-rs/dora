@@ -23,7 +23,6 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
     sync::Arc,
-    thread,
 };
 use tokio::sync::mpsc::Sender;
 
@@ -170,24 +169,22 @@ pub fn spawn(
         Result::<_, eyre::Report>::Ok(reason)
     };
 
-    thread::spawn(move || {
-        let closure = AssertUnwindSafe(|| {
-            python_runner()
-                .wrap_err_with(|| format!("error in Python module at {}", path_cloned.display()))
-        });
-
-        match catch_unwind(closure) {
-            Ok(Ok(reason)) => {
-                let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
-            }
-            Ok(Err(err)) => {
-                let _ = events_tx.blocking_send(OperatorEvent::Error(err));
-            }
-            Err(panic) => {
-                let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
-            }
-        }
+    let closure = AssertUnwindSafe(|| {
+        python_runner()
+            .wrap_err_with(|| format!("error in Python module at {}", path_cloned.display()))
     });
+
+    match catch_unwind(closure) {
+        Ok(Ok(reason)) => {
+            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
+        }
+        Ok(Err(err)) => {
+            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
+        }
+        Err(panic) => {
+            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
+        }
+    }
 
     Ok(())
 }
@@ -201,8 +198,6 @@ struct SendOutputCallback {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
-
-    use std::thread::sleep;
 
     use super::SendOutputCallback;
     use dora_message::Metadata;
@@ -221,27 +216,26 @@ mod callback_impl {
             data: &PyBytes,
             metadata: Option<&PyDict>,
         ) -> Result<()> {
-            //let data = data.as_bytes();
-            //let parameters = pydict_to_metadata(metadata).wrap_err("Could not parse metadata.")?;
-            //let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
-            //let mut message = metadata
-            //.serialize()
-            //.context(format!("failed to serialize `{}` metadata", output))?;
+            let data = data.as_bytes();
+            let parameters = pydict_to_metadata(metadata).wrap_err("Could not parse metadata.")?;
+            let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
+            let mut message = metadata
+                .serialize()
+                .context(format!("failed to serialize `{}` metadata", output))?;
 
-            //match self.publishers.get(output) {
-            //Some(publisher) => {
-            //message.extend_from_slice(data);
+            match self.publishers.get(output) {
+                Some(publisher) => {
+                    message.extend_from_slice(data);
 
-            //publisher
-            //.publish(&message)
-            //.map_err(|err| eyre::eyre!(err))
-            //.context("publish failed")
-            //}
-            //None => Err(eyre!(
-            //"unexpected output {output} (not defined in dataflow config)"
-            //)),
-            //}
-            Ok(())
+                    publisher
+                        .publish(&message)
+                        .map_err(|err| eyre::eyre!(err))
+                        .context("publish failed")
+                }
+                None => Err(eyre!(
+                    "unexpected output {output} (not defined in dataflow config)"
+                )),
+            }
         }
     }
 }

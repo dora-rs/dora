@@ -7,12 +7,11 @@ use dora_core::{
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer, Publisher, STOP_TOPIC},
-    manual_stop_publisher,
 };
 use eyre::{bail, Context};
 use futures::{Stream, StreamExt};
-use operator::{spawn_operator, OperatorEvent, StopReason};
-use pyo3::Python;
+use operator::{spawn_operator, OperatorEvent};
+
 use std::{
     collections::{BTreeSet, HashMap},
     mem,
@@ -25,7 +24,7 @@ mod operator;
 pub fn main() -> eyre::Result<()> {
     set_up_tracing().context("failed to set up tracing subscriber")?;
 
-    let node_id = {
+    let node_id: NodeId = {
         let raw =
             std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
         serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
@@ -46,17 +45,10 @@ pub fn main() -> eyre::Result<()> {
 
     let mut operator_events = StreamMap::new();
     let mut operator_stop_publishers = HashMap::new();
+    let mut operator_events_tx = HashMap::new();
+
     for operator_config in &operators {
         let (events_tx, events) = mpsc::channel(1);
-        spawn_operator(
-            &node_id,
-            operator_config.clone(),
-            events_tx.clone(),
-            communication.as_mut(),
-        )
-        .wrap_err_with(|| format!("failed to init operator {}", operator_config.id))?;
-        operator_events.insert(operator_config.id.clone(), ReceiverStream::new(events));
-
         let stop_publisher = publisher(
             &node_id,
             operator_config.id.clone(),
@@ -70,25 +62,36 @@ pub fn main() -> eyre::Result<()> {
             )
         })?;
         operator_stop_publishers.insert(operator_config.id.clone(), stop_publisher);
+
+        operator_events.insert(operator_config.id.clone(), ReceiverStream::new(events));
+        operator_events_tx.insert(operator_config.id.clone(), events_tx);
     }
 
     let operator_events = operator_events.map(|(id, event)| Event::Operator { id, event });
-    let gil = Python::acquire_gil();
-    let py = gil.python();
-    py.allow_threads(|| {
-        let join = std::thread::spawn(move || {
-            Builder::new_current_thread()
-                .enable_all()
-                .build()?
-                .block_on(run(
-                    node_id,
-                    operator_events,
-                    operator_stop_publishers,
-                    communication.as_mut(),
-                ))
-        });
-        join.join().unwrap().unwrap();
+    let node_id_clone = node_id.clone();
+    std::thread::spawn(move || {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(run(
+                node_id_clone,
+                operator_events,
+                operator_stop_publishers,
+            ))
+            .unwrap();
     });
+
+    for operator_config in &operators {
+        let events_tx = operator_events_tx.get(&operator_config.id).unwrap();
+        spawn_operator(
+            &node_id,
+            operator_config.clone(),
+            events_tx.clone(),
+            communication.as_mut(),
+        )
+        .wrap_err_with(|| format!("failed to init operator {}", operator_config.id))?;
+    }
     Ok(())
 }
 
@@ -96,7 +99,6 @@ async fn run(
     node_id: NodeId,
     mut events: impl Stream<Item = Event> + Unpin,
     mut operator_stop_publishers: HashMap<OperatorId, Box<dyn Publisher>>,
-    communication: &mut dyn CommunicationLayer,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
     let _started = {
@@ -121,14 +123,6 @@ async fn run(
                     }
                     OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
                     OperatorEvent::Finished { reason } => {
-                        if let StopReason::ExplicitStopAll = reason {
-                            let manual_stop_publisher = manual_stop_publisher(communication)?;
-                            tokio::task::spawn_blocking(manual_stop_publisher)
-                                .await
-                                .wrap_err("failed to join stop publish task")?
-                                .map_err(|err| eyre::eyre!(err))
-                                .wrap_err("failed to send stop message")?;
-                        }
                         if let Some(stop_publisher) = operator_stop_publishers.remove(&id) {
                             tracing::info!("operator {node_id}/{id} finished ({reason:?})");
                             stopped_operators.insert(id.clone());
