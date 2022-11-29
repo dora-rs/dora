@@ -69,7 +69,7 @@ pub fn main() -> eyre::Result<()> {
 
     let operator_events = operator_events.map(|(id, event)| Event::Operator { id, event });
     let node_id_clone = node_id.clone();
-    std::thread::spawn(move || {
+    let stop_thread = std::thread::spawn(move || {
         Builder::new_current_thread()
             .enable_all()
             .build()
@@ -92,6 +92,10 @@ pub fn main() -> eyre::Result<()> {
         )
         .wrap_err_with(|| format!("failed to init operator {}", operator_config.id))?;
     }
+
+    stop_thread
+        .join()
+        .map_err(|err| eyre::eyre!("Stop thread failed with err: {err:#?}"))?;
     Ok(())
 }
 

@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
       - uses: actions/setup-python@v2
         with:
-          python-version: 3.8.10
+          python-version: 3.8
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
