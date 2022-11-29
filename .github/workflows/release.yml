@@ -22,24 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Cap'n Proto and libacl-dev (Linux)
+      - name: Install libacl-dev (Linux)
         if: runner.os == 'Linux'
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
-      - name: Install Cap'n Proto (macOS)
-        if: runner.os == 'macOS'
-        run: brew install capnp
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
-          HOMEBREW_NO_BOTTLE_SOURCE_FALLBACK: 1
-          HOMEBREW_NO_INSTALL_CLEANUP: 1
-      - name: Install Cap'n Proto (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install capnproto
-          echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          sudo apt-get install -y libacl1-dev
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
 
