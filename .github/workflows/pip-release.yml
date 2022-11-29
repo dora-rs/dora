@@ -1,0 +1,45 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  release:
+    types:
+      - "published"
+
+jobs:
+  release:
+    name: "Release"
+
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.7", "3.8", "3.9", "3.10", "3.11"]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      
+      # Publish Dora Node Python API
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin==0.13.2
+      - name: Publish wheel
+        shell: bash
+        env:
+          MATURIN_PASSWORD: ${{ secrets.PYPI_PASS }}
+        run: |
+          cd apis/python/node
+          maturin publish \
+          --skip-existing \
+          -o wheels \
+          -i python \
+          --username __token__ \
