@@ -1,7 +1,6 @@
-use communication_layer_pub_sub::CommunicationLayer;
 use daemon::{ControlChannel, DaemonConnection, EventStream};
 pub use dora_core;
-use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
+use dora_core::config::{DataId, NodeId, NodeRunConfig};
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
 pub use flume::Receiver;
@@ -30,19 +29,10 @@ impl DoraNode {
                 .wrap_err("env variable DORA_NODE_RUN_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
-        let communication_config = {
-            let raw = std::env::var("DORA_COMMUNICATION_CONFIG")
-                .wrap_err("env variable DORA_COMMUNICATION_CONFIG must be set")?;
-            serde_yaml::from_str(&raw).context("failed to deserialize communication config")?
-        };
-        Self::init(id, node_config, communication_config)
+        Self::init(id, node_config)
     }
 
-    pub fn init(
-        id: NodeId,
-        node_config: NodeRunConfig,
-        communication_config: CommunicationConfig,
-    ) -> eyre::Result<(Self, EventStream)> {
+    pub fn init(id: NodeId, node_config: NodeRunConfig) -> eyre::Result<(Self, EventStream)> {
         let DaemonConnection {
             control_channel,
             event_stream,
@@ -121,18 +111,6 @@ fn set_up_tracing() -> eyre::Result<()> {
         .context("failed to set tracing global subscriber")
 }
 
-pub fn manual_stop_publisher(
-    communication: &mut dyn CommunicationLayer,
-) -> eyre::Result<impl FnOnce() -> Result<(), BoxError>> {
-    let hlc = dora_message::uhlc::HLC::default();
-    let metadata = dora_message::Metadata::new(hlc.new_timestamp());
-    let data = metadata.serialize().unwrap();
-    let publisher = communication
-        .publisher(dora_core::topics::MANUAL_STOP)
-        .map_err(|err| eyre::eyre!(err))?;
-    Ok(move || publisher.publish(&data))
-}
-
 #[cfg(test)]
 mod tests {
     use dora_core::config;
@@ -146,12 +124,8 @@ mod tests {
             inputs: Default::default(),
             outputs: Default::default(),
         };
-        let communication_config = config::CommunicationConfig::Zenoh {
-            config: Default::default(),
-            prefix: format!("/{}", uuid::Uuid::new_v4()),
-        };
 
-        let (_node, events) = DoraNode::init(id, node_config, communication_config).unwrap();
+        let (_node, events) = DoraNode::init(id, node_config).unwrap();
 
         assert!(events.recv().is_err());
     }

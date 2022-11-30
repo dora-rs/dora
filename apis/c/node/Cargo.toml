@@ -16,5 +16,4 @@ tracing = "0.1.33"
 
 [dependencies.dora-node-api]
 default-features = false
-features = ["zenoh"]
 path = "../../rust/node"
