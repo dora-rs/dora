@@ -955,6 +955,7 @@ dependencies = [
 name = "dora-core"
 version = "0.1.0"
 dependencies = [
+ "dora-message",
  "eyre",
  "once_cell",
  "serde",

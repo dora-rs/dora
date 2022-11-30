@@ -65,21 +65,22 @@ async fn main() -> eyre::Result<()> {
                                 continue;
                             }
                         };
-                        let message: daemon_messages::Request = match serde_json::from_slice(&raw)
-                            .wrap_err("failed to deserialize node message")
-                        {
-                            Ok(e) => e,
-                            Err(err) => {
-                                tracing::warn!("{err:?}");
-                                continue;
-                            }
-                        };
+                        let message: daemon_messages::ControlRequest =
+                            match serde_json::from_slice(&raw)
+                                .wrap_err("failed to deserialize node message")
+                            {
+                                Ok(e) => e,
+                                Err(err) => {
+                                    tracing::warn!("{err:?}");
+                                    continue;
+                                }
+                            };
 
                         let node_event = match message {
-                            daemon_messages::Request::Register { node_id } => {
+                            daemon_messages::ControlRequest::Register { node_id } => {
                                 id = Some(node_id);
 
-                                let reply = daemon_messages::Reply::RegisterResult(Ok(()));
+                                let reply = daemon_messages::ControlReply::Result(Ok(()));
                                 let serialized = serde_json::to_vec(&reply)
                                     .wrap_err("failed to serialize register result");
 
@@ -99,10 +100,10 @@ async fn main() -> eyre::Result<()> {
                                     }
                                 }
                             }
-                            daemon_messages::Request::PrepareOutputMessage { len } => {
+                            daemon_messages::ControlRequest::PrepareOutputMessage { len } => {
                                 NodeEvent::PrepareOutputMessage { len }
                             }
-                            daemon_messages::Request::SendOutMessage { id } => {
+                            daemon_messages::ControlRequest::SendOutMessage { id } => {
                                 NodeEvent::SendOutMessage { id }
                             }
                         };
