@@ -970,7 +970,9 @@ name = "dora-daemon"
 version = "0.1.0"
 dependencies = [
  "dora-core",
+ "dora-message",
  "eyre",
+ "flume",
  "futures-concurrency 7.0.0",
  "serde",
  "serde_json",
@@ -1008,6 +1010,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnpc",
+ "serde",
  "uhlc 0.5.1",
 ]
 
@@ -1027,7 +1030,6 @@ name = "dora-node-api"
 version = "0.1.0"
 dependencies = [
  "capnp",
- "communication-layer-pub-sub",
  "dora-core",
  "dora-message",
  "eyre",
