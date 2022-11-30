@@ -1,3 +1,5 @@
+use dora_message::Metadata;
+
 use crate::config::{DataId, NodeId};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -20,7 +22,11 @@ pub enum ControlReply {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum NodeEvent {
     Stop,
-    Input(RawInput),
+    Input {
+        id: DataId,
+        metadata: Metadata<'static>,
+        data: RawInput, // TODO add lifetime to borrow from inputs channel while RawInput exists
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -30,6 +36,13 @@ pub struct RawInput {
 }
 
 impl RawInput {
+    pub unsafe fn new(ptr: (), len: usize) -> Self {
+        Self {
+            shared_memory_pointer: ptr,
+            len,
+        }
+    }
+
     pub fn get(&self) -> &[u8] {
         &[] // TODO
     }
