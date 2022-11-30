@@ -3,7 +3,6 @@ use dora_core::{
     config::{format_duration, CommunicationConfig, NodeId},
     descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor},
 };
-use dora_node_api::communication;
 use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::{env::consts::EXE_EXTENSION, path::Path};
@@ -93,11 +92,11 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
     }
     for interval in dora_timers {
         let communication_config = communication_config.clone();
-        let mut communication =
-            tokio::task::spawn_blocking(move || communication::init(&communication_config))
-                .await
-                .wrap_err("failed to join communication layer init task")?
-                .wrap_err("failed to init communication layer")?;
+        // let mut communication =
+        //     tokio::task::spawn_blocking(move || communication::init(&communication_config))
+        //         .await
+        //         .wrap_err("failed to join communication layer init task")?
+        //         .wrap_err("failed to init communication layer")?;
         tokio::spawn(async move {
             let topic = {
                 let duration = format_duration(interval);
@@ -108,11 +107,12 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
             while (stream.next().await).is_some() {
                 let metadata = dora_message::Metadata::new(hlc.new_timestamp());
                 let data = metadata.serialize().unwrap();
-                communication
-                    .publisher(&topic)
-                    .unwrap()
-                    .publish(&data)
-                    .expect("failed to publish timer tick message");
+                // communication
+                //     .publisher(&topic)
+                //     .unwrap()
+                //     .publish(&data)
+                //     .expect("failed to publish timer tick message");
+                todo!()
             }
         });
     }
