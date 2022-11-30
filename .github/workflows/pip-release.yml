@@ -27,7 +27,11 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get install -y libacl1-dev
-
+      - name: Install XCode (macOS)
+        if: runner.os == 'macOS'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       
       # Publish Dora Node Python API
