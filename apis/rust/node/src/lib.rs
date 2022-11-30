@@ -1,25 +1,22 @@
-pub use communication::Input;
-use communication::STOP_TOPIC;
 use communication_layer_pub_sub::CommunicationLayer;
-use daemon::DaemonConnection;
+use daemon::{ControlChannel, DaemonConnection, EventStream};
 pub use dora_core;
 use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
 pub use flume::Receiver;
 
-pub mod communication;
 pub mod daemon;
 
 pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
-    communication: Box<dyn CommunicationLayer>,
+    control_channel: ControlChannel,
     hlc: uhlc::HLC,
 }
 
 impl DoraNode {
-    pub fn init_from_env() -> eyre::Result<Self> {
+    pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
         #[cfg(feature = "tracing-subscriber")]
         set_up_tracing().context("failed to set up tracing subscriber")?;
 
@@ -45,26 +42,24 @@ impl DoraNode {
         id: NodeId,
         node_config: NodeRunConfig,
         communication_config: CommunicationConfig,
-    ) -> eyre::Result<Self> {
-        let daemon =
-            DaemonConnection::init(id.clone()).wrap_err("failed to connect to dora-daemon")?;
+    ) -> eyre::Result<(Self, EventStream)> {
+        let DaemonConnection {
+            control_channel,
+            event_stream,
+        } = DaemonConnection::init(id.clone()).wrap_err("failed to connect to dora-daemon")?;
 
-        let communication = communication::init(&communication_config)?;
-        Ok(Self {
+        let node = Self {
             id,
             node_config,
-            communication,
+            control_channel,
             hlc: uhlc::HLC::default(),
-        })
-    }
-
-    pub fn inputs(&mut self) -> eyre::Result<flume::Receiver<Input>> {
-        communication::subscribe_all(self.communication.as_mut(), &self.node_config.inputs)
+        };
+        Ok((node, event_stream))
     }
 
     pub fn send_output<F>(
         &mut self,
-        output_id: &DataId,
+        output_id: DataId,
         parameters: MetadataParameters,
         data_len: usize,
         data: F,
@@ -72,7 +67,7 @@ impl DoraNode {
     where
         F: FnOnce(&mut [u8]),
     {
-        if !self.node_config.outputs.contains(output_id) {
+        if !self.node_config.outputs.contains(&output_id) {
             eyre::bail!("unknown output");
         }
         let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
@@ -81,23 +76,17 @@ impl DoraNode {
             .with_context(|| format!("failed to serialize `{}` message", output_id))?;
         let full_len = serialized_metadata.len() + data_len;
 
-        let self_id = &self.id;
-        let topic = format!("{self_id}/{output_id}");
-        let publisher = self
-            .communication
-            .publisher(&topic)
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err_with(|| format!("failed create publisher for output {output_id}"))?;
+        let sample = self
+            .control_channel
+            .prepare_message(output_id.clone(), full_len)
+            .wrap_err("failed to prepare sample for output message")?;
 
-        let mut sample = publisher
-            .prepare(full_len)
-            .map_err(|err| eyre::eyre!(err))?;
-        let raw = sample.as_mut_slice();
+        let raw = sample.data.get_mut();
         raw[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
         data(&mut raw[serialized_metadata.len()..]);
-        sample
-            .publish()
-            .map_err(|err| eyre::eyre!(err))
+
+        self.control_channel
+            .send_message(sample)
             .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         Ok(())
     }
@@ -114,25 +103,8 @@ impl DoraNode {
 impl Drop for DoraNode {
     #[tracing::instrument(skip(self), fields(self.id = %self.id))]
     fn drop(&mut self) {
-        let self_id = &self.id;
-        let topic = format!("{self_id}/{STOP_TOPIC}");
-        let result = self
-            .communication
-            .publisher(&topic)
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err_with(|| {
-                format!("failed to create publisher for stop message for node `{self_id}`")
-            })
-            .and_then(|p| {
-                p.publish(&[])
-                    .map_err(|err| eyre::eyre!(err))
-                    .wrap_err_with(|| format!("failed to send stop message for node `{self_id}`"))
-            });
-        match result {
-            Ok(()) => tracing::info!("sent stop message for {self_id}"),
-            Err(err) => {
-                tracing::error!("{err:?}")
-            }
+        if let Err(err) = self.control_channel.report_stop() {
+            tracing::error!("{err:?}");
         }
     }
 }
@@ -149,7 +121,6 @@ fn set_up_tracing() -> eyre::Result<()> {
         .context("failed to set tracing global subscriber")
 }
 
-#[must_use]
 pub fn manual_stop_publisher(
     communication: &mut dyn CommunicationLayer,
 ) -> eyre::Result<impl FnOnce() -> Result<(), BoxError>> {
@@ -180,9 +151,8 @@ mod tests {
             prefix: format!("/{}", uuid::Uuid::new_v4()),
         };
 
-        let mut node = DoraNode::init(id, node_config, communication_config).unwrap();
+        let (_node, events) = DoraNode::init(id, node_config, communication_config).unwrap();
 
-        let inputs = node.inputs().unwrap();
-        assert!(inputs.recv().is_err());
+        assert!(events.recv().is_err());
     }
 }
