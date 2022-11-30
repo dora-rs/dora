@@ -7,7 +7,6 @@ use dora_core::{
         StopDataflowResult,
     },
 };
-use dora_node_api::{communication, manual_stop_publisher};
 use eyre::{bail, eyre, WrapErr};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
@@ -259,18 +258,20 @@ async fn stop_dataflow(
         Some(dataflow) => dataflow.communication_config.clone(),
         None => bail!("No running dataflow found with UUID `{uuid}`"),
     };
-    let mut communication =
-        tokio::task::spawn_blocking(move || communication::init(&communication_config))
-            .await
-            .wrap_err("failed to join communication layer init task")?
-            .wrap_err("failed to init communication layer")?;
-    tracing::info!("sending stop message to dataflow `{uuid}`");
-    let manual_stop_publisher = manual_stop_publisher(communication.as_mut())?;
-    tokio::task::spawn_blocking(move || manual_stop_publisher())
-        .await
-        .wrap_err("failed to join stop publish task")?
-        .map_err(|err| eyre!(err))
-        .wrap_err("failed to send stop message")?;
+
+    todo!();
+    // let mut communication =
+    //     tokio::task::spawn_blocking(move || communication::init(&communication_config))
+    //         .await
+    //         .wrap_err("failed to join communication layer init task")?
+    //         .wrap_err("failed to init communication layer")?;
+    // tracing::info!("sending stop message to dataflow `{uuid}`");
+    // let manual_stop_publisher = manual_stop_publisher(communication.as_mut())?;
+    // tokio::task::spawn_blocking(move || manual_stop_publisher())
+    //     .await
+    //     .wrap_err("failed to join stop publish task")?
+    //     .map_err(|err| eyre!(err))
+    //     .wrap_err("failed to send stop message")?;
     Ok(())
 }
 
