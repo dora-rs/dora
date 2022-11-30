@@ -7,14 +7,14 @@ pub mod message_capnp {
 }
 pub use uhlc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Metadata<'a> {
     metadata_version: u16,
     timestamp: uhlc::Timestamp,
     pub parameters: MetadataParameters<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct MetadataParameters<'a> {
     pub watermark: u64,
     pub deadline: u64,
