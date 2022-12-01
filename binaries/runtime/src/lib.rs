@@ -134,11 +134,14 @@ async fn run(
                         if let StopReason::ExplicitStopAll = reason {
                             let hlc = dora_message::uhlc::HLC::default();
                             let metadata = dora_message::Metadata::new(hlc.new_timestamp());
-                            let data = metadata.serialize().unwrap();
+                            let data = metadata
+                                .serialize()
+                                .wrap_err("failed to serialize stop message")?;
                             manual_stop_publisher
                                 .publish(&data)
                                 .map_err(|err| eyre::eyre!(err))
                                 .wrap_err("failed to send stop message")?;
+                            break;
                         }
                         if let Some(stop_publisher) = operator_stop_publishers.remove(&id) {
                             tracing::info!("operator {node_id}/{id} finished ({reason:?})");
