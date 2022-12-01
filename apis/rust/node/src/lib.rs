@@ -144,7 +144,6 @@ fn set_up_tracing() -> eyre::Result<()> {
         .context("failed to set tracing global subscriber")
 }
 
-#[must_use]
 pub fn manual_stop_publisher(
     communication: &mut dyn CommunicationLayer,
 ) -> eyre::Result<Box<dyn Publisher>> {

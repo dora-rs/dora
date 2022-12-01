@@ -3,7 +3,6 @@ use dora_core::{
     adjust_shared_library_path,
     config::{InputMapping, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
-    topics::ControlRequest,
 };
 use eyre::{bail, eyre, Context};
 use std::{env::consts::EXE_EXTENSION, io::Write, path::Path};
