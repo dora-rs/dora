@@ -27,8 +27,7 @@ pub fn spawn_runtime_node(
         command
     } else {
         // Use default runtime if there is no python operator
-        let command = tokio::process::Command::new(runtime);
-        command
+        tokio::process::Command::new(runtime)
     };
 
     command_init_common_env(&mut command, &node_id, communication)?;
