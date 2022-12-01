@@ -7,10 +7,11 @@ use dora_core::{
 use dora_node_api::{
     self,
     communication::{self, CommunicationLayer, Publisher, STOP_TOPIC},
+    manual_stop_publisher,
 };
-use eyre::{bail, Context};
+use eyre::{bail, Context, Result};
 use futures::{Stream, StreamExt};
-use operator::{spawn_operator, OperatorEvent};
+use operator::{spawn_operator, OperatorEvent, StopReason};
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -69,17 +70,18 @@ pub fn main() -> eyre::Result<()> {
 
     let operator_events = operator_events.map(|(id, event)| Event::Operator { id, event });
     let node_id_clone = node_id.clone();
-    let stop_thread = std::thread::spawn(move || {
-        Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(run(
-                node_id_clone,
-                operator_events,
-                operator_stop_publishers,
-            ))
-            .unwrap();
+    let tokio_runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .wrap_err("Could not build a tokio runtime.")?;
+    let manual_stop_publisher = manual_stop_publisher(communication.as_mut())?;
+    let stop_thread = std::thread::spawn(move || -> Result<()> {
+        tokio_runtime.block_on(run(
+            node_id_clone,
+            operator_events,
+            operator_stop_publishers,
+            manual_stop_publisher,
+        ))
     });
 
     for operator_config in &operators {
@@ -95,7 +97,8 @@ pub fn main() -> eyre::Result<()> {
 
     stop_thread
         .join()
-        .map_err(|err| eyre::eyre!("Stop thread failed with err: {err:#?}"))?;
+        .map_err(|err| eyre::eyre!("Stop thread failed with err: {err:#?}"))?
+        .wrap_err("Stop loop thread failed unexpectedly.")?;
     Ok(())
 }
 
@@ -103,6 +106,7 @@ async fn run(
     node_id: NodeId,
     mut events: impl Stream<Item = Event> + Unpin,
     mut operator_stop_publishers: HashMap<OperatorId, Box<dyn Publisher>>,
+    manual_stop_publisher: Box<dyn Publisher>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
     let _started = {
@@ -127,6 +131,15 @@ async fn run(
                     }
                     OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
                     OperatorEvent::Finished { reason } => {
+                        if let StopReason::ExplicitStopAll = reason {
+                            let hlc = dora_message::uhlc::HLC::default();
+                            let metadata = dora_message::Metadata::new(hlc.new_timestamp());
+                            let data = metadata.serialize().unwrap();
+                            manual_stop_publisher
+                                .publish(&data)
+                                .map_err(|err| eyre::eyre!(err))
+                                .wrap_err("failed to send stop message")?;
+                        }
                         if let Some(stop_publisher) = operator_stop_publishers.remove(&id) {
                             tracing::info!("operator {node_id}/{id} finished ({reason:?})");
                             stopped_operators.insert(id.clone());
