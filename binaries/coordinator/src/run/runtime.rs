@@ -21,11 +21,12 @@ pub fn spawn_runtime_node(
         .any(|x| matches!(x.config.source, OperatorSource::Python { .. }));
 
     let mut command = if has_python_operator {
-        // Use Python Runtime if runtime is
+        // Use python to spawn runtime if there is a python operator
         let mut command = tokio::process::Command::new("python3");
         command.args(["-c", "import dora; dora.start_runtime()"]);
         command
     } else {
+        // Use default runtime if there is no python operator
         let command = tokio::process::Command::new(runtime);
         command
     };

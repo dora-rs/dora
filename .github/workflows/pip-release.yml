@@ -1,4 +1,4 @@
-name: Release
+name: Pypi Release
 
 permissions:
   contents: write
