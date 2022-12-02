@@ -20,15 +20,23 @@ pub fn spawn_runtime_node(
         .iter()
         .any(|x| matches!(x.config.source, OperatorSource::Python { .. }));
 
-    let mut command = if has_python_operator {
+    let has_other_operator = node
+        .operators
+        .iter()
+        .any(|x| !matches!(x.config.source, OperatorSource::Python { .. }));
+
+    let mut command = if has_python_operator && !has_other_operator {
         // Use python to spawn runtime if there is a python operator
         let mut command = tokio::process::Command::new("python3");
         command.args(["-c", "import dora; dora.start_runtime()"]);
         command
-    } else {
+    } else if !has_python_operator && has_other_operator {
         // Use default runtime if there is no python operator
-        let command = tokio::process::Command::new(runtime);
-        command
+        tokio::process::Command::new(runtime)
+    } else {
+        return Err(eyre!(
+            "Runtime can not mix Python Operator with other type of operator."
+        ));
     };
 
     command_init_common_env(&mut command, &node_id, communication)?;
