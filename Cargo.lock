@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-python"
-version = "0.1.1"
+version = "0.1.1-2"
 dependencies = [
  "dora-node-api",
  "dora-operator-api-python",
