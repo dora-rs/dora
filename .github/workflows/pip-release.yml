@@ -10,11 +10,11 @@ on:
 
 jobs:
   release:
-    name: "Release"
+    name: "Pypi Release"
 
     strategy:
       matrix:
-        platform: [ubuntu-latest, ubuntu-20.04, ubuntu-18.04, windows-latest]
+        platform: [ubuntu-latest, ubuntu-20.04]
         python-version: ["3.7"]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
