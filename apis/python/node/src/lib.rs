@@ -64,7 +64,7 @@ impl Node {
         data: &PyBytes,
         metadata: Option<&PyDict>,
     ) -> Result<()> {
-        let data = &data.as_bytes();
+        let data = data.as_bytes();
         let metadata = pydict_to_metadata(metadata)?;
         self.node
             .send_output(&output_id.into(), metadata, data.len(), |out| {
@@ -78,8 +78,17 @@ impl Node {
     }
 }
 
+#[pyfunction]
+fn start_runtime() -> Result<()> {
+    dora_runtime::main()
+        .wrap_err("Python Dora Runtime failed.")
+        .unwrap();
+    Ok(())
+}
+
 #[pymodule]
 fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
     m.add_class::<Node>().unwrap();
     Ok(())
 }

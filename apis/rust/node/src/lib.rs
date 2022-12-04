@@ -1,6 +1,6 @@
 pub use communication::Input;
 use communication::STOP_TOPIC;
-use communication_layer_pub_sub::CommunicationLayer;
+use communication_layer_pub_sub::{CommunicationLayer, Publisher};
 pub use dora_core;
 use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
@@ -147,14 +147,11 @@ fn set_up_tracing() -> eyre::Result<()> {
 #[must_use]
 pub fn manual_stop_publisher(
     communication: &mut dyn CommunicationLayer,
-) -> eyre::Result<impl FnOnce() -> Result<(), BoxError>> {
-    let hlc = dora_message::uhlc::HLC::default();
-    let metadata = dora_message::Metadata::new(hlc.new_timestamp());
-    let data = metadata.serialize().unwrap();
+) -> eyre::Result<Box<dyn Publisher>> {
     let publisher = communication
         .publisher(dora_core::topics::MANUAL_STOP)
         .map_err(|err| eyre::eyre!(err))?;
-    Ok(move || publisher.publish(&data))
+    Ok(publisher)
 }
 
 #[cfg(test)]
