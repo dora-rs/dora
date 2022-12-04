@@ -35,30 +35,6 @@ PATH=$PATH:$(pwd):$(pwd)/iceoryx
 dora --help
 ```
 
-<details>
-  <summary> For Macos </summary>
-
-```bash
-wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-macOS.zip
-unzip dora-<version>-x86_64-macOS.zip
-PATH=$PATH:$(pwd):$(pwd)/iceoryx
-dora --help
-```
-
-</details>
-
-<details>
-  <summary> For Windows </summary>
-
-```bash
-wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Windows.zip
-unzip dora-<version>-x86_64-Windows.zip
-PATH=$PATH:$(pwd):$(pwd)/iceoryx
-dora --help
-```
-
-</details>
-
 > This is `x86_64` only for the moment.
 
 2. Create a new dataflow
