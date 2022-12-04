@@ -22,24 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Cap'n Proto and libacl-dev (Linux)
+      - name: Install libacl-dev (Linux)
         if: runner.os == 'Linux'
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
-      - name: Install Cap'n Proto (macOS)
-        if: runner.os == 'macOS'
-        run: brew install capnp
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
-          HOMEBREW_NO_BOTTLE_SOURCE_FALLBACK: 1
-          HOMEBREW_NO_INSTALL_CLEANUP: 1
-      - name: Install Cap'n Proto (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install capnproto
-          echo "$Env:Programfiles\capnproto" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          sudo apt-get install -y libacl1-dev
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
 
@@ -80,25 +67,3 @@ jobs:
           asset_path: archive.zip
           asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
           asset_content_type: application/zip
-
-      # Publish Dora Node Python API
-      - name: Set up Python
-        uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install maturin==0.13.2
-      - name: Publish wheel
-        shell: bash
-        env:
-          MATURIN_PASSWORD: ${{ secrets.PYPI_PASS }}
-        run: |
-          cd apis/python/node
-          maturin publish \
-          --no-sdist \
-          --skip-existing \
-          -o wheels \
-          -i python \
-          --username __token__ \

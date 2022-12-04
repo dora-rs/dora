@@ -23,7 +23,6 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
     sync::Arc,
-    thread,
 };
 use tokio::sync::mpsc::Sender;
 
@@ -170,24 +169,22 @@ pub fn spawn(
         Result::<_, eyre::Report>::Ok(reason)
     };
 
-    thread::spawn(move || {
-        let closure = AssertUnwindSafe(|| {
-            python_runner()
-                .wrap_err_with(|| format!("error in Python module at {}", path_cloned.display()))
-        });
-
-        match catch_unwind(closure) {
-            Ok(Ok(reason)) => {
-                let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
-            }
-            Ok(Err(err)) => {
-                let _ = events_tx.blocking_send(OperatorEvent::Error(err));
-            }
-            Err(panic) => {
-                let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
-            }
-        }
+    let closure = AssertUnwindSafe(|| {
+        python_runner()
+            .wrap_err_with(|| format!("error in Python module at {}", path_cloned.display()))
     });
+
+    match catch_unwind(closure) {
+        Ok(Ok(reason)) => {
+            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
+        }
+        Ok(Err(err)) => {
+            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
+        }
+        Err(panic) => {
+            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
+        }
+    }
 
     Ok(())
 }
@@ -205,11 +202,10 @@ mod callback_impl {
     use super::SendOutputCallback;
     use dora_message::Metadata;
     use dora_operator_api_python::pydict_to_metadata;
-    use eyre::{eyre, Context};
+    use eyre::{eyre, Context, Result};
     use pyo3::{
         pymethods,
         types::{PyBytes, PyDict},
-        PyResult,
     };
 
     #[pymethods]
@@ -219,27 +215,27 @@ mod callback_impl {
             output: &str,
             data: &PyBytes,
             metadata: Option<&PyDict>,
-        ) -> PyResult<()> {
+        ) -> Result<()> {
+            let data = data.as_bytes();
+            let parameters = pydict_to_metadata(metadata).wrap_err("Could not parse metadata.")?;
+            let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
+            let mut message = metadata
+                .serialize()
+                .context(format!("failed to serialize `{}` metadata", output))?;
+
             match self.publishers.get(output) {
                 Some(publisher) => {
-                    let parameters = pydict_to_metadata(metadata)?;
-                    let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
-                    let message = metadata
-                        .serialize()
-                        .context(format!("failed to serialize `{}` metadata", output));
-                    message.and_then(|mut message| {
-                        message.extend_from_slice(data.as_bytes());
-                        publisher
-                            .publish(&message)
-                            .map_err(|err| eyre::eyre!(err))
-                            .context("publish failed")
-                    })
+                    message.extend_from_slice(data);
+
+                    publisher
+                        .publish(&message)
+                        .map_err(|err| eyre::eyre!(err))
+                        .context("publish failed")
                 }
                 None => Err(eyre!(
                     "unexpected output {output} (not defined in dataflow config)"
                 )),
             }
-            .map_err(|err| err.into())
         }
     }
 }
