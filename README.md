@@ -12,6 +12,8 @@ Dataflow Oriented Robotic Architecture ⚡
 
 This project is in early development, and many features have yet to be implemented with breaking changes. Please don't take for granted the current design.
 
+`dora` primary support is with `Linux` ( Ubuntu 20.04 and Ubuntu 22.04 ) as it is the primary OS for both Cloud and small computers. If you wish to use `dora` with another OS, please compile from source.
+
 ---
 ## 📖 Documentation
 
