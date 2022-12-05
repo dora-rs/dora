@@ -12,6 +12,8 @@ Dataflow Oriented Robotic Architecture ⚡
 
 This project is in early development, and many features have yet to be implemented with breaking changes. Please don't take for granted the current design.
 
+`dora` primary support is with `Linux` ( Ubuntu 20.04 and Ubuntu 22.04 ) as it is the primary OS for both Cloud and small computers. If you wish to use `dora` with another OS, please compile from source.
+
 ---
 ## 📖 Documentation
 
@@ -32,30 +34,6 @@ python3 -m pip install dora-rs==<version>
 PATH=$PATH:$(pwd):$(pwd)/iceoryx
 dora --help
 ```
-
-<details>
-  <summary> For Macos </summary>
-
-```bash
-wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-macOS.zip
-unzip dora-<version>-x86_64-macOS.zip
-PATH=$PATH:$(pwd):$(pwd)/iceoryx
-dora --help
-```
-
-</details>
-
-<details>
-  <summary> For Windows </summary>
-
-```bash
-wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Windows.zip
-unzip dora-<version>-x86_64-Windows.zip
-PATH=$PATH:$(pwd):$(pwd)/iceoryx
-dora --help
-```
-
-</details>
 
 > This is `x86_64` only for the moment.
 
