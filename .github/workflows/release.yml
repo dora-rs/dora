@@ -14,7 +14,7 @@ jobs:
 
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest, windows-latest]
+        platform: [ubuntu-20.04, ubuntu-22.04, macos-12, windows-2022]
         python-version: ["3.7"]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
@@ -65,5 +65,5 @@ jobs:
         with:
           upload_url: ${{ github.event.release.upload_url }}
           asset_path: archive.zip
-          asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
+          asset_name: dora-${{ github.ref_name }}-x86_64-${{ matrix.platform }}.zip
           asset_content_type: application/zip
