@@ -15,3 +15,4 @@ zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a1
 which = "4.3.0"
 uuid = { version = "1.2.1", features = ["serde"] }
 dora-message = { path = "../message" }
+shared_memory = "0.12.0"

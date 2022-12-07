@@ -1,4 +1,6 @@
 use dora_message::Metadata;
+use eyre::Context;
+use shared_memory::{Shmem, ShmemConf};
 
 use crate::config::{DataId, NodeId};
 
@@ -7,16 +9,16 @@ pub enum ControlRequest {
     Register { node_id: NodeId },
     Subscribe { node_id: NodeId },
     PrepareOutputMessage { output_id: DataId, len: usize },
-    SendOutMessage { id: MessageId },
+    SendOutMessage { id: SharedMemoryId },
     Stopped,
 }
 
-type MessageId = String;
+type SharedMemoryId = String;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ControlReply {
     Result(Result<(), String>),
-    PreparedMessage { id: MessageId, data: RawMutInput },
+    PreparedMessage { shared_memory_id: SharedMemoryId },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -25,40 +27,37 @@ pub enum NodeEvent {
     Input {
         id: DataId,
         metadata: Metadata<'static>,
-        data: RawInput, // TODO add lifetime to borrow from inputs channel while RawInput exists
+        data: InputData,
     },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct RawInput {
-    shared_memory_pointer: (), // TODO
-    len: usize,
+pub struct InputData {
+    shared_memory_id: SharedMemoryId,
 }
 
-impl RawInput {
-    pub unsafe fn new(ptr: (), len: usize) -> Self {
-        Self {
-            shared_memory_pointer: ptr,
-            len,
-        }
+impl InputData {
+    pub unsafe fn new(shared_memory_id: SharedMemoryId) -> Self {
+        Self { shared_memory_id }
     }
 
-    pub fn get(&self) -> &[u8] {
-        &[] // TODO
+    pub fn map(self) -> eyre::Result<MappedInputData> {
+        let memory = ShmemConf::new()
+            .os_id(self.shared_memory_id)
+            .open()
+            .wrap_err("failed to map shared memory input")?;
+        Ok(MappedInputData { memory })
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct RawMutInput {
-    shared_memory_pointer: (), // TODO
-    len: usize,
+pub struct MappedInputData {
+    memory: Shmem,
 }
 
-impl RawMutInput {
-    pub fn get(&self) -> &[u8] {
-        &[] // TODO
-    }
-    pub fn get_mut(&self) -> &mut [u8] {
-        &mut [] // TODO
+impl std::ops::Deref for MappedInputData {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.memory.as_slice() }
     }
 }

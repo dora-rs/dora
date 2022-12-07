@@ -69,10 +69,14 @@ async fn main_inner() -> eyre::Result<()> {
             Event::ConnectError(err) => {
                 tracing::warn!("{:?}", err.wrap_err("failed to connect"));
             }
-            Event::Node { id, event, reply } => match event {
+            Event::Node {
+                id,
+                event,
+                reply_sender,
+            } => match event {
                 NodeEvent::Subscribe { event_sender } => {
                     subscribe_channels.insert(id, event_sender);
-                    let _ = reply.send(ControlReply::Result(Ok(())));
+                    let _ = reply_sender.send(ControlReply::Result(Ok(())));
                 }
                 NodeEvent::PrepareOutputMessage { output_id, len } => {
                     let memory = ShmemConf::new()
@@ -80,9 +84,15 @@ async fn main_inner() -> eyre::Result<()> {
                         .create()
                         .wrap_err("failed to allocate shared memory")?;
                     let id = memory.get_os_id().to_owned();
-                    uninit_shared_memory.insert(id, memory);
+                    uninit_shared_memory.insert(id.clone(), memory);
 
-                    // TODO send reply with id
+                    let reply = ControlReply::PreparedMessage {
+                        shared_memory_id: id.clone(),
+                    };
+                    if reply_sender.send(reply).is_err() {
+                        // free shared memory slice again
+                        uninit_shared_memory.remove(&id);
+                    }
                 }
                 NodeEvent::SendOutMessage { id } => {
                     let memory = uninit_shared_memory
@@ -92,19 +102,16 @@ async fn main_inner() -> eyre::Result<()> {
                     // TODO figure out receivers from dataflow graph
                     let local_receivers = &[];
 
-                    // TODO send shared memory ID to all local receivers
+                    // send shared memory ID to all local receivers
                     let mut closed = Vec::new();
                     for receiver_id in local_receivers {
                         if let Some(channel) = subscribe_channels.get(receiver_id) {
-                            let ptr = ();
                             let input_id = DataId::from("<unknown>".to_owned());
                             if channel
                                 .send_async(daemon_messages::NodeEvent::Input {
                                     id: input_id,
                                     metadata: Metadata::new(hlc.new_timestamp()), // TODO
-                                    data: unsafe {
-                                        daemon_messages::RawInput::new(ptr, memory.len())
-                                    },
+                                    data: unsafe { daemon_messages::InputData::new(id.clone()) },
                                 })
                                 .await
                                 .is_err()
@@ -117,16 +124,16 @@ async fn main_inner() -> eyre::Result<()> {
                         subscribe_channels.remove(id);
                     }
 
-                    // keep shared memory ptr in order to free it once all subscribers are done
-                    let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), memory.len());
-                    sent_out_shared_memory.insert(id, memory);
-
                     // TODO send `data` via network to all remove receivers
+                    let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), memory.len());
+
+                    // keep shared memory ptr in order to free it once all subscribers are done
+                    sent_out_shared_memory.insert(id, memory);
                 }
                 NodeEvent::Stopped => {
                     // TODO send stop message to downstream nodes
 
-                    let _ = reply.send(ControlReply::Result(Ok(())));
+                    let _ = reply_sender.send(ControlReply::Result(Ok(())));
                 }
             },
         }
@@ -208,7 +215,7 @@ async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sender<Ev
                 }
             },
             event: node_event,
-            reply: reply_tx,
+            reply_sender: reply_tx,
         };
         let Ok(()) = events_tx.send(event).await else {
             break;
@@ -271,7 +278,7 @@ enum Event {
     Node {
         id: NodeId,
         event: NodeEvent,
-        reply: oneshot::Sender<ControlReply>,
+        reply_sender: oneshot::Sender<ControlReply>,
     },
 }
 
