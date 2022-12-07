@@ -13,7 +13,8 @@ fn main() -> eyre::Result<()> {
                 data,
             } => match id.as_str() {
                 "message" => {
-                    let received_string = std::str::from_utf8(data.get())
+                    let data = data.map()?;
+                    let received_string = std::str::from_utf8(&data)
                         .wrap_err("received message was not utf8-encoded")?;
                     println!("received message: {}", received_string);
                     if !received_string.starts_with("operator received random value ") {

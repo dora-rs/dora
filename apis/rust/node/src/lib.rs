@@ -4,6 +4,7 @@ use dora_core::config::{DataId, NodeId, NodeRunConfig};
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
 pub use flume::Receiver;
+use shared_memory::ShmemConf;
 
 pub mod daemon;
 
@@ -71,9 +72,17 @@ impl DoraNode {
             .prepare_message(output_id.clone(), full_len)
             .wrap_err("failed to prepare sample for output message")?;
 
-        let raw = sample.data.get_mut();
-        raw[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
-        data(&mut raw[serialized_metadata.len()..]);
+        // map shared memory and fill in data
+        {
+            let mut shared_memory = ShmemConf::new()
+                .os_id(&sample.id)
+                .open()
+                .wrap_err("failed to open shared memory sample")?;
+
+            let raw = unsafe { shared_memory.as_slice_mut() };
+            raw[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
+            data(&mut raw[serialized_metadata.len()..]);
+        }
 
         self.control_channel
             .send_message(sample)

@@ -5,7 +5,7 @@ use std::{
 
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{ControlRequest, NodeEvent, RawMutInput},
+    daemon_messages::{ControlRequest, NodeEvent},
     topics::DORA_DAEMON_PORT_DEFAULT,
 };
 use eyre::{bail, eyre, Context};
@@ -63,9 +63,9 @@ impl ControlChannel {
         match tcp_receive(&mut self.0)
             .wrap_err("failed to receive PrepareOutputMessage reply from dora-daemon")?
         {
-            dora_core::daemon_messages::ControlReply::PreparedMessage { id, data } => {
-                Ok(MessageSample { id, data })
-            }
+            dora_core::daemon_messages::ControlReply::PreparedMessage {
+                shared_memory_id: id,
+            } => Ok(MessageSample { id }),
             dora_core::daemon_messages::ControlReply::Result(Err(err)) => {
                 Err(eyre!(err).wrap_err("failed to report stop event to dora-daemon"))
             }
@@ -91,8 +91,7 @@ impl ControlChannel {
 }
 
 pub struct MessageSample {
-    id: String,
-    pub data: RawMutInput,
+    pub id: String,
 }
 
 fn init_event_stream(addr: Ipv4Addr, node_id: &NodeId) -> eyre::Result<EventStream> {
