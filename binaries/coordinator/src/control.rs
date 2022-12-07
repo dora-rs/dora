@@ -81,14 +81,23 @@ fn handle_requests(
             Ok(reply)
         }));
         if let Err(err) = result {
-            if err.kind() == ErrorKind::Other {
-                let inner = err.into_inner().unwrap();
-                let downcasted = inner.downcast_ref().unwrap();
-                match downcasted {
-                    HandlerError::ParseError(err) => {
-                        tracing::warn!("failed to parse request: {err}");
+            match err.kind() {
+                ErrorKind::UnexpectedEof => {
+                    tracing::trace!("Control connection closed");
+                    break;
+                }
+                ErrorKind::Other => {
+                    let inner = err.into_inner().unwrap();
+                    let downcasted = inner.downcast_ref().unwrap();
+                    match downcasted {
+                        HandlerError::ParseError(err) => {
+                            tracing::warn!("failed to parse request: {err}");
+                        }
+                        HandlerError::ServerStopped => break,
                     }
-                    HandlerError::ServerStopped => break,
+                }
+                _ => {
+                    tracing::warn!("I/O error while trying to receive control request: {err:?}");
                 }
             }
         }
@@ -103,6 +112,7 @@ enum HandlerError {
     ServerStopped,
 }
 
+#[derive(Debug)]
 pub enum ControlEvent {
     IncomingRequest {
         request: ControlRequest,

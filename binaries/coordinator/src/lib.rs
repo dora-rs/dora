@@ -77,6 +77,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     let mut running_dataflows = HashMap::new();
 
     while let Some(event) = events.next().await {
+        tracing::trace!("Handling event {event:?}");
         match event {
             Event::Dataflow { uuid, event } => match event {
                 DataflowEvent::Finished { result } => {
@@ -319,11 +320,13 @@ async fn start_dataflow(
     })
 }
 
+#[derive(Debug)]
 enum Event {
     Dataflow { uuid: Uuid, event: DataflowEvent },
     Control(ControlEvent),
 }
 
+#[derive(Debug)]
 enum DataflowEvent {
     Finished { result: eyre::Result<()> },
 }
