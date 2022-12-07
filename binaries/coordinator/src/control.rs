@@ -112,6 +112,7 @@ enum HandlerError {
     ServerStopped,
 }
 
+#[derive(Debug)]
 pub enum ControlEvent {
     IncomingRequest {
         request: ControlRequest,
