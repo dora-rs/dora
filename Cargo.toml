@@ -18,11 +18,15 @@ members = [
     "libraries/extensions/zenoh-logger",
 ]
 
+[workspace.package]
+version = "0.1.1"
+
 [package]
 name = "dora-examples"
 version = "0.0.0"
 edition = "2021"
 license = "Apache-2.0"
+
 
 [dev-dependencies]
 eyre = "0.6.8"
