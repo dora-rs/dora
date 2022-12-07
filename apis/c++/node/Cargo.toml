@@ -10,9 +10,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 cxx = "1.0.73"
-dora-node-api = { version = "0.1.1", path = "../../../apis/rust/node", default-features = false, features = [
-    "zenoh",
-] }
+dora-node-api = { workspace = true, features = ["zenoh"] }
 eyre = "0.6.8"
 
 [build-dependencies]
