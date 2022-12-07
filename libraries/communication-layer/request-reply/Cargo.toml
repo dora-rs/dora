@@ -1,6 +1,6 @@
 [package]
 name = "communication-layer-request-reply"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 
 [features]
