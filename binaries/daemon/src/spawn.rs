@@ -1,6 +1,5 @@
-use crate::SpawnNodeParams;
 use dora_core::{
-    daemon_messages::NodeConfig,
+    daemon_messages::{NodeConfig, SpawnNodeParams},
     descriptor::{resolve_path, source_is_url},
 };
 use dora_download::download_file;
@@ -15,7 +14,6 @@ pub async fn spawn_node(
     let SpawnNodeParams {
         node_id,
         node,
-        envs,
         working_dir,
     } = params;
 
@@ -50,7 +48,7 @@ pub async fn spawn_node(
 
     // Injecting the env variable defined in the `yaml` into
     // the node runtime.
-    if let Some(envs) = envs {
+    if let Some(envs) = node.envs {
         for (key, value) in envs {
             command.env(key, value.to_string());
         }

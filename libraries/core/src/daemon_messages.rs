@@ -1,7 +1,13 @@
-use crate::config::{DataId, NodeId, NodeRunConfig};
+use std::{collections::BTreeMap, path::PathBuf};
+
+use crate::{
+    config::{DataId, NodeId, NodeRunConfig},
+    descriptor,
+};
 use dora_message::Metadata;
 use eyre::Context;
 use shared_memory::{Shmem, ShmemConf};
+use uuid::Uuid;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NodeConfig {
@@ -66,4 +72,24 @@ impl std::ops::Deref for MappedInputData {
     fn deref(&self) -> &Self::Target {
         unsafe { self.memory.as_slice() }
     }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum DaemonCoordinatorEvent {
+    Spawn(SpawnDataflowNodes),
+}
+
+pub type DataflowId = Uuid;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct SpawnDataflowNodes {
+    pub dataflow_id: DataflowId,
+    pub nodes: BTreeMap<NodeId, SpawnNodeParams>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct SpawnNodeParams {
+    pub node_id: NodeId,
+    pub node: descriptor::CustomNode,
+    pub working_dir: PathBuf,
 }

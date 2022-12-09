@@ -48,10 +48,12 @@ pub async fn run(args: Args) -> eyre::Result<()> {
             .with_file_name("dora-runtime")
     });
 
+    let daemon_connections = &mut HashMap::new(); // TODO
+
     match run_dataflow {
         Some(path) => {
             // start the given dataflow directly
-            run::run_dataflow(&path, &runtime_path)
+            run::run_dataflow(&path, &runtime_path, daemon_connections)
                 .await
                 .wrap_err_with(|| format!("failed to run dataflow at {}", path.display()))?;
         }
@@ -168,6 +170,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                     name,
                                     runtime_path,
                                     &dataflow_events_tx,
+                                    &mut daemon_connections,
                                 )
                                 .await?;
                                 Ok(dataflow)
@@ -331,6 +334,7 @@ async fn start_dataflow(
     name: Option<String>,
     runtime_path: &Path,
     dataflow_events_tx: &Option<tokio::sync::mpsc::Sender<Event>>,
+    daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<RunningDataflow> {
     // TODO: send Spawn message to daemon
 
@@ -343,7 +347,7 @@ async fn start_dataflow(
         uuid,
         communication_config,
         tasks,
-    } = spawn_dataflow(&runtime_path, path).await?;
+    } = spawn_dataflow(&runtime_path, path, daemon_connections).await?;
     let path = path.to_owned();
     let task = async move {
         let result = await_tasks(tasks)
