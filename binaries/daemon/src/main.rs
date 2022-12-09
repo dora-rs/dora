@@ -5,7 +5,7 @@ use dora_core::{
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
 use dora_message::{uhlc, Metadata};
-use eyre::{eyre, Context};
+use eyre::{bail, eyre, Context};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
@@ -51,7 +51,7 @@ struct Daemon {
     sent_out_shared_memory: HashMap<String, Shmem>,
     subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
 
-    node_tasks: HashMap<NodeId, tokio::task::JoinHandle<eyre::Result<()>>>,
+    node_tasks: HashMap<DataflowId, HashMap<NodeId, tokio::task::JoinHandle<eyre::Result<()>>>>,
 }
 
 impl Daemon {
@@ -120,15 +120,23 @@ impl Daemon {
     async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
-    ) -> Result<(), eyre::ErrReport> {
+    ) -> eyre::Result<()> {
         match event {
-            DaemonCoordinatorEvent::Spawn(spawn_command) => {
-                for (node_id, params) in spawn_command.nodes {
+            DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes { dataflow_id, nodes }) => {
+                let node_tasks = match self.node_tasks.entry(dataflow_id.clone()) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(Default::default())
+                    }
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        bail!("there is already a running dataflow with ID `{dataflow_id}`")
+                    }
+                };
+                for (node_id, params) in nodes {
                     let node_id = node_id.clone();
                     let task = spawn::spawn_node(params, self.port)
                         .await
                         .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
-                    self.node_tasks.insert(node_id, task);
+                    node_tasks.insert(node_id, task);
                 }
 
                 // TODO: spawn timers
@@ -239,11 +247,14 @@ pub enum DaemonNodeEvent {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
-    Spawn(SpawnCommand),
+    Spawn(SpawnDataflowNodes),
 }
 
+type DataflowId = String;
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct SpawnCommand {
+pub struct SpawnDataflowNodes {
+    pub dataflow_id: DataflowId,
     pub nodes: BTreeMap<NodeId, SpawnNodeParams>,
 }
 
