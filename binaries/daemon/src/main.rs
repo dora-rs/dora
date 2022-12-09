@@ -1,7 +1,6 @@
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{self, ControlReply},
-    descriptor,
+    daemon_messages::{self, ControlReply, DaemonCoordinatorEvent, DataflowId, SpawnDataflowNodes},
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
 use dora_message::{uhlc, Metadata};
@@ -9,9 +8,8 @@ use eyre::{bail, eyre, Context};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
 };
 use tokio::{
     net::TcpStream,
@@ -123,7 +121,7 @@ impl Daemon {
     ) -> eyre::Result<()> {
         match event {
             DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes { dataflow_id, nodes }) => {
-                let node_tasks = match self.node_tasks.entry(dataflow_id.clone()) {
+                let node_tasks = match self.node_tasks.entry(dataflow_id) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(Default::default())
                     }
@@ -243,27 +241,6 @@ pub enum DaemonNodeEvent {
     Subscribe {
         event_sender: flume::Sender<daemon_messages::NodeEvent>,
     },
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub enum DaemonCoordinatorEvent {
-    Spawn(SpawnDataflowNodes),
-}
-
-type DataflowId = String;
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct SpawnDataflowNodes {
-    pub dataflow_id: DataflowId,
-    pub nodes: BTreeMap<NodeId, SpawnNodeParams>,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct SpawnNodeParams {
-    pub node_id: NodeId,
-    pub node: descriptor::CustomNode,
-    pub envs: Option<BTreeMap<String, descriptor::EnvValue>>,
-    pub working_dir: PathBuf,
 }
 
 type MessageId = String;
