@@ -14,7 +14,7 @@ futures = "0.3.21"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.8.23"
 tokio = { version = "1.21.2", features = ["full"] }
-tokio-stream = { version = "0.1.8", features = ["io-util"] }
+tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
 tokio-util = { version = "0.7.1", features = ["codec"] }
 clap = { version = "3.1.8", features = ["derive"] }
 uuid = { version = "1.2.1" }
