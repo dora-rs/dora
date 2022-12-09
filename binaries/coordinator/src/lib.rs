@@ -99,6 +99,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     let mut daemon_connections = HashMap::new();
 
     while let Some(event) = events.next().await {
+        tracing::trace!("Handling event {event:?}");
         match event {
             Event::NewDaemonConnection(connection) => {
                 let events_tx = daemon_events_tx.clone();
@@ -369,6 +370,7 @@ async fn start_dataflow(
     })
 }
 
+#[derive(Debug)]
 pub enum Event {
     NewDaemonConnection(TcpStream),
     DaemonConnectError(eyre::Report),
@@ -377,10 +379,12 @@ pub enum Event {
     Daemon(DaemonEvent),
 }
 
+#[derive(Debug)]
 pub enum DataflowEvent {
     Finished { result: eyre::Result<()> },
 }
 
+#[derive(Debug)]
 pub enum DaemonEvent {
     Register {
         machine_id: String,

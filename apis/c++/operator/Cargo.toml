@@ -1,6 +1,6 @@
 [package]
 name = "dora-operator-api-cxx"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
@@ -8,7 +8,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 cxx = "1.0.73"
-dora-operator-api = { version = "0.1.0", path = "../../../apis/rust/operator" }
+dora-operator-api = { version = "0.1.1", path = "../../../apis/rust/operator" }
 eyre = "0.6.8"
 futures = "0.3.21"
 rand = "0.8.5"

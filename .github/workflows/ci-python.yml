@@ -14,13 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Install Cap'n Proto and libacl-dev
+      - name: Install libacl-dev
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y capnproto libcapnp-dev libacl1-dev
+          sudo apt-get install -y libacl1-dev
       - uses: actions/setup-python@v2
         with:
-          python-version: 3.8.10
+          python-version: 3.8
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
