@@ -1,8 +1,14 @@
+use crate::config::{DataId, NodeId, NodeRunConfig};
 use dora_message::Metadata;
 use eyre::Context;
 use shared_memory::{Shmem, ShmemConf};
 
-use crate::config::{DataId, NodeId};
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct NodeConfig {
+    pub node_id: NodeId,
+    pub run_config: NodeRunConfig,
+    pub daemon_port: u16,
+}
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ControlRequest {

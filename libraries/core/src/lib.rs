@@ -5,6 +5,7 @@ use std::{
 };
 
 pub mod config;
+pub mod coordinator_messages;
 pub mod daemon_messages;
 pub mod descriptor;
 pub mod topics;
