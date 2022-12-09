@@ -123,11 +123,15 @@ impl Daemon {
     ) -> Result<(), eyre::ErrReport> {
         match event {
             DaemonCoordinatorEvent::Spawn(spawn_command) => {
-                let node_id = spawn_command.node_id.clone();
-                let task = spawn::spawn_node(spawn_command, self.port)
-                    .await
-                    .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
-                self.node_tasks.insert(node_id, task);
+                for (node_id, params) in spawn_command.nodes {
+                    let node_id = node_id.clone();
+                    let task = spawn::spawn_node(params, self.port)
+                        .await
+                        .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
+                    self.node_tasks.insert(node_id, task);
+                }
+
+                // TODO: spawn timers
                 Ok(())
             }
         }
@@ -240,6 +244,11 @@ pub enum DaemonCoordinatorEvent {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct SpawnCommand {
+    pub nodes: BTreeMap<NodeId, SpawnNodeParams>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct SpawnNodeParams {
     pub node_id: NodeId,
     pub node: descriptor::CustomNode,
     pub envs: Option<BTreeMap<String, descriptor::EnvValue>>,

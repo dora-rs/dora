@@ -332,6 +332,8 @@ async fn start_dataflow(
     runtime_path: &Path,
     dataflow_events_tx: &Option<tokio::sync::mpsc::Sender<Event>>,
 ) -> eyre::Result<RunningDataflow> {
+    // TODO: send Spawn message to daemon
+
     let runtime_path = runtime_path.to_owned();
     let dataflow_events_tx = match dataflow_events_tx {
         Some(channel) => channel.clone(),

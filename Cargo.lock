@@ -971,12 +971,14 @@ name = "dora-daemon"
 version = "0.1.0"
 dependencies = [
  "dora-core",
+ "dora-download",
  "dora-message",
  "eyre",
  "flume",
  "futures-concurrency 7.0.0",
  "serde",
  "serde_json",
+ "serde_yaml 0.8.23",
  "shared_memory",
  "tokio",
  "tokio-stream",

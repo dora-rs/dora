@@ -1,4 +1,4 @@
-use crate::SpawnCommand;
+use crate::SpawnNodeParams;
 use dora_core::{
     daemon_messages::NodeConfig,
     descriptor::{resolve_path, source_is_url},
@@ -9,15 +9,15 @@ use std::{env::consts::EXE_EXTENSION, path::Path};
 
 #[tracing::instrument]
 pub async fn spawn_node(
-    spawn_command: SpawnCommand,
+    params: SpawnNodeParams,
     daemon_port: u16,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<()>>> {
-    let SpawnCommand {
+    let SpawnNodeParams {
         node_id,
         node,
         envs,
         working_dir,
-    } = spawn_command;
+    } = params;
 
     let resolved_path = if source_is_url(&node.source) {
         // try to download the shared library
