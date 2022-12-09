@@ -1,12 +1,11 @@
 use std::{
     io::{ErrorKind, Read, Write},
-    net::{Ipv4Addr, TcpStream},
+    net::{Ipv4Addr, SocketAddr, TcpStream},
 };
 
 use dora_core::{
     config::{DataId, NodeId},
     daemon_messages::{ControlRequest, NodeEvent},
-    topics::DORA_DAEMON_PORT_DEFAULT,
 };
 use eyre::{bail, eyre, Context};
 
@@ -18,13 +17,13 @@ pub struct DaemonConnection {
 }
 
 impl DaemonConnection {
-    pub fn init(node_id: NodeId) -> eyre::Result<Self> {
-        let localhost = Ipv4Addr::new(127, 0, 0, 1);
+    pub fn init(node_id: &NodeId, daemon_port: u16) -> eyre::Result<Self> {
+        let daemon_addr = (Ipv4Addr::new(127, 0, 0, 1), daemon_port).into();
         let control_stream =
-            init_control_stream(localhost, &node_id).wrap_err("failed to init control stream")?;
+            init_control_stream(daemon_addr, &node_id).wrap_err("failed to init control stream")?;
 
         let event_stream =
-            init_event_stream(localhost, &node_id).wrap_err("failed to init event stream")?;
+            init_event_stream(daemon_addr, &node_id).wrap_err("failed to init event stream")?;
 
         Ok(Self {
             control_channel: ControlChannel(control_stream),
@@ -94,9 +93,9 @@ pub struct MessageSample {
     pub id: String,
 }
 
-fn init_event_stream(addr: Ipv4Addr, node_id: &NodeId) -> eyre::Result<EventStream> {
-    let mut event_stream = TcpStream::connect((addr, DORA_DAEMON_PORT_DEFAULT))
-        .wrap_err("failed to connect to dora-daemon")?;
+fn init_event_stream(daemon_addr: SocketAddr, node_id: &NodeId) -> eyre::Result<EventStream> {
+    let mut event_stream =
+        TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
     tcp_send(
         &mut event_stream,
         &ControlRequest::Subscribe {
@@ -136,9 +135,9 @@ fn init_event_stream(addr: Ipv4Addr, node_id: &NodeId) -> eyre::Result<EventStre
     Ok(rx)
 }
 
-fn init_control_stream(addr: Ipv4Addr, node_id: &NodeId) -> eyre::Result<TcpStream> {
-    let mut control_stream = TcpStream::connect((addr, DORA_DAEMON_PORT_DEFAULT))
-        .wrap_err("failed to connect to dora-daemon")?;
+fn init_control_stream(daemon_addr: SocketAddr, node_id: &NodeId) -> eyre::Result<TcpStream> {
+    let mut control_stream =
+        TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
     tcp_send(
         &mut control_stream,
         &ControlRequest::Register {

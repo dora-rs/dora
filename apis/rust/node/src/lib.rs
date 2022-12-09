@@ -1,6 +1,9 @@
 use daemon::{ControlChannel, DaemonConnection, EventStream};
 pub use dora_core;
-use dora_core::config::{DataId, NodeId, NodeRunConfig};
+use dora_core::{
+    config::{DataId, NodeId, NodeRunConfig},
+    daemon_messages::NodeConfig,
+};
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
 pub use flume::Receiver;
@@ -20,28 +23,30 @@ impl DoraNode {
         #[cfg(feature = "tracing-subscriber")]
         set_up_tracing().context("failed to set up tracing subscriber")?;
 
-        let id = {
-            let raw =
-                std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
-            serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
-        };
         let node_config = {
-            let raw = std::env::var("DORA_NODE_RUN_CONFIG")
-                .wrap_err("env variable DORA_NODE_RUN_CONFIG must be set")?;
+            let raw = std::env::var("DORA_NODE_CONFIG")
+                .wrap_err("env variable DORA_NODE_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
-        Self::init(id, node_config)
+        Self::init(node_config)
     }
 
-    pub fn init(id: NodeId, node_config: NodeRunConfig) -> eyre::Result<(Self, EventStream)> {
+    pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
+        let NodeConfig {
+            node_id,
+            run_config,
+            daemon_port,
+        } = node_config;
+
         let DaemonConnection {
             control_channel,
             event_stream,
-        } = DaemonConnection::init(id.clone()).wrap_err("failed to connect to dora-daemon")?;
+        } = DaemonConnection::init(&node_id, daemon_port)
+            .wrap_err("failed to connect to dora-daemon")?;
 
         let node = Self {
-            id,
-            node_config,
+            id: node_id,
+            node_config: run_config,
             control_channel,
             hlc: uhlc::HLC::default(),
         };
@@ -118,24 +123,4 @@ fn set_up_tracing() -> eyre::Result<()> {
     let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to set tracing global subscriber")
-}
-
-#[cfg(test)]
-mod tests {
-    use dora_core::config;
-
-    use super::*;
-
-    #[test]
-    fn no_op_operator() {
-        let id = uuid::Uuid::new_v4().to_string().into();
-        let node_config = config::NodeRunConfig {
-            inputs: Default::default(),
-            outputs: Default::default(),
-        };
-
-        let (_node, events) = DoraNode::init(id, node_config).unwrap();
-
-        assert!(events.recv().is_err());
-    }
 }
