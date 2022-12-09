@@ -18,3 +18,5 @@ shared_memory = "0.12.0"
 dora-core = { path = "../../libraries/core" }
 dora-message = { path = "../../libraries/message" }
 flume = "0.10.14"
+dora-download = { path = "../../libraries/extensions/download" }
+serde_yaml = "0.8.23"
