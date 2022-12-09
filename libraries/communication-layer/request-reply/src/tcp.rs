@@ -125,7 +125,7 @@ impl TcpConnection {
     fn send(&mut self, request: &[u8]) -> std::io::Result<()> {
         let len_raw = (request.len() as u64).to_le_bytes();
         self.stream.write_all(&len_raw)?;
-        self.stream.write_all(&request)?;
+        self.stream.write_all(request)?;
         Ok(())
     }
 
