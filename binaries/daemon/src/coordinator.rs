@@ -12,6 +12,9 @@ pub async fn connect(addr: SocketAddr) -> eyre::Result<impl Stream<Item = Daemon
     let mut stream = TcpStream::connect(addr)
         .await
         .wrap_err("failed to connect to dora-coordinator")?;
+    stream
+        .set_nodelay(true)
+        .wrap_err("failed to set TCP_NODELAY")?;
     let register = serde_json::to_vec(&CoordinatorRequest::Register {
         machine_id: String::new(), // TODO
     })?;
