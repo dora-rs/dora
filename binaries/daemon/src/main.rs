@@ -1,5 +1,5 @@
 use dora_core::{
-    config::{DataId, NodeId},
+    config::{DataId, InputMapping, NodeId},
     daemon_messages::{self, ControlReply, DaemonCoordinatorEvent, DataflowId, SpawnDataflowNodes},
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
@@ -8,7 +8,7 @@ use eyre::{bail, eyre, Context, ContextCompat};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     net::{Ipv4Addr, SocketAddr},
 };
 use tokio::{
@@ -45,7 +45,7 @@ async fn run() -> eyre::Result<()> {
 struct Daemon {
     port: u16,
     hlc: uhlc::HLC,
-    uninit_shared_memory: HashMap<String, Shmem>,
+    uninit_shared_memory: HashMap<String, (DataId, Shmem)>,
     sent_out_shared_memory: HashMap<String, Shmem>,
 
     running: HashMap<DataflowId, RunningDataflow>,
@@ -132,7 +132,16 @@ impl Daemon {
                     }
                 };
                 for (node_id, params) in nodes {
-                    let node_id = node_id.clone();
+                    for (input_id, mapping) in params.node.run_config.inputs.clone() {
+                        if let InputMapping::User(mapping) = mapping {
+                            dataflow
+                                .mappings
+                                .entry((mapping.source, mapping.output))
+                                .or_default()
+                                .insert((node_id.clone(), input_id));
+                        }
+                    }
+
                     let task = spawn::spawn_node(dataflow_id, params, self.port)
                         .await
                         .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
@@ -148,18 +157,18 @@ impl Daemon {
     async fn handle_node_event(
         &mut self,
         event: DaemonNodeEvent,
-        dataflow: DataflowId,
-        id: NodeId,
+        dataflow_id: DataflowId,
+        node_id: NodeId,
         reply_sender: oneshot::Sender<ControlReply>,
     ) -> Result<(), eyre::ErrReport> {
         match event {
             DaemonNodeEvent::Subscribe { event_sender } => {
-                let result = match self.running.get_mut(&dataflow) {
+                let result = match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
-                        dataflow.subscribe_channels.insert(id, event_sender);
+                        dataflow.subscribe_channels.insert(node_id, event_sender);
                         Ok(())
                     }
-                    None => Err(format!("no running dataflow with ID `{dataflow}`")),
+                    None => Err(format!("no running dataflow with ID `{dataflow_id}`")),
                 };
                 let _ = reply_sender.send(ControlReply::Result(result));
             }
@@ -169,7 +178,8 @@ impl Daemon {
                     .create()
                     .wrap_err("failed to allocate shared memory")?;
                 let id = memory.get_os_id().to_owned();
-                self.uninit_shared_memory.insert(id.clone(), memory);
+                self.uninit_shared_memory
+                    .insert(id.clone(), (output_id, memory));
 
                 let reply = ControlReply::PreparedMessage {
                     shared_memory_id: id.clone(),
@@ -180,27 +190,30 @@ impl Daemon {
                 }
             }
             DaemonNodeEvent::SendOutMessage { id } => {
-                let memory = self
+                let (output_id, memory) = self
                     .uninit_shared_memory
                     .remove(&id)
                     .ok_or_else(|| eyre!("invalid shared memory id"))?;
 
                 let dataflow = self
                     .running
-                    .get_mut(&dataflow)
-                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow}`"))?;
+                    .get_mut(&dataflow_id)
+                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
 
-                // TODO figure out receivers from dataflow graph
-                let local_receivers = &[];
+                // figure out receivers from dataflow graph
+                let empty_set = BTreeSet::new();
+                let local_receivers = dataflow
+                    .mappings
+                    .get(&(node_id, output_id))
+                    .unwrap_or(&empty_set);
 
                 // send shared memory ID to all local receivers
                 let mut closed = Vec::new();
-                for receiver_id in local_receivers {
+                for (receiver_id, input_id) in local_receivers {
                     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-                        let input_id = DataId::from("<unknown>".to_owned());
                         if channel
                             .send_async(daemon_messages::NodeEvent::Input {
-                                id: input_id,
+                                id: input_id.clone(),
                                 metadata: Metadata::new(self.hlc.new_timestamp()), // TODO
                                 data: unsafe { daemon_messages::InputData::new(id.clone()) },
                             })
@@ -220,6 +233,8 @@ impl Daemon {
 
                 // keep shared memory ptr in order to free it once all subscribers are done
                 self.sent_out_shared_memory.insert(id, memory);
+
+                let _ = reply_sender.send(ControlReply::Result(Ok(())));
             }
             DaemonNodeEvent::Stopped => {
                 // TODO send stop message to downstream nodes
@@ -235,7 +250,11 @@ impl Daemon {
 pub struct RunningDataflow {
     subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
     node_tasks: HashMap<NodeId, tokio::task::JoinHandle<eyre::Result<()>>>,
+    mappings: HashMap<OutputId, BTreeSet<InputId>>,
 }
+
+type OutputId = (NodeId, DataId);
+type InputId = (NodeId, DataId);
 
 pub enum Event {
     NewConnection(TcpStream),
