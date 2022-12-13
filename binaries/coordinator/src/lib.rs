@@ -13,8 +13,10 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use run::{await_tasks, SpawnedDataflow};
 use std::{
-    collections::HashMap,
+    collections::{hash_map, HashMap},
+    io::ErrorKind,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use tokio::net::TcpStream;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
@@ -96,7 +98,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
         .merge();
 
     let mut running_dataflows = HashMap::new();
-    let mut daemon_connections = HashMap::new();
+    let mut daemon_connections: HashMap<_, TcpStream> = HashMap::new();
 
     while let Some(event) = events.next().await {
         tracing::trace!("Handling event {event:?}");
@@ -108,29 +110,28 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
             Event::DaemonConnectError(err) => {
                 tracing::warn!("{:?}", err.wrap_err("failed to connect to dora-daemon"));
             }
-            Event::Daemon(event) => match event {
-                DaemonEvent::Register {
-                    machine_id,
-                    mut connection,
-                } => match daemon_connections.entry(machine_id) {
-                    std::collections::hash_map::Entry::Vacant(entry) => {
+            Event::Daemon(event) => {
+                match event {
+                    DaemonEvent::Register {
+                        machine_id,
+                        mut connection,
+                    } => {
                         let reply = RegisterResult::Ok;
-                        if tcp_send(&mut connection, &serde_json::to_vec(&reply)?)
-                            .await
-                            .is_ok()
-                        {
-                            entry.insert(connection);
+                        match tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await {
+                            Ok(()) => {
+                                let previous =
+                                    daemon_connections.insert(machine_id.clone(), connection);
+                                if let Some(_previous) = previous {
+                                    tracing::info!("closing previous connection `{machine_id}` on new register");
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!("failed to register daemon connection for machine `{machine_id}`: {err}");
+                            }
                         }
                     }
-                    std::collections::hash_map::Entry::Occupied(entry) => {
-                        let reply = RegisterResult::Err(format!(
-                            "there is already a daemon connection for machine `{}`",
-                            entry.key()
-                        ));
-                        let _ = tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await;
-                    }
-                },
-            },
+                }
+            }
             Event::Dataflow { uuid, event } => match event {
                 DataflowEvent::Finished { result } => {
                     running_dataflows.remove(&uuid);
