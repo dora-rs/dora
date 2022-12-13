@@ -21,7 +21,7 @@ tracing-subscriber = { version = "0.3.15", optional = true }
 flume = "0.10.14"
 communication-layer-pub-sub = { path = "../../../libraries/communication-layer/pub-sub", default-features = false }
 uuid = { version = "1.1.2", features = ["v4"] }
-capnp = "0.14.9"
+capnp = "0.14.11"
 dora-message = { path = "../../../libraries/message" }
 dora-core = { path = "../../../libraries/core" }
 
