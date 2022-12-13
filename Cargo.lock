@@ -975,6 +975,7 @@ dependencies = [
  "dora-message",
  "eyre",
  "flume",
+ "futures",
  "futures-concurrency 7.0.0",
  "serde",
  "serde_json",

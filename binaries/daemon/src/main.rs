@@ -5,6 +5,7 @@ use dora_core::{
 };
 use dora_message::uhlc::HLC;
 use eyre::{bail, eyre, Context, ContextCompat};
+use futures::FutureExt;
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
@@ -187,7 +188,9 @@ impl Daemon {
                             }
                         }
                     };
+                    let (task, handle) = task.remote_handle();
                     tokio::spawn(task);
+                    dataflow._timer_handles.push(handle);
                 }
 
                 Ok(())
@@ -396,6 +399,8 @@ pub struct RunningDataflow {
     subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
+    /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
+    _timer_handles: Vec<futures::future::RemoteHandle<()>>,
 }
 
 type OutputId = (NodeId, DataId);
