@@ -105,6 +105,9 @@ fn init_event_stream(
 ) -> eyre::Result<EventStream> {
     let mut event_stream =
         TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
+    event_stream
+        .set_nodelay(true)
+        .wrap_err("failed to set TCP_NODELAY")?;
     tcp_send(
         &mut event_stream,
         &ControlRequest::Subscribe {
@@ -152,6 +155,9 @@ fn init_control_stream(
 ) -> eyre::Result<TcpStream> {
     let mut control_stream =
         TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
+    control_stream
+        .set_nodelay(true)
+        .wrap_err("failed to set TCP_NODELAY")?;
     tcp_send(
         &mut control_stream,
         &ControlRequest::Register {
