@@ -26,6 +26,11 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
+            NodeEvent::InputClosed { id } => {
+                println!("Input `{id}` was closed -> exiting");
+                break;
+            }
+            other => eprintln!("Received unexpected input: {other:?}"),
         }
     }
 

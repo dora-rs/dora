@@ -283,9 +283,34 @@ impl Daemon {
                 let _ = reply_sender.send(ControlReply::Result(Ok(())));
             }
             DaemonNodeEvent::Stopped => {
-                // TODO send stop message to downstream nodes
+                tracing::info!("Stopped: {dataflow_id}/{node_id}");
 
                 let _ = reply_sender.send(ControlReply::Result(Ok(())));
+
+                // notify downstream nodes
+                let dataflow = self
+                    .running
+                    .get_mut(&dataflow_id)
+                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+                let downstream_nodes: BTreeSet<_> = dataflow
+                    .mappings
+                    .iter()
+                    .filter(|((source_id, _), _)| source_id == &node_id)
+                    .flat_map(|(_, v)| v)
+                    .collect();
+                for (receiver_id, input_id) in downstream_nodes {
+                    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+                        continue;
+                    };
+
+                    let _ = channel
+                        .send_async(daemon_messages::NodeEvent::InputClosed {
+                            id: input_id.clone(),
+                        })
+                        .await;
+                }
+
+                // TODO: notify remote nodes
             }
         }
         Ok(())

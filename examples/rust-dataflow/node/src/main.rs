@@ -31,6 +31,7 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
+            other => eprintln!("Received unexpected input: {other:?}"),
         }
     }
 

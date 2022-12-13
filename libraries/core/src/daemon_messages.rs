@@ -47,12 +47,16 @@ pub enum ControlReply {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum NodeEvent {
     Stop,
     Input {
         id: DataId,
         metadata: Metadata<'static>,
         data: Option<InputData>,
+    },
+    InputClosed {
+        id: DataId,
     },
 }
 
