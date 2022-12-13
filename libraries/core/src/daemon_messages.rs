@@ -52,7 +52,7 @@ pub enum NodeEvent {
     Input {
         id: DataId,
         metadata: Metadata<'static>,
-        data: InputData,
+        data: Option<InputData>,
     },
 }
 
