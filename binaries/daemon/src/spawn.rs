@@ -1,5 +1,5 @@
 use dora_core::{
-    daemon_messages::{NodeConfig, SpawnNodeParams},
+    daemon_messages::{DataflowId, NodeConfig, SpawnNodeParams},
     descriptor::{resolve_path, source_is_url},
 };
 use dora_download::download_file;
@@ -8,6 +8,7 @@ use std::{env::consts::EXE_EXTENSION, path::Path};
 
 #[tracing::instrument]
 pub async fn spawn_node(
+    dataflow_id: DataflowId,
     params: SpawnNodeParams,
     daemon_port: u16,
 ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<()>>> {
@@ -31,6 +32,7 @@ pub async fn spawn_node(
             .wrap_err_with(|| format!("failed to resolve node source `{}`", node.source))?
     };
     let node_config = NodeConfig {
+        dataflow_id,
         node_id: node_id.clone(),
         run_config: node.run_config.clone(),
         daemon_port,

@@ -4,7 +4,7 @@ use dora_core::{
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
 use dora_message::{uhlc, Metadata};
-use eyre::{bail, eyre, Context};
+use eyre::{bail, eyre, Context, ContextCompat};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
@@ -47,9 +47,8 @@ struct Daemon {
     hlc: uhlc::HLC,
     uninit_shared_memory: HashMap<String, Shmem>,
     sent_out_shared_memory: HashMap<String, Shmem>,
-    subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
 
-    node_tasks: HashMap<DataflowId, HashMap<NodeId, tokio::task::JoinHandle<eyre::Result<()>>>>,
+    running: HashMap<DataflowId, RunningDataflow>,
 }
 
 impl Daemon {
@@ -78,8 +77,7 @@ impl Daemon {
             hlc: uhlc::HLC::default(),
             uninit_shared_memory: Default::default(),
             sent_out_shared_memory: Default::default(),
-            subscribe_channels: Default::default(),
-            node_tasks: HashMap::new(),
+            running: HashMap::new(),
         };
         let events = (coordinator_events, new_connections).merge();
         daemon.run_inner(events).await
@@ -105,10 +103,14 @@ impl Daemon {
                 }
                 Event::Coordinator(event) => self.handle_coordinator_event(event).await?,
                 Event::Node {
-                    id,
+                    dataflow_id: dataflow,
+                    node_id,
                     event,
                     reply_sender,
-                } => self.handle_node_event(event, id, reply_sender).await?,
+                } => {
+                    self.handle_node_event(event, dataflow, node_id, reply_sender)
+                        .await?
+                }
             }
         }
 
@@ -121,7 +123,7 @@ impl Daemon {
     ) -> eyre::Result<()> {
         match event {
             DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes { dataflow_id, nodes }) => {
-                let node_tasks = match self.node_tasks.entry(dataflow_id) {
+                let dataflow = match self.running.entry(dataflow_id) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(Default::default())
                     }
@@ -131,10 +133,10 @@ impl Daemon {
                 };
                 for (node_id, params) in nodes {
                     let node_id = node_id.clone();
-                    let task = spawn::spawn_node(params, self.port)
+                    let task = spawn::spawn_node(dataflow_id, params, self.port)
                         .await
                         .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
-                    node_tasks.insert(node_id, task);
+                    dataflow.node_tasks.insert(node_id, task);
                 }
 
                 // TODO: spawn timers
@@ -146,13 +148,20 @@ impl Daemon {
     async fn handle_node_event(
         &mut self,
         event: DaemonNodeEvent,
+        dataflow: DataflowId,
         id: NodeId,
         reply_sender: oneshot::Sender<ControlReply>,
     ) -> Result<(), eyre::ErrReport> {
         match event {
             DaemonNodeEvent::Subscribe { event_sender } => {
-                self.subscribe_channels.insert(id, event_sender);
-                let _ = reply_sender.send(ControlReply::Result(Ok(())));
+                let result = match self.running.get_mut(&dataflow) {
+                    Some(dataflow) => {
+                        dataflow.subscribe_channels.insert(id, event_sender);
+                        Ok(())
+                    }
+                    None => Err(format!("no running dataflow with ID `{dataflow}`")),
+                };
+                let _ = reply_sender.send(ControlReply::Result(result));
             }
             DaemonNodeEvent::PrepareOutputMessage { output_id, len } => {
                 let memory = ShmemConf::new()
@@ -176,13 +185,18 @@ impl Daemon {
                     .remove(&id)
                     .ok_or_else(|| eyre!("invalid shared memory id"))?;
 
+                let dataflow = self
+                    .running
+                    .get_mut(&dataflow)
+                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow}`"))?;
+
                 // TODO figure out receivers from dataflow graph
                 let local_receivers = &[];
 
                 // send shared memory ID to all local receivers
                 let mut closed = Vec::new();
                 for receiver_id in local_receivers {
-                    if let Some(channel) = self.subscribe_channels.get(receiver_id) {
+                    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
                         let input_id = DataId::from("<unknown>".to_owned());
                         if channel
                             .send_async(daemon_messages::NodeEvent::Input {
@@ -198,7 +212,7 @@ impl Daemon {
                     }
                 }
                 for id in closed {
-                    self.subscribe_channels.remove(id);
+                    dataflow.subscribe_channels.remove(id);
                 }
 
                 // TODO send `data` via network to all remove receivers
@@ -217,11 +231,18 @@ impl Daemon {
     }
 }
 
+#[derive(Default)]
+pub struct RunningDataflow {
+    subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
+    node_tasks: HashMap<NodeId, tokio::task::JoinHandle<eyre::Result<()>>>,
+}
+
 pub enum Event {
     NewConnection(TcpStream),
     ConnectError(eyre::Report),
     Node {
-        id: NodeId,
+        dataflow_id: DataflowId,
+        node_id: NodeId,
         event: DaemonNodeEvent,
         reply_sender: oneshot::Sender<ControlReply>,
     },
