@@ -12,7 +12,7 @@ build = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-capnp = { version = "0.14.6", features = ["unaligned"] }
+capnp = { version = "0.14.11", features = ["unaligned"] }
 uhlc = "0.5.1"
 
 [build-dependencies]
