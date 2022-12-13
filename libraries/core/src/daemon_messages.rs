@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NodeConfig {
+    pub dataflow_id: DataflowId,
     pub node_id: NodeId,
     pub run_config: NodeRunConfig,
     pub daemon_port: u16,
@@ -18,10 +19,21 @@ pub struct NodeConfig {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ControlRequest {
-    Register { node_id: NodeId },
-    Subscribe { node_id: NodeId },
-    PrepareOutputMessage { output_id: DataId, len: usize },
-    SendOutMessage { id: SharedMemoryId },
+    Register {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
+    Subscribe {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
+    PrepareOutputMessage {
+        output_id: DataId,
+        len: usize,
+    },
+    SendOutMessage {
+        id: SharedMemoryId,
+    },
     Stopped,
 }
 

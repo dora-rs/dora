@@ -33,6 +33,7 @@ impl DoraNode {
 
     pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
         let NodeConfig {
+            dataflow_id,
             node_id,
             run_config,
             daemon_port,
@@ -41,7 +42,7 @@ impl DoraNode {
         let DaemonConnection {
             control_channel,
             event_stream,
-        } = DaemonConnection::init(&node_id, daemon_port)
+        } = DaemonConnection::init(dataflow_id, &node_id, daemon_port)
             .wrap_err("failed to connect to dora-daemon")?;
 
         let node = Self {

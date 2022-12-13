@@ -48,8 +48,11 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
 
         // handle the message and translate it to a NodeEvent
         let node_event = match message {
-            daemon_messages::ControlRequest::Register { node_id } => {
-                id = Some(node_id);
+            daemon_messages::ControlRequest::Register {
+                dataflow_id,
+                node_id,
+            } => {
+                id = Some((dataflow_id, node_id));
 
                 let reply = daemon_messages::ControlReply::Result(Ok(()));
                 let serialized = serde_json::to_vec(&reply)
@@ -71,29 +74,35 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
             daemon_messages::ControlRequest::SendOutMessage { id } => {
                 DaemonNodeEvent::SendOutMessage { id }
             }
-            daemon_messages::ControlRequest::Subscribe { node_id } => {
+            daemon_messages::ControlRequest::Subscribe {
+                dataflow_id,
+                node_id,
+            } => {
                 let (tx, rx) = flume::bounded(10);
 
-                id = Some(node_id);
+                id = Some((dataflow_id, node_id));
                 enter_subscribe_loop = Some(rx);
 
                 DaemonNodeEvent::Subscribe { event_sender: tx }
             }
         };
 
+        let (dataflow_id, node_id) = match &id {
+            Some(id) => id.clone(),
+            None => {
+                tracing::warn!(
+                    "Ignoring node event because no register \
+                    message was sent yet: {node_event:?}"
+                );
+                continue;
+            }
+        };
+
         // send NodeEvent to daemon main loop
         let (reply_tx, reply) = oneshot::channel();
         let event = Event::Node {
-            id: match &id {
-                Some(id) => id.clone(),
-                None => {
-                    tracing::warn!(
-                        "Ignoring node event because no register \
-                        message was sent yet: {node_event:?}"
-                    );
-                    continue;
-                }
-            },
+            dataflow_id,
+            node_id,
             event: node_event,
             reply_sender: reply_tx,
         };
