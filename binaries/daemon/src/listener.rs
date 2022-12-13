@@ -159,12 +159,14 @@ async fn subscribe_loop(
             Ok(()) => {}
             Err(err)
                 if err.kind() == ErrorKind::UnexpectedEof
-                    || err.kind() == ErrorKind::BrokenPipe =>
+                    || err.kind() == ErrorKind::BrokenPipe
+                    || err.kind() == ErrorKind::ConnectionReset =>
             {
                 break;
             }
             Err(err) => {
                 tracing::error!("{err:?}");
+                break;
             }
         }
     }
