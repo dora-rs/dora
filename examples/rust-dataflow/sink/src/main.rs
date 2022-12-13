@@ -1,5 +1,5 @@
 use dora_node_api::{self, dora_core::daemon_messages::NodeEvent, DoraNode};
-use eyre::{bail, Context};
+use eyre::{bail, Context, ContextCompat};
 
 fn main() -> eyre::Result<()> {
     let (_node, events) = DoraNode::init_from_env()?;
@@ -13,7 +13,7 @@ fn main() -> eyre::Result<()> {
                 data,
             } => match id.as_str() {
                 "message" => {
-                    let data = data.map()?;
+                    let data = data.wrap_err("no data")?.map()?;
                     let received_string = std::str::from_utf8(&data)
                         .wrap_err("received message was not utf8-encoded")?;
                     println!("received message: {}", received_string);
