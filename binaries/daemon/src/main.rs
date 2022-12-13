@@ -3,7 +3,6 @@ use dora_core::{
     daemon_messages::{self, ControlReply, DaemonCoordinatorEvent, DataflowId, SpawnDataflowNodes},
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
-use dora_message::{uhlc, Metadata};
 use eyre::{bail, eyre, Context, ContextCompat};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
@@ -44,8 +43,7 @@ async fn run() -> eyre::Result<()> {
 
 struct Daemon {
     port: u16,
-    hlc: uhlc::HLC,
-    uninit_shared_memory: HashMap<String, (DataId, Shmem)>,
+    uninit_shared_memory: HashMap<String, (DataId, dora_message::Metadata<'static>, Shmem)>,
     sent_out_shared_memory: HashMap<String, Shmem>,
 
     running: HashMap<DataflowId, RunningDataflow>,
@@ -74,7 +72,6 @@ impl Daemon {
 
         let daemon = Self {
             port,
-            hlc: uhlc::HLC::default(),
             uninit_shared_memory: Default::default(),
             sent_out_shared_memory: Default::default(),
             running: HashMap::new(),
@@ -172,14 +169,18 @@ impl Daemon {
                 };
                 let _ = reply_sender.send(ControlReply::Result(result));
             }
-            DaemonNodeEvent::PrepareOutputMessage { output_id, len } => {
+            DaemonNodeEvent::PrepareOutputMessage {
+                output_id,
+                metadata,
+                data_len,
+            } => {
                 let memory = ShmemConf::new()
-                    .size(len)
+                    .size(data_len)
                     .create()
                     .wrap_err("failed to allocate shared memory")?;
                 let id = memory.get_os_id().to_owned();
                 self.uninit_shared_memory
-                    .insert(id.clone(), (output_id, memory));
+                    .insert(id.clone(), (output_id, metadata, memory));
 
                 let reply = ControlReply::PreparedMessage {
                     shared_memory_id: id.clone(),
@@ -190,7 +191,7 @@ impl Daemon {
                 }
             }
             DaemonNodeEvent::SendOutMessage { id } => {
-                let (output_id, memory) = self
+                let (output_id, metadata, memory) = self
                     .uninit_shared_memory
                     .remove(&id)
                     .ok_or_else(|| eyre!("invalid shared memory id"))?;
@@ -214,7 +215,7 @@ impl Daemon {
                         if channel
                             .send_async(daemon_messages::NodeEvent::Input {
                                 id: input_id.clone(),
-                                metadata: Metadata::new(self.hlc.new_timestamp()), // TODO
+                                metadata: metadata.clone(),
                                 data: unsafe { daemon_messages::InputData::new(id.clone()) },
                             })
                             .await
@@ -272,7 +273,8 @@ pub enum Event {
 pub enum DaemonNodeEvent {
     PrepareOutputMessage {
         output_id: DataId,
-        len: usize,
+        metadata: dora_message::Metadata<'static>,
+        data_len: usize,
     },
     SendOutMessage {
         id: MessageId,

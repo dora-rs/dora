@@ -68,9 +68,15 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                 }
             }
             daemon_messages::ControlRequest::Stopped => DaemonNodeEvent::Stopped,
-            daemon_messages::ControlRequest::PrepareOutputMessage { output_id, len } => {
-                DaemonNodeEvent::PrepareOutputMessage { output_id, len }
-            }
+            daemon_messages::ControlRequest::PrepareOutputMessage {
+                output_id,
+                metadata,
+                data_len,
+            } => DaemonNodeEvent::PrepareOutputMessage {
+                output_id,
+                metadata,
+                data_len,
+            },
             daemon_messages::ControlRequest::SendOutMessage { id } => {
                 DaemonNodeEvent::SendOutMessage { id }
             }

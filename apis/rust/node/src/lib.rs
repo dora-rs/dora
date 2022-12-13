@@ -67,15 +67,11 @@ impl DoraNode {
         if !self.node_config.outputs.contains(&output_id) {
             eyre::bail!("unknown output");
         }
-        let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
-        let serialized_metadata = metadata
-            .serialize()
-            .with_context(|| format!("failed to serialize `{}` message", output_id))?;
-        let full_len = serialized_metadata.len() + data_len;
+        let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters.into_owned());
 
         let sample = self
             .control_channel
-            .prepare_message(output_id.clone(), full_len)
+            .prepare_message(output_id.clone(), metadata, data_len)
             .wrap_err("failed to prepare sample for output message")?;
 
         // map shared memory and fill in data
@@ -86,8 +82,7 @@ impl DoraNode {
                 .wrap_err("failed to open shared memory sample")?;
 
             let raw = unsafe { shared_memory.as_slice_mut() };
-            raw[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
-            data(&mut raw[serialized_metadata.len()..]);
+            data(raw);
         }
 
         self.control_channel

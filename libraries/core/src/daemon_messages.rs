@@ -29,7 +29,8 @@ pub enum ControlRequest {
     },
     PrepareOutputMessage {
         output_id: DataId,
-        len: usize,
+        metadata: Metadata<'static>,
+        data_len: usize,
     },
     SendOutMessage {
         id: SharedMemoryId,

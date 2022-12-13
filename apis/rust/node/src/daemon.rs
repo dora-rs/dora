@@ -52,11 +52,16 @@ impl ControlChannel {
     pub fn prepare_message(
         &mut self,
         output_id: DataId,
-        len: usize,
+        metadata: dora_message::Metadata<'static>,
+        data_len: usize,
     ) -> eyre::Result<MessageSample> {
         tcp_send(
             &mut self.0,
-            &ControlRequest::PrepareOutputMessage { output_id, len },
+            &ControlRequest::PrepareOutputMessage {
+                output_id,
+                metadata,
+                data_len,
+            },
         )
         .wrap_err("failed to send PrepareOutputMessage request to dora-daemon")?;
         match tcp_receive(&mut self.0)
