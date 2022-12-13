@@ -22,7 +22,7 @@ pub struct MetadataParameters<'a> {
 }
 
 impl MetadataParameters<'_> {
-    fn into_owned(self) -> MetadataParameters<'static> {
+    pub fn into_owned(self) -> MetadataParameters<'static> {
         MetadataParameters {
             open_telemetry_context: self.open_telemetry_context.into_owned().into(),
             ..self
