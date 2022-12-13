@@ -151,7 +151,10 @@ async fn subscribe_loop(
         };
         match tcp_send(&mut connection, &message).await {
             Ok(()) => {}
-            Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
+            Err(err)
+                if err.kind() == ErrorKind::UnexpectedEof
+                    || err.kind() == ErrorKind::BrokenPipe =>
+            {
                 break;
             }
             Err(err) => {
