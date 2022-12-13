@@ -160,10 +160,9 @@ impl Daemon {
                         }
                     }
 
-                    let task = spawn::spawn_node(dataflow_id, params, self.port)
+                    spawn::spawn_node(dataflow_id, params, self.port, self.dora_events_tx.clone())
                         .await
                         .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
-                    dataflow.node_tasks.insert(node_id, task);
                 }
 
                 // spawn timer tasks
@@ -311,6 +310,12 @@ impl Daemon {
                 }
 
                 // TODO: notify remote nodes
+
+                dataflow.subscribe_channels.remove(&node_id);
+                if dataflow.subscribe_channels.is_empty() {
+                    tracing::info!("Dataflow `{dataflow_id}` finished");
+                    self.running.remove(&dataflow_id);
+                }
             }
         }
         Ok(())
@@ -353,17 +358,42 @@ impl Daemon {
                 for id in closed {
                     dataflow.subscribe_channels.remove(id);
                 }
-
-                Ok(())
+            }
+            DoraEvent::SpawnedNodeResult {
+                dataflow_id,
+                node_id,
+                result,
+            } => {
+                if self
+                    .running
+                    .get(&dataflow_id)
+                    .and_then(|d| d.subscribe_channels.get(&node_id))
+                    .is_some()
+                {
+                    tracing::warn!(
+                        "node `{dataflow_id}/{node_id}` finished without sending `Stopped` message"
+                    );
+                }
+                match result {
+                    Ok(()) => {
+                        tracing::info!("node {dataflow_id}/{node_id} finished");
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "{:?}",
+                            err.wrap_err(format!("error in node `{dataflow_id}/{node_id}`"))
+                        );
+                    }
+                }
             }
         }
+        Ok(())
     }
 }
 
 #[derive(Default)]
 pub struct RunningDataflow {
     subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
-    node_tasks: HashMap<NodeId, tokio::task::JoinHandle<eyre::Result<()>>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
 }
@@ -405,6 +435,11 @@ pub enum DoraEvent {
         dataflow_id: DataflowId,
         interval: Duration,
         metadata: dora_message::Metadata<'static>,
+    },
+    SpawnedNodeResult {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        result: eyre::Result<()>,
     },
 }
 
