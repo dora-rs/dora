@@ -1,3 +1,4 @@
+use crate::DoraEvent;
 use dora_core::{
     daemon_messages::{DataflowId, NodeConfig, SpawnNodeParams},
     descriptor::{resolve_path, source_is_url},
@@ -5,13 +6,15 @@ use dora_core::{
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
 use std::{env::consts::EXE_EXTENSION, path::Path};
+use tokio::sync::mpsc;
 
 #[tracing::instrument]
 pub async fn spawn_node(
     dataflow_id: DataflowId,
     params: SpawnNodeParams,
     daemon_port: u16,
-) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<()>>> {
+    result_tx: mpsc::Sender<DoraEvent>,
+) -> eyre::Result<()> {
     let SpawnNodeParams {
         node_id,
         node,
@@ -63,16 +66,26 @@ pub async fn spawn_node(
             node.args.as_deref().unwrap_or_default()
         )
     })?;
-    let result = tokio::spawn(async move {
+    let node_id_cloned = node_id.clone();
+    let wait_task = async move {
         let status = child.wait().await.context("child process failed")?;
         if status.success() {
-            tracing::info!("node {node_id} finished");
             Ok(())
         } else if let Some(code) = status.code() {
             Err(eyre!("node {node_id} failed with exit code: {code}"))
         } else {
             Err(eyre!("node {node_id} failed (unknown exit code)"))
         }
+    };
+    tokio::spawn(async move {
+        let result = wait_task.await;
+        let _ = result_tx
+            .send(DoraEvent::SpawnedNodeResult {
+                dataflow_id,
+                node_id: node_id_cloned,
+                result,
+            })
+            .await;
     });
-    Ok(result)
+    Ok(())
 }
