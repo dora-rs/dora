@@ -8,7 +8,7 @@ nodes:
       build: cargo build -p rust-dataflow-example-node
       source: ../../target/debug/rust-dataflow-example-node
       inputs:
-        tick: dora/timer/millis/3
+        tick: dora/timer/millis/10
       outputs:
         - random
   # - id: runtime-node
