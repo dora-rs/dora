@@ -1,32 +1,26 @@
-use dora_node_api::{self, dora_core::daemon_messages::NodeEvent, DoraNode};
-use eyre::{bail, Context, ContextCompat};
+use dora_node_api::{self, daemon::Event, DoraNode};
+use eyre::ContextCompat;
 
 fn main() -> eyre::Result<()> {
-    let (_node, events) = DoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
-    while let Ok(event) = events.recv() {
+    while let Some(event) = events.recv() {
         match event {
-            NodeEvent::Stop => break,
-            NodeEvent::Input {
+            Event::Stop => break,
+            Event::Input {
                 id,
                 metadata: _,
                 data,
             } => match id.as_str() {
                 "message" => {
-                    let data = data.wrap_err("no data")?.map()?;
-                    let received_string = std::str::from_utf8(&data)
-                        .wrap_err("received message was not utf8-encoded")?;
-                    println!("received message: {}", received_string);
-                    if !received_string.starts_with("operator received random value ") {
-                        bail!("unexpected message format (should start with 'operator received random value')")
-                    }
-                    if !received_string.ends_with(" ticks") {
-                        bail!("unexpected message format (should end with 'ticks')")
-                    }
+                    let data = data.wrap_err("no data")?;
+                    let raw = (&data[..]).try_into().unwrap();
+
+                    println!("received data: {:#x}", u64::from_le_bytes(raw));
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
-            NodeEvent::InputClosed { id } => {
+            Event::InputClosed { id } => {
                 println!("Input `{id}` was closed -> exiting");
                 break;
             }
