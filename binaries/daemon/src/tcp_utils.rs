@@ -1,16 +1,16 @@
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub async fn tcp_send(connection: &mut TcpStream, message: &[u8]) -> std::io::Result<()> {
+pub async fn tcp_send(
+    connection: &mut (impl AsyncWrite + Unpin),
+    message: &[u8],
+) -> std::io::Result<()> {
     let len_raw = (message.len() as u64).to_le_bytes();
     connection.write_all(&len_raw).await?;
     connection.write_all(message).await?;
     Ok(())
 }
 
-pub async fn tcp_receive(connection: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+pub async fn tcp_receive(connection: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Vec<u8>> {
     let reply_len = {
         let mut raw = [0; 8];
         connection.read_exact(&mut raw).await?;

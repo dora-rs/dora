@@ -7,7 +7,7 @@ use std::{
 
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{ControlRequest, DataflowId, NodeEvent},
+    daemon_messages::{ControlRequest, DataflowId, DropEvent, NodeEvent},
 };
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
@@ -21,14 +21,14 @@ pub struct DaemonConnection {
 impl DaemonConnection {
     pub fn init(dataflow_id: DataflowId, node_id: &NodeId, daemon_port: u16) -> eyre::Result<Self> {
         let daemon_addr = (Ipv4Addr::new(127, 0, 0, 1), daemon_port).into();
-        let control_stream = init_control_stream(daemon_addr, dataflow_id, &node_id)
+        let control_channel = ControlChannel::init(daemon_addr, dataflow_id, node_id)
             .wrap_err("failed to init control stream")?;
 
-        let event_stream = init_event_stream(daemon_addr, dataflow_id, &node_id)
+        let event_stream = EventStream::init(daemon_addr, dataflow_id, node_id)
             .wrap_err("failed to init event stream")?;
 
         Ok(Self {
-            control_channel: ControlChannel(control_stream),
+            control_channel,
             event_stream,
         })
     }
@@ -37,6 +37,35 @@ impl DaemonConnection {
 pub struct ControlChannel(TcpStream);
 
 impl ControlChannel {
+    fn init(
+        daemon_addr: SocketAddr,
+        dataflow_id: DataflowId,
+        node_id: &NodeId,
+    ) -> eyre::Result<Self> {
+        let mut control_stream =
+            TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
+        control_stream
+            .set_nodelay(true)
+            .wrap_err("failed to set TCP_NODELAY")?;
+        tcp_send(
+            &mut control_stream,
+            &ControlRequest::Register {
+                dataflow_id,
+                node_id: node_id.clone(),
+            },
+        )
+        .wrap_err("failed to send register request to dora-daemon")?;
+        match tcp_receive(&mut control_stream)
+            .wrap_err("failed to receive register reply from dora-daemon")?
+        {
+            dora_core::daemon_messages::ControlReply::Result(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to register node with dora-daemon")?,
+            other => bail!("unexpected register reply: {other:?}"),
+        }
+        Ok(Self(control_stream))
+    }
+
     pub fn report_stop(&mut self) -> eyre::Result<()> {
         tcp_send(&mut self.0, &ControlRequest::Stopped)
             .wrap_err("failed to send subscribe request to dora-daemon")?;
@@ -101,8 +130,84 @@ pub struct EventStream {
 }
 
 impl EventStream {
+    fn init(
+        daemon_addr: SocketAddr,
+        dataflow_id: DataflowId,
+        node_id: &NodeId,
+    ) -> eyre::Result<Self> {
+        let mut event_stream =
+            TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
+        event_stream
+            .set_nodelay(true)
+            .wrap_err("failed to set TCP_NODELAY")?;
+        tcp_send(
+            &mut event_stream,
+            &ControlRequest::Subscribe {
+                dataflow_id,
+                node_id: node_id.clone(),
+            },
+        )
+        .wrap_err("failed to send subscribe request to dora-daemon")?;
+        match tcp_receive(&mut event_stream)
+            .wrap_err("failed to receive subscribe reply from dora-daemon")?
+        {
+            dora_core::daemon_messages::ControlReply::Result(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to create subscription with dora-daemon")?,
+            other => bail!("unexpected subscribe reply: {other:?}"),
+        }
+
+        let (tx, rx) = flume::bounded(1);
+        std::thread::spawn(move || loop {
+            let event: NodeEvent = match tcp_receive(&mut event_stream) {
+                Ok(event) => event,
+                Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
+                Err(err) => {
+                    let err = eyre!(err).wrap_err("failed to receive incoming event");
+                    tracing::warn!("{err:?}");
+                    continue;
+                }
+            };
+            let drop_token = match &event {
+                NodeEvent::Input {
+                    data: Some(data), ..
+                } => Some(data.drop_token.clone()),
+                NodeEvent::Stop
+                | NodeEvent::InputClosed { .. }
+                | NodeEvent::Input { data: None, .. } => None,
+            };
+
+            let (drop_tx, drop_rx) = std::sync::mpsc::channel();
+            match tx.send((event, drop_tx)) {
+                Ok(()) => {}
+                Err(_) => {
+                    // receiving end of channel was closed
+                    break;
+                }
+            }
+
+            match drop_rx.recv_timeout(Duration::from_secs(30)) {
+                Ok(()) => panic!("Node API should not send anything on ACK channel"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    tracing::warn!("timeout while waiting for input ACK");
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
+            }
+
+            if let Some(token) = drop_token {
+                let message = DropEvent { token };
+                if let Err(err) = tcp_send(&mut event_stream, &message) {
+                    tracing::warn!("failed to send drop token: {err}");
+                    break;
+                }
+            }
+        });
+
+        Ok(EventStream { receiver: rx })
+    }
+
     pub fn recv(&mut self) -> Option<Event> {
-        let (node_event, ack) = match self.receiver.recv() {
+        let (node_event, drop_sender) = match self.receiver.recv() {
             Ok(d) => d,
             Err(flume::RecvError::Disconnected) => return None,
         };
@@ -117,7 +222,10 @@ impl EventStream {
                     Ok(mapped) => Event::Input {
                         id,
                         metadata,
-                        data: mapped.map(|data| Data { data, _ack: ack }),
+                        data: mapped.map(|data| Data {
+                            data,
+                            _drop: drop_sender,
+                        }),
                     },
                     Err(err) => Event::Error(format!("{err:?}")),
                 }
@@ -130,66 +238,6 @@ impl EventStream {
 
 pub struct MessageSample {
     pub id: String,
-}
-
-fn init_event_stream(
-    daemon_addr: SocketAddr,
-    dataflow_id: DataflowId,
-    node_id: &NodeId,
-) -> eyre::Result<EventStream> {
-    let mut event_stream =
-        TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
-    event_stream
-        .set_nodelay(true)
-        .wrap_err("failed to set TCP_NODELAY")?;
-    tcp_send(
-        &mut event_stream,
-        &ControlRequest::Subscribe {
-            dataflow_id,
-            node_id: node_id.clone(),
-        },
-    )
-    .wrap_err("failed to send subscribe request to dora-daemon")?;
-    match tcp_receive(&mut event_stream)
-        .wrap_err("failed to receive subscribe reply from dora-daemon")?
-    {
-        dora_core::daemon_messages::ControlReply::Result(result) => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with dora-daemon")?,
-        other => bail!("unexpected subscribe reply: {other:?}"),
-    }
-
-    let (tx, rx) = flume::bounded(1);
-    std::thread::spawn(move || loop {
-        let event: NodeEvent = match tcp_receive(&mut event_stream) {
-            Ok(event) => event,
-            Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
-            Err(err) => {
-                let err = eyre!(err).wrap_err("failed to receive incoming event");
-                tracing::warn!("{err:?}");
-                continue;
-            }
-        };
-
-        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-        match tx.send((event, ack_tx)) {
-            Ok(()) => {}
-            Err(_) => {
-                // receiving end of channel was closed
-                break;
-            }
-        }
-
-        match ack_rx.recv_timeout(Duration::from_secs(30)) {
-            Ok(()) => panic!("Node API should not send anything on ACK channel"),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                tracing::warn!("timeout while waiting for input ACK");
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
-        }
-    });
-
-    Ok(EventStream { receiver: rx })
 }
 
 #[derive(Debug)]
@@ -209,7 +257,7 @@ pub enum Event<'a> {
 
 pub struct Data<'a> {
     data: MappedInputData<'a>,
-    _ack: std::sync::mpsc::Sender<()>,
+    _drop: std::sync::mpsc::Sender<()>,
 }
 
 impl std::ops::Deref for Data<'_> {
@@ -250,35 +298,6 @@ impl std::ops::Deref for MappedInputData<'_> {
     fn deref(&self) -> &Self::Target {
         unsafe { self.memory.as_slice() }
     }
-}
-
-fn init_control_stream(
-    daemon_addr: SocketAddr,
-    dataflow_id: DataflowId,
-    node_id: &NodeId,
-) -> eyre::Result<TcpStream> {
-    let mut control_stream =
-        TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
-    control_stream
-        .set_nodelay(true)
-        .wrap_err("failed to set TCP_NODELAY")?;
-    tcp_send(
-        &mut control_stream,
-        &ControlRequest::Register {
-            dataflow_id,
-            node_id: node_id.clone(),
-        },
-    )
-    .wrap_err("failed to send register request to dora-daemon")?;
-    match tcp_receive(&mut control_stream)
-        .wrap_err("failed to receive register reply from dora-daemon")?
-    {
-        dora_core::daemon_messages::ControlReply::Result(result) => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to register node with dora-daemon")?,
-        other => bail!("unexpected register reply: {other:?}"),
-    }
-    Ok(control_stream)
 }
 
 fn tcp_send<T: serde::Serialize>(connection: &mut TcpStream, request: &T) -> std::io::Result<()> {
