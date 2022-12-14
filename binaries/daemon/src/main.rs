@@ -20,6 +20,7 @@ use std::{
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
+    time::timeout,
 };
 use tokio_stream::{
     wrappers::{ReceiverStream, TcpListenerStream},
@@ -278,23 +279,30 @@ impl Daemon {
                 for (receiver_id, input_id) in local_receivers {
                     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
                         let drop_token = DropToken::generate();
-                        if channel
-                            .send_async(daemon_messages::NodeEvent::Input {
-                                id: input_id.clone(),
-                                metadata: metadata.clone(),
-                                data: Some(daemon_messages::InputData {
-                                    shared_memory_id: id.clone(),
-                                    drop_token: drop_token.clone(),
-                                }),
-                            })
-                            .await
-                            .is_err()
-                        {
-                            closed.push(receiver_id);
+                        let send_result = channel.send_async(daemon_messages::NodeEvent::Input {
+                            id: input_id.clone(),
+                            metadata: metadata.clone(),
+                            data: Some(daemon_messages::InputData {
+                                shared_memory_id: id.clone(),
+                                drop_token: drop_token.clone(),
+                            }),
+                        });
+
+                        match timeout(Duration::from_millis(10), send_result).await {
+                            Ok(Ok(())) => {
+                                // keep shared memory ptr in order to free it once all subscribers are done
+                                self.sent_out_shared_memory
+                                    .insert(drop_token, memory.clone());
+                            }
+                            Ok(Err(_)) => {
+                                closed.push(receiver_id);
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "dropping input event `{receiver_id}/{input_id}` (send timeout)"
+                                );
+                            }
                         }
-                        // keep shared memory ptr in order to free it once all subscribers are done
-                        self.sent_out_shared_memory
-                            .insert(drop_token, memory.clone());
                     }
                 }
                 for id in closed {
@@ -368,16 +376,21 @@ impl Daemon {
                         continue;
                     };
 
-                    if channel
-                        .send_async(daemon_messages::NodeEvent::Input {
-                            id: input_id.clone(),
-                            metadata: metadata.clone(),
-                            data: None,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        closed.push(receiver_id);
+                    let send_result = channel.send_async(daemon_messages::NodeEvent::Input {
+                        id: input_id.clone(),
+                        metadata: metadata.clone(),
+                        data: None,
+                    });
+                    match timeout(Duration::from_millis(1), send_result).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => {
+                            closed.push(receiver_id);
+                        }
+                        Err(_) => {
+                            tracing::info!(
+                                "dropping timer tick event for `{receiver_id}` (send timeout)"
+                            );
+                        }
                     }
                 }
                 for id in closed {
@@ -428,6 +441,7 @@ pub struct RunningDataflow {
 type OutputId = (NodeId, DataId);
 type InputId = (NodeId, DataId);
 
+#[derive(Debug)]
 pub enum Event {
     NewConnection(TcpStream),
     ConnectError(eyre::Report),
@@ -458,6 +472,7 @@ pub enum DaemonNodeEvent {
     },
 }
 
+#[derive(Debug)]
 pub enum DoraEvent {
     Timer {
         dataflow_id: DataflowId,
