@@ -2,7 +2,7 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     DaemonNodeEvent, Event,
 };
-use dora_core::daemon_messages;
+use dora_core::daemon_messages::{self, DropEvent};
 use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::Ipv4Addr};
 use tokio::{
@@ -136,16 +136,38 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
 
         // enter subscribe loop after receiving a subscribe message
         if let Some(events) = enter_subscribe_loop {
-            subscribe_loop(connection, events).await;
+            subscribe_loop(connection, events, events_tx).await;
             break; // the subscribe loop only exits when the connection was closed
         }
     }
 }
 
 async fn subscribe_loop(
-    mut connection: TcpStream,
+    connection: TcpStream,
     events: flume::Receiver<daemon_messages::NodeEvent>,
+    events_tx: mpsc::Sender<Event>,
 ) {
+    let (mut rx, mut tx) = connection.into_split();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok(raw) = tcp_receive(&mut rx).await else {
+                break;
+            };
+
+            let event: DropEvent = match serde_json::from_slice(&raw) {
+                Ok(e) => e,
+                Err(err) => {
+                    tracing::error!("Failed to parse incoming message: {err}");
+                    continue;
+                }
+            };
+            if events_tx.send(Event::Drop(event)).await.is_err() {
+                break;
+            }
+        }
+    });
+
     while let Some(event) = events.stream().next().await {
         let message = match serde_json::to_vec(&event) {
             Ok(m) => m,
@@ -155,7 +177,7 @@ async fn subscribe_loop(
                 continue;
             }
         };
-        match tcp_send(&mut connection, &message).await {
+        match tcp_send(&mut tx, &message).await {
             Ok(()) => {}
             Err(err)
                 if err.kind() == ErrorKind::UnexpectedEof

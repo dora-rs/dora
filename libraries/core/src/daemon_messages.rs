@@ -58,14 +58,25 @@ pub enum NodeEvent {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct InputData {
-    pub shared_memory_id: SharedMemoryId,
+pub struct DropEvent {
+    pub token: DropToken,
 }
 
-impl InputData {
-    pub unsafe fn new(shared_memory_id: SharedMemoryId) -> Self {
-        Self { shared_memory_id }
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct DropToken(Uuid);
+
+impl DropToken {
+    pub fn generate() -> Self {
+        Self(Uuid::new_v4())
     }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct InputData {
+    pub shared_memory_id: SharedMemoryId,
+    pub drop_token: DropToken,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

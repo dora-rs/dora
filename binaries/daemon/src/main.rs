@@ -1,6 +1,9 @@
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
-    daemon_messages::{self, ControlReply, DaemonCoordinatorEvent, DataflowId, SpawnDataflowNodes},
+    daemon_messages::{
+        self, ControlReply, DaemonCoordinatorEvent, DataflowId, DropEvent, DropToken,
+        SpawnDataflowNodes,
+    },
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
 use dora_message::uhlc::HLC;
@@ -11,6 +14,7 @@ use shared_memory::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::{Ipv4Addr, SocketAddr},
+    rc::Rc,
     time::Duration,
 };
 use tokio::{
@@ -47,7 +51,7 @@ async fn run() -> eyre::Result<()> {
 struct Daemon {
     port: u16,
     uninit_shared_memory: HashMap<String, (DataId, dora_message::Metadata<'static>, Shmem)>,
-    sent_out_shared_memory: HashMap<String, Shmem>,
+    sent_out_shared_memory: HashMap<DropToken, Rc<Shmem>>,
 
     running: HashMap<DataflowId, RunningDataflow>,
 
@@ -117,6 +121,18 @@ impl Daemon {
                         .await?
                 }
                 Event::Dora(event) => self.handle_dora_event(event).await?,
+                Event::Drop(DropEvent { token }) => {
+                    match self.sent_out_shared_memory.remove(&token) {
+                        Some(rc) => {
+                            if let Ok(_shmem) = Rc::try_unwrap(rc) {
+                                tracing::trace!(
+                                    "freeing shared memory after receiving last drop token"
+                                )
+                            }
+                        }
+                        None => tracing::warn!("received unknown drop token {token:?}"),
+                    }
+                }
             }
         }
 
@@ -243,6 +259,8 @@ impl Daemon {
                     .remove(&id)
                     .ok_or_else(|| eyre!("invalid shared memory id"))?;
 
+                let memory = Rc::new(memory);
+
                 let dataflow = self
                     .running
                     .get_mut(&dataflow_id)
@@ -259,17 +277,24 @@ impl Daemon {
                 let mut closed = Vec::new();
                 for (receiver_id, input_id) in local_receivers {
                     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+                        let drop_token = DropToken::generate();
                         if channel
                             .send_async(daemon_messages::NodeEvent::Input {
                                 id: input_id.clone(),
                                 metadata: metadata.clone(),
-                                data: Some(unsafe { daemon_messages::InputData::new(id.clone()) }),
+                                data: Some(daemon_messages::InputData {
+                                    shared_memory_id: id.clone(),
+                                    drop_token: drop_token.clone(),
+                                }),
                             })
                             .await
                             .is_err()
                         {
                             closed.push(receiver_id);
                         }
+                        // keep shared memory ptr in order to free it once all subscribers are done
+                        self.sent_out_shared_memory
+                            .insert(drop_token, memory.clone());
                     }
                 }
                 for id in closed {
@@ -278,9 +303,6 @@ impl Daemon {
 
                 // TODO send `data` via network to all remove receivers
                 let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), memory.len());
-
-                // keep shared memory ptr in order to free it once all subscribers are done
-                self.sent_out_shared_memory.insert(id, memory);
 
                 let _ = reply_sender.send(ControlReply::Result(Ok(())));
             }
@@ -417,6 +439,7 @@ pub enum Event {
     },
     Coordinator(DaemonCoordinatorEvent),
     Dora(DoraEvent),
+    Drop(DropEvent),
 }
 
 #[derive(Debug)]
