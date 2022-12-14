@@ -5,8 +5,6 @@ use crate::{
     descriptor,
 };
 use dora_message::Metadata;
-use eyre::Context;
-use shared_memory::{Shmem, ShmemConf};
 use uuid::Uuid;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -47,7 +45,6 @@ pub enum ControlReply {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[non_exhaustive]
 pub enum NodeEvent {
     Stop,
     Input {
@@ -62,32 +59,12 @@ pub enum NodeEvent {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct InputData {
-    shared_memory_id: SharedMemoryId,
+    pub shared_memory_id: SharedMemoryId,
 }
 
 impl InputData {
     pub unsafe fn new(shared_memory_id: SharedMemoryId) -> Self {
         Self { shared_memory_id }
-    }
-
-    pub fn map(self) -> eyre::Result<MappedInputData> {
-        let memory = ShmemConf::new()
-            .os_id(self.shared_memory_id)
-            .open()
-            .wrap_err("failed to map shared memory input")?;
-        Ok(MappedInputData { memory })
-    }
-}
-
-pub struct MappedInputData {
-    memory: Shmem,
-}
-
-impl std::ops::Deref for MappedInputData {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { self.memory.as_slice() }
     }
 }
 

@@ -1,15 +1,17 @@
 use std::{
     io::{ErrorKind, Read, Write},
+    marker::PhantomData,
     net::{Ipv4Addr, SocketAddr, TcpStream},
+    time::Duration,
 };
 
 use dora_core::{
     config::{DataId, NodeId},
     daemon_messages::{ControlRequest, DataflowId, NodeEvent},
 };
+use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
-
-pub type EventStream = flume::Receiver<NodeEvent>;
+use shared_memory::{Shmem, ShmemConf};
 
 pub struct DaemonConnection {
     pub control_channel: ControlChannel,
@@ -94,6 +96,38 @@ impl ControlChannel {
     }
 }
 
+pub struct EventStream {
+    receiver: flume::Receiver<(NodeEvent, std::sync::mpsc::Sender<()>)>,
+}
+
+impl EventStream {
+    pub fn recv(&mut self) -> Option<Event> {
+        let (node_event, ack) = match self.receiver.recv() {
+            Ok(d) => d,
+            Err(flume::RecvError::Disconnected) => return None,
+        };
+        let event = match node_event {
+            NodeEvent::Stop => Event::Stop,
+            NodeEvent::InputClosed { id } => Event::InputClosed { id },
+            NodeEvent::Input { id, metadata, data } => {
+                let mapped = data
+                    .map(|d| unsafe { MappedInputData::map(&d.shared_memory_id) })
+                    .transpose();
+                match mapped {
+                    Ok(mapped) => Event::Input {
+                        id,
+                        metadata,
+                        data: mapped.map(|data| Data { data, _ack: ack }),
+                    },
+                    Err(err) => Event::Error(format!("{err:?}")),
+                }
+            }
+        };
+
+        Some(event)
+    }
+}
+
 pub struct MessageSample {
     pub id: String,
 }
@@ -127,7 +161,7 @@ fn init_event_stream(
 
     let (tx, rx) = flume::bounded(1);
     std::thread::spawn(move || loop {
-        let event = match tcp_receive(&mut event_stream) {
+        let event: NodeEvent = match tcp_receive(&mut event_stream) {
             Ok(event) => event,
             Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
             Err(err) => {
@@ -136,16 +170,86 @@ fn init_event_stream(
                 continue;
             }
         };
-        match tx.send(event) {
+
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        match tx.send((event, ack_tx)) {
             Ok(()) => {}
             Err(_) => {
                 // receiving end of channel was closed
                 break;
             }
         }
+
+        match ack_rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(()) => panic!("Node API should not send anything on ACK channel"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                tracing::warn!("timeout while waiting for input ACK");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
+        }
     });
 
-    Ok(rx)
+    Ok(EventStream { receiver: rx })
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Event<'a> {
+    Stop,
+    Input {
+        id: DataId,
+        metadata: Metadata<'static>,
+        data: Option<Data<'a>>,
+    },
+    InputClosed {
+        id: DataId,
+    },
+    Error(String),
+}
+
+pub struct Data<'a> {
+    data: MappedInputData<'a>,
+    _ack: std::sync::mpsc::Sender<()>,
+}
+
+impl std::ops::Deref for Data<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::fmt::Debug for Data<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Data").finish_non_exhaustive()
+    }
+}
+
+pub struct MappedInputData<'a> {
+    memory: Shmem,
+    _data: PhantomData<&'a [u8]>,
+}
+
+impl MappedInputData<'_> {
+    unsafe fn map(shared_memory_id: &str) -> eyre::Result<Self> {
+        let memory = ShmemConf::new()
+            .os_id(shared_memory_id)
+            .open()
+            .wrap_err("failed to map shared memory input")?;
+        Ok(MappedInputData {
+            memory,
+            _data: PhantomData,
+        })
+    }
+}
+
+impl std::ops::Deref for MappedInputData<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.memory.as_slice() }
+    }
 }
 
 fn init_control_stream(
