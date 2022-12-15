@@ -1,6 +1,6 @@
 [package]
 name = "dora-node-api-cxx"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -10,9 +10,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 cxx = "1.0.73"
-dora-node-api = { version = "0.1.1", path = "../../../apis/rust/node", default-features = false, features = [
-    "zenoh",
-] }
+dora-node-api = { workspace = true, features = ["zenoh"] }
 eyre = "0.6.8"
 
 [build-dependencies]
