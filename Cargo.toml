@@ -18,11 +18,20 @@ members = [
     "libraries/extensions/zenoh-logger",
 ]
 
+[workspace.package]
+version = "0.1.1"
+
+[workspace.dependencies]
+dora-node-api = { version = "0.1.1", path = "apis/rust/node", default-features = false }
+dora-operator-api = { version = "0.1.1", path = "apis/rust/operator", default-features = false }
+dora-core = { version = "0.1.1", path = "libraries/core" }
+
 [package]
 name = "dora-examples"
 version = "0.0.0"
 edition = "2021"
 license = "Apache-2.0"
+
 
 [dev-dependencies]
 eyre = "0.6.8"

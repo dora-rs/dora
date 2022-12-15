@@ -1,12 +1,12 @@
 [package]
 name = "iceoryx-example-sink"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { version = "0.1.1", path = "../../../apis/rust/node" }
+dora-node-api = { workspace = true, features = ["iceoryx"] }
 eyre = "0.6.8"
 futures = "0.3.21"
 tokio = { version = "1.20.1", features = ["macros"] }
