@@ -177,7 +177,7 @@ impl DoraOperator for ExampleOperator {
 <p><code>Cargo.toml</code></p>
 <pre><code class="language-toml">[package]
 name = &quot;rust-dataflow-example-operator&quot;
-version = &quot;0.1.1&quot;
+version.workspace = true
 edition = &quot;2021&quot;
 license = &quot;Apache-2.0&quot;
 
@@ -295,13 +295,13 @@ impl DoraOperator for ExampleOperator {
 </code></pre>
 <pre><code class="language-toml">[package]
 name = &quot;rust-dataflow-example-node&quot;
-version = &quot;0.1.1&quot;
+version.workspace = true
 edition = &quot;2021&quot;
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { version = &quot;0.1.1&quot;, path = &quot;../../../apis/rust/node&quot; }
+dora-node-api = { workspace = true, features = [&quot;zenoh&quot;] }
 eyre = &quot;0.6.8&quot;
 futures = &quot;0.3.21&quot;
 rand = &quot;0.8.5&quot;
