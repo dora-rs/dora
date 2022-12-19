@@ -19,12 +19,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 
 [workspace.dependencies]
-dora-node-api = { version = "0.1.1", path = "apis/rust/node", default-features = false }
-dora-operator-api = { version = "0.1.1", path = "apis/rust/operator", default-features = false }
-dora-core = { version = "0.1.1", path = "libraries/core" }
+dora-node-api = { version = "0.1.2", path = "apis/rust/node", default-features = false }
+dora-operator-api = { version = "0.1.2", path = "apis/rust/operator", default-features = false }
+dora-core = { version = "0.1.2", path = "libraries/core" }
 
 [package]
 name = "dora-examples"
