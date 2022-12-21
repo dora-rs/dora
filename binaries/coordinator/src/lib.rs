@@ -11,12 +11,10 @@ use dora_core::{
 use eyre::{bail, WrapErr};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
-use run::{await_tasks, SpawnedDataflow};
+use run::SpawnedDataflow;
 use std::{
-    collections::{hash_map, HashMap},
-    io::ErrorKind,
+    collections::HashMap,
     path::{Path, PathBuf},
-    time::Duration,
 };
 use tokio::net::TcpStream;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
@@ -50,14 +48,10 @@ pub async fn run(args: Args) -> eyre::Result<()> {
             .with_file_name("dora-runtime")
     });
 
-    let daemon_connections = &mut HashMap::new(); // TODO
-
     match run_dataflow {
         Some(path) => {
             // start the given dataflow directly
-            run::run_dataflow(&path, &runtime_path, daemon_connections)
-                .await
-                .wrap_err_with(|| format!("failed to run dataflow at {}", path.display()))?;
+            todo!();
         }
         None => {
             // start in daemon mode
@@ -76,10 +70,6 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
             .unwrap_or_else(Event::DaemonConnectError)
     });
 
-    let (dataflow_events_tx, dataflow_events) = tokio::sync::mpsc::channel(2);
-    let mut dataflow_events_tx = Some(dataflow_events_tx);
-    let dataflow_events = ReceiverStream::new(dataflow_events);
-
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
     let daemon_events = ReceiverStream::new(daemon_events);
 
@@ -89,13 +79,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
             .wrap_err("failed to create control events")?,
     );
 
-    let mut events = (
-        new_daemon_connections,
-        daemon_events,
-        dataflow_events,
-        control_events,
-    )
-        .merge();
+    let mut events = (new_daemon_connections, daemon_events, control_events).merge();
 
     let mut running_dataflows = HashMap::new();
     let mut daemon_connections: HashMap<_, TcpStream> = HashMap::new();
@@ -171,7 +155,6 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                     &dataflow_path,
                                     name,
                                     runtime_path,
-                                    &dataflow_events_tx,
                                     &mut daemon_connections,
                                 )
                                 .await?;
@@ -232,9 +215,6 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                             tracing::info!("Received destroy command");
 
                             control_events_abort.abort();
-
-                            // ensure that no new dataflows can be started
-                            dataflow_events_tx = None;
 
                             // stop all running dataflows
                             for &uuid in running_dataflows.keys() {
@@ -335,35 +315,16 @@ async fn start_dataflow(
     path: &Path,
     name: Option<String>,
     runtime_path: &Path,
-    dataflow_events_tx: &Option<tokio::sync::mpsc::Sender<Event>>,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<RunningDataflow> {
     // TODO: send Spawn message to daemon
 
     let runtime_path = runtime_path.to_owned();
-    let dataflow_events_tx = match dataflow_events_tx {
-        Some(channel) => channel.clone(),
-        None => bail!("cannot start new dataflow after receiving stop command"),
-    };
+
     let SpawnedDataflow {
         uuid,
         communication_config,
-        tasks,
     } = spawn_dataflow(&runtime_path, path, daemon_connections).await?;
-    let path = path.to_owned();
-    let task = async move {
-        let result = await_tasks(tasks)
-            .await
-            .wrap_err_with(|| format!("failed to run dataflow at {}", path.display()));
-
-        let _ = dataflow_events_tx
-            .send(Event::Dataflow {
-                uuid,
-                event: DataflowEvent::Finished { result },
-            })
-            .await;
-    };
-    tokio::spawn(task);
     Ok(RunningDataflow {
         uuid,
         name,

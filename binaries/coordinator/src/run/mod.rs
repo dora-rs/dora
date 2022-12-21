@@ -19,17 +19,6 @@ use uuid::Uuid;
 
 mod runtime;
 
-pub async fn run_dataflow(
-    dataflow_path: &Path,
-    runtime: &Path,
-    daemon_connections: &mut HashMap<String, TcpStream>,
-) -> eyre::Result<()> {
-    let tasks = spawn_dataflow(runtime, dataflow_path, daemon_connections)
-        .await?
-        .tasks;
-    await_tasks(tasks).await
-}
-
 pub async fn spawn_dataflow(
     runtime: &Path,
     dataflow_path: &Path,
@@ -118,7 +107,6 @@ pub async fn spawn_dataflow(
     tracing::info!("successfully spawned dataflow `{uuid}`");
 
     Ok(SpawnedDataflow {
-        tasks: FuturesUnordered::new(), // TODO
         communication_config,
         uuid,
     })
@@ -127,7 +115,6 @@ pub async fn spawn_dataflow(
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
     pub communication_config: CommunicationConfig,
-    pub tasks: FuturesUnordered<tokio::task::JoinHandle<Result<(), eyre::ErrReport>>>,
 }
 
 pub async fn await_tasks(
