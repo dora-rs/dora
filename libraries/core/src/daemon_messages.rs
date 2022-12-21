@@ -82,11 +82,13 @@ pub struct InputData {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
+    StopDataflow { dataflow_id: DataflowId },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorReply {
     SpawnResult(Result<(), String>),
+    StopResult(Result<(), String>),
 }
 
 pub type DataflowId = Uuid;
