@@ -1,14 +1,18 @@
-use crate::{run::spawn_dataflow, tcp_utils::tcp_send};
+use crate::{
+    run::spawn_dataflow,
+    tcp_utils::{tcp_receive, tcp_send},
+};
 use control::ControlEvent;
 use dora_core::{
     config::CommunicationConfig,
     coordinator_messages::RegisterResult,
+    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
     topics::{
         control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
         StopDataflowResult, DORA_COORDINATOR_PORT_DEFAULT,
     },
 };
-use eyre::{bail, WrapErr};
+use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
@@ -187,7 +191,12 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                         }
                         ControlRequest::Stop { dataflow_uuid } => {
                             let stop = async {
-                                stop_dataflow(&running_dataflows, dataflow_uuid).await?;
+                                stop_dataflow(
+                                    &running_dataflows,
+                                    dataflow_uuid,
+                                    &mut daemon_connections,
+                                )
+                                .await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
                             let reply = match stop.await {
@@ -213,7 +222,12 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                     bail!("multiple dataflows found with name `{name}`");
                                 };
 
-                                stop_dataflow(&running_dataflows, dataflow_uuid).await?;
+                                stop_dataflow(
+                                    &running_dataflows,
+                                    dataflow_uuid,
+                                    &mut daemon_connections,
+                                )
+                                .await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
                             let reply = match stop.await {
@@ -230,7 +244,8 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 
                             // stop all running dataflows
                             for &uuid in running_dataflows.keys() {
-                                stop_dataflow(&running_dataflows, uuid).await?;
+                                stop_dataflow(&running_dataflows, uuid, &mut daemon_connections)
+                                    .await?;
                             }
 
                             b"ok".as_slice().into()
@@ -283,25 +298,36 @@ impl Eq for RunningDataflow {}
 async fn stop_dataflow(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     uuid: Uuid,
+    daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<()> {
-    let communication_config = match running_dataflows.get(&uuid) {
-        Some(dataflow) => dataflow.communication_config.clone(),
-        None => bail!("No running dataflow found with UUID `{uuid}`"),
+    let Some(dataflow) = running_dataflows.get(&uuid) else {
+        bail!("No running dataflow found with UUID `{uuid}`")
     };
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::StopDataflow { dataflow_id: uuid })?;
 
-    todo!();
-    // let mut communication =
-    //     tokio::task::spawn_blocking(move || communication::init(&communication_config))
-    //         .await
-    //         .wrap_err("failed to join communication layer init task")?
-    //         .wrap_err("failed to init communication layer")?;
-    // tracing::info!("sending stop message to dataflow `{uuid}`");
-    // let manual_stop_publisher = manual_stop_publisher(communication.as_mut())?;
-    // tokio::task::spawn_blocking(move || manual_stop_publisher())
-    //     .await
-    //     .wrap_err("failed to join stop publish task")?
-    //     .map_err(|err| eyre!(err))
-    //     .wrap_err("failed to send stop message")?;
+    for machine_id in &dataflow.machines {
+        let daemon_connection = daemon_connections
+            .get_mut(machine_id)
+            .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
+        tcp_send(daemon_connection, &message)
+            .await
+            .wrap_err("failed to send stop message to daemon")?;
+
+        // wait for reply
+        let reply_raw = tcp_receive(daemon_connection)
+            .await
+            .wrap_err("failed to receive stop reply from daemon")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize stop reply from daemon")?
+        {
+            DaemonCoordinatorReply::StopResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to stop dataflow")?,
+            _ => bail!("unexpected reply"),
+        }
+    }
+    tracing::info!("successfully stoped dataflow `{uuid}`");
+
     Ok(())
 }
 

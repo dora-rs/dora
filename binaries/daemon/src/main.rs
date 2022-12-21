@@ -226,6 +226,18 @@ impl Daemon {
 
                 Ok(())
             }
+            DaemonCoordinatorEvent::StopDataflow { dataflow_id } => {
+                let dataflow = self
+                    .running
+                    .get_mut(&dataflow_id)
+                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+
+                for channel in dataflow.subscribe_channels.values_mut() {
+                    let _ = channel.send_async(daemon_messages::NodeEvent::Stop).await;
+                }
+
+                Ok(())
+            }
         }
     }
 

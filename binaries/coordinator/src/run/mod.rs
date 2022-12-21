@@ -108,6 +108,7 @@ pub async fn spawn_dataflow(
         DaemonCoordinatorReply::SpawnResult(result) => result
             .map_err(|e| eyre!(e))
             .wrap_err("failed to spawn dataflow")?,
+        _ => bail!("unexpected reply"),
     }
     tracing::info!("successfully spawned dataflow `{uuid}`");
 
