@@ -1,8 +1,9 @@
+use coordinator::CoordinatorEvent;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     daemon_messages::{
-        self, ControlReply, DaemonCoordinatorEvent, DataflowId, DropEvent, DropToken,
-        SpawnDataflowNodes,
+        self, ControlReply, DaemonCoordinatorEvent, DaemonCoordinatorReply, DataflowId, DropEvent,
+        DropToken, SpawnDataflowNodes,
     },
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
@@ -111,7 +112,12 @@ impl Daemon {
                 Event::ConnectError(err) => {
                     tracing::warn!("{:?}", err.wrap_err("failed to connect"));
                 }
-                Event::Coordinator(event) => self.handle_coordinator_event(event).await?,
+                Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
+                    let result = self.handle_coordinator_event(event).await;
+                    let _ = reply_tx.send(DaemonCoordinatorReply::SpawnResult(
+                        result.map_err(|err| format!("{err:?}")),
+                    ));
+                }
                 Event::Node {
                     dataflow_id: dataflow,
                     node_id,
@@ -451,7 +457,7 @@ pub enum Event {
         event: DaemonNodeEvent,
         reply_sender: oneshot::Sender<ControlReply>,
     },
-    Coordinator(DaemonCoordinatorEvent),
+    Coordinator(CoordinatorEvent),
     Dora(DoraEvent),
     Drop(DropEvent),
 }
