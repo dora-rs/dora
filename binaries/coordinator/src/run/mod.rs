@@ -1,10 +1,11 @@
-use crate::tcp_utils::tcp_send;
+use crate::tcp_utils::{tcp_receive, tcp_send};
 
-use self::runtime::spawn_runtime_node;
 use dora_core::{
-    config::{format_duration, CommunicationConfig, NodeId},
-    daemon_messages::{DaemonCoordinatorEvent, SpawnDataflowNodes, SpawnNodeParams},
-    descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor},
+    config::{CommunicationConfig, NodeId},
+    daemon_messages::{
+        DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes, SpawnNodeParams,
+    },
+    descriptor::{collect_dora_timers, CoreNodeKind, Descriptor},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -14,7 +15,6 @@ use std::{
     path::Path,
 };
 use tokio::net::TcpStream;
-use tokio_stream::wrappers::IntervalStream;
 use uuid::Uuid;
 
 mod runtime;
@@ -103,6 +103,19 @@ pub async fn spawn_dataflow(
     tcp_send(daemon_connection, &message)
         .await
         .wrap_err("failed to send spawn message to daemon")?;
+
+    // wait for reply
+    let reply_raw = tcp_receive(daemon_connection)
+        .await
+        .wrap_err("failed to receive spawn reply from daemon")?;
+    match serde_json::from_slice(&reply_raw)
+        .wrap_err("failed to deserialize spawn reply from daemon")?
+    {
+        DaemonCoordinatorReply::SpawnResult(result) => result
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to spawn dataflow")?,
+    }
+    tracing::info!("successfully spawned dataflow `{uuid}`");
 
     Ok(SpawnedDataflow {
         tasks: FuturesUnordered::new(), // TODO

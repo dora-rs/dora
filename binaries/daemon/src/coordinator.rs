@@ -2,13 +2,25 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     DaemonCoordinatorEvent,
 };
-use dora_core::coordinator_messages::{CoordinatorRequest, RegisterResult};
+use dora_core::{
+    coordinator_messages::{CoordinatorRequest, RegisterResult},
+    daemon_messages::DaemonCoordinatorReply,
+};
 use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::SocketAddr};
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::{
+    net::TcpStream,
+    sync::{mpsc, oneshot},
+};
 use tokio_stream::{wrappers::ReceiverStream, Stream};
 
-pub async fn connect(addr: SocketAddr) -> eyre::Result<impl Stream<Item = DaemonCoordinatorEvent>> {
+#[derive(Debug)]
+pub struct CoordinatorEvent {
+    pub event: DaemonCoordinatorEvent,
+    pub reply_tx: oneshot::Sender<DaemonCoordinatorReply>,
+}
+
+pub async fn connect(addr: SocketAddr) -> eyre::Result<impl Stream<Item = CoordinatorEvent>> {
     let mut stream = TcpStream::connect(addr)
         .await
         .wrap_err("failed to connect to dora-coordinator")?;
@@ -49,13 +61,32 @@ pub async fn connect(addr: SocketAddr) -> eyre::Result<impl Stream<Item = Daemon
                     continue;
                 }
             };
-            match tx.send(event).await {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            match tx.send(CoordinatorEvent { event, reply_tx }).await {
                 Ok(()) => {}
                 Err(_) => {
                     // receiving end of channel was closed
                     break;
                 }
             }
+
+            let Ok(reply) = reply_rx.await else {
+                tracing::warn!("daemon sent no reply");
+                continue;
+            };
+            let serialized = match serde_json::to_vec(&reply)
+                .wrap_err("failed to serialize DaemonCoordinatorReply")
+            {
+                Ok(r) => r,
+                Err(err) => {
+                    tracing::error!("{err:?}");
+                    continue;
+                }
+            };
+            if let Err(err) = tcp_send(&mut stream, &serialized).await {
+                tracing::warn!("failed to send reply to coordinator: {err}");
+                continue;
+            };
         }
     });
 

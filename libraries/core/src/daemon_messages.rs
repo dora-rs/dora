@@ -84,6 +84,11 @@ pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
 }
 
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum DaemonCoordinatorReply {
+    SpawnResult(Result<(), String>),
+}
+
 pub type DataflowId = Uuid;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
