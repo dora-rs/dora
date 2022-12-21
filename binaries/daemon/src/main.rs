@@ -1,6 +1,7 @@
 use coordinator::CoordinatorEvent;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
+    coordinator_messages::DaemonEvent,
     daemon_messages::{
         self, ControlReply, DaemonCoordinatorEvent, DaemonCoordinatorReply, DataflowId, DropEvent,
         DropToken, SpawnDataflowNodes,
@@ -47,7 +48,9 @@ async fn run() -> eyre::Result<()> {
     let localhost = Ipv4Addr::new(127, 0, 0, 1);
     let coordinator_socket = (localhost, DORA_COORDINATOR_PORT_DEFAULT);
 
-    Daemon::run(coordinator_socket.into()).await
+    let machine_id = String::new(); // TODO
+
+    Daemon::run(coordinator_socket.into(), machine_id).await
 }
 
 struct Daemon {
@@ -58,12 +61,15 @@ struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
 
     dora_events_tx: mpsc::Sender<DoraEvent>,
+
+    coordinator_addr: SocketAddr,
+    machine_id: String,
 }
 
 impl Daemon {
-    pub async fn run(coordinator_addr: SocketAddr) -> eyre::Result<()> {
+    pub async fn run(coordinator_addr: SocketAddr, machine_id: String) -> eyre::Result<()> {
         // connect to the coordinator
-        let coordinator_events = coordinator::connect(coordinator_addr)
+        let coordinator_events = coordinator::register(coordinator_addr, machine_id.clone())
             .await
             .wrap_err("failed to connect to dora-coordinator")?
             .map(Event::Coordinator);
@@ -88,6 +94,8 @@ impl Daemon {
             sent_out_shared_memory: Default::default(),
             running: HashMap::new(),
             dora_events_tx,
+            coordinator_addr,
+            machine_id,
         };
         let dora_events = ReceiverStream::new(dora_events_rx).map(Event::Dora);
         let events = (coordinator_events, new_connections, dora_events).merge();
@@ -352,7 +360,23 @@ impl Daemon {
 
                 dataflow.subscribe_channels.remove(&node_id);
                 if dataflow.subscribe_channels.is_empty() {
-                    tracing::info!("Dataflow `{dataflow_id}` finished");
+                    tracing::info!(
+                        "Dataflow `{dataflow_id}` finished on machine `{}`",
+                        self.machine_id
+                    );
+                    if coordinator::send_event(
+                        self.coordinator_addr,
+                        self.machine_id.clone(),
+                        DaemonEvent::AllNodesFinished {
+                            dataflow_id,
+                            result: Ok(()),
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        tracing::warn!("failed to report dataflow finish to coordinator");
+                    }
                     self.running.remove(&dataflow_id);
                 }
             }
