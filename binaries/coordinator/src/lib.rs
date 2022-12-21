@@ -13,7 +13,7 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 use tokio::net::TcpStream;
@@ -81,7 +81,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 
     let mut events = (new_daemon_connections, daemon_events, control_events).merge();
 
-    let mut running_dataflows = HashMap::new();
+    let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, TcpStream> = HashMap::new();
 
     while let Some(event) = events.next().await {
@@ -117,15 +117,27 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                 }
             }
             Event::Dataflow { uuid, event } => match event {
-                DataflowEvent::Finished { result } => {
-                    running_dataflows.remove(&uuid);
-                    match result {
-                        Ok(()) => {
-                            tracing::info!("dataflow `{uuid}` finished successfully");
+                DataflowEvent::DataflowFinishedOnMachine { machine_id, result } => {
+                    match running_dataflows.entry(uuid) {
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            entry.get_mut().machines.remove(&machine_id);
+                            match result {
+                                Ok(()) => {
+                                    tracing::info!("dataflow `{uuid}` finished successfully on machine `{machine_id}`");
+                                }
+                                Err(err) => {
+                                    let err =
+                                        err.wrap_err(format!("error occured in dataflow `{uuid}` on machine `{machine_id}`"));
+                                    tracing::error!("{err:?}");
+                                }
+                            }
+                            if entry.get_mut().machines.is_empty() {
+                                entry.remove();
+                                tracing::info!("dataflow `{uuid}` finished");
+                            }
                         }
-                        Err(err) => {
-                            let err = err.wrap_err(format!("error occured in dataflow `{uuid}`"));
-                            tracing::error!("{err:?}");
+                        std::collections::hash_map::Entry::Vacant(_) => {
+                            tracing::warn!("dataflow not running on DataflowFinishedOnMachine");
                         }
                     }
                 }
@@ -225,7 +237,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                         }
                         ControlRequest::List => {
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
-                            dataflows.sort();
+                            dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
                             let reply = ListDataflowResult::Ok {
                                 dataflows: dataflows
@@ -256,35 +268,17 @@ struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
     communication_config: CommunicationConfig,
+    /// The IDs of the machines that the dataflow is running on.
+    machines: BTreeSet<String>,
 }
 
 impl PartialEq for RunningDataflow {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.uuid == other.uuid
+        self.name == other.name && self.uuid == other.uuid && self.machines == other.machines
     }
 }
 
 impl Eq for RunningDataflow {}
-
-impl PartialOrd for RunningDataflow {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match self.name.partial_cmp(&other.name) {
-            Some(core::cmp::Ordering::Equal) => {}
-            ord => return ord,
-        }
-        self.uuid.partial_cmp(&other.uuid)
-    }
-}
-
-impl Ord for RunningDataflow {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.name.cmp(&other.name) {
-            core::cmp::Ordering::Equal => {}
-            ord => return ord,
-        }
-        self.uuid.cmp(&other.uuid)
-    }
-}
 
 async fn stop_dataflow(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
@@ -317,18 +311,18 @@ async fn start_dataflow(
     runtime_path: &Path,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<RunningDataflow> {
-    // TODO: send Spawn message to daemon
-
     let runtime_path = runtime_path.to_owned();
 
     let SpawnedDataflow {
         uuid,
         communication_config,
+        machines,
     } = spawn_dataflow(&runtime_path, path, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
         communication_config,
+        machines,
     })
 }
 
@@ -343,7 +337,10 @@ pub enum Event {
 
 #[derive(Debug)]
 pub enum DataflowEvent {
-    Finished { result: eyre::Result<()> },
+    DataflowFinishedOnMachine {
+        machine_id: String,
+        result: eyre::Result<()>,
+    },
 }
 
 #[derive(Debug)]

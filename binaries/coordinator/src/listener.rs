@@ -1,6 +1,6 @@
-use crate::{tcp_utils::tcp_receive, DaemonEvent, Event};
+use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
 use dora_core::coordinator_messages;
-use eyre::Context;
+use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::Ipv4Addr};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -50,6 +50,23 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
             }
+            coordinator_messages::CoordinatorRequest::Event { machine_id, event } => match event {
+                coordinator_messages::DaemonEvent::AllNodesFinished {
+                    dataflow_id,
+                    result,
+                } => {
+                    let event = Event::Dataflow {
+                        uuid: dataflow_id,
+                        event: DataflowEvent::DataflowFinishedOnMachine {
+                            machine_id,
+                            result: result.map_err(|e| eyre!(e)),
+                        },
+                    };
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+            },
         };
     }
 }

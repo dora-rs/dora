@@ -1,8 +1,24 @@
 use eyre::eyre;
 
+use crate::daemon_messages::DataflowId;
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
-    Register { machine_id: String },
+    Register {
+        machine_id: String,
+    },
+    Event {
+        machine_id: String,
+        event: DaemonEvent,
+    },
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum DaemonEvent {
+    AllNodesFinished {
+        dataflow_id: DataflowId,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

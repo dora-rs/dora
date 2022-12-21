@@ -3,7 +3,7 @@ use crate::{
     DaemonCoordinatorEvent,
 };
 use dora_core::{
-    coordinator_messages::{CoordinatorRequest, RegisterResult},
+    coordinator_messages::{CoordinatorRequest, DaemonEvent, RegisterResult},
     daemon_messages::DaemonCoordinatorReply,
 };
 use eyre::{eyre, Context};
@@ -20,16 +20,17 @@ pub struct CoordinatorEvent {
     pub reply_tx: oneshot::Sender<DaemonCoordinatorReply>,
 }
 
-pub async fn connect(addr: SocketAddr) -> eyre::Result<impl Stream<Item = CoordinatorEvent>> {
+pub async fn register(
+    addr: SocketAddr,
+    machine_id: String,
+) -> eyre::Result<impl Stream<Item = CoordinatorEvent>> {
     let mut stream = TcpStream::connect(addr)
         .await
         .wrap_err("failed to connect to dora-coordinator")?;
     stream
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
-    let register = serde_json::to_vec(&CoordinatorRequest::Register {
-        machine_id: String::new(), // TODO
-    })?;
+    let register = serde_json::to_vec(&CoordinatorRequest::Register { machine_id })?;
     tcp_send(&mut stream, &register)
         .await
         .wrap_err("failed to send register request to dora-coordinator")?;
@@ -91,4 +92,21 @@ pub async fn connect(addr: SocketAddr) -> eyre::Result<impl Stream<Item = Coordi
     });
 
     Ok(ReceiverStream::new(rx))
+}
+
+pub async fn send_event(
+    addr: SocketAddr,
+    machine_id: String,
+    event: DaemonEvent,
+) -> eyre::Result<()> {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .wrap_err("failed to connect to dora-coordinator")?;
+    stream
+        .set_nodelay(true)
+        .wrap_err("failed to set TCP_NODELAY")?;
+    let msg = serde_json::to_vec(&CoordinatorRequest::Event { machine_id, event })?;
+    tcp_send(&mut stream, &msg)
+        .await
+        .wrap_err("failed to send event to dora-coordinator")
 }

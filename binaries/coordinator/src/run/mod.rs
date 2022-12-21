@@ -10,7 +10,7 @@ use dora_core::{
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
     path::Path,
 };
@@ -86,8 +86,13 @@ pub async fn spawn_dataflow(
         nodes: custom_nodes,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
+
+    // TODO allow partitioning a dataflow across multiple machines
+    let machine_id = "";
+    let machines = [machine_id.to_owned()].into();
+
     let daemon_connection = daemon_connections
-        .get_mut("")
+        .get_mut(machine_id)
         .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
     tcp_send(daemon_connection, &message)
         .await
@@ -109,12 +114,14 @@ pub async fn spawn_dataflow(
     Ok(SpawnedDataflow {
         communication_config,
         uuid,
+        machines,
     })
 }
 
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
     pub communication_config: CommunicationConfig,
+    pub machines: BTreeSet<String>,
 }
 
 pub async fn await_tasks(
