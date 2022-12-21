@@ -145,20 +145,24 @@
                     <main>
                         <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
 <p>This project is in early development, and many features have yet to be implemented with breaking changes. Please don't take for granted the current design. The installation process will be streamlined in the future.</p>
-<h3 id="1-compile-the-dora-coordinator"><a class="header" href="#1-compile-the-dora-coordinator">1. Compile the dora-coordinator</a></h3>
-<p>The <code>dora-coordinator</code> is responsible for reading the dataflow descriptor file and launching the operators accordingly. </p>
+<h3 id="download-the-binaries-from-github"><a class="header" href="#download-the-binaries-from-github">Download the binaries from Github</a></h3>
+<p>Install <code>dora</code> binaries from GitHub releases:</p>
+<pre><code class="language-bash">wget https://github.com/dora-rs/dora/releases/download/&lt;version&gt;/dora-&lt;version&gt;-x86_64-Linux.zip
+unzip dora-&lt;version&gt;-x86_64-Linux.zip
+python3 -m pip install dora-rs==&lt;version&gt; ## For Python API
+PATH=$PATH:$(pwd):$(pwd)/iceoryx
+dora --help
+</code></pre>
+<h4 id="or-compile-from-source"><a class="header" href="#or-compile-from-source">Or compile from Source</a></h4>
 <p>Build it using:</p>
 <pre><code class="language-bash">git clone https://github.com/dora-rs/dora.git
 cd dora
-cargo build -p dora-coordinator --release
+cargo build -p dora-coordinator -p dora-runtime --release
+PATH=$PATH:$(pwd)/target/release
 </code></pre>
-<h3 id="2-compile-the-dora-runtime-for-operators"><a class="header" href="#2-compile-the-dora-runtime-for-operators">2. Compile the dora-runtime for operators</a></h3>
-<p>The <code>dora-runtime</code> is responsible for managing a set of operators. </p>
-<pre><code class="language-bash">cargo build -p dora-runtime --release
-</code></pre>
-<h3 id="3-add-those-binaries-to-your-path"><a class="header" href="#3-add-those-binaries-to-your-path">3. Add those binaries to your path</a></h3>
-<p>This step is optional. You can also refer to the executables using their full path or copy them somewhere else.</p>
-<pre><code class="language-bash">export PATH=$PATH:$(pwd)/target/release
+<p>If you want to use <code>Iceoryx</code>. Add <code>iox-roudi</code> to the path.
+You can find <code>iox-roudi</code> with:</p>
+<pre><code class="language-bash">find target -type f -wholename &quot;*/iceoryx-install/bin/iox-roudi&quot;
 </code></pre>
 
                     </main>
