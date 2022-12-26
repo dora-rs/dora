@@ -78,7 +78,7 @@ jobs:
     name: "CLI Test"
     strategy:
       matrix:
-        platform: [ubuntu-latest]
+        platform: [ubuntu-latest, macos-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     steps:
@@ -94,11 +94,9 @@ jobs:
         timeout-minutes: 30
         run: cargo build --all
 
-      - name: "Test dora `up`"
+      - name: "Test dora-coordinator"
         run: |
-            echo "$(pwd)/target/debug" >> $GITHUB_PATH
-            find $(pwd) -type f  -wholename "*/iceoryx-install/bin/iox-roudi" | head -n 1 | xargs dirname >> $GITHUB_PATH
-            cargo run -p dora-cli -- up
+            cargo run -p dora-coordinator &
 
       - name: "Test dora `check`"
         run: cargo run -p dora-cli -- check
