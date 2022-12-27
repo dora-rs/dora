@@ -1003,10 +1003,13 @@ dependencies = [
 name = "dora-examples"
 version = "0.0.0"
 dependencies = [
- "dora-coordinator",
+ "dora-core",
+ "dora-daemon",
  "dunce",
  "eyre",
+ "serde_yaml 0.8.23",
  "tokio",
+ "uuid 1.2.1",
 ]
 
 [[package]]
@@ -3318,13 +3321,6 @@ dependencies = [
  "futures",
  "rand",
  "tokio",
-]
-
-[[package]]
-name = "rust-dataflow-example-operator"
-version = "0.1.1"
-dependencies = [
- "dora-operator-api",
 ]
 
 [[package]]

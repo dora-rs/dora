@@ -1,5 +1,11 @@
+use dora_core::{
+    daemon_messages::{SpawnDataflowNodes, SpawnNodeParams},
+    descriptor::{CoreNodeKind, Descriptor},
+};
 use eyre::{bail, Context};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
+use tokio::fs;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -9,13 +15,38 @@ async fn main() -> eyre::Result<()> {
 
     let dataflow = Path::new("dataflow.yml");
     build_dataflow(dataflow).await?;
-    build_package("dora-runtime").await?;
 
-    dora_coordinator::run(dora_coordinator::Args {
-        run_dataflow: dataflow.to_owned().into(),
-        runtime: Some(root.join("target").join("debug").join("dora-runtime")),
-    })
-    .await?;
+    let working_dir = dataflow
+        .canonicalize()
+        .context("failed to canoncialize dataflow path")?
+        .parent()
+        .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
+        .to_owned();
+
+    let nodes = read_descriptor(dataflow).await?.resolve_aliases();
+    let mut custom_nodes = BTreeMap::new();
+    for node in nodes {
+        match node.kind {
+            CoreNodeKind::Runtime(_) => todo!(),
+            CoreNodeKind::Custom(n) => {
+                custom_nodes.insert(
+                    node.id.clone(),
+                    SpawnNodeParams {
+                        node_id: node.id,
+                        node: n,
+                        working_dir: working_dir.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    let spawn_command = SpawnDataflowNodes {
+        dataflow_id: Uuid::new_v4(),
+        nodes: custom_nodes,
+    };
+
+    dora_daemon::Daemon::run_dataflow(spawn_command).await?;
 
     Ok(())
 }
@@ -32,13 +63,9 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn build_package(package: &str) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("build");
-    cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
-        bail!("failed to build {package}");
-    };
-    Ok(())
+pub async fn read_descriptor(file: &Path) -> eyre::Result<Descriptor> {
+    let descriptor_file = fs::read(file).await.context("failed to open given file")?;
+    let descriptor: Descriptor =
+        serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
+    Ok(descriptor)
 }
