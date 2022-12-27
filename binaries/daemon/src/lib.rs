@@ -9,7 +9,7 @@ use dora_core::{
 };
 use dora_message::uhlc::HLC;
 use eyre::{bail, eyre, Context, ContextCompat};
-use futures::FutureExt;
+use futures::{future::Either, stream, FutureExt};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
@@ -42,17 +42,22 @@ pub struct Daemon {
 
     dora_events_tx: mpsc::Sender<DoraEvent>,
 
-    coordinator_addr: SocketAddr,
+    coordinator_addr: Option<SocketAddr>,
     machine_id: String,
 }
 
 impl Daemon {
-    pub async fn run(coordinator_addr: SocketAddr, machine_id: String) -> eyre::Result<()> {
+    pub async fn run(coordinator_addr: Option<SocketAddr>, machine_id: String) -> eyre::Result<()> {
         // connect to the coordinator
-        let coordinator_events = coordinator::register(coordinator_addr, machine_id.clone())
-            .await
-            .wrap_err("failed to connect to dora-coordinator")?
-            .map(Event::Coordinator);
+        let coordinator_events = match coordinator_addr {
+            Some(addr) => Either::Left(
+                coordinator::register(addr, machine_id.clone())
+                    .await
+                    .wrap_err("failed to connect to dora-coordinator")?
+                    .map(Event::Coordinator),
+            ),
+            None => Either::Right(stream::empty()),
+        };
 
         // create listener for node connection
         let listener = listener::create_listener().await?;
@@ -358,18 +363,20 @@ impl Daemon {
                         "Dataflow `{dataflow_id}` finished on machine `{}`",
                         self.machine_id
                     );
-                    if coordinator::send_event(
-                        self.coordinator_addr,
-                        self.machine_id.clone(),
-                        DaemonEvent::AllNodesFinished {
-                            dataflow_id,
-                            result: Ok(()),
-                        },
-                    )
-                    .await
-                    .is_err()
-                    {
-                        tracing::warn!("failed to report dataflow finish to coordinator");
+                    if let Some(addr) = self.coordinator_addr {
+                        if coordinator::send_event(
+                            addr,
+                            self.machine_id.clone(),
+                            DaemonEvent::AllNodesFinished {
+                                dataflow_id,
+                                result: Ok(()),
+                            },
+                        )
+                        .await
+                        .is_err()
+                        {
+                            tracing::warn!("failed to report dataflow finish to coordinator");
+                        }
                     }
                     self.running.remove(&dataflow_id);
                 }
