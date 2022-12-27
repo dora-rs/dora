@@ -98,9 +98,6 @@ jobs:
         run: |
             cargo run -p dora-coordinator &
 
-      - name: "Test dora `check`"
-        run: cargo run -p dora-cli -- check
-
       - name: "Test dora `list"
         run: cargo run -p dora-cli -- list
 
