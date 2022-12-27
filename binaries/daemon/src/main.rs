@@ -19,7 +19,7 @@ async fn run() -> eyre::Result<()> {
 
     let machine_id = String::new(); // TODO
 
-    Daemon::run(coordinator_socket.into(), machine_id).await
+    Daemon::run(Some(coordinator_socket.into()), machine_id).await
 }
 
 fn set_up_tracing() -> eyre::Result<()> {
