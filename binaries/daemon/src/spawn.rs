@@ -5,7 +5,7 @@ use dora_core::{
 };
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
-use std::{env::consts::EXE_EXTENSION, path::Path};
+use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
 use tokio::sync::mpsc;
 
 #[tracing::instrument]
@@ -20,6 +20,8 @@ pub async fn spawn_node(
         node,
         working_dir,
     } = params;
+
+    tracing::trace!("Spawning node `{dataflow_id}/{node_id}`");
 
     let resolved_path = if source_is_url(&node.source) {
         // try to download the shared library
@@ -58,6 +60,7 @@ pub async fn spawn_node(
             command.env(key, value.to_string());
         }
     }
+    command.stdin(Stdio::null());
 
     let mut child = command.spawn().wrap_err_with(move || {
         format!(
