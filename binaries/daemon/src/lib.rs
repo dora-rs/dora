@@ -39,7 +39,7 @@ mod tcp_utils;
 
 pub struct Daemon {
     port: u16,
-    uninit_shared_memory: HashMap<String, (DataId, dora_message::Metadata<'static>, Shmem)>,
+    prepared_messages: HashMap<String, (DataId, dora_message::Metadata<'static>, Option<Shmem>)>,
     sent_out_shared_memory: HashMap<DropToken, Rc<Shmem>>,
 
     running: HashMap<DataflowId, RunningDataflow>,
@@ -144,7 +144,7 @@ impl Daemon {
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             port,
-            uninit_shared_memory: Default::default(),
+            prepared_messages: Default::default(),
             sent_out_shared_memory: Default::default(),
             running: HashMap::new(),
             dora_events_tx,
@@ -326,12 +326,21 @@ impl Daemon {
                 metadata,
                 data_len,
             } => {
-                let memory = ShmemConf::new()
-                    .size(data_len)
-                    .create()
-                    .wrap_err("failed to allocate shared memory")?;
-                let id = memory.get_os_id().to_owned();
-                self.uninit_shared_memory
+                let memory = if data_len > 0 {
+                    Some(
+                        ShmemConf::new()
+                            .size(data_len)
+                            .create()
+                            .wrap_err("failed to allocate shared memory")?,
+                    )
+                } else {
+                    None
+                };
+                let id = memory
+                    .as_ref()
+                    .map(|m| m.get_os_id().to_owned())
+                    .unwrap_or_else(|| Uuid::new_v4().to_string());
+                self.prepared_messages
                     .insert(id.clone(), (output_id, metadata, memory));
 
                 let reply = ControlReply::PreparedMessage {
@@ -339,16 +348,16 @@ impl Daemon {
                 };
                 if reply_sender.send(reply).is_err() {
                     // free shared memory slice again
-                    self.uninit_shared_memory.remove(&id);
+                    self.prepared_messages.remove(&id);
                 }
             }
             DaemonNodeEvent::SendOutMessage { id } => {
                 let (output_id, metadata, memory) = self
-                    .uninit_shared_memory
+                    .prepared_messages
                     .remove(&id)
                     .ok_or_else(|| eyre!("invalid shared memory id"))?;
 
-                let memory = Rc::new(memory);
+                let memory = memory.map(Rc::new);
 
                 let dataflow = self
                     .running
@@ -370,8 +379,8 @@ impl Daemon {
                         let send_result = channel.send_async(daemon_messages::NodeEvent::Input {
                             id: input_id.clone(),
                             metadata: metadata.clone(),
-                            data: Some(daemon_messages::InputData {
-                                shared_memory_id: id.clone(),
+                            data: memory.as_ref().map(|m| daemon_messages::InputData {
+                                shared_memory_id: m.get_os_id().to_owned(),
                                 drop_token: drop_token.clone(),
                             }),
                         });
@@ -379,8 +388,10 @@ impl Daemon {
                         match timeout(Duration::from_millis(10), send_result).await {
                             Ok(Ok(())) => {
                                 // keep shared memory ptr in order to free it once all subscribers are done
-                                self.sent_out_shared_memory
-                                    .insert(drop_token, memory.clone());
+                                if let Some(memory) = &memory {
+                                    self.sent_out_shared_memory
+                                        .insert(drop_token, memory.clone());
+                                }
                             }
                             Ok(Err(_)) => {
                                 closed.push(receiver_id);
@@ -398,7 +409,9 @@ impl Daemon {
                 }
 
                 // TODO send `data` via network to all remove receivers
-                let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), memory.len());
+                if let Some(memory) = &memory {
+                    let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), memory.len());
+                }
 
                 let _ = reply_sender.send(ControlReply::Result(Ok(())));
             }
