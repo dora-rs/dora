@@ -4,7 +4,6 @@ use std::ops::Deref;
 
 use dora_node_api::{
     daemon::{Event, EventStream},
-    dora_core::config::NodeId,
     DoraNode,
 };
 use dora_operator_api_python::{metadata_to_pydict, pydict_to_metadata};
@@ -16,7 +15,6 @@ use pyo3::{
 
 #[pyclass]
 pub struct Node {
-    id: NodeId,
     events: EventStream,
     node: DoraNode,
 }
@@ -45,15 +43,9 @@ impl IntoPy<PyObject> for PyInput<'_> {
 impl Node {
     #[new]
     pub fn new() -> Result<Self> {
-        let id = {
-            let raw =
-                std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
-            serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
-        };
-
         let (node, events) = DoraNode::init_from_env()?;
 
-        Ok(Node { id, events, node })
+        Ok(Node { events, node })
     }
 
     #[allow(clippy::should_implement_trait)]
@@ -85,7 +77,7 @@ impl Node {
     }
 
     pub fn id(&self) -> String {
-        self.id.to_string()
+        self.node.id().to_string()
     }
 }
 
@@ -97,9 +89,9 @@ impl Node {
 //     Ok(())
 // }
 
-// #[pymodule]
-// fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
-//     m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
-//     m.add_class::<Node>().unwrap();
-//     Ok(())
-// }
+#[pymodule]
+fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
+    // m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
+    m.add_class::<Node>().unwrap();
+    Ok(())
+}
