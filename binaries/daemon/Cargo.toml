@@ -22,3 +22,4 @@ dora-download = { path = "../../libraries/extensions/download" }
 serde_yaml = "0.8.23"
 uuid = { version = "1.1.2", features = ["v4"] }
 futures = "0.3.25"
+clap = { version = "3.1.8", features = ["derive"] }

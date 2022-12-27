@@ -970,6 +970,7 @@ dependencies = [
 name = "dora-daemon"
 version = "0.1.0"
 dependencies = [
+ "clap 3.2.20",
  "dora-core",
  "dora-download",
  "dora-message",
