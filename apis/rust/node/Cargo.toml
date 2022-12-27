@@ -1,6 +1,6 @@
 [package]
 name = "dora-node-api"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -19,7 +19,7 @@ tracing = "0.1.33"
 tracing-subscriber = { version = "0.3.15", optional = true }
 flume = "0.10.14"
 uuid = { version = "1.1.2", features = ["v4"] }
-capnp = "0.14.9"
+capnp = "0.14.11"
 dora-message = { path = "../../../libraries/message" }
 dora-core = { path = "../../../libraries/core" }
 shared_memory = "0.12.0"

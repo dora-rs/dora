@@ -1,6 +1,6 @@
 [package]
 name = "dora-coordinator"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -20,7 +20,7 @@ clap = { version = "3.1.8", features = ["derive"] }
 uuid = { version = "1.2.1" }
 time = "0.3.9"
 rand = "0.8.5"
-dora-core = { version = "0.1.1", path = "../../libraries/core" }
+dora-core = { workspace = true }
 dora-message = { path = "../../libraries/message" }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
