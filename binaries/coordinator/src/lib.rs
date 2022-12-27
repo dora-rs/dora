@@ -34,15 +34,10 @@ mod tcp_utils;
 pub struct Args {
     #[clap(long)]
     pub runtime: Option<PathBuf>,
-    #[clap(long)]
-    pub run_dataflow: Option<PathBuf>,
 }
 
 pub async fn run(args: Args) -> eyre::Result<()> {
-    let Args {
-        runtime,
-        run_dataflow,
-    } = args;
+    let Args { runtime } = args;
 
     let runtime_path = runtime.unwrap_or_else(|| {
         std::env::args()
@@ -52,16 +47,8 @@ pub async fn run(args: Args) -> eyre::Result<()> {
             .with_file_name("dora-runtime")
     });
 
-    match run_dataflow {
-        Some(path) => {
-            // start the given dataflow directly
-            todo!();
-        }
-        None => {
-            // start in daemon mode
-            start(&runtime_path).await?;
-        }
-    }
+    // start in daemon mode
+    start(&runtime_path).await?;
 
     Ok(())
 }
