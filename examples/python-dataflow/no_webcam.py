@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import time
@@ -17,7 +17,16 @@ start = time.time()
 
 while time.time() - start < 20:
     # Wait next dora_input
-    node.next()
-    node.send_output("image", arr.tobytes())
+    event = node.next()
+    match event["type"]:
+        case "input":
+            print("received input", event["id"])
+            node.send_output("image", arr.tobytes())
+        case "stop":
+            print("received stop")
+            break
+        case other:
+            print("received unexpected event:", other)
+            break
 
-time.sleep(1)
+    time.sleep(1)
