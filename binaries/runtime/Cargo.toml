@@ -1,6 +1,6 @@
 [package]
 name = "dora-runtime"
-version = "0.1.1"
+version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
@@ -11,7 +11,7 @@ clap = { version = "3.1.12", features = ["derive"] }
 dora-node-api = { path = "../../apis/rust/node", default-features = false }
 dora-operator-api-python = { path = "../../apis/python/operator" }
 dora-operator-api-types = { path = "../../apis/rust/operator/types" }
-dora-core = { version = "0.1.1", path = "../../libraries/core" }
+dora-core = { workspace = true }
 dora-tracing = { path = "../../libraries/extensions/telemetry/tracing", optional = true }
 dora-metrics = { path = "../../libraries/extensions/telemetry/metrics", optional = true }
 opentelemetry = { version = "0.17", features = [
