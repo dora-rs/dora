@@ -9,7 +9,7 @@ use dora_core::{
 };
 use dora_message::uhlc::HLC;
 use eyre::{bail, eyre, Context, ContextCompat};
-use futures::{future::Either, stream, FutureExt};
+use futures::{stream, FutureExt};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
@@ -27,6 +27,7 @@ use tokio_stream::{
     wrappers::{ReceiverStream, TcpListenerStream},
     Stream, StreamExt,
 };
+use uuid::Uuid;
 
 mod coordinator;
 mod listener;
@@ -44,21 +45,45 @@ pub struct Daemon {
 
     coordinator_addr: Option<SocketAddr>,
     machine_id: String,
+
+    /// used for testing and examples
+    exit_when_done: Option<BTreeSet<Uuid>>,
 }
 
 impl Daemon {
-    pub async fn run(coordinator_addr: Option<SocketAddr>, machine_id: String) -> eyre::Result<()> {
+    pub async fn run(coordinator_addr: SocketAddr, machine_id: String) -> eyre::Result<()> {
         // connect to the coordinator
-        let coordinator_events = match coordinator_addr {
-            Some(addr) => Either::Left(
-                coordinator::register(addr, machine_id.clone())
-                    .await
-                    .wrap_err("failed to connect to dora-coordinator")?
-                    .map(Event::Coordinator),
-            ),
-            None => Either::Right(stream::empty()),
-        };
+        let coordinator_events = coordinator::register(coordinator_addr, machine_id.clone())
+            .await
+            .wrap_err("failed to connect to dora-coordinator")?
+            .map(Event::Coordinator);
+        Self::run_general(coordinator_events, Some(coordinator_addr), machine_id, None).await
+    }
 
+    pub async fn run_dataflow(dataflow: SpawnDataflowNodes) -> eyre::Result<()> {
+        let exit_when_done = [dataflow.dataflow_id].into();
+        let coordinator_events = stream::once(async { DaemonCoordinatorEvent::Spawn(dataflow) })
+            .map(|event| {
+                Event::Coordinator(CoordinatorEvent {
+                    event,
+                    reply_tx: oneshot::channel().0,
+                })
+            });
+        Self::run_general(
+            Box::pin(coordinator_events),
+            None,
+            "".into(),
+            Some(exit_when_done),
+        )
+        .await
+    }
+
+    async fn run_general(
+        external_events: impl Stream<Item = Event> + Unpin,
+        coordinator_addr: Option<SocketAddr>,
+        machine_id: String,
+        exit_when_done: Option<BTreeSet<Uuid>>,
+    ) -> eyre::Result<()> {
         // create listener for node connection
         let listener = listener::create_listener().await?;
         let port = listener
@@ -81,9 +106,10 @@ impl Daemon {
             dora_events_tx,
             coordinator_addr,
             machine_id,
+            exit_when_done,
         };
         let dora_events = ReceiverStream::new(dora_events_rx).map(Event::Dora);
-        let events = (coordinator_events, new_connections, dora_events).merge();
+        let events = (external_events, new_connections, dora_events).merge();
         daemon.run_inner(events).await
     }
 
@@ -117,8 +143,13 @@ impl Daemon {
                     event,
                     reply_sender,
                 } => {
-                    self.handle_node_event(event, dataflow, node_id, reply_sender)
+                    match self
+                        .handle_node_event(event, dataflow, node_id, reply_sender)
                         .await?
+                    {
+                        RunStatus::Continue => {}
+                        RunStatus::Exit => break,
+                    }
                 }
                 Event::Dora(event) => self.handle_dora_event(event).await?,
                 Event::Drop(DropEvent { token }) => {
@@ -234,7 +265,7 @@ impl Daemon {
         dataflow_id: DataflowId,
         node_id: NodeId,
         reply_sender: oneshot::Sender<ControlReply>,
-    ) -> Result<(), eyre::ErrReport> {
+    ) -> eyre::Result<RunStatus> {
         match event {
             DaemonNodeEvent::Subscribe { event_sender } => {
                 let result = match self.running.get_mut(&dataflow_id) {
@@ -379,10 +410,17 @@ impl Daemon {
                         }
                     }
                     self.running.remove(&dataflow_id);
+
+                    if let Some(exit_when_done) = &mut self.exit_when_done {
+                        exit_when_done.remove(&dataflow_id);
+                        if exit_when_done.is_empty() {
+                            return Ok(RunStatus::Exit);
+                        }
+                    }
                 }
             }
         }
-        Ok(())
+        Ok(RunStatus::Continue)
     }
 
     async fn handle_dora_event(&mut self, event: DoraEvent) -> eyre::Result<()> {
@@ -518,3 +556,9 @@ pub enum DoraEvent {
 }
 
 type MessageId = String;
+
+#[must_use]
+enum RunStatus {
+    Continue,
+    Exit,
+}
