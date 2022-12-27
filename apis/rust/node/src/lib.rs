@@ -75,7 +75,7 @@ impl DoraNode {
             .wrap_err("failed to prepare sample for output message")?;
 
         // map shared memory and fill in data
-        {
+        if data_len > 0 {
             let mut shared_memory = ShmemConf::new()
                 .os_id(&sample.id)
                 .open()
@@ -83,6 +83,8 @@ impl DoraNode {
 
             let raw = unsafe { shared_memory.as_slice_mut() };
             data(raw);
+        } else {
+            data(&mut []);
         }
 
         self.control_channel
