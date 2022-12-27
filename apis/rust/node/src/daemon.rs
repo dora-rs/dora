@@ -68,9 +68,9 @@ impl ControlChannel {
 
     pub fn report_stop(&mut self) -> eyre::Result<()> {
         tcp_send(&mut self.0, &ControlRequest::Stopped)
-            .wrap_err("failed to send subscribe request to dora-daemon")?;
+            .wrap_err("failed to report stopped to dora-daemon")?;
         match tcp_receive(&mut self.0)
-            .wrap_err("failed to receive subscribe reply from dora-daemon")?
+            .wrap_err("failed to receive stopped reply from dora-daemon")?
         {
             dora_core::daemon_messages::ControlReply::Result(result) => result
                 .map_err(|e| eyre!(e))
