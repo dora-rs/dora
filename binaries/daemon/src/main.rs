@@ -1,7 +1,14 @@
 use dora_core::topics::DORA_COORDINATOR_PORT_DEFAULT;
 use dora_daemon::Daemon;
 use eyre::Context;
-use std::net::Ipv4Addr;
+use std::{net::Ipv4Addr, path::PathBuf};
+
+#[derive(Debug, Clone, clap::Parser)]
+#[clap(about = "Dora daemon")]
+pub struct Args {
+    #[clap(long)]
+    pub run_dataflow: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -13,13 +20,24 @@ async fn main() -> eyre::Result<()> {
 async fn run() -> eyre::Result<()> {
     set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
 
-    tracing::info!("Starting in local mode");
-    let localhost = Ipv4Addr::new(127, 0, 0, 1);
-    let coordinator_socket = (localhost, DORA_COORDINATOR_PORT_DEFAULT);
+    let Args { run_dataflow } = clap::Parser::parse();
 
-    let machine_id = String::new(); // TODO
+    match run_dataflow {
+        Some(dataflow_path) => {
+            tracing::info!("Starting dataflow `{}`", dataflow_path.display());
 
-    Daemon::run(coordinator_socket.into(), machine_id).await
+            Daemon::run_dataflow(&dataflow_path).await
+        }
+        None => {
+            tracing::info!("Starting in local mode");
+            let localhost = Ipv4Addr::new(127, 0, 0, 1);
+            let coordinator_socket = (localhost, DORA_COORDINATOR_PORT_DEFAULT);
+
+            let machine_id = String::new(); // TODO
+
+            Daemon::run(coordinator_socket.into(), machine_id).await
+        }
+    }
 }
 
 fn set_up_tracing() -> eyre::Result<()> {

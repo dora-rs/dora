@@ -4,21 +4,24 @@ use dora_core::{
     coordinator_messages::DaemonEvent,
     daemon_messages::{
         self, ControlReply, DaemonCoordinatorEvent, DaemonCoordinatorReply, DataflowId, DropEvent,
-        DropToken, SpawnDataflowNodes,
+        DropToken, SpawnDataflowNodes, SpawnNodeParams,
     },
+    descriptor::{CoreNodeKind, Descriptor},
 };
 use dora_message::uhlc::HLC;
 use eyre::{bail, eyre, Context, ContextCompat};
-use futures::{stream, FutureExt};
+use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use shared_memory::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
+    path::Path,
     rc::Rc,
     time::Duration,
 };
 use tokio::{
+    fs,
     net::TcpStream,
     sync::{mpsc, oneshot},
     time::timeout,
@@ -60,22 +63,63 @@ impl Daemon {
         Self::run_general(coordinator_events, Some(coordinator_addr), machine_id, None).await
     }
 
-    pub async fn run_dataflow(dataflow: SpawnDataflowNodes) -> eyre::Result<()> {
-        let exit_when_done = [dataflow.dataflow_id].into();
-        let coordinator_events = stream::once(async { DaemonCoordinatorEvent::Spawn(dataflow) })
-            .map(|event| {
-                Event::Coordinator(CoordinatorEvent {
-                    event,
-                    reply_tx: oneshot::channel().0,
-                })
-            });
-        Self::run_general(
+    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
+        let working_dir = dataflow_path
+            .canonicalize()
+            .context("failed to canoncialize dataflow path")?
+            .parent()
+            .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
+            .to_owned();
+
+        let nodes = read_descriptor(dataflow_path).await?.resolve_aliases();
+        let mut custom_nodes = BTreeMap::new();
+        for node in nodes {
+            match node.kind {
+                CoreNodeKind::Runtime(_) => todo!(),
+                CoreNodeKind::Custom(n) => {
+                    custom_nodes.insert(
+                        node.id.clone(),
+                        SpawnNodeParams {
+                            node_id: node.id,
+                            node: n,
+                            working_dir: working_dir.clone(),
+                        },
+                    );
+                }
+            }
+        }
+
+        let spawn_command = SpawnDataflowNodes {
+            dataflow_id: Uuid::new_v4(),
+            nodes: custom_nodes,
+        };
+
+        let exit_when_done = [spawn_command.dataflow_id].into();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let coordinator_events = stream::once(async move {
+            Event::Coordinator(CoordinatorEvent {
+                event: DaemonCoordinatorEvent::Spawn(spawn_command),
+                reply_tx,
+            })
+        });
+        let run_result = Self::run_general(
             Box::pin(coordinator_events),
             None,
             "".into(),
             Some(exit_when_done),
-        )
-        .await
+        );
+
+        let spawn_result = reply_rx
+            .map_err(|err| eyre!("failed to receive spawn result: {err}"))
+            .and_then(|r| async {
+                match r {
+                    DaemonCoordinatorReply::SpawnResult(result) => result.map_err(|err| eyre!(err)),
+                    DaemonCoordinatorReply::StopResult(_) => Err(eyre!("unexpected spawn reply")),
+                }
+            });
+
+        future::try_join(run_result, spawn_result).await?;
+        Ok(())
     }
 
     async fn run_general(
@@ -564,4 +608,11 @@ type MessageId = String;
 enum RunStatus {
     Continue,
     Exit,
+}
+
+pub async fn read_descriptor(file: &Path) -> eyre::Result<Descriptor> {
+    let descriptor_file = fs::read(file).await.wrap_err("failed to open given file")?;
+    let descriptor: Descriptor =
+        serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
+    Ok(descriptor)
 }
