@@ -1,6 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 from enum import Enum
 from typing import Callable
+from dora import Node
 
 import cv2
 import numpy as np
@@ -11,13 +15,12 @@ CI = os.environ.get("CI")
 
 font = cv2.FONT_HERSHEY_SIMPLEX
 
-
-class DoraStatus(Enum):
+class Status(Enum):
     CONTINUE = 0
     STOP = 1
 
 
-class Operator:
+class Plotter:
     """
     Plot image and bounding box
     """
@@ -29,15 +32,13 @@ class Operator:
     def on_input(
         self,
         dora_input: dict,
-        send_output: Callable[[str, bytes], None],
-    ) -> DoraStatus:
+    ) -> Status:
         """
         Put image and bounding box on cv2 window.
 
         Args:
             dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
             dora_input["data"] (bytes): Bytes message of the dora_input
-            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         """
         if dora_input["id"] == "image":
             frame = np.frombuffer(dora_input["data"], dtype="uint8")
@@ -78,9 +79,30 @@ class Operator:
         if CI != "true":
             cv2.imshow("frame", self.image)
             if cv2.waitKey(1) & 0xFF == ord("q"):
-                return DoraStatus.STOP
+                return Status.STOP
 
-        return DoraStatus.CONTINUE
+        return Status.CONTINUE
 
     def __del__(self):
         cv2.destroyAllWindows()
+
+
+plotter = Plotter()
+node = Node()
+
+for event in node:
+    match event["type"]:
+        case "input":
+            status = plotter.on_input(event)
+            match status:
+                case Status.CONTINUE:
+                    pass
+                case Status.STOP:
+                    print("plotter returned stop status")
+                    break
+        case "stop":
+            print("received stop")
+            break
+        case other:
+            print("received unexpected event:", other)
+            break

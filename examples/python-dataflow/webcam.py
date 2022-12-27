@@ -15,9 +15,17 @@ start = time.time()
 # Run for 20 seconds
 while time.time() - start < 10:
     # Wait next dora_input
-    node.next()
-    ret, frame = video_capture.read()
-    if ret:
-        node.send_output("image", cv2.imencode(".jpg", frame)[1].tobytes())
+    event = node.next()
+    match event["type"]:
+        case "input":
+            ret, frame = video_capture.read()
+            if ret:
+                node.send_output("image", cv2.imencode(".jpg", frame)[1].tobytes())
+        case "stop":
+            print("received stop")
+            break
+        case other:
+            print("received unexpected event:", other)
+            break
 
 video_capture.release()
