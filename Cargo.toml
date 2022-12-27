@@ -32,6 +32,8 @@ dora-core = { path = "libraries/core" }
 dunce = "1.0.2"
 serde_yaml = "0.8.23"
 uuid = { version = "1.2.1", features = ["v4", "serde"] }
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"
 
 [[example]]
 name = "c-dataflow"

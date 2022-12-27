@@ -414,6 +414,9 @@ impl Daemon {
                     if let Some(exit_when_done) = &mut self.exit_when_done {
                         exit_when_done.remove(&dataflow_id);
                         if exit_when_done.is_empty() {
+                            tracing::info!(
+                                "exiting daemon because all required dataflows are finished"
+                            );
                             return Ok(RunStatus::Exit);
                         }
                     }

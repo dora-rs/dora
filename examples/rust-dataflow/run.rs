@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
@@ -68,4 +70,13 @@ pub async fn read_descriptor(file: &Path) -> eyre::Result<Descriptor> {
     let descriptor: Descriptor =
         serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
     Ok(descriptor)
+}
+
+fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+    let stdout_log = tracing_subscriber::fmt::layer().pretty();
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
 }

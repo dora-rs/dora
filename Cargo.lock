@@ -1009,6 +1009,8 @@ dependencies = [
  "eyre",
  "serde_yaml 0.8.23",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid 1.2.1",
 ]
 
