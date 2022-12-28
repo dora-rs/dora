@@ -84,6 +84,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: "Remote Rust Dataflow example"
+        if: false # skip this example for now until we uploaded new test nodes
         timeout-minutes: 30
         run: cargo run --example rust-dataflow-url
 
