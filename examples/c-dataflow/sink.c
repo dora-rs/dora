@@ -19,28 +19,47 @@ int main()
     while (1)
     {
         printf("[c sink] waiting for next input\n");
-        void *input = dora_next_input(dora_context);
-        if (input == NULL)
+        void *event = dora_next_event(dora_context);
+        if (event == NULL)
         {
-            printf("[c sink] end of input\n");
+            printf("[c sink] end of event\n");
             break;
         }
 
-        char *id;
-        size_t id_len;
-        read_dora_input_id(input, &id, &id_len);
+        enum EventType ty = read_dora_event_type(event);
 
-        char *data;
-        size_t data_len;
-        read_dora_input_data(input, &data, &data_len);
+        if (ty == Input)
+        {
+            char *id;
+            size_t id_len;
+            read_dora_input_id(event, &id, &id_len);
 
-        printf("sink received input `");
-        fwrite(id, id_len, 1, stdout);
-        printf("` with data: '");
-        fwrite(data, data_len, 1, stdout);
-        printf("'\n");
+            char *data;
+            size_t data_len;
+            read_dora_input_data(event, &data, &data_len);
 
-        free_dora_input(input);
+            printf("[c sink] received input `");
+            fwrite(id, id_len, 1, stdout);
+            printf("` with data: %d\n", *data);
+        }
+        else if (ty == InputClosed)
+        {
+            printf("[c sink] received InputClosed event\n");
+            free_dora_event(event);
+            break;
+        }
+        else if (ty == Stop)
+        {
+            printf("[c sink] received stop event\n");
+            free_dora_event(event);
+            break;
+        }
+        else
+        {
+            printf("[c sink] received unexpected event: %d\n", ty);
+        }
+
+        free_dora_event(event);
     }
 
     free_dora_context(dora_context);

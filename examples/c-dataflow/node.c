@@ -23,29 +23,44 @@ int main()
 
     printf("[c node] dora context initialized\n");
 
-    for (char i = 0; i < 10; i++)
+    for (char i = 0; i < 100; i++)
     {
         printf("[c node] waiting for next input\n");
-        void *input = dora_next_input(dora_context);
-        if (input == NULL)
+        void *event = dora_next_event(dora_context);
+        if (event == NULL)
         {
-            printf("[c node] ERROR: unexpected end of input\n");
+            printf("[c node] ERROR: unexpected end of event\n");
             return -1;
         }
 
-        char *data;
-        size_t data_len;
-        read_dora_input_data(input, &data, &data_len);
+        enum EventType ty = read_dora_event_type(event);
 
-        assert(data_len == 0);
+        if (ty == Input)
+        {
+            char *data;
+            size_t data_len;
+            read_dora_input_data(event, &data, &data_len);
 
-        char out_id[] = "tick";
-        dora_send_output(dora_context, out_id, strlen(out_id), &i, 1);
+            assert(data_len == 0);
 
-        free_dora_input(input);
+            char out_id[] = "counter";
+            dora_send_output(dora_context, out_id, strlen(out_id), &i, 1);
+        }
+        else if (ty == Stop)
+        {
+            printf("[c node] received stop event\n");
+            free_dora_event(event);
+            break;
+        }
+        else
+        {
+            printf("[c node] received unexpected event: %d\n", ty);
+        }
+
+        free_dora_event(event);
     }
 
-    printf("[c node] received 10 inputs\n");
+    printf("[c node] received 10 events\n");
 
     free_dora_context(dora_context);
 
