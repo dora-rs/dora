@@ -67,15 +67,6 @@ jobs:
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
 
-      - name: "Start RouDi (iceoryx)"
-        if: runner.os != 'Windows'
-        run: find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec {} \; &
-
-      - name: "Rust iceoryx example"
-        if: runner.os != 'Windows'
-        timeout-minutes: 30
-        run: cargo run --example iceoryx
-
   examples-remote:
     name: "Examples (Remote)"
     runs-on: ubuntu-latest
