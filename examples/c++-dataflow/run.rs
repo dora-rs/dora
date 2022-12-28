@@ -20,22 +20,6 @@ async fn main() -> eyre::Result<()> {
     tokio::fs::create_dir_all("build").await?;
     let build_dir = Path::new("build");
 
-    build_package("dora-operator-api-cxx").await?;
-    let operator_cxxbridge = target
-        .join("cxxbridge")
-        .join("dora-operator-api-cxx")
-        .join("src");
-    tokio::fs::copy(
-        operator_cxxbridge.join("lib.rs.cc"),
-        build_dir.join("operator-bridge.cc"),
-    )
-    .await?;
-    tokio::fs::copy(
-        operator_cxxbridge.join("lib.rs.h"),
-        build_dir.join("dora-operator-api.h"),
-    )
-    .await?;
-
     build_package("dora-node-api-cxx").await?;
     let node_cxxbridge = target
         .join("cxxbridge")
@@ -58,7 +42,7 @@ async fn main() -> eyre::Result<()> {
     .await?;
 
     build_package("dora-node-api-c").await?;
-    build_package("dora-operator-api-c").await?;
+    // build_package("dora-operator-api-c").await?;
     build_cxx_node(
         root,
         &[
@@ -69,45 +53,42 @@ async fn main() -> eyre::Result<()> {
         &["-l", "dora_node_api_cxx"],
     )
     .await?;
-    build_cxx_node(
-        root,
-        &[&dunce::canonicalize(
-            Path::new("node-c-api").join("main.cc"),
-        )?],
-        "node_c_api",
-        &["-l", "dora_node_api_c"],
-    )
-    .await?;
-    build_cxx_operator(
-        &[
-            &dunce::canonicalize(Path::new("operator-rust-api").join("operator.cc"))?,
-            &dunce::canonicalize(build_dir.join("operator-bridge.cc"))?,
-        ],
-        "operator_rust_api",
-        &[
-            "-l",
-            "dora_operator_api_cxx",
-            "-L",
-            &root.join("target").join("debug").to_str().unwrap(),
-        ],
-    )
-    .await?;
-    build_cxx_operator(
-        &[&dunce::canonicalize(
-            Path::new("operator-c-api").join("operator.cc"),
-        )?],
-        "operator_c_api",
-        &[],
-    )
-    .await?;
+    // build_cxx_node(
+    //     root,
+    //     &[&dunce::canonicalize(
+    //         Path::new("node-c-api").join("main.cc"),
+    //     )?],
+    //     "node_c_api",
+    //     &["-l", "dora_node_api_c"],
+    // )
+    // .await?;
+    // build_cxx_operator(
+    //     &[
+    //         &dunce::canonicalize(Path::new("operator-rust-api").join("operator.cc"))?,
+    //         &dunce::canonicalize(build_dir.join("operator-bridge.cc"))?,
+    //     ],
+    //     "operator_rust_api",
+    //     &[
+    //         "-l",
+    //         "dora_operator_api_cxx",
+    //         "-L",
+    //         &root.join("target").join("debug").to_str().unwrap(),
+    //     ],
+    // )
+    // .await?;
+    // build_cxx_operator(
+    //     &[&dunce::canonicalize(
+    //         Path::new("operator-c-api").join("operator.cc"),
+    //     )?],
+    //     "operator_c_api",
+    //     &[],
+    // )
+    // .await?;
 
-    build_package("dora-runtime").await?;
+    // build_package("dora-runtime").await?;
 
-    dora_coordinator::run(dora_coordinator::Args {
-        run_dataflow: Path::new("dataflow.yml").to_owned().into(),
-        runtime: Some(root.join("target").join("debug").join("dora-runtime")),
-    })
-    .await?;
+    let dataflow = Path::new("dataflow.yml").to_owned();
+    dora_daemon::Daemon::run_dataflow(&dataflow).await?;
 
     Ok(())
 }
