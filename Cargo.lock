@@ -1147,37 +1147,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-runtime"
-version = "0.1.2"
-dependencies = [
- "clap 3.2.20",
- "dora-core",
- "dora-download",
- "dora-message",
- "dora-metrics",
- "dora-node-api",
- "dora-operator-api-python",
- "dora-operator-api-types",
- "dora-tracing",
- "eyre",
- "fern",
- "flume",
- "futures",
- "futures-concurrency 2.0.3",
- "libloading",
- "opentelemetry",
- "opentelemetry-system-metrics",
- "pyo3",
- "serde_yaml 0.8.23",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
- "zenoh",
- "zenoh-config",
-]
-
-[[package]]
 name = "dora-tracing"
 version = "0.1.2"
 dependencies = [
@@ -1255,15 +1224,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3fcf0cee53519c866c09b5de1f6c56ff9d647101f81c1964fa632e148896cdf"
 dependencies = [
  "instant",
-]
-
-[[package]]
-name = "fern"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bdd7b0849075e79ee9a1836df22c717d1eba30451796fdc631b04565dd11e2a"
-dependencies = [
- "log",
 ]
 
 [[package]]
@@ -1355,17 +1315,6 @@ checksum = "52ba265a92256105f45b719605a571ffe2d1f0fea3807304b522c1d778f79eed"
 dependencies = [
  "futures-core",
  "futures-sink",
-]
-
-[[package]]
-name = "futures-concurrency"
-version = "2.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e98b7b5aedee7c34a5cfb1ee1681af8faf46e2f30c0b8af5ea08eba517d61c"
-dependencies = [
- "async-trait",
- "futures-core",
- "pin-project",
 ]
 
 [[package]]
