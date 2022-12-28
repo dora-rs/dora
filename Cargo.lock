@@ -1673,32 +1673,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iceoryx-example-node"
-version = "0.1.2"
-dependencies = [
- "dora-node-api",
- "eyre",
- "rand",
-]
-
-[[package]]
-name = "iceoryx-example-operator"
-version = "0.1.2"
-dependencies = [
- "dora-operator-api",
-]
-
-[[package]]
-name = "iceoryx-example-sink"
-version = "0.1.2"
-dependencies = [
- "dora-node-api",
- "eyre",
- "futures",
- "tokio",
-]
-
-[[package]]
 name = "iceoryx-rs"
 version = "0.1.0"
 source = "git+https://github.com/eclipse-iceoryx/iceoryx-rs.git#68fbd034a77c6ed98cb75a939d406429ef26b0dd"
