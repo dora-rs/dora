@@ -12,7 +12,6 @@ members = [
     "binaries/daemon",
     # "binaries/runtime",
     "examples/rust-dataflow/*",
-    "examples/iceoryx/*",
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
@@ -66,7 +65,3 @@ path = "examples/c++-dataflow/run.rs"
 [[example]]
 name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
-
-[[example]]
-name = "iceoryx"
-path = "examples/iceoryx/run.rs"
