@@ -92,31 +92,34 @@ jobs:
 
       - name: "Build cli and binaries"
         timeout-minutes: 30
-        run: cargo build --all
+        run: |
+          cargo install --path binaries/coordinator
+          cargo install --path binaries/runtime
+          cargo install --path binaries/cli
 
       - name: "Test dora-coordinator"
         run: |
-            cargo run -p dora-coordinator &
+          dora-coordinator &
 
       - name: "Test dora `list"
-        run: cargo run -p dora-cli -- list
+        run: dora-cli list
 
       - name: "Test new command"
         run: |
-            cargo run -p dora-cli -- new test_project
+            dora-cli new test_project
             cd test_project
 
       - name: "Test start and stop command"
         timeout-minutes: 30
         run: |
             cargo build --all
-            UUID=$(../target/debug/dora-cli start dataflow.yml)
+            UUID=$(dora-cli start dataflow.yml)
             sleep 10
-            ../target/debug/dora-cli stop $UUID
+            dora-cli stop $UUID
             cd .. 
 
       - name: "Test dora `destroy"
-        run: cargo run -p dora-cli -- destroy
+        run: dora-cli destroy
 
   examples-remote:
     name: "Examples (Remote)"
