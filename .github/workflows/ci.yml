@@ -107,11 +107,11 @@ jobs:
       - name: "Test new command"
         run: |
             dora-cli new test_project
-            cd test_project
 
       - name: "Test start and stop command"
         timeout-minutes: 30
         run: |
+            cd test_project
             cargo build --all
             UUID=$(dora-cli start dataflow.yml)
             sleep 10
