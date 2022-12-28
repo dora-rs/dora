@@ -9,13 +9,8 @@ async fn main() -> eyre::Result<()> {
 
     let dataflow = Path::new("dataflow.yml");
     build_dataflow(dataflow).await?;
-    build_package("dora-runtime").await?;
 
-    dora_coordinator::run(dora_coordinator::Args {
-        run_dataflow: dataflow.to_owned().into(),
-        runtime: Some(root.join("target").join("debug").join("dora-runtime")),
-    })
-    .await?;
+    dora_daemon::Daemon::run_dataflow(dataflow).await?;
 
     Ok(())
 }
