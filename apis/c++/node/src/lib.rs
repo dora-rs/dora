@@ -1,14 +1,27 @@
-use dora_node_api::{self, Input, Receiver};
+use dora_node_api::{
+    self,
+    daemon::{Event, EventStream},
+};
+use eyre::bail;
 
 #[cxx::bridge]
+#[allow(clippy::needless_lifetimes)]
 mod ffi {
     struct DoraNode {
-        inputs: Box<Inputs>,
+        events: Box<Events>,
         send_output: Box<OutputSender>,
     }
 
+    pub enum DoraEventType {
+        Stop,
+        Input,
+        InputClosed,
+        Error,
+        Unknown,
+        AllInputsClosed,
+    }
+
     struct DoraInput {
-        end_of_input: bool,
         id: String,
         data: Vec<u8>,
     }
@@ -18,12 +31,16 @@ mod ffi {
     }
 
     extern "Rust" {
-        type Inputs;
+        type Events;
         type OutputSender;
+        type DoraEvent<'a>;
 
         fn init_dora_node() -> Result<DoraNode>;
         fn free_dora_node(node: DoraNode);
-        fn next_input(inputs: &mut Box<Inputs>) -> DoraInput;
+
+        fn next_event(inputs: &mut Box<Events>) -> Box<DoraEvent<'_>>;
+        fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
+        fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -33,13 +50,12 @@ mod ffi {
 }
 
 fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
-    let mut node = dora_node_api::DoraNode::init_from_env()?;
-    let input_stream = node.inputs()?;
-    let inputs = Inputs(input_stream);
+    let (node, events) = dora_node_api::DoraNode::init_from_env()?;
+    let inputs = Events(events);
     let send_output = OutputSender(node);
 
     Ok(ffi::DoraNode {
-        inputs: Box::new(inputs),
+        events: Box::new(inputs),
         send_output: Box::new(send_output),
     })
 }
@@ -48,25 +64,35 @@ fn free_dora_node(node: ffi::DoraNode) {
     let _ = node;
 }
 
-pub struct Inputs(Receiver<Input>);
+pub struct Events(EventStream);
 
-fn next_input(inputs: &mut Box<Inputs>) -> ffi::DoraInput {
-    match inputs.0.recv() {
-        Ok(input) => {
-            let id = input.id.clone().into();
-            let data = input.data();
-            ffi::DoraInput {
-                end_of_input: false,
-                id,
-                data: data.into_owned(),
-            }
-        }
-        Err(_) => ffi::DoraInput {
-            end_of_input: true,
-            id: String::new(),
-            data: Vec::new(),
+fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
+    Box::new(DoraEvent(events.0.recv()))
+}
+
+pub struct DoraEvent<'a>(Option<Event<'a>>);
+
+fn event_type(event: &Box<DoraEvent>) -> ffi::DoraEventType {
+    match &event.0 {
+        Some(event) => match event {
+            Event::Stop => ffi::DoraEventType::Stop,
+            Event::Input { .. } => ffi::DoraEventType::Input,
+            Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
+            Event::Error(_) => ffi::DoraEventType::Error,
+            _ => ffi::DoraEventType::Unknown,
         },
+        None => ffi::DoraEventType::AllInputsClosed,
     }
+}
+
+fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
+    let Some(Event::Input { id, metadata: _, data }) = event.0 else {
+        bail!("not an input event");
+    };
+    Ok(ffi::DoraInput {
+        id: id.into(),
+        data: data.map(|d| d.to_owned()).unwrap_or_default(),
+    })
 }
 
 pub struct OutputSender(dora_node_api::DoraNode);
@@ -74,7 +100,7 @@ pub struct OutputSender(dora_node_api::DoraNode);
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
     let result = sender
         .0
-        .send_output(&id.into(), Default::default(), data.len(), |out| {
+        .send_output(id.into(), Default::default(), data.len(), |out| {
             out.copy_from_slice(data)
         });
     let error = match result {
