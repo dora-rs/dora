@@ -13,18 +13,12 @@ async fn main() -> eyre::Result<()> {
 
     tokio::fs::create_dir_all("build").await?;
 
-    build_package("dora-runtime").await?;
     build_package("dora-node-api-c").await?;
-    build_package("dora-operator-api-c").await?;
     build_c_node(root, "node.c", "c_node").await?;
     build_c_node(root, "sink.c", "c_sink").await?;
-    build_c_operator().await?;
 
-    dora_coordinator::run(dora_coordinator::Args {
-        run_dataflow: Path::new("dataflow.yml").to_owned().into(),
-        runtime: Some(root.join("target").join("debug").join("dora-runtime")),
-    })
-    .await?;
+    let dataflow = Path::new("dataflow.yml").to_owned();
+    dora_daemon::Daemon::run_dataflow(&dataflow).await?;
 
     Ok(())
 }
@@ -100,28 +94,6 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
     if !clang.status().await?.success() {
         bail!("failed to compile c node");
     };
-    Ok(())
-}
-
-async fn build_c_operator() -> eyre::Result<()> {
-    let mut compile = tokio::process::Command::new("clang");
-    compile.arg("-c").arg("operator.c");
-    compile.arg("-o").arg("build/operator.o");
-    compile.arg("-fdeclspec");
-    #[cfg(unix)]
-    compile.arg("-fPIC");
-    if !compile.status().await?.success() {
-        bail!("failed to compile c operator");
-    };
-
-    let mut link = tokio::process::Command::new("clang");
-    link.arg("-shared").arg("build/operator.o");
-    link.arg("-o")
-        .arg(Path::new("build").join(library_filename("operator")));
-    if !link.status().await?.success() {
-        bail!("failed to link c operator");
-    };
-
     Ok(())
 }
 
