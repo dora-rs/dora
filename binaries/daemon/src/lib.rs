@@ -39,7 +39,7 @@ mod tcp_utils;
 
 pub struct Daemon {
     port: u16,
-    prepared_messages: HashMap<String, (DataId, dora_message::Metadata<'static>, Option<Shmem>)>,
+    prepared_messages: HashMap<String, PreparedMessage>,
     sent_out_shared_memory: HashMap<DropToken, Rc<Shmem>>,
 
     running: HashMap<DataflowId, RunningDataflow>,
@@ -342,8 +342,12 @@ impl Daemon {
                     .as_ref()
                     .map(|m| m.get_os_id().to_owned())
                     .unwrap_or_else(|| Uuid::new_v4().to_string());
-                self.prepared_messages
-                    .insert(id.clone(), (output_id, metadata, memory));
+                let message = PreparedMessage {
+                    output_id,
+                    metadata,
+                    data: memory.map(|m| (m, data_len)),
+                };
+                self.prepared_messages.insert(id.clone(), message);
 
                 let reply = ControlReply::PreparedMessage {
                     shared_memory_id: id.clone(),
@@ -354,12 +358,16 @@ impl Daemon {
                 }
             }
             DaemonNodeEvent::SendOutMessage { id } => {
-                let (output_id, metadata, memory) = self
+                let message = self
                     .prepared_messages
                     .remove(&id)
                     .ok_or_else(|| eyre!("invalid shared memory id"))?;
-
-                let memory = memory.map(Rc::new);
+                let PreparedMessage {
+                    output_id,
+                    metadata,
+                    data,
+                } = message;
+                let data = data.map(|(m, len)| (Rc::new(m), len));
 
                 let dataflow = self
                     .running
@@ -381,8 +389,9 @@ impl Daemon {
                         let send_result = channel.send_async(daemon_messages::NodeEvent::Input {
                             id: input_id.clone(),
                             metadata: metadata.clone(),
-                            data: memory.as_ref().map(|m| daemon_messages::InputData {
+                            data: data.as_ref().map(|(m, len)| daemon_messages::InputData {
                                 shared_memory_id: m.get_os_id().to_owned(),
+                                len: *len,
                                 drop_token: drop_token.clone(),
                             }),
                         });
@@ -390,7 +399,7 @@ impl Daemon {
                         match timeout(Duration::from_millis(10), send_result).await {
                             Ok(Ok(())) => {
                                 // keep shared memory ptr in order to free it once all subscribers are done
-                                if let Some(memory) = &memory {
+                                if let Some((memory, _)) = &data {
                                     self.sent_out_shared_memory
                                         .insert(drop_token, memory.clone());
                                 }
@@ -411,8 +420,8 @@ impl Daemon {
                 }
 
                 // TODO send `data` via network to all remove receivers
-                if let Some(memory) = &memory {
-                    let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), memory.len());
+                if let Some((memory, len)) = &data {
+                    let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), *len);
                 }
 
                 let _ = reply_sender.send(ControlReply::Result(Ok(())));
@@ -560,6 +569,12 @@ impl Daemon {
         }
         Ok(RunStatus::Continue)
     }
+}
+
+struct PreparedMessage {
+    output_id: DataId,
+    metadata: dora_message::Metadata<'static>,
+    data: Option<(Shmem, usize)>,
 }
 
 #[derive(Default)]

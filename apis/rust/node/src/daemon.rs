@@ -216,7 +216,7 @@ impl EventStream {
             NodeEvent::InputClosed { id } => Event::InputClosed { id },
             NodeEvent::Input { id, metadata, data } => {
                 let mapped = data
-                    .map(|d| unsafe { MappedInputData::map(&d.shared_memory_id) })
+                    .map(|d| unsafe { MappedInputData::map(&d.shared_memory_id, d.len) })
                     .transpose();
                 match mapped {
                     Ok(mapped) => Event::Input {
@@ -276,17 +276,19 @@ impl std::fmt::Debug for Data<'_> {
 
 pub struct MappedInputData<'a> {
     memory: Shmem,
+    len: usize,
     _data: PhantomData<&'a [u8]>,
 }
 
 impl MappedInputData<'_> {
-    unsafe fn map(shared_memory_id: &str) -> eyre::Result<Self> {
+    unsafe fn map(shared_memory_id: &str, len: usize) -> eyre::Result<Self> {
         let memory = ShmemConf::new()
             .os_id(shared_memory_id)
             .open()
             .wrap_err("failed to map shared memory input")?;
         Ok(MappedInputData {
             memory,
+            len,
             _data: PhantomData,
         })
     }
@@ -296,7 +298,7 @@ impl std::ops::Deref for MappedInputData<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { self.memory.as_slice() }
+        unsafe { &self.memory.as_slice()[..self.len] }
     }
 }
 
