@@ -60,6 +60,11 @@ jobs:
       - name: "Rust Dataflow example"
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
+
+      - name: "Benchmark example"
+        timeout-minutes: 30
+        run: cargo run --example benchmark --release
+
       - name: "C Dataflow example"
         timeout-minutes: 15
         run: cargo run --example c-dataflow
