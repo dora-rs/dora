@@ -82,7 +82,7 @@ impl DoraNode {
                 .wrap_err("failed to open shared memory sample")?;
 
             let raw = unsafe { shared_memory.as_slice_mut() };
-            data(raw);
+            data(&mut raw[..data_len]);
         } else {
             data(&mut []);
         }
