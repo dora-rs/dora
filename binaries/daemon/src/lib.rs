@@ -251,6 +251,9 @@ impl Daemon {
                 let reply = DaemonCoordinatorReply::DestroyResult(Ok(()));
                 (reply, RunStatus::Exit)
             }
+            DaemonCoordinatorEvent::Watchdog => {
+                (DaemonCoordinatorReply::WatchdogAck, RunStatus::Continue)
+            }
         }
     }
 
