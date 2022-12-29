@@ -76,6 +76,7 @@ impl DropToken {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct InputData {
     pub shared_memory_id: SharedMemoryId,
+    pub len: usize,
     pub drop_token: DropToken,
 }
 
