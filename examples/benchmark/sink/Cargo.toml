@@ -1,0 +1,10 @@
+[package]
+name = "benchmark-example-sink"
+version.workspace = true
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = "0.6.8"
