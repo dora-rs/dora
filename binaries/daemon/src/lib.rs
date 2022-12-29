@@ -50,7 +50,7 @@ pub struct Daemon {
     machine_id: String,
 
     /// used for testing and examples
-    exit_when_done: Option<BTreeSet<Uuid>>,
+    exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
 }
 
 impl Daemon {
@@ -94,7 +94,11 @@ impl Daemon {
             nodes: custom_nodes,
         };
 
-        let exit_when_done = [spawn_command.dataflow_id].into();
+        let exit_when_done = spawn_command
+            .nodes
+            .iter()
+            .map(|(id, _)| (spawn_command.dataflow_id, id.clone()))
+            .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
         let coordinator_events = stream::once(async move {
             Event::Coordinator(CoordinatorEvent {
@@ -126,7 +130,7 @@ impl Daemon {
         external_events: impl Stream<Item = Event> + Unpin,
         coordinator_addr: Option<SocketAddr>,
         machine_id: String,
-        exit_when_done: Option<BTreeSet<Uuid>>,
+        exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     ) -> eyre::Result<()> {
         // create listener for node connection
         let listener = listener::create_listener().await?;
@@ -187,15 +191,13 @@ impl Daemon {
                     event,
                     reply_sender,
                 } => {
-                    match self
-                        .handle_node_event(event, dataflow, node_id, reply_sender)
+                    self.handle_node_event(event, dataflow, node_id, reply_sender)
                         .await?
-                    {
-                        RunStatus::Continue => {}
-                        RunStatus::Exit => break,
-                    }
                 }
-                Event::Dora(event) => self.handle_dora_event(event).await?,
+                Event::Dora(event) => match self.handle_dora_event(event).await? {
+                    RunStatus::Continue => {}
+                    RunStatus::Exit => break,
+                },
                 Event::Drop(DropEvent { token }) => {
                     match self.sent_out_shared_memory.remove(&token) {
                         Some(rc) => {
@@ -309,7 +311,7 @@ impl Daemon {
         dataflow_id: DataflowId,
         node_id: NodeId,
         reply_sender: oneshot::Sender<ControlReply>,
-    ) -> eyre::Result<RunStatus> {
+    ) -> eyre::Result<()> {
         match event {
             DaemonNodeEvent::Subscribe { event_sender } => {
                 let result = match self.running.get_mut(&dataflow_id) {
@@ -467,23 +469,13 @@ impl Daemon {
                         }
                     }
                     self.running.remove(&dataflow_id);
-
-                    if let Some(exit_when_done) = &mut self.exit_when_done {
-                        exit_when_done.remove(&dataflow_id);
-                        if exit_when_done.is_empty() {
-                            tracing::info!(
-                                "exiting daemon because all required dataflows are finished"
-                            );
-                            return Ok(RunStatus::Exit);
-                        }
-                    }
                 }
             }
         }
-        Ok(RunStatus::Continue)
+        Ok(())
     }
 
-    async fn handle_dora_event(&mut self, event: DoraEvent) -> eyre::Result<()> {
+    async fn handle_dora_event(&mut self, event: DoraEvent) -> eyre::Result<RunStatus> {
         match event {
             DoraEvent::Timer {
                 dataflow_id,
@@ -492,11 +484,11 @@ impl Daemon {
             } => {
                 let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
                     tracing::warn!("Timer event for unknown dataflow `{dataflow_id}`");
-                    return Ok(())
+                    return Ok(RunStatus::Continue);
                 };
 
                 let Some(subscribers) = dataflow.timers.get(&interval) else {
-                    return Ok(());
+                    return Ok(RunStatus::Continue);
                 };
 
                 let mut closed = Vec::new();
@@ -543,18 +535,30 @@ impl Daemon {
                 }
                 match result {
                     Ok(()) => {
-                        tracing::info!("node {dataflow_id}/{node_id} finished");
+                        tracing::info!("node {dataflow_id}/{node_id} finished successfully");
                     }
                     Err(err) => {
-                        tracing::error!(
-                            "{:?}",
-                            err.wrap_err(format!("error in node `{dataflow_id}/{node_id}`"))
+                        let err = err.wrap_err(format!("error in node `{dataflow_id}/{node_id}`"));
+                        if self.exit_when_done.is_some() {
+                            bail!(err);
+                        } else {
+                            tracing::error!("{err:?}",);
+                        }
+                    }
+                }
+
+                if let Some(exit_when_done) = &mut self.exit_when_done {
+                    exit_when_done.remove(&(dataflow_id, node_id));
+                    if exit_when_done.is_empty() {
+                        tracing::info!(
+                            "exiting daemon because all required dataflows are finished"
                         );
+                        return Ok(RunStatus::Exit);
                     }
                 }
             }
         }
-        Ok(())
+        Ok(RunStatus::Continue)
     }
 }
 
