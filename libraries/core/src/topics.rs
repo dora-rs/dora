@@ -27,6 +27,7 @@ pub enum ControlRequest {
     },
     Destroy,
     List,
+    DaemonConnected,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
