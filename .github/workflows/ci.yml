@@ -106,8 +106,10 @@ jobs:
         run: cargo clippy --all
       - name: "Clippy (tracing feature)"
         run: cargo clippy --all --features tracing
+        if: false # only the dora-runtime has this feature, but it is currently commented out
       - name: "Clippy (metrics feature)"
         run: cargo clippy --all --features metrics
+        if: false # only the dora-runtime has this feature, but it is currently commented out
 
   rustfmt:
     name: "Formatting"
