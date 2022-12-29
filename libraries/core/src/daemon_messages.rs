@@ -85,6 +85,7 @@ pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
     StopDataflow { dataflow_id: DataflowId },
     Destroy,
+    Watchdog,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -92,6 +93,7 @@ pub enum DaemonCoordinatorReply {
     SpawnResult(Result<(), String>),
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
+    WatchdogAck,
 }
 
 pub type DataflowId = Uuid;
