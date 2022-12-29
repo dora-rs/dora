@@ -33,9 +33,9 @@ int main()
             return -1;
         }
 
-        enum EventType ty = read_dora_event_type(event);
+        enum DoraEventType ty = read_dora_event_type(event);
 
-        if (ty == Input)
+        if (ty == DoraEventType_Input)
         {
             char *data;
             size_t data_len;
@@ -46,7 +46,7 @@ int main()
             char out_id[] = "counter";
             dora_send_output(dora_context, out_id, strlen(out_id), &i, 1);
         }
-        else if (ty == Stop)
+        else if (ty == DoraEventType_Stop)
         {
             printf("[c node] received stop event\n");
             free_dora_event(event);

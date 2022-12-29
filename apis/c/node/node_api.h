@@ -6,15 +6,15 @@ void free_dora_context(void *dora_context);
 void *dora_next_event(void *dora_context);
 void free_dora_event(void *dora_event);
 
-enum EventType
+enum DoraEventType
 {
-    Stop,
-    Input,
-    InputClosed,
-    Error,
-    Unknown,
+    DoraEventType_Stop,
+    DoraEventType_Input,
+    DoraEventType_InputClosed,
+    DoraEventType_Error,
+    DoraEventType_Unknown,
 };
-enum EventType read_dora_event_type(void *dora_event);
+enum DoraEventType read_dora_event_type(void *dora_event);
 
 void read_dora_input_id(void *dora_event, char **out_ptr, size_t *out_len);
 void read_dora_input_data(void *dora_event, char **out_ptr, size_t *out_len);
