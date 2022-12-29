@@ -1,7 +1,10 @@
-use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
+use crate::{
+    tcp_utils::{tcp_receive, tcp_send},
+    DaemonEvent, DataflowEvent, Event,
+};
 use dora_core::coordinator_messages;
 use eyre::{eyre, Context};
-use std::{io::ErrorKind, net::Ipv4Addr};
+use std::{io::ErrorKind, net::Ipv4Addr, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
@@ -65,6 +68,14 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                     if events_tx.send(event).await.is_err() {
                         break;
                     }
+                }
+                coordinator_messages::DaemonEvent::Watchdog => {
+                    let reply = serde_json::to_vec(&coordinator_messages::WatchdogAck).unwrap();
+                    _ = tokio::time::timeout(
+                        Duration::from_millis(10),
+                        tcp_send(&mut connection, &reply),
+                    )
+                    .await;
                 }
             },
         };

@@ -98,7 +98,7 @@ pub async fn send_event(
     addr: SocketAddr,
     machine_id: String,
     event: DaemonEvent,
-) -> eyre::Result<()> {
+) -> eyre::Result<TcpStream> {
     let mut stream = TcpStream::connect(addr)
         .await
         .wrap_err("failed to connect to dora-coordinator")?;
@@ -108,5 +108,7 @@ pub async fn send_event(
     let msg = serde_json::to_vec(&CoordinatorRequest::Event { machine_id, event })?;
     tcp_send(&mut stream, &msg)
         .await
-        .wrap_err("failed to send event to dora-coordinator")
+        .wrap_err("failed to send event to dora-coordinator")?;
+
+    Ok(stream)
 }
