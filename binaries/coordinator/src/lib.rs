@@ -253,6 +253,10 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 
                             serde_json::to_vec(&reply).unwrap()
                         }
+                        ControlRequest::DaemonConnected => {
+                            let running = !daemon_connections.is_empty();
+                            serde_json::to_vec(&running).unwrap()
+                        }
                     };
                     let _ = reply_sender.send(reply);
                 }
