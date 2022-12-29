@@ -49,6 +49,8 @@ enum Command {
         config: Option<PathBuf>,
         #[clap(long)]
         coordinator_path: Option<PathBuf>,
+        #[clap(long)]
+        daemon_path: Option<PathBuf>,
     },
     Destroy {
         #[clap(long)]
@@ -125,9 +127,11 @@ fn main() -> eyre::Result<()> {
         Command::Up {
             config,
             coordinator_path,
+            daemon_path,
         } => up::up(
             config.as_deref(),
             coordinator_path.as_deref(),
+            daemon_path.as_deref(),
         )?,
         Command::Start { dataflow, name } => start_dataflow(dataflow, name, &mut session)?,
         Command::List => list(&mut session)?,

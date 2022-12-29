@@ -1,4 +1,7 @@
-use crate::{check::coordinator_running, control_connection};
+use crate::{
+    check::{coordinator_running, daemon_running},
+    control_connection,
+};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::ControlRequest;
 use eyre::Context;
@@ -10,11 +13,19 @@ struct UpConfig {}
 pub(crate) fn up(
     config_path: Option<&Path>,
     coordinator: Option<&Path>,
+    daemon: Option<&Path>,
 ) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
 
     if !coordinator_running()? {
         start_coordinator(coordinator).wrap_err("failed to start dora-coordinator")?;
+        // sleep a bit until the coordinator accepts connections
+        while !coordinator_running()? {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    if !daemon_running()? {
+        start_daemon(daemon).wrap_err("failed to start dora-daemon")?;
     }
 
     Ok(())
@@ -65,6 +76,14 @@ fn start_coordinator(coordinator: Option<&Path>) -> eyre::Result<()> {
     Ok(())
 }
 
+fn start_daemon(daemon: Option<&Path>) -> eyre::Result<()> {
+    let daemon = daemon.unwrap_or_else(|| Path::new("dora-daemon"));
 
+    let mut cmd = Command::new(daemon);
+    cmd.spawn()
+        .wrap_err_with(|| format!("failed to run {}", daemon.display()))?;
 
+    println!("started dora daemon");
 
+    Ok(())
+}

@@ -55,13 +55,15 @@ pub async fn run(args: Args) -> eyre::Result<()> {
 
 async fn start(runtime_path: &Path) -> eyre::Result<()> {
     let listener = listener::create_listener(DORA_COORDINATOR_PORT_DEFAULT).await?;
-    let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
-        c.map(Event::NewDaemonConnection)
-            .wrap_err("failed to open connection")
-            .unwrap_or_else(Event::DaemonConnectError)
-    });
+    let (new_daemon_connections, new_daemon_connections_abort) =
+        futures::stream::abortable(TcpListenerStream::new(listener).map(|c| {
+            c.map(Event::NewDaemonConnection)
+                .wrap_err("failed to open connection")
+                .unwrap_or_else(Event::DaemonConnectError)
+        }));
 
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
+    let mut daemon_events_tx = Some(daemon_events_tx);
     let daemon_events = ReceiverStream::new(daemon_events);
 
     let (control_events, control_events_abort) = futures::stream::abortable(
@@ -80,7 +82,13 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
         match event {
             Event::NewDaemonConnection(connection) => {
                 let events_tx = daemon_events_tx.clone();
-                tokio::spawn(listener::handle_connection(connection, events_tx));
+                if let Some(events_tx) = events_tx {
+                    tokio::spawn(listener::handle_connection(connection, events_tx));
+                } else {
+                    tracing::warn!(
+                        "ignoring new daemon connection because events_tx was closed already"
+                    );
+                }
             }
             Event::DaemonConnectError(err) => {
                 tracing::warn!("{:?}", err.wrap_err("failed to connect to dora-daemon"));
@@ -235,6 +243,13 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                     .await?;
                             }
 
+                            // destroy all connected daemons
+                            destroy_daemons(&mut daemon_connections).await?;
+
+                            // prevent the creation of new daemon connections
+                            new_daemon_connections_abort.abort();
+                            daemon_events_tx = None;
+
                             b"ok".as_slice().into()
                         }
                         ControlRequest::List => {
@@ -317,7 +332,7 @@ async fn stop_dataflow(
             _ => bail!("unexpected reply"),
         }
     }
-    tracing::info!("successfully stoped dataflow `{uuid}`");
+    tracing::info!("successfully stopped dataflow `{uuid}`");
 
     Ok(())
 }
@@ -341,6 +356,33 @@ async fn start_dataflow(
         communication_config,
         machines,
     })
+}
+
+async fn destroy_daemons(daemon_connections: &mut HashMap<String, TcpStream>) -> eyre::Result<()> {
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Destroy)?;
+
+    for (machine_id, mut daemon_connection) in daemon_connections.drain() {
+        tcp_send(&mut daemon_connection, &message)
+            .await
+            .wrap_err("failed to send destroy message to daemon")?;
+
+        // wait for reply
+        let reply_raw = tcp_receive(&mut daemon_connection)
+            .await
+            .wrap_err("failed to receive destroy reply from daemon")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize destroy reply from daemon")?
+        {
+            DaemonCoordinatorReply::DestroyResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to destroy dataflow")?,
+            _ => bail!("unexpected reply"),
+        }
+
+        tracing::info!("successfully destroyed daemon `{machine_id}`");
+    }
+
+    Ok(())
 }
 
 #[derive(Debug)]

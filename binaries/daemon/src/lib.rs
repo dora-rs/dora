@@ -118,7 +118,7 @@ impl Daemon {
             .and_then(|r| async {
                 match r {
                     DaemonCoordinatorReply::SpawnResult(result) => result.map_err(|err| eyre!(err)),
-                    DaemonCoordinatorReply::StopResult(_) => Err(eyre!("unexpected spawn reply")),
+                    _ => Err(eyre!("unexpected spawn reply")),
                 }
             });
 
@@ -180,10 +180,12 @@ impl Daemon {
                     tracing::warn!("{:?}", err.wrap_err("failed to connect"));
                 }
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
-                    let result = self.handle_coordinator_event(event).await;
-                    let _ = reply_tx.send(DaemonCoordinatorReply::SpawnResult(
-                        result.map_err(|err| format!("{err:?}")),
-                    ));
+                    let (reply, status) = self.handle_coordinator_event(event).await;
+                    let _ = reply_tx.send(reply);
+                    match status {
+                        RunStatus::Continue => {}
+                        RunStatus::Exit => break,
+                    }
                 }
                 Event::Node {
                     dataflow_id: dataflow,
@@ -219,22 +221,35 @@ impl Daemon {
     async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
-    ) -> eyre::Result<()> {
+    ) -> (DaemonCoordinatorReply, RunStatus) {
         match event {
             DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes { dataflow_id, nodes }) => {
-                self.spawn_dataflow(dataflow_id, nodes).await
+                let result = self.spawn_dataflow(dataflow_id, nodes).await;
+                let reply =
+                    DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
+                (reply, RunStatus::Continue)
             }
             DaemonCoordinatorEvent::StopDataflow { dataflow_id } => {
-                let dataflow = self
-                    .running
-                    .get_mut(&dataflow_id)
-                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+                let stop = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
 
-                for channel in dataflow.subscribe_channels.values_mut() {
-                    let _ = channel.send_async(daemon_messages::NodeEvent::Stop).await;
-                }
-
-                Ok(())
+                    for channel in dataflow.subscribe_channels.values_mut() {
+                        let _ = channel.send_async(daemon_messages::NodeEvent::Stop).await;
+                    }
+                    Result::<(), eyre::Report>::Ok(())
+                };
+                let reply = DaemonCoordinatorReply::SpawnResult(
+                    stop.await.map_err(|err| format!("{err:?}")),
+                );
+                (reply, RunStatus::Continue)
+            }
+            DaemonCoordinatorEvent::Destroy => {
+                tracing::info!("received destroy command -> exiting");
+                let reply = DaemonCoordinatorReply::DestroyResult(Ok(()));
+                (reply, RunStatus::Exit)
             }
         }
     }
