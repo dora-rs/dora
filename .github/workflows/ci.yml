@@ -97,7 +97,7 @@ jobs:
           cargo install --path binaries/runtime
           cargo install --path binaries/cli
 
-      - name: "Test dora-coordinator"
+      - name: "Start dora-coordinator"
         run: |
           dora-coordinator &
 
