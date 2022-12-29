@@ -20,6 +20,7 @@ use std::{
     rc::Rc,
     time::Duration,
 };
+use tcp_utils::tcp_receive;
 use tokio::{
     fs,
     net::TcpStream,
@@ -157,7 +158,17 @@ impl Daemon {
             exit_when_done,
         };
         let dora_events = ReceiverStream::new(dora_events_rx).map(Event::Dora);
-        let events = (external_events, new_connections, dora_events).merge();
+        let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+            Duration::from_secs(5),
+        ))
+        .map(|_| Event::WatchdogInterval);
+        let events = (
+            external_events,
+            new_connections,
+            dora_events,
+            watchdog_interval,
+        )
+            .merge();
         daemon.run_inner(events).await
     }
 
@@ -210,6 +221,23 @@ impl Daemon {
                             }
                         }
                         None => tracing::warn!("received unknown drop token {token:?}"),
+                    }
+                }
+                Event::WatchdogInterval => {
+                    if let Some(addr) = self.coordinator_addr {
+                        let mut connection = coordinator::send_event(
+                            addr,
+                            self.machine_id.clone(),
+                            DaemonEvent::Watchdog,
+                        )
+                        .await
+                        .wrap_err("lost connection to coordinator")?;
+                        let reply_raw = tcp_receive(&mut connection)
+                            .await
+                            .wrap_err("lost connection to coordinator")?;
+                        let _: dora_core::coordinator_messages::WatchdogAck =
+                            serde_json::from_slice(&reply_raw)
+                                .wrap_err("received unexpected watchdog reply from coordinator")?;
                     }
                 }
             }
@@ -620,6 +648,7 @@ pub enum Event {
     Coordinator(CoordinatorEvent),
     Dora(DoraEvent),
     Drop(DropEvent),
+    WatchdogInterval,
 }
 
 #[derive(Debug)]

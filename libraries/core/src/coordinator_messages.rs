@@ -19,6 +19,7 @@ pub enum DaemonEvent {
         dataflow_id: DataflowId,
         result: Result<(), String>,
     },
+    Watchdog,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -35,3 +36,6 @@ impl RegisterResult {
         }
     }
 }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct WatchdogAck;
