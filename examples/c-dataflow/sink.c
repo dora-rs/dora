@@ -26,9 +26,9 @@ int main()
             break;
         }
 
-        enum EventType ty = read_dora_event_type(event);
+        enum DoraEventType ty = read_dora_event_type(event);
 
-        if (ty == Input)
+        if (ty == DoraEventType_Input)
         {
             char *id;
             size_t id_len;
@@ -42,13 +42,13 @@ int main()
             fwrite(id, id_len, 1, stdout);
             printf("` with data: %d\n", *data);
         }
-        else if (ty == InputClosed)
+        else if (ty == DoraEventType_InputClosed)
         {
             printf("[c sink] received InputClosed event\n");
             free_dora_event(event);
             break;
         }
-        else if (ty == Stop)
+        else if (ty == DoraEventType_Stop)
         {
             printf("[c sink] received stop event\n");
             free_dora_event(event);
