@@ -49,8 +49,6 @@ int main()
         else if (ty == DoraEventType_Stop)
         {
             printf("[c node] received stop event\n");
-            free_dora_event(event);
-            break;
         }
         else
         {
