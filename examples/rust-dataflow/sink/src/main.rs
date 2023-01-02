@@ -6,7 +6,6 @@ fn main() -> eyre::Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Stop => break,
             Event::Input {
                 id,
                 metadata: _,
@@ -20,9 +19,11 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
+            Event::Stop => {
+                println!("Received manual stop");
+            }
             Event::InputClosed { id } => {
-                println!("Input `{id}` was closed -> exiting");
-                break;
+                println!("Input `{id}` was closed");
             }
             other => eprintln!("Received unexpected input: {other:?}"),
         }

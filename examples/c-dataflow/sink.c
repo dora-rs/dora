@@ -45,14 +45,10 @@ int main()
         else if (ty == DoraEventType_InputClosed)
         {
             printf("[c sink] received InputClosed event\n");
-            free_dora_event(event);
-            break;
         }
         else if (ty == DoraEventType_Stop)
         {
             printf("[c sink] received stop event\n");
-            free_dora_event(event);
-            break;
         }
         else
         {

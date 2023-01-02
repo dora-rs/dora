@@ -14,7 +14,6 @@ fn main() -> eyre::Result<()> {
         };
 
         match event {
-            Event::Stop => break,
             Event::Input {
                 id,
                 metadata,
@@ -30,6 +29,7 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
+            Event::Stop => println!("Received manual stop"),
             other => eprintln!("Received unexpected input: {other:?}"),
         }
     }

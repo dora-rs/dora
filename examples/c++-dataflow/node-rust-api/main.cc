@@ -41,7 +41,6 @@ int main()
         else
         {
             std::cerr << "Unknown event type " << static_cast<int>(ty) << std::endl;
-            return -1;
         }
     }
 
