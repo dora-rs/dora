@@ -184,6 +184,7 @@ impl Daemon {
         while let Some(event) = events.next().await {
             match event {
                 Event::NewConnection(connection) => {
+                    connection.set_nodelay(true)?;
                     let events_tx = node_events_tx.clone();
                     tokio::spawn(listener::handle_connection(connection, events_tx));
                 }
