@@ -24,9 +24,7 @@ while time.time() - start < 20:
             node.send_output("image", arr.tobytes())
         case "stop":
             print("received stop")
-            break
         case other:
             print("received unexpected event:", other)
-            break
 
     time.sleep(1)

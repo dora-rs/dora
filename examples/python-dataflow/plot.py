@@ -102,7 +102,5 @@ for event in node:
                     break
         case "stop":
             print("received stop")
-            break
         case other:
             print("received unexpected event:", other)
-            break
