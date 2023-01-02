@@ -94,6 +94,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
         }
         match event {
             Event::NewDaemonConnection(connection) => {
+                connection.set_nodelay(true)?;
                 let events_tx = daemon_events_tx.clone();
                 if let Some(events_tx) = events_tx {
                     tokio::spawn(listener::handle_connection(connection, events_tx));
