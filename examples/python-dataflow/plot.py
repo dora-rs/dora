@@ -92,7 +92,7 @@ node = Node()
 
 for event in node:
     match event["type"]:
-        case "input":
+        case "INPUT":
             status = plotter.on_input(event)
             match status:
                 case Status.CONTINUE:
@@ -100,7 +100,7 @@ for event in node:
                 case Status.STOP:
                     print("plotter returned stop status")
                     break
-        case "stop":
+        case "STOP":
             print("received stop")
         case other:
             print("received unexpected event:", other)
