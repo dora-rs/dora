@@ -17,11 +17,11 @@ while time.time() - start < 10:
     # Wait next dora_input
     event = node.next()
     match event["type"]:
-        case "input":
+        case "INPUT":
             ret, frame = video_capture.read()
             if ret:
                 node.send_output("image", cv2.imencode(".jpg", frame)[1].tobytes())
-        case "stop":
+        case "STOP":
             print("received stop")
             break
         case other:

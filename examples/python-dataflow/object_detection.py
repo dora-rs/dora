@@ -15,7 +15,7 @@ node = Node()
 
 for event in node:
     match event["type"]:
-        case "input":
+        case "INPUT":
             match event["id"]:
                 case "image":
                     print("received image input")
@@ -28,7 +28,7 @@ for event in node:
                     node.send_output("bbox", arrays, event["metadata"])
                 case other:
                     print("ignoring unexpected input:", other)
-        case "stop":
+        case "STOP":
             print("received stop")
         case other:
             print("received unexpected event:", other)

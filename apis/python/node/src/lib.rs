@@ -24,7 +24,7 @@ impl IntoPy<PyObject> for PyInput<'_> {
         let dict = PyDict::new(py);
 
         let ty = match self.0 {
-            Event::Stop => "stop",
+            Event::Stop => "STOP",
             Event::Input { id, metadata, data } => {
                 dict.set_item("id", id.to_string())
                     .wrap_err("failed to add input ID")
@@ -38,21 +38,21 @@ impl IntoPy<PyObject> for PyInput<'_> {
                 dict.set_item("metadata", metadata_to_pydict(&metadata, py))
                     .wrap_err("failed to add input metadata")
                     .unwrap();
-                "input"
+                "INPUT"
             }
             Event::InputClosed { id } => {
                 dict.set_item("id", id.to_string())
                     .wrap_err("failed to add closed-input ID")
                     .unwrap();
-                "input-closed"
+                "INPUT_CLOSED"
             }
             Event::Error(err) => {
                 dict.set_item("error", err)
                     .wrap_err("failed to add error")
                     .unwrap();
-                "error"
+                "ERROR"
             }
-            _other => "unknown",
+            _other => "UNKNOWN",
         };
 
         dict.set_item("type", ty)

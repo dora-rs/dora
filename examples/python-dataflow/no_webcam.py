@@ -19,10 +19,10 @@ while time.time() - start < 20:
     # Wait next dora_input
     event = node.next()
     match event["type"]:
-        case "input":
+        case "INPUT":
             print("received input", event["id"])
             node.send_output("image", arr.tobytes())
-        case "stop":
+        case "STOP":
             print("received stop")
         case other:
             print("received unexpected event:", other)
