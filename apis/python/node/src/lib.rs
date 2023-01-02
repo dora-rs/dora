@@ -42,7 +42,7 @@ impl IntoPy<PyObject> for PyInput<'_> {
             }
             Event::InputClosed { id } => {
                 dict.set_item("id", id.to_string())
-                    .wrap_err("failed to add clsoed-input ID")
+                    .wrap_err("failed to add closed-input ID")
                     .unwrap();
                 "input-closed"
             }
