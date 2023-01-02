@@ -30,7 +30,5 @@ for event in node:
                     print("ignoring unexpected input:", other)
         case "stop":
             print("received stop")
-            break
         case other:
             print("received unexpected event:", other)
-            break
