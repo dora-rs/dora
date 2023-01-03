@@ -81,6 +81,3 @@ class Operator:
                 return DoraStatus.STOP
 
         return DoraStatus.CONTINUE
-
-    def __del__(self):
-        cv2.destroyAllWindows()
