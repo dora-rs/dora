@@ -23,6 +23,7 @@ capnp = "0.14.11"
 dora-message = { path = "../../../libraries/message" }
 dora-core = { path = "../../../libraries/core" }
 shared_memory = "0.12.0"
+raw_sync = "0.1.5"
 
 [dev-dependencies]
 tokio = { version = "1.17.0", features = ["rt"] }

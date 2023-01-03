@@ -1,10 +1,12 @@
-use crate::DoraEvent;
+use crate::{listener::listener_loop, DoraEvent, Event};
 use dora_core::{
     daemon_messages::{DataflowId, NodeConfig, SpawnNodeParams},
     descriptor::{resolve_path, source_is_url},
+    shm_channel::ShmemChannel,
 };
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
+use shared_memory::ShmemConf;
 use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
 use tokio::sync::mpsc;
 
@@ -13,7 +15,7 @@ pub async fn spawn_node(
     dataflow_id: DataflowId,
     params: SpawnNodeParams,
     daemon_port: u16,
-    result_tx: mpsc::Sender<DoraEvent>,
+    events_tx: mpsc::Sender<Event>,
 ) -> eyre::Result<()> {
     let SpawnNodeParams {
         node_id,
@@ -36,12 +38,23 @@ pub async fn spawn_node(
         resolve_path(&node.source, &working_dir)
             .wrap_err_with(|| format!("failed to resolve node source `{}`", node.source))?
     };
+
+    let daemon_events_region = ShmemConf::new()
+        .size(4096)
+        .create()
+        .wrap_err("failed to allocate daemon_events_region")?;
     let node_config = NodeConfig {
         dataflow_id,
         node_id: node_id.clone(),
         run_config: node.run_config.clone(),
         daemon_port,
+        daemon_events_region_id: daemon_events_region.get_os_id().to_owned(),
     };
+    let channel = unsafe { ShmemChannel::new_server(daemon_events_region) }
+        .wrap_err("failed to create ShmemChannel")?;
+
+    let result_tx = events_tx.clone();
+    tokio::task::spawn_blocking(move || listener_loop(channel, events_tx));
 
     let mut command = tokio::process::Command::new(&resolved_path);
     if let Some(args) = &node.args {
@@ -82,13 +95,12 @@ pub async fn spawn_node(
     };
     tokio::spawn(async move {
         let result = wait_task.await;
-        let _ = result_tx
-            .send(DoraEvent::SpawnedNodeResult {
-                dataflow_id,
-                node_id: node_id_cloned,
-                result,
-            })
-            .await;
+        let event = DoraEvent::SpawnedNodeResult {
+            dataflow_id,
+            node_id: node_id_cloned,
+            result,
+        };
+        let _ = result_tx.send(event.into()).await;
     });
     Ok(())
 }
