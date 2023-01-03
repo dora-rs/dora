@@ -10,6 +10,7 @@ members = [
     "binaries/*",
     "examples/rust-dataflow/*",
     "examples/iceoryx/*",
+    "examples/benchmark/*",
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
@@ -38,6 +39,8 @@ eyre = "0.6.8"
 tokio = "1.20.1"
 dora-coordinator = { path = "binaries/coordinator" }
 dunce = "1.0.2"
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"
 
 [[example]]
 name = "c-dataflow"
@@ -62,3 +65,7 @@ path = "examples/python-dataflow/run.rs"
 [[example]]
 name = "iceoryx"
 path = "examples/iceoryx/run.rs"
+
+[[example]]
+name = "benchmark"
+path = "examples/benchmark/run.rs"

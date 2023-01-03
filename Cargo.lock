@@ -273,6 +273,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6b4d9b1225d28d360ec6a231d65af1fd99a2a095154c8040689617290569c5c"
 
 [[package]]
+name = "benchmark-example-node"
+version = "0.1.2"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "futures",
+ "rand",
+ "tokio",
+]
+
+[[package]]
+name = "benchmark-example-sink"
+version = "0.1.2"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -971,6 +990,8 @@ dependencies = [
  "dunce",
  "eyre",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
