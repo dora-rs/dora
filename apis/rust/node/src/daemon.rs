@@ -8,6 +8,7 @@ use std::{
 use dora_core::{
     config::{DataId, NodeId},
     daemon_messages::{ControlRequest, DataflowId, DropEvent, NodeEvent},
+    shm_channel::ShmemChannel,
 };
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
@@ -19,11 +20,16 @@ pub struct DaemonConnection {
 }
 
 impl DaemonConnection {
-    pub fn init(dataflow_id: DataflowId, node_id: &NodeId, daemon_port: u16) -> eyre::Result<Self> {
-        let daemon_addr = (Ipv4Addr::new(127, 0, 0, 1), daemon_port).into();
-        let control_channel = ControlChannel::init(daemon_addr, dataflow_id, node_id)
+    pub fn init(
+        dataflow_id: DataflowId,
+        node_id: &NodeId,
+        daemon_port: u16,
+        daemon_events_region_id: &str,
+    ) -> eyre::Result<Self> {
+        let control_channel = ControlChannel::init(dataflow_id, node_id, daemon_events_region_id)
             .wrap_err("failed to init control stream")?;
 
+        let daemon_addr = (Ipv4Addr::new(127, 0, 0, 1), daemon_port).into();
         let event_stream = EventStream::init(daemon_addr, dataflow_id, node_id)
             .wrap_err("failed to init event stream")?;
 
@@ -34,42 +40,53 @@ impl DaemonConnection {
     }
 }
 
-pub struct ControlChannel(TcpStream);
+pub struct ControlChannel {
+    channel: ShmemChannel,
+}
 
 impl ControlChannel {
+    #[tracing::instrument]
     fn init(
-        daemon_addr: SocketAddr,
         dataflow_id: DataflowId,
         node_id: &NodeId,
+        daemon_events_region_id: &str,
     ) -> eyre::Result<Self> {
-        let mut control_stream =
-            TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
-        control_stream
-            .set_nodelay(true)
-            .wrap_err("failed to set TCP_NODELAY")?;
-        tcp_send(
-            &mut control_stream,
-            &ControlRequest::Register {
-                dataflow_id,
-                node_id: node_id.clone(),
-            },
-        )
-        .wrap_err("failed to send register request to dora-daemon")?;
-        match tcp_receive(&mut control_stream)
-            .wrap_err("failed to receive register reply from dora-daemon")?
-        {
+        let daemon_events_region = ShmemConf::new()
+            .os_id(daemon_events_region_id)
+            .open()
+            .wrap_err("failed to connect to dora-daemon")?;
+        let mut channel = unsafe { ShmemChannel::new_client(daemon_events_region) }
+            .wrap_err("failed to create ShmemChannel")?;
+
+        let msg = ControlRequest::Register {
+            dataflow_id,
+            node_id: node_id.clone(),
+        };
+        channel
+            .send(&msg)
+            .wrap_err("failed to send register request to dora-daemon")?;
+
+        // wait for reply
+        let reply = channel
+            .receive()
+            .wrap_err("failed to wait for receive register reply from dora-daemon")?;
+        match reply {
             dora_core::daemon_messages::ControlReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to register node with dora-daemon")?,
             other => bail!("unexpected register reply: {other:?}"),
         }
-        Ok(Self(control_stream))
+
+        Ok(Self { channel })
     }
 
     pub fn report_stop(&mut self) -> eyre::Result<()> {
-        tcp_send(&mut self.0, &ControlRequest::Stopped)
+        self.channel
+            .send(&ControlRequest::Stopped)
             .wrap_err("failed to report stopped to dora-daemon")?;
-        match tcp_receive(&mut self.0)
+        match self
+            .channel
+            .receive()
             .wrap_err("failed to receive stopped reply from dora-daemon")?
         {
             dora_core::daemon_messages::ControlReply::Result(result) => result
@@ -86,16 +103,16 @@ impl ControlChannel {
         metadata: dora_message::Metadata<'static>,
         data_len: usize,
     ) -> eyre::Result<MessageSample> {
-        tcp_send(
-            &mut self.0,
-            &ControlRequest::PrepareOutputMessage {
+        self.channel
+            .send(&ControlRequest::PrepareOutputMessage {
                 output_id,
                 metadata,
                 data_len,
-            },
-        )
-        .wrap_err("failed to send PrepareOutputMessage request to dora-daemon")?;
-        match tcp_receive(&mut self.0)
+            })
+            .wrap_err("failed to send PrepareOutputMessage request to dora-daemon")?;
+        match self
+            .channel
+            .receive()
             .wrap_err("failed to receive PrepareOutputMessage reply from dora-daemon")?
         {
             dora_core::daemon_messages::ControlReply::PreparedMessage {
@@ -109,12 +126,12 @@ impl ControlChannel {
     }
 
     pub fn send_message(&mut self, sample: MessageSample) -> eyre::Result<()> {
-        tcp_send(
-            &mut self.0,
-            &ControlRequest::SendOutMessage { id: sample.id },
-        )
-        .wrap_err("failed to send SendOutMessage request to dora-daemon")?;
-        match tcp_receive(&mut self.0)
+        self.channel
+            .send(&ControlRequest::SendOutMessage { id: sample.id })
+            .wrap_err("failed to send SendOutMessage request to dora-daemon")?;
+        match self
+            .channel
+            .receive()
             .wrap_err("failed to receive SendOutMessage reply from dora-daemon")?
         {
             dora_core::daemon_messages::ControlReply::Result(result) => {

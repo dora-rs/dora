@@ -45,7 +45,7 @@ pub struct Daemon {
 
     running: HashMap<DataflowId, RunningDataflow>,
 
-    dora_events_tx: mpsc::Sender<DoraEvent>,
+    events_tx: mpsc::Sender<Event>,
 
     coordinator_addr: Option<SocketAddr>,
     machine_id: String,
@@ -152,12 +152,12 @@ impl Daemon {
             prepared_messages: Default::default(),
             sent_out_shared_memory: Default::default(),
             running: HashMap::new(),
-            dora_events_tx,
+            events_tx: dora_events_tx,
             coordinator_addr,
             machine_id,
             exit_when_done,
         };
-        let dora_events = ReceiverStream::new(dora_events_rx).map(Event::Dora);
+        let dora_events = ReceiverStream::new(dora_events_rx);
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
         ))
@@ -326,12 +326,12 @@ impl Daemon {
                 }
             }
 
-            spawn::spawn_node(dataflow_id, params, self.port, self.dora_events_tx.clone())
+            spawn::spawn_node(dataflow_id, params, self.port, self.events_tx.clone())
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
         }
         for interval in dataflow.timers.keys().copied() {
-            let events_tx = self.dora_events_tx.clone();
+            let events_tx = self.events_tx.clone();
             let task = async move {
                 let mut interval_stream = tokio::time::interval(interval);
                 let hlc = HLC::default();
@@ -346,7 +346,7 @@ impl Daemon {
                             Default::default(),
                         ),
                     };
-                    if events_tx.send(event).await.is_err() {
+                    if events_tx.send(event.into()).await.is_err() {
                         break;
                     }
                 }
@@ -667,6 +667,12 @@ pub enum Event {
     Dora(DoraEvent),
     Drop(DropEvent),
     WatchdogInterval,
+}
+
+impl From<DoraEvent> for Event {
+    fn from(event: DoraEvent) -> Self {
+        Event::Dora(event)
+    }
 }
 
 #[derive(Debug)]

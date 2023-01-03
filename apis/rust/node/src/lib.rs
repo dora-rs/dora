@@ -5,7 +5,7 @@ use dora_core::{
     daemon_messages::NodeConfig,
 };
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
-use eyre::WrapErr;
+use eyre::{eyre, WrapErr};
 pub use flume::Receiver;
 use shared_memory::ShmemConf;
 
@@ -37,12 +37,13 @@ impl DoraNode {
             node_id,
             run_config,
             daemon_port,
+            daemon_events_region_id,
         } = node_config;
 
         let DaemonConnection {
             control_channel,
             event_stream,
-        } = DaemonConnection::init(dataflow_id, &node_id, daemon_port)
+        } = DaemonConnection::init(dataflow_id, &node_id, daemon_port, &daemon_events_region_id)
             .wrap_err("failed to connect to dora-daemon")?;
 
         let node = Self {
