@@ -12,10 +12,10 @@ use dora_operator_api_python::metadata_to_pydict;
 use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context};
 use pyo3::{
-    pyclass,
+    ffi, pyclass,
     types::IntoPyDict,
     types::{PyBytes, PyDict},
-    Py, Python,
+    AsPyPointer, Py, Python,
 };
 use std::{
     borrow::Cow,
@@ -139,14 +139,21 @@ pub fn spawn(
 
             let status_enum = Python::with_gil(|py| {
                 let input_dict = PyDict::new(py);
+                let bytes = PyBytes::new(py, &input.data());
 
                 input_dict.set_item("id", input.id.as_str())?;
-                input_dict.set_item("data", PyBytes::new(py, &input.data()))?;
+                input_dict.set_item("data", bytes)?;
                 input_dict.set_item("metadata", metadata_to_pydict(input.metadata(), py))?;
 
-                operator
+                let status_enum = operator
                     .call_method1(py, "on_input", (input_dict, send_output.clone()))
-                    .map_err(traceback)
+                    .map_err(traceback);
+
+                unsafe {
+                    ffi::Py_DECREF(bytes.as_ptr());
+                    ffi::Py_DECREF(input_dict.as_ptr());
+                }
+                status_enum
             })?;
             let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
                 .wrap_err("on_input must have enum return value")?;
