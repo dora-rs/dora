@@ -1,6 +1,6 @@
 [package]
+version = "0.1.2"
 name = "dora-node-api-python"
-version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 
