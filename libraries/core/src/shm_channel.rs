@@ -50,11 +50,12 @@ impl ShmemChannel {
     }
 
     pub unsafe fn new_client(memory: Shmem) -> eyre::Result<Self> {
-        let (server_event, offset) = unsafe { Event::from_existing(memory.as_ptr()) }
+        let (server_event, server_event_len) = unsafe { Event::from_existing(memory.as_ptr()) }
             .map_err(|err| eyre!("failed to open raw server event: {err}"))?;
-        let (client_event, buffer_start_offset) =
-            unsafe { Event::from_existing(memory.as_ptr().wrapping_add(offset)) }
+        let (client_event, client_event_len) =
+            unsafe { Event::from_existing(memory.as_ptr().wrapping_add(server_event_len)) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
+        let buffer_start_offset = server_event_len + client_event_len;
 
         Ok(Self {
             memory,
