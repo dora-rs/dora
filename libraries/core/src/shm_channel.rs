@@ -71,7 +71,6 @@ impl ShmemChannel {
         T: Serialize + std::fmt::Debug,
     {
         let msg = bincode::serialize(value).wrap_err("failed to serialize value")?;
-        tracing::debug!("sending message with length {}: {value:?}", msg.len());
 
         let total_len = LEN_LEN + msg.len();
         assert!(total_len <= self.memory.len() - self.buffer_start_offset);
@@ -124,9 +123,8 @@ impl ShmemChannel {
         assert!(msg_len < self.memory.len() - self.buffer_start_offset - LEN_LEN);
 
         let value_raw = unsafe { slice::from_raw_parts(self.data(), msg_len) };
-        let msg = bincode::deserialize(value_raw).wrap_err("failed to deserialize value");
-        tracing::debug!("received message with length {msg_len}: {msg:?}");
-        msg
+
+        bincode::deserialize(value_raw).wrap_err("failed to deserialize value")
     }
 
     fn data_len(&self) -> *const AtomicU64 {
