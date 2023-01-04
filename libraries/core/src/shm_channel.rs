@@ -26,9 +26,19 @@ impl ShmemChannel {
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
         let buffer_start_offset = server_event_len + client_event_len;
 
-        tracing::trace!(
-            "Initializing new ShmemChannel: buffer_start_offset: {buffer_start_offset}"
-        );
+        server_event
+            .set(EventState::Clear)
+            .map_err(|err| eyre!("failed to init server_event: {err}"))?;
+        client_event
+            .set(EventState::Clear)
+            .map_err(|err| eyre!("failed to init client_event: {err}"))?;
+        unsafe {
+            memory
+                .as_ptr()
+                .wrapping_add(buffer_start_offset)
+                .cast::<AtomicU64>()
+                .write(AtomicU64::new(0));
+        }
 
         Ok(Self {
             memory,
