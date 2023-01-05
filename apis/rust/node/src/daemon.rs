@@ -8,7 +8,7 @@ use std::{
 use dora_core::{
     config::{DataId, NodeId},
     daemon_messages::{ControlRequest, DataflowId, DropEvent, NodeEvent},
-    shm_channel::ShmemChannel,
+    shared_memory::ShmemClient,
 };
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
@@ -41,7 +41,7 @@ impl DaemonConnection {
 }
 
 pub struct ControlChannel {
-    channel: ShmemChannel,
+    channel: ShmemClient,
 }
 
 impl ControlChannel {
@@ -55,22 +55,17 @@ impl ControlChannel {
             .os_id(daemon_events_region_id)
             .open()
             .wrap_err("failed to connect to dora-daemon")?;
-        let mut channel = unsafe { ShmemChannel::new_client(daemon_events_region) }
+        let mut channel = unsafe { ShmemClient::new(daemon_events_region) }
             .wrap_err("failed to create ShmemChannel")?;
 
         let msg = ControlRequest::Register {
             dataflow_id,
             node_id: node_id.clone(),
         };
-        channel
-            .send(&msg)
+        let reply = channel
+            .request(&msg)
             .wrap_err("failed to send register request to dora-daemon")?;
 
-        // wait for reply
-        let reply = channel
-            .receive()
-            .wrap_err("failed to wait for receive register reply from dora-daemon")?
-            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?;
         match reply {
             dora_core::daemon_messages::ControlReply::Result(result) => result
                 .map_err(|e| eyre!(e))
@@ -82,15 +77,11 @@ impl ControlChannel {
     }
 
     pub fn report_stop(&mut self) -> eyre::Result<()> {
-        self.channel
-            .send(&ControlRequest::Stopped)
-            .wrap_err("failed to report stopped to dora-daemon")?;
-        match self
+        let reply = self
             .channel
-            .receive()
-            .wrap_err("failed to receive stopped reply from dora-daemon")?
-            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?
-        {
+            .request(&ControlRequest::Stopped)
+            .wrap_err("failed to report stopped to dora-daemon")?;
+        match reply {
             dora_core::daemon_messages::ControlReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to report stop event to dora-daemon")?,
@@ -105,19 +96,15 @@ impl ControlChannel {
         metadata: dora_message::Metadata<'static>,
         data_len: usize,
     ) -> eyre::Result<MessageSample> {
-        self.channel
-            .send(&ControlRequest::PrepareOutputMessage {
+        let reply = self
+            .channel
+            .request(&ControlRequest::PrepareOutputMessage {
                 output_id,
                 metadata,
                 data_len,
             })
             .wrap_err("failed to send PrepareOutputMessage request to dora-daemon")?;
-        match self
-            .channel
-            .receive()
-            .wrap_err("failed to receive PrepareOutputMessage reply from dora-daemon")?
-            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?
-        {
+        match reply {
             dora_core::daemon_messages::ControlReply::PreparedMessage {
                 shared_memory_id: id,
             } => Ok(MessageSample { id }),
@@ -129,15 +116,11 @@ impl ControlChannel {
     }
 
     pub fn send_message(&mut self, sample: MessageSample) -> eyre::Result<()> {
-        self.channel
-            .send(&ControlRequest::SendOutMessage { id: sample.id })
-            .wrap_err("failed to send SendOutMessage request to dora-daemon")?;
-        match self
+        let reply = self
             .channel
-            .receive()
-            .wrap_err("failed to receive SendOutMessage reply from dora-daemon")?
-            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?
-        {
+            .request(&ControlRequest::SendOutMessage { id: sample.id })
+            .wrap_err("failed to send SendOutMessage request to dora-daemon")?;
+        match reply {
             dora_core::daemon_messages::ControlReply::Result(result) => {
                 result.map_err(|err| eyre!(err))
             }

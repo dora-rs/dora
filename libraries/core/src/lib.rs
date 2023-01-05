@@ -8,7 +8,7 @@ pub mod config;
 pub mod coordinator_messages;
 pub mod daemon_messages;
 pub mod descriptor;
-pub mod shm_channel;
+pub mod shared_memory;
 pub mod topics;
 
 pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyre::ErrReport> {
