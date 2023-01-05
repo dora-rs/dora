@@ -69,7 +69,8 @@ impl ControlChannel {
         // wait for reply
         let reply = channel
             .receive()
-            .wrap_err("failed to wait for receive register reply from dora-daemon")?;
+            .wrap_err("failed to wait for receive register reply from dora-daemon")?
+            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?;
         match reply {
             dora_core::daemon_messages::ControlReply::Result(result) => result
                 .map_err(|e| eyre!(e))
@@ -88,6 +89,7 @@ impl ControlChannel {
             .channel
             .receive()
             .wrap_err("failed to receive stopped reply from dora-daemon")?
+            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?
         {
             dora_core::daemon_messages::ControlReply::Result(result) => result
                 .map_err(|e| eyre!(e))
@@ -114,6 +116,7 @@ impl ControlChannel {
             .channel
             .receive()
             .wrap_err("failed to receive PrepareOutputMessage reply from dora-daemon")?
+            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?
         {
             dora_core::daemon_messages::ControlReply::PreparedMessage {
                 shared_memory_id: id,
@@ -133,6 +136,7 @@ impl ControlChannel {
             .channel
             .receive()
             .wrap_err("failed to receive SendOutMessage reply from dora-daemon")?
+            .ok_or_else(|| eyre!("daemon disconnected unexpectedly"))?
         {
             dora_core::daemon_messages::ControlReply::Result(result) => {
                 result.map_err(|err| eyre!(err))
