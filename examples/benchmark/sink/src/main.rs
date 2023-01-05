@@ -1,8 +1,5 @@
 use dora_node_api::{self, DoraNode};
-use std::{
-    fmt::Write as _,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 fn main() -> eyre::Result<()> {
     let mut node = DoraNode::init_from_env()?;
@@ -16,9 +13,7 @@ fn main() -> eyre::Result<()> {
     let mut start = Instant::now();
     let mut latencies = Vec::new();
 
-    let mut summary = String::new();
     println!("Latency:");
-    writeln!(summary, "Latency:")?;
 
     while let Ok(input) = inputs.recv() {
         let data = input.data();
@@ -26,7 +21,7 @@ fn main() -> eyre::Result<()> {
         // check if new size bracket
         if data.len() != current_size {
             if n > 0 {
-                record_results(start, current_size, n, latencies, &mut summary, latency);
+                record_results(start, current_size, n, latencies, latency);
             }
             current_size = data.len();
             n = 0;
@@ -40,7 +35,6 @@ fn main() -> eyre::Result<()> {
                 if latency {
                     latency = false;
                     println!("Throughput:");
-                    writeln!(summary, "Throughput:")?;
                 }
             }
             other => eprintln!("Ignoring unexpected input `{other}`"),
@@ -57,9 +51,7 @@ fn main() -> eyre::Result<()> {
         );
     }
 
-    record_results(start, current_size, n, latencies, &mut summary, latency);
-
-    println!("\nSummary:\n{summary}");
+    record_results(start, current_size, n, latencies, latency);
 
     Ok(())
 }
@@ -69,7 +61,6 @@ fn record_results(
     current_size: usize,
     n: u32,
     latencies: Vec<Duration>,
-    summary: &mut String,
     latency: bool,
 ) {
     let msg = if latency {
@@ -81,5 +72,4 @@ fn record_results(
         format!("size {current_size:<#8x}: {msg_per_sec:.0} messages per second")
     };
     println!("{msg}");
-    writeln!(summary, "{msg}").unwrap();
 }
