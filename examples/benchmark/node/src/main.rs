@@ -38,6 +38,9 @@ fn main() -> eyre::Result<()> {
         }
     }
 
+    // wait a bit to ensure that all throughput messages reached their target
+    std::thread::sleep(Duration::from_secs(2));
+
     // then throughput with full speed
     for size in sizes {
         for _ in 0..100 {
