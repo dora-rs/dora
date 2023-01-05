@@ -1,13 +1,12 @@
+use eyre::{eyre, Context};
+use raw_sync::events::{Event, EventImpl, EventInit, EventState};
+use serde::{Deserialize, Serialize};
+use shared_memory::Shmem;
 use std::{
     mem, slice,
     sync::atomic::{AtomicBool, AtomicU64},
     time::Duration,
 };
-
-use eyre::{eyre, Context};
-use raw_sync::events::{Event, EventImpl, EventInit, EventState};
-use serde::{Deserialize, Serialize};
-use shared_memory::Shmem;
 
 pub struct ShmemChannel {
     memory: Shmem,

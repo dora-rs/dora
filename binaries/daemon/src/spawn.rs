@@ -2,7 +2,7 @@ use crate::{listener::listener_loop, DoraEvent, Event};
 use dora_core::{
     daemon_messages::{DataflowId, NodeConfig, SpawnNodeParams},
     descriptor::{resolve_path, source_is_url},
-    shm_channel::ShmemChannel,
+    shared_memory::ShmemServer,
 };
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
@@ -50,7 +50,7 @@ pub async fn spawn_node(
         daemon_port,
         daemon_events_region_id: daemon_events_region.get_os_id().to_owned(),
     };
-    let channel = unsafe { ShmemChannel::new_server(daemon_events_region) }
+    let channel = unsafe { ShmemServer::new(daemon_events_region) }
         .wrap_err("failed to create ShmemChannel")?;
 
     let result_tx = events_tx.clone();

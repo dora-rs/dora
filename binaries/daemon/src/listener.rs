@@ -4,7 +4,7 @@ use crate::{
 };
 use dora_core::{
     daemon_messages::{self, DropEvent},
-    shm_channel::ShmemChannel,
+    shared_memory::ShmemServer,
 };
 use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::Ipv4Addr};
@@ -146,12 +146,12 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
 }
 
 #[tracing::instrument(skip(channel, events_tx))]
-pub fn listener_loop(mut channel: ShmemChannel, events_tx: mpsc::Sender<Event>) {
+pub fn listener_loop(mut channel: ShmemServer, events_tx: mpsc::Sender<Event>) {
     let mut id = None;
     let mut enter_subscribe_loop = None;
     loop {
         // receive the next message
-        let message = match channel.receive().wrap_err("failed to receive node message") {
+        let message = match channel.listen().wrap_err("failed to receive node message") {
             Ok(Some(m)) => m,
             Ok(None) => {
                 tracing::info!("control channel disconnected: {id:?}");
@@ -173,7 +173,7 @@ pub fn listener_loop(mut channel: ShmemChannel, events_tx: mpsc::Sender<Event>) 
 
                 let reply = daemon_messages::ControlReply::Result(Ok(()));
 
-                match channel.send(&reply) {
+                match channel.send_reply(&reply) {
                     Ok(()) => continue, // don't trigger an event for register calls
                     Err(err) => {
                         tracing::warn!("{err:?}");
@@ -234,7 +234,7 @@ pub fn listener_loop(mut channel: ShmemChannel, events_tx: mpsc::Sender<Event>) 
         let Ok(reply) = reply.blocking_recv() else {
             break; // main loop exited
         };
-        if let Err(err) = channel.send(&reply).wrap_err("failed to send reply") {
+        if let Err(err) = channel.send_reply(&reply).wrap_err("failed to send reply") {
             tracing::error!("{err:?}");
             break;
         }
