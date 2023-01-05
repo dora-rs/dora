@@ -25,7 +25,7 @@ async fn main() -> eyre::Result<()> {
     .await?;
     println!("\n\nICEORYX:");
     dora_coordinator::run(dora_coordinator::Args {
-        run_dataflow: dataflow_zenoh.to_owned().into(),
+        run_dataflow: dataflow_iceoryx.to_owned().into(),
         runtime: None,
     })
     .await?;
