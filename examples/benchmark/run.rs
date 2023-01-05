@@ -11,11 +11,21 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    let dataflow = Path::new("dataflow.yml");
-    build_dataflow(dataflow).await?;
+    let dataflow_zenoh = Path::new("dataflow-zenoh.yml");
+    build_dataflow(dataflow_zenoh).await?;
 
+    let dataflow_iceoryx = Path::new("dataflow-iceoryx.yml");
+    build_dataflow(dataflow_iceoryx).await?;
+
+    println!("ZENOH:");
     dora_coordinator::run(dora_coordinator::Args {
-        run_dataflow: dataflow.to_owned().into(),
+        run_dataflow: dataflow_zenoh.to_owned().into(),
+        runtime: None,
+    })
+    .await?;
+    println!("\n\nICEORYX:");
+    dora_coordinator::run(dora_coordinator::Args {
+        run_dataflow: dataflow_zenoh.to_owned().into(),
         runtime: None,
     })
     .await?;

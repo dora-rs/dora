@@ -8,42 +8,56 @@ fn main() -> eyre::Result<()> {
     let mut node = DoraNode::init_from_env()?;
     let inputs = node.inputs()?;
 
+    // latency is tested first
+    let mut latency = true;
+
     let mut current_size = 0;
     let mut n = 0;
     let mut start = Instant::now();
     let mut latencies = Vec::new();
 
     let mut summary = String::new();
+    println!("Latency:");
+    writeln!(summary, "Latency:")?;
 
     while let Ok(input) = inputs.recv() {
-        match input.id.as_str() {
-            "message" => {
-                let data = input.data();
+        let data = input.data();
 
-                if data.len() != current_size {
-                    if n > 0 {
-                        record_results(start, current_size, n, latencies, &mut summary);
-                    }
-                    current_size = data.len();
-                    n = 0;
-                    start = Instant::now();
-                    latencies = Vec::new();
+        // check if new size bracket
+        if data.len() != current_size {
+            if n > 0 {
+                record_results(start, current_size, n, latencies, &mut summary, latency);
+            }
+            current_size = data.len();
+            n = 0;
+            start = Instant::now();
+            latencies = Vec::new();
+        }
+
+        match input.id.as_str() {
+            "latency" => {}
+            "throughput" => {
+                if latency {
+                    latency = false;
+                    println!("Throughput:");
+                    writeln!(summary, "Throughput:")?;
                 }
-                n += 1;
-                latencies.push(
-                    input
-                        .metadata
-                        .timestamp()
-                        .get_time()
-                        .to_system_time()
-                        .elapsed()?,
-                );
             }
             other => eprintln!("Ignoring unexpected input `{other}`"),
         }
+
+        n += 1;
+        latencies.push(
+            input
+                .metadata
+                .timestamp()
+                .get_time()
+                .to_system_time()
+                .elapsed()?,
+        );
     }
 
-    record_results(start, current_size, n, latencies, &mut summary);
+    record_results(start, current_size, n, latencies, &mut summary, latency);
 
     println!("\nSummary:\n{summary}");
 
@@ -56,12 +70,16 @@ fn record_results(
     n: u32,
     latencies: Vec<Duration>,
     summary: &mut String,
+    latency: bool,
 ) {
-    let duration = start.elapsed();
-    let per_message = duration / n;
-    let avg_latency = latencies.iter().sum::<Duration>() / n;
-    let msg =
-        format!("size {current_size:<#8x}: {per_message:?} per message (latency: {avg_latency:?})");
+    let msg = if latency {
+        let avg_latency = latencies.iter().sum::<Duration>() / n;
+        format!("size {current_size:<#8x}: {avg_latency:?}")
+    } else {
+        let duration = start.elapsed();
+        let msg_per_sec = n as f64 / duration.as_secs_f64();
+        format!("size {current_size:<#8x}: {msg_per_sec:.0} messages per second")
+    };
     println!("{msg}");
     writeln!(summary, "{msg}").unwrap();
 }
