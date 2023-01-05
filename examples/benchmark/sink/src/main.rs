@@ -30,14 +30,16 @@ fn main() -> eyre::Result<()> {
         }
 
         match input.id.as_str() {
-            "latency" => {}
-            "throughput" => {
-                if latency {
-                    latency = false;
-                    println!("Throughput:");
-                }
+            "latency" if latency => {}
+            "throughput" if latency => {
+                latency = false;
+                println!("Throughput:");
             }
-            other => eprintln!("Ignoring unexpected input `{other}`"),
+            "throughput" => {}
+            other => {
+                eprintln!("Ignoring unexpected input `{other}`");
+                continue;
+            }
         }
 
         n += 1;
