@@ -8,11 +8,12 @@ nodes:
       build: cargo build -p benchmark-example-node --release
       source: ../../target/release/benchmark-example-node
       outputs:
-        - random
+        - latency
+        - throughput
   - id: rust-sink
     custom:
       build: cargo build -p benchmark-example-sink --release
       source: ../../target/release/benchmark-example-sink
       inputs:
-        # message: runtime-node/rust-operator/status
-        message: rust-node/random
+        latency: rust-node/latency
+        throughput: rust-node/throughput
