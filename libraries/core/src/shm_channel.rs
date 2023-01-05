@@ -1,18 +1,21 @@
-use std::{mem, slice, sync::atomic::AtomicU64, time::Duration};
+use std::{
+    mem, slice,
+    sync::atomic::{AtomicBool, AtomicU64},
+    time::Duration,
+};
 
 use eyre::{eyre, Context};
 use raw_sync::events::{Event, EventImpl, EventInit, EventState};
 use serde::{Deserialize, Serialize};
 use shared_memory::Shmem;
 
-/// Size of the encoded length in bytes.
-const LEN_LEN: usize = mem::size_of::<AtomicU64>();
-
 pub struct ShmemChannel {
     memory: Shmem,
     server_event: Box<dyn EventImpl>,
     client_event: Box<dyn EventImpl>,
-    buffer_start_offset: usize,
+    disconnect_offset: usize,
+    len_offset: usize,
+    data_offset: usize,
     server: bool,
 }
 
@@ -24,7 +27,8 @@ impl ShmemChannel {
         let (client_event, client_event_len) =
             unsafe { Event::new(memory.as_ptr().wrapping_add(server_event_len), true) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
-        let buffer_start_offset = server_event_len + client_event_len;
+        let (disconnect_offset, len_offset, data_offset) =
+            offsets(server_event_len, client_event_len);
 
         server_event
             .set(EventState::Clear)
@@ -35,7 +39,14 @@ impl ShmemChannel {
         unsafe {
             memory
                 .as_ptr()
-                .wrapping_add(buffer_start_offset)
+                .wrapping_add(disconnect_offset)
+                .cast::<AtomicBool>()
+                .write(AtomicBool::new(false));
+        }
+        unsafe {
+            memory
+                .as_ptr()
+                .wrapping_add(len_offset)
                 .cast::<AtomicU64>()
                 .write(AtomicU64::new(0));
         }
@@ -44,7 +55,9 @@ impl ShmemChannel {
             memory,
             server_event,
             client_event,
-            buffer_start_offset,
+            disconnect_offset,
+            len_offset,
+            data_offset,
             server: true,
         })
     }
@@ -55,13 +68,16 @@ impl ShmemChannel {
         let (client_event, client_event_len) =
             unsafe { Event::from_existing(memory.as_ptr().wrapping_add(server_event_len)) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
-        let buffer_start_offset = server_event_len + client_event_len;
+        let (disconnect_offset, len_offset, data_offset) =
+            offsets(server_event_len, client_event_len);
 
         Ok(Self {
             memory,
             server_event,
             client_event,
-            buffer_start_offset,
+            disconnect_offset,
+            len_offset,
+            data_offset,
             server: false,
         })
     }
@@ -72,19 +88,19 @@ impl ShmemChannel {
     {
         let msg = bincode::serialize(value).wrap_err("failed to serialize value")?;
 
-        let total_len = LEN_LEN + msg.len();
-        assert!(total_len <= self.memory.len() - self.buffer_start_offset);
+        self.send_raw(&msg)
+    }
 
+    fn send_raw(&mut self, msg: &[u8]) -> Result<(), eyre::ErrReport> {
+        assert!(msg.len() <= self.memory.len() - self.data_offset);
         // write data first
         unsafe {
             self.data_mut()
                 .copy_from_nonoverlapping(msg.as_ptr(), msg.len());
         }
-
         // write len second for synchronization
-        unsafe {
-            (*self.data_len()).store(msg.len() as u64, std::sync::atomic::Ordering::Release);
-        }
+        self.data_len()
+            .store(msg.len() as u64, std::sync::atomic::Ordering::Release);
 
         // signal event
         let event = if self.server {
@@ -95,11 +111,10 @@ impl ShmemChannel {
         event
             .set(EventState::Signaled)
             .map_err(|err| eyre!("failed to send message over ShmemChannel: {err}"))?;
-
         Ok(())
     }
 
-    pub fn receive<T>(&mut self) -> eyre::Result<T>
+    pub fn receive<T>(&mut self) -> eyre::Result<Option<T>>
     where
         T: for<'a> Deserialize<'a> + std::fmt::Debug,
     {
@@ -117,31 +132,73 @@ impl ShmemChannel {
             .wait(timeout)
             .map_err(|err| eyre!("failed to wait for reply from ShmemChannel: {err}"))?;
 
-        // read len first for synchronization
-        let msg_len =
-            unsafe { &*self.data_len() }.load(std::sync::atomic::Ordering::Acquire) as usize;
-        assert!(msg_len < self.memory.len() - self.buffer_start_offset - LEN_LEN);
+        // check for disconnect first
+        if self.disconnect().load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(None);
+        }
 
+        // then read len for synchronization
+        let msg_len = self.data_len().load(std::sync::atomic::Ordering::Acquire) as usize;
+        assert!(msg_len < self.memory.len() - self.data_offset);
+
+        // finally read the data
         let value_raw = unsafe { slice::from_raw_parts(self.data(), msg_len) };
 
-        bincode::deserialize(value_raw).wrap_err("failed to deserialize value")
+        bincode::deserialize(value_raw)
+            .wrap_err("failed to deserialize value")
+            .map(|v| Some(v))
     }
 
-    fn data_len(&self) -> *const AtomicU64 {
-        self.data_len_ptr().cast()
+    fn disconnect(&self) -> &AtomicBool {
+        unsafe {
+            &*self
+                .memory
+                .as_ptr()
+                .wrapping_add(self.disconnect_offset)
+                .cast::<AtomicBool>()
+        }
     }
 
-    fn data_len_ptr(&self) -> *mut u8 {
-        self.memory.as_ptr().wrapping_add(self.buffer_start_offset)
+    fn data_len(&self) -> &AtomicU64 {
+        unsafe {
+            &*self
+                .memory
+                .as_ptr()
+                .wrapping_add(self.len_offset)
+                .cast::<AtomicU64>()
+        }
     }
 
     fn data(&self) -> *const u8 {
-        self.data_len_ptr().wrapping_add(LEN_LEN)
+        self.memory.as_ptr().wrapping_add(self.data_offset)
     }
 
     fn data_mut(&mut self) -> *mut u8 {
-        self.data_len_ptr().wrapping_add(LEN_LEN)
+        self.memory.as_ptr().wrapping_add(self.data_offset)
     }
 }
 
+fn offsets(server_event_len: usize, client_event_len: usize) -> (usize, usize, usize) {
+    let disconnect_offset = server_event_len + client_event_len;
+    let len_offset = disconnect_offset + mem::size_of::<AtomicBool>();
+    let data_offset = len_offset + mem::size_of::<AtomicU64>();
+    (disconnect_offset, len_offset, data_offset)
+}
+
 unsafe impl Send for ShmemChannel {}
+
+impl Drop for ShmemChannel {
+    fn drop(&mut self) {
+        self.disconnect()
+            .store(true, std::sync::atomic::Ordering::Release);
+        // wake up other end
+        let event = if self.server {
+            &self.client_event
+        } else {
+            &self.server_event
+        };
+        if let Err(err) = event.set(EventState::Signaled) {
+            tracing::warn!("failed to signal ShmemChannel disconnect: {err}");
+        }
+    }
+}

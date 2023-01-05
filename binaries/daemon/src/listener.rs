@@ -152,7 +152,11 @@ pub fn listener_loop(mut channel: ShmemChannel, events_tx: mpsc::Sender<Event>) 
     loop {
         // receive the next message
         let message = match channel.receive().wrap_err("failed to receive node message") {
-            Ok(m) => m,
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                tracing::info!("control channel disconnected: {id:?}");
+                break;
+            } // disconnected
             Err(err) => {
                 tracing::warn!("{err:?}");
                 continue;
