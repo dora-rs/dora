@@ -9,4 +9,4 @@ edition = "2021"
 dora-node-api = { workspace = true, features = ["iceoryx"] }
 eyre = "0.6.8"
 futures = "0.3.21"
-tokio = { version = "1.20.1", features = ["macros"] }
+tokio = { version = "1.23.1", features = ["macros"] }
