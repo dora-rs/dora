@@ -27,7 +27,7 @@ futures = "0.3.21"
 futures-concurrency = "2.0.3"
 libloading = "0.7.3"
 serde_yaml = "0.8.23"
-tokio = { version = "1.17.0", features = ["full"] }
+tokio = { version = "1.23.1", features = ["full"] }
 tokio-stream = "0.1.8"
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a136e4fd90b11ff5d775ced981af53c4f1071b" }
 zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a136e4fd90b11ff5d775ced981af53c4f1071b" }
