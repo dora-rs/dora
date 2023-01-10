@@ -26,4 +26,4 @@ dora-message = { path = "../../../libraries/message" }
 dora-core = { path = "../../../libraries/core" }
 
 [dev-dependencies]
-tokio = { version = "1.17.0", features = ["rt"] }
+tokio = { version = "1.23.1", features = ["rt"] }
