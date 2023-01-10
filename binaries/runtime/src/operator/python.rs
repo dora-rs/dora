@@ -12,10 +12,10 @@ use dora_operator_api_python::metadata_to_pydict;
 use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
 use pyo3::{
-    ffi, pyclass,
+    pyclass,
     types::IntoPyDict,
     types::{PyBytes, PyDict},
-    AsPyPointer, Py, Python,
+    Py, Python,
 };
 use std::{
     borrow::Cow,
@@ -138,6 +138,15 @@ pub fn spawn(
             input.metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
 
             let status = Python::with_gil(|py| -> Result<i32> {
+                // We need to create a new scoped `GILPool` because the dora-runtime
+                // is currently started through a `start_runtime` wrapper function,
+                // which is annotated with `#[pyfunction]`. This attribute creates an
+                // initial `GILPool` that lasts for the entire lifetime of the `dora-runtime`.
+                // However, we want the `PyBytes` created below to be freed earlier.
+                // creating a new scoped `GILPool` tied to this closure, will free `PyBytes`
+                // at the end of the closure.
+                // See https://github.com/PyO3/pyo3/pull/2864 and
+                // https://github.com/PyO3/pyo3/issues/2853 for more details.
                 let pool = unsafe { py.new_pool() };
                 let py = pool.python();
                 let input_dict = PyDict::new(py);
