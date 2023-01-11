@@ -53,15 +53,23 @@ pub async fn spawn_node(
         daemon_control_region_id: daemon_control_region.get_os_id().to_owned(),
         daemon_events_region_id: daemon_events_region.get_os_id().to_owned(),
     };
-    let control_channel = unsafe { ShmemServer::new(daemon_control_region) }
-        .wrap_err("failed to create control_channel")?;
-    let events_channel = unsafe { ShmemServer::new(daemon_events_region) }
-        .wrap_err("failed to create events_channel")?;
 
-    let events_tx_cloned = events_tx.clone();
-    let result_tx = events_tx.clone();
-    tokio::task::spawn_blocking(move || listener_loop(control_channel, events_tx));
-    tokio::task::spawn_blocking(move || listener_loop(events_channel, events_tx_cloned));
+    {
+        let server = unsafe { ShmemServer::new(daemon_control_region) }
+            .wrap_err("failed to create control server")?;
+        let events_tx = events_tx.clone();
+        tokio::task::spawn_blocking(move || listener_loop(server, events_tx));
+    }
+    {
+        let server = unsafe { ShmemServer::new(daemon_events_region) }
+            .wrap_err("failed to create events server")?;
+        let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+        let events_tx = events_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            listener_loop(server, events_tx);
+            tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
+        });
+    }
 
     let mut command = tokio::process::Command::new(&resolved_path);
     if let Some(args) = &node.args {
@@ -107,7 +115,7 @@ pub async fn spawn_node(
             node_id: node_id_cloned,
             result,
         };
-        let _ = result_tx.send(event.into()).await;
+        let _ = events_tx.send(event.into()).await;
     });
     Ok(())
 }
