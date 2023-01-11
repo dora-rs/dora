@@ -14,7 +14,6 @@ use tokio::sync::mpsc;
 pub async fn spawn_node(
     dataflow_id: DataflowId,
     params: SpawnNodeParams,
-    daemon_port: u16,
     events_tx: mpsc::Sender<Event>,
 ) -> eyre::Result<()> {
     let SpawnNodeParams {
@@ -39,6 +38,10 @@ pub async fn spawn_node(
             .wrap_err_with(|| format!("failed to resolve node source `{}`", node.source))?
     };
 
+    let daemon_control_region = ShmemConf::new()
+        .size(4096)
+        .create()
+        .wrap_err("failed to allocate daemon_control_region")?;
     let daemon_events_region = ShmemConf::new()
         .size(4096)
         .create()
@@ -47,14 +50,18 @@ pub async fn spawn_node(
         dataflow_id,
         node_id: node_id.clone(),
         run_config: node.run_config.clone(),
-        daemon_port,
+        daemon_control_region_id: daemon_control_region.get_os_id().to_owned(),
         daemon_events_region_id: daemon_events_region.get_os_id().to_owned(),
     };
-    let channel = unsafe { ShmemServer::new(daemon_events_region) }
-        .wrap_err("failed to create ShmemChannel")?;
+    let control_channel = unsafe { ShmemServer::new(daemon_control_region) }
+        .wrap_err("failed to create control_channel")?;
+    let events_channel = unsafe { ShmemServer::new(daemon_events_region) }
+        .wrap_err("failed to create events_channel")?;
 
+    let events_tx_cloned = events_tx.clone();
     let result_tx = events_tx.clone();
-    tokio::task::spawn_blocking(move || listener_loop(channel, events_tx));
+    tokio::task::spawn_blocking(move || listener_loop(control_channel, events_tx));
+    tokio::task::spawn_blocking(move || listener_loop(events_channel, events_tx_cloned));
 
     let mut command = tokio::process::Command::new(&resolved_path);
     if let Some(args) = &node.args {
