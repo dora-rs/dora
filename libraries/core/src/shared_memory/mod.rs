@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use self::channel::ShmemChannel;
-use eyre::eyre;
+use eyre::{eyre, Context};
 use serde::{Deserialize, Serialize};
 use shared_memory::Shmem;
 
@@ -23,7 +25,7 @@ impl ShmemServer {
         T: for<'a> Deserialize<'a> + std::fmt::Debug,
     {
         assert!(!self.reply_expected);
-        let result = self.channel.receive();
+        let result = self.channel.receive(None);
         if matches!(result, Ok(Some(_))) {
             self.reply_expected = true;
         }
@@ -44,12 +46,14 @@ impl ShmemServer {
 
 pub struct ShmemClient {
     channel: ShmemChannel,
+    timeout: Option<Duration>,
 }
 
 impl ShmemClient {
-    pub unsafe fn new(memory: Shmem) -> eyre::Result<Self> {
+    pub unsafe fn new(memory: Shmem, timeout: Option<Duration>) -> eyre::Result<Self> {
         Ok(Self {
             channel: ShmemChannel::new_client(memory)?,
+            timeout,
         })
     }
 
@@ -58,9 +62,12 @@ impl ShmemClient {
         T: Serialize + std::fmt::Debug,
         U: for<'a> Deserialize<'a> + std::fmt::Debug,
     {
-        self.channel.send(value)?;
         self.channel
-            .receive()?
+            .send(value)
+            .wrap_err("failed to send request")?;
+        self.channel
+            .receive(self.timeout)
+            .wrap_err("failed to receive reply")?
             .ok_or_else(|| eyre!("server disconnected unexpectedly"))
     }
 }

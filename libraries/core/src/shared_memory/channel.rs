@@ -113,26 +113,30 @@ impl ShmemChannel {
         Ok(())
     }
 
-    pub fn receive<T>(&mut self) -> eyre::Result<Option<T>>
+    pub fn receive<T>(&mut self, timeout: Option<Duration>) -> eyre::Result<Option<T>>
     where
         T: for<'a> Deserialize<'a> + std::fmt::Debug,
     {
         // wait for event
-        let (event, timeout) = if self.server {
-            (&self.server_event, raw_sync::Timeout::Infinite)
+        let event = if self.server {
+            &self.server_event
         } else {
-            (
-                &self.client_event,
-                raw_sync::Timeout::Val(Duration::from_secs(5)),
-            )
+            &self.client_event
         };
-
+        let timeout = timeout
+            .map(raw_sync::Timeout::Val)
+            .unwrap_or(raw_sync::Timeout::Infinite);
         event
             .wait(timeout)
-            .map_err(|err| eyre!("failed to wait for reply from ShmemChannel: {err}"))?;
+            .map_err(|err| eyre!("failed to receive from ShmemChannel: {err}"))?;
 
         // check for disconnect first
         if self.disconnect().load(std::sync::atomic::Ordering::Acquire) {
+            if self.server {
+                tracing::trace!("shm client disconnected");
+            } else {
+                tracing::error!("shm server disconnected");
+            }
             return Ok(None);
         }
 
