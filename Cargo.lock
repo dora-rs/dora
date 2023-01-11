@@ -281,6 +281,8 @@ dependencies = [
  "futures",
  "rand",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -289,6 +291,8 @@ version = "0.1.2"
 dependencies = [
  "dora-node-api",
  "eyre",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
