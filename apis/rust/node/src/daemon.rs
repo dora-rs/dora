@@ -6,15 +6,16 @@ use dora_core::{
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
 use shared_memory::{Shmem, ShmemConf};
-use std::{marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, thread::JoinHandle, time::Duration};
 
 pub struct DaemonConnection {
     pub control_channel: ControlChannel,
     pub event_stream: EventStream,
+    pub(crate) event_stream_thread: JoinHandle<()>,
 }
 
 impl DaemonConnection {
-    pub fn init(
+    pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_control_region_id: &str,
@@ -23,12 +24,14 @@ impl DaemonConnection {
         let control_channel = ControlChannel::init(dataflow_id, node_id, daemon_control_region_id)
             .wrap_err("failed to init control stream")?;
 
-        let event_stream = EventStream::init(dataflow_id, node_id, daemon_events_region_id)
-            .wrap_err("failed to init event stream")?;
+        let (event_stream, event_stream_thread) =
+            EventStream::init(dataflow_id, node_id, daemon_events_region_id)
+                .wrap_err("failed to init event stream")?;
 
         Ok(Self {
             control_channel,
             event_stream,
+            event_stream_thread,
         })
     }
 }
@@ -132,7 +135,7 @@ impl EventStream {
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_events_region_id: &str,
-    ) -> eyre::Result<Self> {
+    ) -> eyre::Result<(Self, JoinHandle<()>)> {
         let daemon_events_region = ShmemConf::new()
             .os_id(daemon_events_region_id)
             .open()
@@ -151,7 +154,7 @@ impl EventStream {
 
         let (tx, rx) = flume::bounded(1);
         let mut drop_tokens = Vec::new();
-        std::thread::spawn(move || loop {
+        let thread = std::thread::spawn(move || loop {
             let event: NodeEvent = match channel.request(&ControlRequest::NextEvent {
                 drop_tokens: std::mem::take(&mut drop_tokens),
             }) {
@@ -193,7 +196,7 @@ impl EventStream {
             }
         });
 
-        Ok(EventStream { receiver: rx })
+        Ok((EventStream { receiver: rx }, thread))
     }
 
     pub fn recv(&mut self) -> Option<Event> {
