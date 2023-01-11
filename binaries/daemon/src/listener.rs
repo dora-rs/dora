@@ -1,21 +1,24 @@
 use crate::{DaemonNodeEvent, Event};
 use dora_core::{
-    daemon_messages::{self, DropEvent},
+    daemon_messages::{DaemonReply, DaemonRequest, DropEvent},
     shared_memory::ShmemServer,
 };
 use eyre::Context;
 use tokio::sync::{mpsc, oneshot};
 
-#[tracing::instrument(skip(channel, events_tx))]
-pub fn listener_loop(mut channel: ShmemServer, events_tx: mpsc::Sender<Event>) {
+#[tracing::instrument(skip(server, events_tx))]
+pub fn listener_loop(
+    mut server: ShmemServer<DaemonRequest, DaemonReply>,
+    events_tx: mpsc::Sender<Event>,
+) {
     let mut id = None;
     let mut events = None;
     loop {
         // receive the next message
-        let message = match channel.listen().wrap_err("failed to receive node message") {
+        let message = match server.listen().wrap_err("failed to receive DaemonRequest") {
             Ok(Some(m)) => m,
             Ok(None) => {
-                tracing::info!("control channel disconnected: {id:?}");
+                tracing::info!("channel disconnected: {id:?}");
                 break;
             } // disconnected
             Err(err) => {
@@ -26,15 +29,15 @@ pub fn listener_loop(mut channel: ShmemServer, events_tx: mpsc::Sender<Event>) {
 
         // handle the message and translate it to a NodeEvent
         let node_event = match message {
-            daemon_messages::ControlRequest::Register {
+            DaemonRequest::Register {
                 dataflow_id,
                 node_id,
             } => {
                 id = Some((dataflow_id, node_id));
 
-                let reply = daemon_messages::ControlReply::Result(Ok(()));
+                let reply = DaemonReply::Result(Ok(()));
 
-                match channel.send_reply(&reply) {
+                match server.send_reply(&reply) {
                     Ok(()) => continue, // don't trigger an event for register calls
                     Err(err) => {
                         tracing::warn!("{err:?}");
@@ -42,8 +45,8 @@ pub fn listener_loop(mut channel: ShmemServer, events_tx: mpsc::Sender<Event>) {
                     }
                 }
             }
-            daemon_messages::ControlRequest::Stopped => DaemonNodeEvent::Stopped,
-            daemon_messages::ControlRequest::PrepareOutputMessage {
+            DaemonRequest::Stopped => DaemonNodeEvent::Stopped,
+            DaemonRequest::PrepareOutputMessage {
                 output_id,
                 metadata,
                 data_len,
@@ -52,10 +55,8 @@ pub fn listener_loop(mut channel: ShmemServer, events_tx: mpsc::Sender<Event>) {
                 metadata,
                 data_len,
             },
-            daemon_messages::ControlRequest::SendOutMessage { id } => {
-                DaemonNodeEvent::SendOutMessage { id }
-            }
-            daemon_messages::ControlRequest::Subscribe {
+            DaemonRequest::SendOutMessage { id } => DaemonNodeEvent::SendOutMessage { id },
+            DaemonRequest::Subscribe {
                 dataflow_id,
                 node_id,
             } => {
@@ -66,28 +67,29 @@ pub fn listener_loop(mut channel: ShmemServer, events_tx: mpsc::Sender<Event>) {
 
                 DaemonNodeEvent::Subscribe { event_sender: tx }
             }
-            daemon_messages::ControlRequest::NextEvent { drop_tokens } => {
+            DaemonRequest::NextEvent { drop_tokens } => {
                 let drop_event = Event::Drop(DropEvent {
                     tokens: drop_tokens,
                 });
                 if events_tx.blocking_send(drop_event).is_err() {
-                    break;
+                    tracing::warn!(
+                        "`events_tx` was closed unexpectedly when trying to send drop tokens"
+                    );
                 }
 
-                let Some(events) = events.as_mut() else {
-                    tracing::warn!(
-                        "Ignoring event request because no subscribe \
-                        message was sent yet"
-                    );
-                    continue;
+                let reply = match events.as_mut() {
+                    Some(events) => match events.recv() {
+                        Ok(event) => DaemonReply::NodeEvent(event),
+                        Err(flume::RecvError::Disconnected) => DaemonReply::Closed,
+                    },
+                    None => {
+                        DaemonReply::Result(Err("Ignoring event request because no subscribe \
+                    message was sent yet"
+                            .into()))
+                    }
                 };
 
-                let event = match events.recv() {
-                    Ok(event) => event,
-                    Err(_) => break,
-                };
-
-                if let Err(err) = channel.send_reply(&event).wrap_err("failed to send reply") {
+                if let Err(err) = server.send_reply(&reply).wrap_err("failed to send reply") {
                     tracing::error!("{err:?}");
                     break;
                 }
@@ -123,7 +125,7 @@ pub fn listener_loop(mut channel: ShmemServer, events_tx: mpsc::Sender<Event>) {
         let Ok(reply) = reply.blocking_recv() else {
             break; // main loop exited
         };
-        if let Err(err) = channel.send_reply(&reply).wrap_err("failed to send reply") {
+        if let Err(err) = server.send_reply(&reply).wrap_err("failed to send reply") {
             tracing::error!("{err:?}");
             break;
         }

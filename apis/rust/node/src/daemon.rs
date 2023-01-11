@@ -1,6 +1,6 @@
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{ControlRequest, DataflowId, NodeEvent},
+    daemon_messages::{DaemonReply, DaemonRequest, DataflowId, NodeEvent},
     shared_memory::ShmemClient,
 };
 use dora_message::Metadata;
@@ -37,7 +37,7 @@ impl DaemonConnection {
 }
 
 pub struct ControlChannel {
-    channel: ShmemClient,
+    channel: ShmemClient<DaemonRequest, DaemonReply>,
 }
 
 impl ControlChannel {
@@ -55,7 +55,7 @@ impl ControlChannel {
             unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
                 .wrap_err("failed to create ShmemChannel")?;
 
-        let msg = ControlRequest::Register {
+        let msg = DaemonRequest::Register {
             dataflow_id,
             node_id: node_id.clone(),
         };
@@ -64,7 +64,7 @@ impl ControlChannel {
             .wrap_err("failed to send register request to dora-daemon")?;
 
         match reply {
-            dora_core::daemon_messages::ControlReply::Result(result) => result
+            dora_core::daemon_messages::DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to register node with dora-daemon")?,
             other => bail!("unexpected register reply: {other:?}"),
@@ -76,10 +76,10 @@ impl ControlChannel {
     pub fn report_stop(&mut self) -> eyre::Result<()> {
         let reply = self
             .channel
-            .request(&ControlRequest::Stopped)
+            .request(&DaemonRequest::Stopped)
             .wrap_err("failed to report stopped to dora-daemon")?;
         match reply {
-            dora_core::daemon_messages::ControlReply::Result(result) => result
+            dora_core::daemon_messages::DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to report stop event to dora-daemon")?,
             other => bail!("unexpected stopped reply: {other:?}"),
@@ -95,17 +95,17 @@ impl ControlChannel {
     ) -> eyre::Result<MessageSample> {
         let reply = self
             .channel
-            .request(&ControlRequest::PrepareOutputMessage {
+            .request(&DaemonRequest::PrepareOutputMessage {
                 output_id,
                 metadata,
                 data_len,
             })
             .wrap_err("failed to send PrepareOutputMessage request to dora-daemon")?;
         match reply {
-            dora_core::daemon_messages::ControlReply::PreparedMessage {
+            dora_core::daemon_messages::DaemonReply::PreparedMessage {
                 shared_memory_id: id,
             } => Ok(MessageSample { id }),
-            dora_core::daemon_messages::ControlReply::Result(Err(err)) => {
+            dora_core::daemon_messages::DaemonReply::Result(Err(err)) => {
                 Err(eyre!(err).wrap_err("failed to report stop event to dora-daemon"))
             }
             other => bail!("unexpected PrepareOutputMessage reply: {other:?}"),
@@ -115,10 +115,10 @@ impl ControlChannel {
     pub fn send_message(&mut self, sample: MessageSample) -> eyre::Result<()> {
         let reply = self
             .channel
-            .request(&ControlRequest::SendOutMessage { id: sample.id })
+            .request(&DaemonRequest::SendOutMessage { id: sample.id })
             .wrap_err("failed to send SendOutMessage request to dora-daemon")?;
         match reply {
-            dora_core::daemon_messages::ControlReply::Result(result) => {
+            dora_core::daemon_messages::DaemonReply::Result(result) => {
                 result.map_err(|err| eyre!(err))
             }
             other => bail!("unexpected SendOutMessage reply: {other:?}"),
@@ -140,12 +140,12 @@ impl EventStream {
             .os_id(daemon_events_region_id)
             .open()
             .wrap_err("failed to connect to dora-daemon")?;
-        let mut channel =
+        let mut channel: ShmemClient<DaemonRequest, DaemonReply> =
             unsafe { ShmemClient::new(daemon_events_region, None) }
                 .wrap_err("failed to create ShmemChannel")?;
 
         channel
-            .request(&ControlRequest::Subscribe {
+            .request(&DaemonRequest::Subscribe {
                 dataflow_id,
                 node_id: node_id.clone(),
             })
@@ -155,10 +155,20 @@ impl EventStream {
         let (tx, rx) = flume::bounded(1);
         let mut drop_tokens = Vec::new();
         let thread = std::thread::spawn(move || loop {
-            let event: NodeEvent = match channel.request(&ControlRequest::NextEvent {
+            let daemon_request = DaemonRequest::NextEvent {
                 drop_tokens: std::mem::take(&mut drop_tokens),
-            }) {
-                Ok(event) => event,
+            };
+            let event: NodeEvent = match channel.request(&daemon_request) {
+                Ok(DaemonReply::NodeEvent(event)) => event,
+                Ok(DaemonReply::Closed) => {
+                    tracing::debug!("Event stream closed");
+                    break;
+                }
+                Ok(other) => {
+                    let err = eyre!("unexpected control reply: {other:?}");
+                    tracing::warn!("{err:?}");
+                    continue;
+                }
                 Err(err) => {
                     let err = eyre!(err).wrap_err("failed to receive incoming event");
                     tracing::warn!("{err:?}");

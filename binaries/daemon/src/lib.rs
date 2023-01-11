@@ -3,7 +3,7 @@ use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
     daemon_messages::{
-        self, ControlReply, DaemonCoordinatorEvent, DaemonCoordinatorReply, DataflowId, DropEvent,
+        self, DaemonCoordinatorEvent, DaemonCoordinatorReply, DaemonReply, DataflowId, DropEvent,
         DropToken, SpawnDataflowNodes, SpawnNodeParams,
     },
     descriptor::{CoreNodeKind, Descriptor},
@@ -329,7 +329,7 @@ impl Daemon {
         event: DaemonNodeEvent,
         dataflow_id: DataflowId,
         node_id: NodeId,
-        reply_sender: oneshot::Sender<ControlReply>,
+        reply_sender: oneshot::Sender<DaemonReply>,
     ) -> eyre::Result<()> {
         match event {
             DaemonNodeEvent::Subscribe { event_sender } => {
@@ -342,7 +342,7 @@ impl Daemon {
                         "subscribe failed: no running dataflow with ID `{dataflow_id}`"
                     )),
                 };
-                let _ = reply_sender.send(ControlReply::Result(result));
+                let _ = reply_sender.send(DaemonReply::Result(result));
             }
             DaemonNodeEvent::PrepareOutputMessage {
                 output_id,
@@ -370,7 +370,7 @@ impl Daemon {
                 };
                 self.prepared_messages.insert(id.clone(), message);
 
-                let reply = ControlReply::PreparedMessage {
+                let reply = DaemonReply::PreparedMessage {
                     shared_memory_id: id.clone(),
                 };
                 if reply_sender.send(reply).is_err() {
@@ -444,12 +444,12 @@ impl Daemon {
                     let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), *len);
                 }
 
-                let _ = reply_sender.send(ControlReply::Result(Ok(())));
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
             DaemonNodeEvent::Stopped => {
                 tracing::info!("Stopped: {dataflow_id}/{node_id}");
 
-                let _ = reply_sender.send(ControlReply::Result(Ok(())));
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
 
                 // notify downstream nodes
                 let dataflow = self
@@ -625,7 +625,7 @@ pub enum Event {
         dataflow_id: DataflowId,
         node_id: NodeId,
         event: DaemonNodeEvent,
-        reply_sender: oneshot::Sender<ControlReply>,
+        reply_sender: oneshot::Sender<DaemonReply>,
     },
     Coordinator(CoordinatorEvent),
     Dora(DoraEvent),
