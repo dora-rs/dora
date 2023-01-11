@@ -41,32 +41,12 @@ pub enum ControlRequest {
     },
 }
 
-impl ControlRequest {
-    pub fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
-    }
-
-    pub fn deserialize(data: &[u8]) -> eyre::Result<Self> {
-        bincode::deserialize(data).wrap_err("failed to deserialize ControlRequest")
-    }
-}
-
 type SharedMemoryId = String;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ControlReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
-}
-
-impl ControlReply {
-    pub fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
-    }
-
-    pub fn deserialize(data: &[u8]) -> eyre::Result<Self> {
-        bincode::deserialize(data).wrap_err("failed to deserialize ControlReply")
-    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
