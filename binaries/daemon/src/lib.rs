@@ -394,6 +394,8 @@ impl Daemon {
                     format!("send out failed: no running dataflow with ID `{dataflow_id}`")
                 })?;
 
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+
                 // figure out receivers from dataflow graph
                 let empty_set = BTreeSet::new();
                 let local_receivers = dataflow
@@ -443,8 +445,6 @@ impl Daemon {
                 if let Some((memory, len)) = &data {
                     let data = std::ptr::slice_from_raw_parts(memory.as_ptr(), *len);
                 }
-
-                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
             DaemonNodeEvent::Stopped => {
                 tracing::info!("Stopped: {dataflow_id}/{node_id}");
