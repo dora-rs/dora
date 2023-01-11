@@ -196,8 +196,11 @@ impl Drop for ShmemChannel {
         if self.server {
             // server must only exit after client is disconnected
             let disconnected = self.disconnect().load(std::sync::atomic::Ordering::Acquire);
-            tracing::debug!("closing ShmemServer after client disconnect ({disconnected})");
-            assert!(disconnected);
+            if disconnected {
+                tracing::debug!("closing ShmemServer after client disconnect");
+            } else {
+                tracing::error!("ShmemServer closed before client disconnect");
+            }
         } else {
             tracing::debug!("disconnecting client");
 
