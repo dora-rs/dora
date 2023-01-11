@@ -5,7 +5,6 @@ use crate::{
     descriptor,
 };
 use dora_message::Metadata;
-use eyre::Context;
 use uuid::Uuid;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -18,7 +17,7 @@ pub struct NodeConfig {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum ControlRequest {
+pub enum DaemonRequest {
     Register {
         dataflow_id: DataflowId,
         node_id: NodeId,
@@ -44,9 +43,11 @@ pub enum ControlRequest {
 type SharedMemoryId = String;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum ControlReply {
+pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
+    Closed,
+    NodeEvent(NodeEvent),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
