@@ -188,16 +188,21 @@ unsafe impl Send for ShmemChannel {}
 
 impl Drop for ShmemChannel {
     fn drop(&mut self) {
-        self.disconnect()
-            .store(true, std::sync::atomic::Ordering::Release);
-        // wake up other end
-        let event = if self.server {
-            &self.client_event
+        if self.server {
+            // server must only exit after client is disconnected
+            let disconnected = self.disconnect().load(std::sync::atomic::Ordering::Acquire);
+            tracing::debug!("closing ShmemServer after client disconnect ({disconnected})");
+            assert!(disconnected);
         } else {
-            &self.server_event
-        };
-        if let Err(err) = event.set(EventState::Signaled) {
-            tracing::warn!("failed to signal ShmemChannel disconnect: {err}");
+            tracing::debug!("disconnecting client");
+
+            self.disconnect()
+                .store(true, std::sync::atomic::Ordering::Release);
+
+            // wake up server
+            if let Err(err) = self.server_event.set(EventState::Signaled) {
+                tracing::warn!("failed to signal ShmemChannel disconnect: {err}");
+            }
         }
     }
 }
