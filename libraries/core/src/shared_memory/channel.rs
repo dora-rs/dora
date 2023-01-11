@@ -138,6 +138,7 @@ impl ShmemChannel {
 
         // then read len for synchronization
         let msg_len = self.data_len().load(std::sync::atomic::Ordering::Acquire) as usize;
+        assert_ne!(msg_len, 0);
         assert!(msg_len < self.memory.len() - self.data_offset);
 
         // finally read the data
