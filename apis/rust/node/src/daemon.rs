@@ -48,8 +48,9 @@ impl ControlChannel {
             .os_id(daemon_control_region_id)
             .open()
             .wrap_err("failed to connect to dora-daemon")?;
-        let mut channel = unsafe { ShmemClient::new(daemon_events_region) }
-            .wrap_err("failed to create ShmemChannel")?;
+        let mut channel =
+            unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
+                .wrap_err("failed to create ShmemChannel")?;
 
         let msg = ControlRequest::Register {
             dataflow_id,
@@ -136,8 +137,9 @@ impl EventStream {
             .os_id(daemon_events_region_id)
             .open()
             .wrap_err("failed to connect to dora-daemon")?;
-        let mut channel = unsafe { ShmemClient::new(daemon_events_region) }
-            .wrap_err("failed to create ShmemChannel")?;
+        let mut channel =
+            unsafe { ShmemClient::new(daemon_events_region, None) }
+                .wrap_err("failed to create ShmemChannel")?;
 
         channel
             .request(&ControlRequest::Subscribe {
