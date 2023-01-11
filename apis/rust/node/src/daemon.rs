@@ -1,18 +1,12 @@
-use std::{
-    io::{ErrorKind, Read, Write},
-    marker::PhantomData,
-    net::{Ipv4Addr, SocketAddr, TcpStream},
-    time::Duration,
-};
-
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{ControlRequest, DataflowId, DropEvent, NodeEvent},
+    daemon_messages::{ControlRequest, DataflowId, NodeEvent},
     shared_memory::ShmemClient,
 };
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
 use shared_memory::{Shmem, ShmemConf};
+use std::{marker::PhantomData, time::Duration};
 
 pub struct DaemonConnection {
     pub control_channel: ControlChannel,
@@ -23,14 +17,13 @@ impl DaemonConnection {
     pub fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
-        daemon_port: u16,
+        daemon_control_region_id: &str,
         daemon_events_region_id: &str,
     ) -> eyre::Result<Self> {
-        let control_channel = ControlChannel::init(dataflow_id, node_id, daemon_events_region_id)
+        let control_channel = ControlChannel::init(dataflow_id, node_id, daemon_control_region_id)
             .wrap_err("failed to init control stream")?;
 
-        let daemon_addr = (Ipv4Addr::new(127, 0, 0, 1), daemon_port).into();
-        let event_stream = EventStream::init(daemon_addr, dataflow_id, node_id)
+        let event_stream = EventStream::init(dataflow_id, node_id, daemon_events_region_id)
             .wrap_err("failed to init event stream")?;
 
         Ok(Self {
@@ -49,10 +42,10 @@ impl ControlChannel {
     fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
-        daemon_events_region_id: &str,
+        daemon_control_region_id: &str,
     ) -> eyre::Result<Self> {
         let daemon_events_region = ShmemConf::new()
-            .os_id(daemon_events_region_id)
+            .os_id(daemon_control_region_id)
             .open()
             .wrap_err("failed to connect to dora-daemon")?;
         let mut channel = unsafe { ShmemClient::new(daemon_events_region) }
@@ -135,37 +128,32 @@ pub struct EventStream {
 
 impl EventStream {
     fn init(
-        daemon_addr: SocketAddr,
         dataflow_id: DataflowId,
         node_id: &NodeId,
+        daemon_events_region_id: &str,
     ) -> eyre::Result<Self> {
-        let mut event_stream =
-            TcpStream::connect(daemon_addr).wrap_err("failed to connect to dora-daemon")?;
-        event_stream
-            .set_nodelay(true)
-            .wrap_err("failed to set TCP_NODELAY")?;
-        tcp_send(
-            &mut event_stream,
-            &ControlRequest::Subscribe {
+        let daemon_events_region = ShmemConf::new()
+            .os_id(daemon_events_region_id)
+            .open()
+            .wrap_err("failed to connect to dora-daemon")?;
+        let mut channel = unsafe { ShmemClient::new(daemon_events_region) }
+            .wrap_err("failed to create ShmemChannel")?;
+
+        channel
+            .request(&ControlRequest::Subscribe {
                 dataflow_id,
                 node_id: node_id.clone(),
-            },
-        )
-        .wrap_err("failed to send subscribe request to dora-daemon")?;
-        match tcp_receive(&mut event_stream)
-            .wrap_err("failed to receive subscribe reply from dora-daemon")?
-        {
-            dora_core::daemon_messages::ControlReply::Result(result) => result
-                .map_err(|e| eyre!(e))
-                .wrap_err("failed to create subscription with dora-daemon")?,
-            other => bail!("unexpected subscribe reply: {other:?}"),
-        }
+            })
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to create subscription with dora-daemon")?;
 
         let (tx, rx) = flume::bounded(1);
+        let mut drop_tokens = Vec::new();
         std::thread::spawn(move || loop {
-            let event: NodeEvent = match tcp_receive(&mut event_stream) {
+            let event: NodeEvent = match channel.request(&ControlRequest::NextEvent {
+                drop_tokens: std::mem::take(&mut drop_tokens),
+            }) {
                 Ok(event) => event,
-                Err(err) if err.kind() == ErrorKind::UnexpectedEof => break,
                 Err(err) => {
                     let err = eyre!(err).wrap_err("failed to receive incoming event");
                     tracing::warn!("{err:?}");
@@ -199,11 +187,7 @@ impl EventStream {
             }
 
             if let Some(token) = drop_token {
-                let message = DropEvent { token };
-                if let Err(err) = tcp_send(&mut event_stream, &message) {
-                    tracing::warn!("failed to send drop token: {err}");
-                    break;
-                }
+                drop_tokens.push(token);
             }
         });
 
@@ -304,30 +288,4 @@ impl std::ops::Deref for MappedInputData<'_> {
     fn deref(&self) -> &Self::Target {
         unsafe { &self.memory.as_slice()[..self.len] }
     }
-}
-
-fn tcp_send<T: serde::Serialize>(connection: &mut TcpStream, request: &T) -> std::io::Result<()> {
-    let serialized = serde_json::to_vec(request)?;
-
-    let len_raw = (serialized.len() as u64).to_le_bytes();
-    connection.write_all(&len_raw)?;
-    connection.write_all(&serialized)?;
-    Ok(())
-}
-
-fn tcp_receive<T>(connection: &mut TcpStream) -> std::io::Result<T>
-where
-    T: for<'a> serde::Deserialize<'a>,
-{
-    let reply_len = {
-        let mut raw = [0; 8];
-        connection.read_exact(&mut raw)?;
-        u64::from_le_bytes(raw) as usize
-    };
-    let mut reply_raw = vec![0; reply_len];
-    connection.read_exact(&mut reply_raw)?;
-
-    let reply = serde_json::from_slice(&reply_raw)?;
-
-    Ok(reply)
 }

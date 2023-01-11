@@ -13,7 +13,7 @@ pub struct NodeConfig {
     pub dataflow_id: DataflowId,
     pub node_id: NodeId,
     pub run_config: NodeRunConfig,
-    pub daemon_port: u16,
+    pub daemon_control_region_id: SharedMemoryId,
     pub daemon_events_region_id: SharedMemoryId,
 }
 
@@ -36,6 +36,9 @@ pub enum ControlRequest {
         id: SharedMemoryId,
     },
     Stopped,
+    NextEvent {
+        drop_tokens: Vec<DropToken>,
+    },
 }
 
 impl ControlRequest {
@@ -81,7 +84,7 @@ pub enum NodeEvent {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DropEvent {
-    pub token: DropToken,
+    pub tokens: Vec<DropToken>,
 }
 
 #[derive(

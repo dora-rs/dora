@@ -23,14 +23,10 @@ use std::{
 use tcp_utils::tcp_receive;
 use tokio::{
     fs,
-    net::TcpStream,
     sync::{mpsc, oneshot},
     time::timeout,
 };
-use tokio_stream::{
-    wrappers::{ReceiverStream, TcpListenerStream},
-    Stream, StreamExt,
-};
+use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use uuid::Uuid;
 
 mod coordinator;
@@ -39,7 +35,6 @@ mod spawn;
 mod tcp_utils;
 
 pub struct Daemon {
-    port: u16,
     prepared_messages: HashMap<String, PreparedMessage>,
     sent_out_shared_memory: HashMap<DropToken, Rc<Shmem>>,
 
@@ -133,22 +128,8 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     ) -> eyre::Result<()> {
-        // create listener for node connection
-        let listener = listener::create_listener().await?;
-        let port = listener
-            .local_addr()
-            .wrap_err("failed to get local addr of listener")?
-            .port();
-        let new_connections = TcpListenerStream::new(listener).map(|c| {
-            c.map(Event::NewConnection)
-                .wrap_err("failed to open connection")
-                .unwrap_or_else(Event::ConnectError)
-        });
-        tracing::info!("Listening for node connections on 127.0.0.1:{port}");
-
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
-            port,
             prepared_messages: Default::default(),
             sent_out_shared_memory: Default::default(),
             running: HashMap::new(),
@@ -162,13 +143,7 @@ impl Daemon {
             Duration::from_secs(5),
         ))
         .map(|_| Event::WatchdogInterval);
-        let events = (
-            external_events,
-            new_connections,
-            dora_events,
-            watchdog_interval,
-        )
-            .merge();
+        let events = (external_events, dora_events, watchdog_interval).merge();
         daemon.run_inner(events).await
     }
 
@@ -176,21 +151,10 @@ impl Daemon {
         mut self,
         incoming_events: impl Stream<Item = Event> + Unpin,
     ) -> eyre::Result<()> {
-        let (node_events_tx, node_events_rx) = mpsc::channel(10);
-        let node_events = ReceiverStream::new(node_events_rx);
-
-        let mut events = (incoming_events, node_events).merge();
+        let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
             match event {
-                Event::NewConnection(connection) => {
-                    connection.set_nodelay(true)?;
-                    let events_tx = node_events_tx.clone();
-                    tokio::spawn(listener::handle_connection(connection, events_tx));
-                }
-                Event::ConnectError(err) => {
-                    tracing::warn!("{:?}", err.wrap_err("failed to connect"));
-                }
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
                     let (reply, status) = self.handle_coordinator_event(event).await;
                     let _ = reply_tx.send(reply);
@@ -212,16 +176,18 @@ impl Daemon {
                     RunStatus::Continue => {}
                     RunStatus::Exit => break,
                 },
-                Event::Drop(DropEvent { token }) => {
-                    match self.sent_out_shared_memory.remove(&token) {
-                        Some(rc) => {
-                            if let Ok(_shmem) = Rc::try_unwrap(rc) {
-                                tracing::trace!(
-                                    "freeing shared memory after receiving last drop token"
-                                )
+                Event::Drop(DropEvent { tokens }) => {
+                    for token in tokens {
+                        match self.sent_out_shared_memory.remove(&token) {
+                            Some(rc) => {
+                                if let Ok(_shmem) = Rc::try_unwrap(rc) {
+                                    tracing::trace!(
+                                        "freeing shared memory after receiving last drop token"
+                                    )
+                                }
                             }
+                            None => tracing::warn!("received unknown drop token {token:?}"),
                         }
-                        None => tracing::warn!("received unknown drop token {token:?}"),
                     }
                 }
                 Event::WatchdogInterval => {
@@ -326,7 +292,7 @@ impl Daemon {
                 }
             }
 
-            spawn::spawn_node(dataflow_id, params, self.port, self.events_tx.clone())
+            spawn::spawn_node(dataflow_id, params, self.events_tx.clone())
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
         }
@@ -655,8 +621,6 @@ type InputId = (NodeId, DataId);
 
 #[derive(Debug)]
 pub enum Event {
-    NewConnection(TcpStream),
-    ConnectError(eyre::Report),
     Node {
         dataflow_id: DataflowId,
         node_id: NodeId,
