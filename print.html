@@ -1118,17 +1118,13 @@ int main()
 <ul>
 <li>Create an operator python file called <code>object_detection.py</code>:</li>
 </ul>
-<pre><code class="language-python">from enum import Enum
-from typing import Callable
+<pre><code class="language-python">from typing import Callable
 
 import cv2
 import numpy as np
 import torch
 
-
-class DoraStatus(Enum):
-    CONTINUE = 0
-    STOP = 1
+from dora import DoraStatus
 
 
 class Operator:
