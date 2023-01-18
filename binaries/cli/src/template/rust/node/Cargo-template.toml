@@ -6,4 +6,4 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { git = "https://github.com/dora-rs/dora.git", tag = "___version___" }
+dora-node-api = { git = "https://github.com/dora-rs/dora.git", tag = "v___version___" }
