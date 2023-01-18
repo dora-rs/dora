@@ -1,4 +1,4 @@
-use crate::{listener::listener_loop, DoraEvent, Event};
+use crate::{listener::listener_loop, shared_mem_handler, DoraEvent, Event};
 use dora_core::{
     daemon_messages::{DataflowId, NodeConfig, SpawnNodeParams},
     descriptor::{resolve_path, source_is_url},
@@ -14,7 +14,8 @@ use tokio::sync::mpsc;
 pub async fn spawn_node(
     dataflow_id: DataflowId,
     params: SpawnNodeParams,
-    events_tx: mpsc::Sender<Event>,
+    daemon_tx: mpsc::Sender<Event>,
+    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
 ) -> eyre::Result<()> {
     let SpawnNodeParams {
         node_id,
@@ -57,16 +58,18 @@ pub async fn spawn_node(
     {
         let server = unsafe { ShmemServer::new(daemon_control_region) }
             .wrap_err("failed to create control server")?;
-        let events_tx = events_tx.clone();
-        tokio::task::spawn_blocking(move || listener_loop(server, events_tx));
+        let daemon_tx = daemon_tx.clone();
+        let shmem_handler_tx = shmem_handler_tx.clone();
+        tokio::task::spawn_blocking(move || listener_loop(server, daemon_tx, shmem_handler_tx));
     }
     {
         let server = unsafe { ShmemServer::new(daemon_events_region) }
             .wrap_err("failed to create events server")?;
         let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-        let events_tx = events_tx.clone();
+        let daemon_tx = daemon_tx.clone();
+        let shmem_handler_tx = shmem_handler_tx.clone();
         tokio::task::spawn_blocking(move || {
-            listener_loop(server, events_tx);
+            listener_loop(server, daemon_tx, shmem_handler_tx);
             tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
         });
     }
@@ -115,7 +118,7 @@ pub async fn spawn_node(
             node_id: node_id_cloned,
             result,
         };
-        let _ = events_tx.send(event.into()).await;
+        let _ = daemon_tx.send(event.into()).await;
     });
     Ok(())
 }
