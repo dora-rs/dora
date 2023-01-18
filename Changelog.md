@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.1.3 (2023-01-18)
 
 * Package `DoraStatus` into dora python package: https://github.com/dora-rs/dora/pull/172
 * Force removal of Pyo3 Object to avoid memory leak: https://github.com/dora-rs/dora/pull/168
 * Bump tokio from 1.21.2 to 1.23.1: https://github.com/dora-rs/dora/pull/171
+* Create a changelog file: https://github.com/dora-rs/dora/pull/174 
 
 ## v0.1.2 (2022-12-15)
 
