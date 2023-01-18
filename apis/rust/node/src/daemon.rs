@@ -55,20 +55,7 @@ impl ControlChannel {
             unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
                 .wrap_err("failed to create ShmemChannel")?;
 
-        let msg = DaemonRequest::Register {
-            dataflow_id,
-            node_id: node_id.clone(),
-        };
-        let reply = channel
-            .request(&msg)
-            .wrap_err("failed to send register request to dora-daemon")?;
-
-        match reply {
-            dora_core::daemon_messages::DaemonReply::Result(result) => result
-                .map_err(|e| eyre!(e))
-                .wrap_err("failed to register node with dora-daemon")?,
-            other => bail!("unexpected register reply: {other:?}"),
-        }
+        register(dataflow_id, node_id.clone(), &mut channel)?;
 
         Ok(Self { channel })
     }
@@ -126,6 +113,28 @@ impl ControlChannel {
     }
 }
 
+fn register(
+    dataflow_id: DataflowId,
+    node_id: NodeId,
+    channel: &mut ShmemClient<DaemonRequest, DaemonReply>,
+) -> eyre::Result<()> {
+    let msg = DaemonRequest::Register {
+        dataflow_id,
+        node_id,
+    };
+    let reply = channel
+        .request(&msg)
+        .wrap_err("failed to send register request to dora-daemon")?;
+
+    match reply {
+        dora_core::daemon_messages::DaemonReply::Result(result) => result
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to register node with dora-daemon")?,
+        other => bail!("unexpected register reply: {other:?}"),
+    }
+    Ok(())
+}
+
 pub struct EventStream {
     receiver: flume::Receiver<(NodeEvent, std::sync::mpsc::Sender<()>)>,
 }
@@ -144,11 +153,10 @@ impl EventStream {
             unsafe { ShmemClient::new(daemon_events_region, None) }
                 .wrap_err("failed to create ShmemChannel")?;
 
+        register(dataflow_id, node_id.clone(), &mut channel)?;
+
         channel
-            .request(&DaemonRequest::Subscribe {
-                dataflow_id,
-                node_id: node_id.clone(),
-            })
+            .request(&DaemonRequest::Subscribe)
             .map_err(|e| eyre!(e))
             .wrap_err("failed to create subscription with dora-daemon")?;
 

@@ -22,10 +22,7 @@ pub enum DaemonRequest {
         dataflow_id: DataflowId,
         node_id: NodeId,
     },
-    Subscribe {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-    },
+    Subscribe,
     PrepareOutputMessage {
         output_id: DataId,
         metadata: Metadata<'static>,
