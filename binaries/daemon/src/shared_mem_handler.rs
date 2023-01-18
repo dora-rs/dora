@@ -220,7 +220,7 @@ impl SharedMemSample {
     }
 
     pub fn len(&self) -> usize {
-        self.shared_memory.0.len()
+        self.len
     }
 }
 
