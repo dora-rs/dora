@@ -1,5 +1,9 @@
 use core::fmt;
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
 use dora_core::{
     config::{DataId, NodeId},
@@ -19,6 +23,7 @@ pub struct SharedMemHandler {
     events_tx: Sender<crate::ShmemHandlerEvent>,
     prepared_messages: HashMap<String, PreparedMessage>,
     sent_out_shared_memory: HashMap<DropToken, Arc<ShmemHandle>>,
+    dropped: HashSet<DropToken>,
 }
 
 impl SharedMemHandler {
@@ -27,6 +32,7 @@ impl SharedMemHandler {
             events_tx,
             prepared_messages: HashMap::new(),
             sent_out_shared_memory: HashMap::new(),
+            dropped: HashSet::new(),
         }
     }
 
@@ -86,7 +92,9 @@ impl SharedMemHandler {
                                 });
                             }
                         }
-                        None => tracing::warn!("received unknown drop token {token:?}"),
+                        None => {
+                            self.dropped.insert(token);
+                        }
                     }
                 }
             }
@@ -180,8 +188,12 @@ impl SharedMemHandler {
                 // keep shared memory alive until we received all drop tokens
                 let memory = Arc::new(data.shared_memory);
                 for drop_token in drop_tokens {
-                    self.sent_out_shared_memory
-                        .insert(drop_token, memory.clone());
+                    if self.dropped.remove(&drop_token) {
+                        // this token was already dropped -> ignore
+                    } else {
+                        self.sent_out_shared_memory
+                            .insert(drop_token, memory.clone());
+                    }
                 }
             }
         }
