@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 
 [workspace.dependencies]
 dora-node-api = { version = "0.1.2", path = "apis/rust/node", default-features = false }
