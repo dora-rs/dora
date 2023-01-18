@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     let crate::CommandNew {
         kind,
@@ -81,7 +82,9 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     fs::create_dir(&src)
         .with_context(|| format!("failed to create directory `{}`", src.display()))?;
 
-    let cargo_toml = CARGO_TOML.replace("___name___", &name);
+    let cargo_toml = CARGO_TOML
+        .replace("___name___", &name)
+        .replace("___version___", &VERSION);
     let cargo_toml_path = root.join("Cargo.toml");
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
@@ -117,7 +120,9 @@ fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::E
     fs::create_dir(&src)
         .with_context(|| format!("failed to create directory `{}`", src.display()))?;
 
-    let cargo_toml = CARGO_TOML.replace("___name___", &name);
+    let cargo_toml = CARGO_TOML
+        .replace("___name___", &name)
+        .replace("___version___", &VERSION);
     let cargo_toml_path = root.join("Cargo.toml");
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
