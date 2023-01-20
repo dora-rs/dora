@@ -2,11 +2,10 @@ use crate::{listener::listener_loop, shared_mem_handler, DoraEvent, Event};
 use dora_core::{
     daemon_messages::{DataflowId, NodeConfig, SpawnNodeParams},
     descriptor::{resolve_path, source_is_url},
-    shared_memory::ShmemServer,
 };
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
-use shared_memory::ShmemConf;
+use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
 use tokio::sync::mpsc;
 

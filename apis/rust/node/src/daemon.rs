@@ -1,12 +1,15 @@
 use dora_core::{
     config::{DataId, NodeId},
     daemon_messages::{DaemonReply, DaemonRequest, DataflowId, NodeEvent},
-    shared_memory::ShmemClient,
 };
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
-use shared_memory::{Shmem, ShmemConf};
-use std::{marker::PhantomData, thread::JoinHandle, time::Duration};
+use shared_memory_server::{Shmem, ShmemClient, ShmemConf};
+use std::{
+    marker::PhantomData,
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
 
 pub struct DaemonConnection {
     pub control_channel: ControlChannel,

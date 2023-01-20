@@ -2,9 +2,9 @@ use crate::{shared_mem_handler, DaemonNodeEvent, Event};
 use dora_core::{
     config::NodeId,
     daemon_messages::{DaemonReply, DaemonRequest, DataflowId, DropEvent, NodeEvent},
-    shared_memory::ShmemServer,
 };
 use eyre::{eyre, Context};
+use shared_memory_server::ShmemServer;
 use tokio::sync::{mpsc, oneshot};
 
 #[tracing::instrument(skip(server, daemon_tx, shmem_handler_tx))]
