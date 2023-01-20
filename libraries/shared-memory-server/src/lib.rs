@@ -1,9 +1,9 @@
 use self::channel::ShmemChannel;
 use eyre::{eyre, Context};
 use serde::{Deserialize, Serialize};
-use shared_memory::Shmem;
+pub use shared_memory::{Shmem, ShmemConf};
 use std::marker::PhantomData;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod channel;
 
@@ -40,7 +40,7 @@ impl<T, U> ShmemServer<T, U> {
         U: Serialize + std::fmt::Debug,
     {
         assert!(self.reply_expected);
-        self.channel.send(value)?;
+        self.channel.send(value, Instant::now())?;
         self.reply_expected = false;
         Ok(())
     }
@@ -61,13 +61,13 @@ impl<T, U> ShmemClient<T, U> {
         })
     }
 
-    pub fn request(&mut self, value: &T) -> eyre::Result<U>
+    pub fn request(&mut self, value: &T, start: Instant) -> eyre::Result<U>
     where
         T: Serialize + std::fmt::Debug,
         U: for<'a> Deserialize<'a> + std::fmt::Debug,
     {
         self.channel
-            .send(value)
+            .send(value, start)
             .wrap_err("failed to send request")?;
         self.channel
             .receive(self.timeout)

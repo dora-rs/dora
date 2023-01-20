@@ -9,7 +9,7 @@ use dora_core::{
 pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
 pub use flume::Receiver;
-use shared_memory::ShmemConf;
+use shared_memory_server::ShmemConf;
 
 pub mod daemon;
 

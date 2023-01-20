@@ -13,7 +13,7 @@ use eyre::{eyre, Context};
 use flume::{Receiver, Sender};
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
-use shared_memory::{Shmem, ShmemConf};
+use shared_memory_server::{Shmem, ShmemConf};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 

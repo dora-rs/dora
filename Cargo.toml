@@ -16,6 +16,7 @@ members = [
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
+    "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/zenoh-logger",
