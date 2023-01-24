@@ -21,12 +21,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tcp_utils::tcp_receive;
-use tokio::{
-    fs,
-    sync::{mpsc, oneshot},
-    time::timeout,
-};
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio::{fs, sync::oneshot, time::timeout};
+use tokio_stream::{Stream, StreamExt};
 use uuid::Uuid;
 
 mod coordinator;
@@ -38,10 +34,9 @@ mod tcp_utils;
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
 
-    events_tx: mpsc::Sender<Event>,
+    events_tx: flume::Sender<Event>,
 
-    shared_memory_handler: flume::Sender<shared_mem_handler::DaemonEvent>,
-    shared_memory_handler_node: flume::Sender<shared_mem_handler::NodeEvent>,
+    shared_memory_handler: flume::Sender<shared_mem_handler::Event>,
 
     coordinator_addr: Option<SocketAddr>,
     machine_id: String,
@@ -129,26 +124,22 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     ) -> eyre::Result<()> {
-        let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
-        let (shared_memory_handler, shared_memory_daemon_rx) = flume::unbounded();
-        let (shared_memory_handler_node, shared_memory_node_rx) = flume::bounded(10);
+        let (dora_events_tx, dora_events_rx) = flume::bounded(50);
+        let (shared_memory_handler, shared_memory_rx) = flume::unbounded();
         let daemon = Self {
             running: HashMap::new(),
             events_tx: dora_events_tx,
             shared_memory_handler,
-            shared_memory_handler_node,
             coordinator_addr,
             machine_id,
             exit_when_done,
         };
         let (shmem_events_tx, shmem_events_rx) = flume::bounded(5);
-        tokio::spawn(async {
+        std::thread::spawn(|| {
             let mut handler = shared_mem_handler::SharedMemHandler::new(shmem_events_tx);
-            handler
-                .run(shared_memory_node_rx, shared_memory_daemon_rx)
-                .await;
+            handler.run(shared_memory_rx);
         });
-        let dora_events = ReceiverStream::new(dora_events_rx);
+        let dora_events = dora_events_rx.into_stream();
         let shmem_events = shmem_events_rx.into_stream().map(Event::ShmemHandler);
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
@@ -307,7 +298,7 @@ impl Daemon {
                 dataflow_id,
                 params,
                 self.events_tx.clone(),
-                self.shared_memory_handler_node.clone(),
+                self.shared_memory_handler.clone(),
             )
             .await
             .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
@@ -328,7 +319,7 @@ impl Daemon {
                             Default::default(),
                         ),
                     };
-                    if events_tx.send(event.into()).await.is_err() {
+                    if events_tx.send_async(event.into()).await.is_err() {
                         break;
                     }
                 }
@@ -582,7 +573,9 @@ impl Daemon {
                 if let Some(data) = data {
                     if let Err(err) = self
                         .shared_memory_handler
-                        .send_async(shared_mem_handler::DaemonEvent::SentOut { data, drop_tokens })
+                        .send_async(
+                            shared_mem_handler::DaemonEvent::SentOut { data, drop_tokens }.into(),
+                        )
                         .await
                         .wrap_err("shared mem handler crashed after send out")
                     {

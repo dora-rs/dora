@@ -11,8 +11,6 @@ use dora_core::{
 };
 use eyre::{eyre, Context};
 use flume::{Receiver, Sender};
-use futures::StreamExt;
-use futures_concurrency::stream::Merge;
 use shared_memory_server::{Shmem, ShmemConf};
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -36,38 +34,24 @@ impl SharedMemHandler {
         }
     }
 
-    pub async fn run(
-        &mut self,
-        node_events: Receiver<NodeEvent>,
-        daemon_events: Receiver<DaemonEvent>,
-    ) {
-        if let Err(err) = self.run_inner(node_events, daemon_events).await {
+    pub fn run(&mut self, events: Receiver<Event>) {
+        if let Err(err) = self.run_inner(events) {
             if let Err(send_err) = self
                 .events_tx
-                .send_async(crate::ShmemHandlerEvent::HandlerError(err))
-                .await
+                .send(crate::ShmemHandlerEvent::HandlerError(err))
             {
                 tracing::error!("{send_err:?}");
             }
         }
     }
 
-    pub async fn run_inner(
-        &mut self,
-        node_events: Receiver<NodeEvent>,
-        daemon_events: Receiver<DaemonEvent>,
-    ) -> eyre::Result<()> {
-        let mut events = (
-            node_events.stream().map(Event::Node),
-            daemon_events.stream().map(Event::Daemon),
-        )
-            .merge();
-        while let Some(event) = events.next().await {
+    pub fn run_inner(&mut self, events: Receiver<Event>) -> eyre::Result<()> {
+        while let Ok(event) = events.recv() {
             let start = Instant::now();
             let event_debug = format!("{event:?}");
             match event {
-                Event::Node(event) => self.handle_node_event(event).await?,
-                Event::Daemon(event) => self.handle_daemon_event(event).await?,
+                Event::Node(event) => self.handle_node_event(event)?,
+                Event::Daemon(event) => self.handle_daemon_event(event)?,
             }
             let elapsed = start.elapsed();
             // if elapsed.as_micros() > 10 {
@@ -77,14 +61,14 @@ impl SharedMemHandler {
         Ok(())
     }
 
-    async fn handle_node_event(&mut self, event: NodeEvent) -> eyre::Result<()> {
+    fn handle_node_event(&mut self, event: NodeEvent) -> eyre::Result<()> {
         match event {
             NodeEvent::Drop(DropEvent { tokens }) => {
                 for token in tokens {
                     match self.sent_out_shared_memory.remove(&token) {
                         Some(arc) => {
                             if let Ok(shmem) = Arc::try_unwrap(arc) {
-                                tokio::task::spawn_blocking(move || {
+                                std::thread::spawn(move || {
                                     tracing::trace!(
                                         "freeing shared memory after receiving last drop token"
                                     );
@@ -164,16 +148,13 @@ impl SharedMemHandler {
                     len,
                 });
 
-                let send_result = self
-                    .events_tx
-                    .send_async(crate::ShmemHandlerEvent::SendOut {
-                        dataflow_id,
-                        node_id,
-                        output_id,
-                        metadata,
-                        data,
-                    })
-                    .await;
+                let send_result = self.events_tx.send(crate::ShmemHandlerEvent::SendOut {
+                    dataflow_id,
+                    node_id,
+                    output_id,
+                    metadata,
+                    data,
+                });
                 let _ = reply_sender.send(DaemonReply::Result(
                     send_result.map_err(|_| "daemon is no longer running".into()),
                 ));
@@ -182,7 +163,7 @@ impl SharedMemHandler {
         Ok(())
     }
 
-    async fn handle_daemon_event(&mut self, event: DaemonEvent) -> eyre::Result<()> {
+    fn handle_daemon_event(&mut self, event: DaemonEvent) -> eyre::Result<()> {
         match event {
             DaemonEvent::SentOut { data, drop_tokens } => {
                 // keep shared memory alive until we received all drop tokens
@@ -225,9 +206,21 @@ impl SharedMemSample {
 }
 
 #[derive(Debug)]
-enum Event {
+pub enum Event {
     Node(NodeEvent),
     Daemon(DaemonEvent),
+}
+
+impl From<NodeEvent> for Event {
+    fn from(event: NodeEvent) -> Self {
+        Self::Node(event)
+    }
+}
+
+impl From<DaemonEvent> for Event {
+    fn from(event: DaemonEvent) -> Self {
+        Self::Daemon(event)
+    }
 }
 
 #[derive(Debug)]
