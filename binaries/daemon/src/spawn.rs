@@ -7,13 +7,14 @@ use dora_download::download_file;
 use eyre::{eyre, WrapErr};
 use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
+use tokio::sync::mpsc;
 
 #[tracing::instrument]
 pub async fn spawn_node(
     dataflow_id: DataflowId,
     params: SpawnNodeParams,
-    daemon_tx: flume::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::Event>,
+    daemon_tx: mpsc::Sender<Event>,
+    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
 ) -> eyre::Result<()> {
     let SpawnNodeParams {
         node_id,
@@ -58,7 +59,7 @@ pub async fn spawn_node(
             .wrap_err("failed to create control server")?;
         let daemon_tx = daemon_tx.clone();
         let shmem_handler_tx = shmem_handler_tx.clone();
-        std::thread::spawn(move || listener_loop(server, daemon_tx, shmem_handler_tx));
+        tokio::task::spawn_blocking(move || listener_loop(server, daemon_tx, shmem_handler_tx));
     }
     {
         let server = unsafe { ShmemServer::new(daemon_events_region) }
@@ -66,7 +67,7 @@ pub async fn spawn_node(
         let event_loop_node_id = format!("{dataflow_id}/{node_id}");
         let daemon_tx = daemon_tx.clone();
         let shmem_handler_tx = shmem_handler_tx.clone();
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             listener_loop(server, daemon_tx, shmem_handler_tx);
             tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
         });
@@ -116,7 +117,7 @@ pub async fn spawn_node(
             node_id: node_id_cloned,
             result,
         };
-        let _ = daemon_tx.send_async(event.into()).await;
+        let _ = daemon_tx.send(event.into()).await;
     });
     Ok(())
 }
