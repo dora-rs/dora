@@ -166,10 +166,12 @@ impl Listener {
                 self.subscribed_events = Some(rx);
             }
             DaemonRequest::NextEvent { drop_tokens } => {
-                let drop_event = shared_mem_handler::NodeEvent::Drop(DropEvent {
-                    tokens: drop_tokens,
-                });
-                self.send_shared_memory_event(drop_event)?;
+                if !drop_tokens.is_empty() {
+                    let drop_event = shared_mem_handler::NodeEvent::Drop(DropEvent {
+                        tokens: drop_tokens,
+                    });
+                    self.send_shared_memory_event(drop_event)?;
+                }
 
                 let reply = match self.subscribed_events.as_mut() {
                     Some(events) => match events.recv() {
