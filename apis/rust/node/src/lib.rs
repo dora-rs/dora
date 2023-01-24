@@ -80,13 +80,12 @@ impl DoraNode {
         }
         let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters.into_owned());
 
-        let sample = self
-            .control_channel
-            .prepare_message(output_id.clone(), metadata, data_len)
-            .wrap_err("failed to prepare sample for output message")?;
-
-        // map shared memory and fill in data
         if data_len > 0 {
+            let sample = self
+                .control_channel
+                .prepare_message(output_id.clone(), metadata, data_len)
+                .wrap_err("failed to prepare sample for output message")?;
+            // map shared memory and fill in data
             let mut shared_memory = ShmemConf::new()
                 .os_id(&sample.id)
                 .open()
@@ -94,13 +93,17 @@ impl DoraNode {
 
             let raw = unsafe { shared_memory.as_slice_mut() };
             data(&mut raw[..data_len]);
+
+            self.control_channel
+                .send_prepared_message(sample)
+                .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         } else {
             data(&mut []);
+            self.control_channel
+                .send_empty_message(output_id.clone(), metadata)
+                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
         }
 
-        self.control_channel
-            .send_message(sample)
-            .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         Ok(())
     }
 

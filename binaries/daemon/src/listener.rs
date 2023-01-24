@@ -126,21 +126,39 @@ impl Listener {
                     reply_sender,
                 };
                 self.send_shared_memory_event(event)?;
-                self.send_reply(
-                    &reply
-                        .blocking_recv()
-                        .wrap_err("failed to receive prepare output reply")?,
-                )?;
+                let reply = reply
+                    .blocking_recv()
+                    .wrap_err("failed to receive prepare output reply")?;
+                // tracing::debug!("prepare latency: {:?}", start.elapsed()?);
+                self.send_reply(&reply)?;
             }
-            DaemonRequest::SendOutMessage { id } => {
+            DaemonRequest::SendPreparedMessage { id } => {
                 let (reply_sender, reply) = oneshot::channel();
-                let event = shared_mem_handler::NodeEvent::SendOutMessage { id, reply_sender };
+                let event = shared_mem_handler::NodeEvent::SendPreparedMessage { id, reply_sender };
                 self.send_shared_memory_event(event)?;
                 self.send_reply(
                     &reply
                         .blocking_recv()
                         .wrap_err("failed to receive send output reply")?,
                 )?;
+            }
+            DaemonRequest::SendEmptyMessage {
+                output_id,
+                metadata,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                let event = shared_mem_handler::NodeEvent::SendEmptyMessage {
+                    dataflow_id: self.dataflow_id,
+                    node_id: self.node_id.clone(),
+                    output_id,
+                    metadata,
+                    reply_sender,
+                };
+                self.send_shared_memory_event(event)?;
+                let reply = reply
+                    .blocking_recv()
+                    .wrap_err("failed to receive send_empty_message reply")?;
+                self.send_reply(&reply)?;
             }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = flume::bounded(10);
