@@ -18,6 +18,7 @@ use std::{
     fmt,
     net::SocketAddr,
     path::Path,
+    sync::Weak,
     time::{Duration, Instant},
 };
 use tcp_utils::tcp_receive;
@@ -348,10 +349,20 @@ impl Daemon {
         reply_sender: oneshot::Sender<DaemonReply>,
     ) -> eyre::Result<()> {
         match event {
-            DaemonNodeEvent::Subscribe { event_sender } => {
+            DaemonNodeEvent::Subscribe {
+                event_sender,
+                receiver_handle,
+            } => {
                 let result = match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
-                        dataflow.subscribe_channels.insert(node_id, event_sender);
+                        dataflow.subscribe_channels.insert(
+                            node_id,
+                            SubscribeChannel {
+                                sender: event_sender,
+                                receiver_handle,
+                                max_queue_len: 10, // TODO: make this configurable
+                            },
+                        );
                         Ok(())
                     }
                     None => Err(format!(
@@ -604,13 +615,35 @@ impl Daemon {
 
 #[derive(Default)]
 pub struct RunningDataflow {
-    subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
+    subscribe_channels: HashMap<NodeId, SubscribeChannel>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     running_nodes: BTreeSet<NodeId>,
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
     _timer_handles: Vec<futures::future::RemoteHandle<()>>,
+}
+
+struct SubscribeChannel {
+    sender: flume::Sender<daemon_messages::NodeEvent>,
+    receiver_handle: Weak<flume::Receiver<daemon_messages::NodeEvent>>,
+    max_queue_len: usize,
+}
+
+impl SubscribeChannel {
+    async fn send_async(&self, event: daemon_messages::NodeEvent) -> eyre::Result<()> {
+        while self.sender.len() >= self.max_queue_len {
+            if let Some(receiver) = self.receiver_handle.upgrade() {
+                if receiver.try_recv().is_ok() {
+                    tracing::debug!("Dropping message because queue is full");
+                }
+            }
+        }
+        self.sender
+            .send_async(event)
+            .await
+            .map_err(|_| eyre!("failed to send event"))
+    }
 }
 
 type OutputId = (NodeId, DataId);
@@ -646,6 +679,7 @@ pub enum DaemonNodeEvent {
     Stopped,
     Subscribe {
         event_sender: flume::Sender<daemon_messages::NodeEvent>,
+        receiver_handle: Weak<flume::Receiver<daemon_messages::NodeEvent>>,
     },
 }
 

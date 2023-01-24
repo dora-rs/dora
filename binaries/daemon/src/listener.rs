@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{shared_mem_handler, DaemonNodeEvent, Event};
 use dora_core::{
     config::NodeId,
@@ -73,7 +75,7 @@ struct Listener {
     server: ShmemServer<DaemonRequest, DaemonReply>,
     daemon_tx: mpsc::Sender<Event>,
     shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
-    subscribed_events: Option<flume::Receiver<NodeEvent>>,
+    subscribed_events: Option<Arc<flume::Receiver<NodeEvent>>>,
 }
 
 impl Listener {
@@ -160,7 +162,11 @@ impl Listener {
             }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = flume::bounded(10);
-                self.process_daemon_event(DaemonNodeEvent::Subscribe { event_sender: tx })?;
+                let rx = Arc::new(rx);
+                self.process_daemon_event(DaemonNodeEvent::Subscribe {
+                    event_sender: tx,
+                    receiver_handle: Arc::downgrade(&rx),
+                })?;
                 self.subscribed_events = Some(rx);
             }
             DaemonRequest::NextEvent { drop_tokens } => {
