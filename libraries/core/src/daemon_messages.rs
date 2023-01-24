@@ -28,8 +28,12 @@ pub enum DaemonRequest {
         metadata: Metadata<'static>,
         data_len: usize,
     },
-    SendOutMessage {
+    SendPreparedMessage {
         id: SharedMemoryId,
+    },
+    SendEmptyMessage {
+        output_id: DataId,
+        metadata: Metadata<'static>,
     },
     Stopped,
     NextEvent {

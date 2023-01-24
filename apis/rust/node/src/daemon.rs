@@ -5,11 +5,7 @@ use dora_core::{
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
 use shared_memory_server::{Shmem, ShmemClient, ShmemConf};
-use std::{
-    marker::PhantomData,
-    thread::JoinHandle,
-    time::{Duration, Instant},
-};
+use std::{marker::PhantomData, thread::JoinHandle, time::Duration};
 
 pub struct DaemonConnection {
     pub control_channel: ControlChannel,
@@ -102,16 +98,36 @@ impl ControlChannel {
         }
     }
 
-    pub fn send_message(&mut self, sample: MessageSample) -> eyre::Result<()> {
+    pub fn send_prepared_message(&mut self, sample: MessageSample) -> eyre::Result<()> {
         let reply = self
             .channel
-            .request(&DaemonRequest::SendOutMessage { id: sample.id })
+            .request(&DaemonRequest::SendPreparedMessage { id: sample.id })
             .wrap_err("failed to send SendOutMessage request to dora-daemon")?;
         match reply {
             dora_core::daemon_messages::DaemonReply::Result(result) => {
                 result.map_err(|err| eyre!(err))
             }
             other => bail!("unexpected SendOutMessage reply: {other:?}"),
+        }
+    }
+
+    pub fn send_empty_message(
+        &mut self,
+        output_id: DataId,
+        metadata: dora_message::Metadata<'static>,
+    ) -> eyre::Result<()> {
+        let reply = self
+            .channel
+            .request(&DaemonRequest::SendEmptyMessage {
+                output_id,
+                metadata,
+            })
+            .wrap_err("failed to send SendEmptyMessage request to dora-daemon")?;
+        match reply {
+            dora_core::daemon_messages::DaemonReply::Result(result) => {
+                result.map_err(|err| eyre!(err))
+            }
+            other => bail!("unexpected SendEmptyMessage reply: {other:?}"),
         }
     }
 }
