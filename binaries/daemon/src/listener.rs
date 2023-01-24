@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::collections::VecDeque;
 
 use crate::{shared_mem_handler, DaemonNodeEvent, Event};
 use dora_core::{
@@ -49,6 +49,8 @@ pub fn listener_loop(
                         daemon_tx,
                         shmem_handler_tx,
                         subscribed_events: None,
+                        max_queue_len: 10, // TODO: make this configurable
+                        queue: VecDeque::new(),
                     };
                     match listener.run().wrap_err("listener failed") {
                         Ok(()) => {}
@@ -75,13 +77,15 @@ struct Listener {
     server: ShmemServer<DaemonRequest, DaemonReply>,
     daemon_tx: mpsc::Sender<Event>,
     shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
-    subscribed_events: Option<Arc<flume::Receiver<NodeEvent>>>,
+    subscribed_events: Option<flume::Receiver<NodeEvent>>,
+    max_queue_len: usize,
+    queue: VecDeque<NodeEvent>,
 }
 
 impl Listener {
     fn run(&mut self) -> eyre::Result<()> {
         loop {
-            // receive the next message
+            // receive the next node message
             let message = match self
                 .server
                 .listen()
@@ -101,8 +105,56 @@ impl Listener {
                     continue;
                 }
             };
+
+            // handle incoming events
+            self.handle_events()?;
+
             self.handle_message(message)?;
         }
+        Ok(())
+    }
+
+    fn handle_events(&mut self) -> eyre::Result<()> {
+        if let Some(events) = &mut self.subscribed_events {
+            while let Ok(event) = events.try_recv() {
+                self.queue.push_back(event);
+            }
+
+            // drop oldest input events to maintain max queue length queue
+            let input_event_count = self
+                .queue
+                .iter()
+                .filter(|e| matches!(e, NodeEvent::Input { .. }))
+                .count();
+            let drop_n = input_event_count.saturating_sub(self.max_queue_len);
+            self.drop_oldest_inputs(drop_n)?;
+        }
+        Ok(())
+    }
+
+    fn drop_oldest_inputs(&mut self, number: usize) -> Result<(), eyre::ErrReport> {
+        let mut drop_tokens = Vec::new();
+        for i in 0..number {
+            // find index of oldest input event
+            let index = self
+                .queue
+                .iter()
+                .position(|e| matches!(e, NodeEvent::Input { .. }))
+                .expect(&format!("no input event found in drop iteration {i}"));
+
+            // remove that event
+            if let Some(event) = self.queue.remove(index) {
+                tracing::debug!("dropping event {event:?}");
+
+                if let NodeEvent::Input {
+                    data: Some(data), ..
+                } = event
+                {
+                    drop_tokens.push(data.drop_token);
+                }
+            }
+        }
+        self.report_drop_tokens(drop_tokens)?;
         Ok(())
     }
 
@@ -161,36 +213,45 @@ impl Listener {
                 self.send_reply(&DaemonReply::Result(result))?;
             }
             DaemonRequest::Subscribe => {
-                let (tx, rx) = flume::bounded(10);
-                let rx = Arc::new(rx);
-                self.process_daemon_event(DaemonNodeEvent::Subscribe {
-                    event_sender: tx,
-                    receiver_handle: Arc::downgrade(&rx),
-                })?;
+                let (tx, rx) = flume::bounded(100);
+                self.process_daemon_event(DaemonNodeEvent::Subscribe { event_sender: tx })?;
                 self.subscribed_events = Some(rx);
             }
             DaemonRequest::NextEvent { drop_tokens } => {
-                if !drop_tokens.is_empty() {
-                    let drop_event = shared_mem_handler::NodeEvent::Drop(DropEvent {
-                        tokens: drop_tokens,
-                    });
-                    self.send_shared_memory_event(drop_event)?;
-                }
+                self.report_drop_tokens(drop_tokens)?;
 
-                let reply = match self.subscribed_events.as_mut() {
-                    Some(events) => match events.recv() {
-                        Ok(event) => DaemonReply::NodeEvent(event),
-                        Err(flume::RecvError::Disconnected) => DaemonReply::Closed,
-                    },
-                    None => {
-                        DaemonReply::Result(Err("Ignoring event request because no subscribe \
-                            message was sent yet"
-                            .into()))
+                // try to take the latest queued event first
+                let queued_event = self.queue.pop_front().map(DaemonReply::NodeEvent);
+                let reply = queued_event.unwrap_or_else(|| {
+                    match self.subscribed_events.as_mut() {
+                        // wait for next event
+                        Some(events) => match events.recv() {
+                            Ok(event) => DaemonReply::NodeEvent(event),
+                            Err(flume::RecvError::Disconnected) => DaemonReply::Closed,
+                        },
+                        None => {
+                            DaemonReply::Result(Err("Ignoring event request because no subscribe \
+                                message was sent yet"
+                                .into()))
+                        }
                     }
-                };
+                });
 
                 self.send_reply(&reply)?;
             }
+        }
+        Ok(())
+    }
+
+    fn report_drop_tokens(
+        &mut self,
+        drop_tokens: Vec<dora_core::daemon_messages::DropToken>,
+    ) -> eyre::Result<()> {
+        if !drop_tokens.is_empty() {
+            let drop_event = shared_mem_handler::NodeEvent::Drop(DropEvent {
+                tokens: drop_tokens,
+            });
+            self.send_shared_memory_event(drop_event)?;
         }
         Ok(())
     }
