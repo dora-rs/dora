@@ -178,24 +178,6 @@ impl SharedMemHandler {
                     send_result.map_err(|_| "daemon is no longer running".into()),
                 ));
             }
-            NodeEvent::SendEmptyMessage {
-                dataflow_id,
-                node_id,
-                output_id,
-                metadata,
-                reply_sender,
-            } => {
-                let send_result = self.events_tx.send(crate::ShmemHandlerEvent::SendOut {
-                    dataflow_id,
-                    node_id,
-                    output_id,
-                    metadata,
-                    data: None,
-                });
-                let _ = reply_sender.send(DaemonReply::Result(
-                    send_result.map_err(|_| "daemon is no longer running".into()),
-                ));
-            }
         }
         Ok(())
     }
@@ -260,13 +242,6 @@ pub enum NodeEvent {
     },
     SendPreparedMessage {
         id: MessageId,
-        reply_sender: oneshot::Sender<DaemonReply>,
-    },
-    SendEmptyMessage {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        output_id: DataId,
-        metadata: dora_message::Metadata<'static>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     Drop(DropEvent),

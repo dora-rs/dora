@@ -146,19 +146,17 @@ impl Listener {
                 output_id,
                 metadata,
             } => {
-                let (reply_sender, reply) = oneshot::channel();
-                let event = shared_mem_handler::NodeEvent::SendEmptyMessage {
+                let event = crate::Event::ShmemHandler(crate::ShmemHandlerEvent::SendOut {
                     dataflow_id: self.dataflow_id,
                     node_id: self.node_id.clone(),
                     output_id,
                     metadata,
-                    reply_sender,
-                };
-                self.send_shared_memory_event(event)?;
-                let reply = reply
-                    .blocking_recv()
-                    .wrap_err("failed to receive send_empty_message reply")?;
-                self.send_reply(&reply)?;
+                    data: None,
+                });
+                let result = self
+                    .send_daemon_event(event)
+                    .map_err(|_| "failed to receive send_empty_message reply".to_owned());
+                self.send_reply(&DaemonReply::Result(result))?;
             }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = flume::bounded(10);
@@ -220,5 +218,11 @@ impl Listener {
         self.shmem_handler_tx
             .send(event)
             .map_err(|_| eyre!("failed to send event to shared_mem_handler"))
+    }
+
+    fn send_daemon_event(&self, event: crate::Event) -> eyre::Result<()> {
+        self.daemon_tx
+            .blocking_send(event)
+            .map_err(|_| eyre!("failed to send event to daemon"))
     }
 }
