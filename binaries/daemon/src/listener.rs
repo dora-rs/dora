@@ -5,13 +5,13 @@ use dora_core::{
 };
 use eyre::{eyre, Context};
 use shared_memory_server::ShmemServer;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 #[tracing::instrument(skip(server, daemon_tx, shmem_handler_tx))]
 pub fn listener_loop(
     mut server: ShmemServer<DaemonRequest, DaemonReply>,
-    daemon_tx: flume::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::Event>,
+    daemon_tx: mpsc::Sender<Event>,
+    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
 ) {
     // receive the first message
     let message = match server
@@ -71,8 +71,8 @@ struct Listener {
     dataflow_id: DataflowId,
     node_id: NodeId,
     server: ShmemServer<DaemonRequest, DaemonReply>,
-    daemon_tx: flume::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::Event>,
+    daemon_tx: mpsc::Sender<Event>,
+    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
     subscribed_events: Option<flume::Receiver<NodeEvent>>,
 }
 
@@ -199,7 +199,7 @@ impl Listener {
             reply_sender: reply_tx,
         };
         self.daemon_tx
-            .send(event)
+            .blocking_send(event)
             .map_err(|_| eyre!("failed to send event to daemon"))?;
         let reply = reply
             .blocking_recv()
@@ -216,7 +216,7 @@ impl Listener {
 
     fn send_shared_memory_event(&self, event: shared_mem_handler::NodeEvent) -> eyre::Result<()> {
         self.shmem_handler_tx
-            .send(event.into())
+            .send(event)
             .map_err(|_| eyre!("failed to send event to shared_mem_handler"))
     }
 }
