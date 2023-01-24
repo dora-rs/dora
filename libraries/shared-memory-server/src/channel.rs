@@ -5,7 +5,7 @@ use shared_memory::Shmem;
 use std::{
     mem, slice,
     sync::atomic::{AtomicBool, AtomicU64},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub struct ShmemChannel {
@@ -81,16 +81,11 @@ impl ShmemChannel {
         })
     }
 
-    pub fn send<T>(&mut self, value: &T, start: Instant) -> eyre::Result<()>
+    pub fn send<T>(&mut self, value: &T) -> eyre::Result<()>
     where
         T: Serialize + std::fmt::Debug,
     {
         let msg = bincode::serialize(value).wrap_err("failed to serialize value")?;
-
-        let elapsed = start.elapsed();
-        if elapsed.as_micros() > 1 {
-            tracing::debug!("before send: {elapsed:?}");
-        }
 
         self.send_raw(&msg)
     }
