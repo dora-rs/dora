@@ -64,7 +64,7 @@ impl SharedMemHandler {
             .merge();
         while let Some(event) = events.next().await {
             let start = Instant::now();
-            let event_debug = format!("{event:?}");
+
             match event {
                 Event::Node(event) => self.handle_node_event(event).await?,
                 Event::Daemon(event) => self.handle_daemon_event(event).await?,
