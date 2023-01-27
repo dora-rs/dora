@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::{
     config::{DataId, NodeId, NodeRunConfig},
-    descriptor,
+    descriptor::{self, OperatorDefinition},
 };
 use dora_message::Metadata;
 use uuid::Uuid;
@@ -14,6 +14,12 @@ pub struct NodeConfig {
     pub run_config: NodeRunConfig,
     pub daemon_control_region_id: SharedMemoryId,
     pub daemon_events_region_id: SharedMemoryId,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeConfig {
+    pub node: NodeConfig,
+    pub operators: Vec<OperatorDefinition>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

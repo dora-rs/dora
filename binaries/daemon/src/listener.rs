@@ -200,6 +200,8 @@ impl Listener {
                 output_id,
                 metadata,
             } => {
+                // let elapsed = metadata.timestamp().get_time().to_system_time().elapsed()?;
+                // tracing::debug!("listener SendEmptyMessage: {elapsed:?}");
                 let event = crate::Event::ShmemHandler(crate::ShmemHandlerEvent::SendOut {
                     dataflow_id: self.dataflow_id,
                     node_id: self.node_id.clone(),

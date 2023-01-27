@@ -10,7 +10,7 @@ members = [
     "binaries/cli",
     "binaries/coordinator",
     "binaries/daemon",
-    # "binaries/runtime",
+    "binaries/runtime",
     "examples/rust-dataflow/*",
     "examples/benchmark/*",
     "libraries/communication-layer/*",
