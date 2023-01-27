@@ -154,8 +154,10 @@ fn register(
     Ok(())
 }
 
+type EventItem = (NodeEvent, std::sync::mpsc::Sender<()>);
+
 pub struct EventStream {
-    receiver: flume::Receiver<(NodeEvent, std::sync::mpsc::Sender<()>)>,
+    receiver: flume::Receiver<EventItem>,
 }
 
 impl EventStream {
@@ -237,7 +239,17 @@ impl EventStream {
     }
 
     pub fn recv(&mut self) -> Option<Event> {
-        let (node_event, drop_sender) = match self.receiver.recv() {
+        let event = self.receiver.recv();
+        self.recv_common(event)
+    }
+
+    pub async fn recv_async(&mut self) -> Option<Event> {
+        let event = self.receiver.recv_async().await;
+        self.recv_common(event)
+    }
+
+    fn recv_common(&mut self, event: Result<EventItem, flume::RecvError>) -> Option<Event> {
+        let (node_event, drop_sender) = match event {
             Ok(d) => d,
             Err(flume::RecvError::Disconnected) => return None,
         };
