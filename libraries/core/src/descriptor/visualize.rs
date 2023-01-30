@@ -162,15 +162,11 @@ fn visualize_user_mapping(
     input_id: &DataId,
     flowchart: &mut String,
 ) {
-    let UserInputMapping {
-        source,
-        operator,
-        output,
-    } = mapping;
+    let UserInputMapping { source, output } = mapping;
     let mut source_found = false;
     if let Some(source_node) = nodes.get(source) {
-        match (&source_node.kind, operator) {
-            (CoreNodeKind::Custom(custom_node), None) => {
+        match &source_node.kind {
+            CoreNodeKind::Custom(custom_node) => {
                 if custom_node.run_config.outputs.contains(output) {
                     let data = if output == input_id {
                         format!("{output}")
@@ -181,10 +177,11 @@ fn visualize_user_mapping(
                     source_found = true;
                 }
             }
-            (CoreNodeKind::Runtime(RuntimeNode { operators, .. }), Some(operator_id)) => {
-                if let Some(operator) = operators.iter().find(|o| &o.id == operator_id) {
+            CoreNodeKind::Runtime(RuntimeNode { operators, .. }) => {
+                let (operator_id, output) = output.split_once('/').unwrap_or(("", output));
+                if let Some(operator) = operators.iter().find(|o| o.id.as_ref() == operator_id) {
                     if operator.config.outputs.contains(output) {
-                        let data = if output == input_id {
+                        let data = if output == input_id.as_str() {
                             format!("{output}")
                         } else {
                             format!("{output} as {input_id}")
@@ -195,7 +192,6 @@ fn visualize_user_mapping(
                     }
                 }
             }
-            (CoreNodeKind::Custom(_), Some(_)) | (CoreNodeKind::Runtime(_), None) => {}
         }
     }
     if !source_found {
