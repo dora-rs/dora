@@ -165,6 +165,9 @@ impl Listener {
                 self.send_reply(&reply)?;
             }
             DaemonRequest::Stopped => self.process_daemon_event(DaemonNodeEvent::Stopped)?,
+            DaemonRequest::CloseOutputs(outputs) => {
+                self.process_daemon_event(DaemonNodeEvent::CloseOutputs(outputs))?
+            }
             DaemonRequest::PrepareOutputMessage {
                 output_id,
                 metadata,

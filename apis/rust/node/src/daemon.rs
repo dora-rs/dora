@@ -73,6 +73,20 @@ impl ControlChannel {
         Ok(())
     }
 
+    pub fn report_closed_outputs(&mut self, outputs: Vec<DataId>) -> eyre::Result<()> {
+        let reply = self
+            .channel
+            .request(&DaemonRequest::CloseOutputs(outputs))
+            .wrap_err("failed to report closed outputs to dora-daemon")?;
+        match reply {
+            dora_core::daemon_messages::DaemonReply::Result(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to receive closed outputs reply from dora-daemon")?,
+            other => bail!("unexpected closed outputs reply: {other:?}"),
+        }
+        Ok(())
+    }
+
     pub fn prepare_message(
         &mut self,
         output_id: DataId,

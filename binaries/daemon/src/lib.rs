@@ -360,6 +360,24 @@ impl Daemon {
                 };
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
+            DaemonNodeEvent::CloseOutputs(outputs) => {
+                // notify downstream nodes
+                let inner = async {
+                    let dataflow = self
+                    .running
+                    .get_mut(&dataflow_id)
+                    .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
+                    send_input_closed_events(dataflow, |(source_id, output_id)| {
+                        source_id == &node_id && outputs.contains(output_id)
+                    })
+                    .await;
+                    Result::<_, eyre::Error>::Ok(())
+                };
+
+                let reply = inner.await.map_err(|err| format!("{err:?}"));
+                let _ = reply_sender.send(DaemonReply::Result(reply));
+                // TODO: notify remote nodes
+            }
             DaemonNodeEvent::Stopped => {
                 tracing::info!("Stopped: {dataflow_id}/{node_id}");
 
@@ -370,31 +388,7 @@ impl Daemon {
                     .running
                     .get_mut(&dataflow_id)
                     .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
-                let downstream_nodes: BTreeSet<_> = dataflow
-                    .mappings
-                    .iter()
-                    .filter(|((source_id, _), _)| source_id == &node_id)
-                    .flat_map(|(_, v)| v)
-                    .collect();
-                for (receiver_id, input_id) in downstream_nodes {
-                    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-                        continue;
-                    };
-
-                    let _ = channel
-                        .send_async(daemon_messages::NodeEvent::InputClosed {
-                            id: input_id.clone(),
-                        })
-                        .await;
-
-                    if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
-                        open_inputs.remove(input_id);
-                        if open_inputs.is_empty() {
-                            // close the subscriber channel
-                            dataflow.subscribe_channels.remove(receiver_id);
-                        }
-                    }
-                }
+                send_input_closed_events(dataflow, |(source_id, _)| source_id == &node_id).await;
 
                 // TODO: notify remote nodes
 
@@ -602,6 +596,37 @@ impl Daemon {
     }
 }
 
+async fn send_input_closed_events<F>(dataflow: &mut RunningDataflow, mut filter: F)
+where
+    F: FnMut(&(NodeId, DataId)) -> bool,
+{
+    let downstream_nodes: BTreeSet<_> = dataflow
+        .mappings
+        .iter()
+        .filter(|(k, _)| filter(k))
+        .flat_map(|(_, v)| v)
+        .collect();
+    for (receiver_id, input_id) in downstream_nodes {
+        let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+            continue;
+        };
+
+        let _ = channel
+            .send_async(daemon_messages::NodeEvent::InputClosed {
+                id: input_id.clone(),
+            })
+            .await;
+
+        if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            open_inputs.remove(input_id);
+            if open_inputs.is_empty() {
+                // close the subscriber channel
+                dataflow.subscribe_channels.remove(receiver_id);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct RunningDataflow {
     subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
@@ -647,6 +672,7 @@ pub enum DaemonNodeEvent {
     Subscribe {
         event_sender: flume::Sender<daemon_messages::NodeEvent>,
     },
+    CloseOutputs(Vec<dora_core::config::DataId>),
 }
 
 pub enum ShmemHandlerEvent {

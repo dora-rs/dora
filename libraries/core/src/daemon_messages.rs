@@ -41,6 +41,7 @@ pub enum DaemonRequest {
         output_id: DataId,
         metadata: Metadata<'static>,
     },
+    CloseOutputs(Vec<DataId>),
     Stopped,
     NextEvent {
         drop_tokens: Vec<DropToken>,

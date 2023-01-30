@@ -107,6 +107,20 @@ impl DoraNode {
         Ok(())
     }
 
+    pub fn close_outputs(&mut self, outputs: Vec<DataId>) -> eyre::Result<()> {
+        for output_id in &outputs {
+            if !self.node_config.outputs.remove(output_id) {
+                eyre::bail!("unknown output {output_id}");
+            }
+        }
+
+        self.control_channel
+            .report_closed_outputs(outputs)
+            .wrap_err("failed to report closed outputs to daemon")?;
+
+        Ok(())
+    }
+
     pub fn id(&self) -> &NodeId {
         &self.id
     }
