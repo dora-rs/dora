@@ -69,5 +69,9 @@ name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
 
 [[example]]
+name = "python-operator-dataflow"
+path = "examples/python-operator-dataflow/run.rs"
+
+[[example]]
 name = "benchmark"
 path = "examples/benchmark/run.rs"
