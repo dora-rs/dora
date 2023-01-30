@@ -105,17 +105,17 @@ impl Node {
     }
 }
 
-// #[pyfunction]
-// fn start_runtime() -> Result<()> {
-//     dora_runtime::main()
-//         .wrap_err("Python Dora Runtime failed.")
-//         .unwrap();
-//     Ok(())
-// }
+#[pyfunction]
+fn start_runtime() -> Result<()> {
+    dora_runtime::main()
+        .wrap_err("Python Dora Runtime failed.")
+        .unwrap();
+    Ok(())
+}
 
 #[pymodule]
 fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
-    // m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
+    m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
     m.add_class::<Node>().unwrap();
     Ok(())
 }
