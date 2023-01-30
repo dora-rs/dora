@@ -3,6 +3,7 @@
 use dora_core::{
     config::{DataId, OperatorId},
     daemon_messages::RuntimeConfig,
+    descriptor::OperatorConfig,
 };
 use dora_node_api::DoraNode;
 use eyre::{bail, Context, Result};
@@ -74,7 +75,6 @@ pub fn main() -> eyre::Result<()> {
         event.map(|event| (event, stream))
     });
     let events = (operator_events, daemon_events).merge();
-    let node_id_clone = node_id.clone();
     let tokio_runtime = Builder::new_current_thread()
         .enable_all()
         .build()
@@ -96,8 +96,9 @@ pub fn main() -> eyre::Result<()> {
         operator_channels.insert(operator_config.id.clone(), operator_tx);
     }
 
+    let operator_config = operators.into_iter().map(|c| (c.id, c.config)).collect();
     let main_task = std::thread::spawn(move || -> Result<()> {
-        tokio_runtime.block_on(run(node, events, operator_channels))
+        tokio_runtime.block_on(run(node, operator_config, events, operator_channels))
     });
 
     main_task
@@ -109,6 +110,7 @@ pub fn main() -> eyre::Result<()> {
 
 async fn run(
     mut node: DoraNode,
+    operators: HashMap<OperatorId, OperatorConfig>,
     mut events: impl Stream<Item = Event> + Unpin,
     mut operator_channels: HashMap<OperatorId, mpsc::Sender<operator::IncomingEvent>>,
 ) -> eyre::Result<()> {
@@ -144,38 +146,37 @@ async fn run(
                             let data = metadata
                                 .serialize()
                                 .wrap_err("failed to serialize stop message")?;
+                            todo!("instruct dora-daemon/dora-coordinator to stop other nodes");
                             // manual_stop_publisher
                             //     .publish(&data)
                             //     .map_err(|err| eyre::eyre!(err))
                             //     .wrap_err("failed to send stop message")?;
                             break;
                         }
-                        // if let Some(stop_publisher) = operator_stop_publishers.remove(&id) {
-                        //     tracing::info!("operator {node_id}/{id} finished ({reason:?})");
-                        //     stopped_operators.insert(id.clone());
-                        //     // send stopped message
-                        //     tokio::task::spawn_blocking(move || stop_publisher.publish(&[]))
-                        //         .await
-                        //         .wrap_err("failed to join stop publish task")?
-                        //         .map_err(|err| eyre::eyre!(err))
-                        //         .with_context(|| {
-                        //             format!(
-                        //                 "failed to send stop message for operator `{node_id}/{id}`"
-                        //             )
-                        //         })?;
-                        //     if operator_stop_publishers.is_empty() {
-                        //         break;
-                        //     }
-                        // } else {
-                        //     tracing::warn!("no stop publisher for {id}");
-                        // }
+
+                        let Some(config) = operators.get(&operator_id) else {
+                            tracing::warn!("received Finished event for unknown operator `{operator_id}`");
+                            continue;
+                        };
+                        let outputs = config
+                            .outputs
+                            .iter()
+                            .map(|output_id| operator_output_id(&operator_id, output_id))
+                            .collect();
+                        let result;
+                        (node, result) = tokio::task::spawn_blocking(move || {
+                            let result = node.close_outputs(outputs);
+                            (node, result)
+                        })
+                        .await?;
+                        result.wrap_err("failed to close outputs of finished operator")?;
                     }
                     OperatorEvent::Output {
                         output_id,
                         metadata,
                         data,
                     } => {
-                        let output_id = DataId::from(format!("{operator_id}/{output_id}"));
+                        let output_id = operator_output_id(&operator_id, &output_id);
                         let result;
                         (node, result) = tokio::task::spawn_blocking(move || {
                             let result = node.send_output(output_id, metadata, data.len(), |buf| {
@@ -220,6 +221,10 @@ async fn run(
     mem::drop(events);
 
     Ok(())
+}
+
+fn operator_output_id(operator_id: &OperatorId, output_id: &DataId) -> DataId {
+    DataId::from(format!("{operator_id}/{output_id}"))
 }
 
 // fn publisher(
