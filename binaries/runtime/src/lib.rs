@@ -11,10 +11,7 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::Merge;
 use operator::{spawn_operator, OperatorEvent, StopReason};
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    mem,
-};
+use std::{collections::HashMap, mem};
 use tokio::{runtime::Builder, sync::mpsc};
 use tokio_stream::{wrappers::ReceiverStream, StreamMap};
 
@@ -207,7 +204,7 @@ async fn run(
                     continue;
                 };
 
-                operator_channel.send(operator::IncomingEvent::Input {
+                let _ = operator_channel.send(operator::IncomingEvent::Input {
                     input_id,
                     metadata,
                     data,
@@ -226,18 +223,6 @@ async fn run(
 fn operator_output_id(operator_id: &OperatorId, output_id: &DataId) -> DataId {
     DataId::from(format!("{operator_id}/{output_id}"))
 }
-
-// fn publisher(
-//     self_id: &NodeId,
-//     operator_id: OperatorId,
-//     output_id: DataId,
-// ) -> eyre::Result<Box<dyn Publisher>> {
-//     let topic = format!("{self_id}/{operator_id}/{output_id}");
-//     communication
-//         .publisher(&topic)
-//         .map_err(|err| eyre::eyre!(err))
-//         .wrap_err_with(|| format!("failed to create publisher for output {output_id}"))
-// }
 
 enum Event {
     Operator {
