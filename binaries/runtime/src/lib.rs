@@ -176,9 +176,15 @@ async fn run(
                         data,
                     } => {
                         let output_id = DataId::from(format!("{operator_id}/{output_id}"));
-                        node.send_output(output_id, metadata, data.len(), |buf| {
-                            buf.copy_from_slice(&data);
-                        });
+                        let result;
+                        (node, result) = tokio::task::spawn_blocking(move || {
+                            let result = node.send_output(output_id, metadata, data.len(), |buf| {
+                                buf.copy_from_slice(&data);
+                            });
+                            (node, result)
+                        })
+                        .await?;
+                        result.wrap_err("failed to send node output")?;
                     }
                 }
             }
