@@ -21,8 +21,8 @@ pub fn main() -> eyre::Result<()> {
     set_up_tracing().context("failed to set up tracing subscriber")?;
 
     let config: RuntimeConfig = {
-        let raw = std::env::var("DORA_NODE_CONFIG")
-            .wrap_err("env variable DORA_NODE_CONFIG must be set")?;
+        let raw = std::env::var("DORA_RUNTIME_CONFIG")
+            .wrap_err("env variable DORA_RUNTIME_CONFIG must be set")?;
         serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
     };
     let RuntimeConfig {

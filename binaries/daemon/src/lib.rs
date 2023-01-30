@@ -4,9 +4,9 @@ use dora_core::{
     coordinator_messages::DaemonEvent,
     daemon_messages::{
         self, DaemonCoordinatorEvent, DaemonCoordinatorReply, DaemonReply, DataflowId, DropToken,
-        SpawnDataflowNodes, SpawnNodeParams,
+        SpawnDataflowNodes,
     },
-    descriptor::{CoreNodeKind, Descriptor},
+    descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 use dora_message::uhlc::HLC;
 use eyre::{bail, eyre, Context, ContextCompat};
@@ -17,7 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use tcp_utils::tcp_receive;
@@ -69,32 +69,17 @@ impl Daemon {
             .to_owned();
 
         let nodes = read_descriptor(dataflow_path).await?.resolve_aliases();
-        let mut custom_nodes = BTreeMap::new();
-        for node in nodes {
-            match node.kind {
-                CoreNodeKind::Runtime(_) => todo!(),
-                CoreNodeKind::Custom(n) => {
-                    custom_nodes.insert(
-                        node.id.clone(),
-                        SpawnNodeParams {
-                            node_id: node.id,
-                            node: n,
-                            working_dir: working_dir.clone(),
-                        },
-                    );
-                }
-            }
-        }
 
         let spawn_command = SpawnDataflowNodes {
             dataflow_id: Uuid::new_v4(),
-            nodes: custom_nodes,
+            working_dir,
+            nodes,
         };
 
         let exit_when_done = spawn_command
             .nodes
             .iter()
-            .map(|(id, _)| (spawn_command.dataflow_id, id.clone()))
+            .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
         let coordinator_events = stream::once(async move {
@@ -229,8 +214,15 @@ impl Daemon {
         event: DaemonCoordinatorEvent,
     ) -> (DaemonCoordinatorReply, RunStatus) {
         match event {
-            DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes { dataflow_id, nodes }) => {
-                let result = self.spawn_dataflow(dataflow_id, nodes).await;
+            DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes {
+                dataflow_id,
+                working_dir,
+                nodes,
+            }) => {
+                let result = self.spawn_dataflow(dataflow_id, working_dir, nodes).await;
+                if let Err(err) = &result {
+                    tracing::error!("{err:?}");
+                }
                 let reply =
                     DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
                 (reply, RunStatus::Continue)
@@ -266,7 +258,8 @@ impl Daemon {
     async fn spawn_dataflow(
         &mut self,
         dataflow_id: uuid::Uuid,
-        nodes: BTreeMap<NodeId, daemon_messages::SpawnNodeParams>,
+        working_dir: PathBuf,
+        nodes: Vec<ResolvedNode>,
     ) -> eyre::Result<()> {
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Default::default()),
@@ -274,38 +267,39 @@ impl Daemon {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
         };
-        for (node_id, params) in nodes {
-            dataflow.running_nodes.insert(node_id.clone());
-            for (input_id, mapping) in params.node.run_config.inputs.clone() {
+        for node in nodes {
+            dataflow.running_nodes.insert(node.id.clone());
+            let inputs = node_inputs(&node);
+
+            for (input_id, mapping) in inputs {
                 dataflow
                     .open_inputs
-                    .entry(node_id.clone())
+                    .entry(node.id.clone())
                     .or_default()
                     .insert(input_id.clone());
                 match mapping {
                     InputMapping::User(mapping) => {
-                        if mapping.operator.is_some() {
-                            bail!("operators are not supported");
-                        }
                         dataflow
                             .mappings
                             .entry((mapping.source, mapping.output))
                             .or_default()
-                            .insert((node_id.clone(), input_id));
+                            .insert((node.id.clone(), input_id));
                     }
                     InputMapping::Timer { interval } => {
                         dataflow
                             .timers
                             .entry(interval)
                             .or_default()
-                            .insert((node_id.clone(), input_id));
+                            .insert((node.id.clone(), input_id));
                     }
                 }
             }
 
+            let node_id = node.id.clone();
             spawn::spawn_node(
                 dataflow_id,
-                params,
+                &working_dir,
+                node,
                 self.events_tx.clone(),
                 self.shared_memory_handler_node.clone(),
             )
@@ -594,6 +588,40 @@ impl Daemon {
 
         Ok(())
     }
+}
+
+fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, InputMapping> {
+    match &node.kind {
+        CoreNodeKind::Custom(n) => n.run_config.inputs.clone(),
+        CoreNodeKind::Runtime(n) => runtime_node_inputs(n),
+    }
+}
+
+fn runtime_node_inputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeMap<DataId, InputMapping> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator.config.inputs.iter().map(|(input_id, mapping)| {
+                (
+                    DataId::from(format!("{}/{input_id}", operator.id)),
+                    mapping.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn runtime_node_outputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeSet<DataId> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator
+                .config
+                .outputs
+                .iter()
+                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
+        })
+        .collect()
 }
 
 async fn send_input_closed_events<F>(dataflow: &mut RunningDataflow, mut filter: F)

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::{
     config::{DataId, NodeId, NodeRunConfig},
-    descriptor::{self, OperatorDefinition},
+    descriptor::{self, OperatorDefinition, ResolvedNode},
 };
 use dora_message::Metadata;
 use uuid::Uuid;
@@ -115,12 +115,6 @@ pub type DataflowId = Uuid;
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct SpawnDataflowNodes {
     pub dataflow_id: DataflowId,
-    pub nodes: BTreeMap<NodeId, SpawnNodeParams>,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct SpawnNodeParams {
-    pub node_id: NodeId,
-    pub node: descriptor::CustomNode,
     pub working_dir: PathBuf,
+    pub nodes: Vec<ResolvedNode>,
 }
