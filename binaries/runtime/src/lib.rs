@@ -210,8 +210,8 @@ async fn run(
                     data,
                 });
             }
-            Event::InputClosed(_) => todo!(),
-            Event::Error(_) => todo!(),
+            Event::InputClosed(_) => {}
+            Event::Error(err) => eyre::bail!("received error event: {err}"),
         }
     }
 
