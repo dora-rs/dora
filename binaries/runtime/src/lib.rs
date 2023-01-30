@@ -187,9 +187,9 @@ async fn run(
                 }
             }
             Event::Stop => {
-                // forward stop event to all operators
-                for channel in operator_channels.values_mut() {
-                    channel.send(operator::IncomingEvent::Stop).await;
+                // forward stop event to all operators and close the event channels
+                for (_, channel) in operator_channels.drain() {
+                    let _ = channel.send(operator::IncomingEvent::Stop).await;
                 }
             }
             Event::Input { id, metadata, data } => {
