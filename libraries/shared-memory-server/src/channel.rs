@@ -110,6 +110,12 @@ impl ShmemChannel {
         event
             .set(EventState::Signaled)
             .map_err(|err| eyre!("failed to send message over ShmemChannel: {err}"))?;
+
+        let disconnected = self.disconnect().load(std::sync::atomic::Ordering::Acquire);
+        if disconnected {
+            eyre::bail!("server closed the connection");
+        }
+
         Ok(())
     }
 
@@ -200,6 +206,9 @@ impl Drop for ShmemChannel {
                 tracing::debug!("closing ShmemServer after client disconnect");
             } else {
                 tracing::error!("ShmemServer closed before client disconnect");
+
+                self.disconnect()
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
         } else {
             tracing::debug!("disconnecting client");
