@@ -164,9 +164,9 @@ impl<'de> Deserialize<'de> for InputMapping {
             .split_once('/')
             .ok_or_else(|| serde::de::Error::custom("input must start with `<source>/`"))?;
 
-        let deserialized = if let Some(dora_output) = source.strip_prefix("dora/") {
-            match dora_output {
-                "timer" => {
+        let deserialized = match source {
+            "dora" => match output.split_once('/') {
+                Some(("timer", output)) => {
                     let (unit, value) = output.split_once('/').ok_or_else(|| {
                         serde::de::Error::custom(
                             "timer input must specify unit and value (e.g. `secs/5` or `millis/100`)",
@@ -197,17 +197,21 @@ impl<'de> Deserialize<'de> for InputMapping {
                     };
                     Self::Timer { interval }
                 }
-                other => {
+                Some((other, _)) => {
                     return Err(serde::de::Error::custom(format!(
                         "unknown dora input `{other}`"
                     )))
                 }
-            }
-        } else {
-            Self::User(UserInputMapping {
+                None => {
+                    return Err(serde::de::Error::custom(format!(
+                        "dora input has invalid format"
+                    )))
+                }
+            },
+            _ => Self::User(UserInputMapping {
                 source: source.to_owned().into(),
                 output: output.to_owned().into(),
-            })
+            }),
         };
 
         Ok(deserialized)
