@@ -105,6 +105,7 @@ pub fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(skip(node, events, operator_channels), fields(node.id))]
 async fn run(
     mut node: DoraNode,
     operators: HashMap<OperatorId, OperatorConfig>,
