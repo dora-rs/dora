@@ -144,8 +144,6 @@ impl Listener {
 
             // remove that event
             if let Some(event) = self.queue.remove(index) {
-                tracing::debug!("dropping event {event:?}");
-
                 if let NodeEvent::Input {
                     data: Some(data), ..
                 } = event
