@@ -21,25 +21,7 @@ pub async fn spawn_node(
     shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();
-    tracing::trace!("Spawning node `{dataflow_id}/{node_id}`");
-
-    let source = node_source(&node)?;
-
-    let resolved_path = if source_is_url(&source) {
-        // try to download the shared library
-        let target_path = Path::new("build")
-            .join(node_id.to_string())
-            .with_extension(EXE_EXTENSION);
-        download_file(source, &target_path)
-            .await
-            .wrap_err("failed to download custom node")?;
-        target_path.clone()
-    } else {
-        resolve_path(&source, &working_dir)
-            .wrap_err_with(|| format!("failed to resolve node source `{}`", source))?
-    };
-
-    tracing::info!("spawning {}", resolved_path.display());
+    tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 
     let daemon_control_region = ShmemConf::new()
         .size(4096)
@@ -70,12 +52,26 @@ pub async fn spawn_node(
         });
     }
 
-    let mut command = tokio::process::Command::new(&resolved_path);
-    command.current_dir(working_dir);
-    command.stdin(Stdio::null());
-
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
+            let resolved_path = if source_is_url(&n.source) {
+                // try to download the shared library
+                let target_path = Path::new("build")
+                    .join(node_id.to_string())
+                    .with_extension(EXE_EXTENSION);
+                download_file(&n.source, &target_path)
+                    .await
+                    .wrap_err("failed to download custom node")?;
+                target_path.clone()
+            } else {
+                resolve_path(&n.source, &working_dir)
+                    .wrap_err_with(|| format!("failed to resolve node source `{}`", n.source))?
+            };
+
+            tracing::info!("spawning {}", resolved_path.display());
+            let mut command = tokio::process::Command::new(&resolved_path);
+            command.current_dir(working_dir);
+            command.stdin(Stdio::null());
             let node_config = NodeConfig {
                 dataflow_id,
                 node_id: node_id.clone(),
@@ -106,6 +102,29 @@ pub async fn spawn_node(
             })?
         }
         dora_core::descriptor::CoreNodeKind::Runtime(n) => {
+            let has_python_operator = n
+                .operators
+                .iter()
+                .any(|x| matches!(x.config.source, OperatorSource::Python { .. }));
+
+            let has_other_operator = n
+                .operators
+                .iter()
+                .any(|x| !matches!(x.config.source, OperatorSource::Python { .. }));
+
+            let mut command = if has_python_operator && !has_other_operator {
+                // Use python to spawn runtime if there is a python operator
+                let mut command = tokio::process::Command::new("python3");
+                command.args(["-c", "import dora; dora.start_runtime()"]);
+                command
+            } else if !has_python_operator && has_other_operator {
+                tokio::process::Command::new("dora-runtime")
+            } else {
+                eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
+            };
+            command.current_dir(working_dir);
+            command.stdin(Stdio::null());
+
             let runtime_config = RuntimeConfig {
                 node: NodeConfig {
                     dataflow_id,
@@ -125,9 +144,7 @@ pub async fn spawn_node(
                     .wrap_err("failed to serialize runtime config")?,
             );
 
-            command.spawn().wrap_err_with(move || {
-                format!("failed to run runtime at `{}`", resolved_path.display())
-            })?
+            command.spawn().wrap_err("failed to run runtime")?
         }
     };
 
@@ -152,30 +169,4 @@ pub async fn spawn_node(
         let _ = daemon_tx.send(event.into()).await;
     });
     Ok(())
-}
-
-fn node_source(node: &ResolvedNode) -> eyre::Result<&str> {
-    match &node.kind {
-        dora_core::descriptor::CoreNodeKind::Runtime(node) => {
-            let has_python_operator = node
-                .operators
-                .iter()
-                .any(|x| matches!(x.config.source, OperatorSource::Python { .. }));
-
-            let has_other_operator = node
-                .operators
-                .iter()
-                .any(|x| !matches!(x.config.source, OperatorSource::Python { .. }));
-
-            if has_python_operator && !has_other_operator {
-                // Use python to spawn runtime if there is a python operator
-                Ok("python3")
-            } else if !has_python_operator && has_other_operator {
-                Ok("dora-runtime")
-            } else {
-                eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
-            }
-        }
-        dora_core::descriptor::CoreNodeKind::Custom(node) => Ok(&node.source),
-    }
 }
