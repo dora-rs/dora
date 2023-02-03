@@ -34,7 +34,8 @@ fn traceback(err: pyo3::PyErr) -> eyre::Report {
     })
 }
 
-pub fn spawn(
+#[tracing::instrument(skip(events_tx, incoming_events, tracer))]
+pub fn run(
     node_id: &NodeId,
     operator_id: &OperatorId,
     source: &str,
