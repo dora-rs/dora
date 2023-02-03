@@ -7,13 +7,13 @@ use dora_core::{
 };
 use dora_node_api::DoraNode;
 use eyre::{bail, Context, Result};
-use futures::{stream::FuturesUnordered, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use futures_concurrency::Merge;
 use operator::{run_operator, OperatorEvent, StopReason};
 
 use std::{collections::HashMap, mem};
 use tokio::{runtime::Builder, sync::mpsc};
-use tokio_stream::{wrappers::ReceiverStream, StreamMap};
+use tokio_stream::wrappers::ReceiverStream;
 
 mod operator;
 
@@ -32,31 +32,21 @@ pub fn main() -> eyre::Result<()> {
     let node_id = config.node_id.clone();
     let (node, daemon_events) = DoraNode::init(config)?;
 
-    let mut operator_events = StreamMap::new();
-    // let mut operator_stop_publishers = HashMap::new();
-    let mut operator_events_tx = HashMap::new();
+    let operator_definition = if operators.is_empty() {
+        bail!("no operators");
+    } else if operators.len() > 1 {
+        bail!("multiple operators are not supported");
+    } else {
+        let mut ops = operators;
+        ops.remove(0)
+    };
 
-    for operator_config in &operators {
-        let (events_tx, events) = mpsc::channel(1);
-        //     let stop_publisher = publisher(
-        //         &config.node_id,
-        //         operator_config.id.clone(),
-        //         STOP_TOPIC.to_owned().into(),
-        //         communication.as_mut(),
-        //     )
-        //     .with_context(|| {
-        //         format!(
-        //             "failed to create stop publisher for operator {}",
-        //             operator_config.id
-        //         )
-        //     })?;
-        //     operator_stop_publishers.insert(operator_config.id.clone(), stop_publisher);
-
-        operator_events.insert(operator_config.id.clone(), ReceiverStream::new(events));
-        operator_events_tx.insert(operator_config.id.clone(), events_tx);
-    }
-
-    let operator_events = operator_events.map(|(id, event)| Event::Operator { id, event });
+    let (operator_events_tx, events) = mpsc::channel(1);
+    let operator_id = operator_definition.id.clone();
+    let operator_events = ReceiverStream::new(events).map(move |event| Event::Operator {
+        id: operator_id.clone(),
+        event,
+    });
     let daemon_events = futures::stream::unfold(daemon_events, |mut stream| async {
         let event = stream.recv_async().await.map(|event| match event {
             dora_node_api::daemon::Event::Stop => Event::Stop,
@@ -78,35 +68,33 @@ pub fn main() -> eyre::Result<()> {
         .wrap_err("Could not build a tokio runtime.")?;
 
     let mut operator_channels = HashMap::new();
-    let operator_threads = FuturesUnordered::new();
+    let (operator_channel, incoming_events) = mpsc::channel(10);
+    operator_channels.insert(operator_definition.id.clone(), operator_channel);
 
-    for operator_config in &operators {
-        let events_tx = operator_events_tx.get(&operator_config.id).unwrap().clone();
-        let (operator_tx, incoming_events) = mpsc::channel(10);
-        let operator_definition = operator_config.clone();
-        let node_id = node_id.clone();
-        let task = std::thread::spawn(move || {
-            let operator_id = operator_definition.id.clone();
-            run_operator(&node_id, operator_definition, incoming_events, events_tx)
-                .wrap_err_with(|| format!("failed to init operator {operator_id}"))
-        });
-
-        operator_channels.insert(operator_config.id.clone(), operator_tx);
-        operator_threads.push(task);
-    }
-
-    let operator_config = operators.into_iter().map(|c| (c.id, c.config)).collect();
+    tracing::info!("spawning main task");
+    let operator_config = [(
+        operator_definition.id.clone(),
+        operator_definition.config.clone(),
+    )]
+    .into_iter()
+    .collect();
     let main_task = std::thread::spawn(move || -> Result<()> {
         tokio_runtime.block_on(run(node, operator_config, events, operator_channels))
     });
+
+    let operator_id = operator_definition.id.clone();
+    run_operator(
+        &node_id,
+        operator_definition,
+        incoming_events,
+        operator_events_tx,
+    )
+    .wrap_err_with(|| format!("failed to run operator {operator_id}"))?;
 
     main_task
         .join()
         .map_err(|err| eyre::eyre!("Stop thread failed with err: {err:#?}"))?
         .wrap_err("Stop loop thread failed unexpectedly.")?;
-    for thread in operator_threads {
-        thread.join().unwrap()?;
-    }
 
     Ok(())
 }
