@@ -15,7 +15,7 @@ type Tracer = ();
 mod python;
 // mod shared_lib;
 
-pub fn spawn_operator(
+pub fn run_operator(
     node_id: &NodeId,
     operator_definition: OperatorDefinition,
     incoming_events: Receiver<IncomingEvent>,
@@ -49,7 +49,7 @@ pub fn spawn_operator(
             todo!()
         }
         OperatorSource::Python(source) => {
-            python::spawn(
+            python::run(
                 node_id,
                 &operator_definition.id,
                 source,

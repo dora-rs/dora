@@ -7,9 +7,9 @@ use dora_core::{
 };
 use dora_node_api::DoraNode;
 use eyre::{bail, Context, Result};
-use futures::{Stream, StreamExt};
+use futures::{stream::FuturesUnordered, Stream, StreamExt};
 use futures_concurrency::Merge;
-use operator::{spawn_operator, OperatorEvent, StopReason};
+use operator::{run_operator, OperatorEvent, StopReason};
 
 use std::{collections::HashMap, mem};
 use tokio::{runtime::Builder, sync::mpsc};
@@ -78,19 +78,21 @@ pub fn main() -> eyre::Result<()> {
         .wrap_err("Could not build a tokio runtime.")?;
 
     let mut operator_channels = HashMap::new();
+    let operator_threads = FuturesUnordered::new();
 
     for operator_config in &operators {
-        let events_tx = operator_events_tx.get(&operator_config.id).unwrap();
+        let events_tx = operator_events_tx.get(&operator_config.id).unwrap().clone();
         let (operator_tx, incoming_events) = mpsc::channel(10);
-        spawn_operator(
-            &node_id,
-            operator_config.clone(),
-            incoming_events,
-            events_tx.clone(),
-        )
-        .wrap_err_with(|| format!("failed to init operator {}", operator_config.id))?;
+        let operator_definition = operator_config.clone();
+        let node_id = node_id.clone();
+        let task = std::thread::spawn(move || {
+            let operator_id = operator_definition.id.clone();
+            run_operator(&node_id, operator_definition, incoming_events, events_tx)
+                .wrap_err_with(|| format!("failed to init operator {operator_id}"))
+        });
 
         operator_channels.insert(operator_config.id.clone(), operator_tx);
+        operator_threads.push(task);
     }
 
     let operator_config = operators.into_iter().map(|c| (c.id, c.config)).collect();
@@ -102,6 +104,10 @@ pub fn main() -> eyre::Result<()> {
         .join()
         .map_err(|err| eyre::eyre!("Stop thread failed with err: {err:#?}"))?
         .wrap_err("Stop loop thread failed unexpectedly.")?;
+    for thread in operator_threads {
+        thread.join().unwrap()?;
+    }
+
     Ok(())
 }
 
