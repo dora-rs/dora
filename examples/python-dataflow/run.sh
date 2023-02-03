@@ -1,3 +1,5 @@
+set -e
+
 python3 -m venv .env
 . $(pwd)/.env/bin/activate
 # Dev dependencies
