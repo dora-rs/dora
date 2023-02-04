@@ -35,7 +35,7 @@ license = "Apache-2.0"
 
 [dev-dependencies]
 eyre = "0.6.8"
-tokio = "1.23.1"
+tokio = "1.24.2"
 dora-coordinator = { path = "binaries/coordinator" }
 dunce = "1.0.2"
 
