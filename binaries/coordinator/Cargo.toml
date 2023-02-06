@@ -13,7 +13,7 @@ eyre = "0.6.7"
 futures = "0.3.21"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.8.23"
-tokio = { version = "1.23.1", features = ["full"] }
+tokio = { version = "1.24.2", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util"] }
 tokio-util = { version = "0.7.1", features = ["codec"] }
 clap = { version = "3.1.8", features = ["derive"] }
