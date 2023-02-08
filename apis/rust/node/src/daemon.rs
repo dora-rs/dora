@@ -195,7 +195,7 @@ impl EventStream {
             .map_err(|e| eyre!(e))
             .wrap_err("failed to create subscription with dora-daemon")?;
 
-        let (tx, rx) = flume::bounded(1);
+        let (tx, rx) = flume::bounded(0);
         let mut drop_tokens = Vec::new();
         let thread = std::thread::spawn(move || loop {
             let daemon_request = DaemonRequest::NextEvent {
