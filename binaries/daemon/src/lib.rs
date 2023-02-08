@@ -115,6 +115,15 @@ impl Daemon {
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     ) -> eyre::Result<()> {
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
+        let ctrlc_tx = dora_events_tx.clone();
+        ctrlc::set_handler(move || {
+            tracing::info!("received ctrc signal");
+            if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
+                tracing::error!("failed to report ctrl-c event to dora-daemon");
+            }
+        })
+        .wrap_err("failed to set ctrl-c handler")?;
+
         let (shared_memory_handler, shared_memory_daemon_rx) = flume::unbounded();
         let (shared_memory_handler_node, shared_memory_node_rx) = flume::bounded(10);
         let daemon = Self {
@@ -196,6 +205,13 @@ impl Daemon {
                         let _: dora_core::coordinator_messages::WatchdogAck =
                             serde_json::from_slice(&reply_raw)
                                 .wrap_err("received unexpected watchdog reply from coordinator")?;
+                    }
+                }
+                Event::CtrlC => {
+                    for dataflow in self.running.values_mut() {
+                        for (_node_id, channel) in dataflow.subscribe_channels.drain() {
+                            let _ = channel.send_async(daemon_messages::NodeEvent::Stop).await;
+                        }
                     }
                 }
             }
@@ -681,6 +697,7 @@ pub enum Event {
     Dora(DoraEvent),
     ShmemHandler(ShmemHandlerEvent),
     WatchdogInterval,
+    CtrlC,
 }
 
 impl From<DoraEvent> for Event {
