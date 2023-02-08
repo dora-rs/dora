@@ -11,7 +11,7 @@ tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["net"] }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
-futures-concurrency = "7.0.0"
+futures-concurrency = "7.1.0"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_json = "1.0.86"
 dora-core = { path = "../../libraries/core" }

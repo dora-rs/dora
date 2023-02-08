@@ -962,7 +962,7 @@ dependencies = [
  "dora-node-api",
  "eyre",
  "futures",
- "futures-concurrency 5.0.1",
+ "futures-concurrency",
  "rand",
  "serde",
  "serde_json",
@@ -1005,7 +1005,7 @@ dependencies = [
  "eyre",
  "flume",
  "futures",
- "futures-concurrency 7.0.0",
+ "futures-concurrency",
  "serde",
  "serde_json",
  "serde_yaml 0.8.23",
@@ -1192,7 +1192,7 @@ dependencies = [
  "fern",
  "flume",
  "futures",
- "futures-concurrency 2.0.3",
+ "futures-concurrency",
  "libloading",
  "opentelemetry",
  "opentelemetry-system-metrics",
@@ -1388,30 +1388,9 @@ dependencies = [
 
 [[package]]
 name = "futures-concurrency"
-version = "2.0.3"
+version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e98b7b5aedee7c34a5cfb1ee1681af8faf46e2f30c0b8af5ea08eba517d61c"
-dependencies = [
- "async-trait",
- "futures-core",
- "pin-project",
-]
-
-[[package]]
-name = "futures-concurrency"
-version = "5.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "407ed2aa475d777e35fb167144b63babd0377b2f9a528ae3ec4bec94f1ce1f1a"
-dependencies = [
- "futures-core",
- "pin-project",
-]
-
-[[package]]
-name = "futures-concurrency"
-version = "7.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a740c32e1bde284ce2f51df98abd4fa38e9e539670443c111211777e3ab09927"
+checksum = "e06f199437c8a435c12ad153c5a1f4e131871cf6f6025585bb15e8cbb414f0dc"
 dependencies = [
  "bitvec",
  "futures-core",
