@@ -11,7 +11,11 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use operator::{run_operator, OperatorEvent, StopReason};
 
-use std::{collections::HashMap, mem};
+use core::fmt;
+use std::{
+    collections::{BTreeSet, HashMap},
+    mem,
+};
 use tokio::{runtime::Builder, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -118,6 +122,11 @@ async fn run(
         _started
     };
 
+    let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
+        .iter()
+        .map(|(id, config)| (id, config.inputs.keys().collect()))
+        .collect();
+
     // let mut stopped_operators = BTreeSet::new();
 
     while let Some(event) = events.next().await {
@@ -207,7 +216,24 @@ async fn run(
                     })
                     .await?;
             }
-            Event::InputClosed(_) => {}
+            Event::InputClosed(id) => {
+                let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
+                    tracing::warn!("received InputClosed event for non-operator input {id}");
+                    continue;
+                };
+                let operator_id = OperatorId::from(operator_id.to_owned());
+                let input_id = DataId::from(input_id.to_owned());
+
+                if let Some(open_inputs) = open_operator_inputs.get_mut(&operator_id) {
+                    open_inputs.remove(&input_id);
+                    if open_inputs.is_empty() {
+                        // all inputs of the node were closed -> close its event channel
+                        tracing::info!("all inputs of operator {operator_id} were closed -> closing event channel");
+                        open_operator_inputs.remove(&operator_id);
+                        operator_channels.remove(&operator_id);
+                    }
+                }
+            }
             Event::Error(err) => eyre::bail!("received error event: {err}"),
         }
     }
