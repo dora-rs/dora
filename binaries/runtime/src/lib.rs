@@ -91,10 +91,10 @@ pub fn main() -> eyre::Result<()> {
     )
     .wrap_err_with(|| format!("failed to run operator {operator_id}"))?;
 
-    main_task
-        .join()
-        .map_err(|err| eyre::eyre!("Stop thread failed with err: {err:#?}"))?
-        .wrap_err("Stop loop thread failed unexpectedly.")?;
+    match main_task.join() {
+        Ok(result) => result.wrap_err("Stop loop thread failed unexpectedly.")?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 
     Ok(())
 }
