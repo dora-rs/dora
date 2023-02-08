@@ -199,11 +199,13 @@ async fn run(
                     continue;
                 };
 
-                let _ = operator_channel.send(operator::IncomingEvent::Input {
-                    input_id,
-                    metadata,
-                    data,
-                });
+                operator_channel
+                    .send(operator::IncomingEvent::Input {
+                        input_id,
+                        metadata,
+                        data,
+                    })
+                    .await?;
             }
             Event::InputClosed(_) => {}
             Event::Error(err) => eyre::bail!("received error event: {err}"),
