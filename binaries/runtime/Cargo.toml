@@ -21,7 +21,7 @@ opentelemetry = { version = "0.17", features = [
 opentelemetry-system-metrics = { version = "0.1.1", optional = true }
 eyre = "0.6.8"
 futures = "0.3.21"
-futures-concurrency = "2.0.3"
+futures-concurrency = "7.1.0"
 libloading = "0.7.3"
 serde_yaml = "0.8.23"
 tokio = { version = "1.17.0", features = ["full"] }
