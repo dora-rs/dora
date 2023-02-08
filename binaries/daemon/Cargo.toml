@@ -23,3 +23,4 @@ uuid = { version = "1.1.2", features = ["v4"] }
 futures = "0.3.25"
 clap = { version = "3.1.8", features = ["derive"] }
 shared-memory-server = { path = "../../libraries/shared-memory-server" }
+ctrlc = "3.2.5"
