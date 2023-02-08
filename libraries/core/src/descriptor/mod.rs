@@ -46,6 +46,14 @@ impl Descriptor {
                 NodeKind::Custom(node) => node.run_config.inputs.values_mut().collect(),
                 NodeKind::Operator(operator) => operator.config.inputs.values_mut().collect(),
             };
+            for mapping in input_mappings.into_iter().filter_map(|m| match m {
+                InputMapping::Timer { .. } => None,
+                InputMapping::User(m) => Some(m),
+            }) {
+                if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
+                    mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
+                }
+            }
 
             // resolve nodes
             let kind = match node.kind {
