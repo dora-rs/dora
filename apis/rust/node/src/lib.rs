@@ -39,21 +39,15 @@ impl DoraNode {
             dataflow_id,
             node_id,
             run_config,
-            daemon_control_region_id,
-            daemon_events_region_id,
+            daemon_communication,
         } = node_config;
 
         let DaemonConnection {
             control_channel,
             event_stream,
             event_stream_thread,
-        } = DaemonConnection::init(
-            dataflow_id,
-            &node_id,
-            &daemon_control_region_id,
-            &daemon_events_region_id,
-        )
-        .wrap_err("failed to connect to dora-daemon")?;
+        } = DaemonConnection::init(dataflow_id, &node_id, &daemon_communication)
+            .wrap_err("failed to connect to dora-daemon")?;
 
         let node = Self {
             id: node_id,

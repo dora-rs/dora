@@ -6,7 +6,7 @@ use dora_core::{
     topics::ControlRequest,
 };
 use eyre::{bail, eyre, Context};
-use std::{env::consts::EXE_EXTENSION, io::Write, path::Path, str::FromStr};
+use std::{env::consts::EXE_EXTENSION, io::Write, path::Path};
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
 pub fn check_environment() -> eyre::Result<()> {

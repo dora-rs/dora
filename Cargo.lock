@@ -1008,6 +1008,7 @@ dependencies = [
 name = "dora-daemon"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "clap 3.2.20",
  "ctrlc",
  "dora-core",
