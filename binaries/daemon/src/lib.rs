@@ -3,8 +3,8 @@ use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
     daemon_messages::{
-        self, DaemonCoordinatorEvent, DaemonCoordinatorReply, DaemonReply, DataflowId, DropToken,
-        SpawnDataflowNodes,
+        self, DaemonCommunicationConfig, DaemonCoordinatorEvent, DaemonCoordinatorReply,
+        DaemonReply, DataflowId, DropToken, SpawnDataflowNodes,
     },
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
@@ -68,12 +68,14 @@ impl Daemon {
             .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
             .to_owned();
 
-        let nodes = read_descriptor(dataflow_path).await?.resolve_aliases();
+        let descriptor = read_descriptor(dataflow_path).await?;
+        let nodes = descriptor.resolve_aliases();
 
         let spawn_command = SpawnDataflowNodes {
             dataflow_id: Uuid::new_v4(),
             working_dir,
             nodes,
+            daemon_communication: descriptor.daemon_config,
         };
 
         let exit_when_done = spawn_command
@@ -234,8 +236,11 @@ impl Daemon {
                 dataflow_id,
                 working_dir,
                 nodes,
+                daemon_communication,
             }) => {
-                let result = self.spawn_dataflow(dataflow_id, working_dir, nodes).await;
+                let result = self
+                    .spawn_dataflow(dataflow_id, working_dir, nodes, daemon_communication)
+                    .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
                 }
@@ -276,6 +281,7 @@ impl Daemon {
         dataflow_id: uuid::Uuid,
         working_dir: PathBuf,
         nodes: Vec<ResolvedNode>,
+        daemon_communication_config: DaemonCommunicationConfig,
     ) -> eyre::Result<()> {
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Default::default()),
@@ -318,6 +324,7 @@ impl Daemon {
                 node,
                 self.events_tx.clone(),
                 self.shared_memory_handler_node.clone(),
+                daemon_communication_config,
             )
             .await
             .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;

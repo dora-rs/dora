@@ -65,6 +65,7 @@ pub async fn spawn_dataflow(
         dataflow_id: uuid,
         working_dir,
         nodes,
+        daemon_communication: descriptor.daemon_config,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 

@@ -1,6 +1,6 @@
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{DaemonReply, DaemonRequest, DataflowId, NodeEvent},
+    daemon_messages::{DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, NodeEvent},
 };
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
@@ -17,21 +17,29 @@ impl DaemonConnection {
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
-        daemon_control_region_id: &str,
-        daemon_events_region_id: &str,
+        daemon_communication: &DaemonCommunication,
     ) -> eyre::Result<Self> {
-        let control_channel = ControlChannel::init(dataflow_id, node_id, daemon_control_region_id)
-            .wrap_err("failed to init control stream")?;
+        match daemon_communication {
+            DaemonCommunication::Shmem {
+                daemon_control_region_id,
+                daemon_events_region_id,
+            } => {
+                let control_channel =
+                    ControlChannel::init(dataflow_id, node_id, daemon_control_region_id)
+                        .wrap_err("failed to init control stream")?;
 
-        let (event_stream, event_stream_thread) =
-            EventStream::init(dataflow_id, node_id, daemon_events_region_id)
-                .wrap_err("failed to init event stream")?;
+                let (event_stream, event_stream_thread) =
+                    EventStream::init(dataflow_id, node_id, daemon_events_region_id)
+                        .wrap_err("failed to init event stream")?;
 
-        Ok(Self {
-            control_channel,
-            event_stream,
-            event_stream_thread,
-        })
+                Ok(Self {
+                    control_channel,
+                    event_stream,
+                    event_stream_thread,
+                })
+            }
+            DaemonCommunication::Tcp { socket_addr } => todo!(),
+        }
     }
 }
 

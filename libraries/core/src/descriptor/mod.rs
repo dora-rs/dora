@@ -1,4 +1,7 @@
-use crate::config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId};
+use crate::{
+    config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId},
+    daemon_messages::DaemonCommunicationConfig,
+};
 use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,6 +21,8 @@ pub struct Descriptor {
     #[serde(with = "serde_yaml::with::singleton_map")]
     pub communication: CommunicationConfig,
     pub nodes: Vec<Node>,
+    #[serde(default)]
+    pub daemon_config: DaemonCommunicationConfig,
 }
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
