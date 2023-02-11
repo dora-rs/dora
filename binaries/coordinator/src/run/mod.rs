@@ -8,6 +8,7 @@ use eyre::{bail, eyre, WrapErr};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::{env::consts::EXE_EXTENSION, path::Path};
 use tokio_stream::wrappers::IntervalStream;
+use tracing::warn;
 use uuid::Uuid;
 
 mod custom;
@@ -135,7 +136,8 @@ pub async fn await_tasks(
     while let Some(task_result) = tasks.next().await {
         task_result
             .wrap_err("failed to join async task")?
-            .wrap_err("custom node failed")?;
+            .wrap_err("One node failed!")
+            .unwrap_or_else(|err| warn!("{err}"))
     }
     Ok(())
 }
