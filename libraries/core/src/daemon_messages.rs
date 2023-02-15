@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use crate::{
     config::{DataId, NodeId, NodeRunConfig},
@@ -107,7 +107,10 @@ pub struct InputData {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
-    StopDataflow { dataflow_id: DataflowId },
+    StopDataflow {
+        dataflow_id: DataflowId,
+        grace_period: Option<Duration>,
+    },
     Destroy,
     Watchdog,
 }

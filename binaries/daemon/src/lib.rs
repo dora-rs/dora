@@ -248,7 +248,10 @@ impl Daemon {
                     DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
                 (reply, RunStatus::Continue)
             }
-            DaemonCoordinatorEvent::StopDataflow { dataflow_id } => {
+            DaemonCoordinatorEvent::StopDataflow {
+                dataflow_id,
+                grace_period,
+            } => {
                 let stop = async {
                     let dataflow = self
                         .running
