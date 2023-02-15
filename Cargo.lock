@@ -931,6 +931,7 @@ dependencies = [
  "eyre",
  "once_cell",
  "serde",
+ "serde-with-expand-env",
  "serde_yaml 0.9.11",
  "uuid 1.2.1",
  "which",
@@ -3364,6 +3365,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f747710de3dcd43b88c9168773254e809d8ddbdf9653b84e2554ab219f17860"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde-with-expand-env"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "888d884a3be3a209308d0b66f1918ff18f60e93db837259e53ea7d8dd14e7e98"
+dependencies = [
+ "serde",
+ "shellexpand",
 ]
 
 [[package]]
