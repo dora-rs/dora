@@ -4,7 +4,7 @@ use dora_core::{
     coordinator_messages::DaemonEvent,
     daemon_messages::{
         self, DaemonCommunicationConfig, DaemonCoordinatorEvent, DaemonCoordinatorReply,
-        DaemonReply, DataflowId, DropToken, SpawnDataflowNodes,
+        DaemonReply, DataflowId, DropToken, RunningNodes, SpawnDataflowNodes,
     },
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
@@ -20,6 +20,10 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use sysinfo::{ProcessExt, SystemExt};
+use tracing::log::warn;
+
+use sysinfo::{Pid, Process};
 use tcp_utils::tcp_receive;
 use tokio::{
     fs,
@@ -261,9 +265,22 @@ impl Daemon {
                     for (_node_id, channel) in dataflow.subscribe_channels.drain() {
                         let _ = channel.send_async(daemon_messages::NodeEvent::Stop).await;
                     }
+                    if let Some(period) = grace_period {
+                        tokio::time::sleep(period).await;
+                        let mut system = sysinfo::System::new();
+                        system.refresh_all();
+
+                        for (node, id) in dataflow.running_nodes.iter() {
+                            if let Some(process) = system.process(Pid::from(id.clone())) {
+                                process.kill();
+                                warn!("{node} was killed due to not stopping within grace period")
+                            }
+                        }
+                    }
                     Result::<(), eyre::Report>::Ok(())
                 };
-                let reply = DaemonCoordinatorReply::SpawnResult(
+
+                let reply = DaemonCoordinatorReply::StopResult(
                     stop.await.map_err(|err| format!("{err:?}")),
                 );
                 (reply, RunStatus::Continue)
@@ -292,8 +309,10 @@ impl Daemon {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
         };
+
+        let mut running_nodes = BTreeMap::new();
+
         for node in nodes {
-            dataflow.running_nodes.insert(node.id.clone());
             let inputs = node_inputs(&node);
 
             for (input_id, mapping) in inputs {
@@ -321,7 +340,7 @@ impl Daemon {
             }
 
             let node_id = node.id.clone();
-            spawn::spawn_node(
+            let running_node = spawn::spawn_node(
                 dataflow_id,
                 &working_dir,
                 node,
@@ -331,7 +350,9 @@ impl Daemon {
             )
             .await
             .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
+            running_nodes.insert(node_id, running_node);
         }
+        dataflow.running_nodes = running_nodes;
         for interval in dataflow.timers.keys().copied() {
             let events_tx = self.events_tx.clone();
             let task = async move {
@@ -398,7 +419,7 @@ impl Daemon {
                 let _ = reply_sender.send(DaemonReply::Result(reply));
                 // TODO: notify remote nodes
             }
-            DaemonNodeEvent::Stopped => {
+            DaemonNodeEvent::Stopped { grace_period } => {
                 tracing::info!("Stopped: {dataflow_id}/{node_id}");
 
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
@@ -687,7 +708,7 @@ pub struct RunningDataflow {
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
-    running_nodes: BTreeSet<NodeId>,
+    running_nodes: RunningNodes,
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
     _timer_handles: Vec<futures::future::RemoteHandle<()>>,
 }
@@ -723,7 +744,9 @@ impl From<ShmemHandlerEvent> for Event {
 
 #[derive(Debug)]
 pub enum DaemonNodeEvent {
-    Stopped,
+    Stopped {
+        grace_period: Option<Duration>,
+    },
     Subscribe {
         event_sender: flume::Sender<daemon_messages::NodeEvent>,
     },

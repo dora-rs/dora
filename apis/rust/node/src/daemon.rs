@@ -70,7 +70,7 @@ impl ControlChannel {
     pub fn report_stop(&mut self) -> eyre::Result<()> {
         let reply = self
             .channel
-            .request(&DaemonRequest::Stopped)
+            .request(&DaemonRequest::Stopped { grace_period: None })
             .wrap_err("failed to report stopped to dora-daemon")?;
         match reply {
             dora_core::daemon_messages::DaemonReply::Result(result) => result

@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
 
 use crate::{
     config::{DataId, NodeId, NodeRunConfig},
@@ -52,7 +52,9 @@ pub enum DaemonRequest {
         metadata: Metadata<'static>,
     },
     CloseOutputs(Vec<DataId>),
-    Stopped,
+    Stopped {
+        grace_period: Option<Duration>,
+    },
     NextEvent {
         drop_tokens: Vec<DropToken>,
     },
@@ -123,6 +125,8 @@ pub enum DaemonCoordinatorReply {
     WatchdogAck,
 }
 
+pub type RunningNodes = BTreeMap<NodeId, RunningNode>;
+pub type RunningNode = usize; // Currently only represent the pid of the process.
 pub type DataflowId = Uuid;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

@@ -4,7 +4,8 @@ use crate::{
 use dora_core::{
     config::{NodeId, NodeRunConfig},
     daemon_messages::{
-        DaemonCommunication, DaemonCommunicationConfig, DataflowId, NodeConfig, RuntimeConfig,
+        DaemonCommunication, DaemonCommunicationConfig, DataflowId, NodeConfig, RunningNode,
+        RuntimeConfig,
     },
     descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode},
 };
@@ -21,7 +22,7 @@ pub async fn spawn_node(
     daemon_tx: mpsc::Sender<Event>,
     shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
     config: DaemonCommunicationConfig,
-) -> eyre::Result<()> {
+) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 
@@ -129,6 +130,7 @@ pub async fn spawn_node(
     };
 
     let node_id_cloned = node_id.clone();
+    let running_node = child.id().unwrap() as usize; // Todo: Manage failure
     let wait_task = async move {
         let status = child.wait().await.context("child process failed")?;
         if status.success() {
@@ -148,7 +150,7 @@ pub async fn spawn_node(
         };
         let _ = daemon_tx.send(event.into()).await;
     });
-    Ok(())
+    Ok(running_node)
 }
 
 async fn daemon_communication_config(

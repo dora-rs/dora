@@ -226,7 +226,10 @@ impl Listener {
                 let reply = DaemonReply::Result(Err("unexpected register message".into()));
                 self.send_reply(&reply).await?;
             }
-            DaemonRequest::Stopped => self.process_daemon_event(DaemonNodeEvent::Stopped).await?,
+            DaemonRequest::Stopped { grace_period } => {
+                self.process_daemon_event(DaemonNodeEvent::Stopped { grace_period })
+                    .await?
+            }
             DaemonRequest::CloseOutputs(outputs) => {
                 self.process_daemon_event(DaemonNodeEvent::CloseOutputs(outputs))
                     .await?

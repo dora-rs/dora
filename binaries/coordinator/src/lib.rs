@@ -6,7 +6,7 @@ use control::ControlEvent;
 use dora_core::{
     config::CommunicationConfig,
     coordinator_messages::RegisterResult,
-    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
+    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, RunningNodes},
     topics::{
         control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
         StopDataflowResult, DORA_COORDINATOR_PORT_DEFAULT,
@@ -357,6 +357,7 @@ struct RunningDataflow {
     communication_config: CommunicationConfig,
     /// The IDs of the machines that the dataflow is running on.
     machines: BTreeSet<String>,
+    running_nodes: RunningNodes,
 }
 
 impl PartialEq for RunningDataflow {
@@ -419,12 +420,14 @@ async fn start_dataflow(
         uuid,
         communication_config,
         machines,
+        running_nodes,
     } = spawn_dataflow(&runtime_path, path, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
         communication_config,
         machines,
+        running_nodes,
     })
 }
 
