@@ -2,6 +2,7 @@ use std::{
     fmt::Display,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -21,9 +22,11 @@ pub enum ControlRequest {
     },
     Stop {
         dataflow_uuid: Uuid,
+        grace_period: Option<Duration>,
     },
     StopByName {
         name: String,
+        grace_period: Option<Duration>,
     },
     Destroy,
     List,

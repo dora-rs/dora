@@ -6,7 +6,7 @@ use control::ControlEvent;
 use dora_core::{
     config::CommunicationConfig,
     coordinator_messages::RegisterResult,
-    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
+    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, RunningNodes},
     topics::{
         control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
         StopDataflowResult, DORA_COORDINATOR_PORT_DEFAULT,
@@ -29,6 +29,8 @@ mod control;
 mod listener;
 mod run;
 mod tcp_utils;
+
+static DESTROY_GRACE_PERIOD: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora coordinator")]
@@ -198,12 +200,16 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                             };
                             serde_json::to_vec(&reply).unwrap()
                         }
-                        ControlRequest::Stop { dataflow_uuid } => {
+                        ControlRequest::Stop {
+                            dataflow_uuid,
+                            grace_period,
+                        } => {
                             let stop = async {
                                 stop_dataflow(
                                     &running_dataflows,
                                     dataflow_uuid,
                                     &mut daemon_connections,
+                                    grace_period,
                                 )
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
@@ -215,7 +221,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 
                             serde_json::to_vec(&reply).unwrap()
                         }
-                        ControlRequest::StopByName { name } => {
+                        ControlRequest::StopByName { name, grace_period } => {
                             let stop = async {
                                 let uuids: Vec<_> = running_dataflows
                                     .iter()
@@ -235,6 +241,7 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                     &running_dataflows,
                                     dataflow_uuid,
                                     &mut daemon_connections,
+                                    grace_period,
                                 )
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
@@ -253,8 +260,13 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
 
                             // stop all running dataflows
                             for &uuid in running_dataflows.keys() {
-                                stop_dataflow(&running_dataflows, uuid, &mut daemon_connections)
-                                    .await?;
+                                stop_dataflow(
+                                    &running_dataflows,
+                                    uuid,
+                                    &mut daemon_connections,
+                                    Some(DESTROY_GRACE_PERIOD),
+                                )
+                                .await?;
                             }
 
                             // destroy all connected daemons
@@ -345,6 +357,7 @@ struct RunningDataflow {
     communication_config: CommunicationConfig,
     /// The IDs of the machines that the dataflow is running on.
     machines: BTreeSet<String>,
+    running_nodes: RunningNodes,
 }
 
 impl PartialEq for RunningDataflow {
@@ -359,11 +372,15 @@ async fn stop_dataflow(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     uuid: Uuid,
     daemon_connections: &mut HashMap<String, TcpStream>,
+    grace_period: Option<Duration>,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&uuid) else {
         bail!("No running dataflow found with UUID `{uuid}`")
     };
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::StopDataflow { dataflow_id: uuid })?;
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::StopDataflow {
+        dataflow_id: uuid,
+        grace_period,
+    })?;
 
     for machine_id in &dataflow.machines {
         let daemon_connection = daemon_connections
@@ -403,12 +420,14 @@ async fn start_dataflow(
         uuid,
         communication_config,
         machines,
+        running_nodes,
     } = spawn_dataflow(&runtime_path, path, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
         communication_config,
         machines,
+        running_nodes,
     })
 }
 

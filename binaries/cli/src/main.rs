@@ -4,10 +4,10 @@ use dora_core::topics::{
     control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
     StopDataflowResult,
 };
+use duration_str::parse;
 use eyre::{bail, Context};
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 use uuid::Uuid;
-
 mod build;
 mod check;
 mod graph;
@@ -65,6 +65,8 @@ enum Command {
         uuid: Option<Uuid>,
         #[clap(long)]
         name: Option<String>,
+        #[arg(value_parser = parse)]
+        grace_period: Option<Duration>,
     },
     Logs,
     Metrics,
@@ -135,9 +137,13 @@ fn main() -> eyre::Result<()> {
         )?,
         Command::Start { dataflow, name } => start_dataflow(dataflow, name, &mut session)?,
         Command::List => list(&mut session)?,
-        Command::Stop { uuid, name } => match (uuid, name) {
-            (Some(uuid), _) => stop_dataflow(uuid, &mut session)?,
-            (None, Some(name)) => stop_dataflow_by_name(name, &mut session)?,
+        Command::Stop {
+            uuid,
+            name,
+            grace_period,
+        } => match (uuid, name) {
+            (Some(uuid), _) => stop_dataflow(uuid, grace_period, &mut session)?,
+            (None, Some(name)) => stop_dataflow_by_name(name, grace_period, &mut session)?,
             (None, None) => stop_dataflow_interactive(&mut session)?,
         },
         Command::Destroy { config } => up::destroy(config.as_deref(), &mut session)?,
@@ -187,8 +193,29 @@ fn stop_dataflow_interactive(
     if uuids.is_empty() {
         eprintln!("No dataflows are running");
     } else {
-        let selection = inquire::Select::new("Choose dataflow to stop:", uuids).prompt()?;
-        stop_dataflow(selection.uuid, session)?;
+        let uuid_selection = inquire::Select::new("Choose dataflow to stop:", uuids).prompt()?;
+        let force_selection = inquire::Confirm::new("Kill the node after a grace period:")
+            .with_default(false)
+            .prompt()?;
+
+        let grace_period = if force_selection {
+            let grace_period = inquire::CustomType::<String>::new("How long is the grace period:")
+                .with_validator(|resp: &String| {
+                    if parse(resp).is_ok() {
+                        Ok(inquire::validator::Validation::Valid)
+                    } else {
+                        Ok(inquire::validator::Validation::Invalid(
+                            "You must give a period with a unit like: 1ms, 2sec, 5 minutes".into(),
+                        ))
+                    }
+                })
+                .prompt()?;
+            Some(parse(&grace_period)?)
+        } else {
+            None
+        };
+
+        stop_dataflow(uuid_selection.uuid, grace_period, session)?;
     }
 
     Ok(())
@@ -196,12 +223,14 @@ fn stop_dataflow_interactive(
 
 fn stop_dataflow(
     uuid: Uuid,
+    grace_period: Option<Duration>,
     session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = control_connection(session)?
         .request(
             &serde_json::to_vec(&ControlRequest::Stop {
                 dataflow_uuid: uuid,
+                grace_period,
             })
             .unwrap(),
         )
@@ -216,10 +245,11 @@ fn stop_dataflow(
 
 fn stop_dataflow_by_name(
     name: String,
+    grace_period: Option<Duration>,
     session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = control_connection(session)?
-        .request(&serde_json::to_vec(&ControlRequest::StopByName { name }).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::StopByName { name, grace_period }).unwrap())
         .wrap_err("failed to send dataflow stop_by_name message")?;
     let result: StopDataflowResult =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
