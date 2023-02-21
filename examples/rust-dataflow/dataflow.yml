@@ -2,6 +2,8 @@ communication:
   zenoh:
     prefix: /example-rust-dataflow
 
+daemon_config: Tcp # or Shmem
+
 nodes:
   - id: rust-node
     custom:
