@@ -29,3 +29,6 @@ jobs:
 
       - name: "Python Dataflow example"
         run: cargo run --example python-dataflow
+
+      - name: "Python Operator Dataflow example"
+        run: cargo run --example python-operator-dataflow
