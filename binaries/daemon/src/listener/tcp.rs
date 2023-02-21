@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use crate::{
     shared_mem_handler,
     tcp_utils::{tcp_receive, tcp_send},
@@ -10,6 +8,7 @@ use dora_core::{
     daemon_messages::{DaemonReply, DaemonRequest, DataflowId, DropEvent, NodeEvent},
 };
 use eyre::{eyre, Context};
+use std::collections::VecDeque;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, oneshot},
@@ -118,7 +117,7 @@ async fn receive_message(connection: &mut TcpStream) -> eyre::Result<Option<Daem
             std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionAborted => {
                 return Ok(None)
             }
-            other => {
+            _other => {
                 return Err(err)
                     .context("unexpected I/O error while trying to receive DaemonRequest")
             }
@@ -205,7 +204,7 @@ impl Listener {
                 .queue
                 .iter()
                 .position(|e| matches!(e, NodeEvent::Input { .. }))
-                .expect(&format!("no input event found in drop iteration {i}"));
+                .unwrap_or_else(|| panic!("no input event found in drop iteration {i}"));
 
             // remove that event
             if let Some(event) = self.queue.remove(index) {
@@ -336,7 +335,7 @@ impl Listener {
         // send NodeEvent to daemon main loop
         let (reply_tx, reply) = oneshot::channel();
         let event = Event::Node {
-            dataflow_id: self.dataflow_id.clone(),
+            dataflow_id: self.dataflow_id,
             node_id: self.node_id.clone(),
             event,
             reply_sender: reply_tx,
