@@ -5,9 +5,11 @@ use dora_core::{
 use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
 use shared_memory_server::{Shmem, ShmemClient, ShmemConf};
-use std::{marker::PhantomData, thread::JoinHandle, time::Duration};
+use std::{marker::PhantomData, net::TcpStream, thread::JoinHandle, time::Duration};
 
-pub struct DaemonConnection {
+mod tcp;
+
+pub(crate) struct DaemonConnection {
     pub control_channel: ControlChannel,
     pub event_stream: EventStream,
     pub(crate) event_stream_thread: JoinHandle<()>,
@@ -19,49 +21,53 @@ impl DaemonConnection {
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
     ) -> eyre::Result<Self> {
-        match daemon_communication {
+        let (control, events) = match daemon_communication {
             DaemonCommunication::Shmem {
                 daemon_control_region_id,
                 daemon_events_region_id,
             } => {
-                let control_channel =
-                    ControlChannel::init(dataflow_id, node_id, daemon_control_region_id)
-                        .wrap_err("failed to init control stream")?;
-
-                let (event_stream, event_stream_thread) =
-                    EventStream::init(dataflow_id, node_id, daemon_events_region_id)
-                        .wrap_err("failed to init event stream")?;
-
-                Ok(Self {
-                    control_channel,
-                    event_stream,
-                    event_stream_thread,
-                })
+                let control = unsafe { DaemonChannel::new_shmem(daemon_control_region_id) }
+                    .wrap_err("failed to create shmem control channel")?;
+                let events = unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
+                    .wrap_err("failed to create shmem event channel")?;
+                (control, events)
             }
-            DaemonCommunication::Tcp { socket_addr } => todo!(),
-        }
+            DaemonCommunication::Tcp { socket_addr } => {
+                let control = DaemonChannel::new_tcp(
+                    TcpStream::connect(socket_addr).wrap_err("failed to connect control stream")?,
+                )?;
+                let events = DaemonChannel::new_tcp(
+                    TcpStream::connect(socket_addr).wrap_err("failed to connect event stream")?,
+                )?;
+                (control, events)
+            }
+        };
+
+        let control_channel = ControlChannel::init(dataflow_id, node_id, control)
+            .wrap_err("failed to init control stream")?;
+
+        let (event_stream, event_stream_thread) = EventStream::init(dataflow_id, node_id, events)
+            .wrap_err("failed to init event stream")?;
+
+        Ok(Self {
+            control_channel,
+            event_stream,
+            event_stream_thread,
+        })
     }
 }
 
-pub struct ControlChannel {
-    channel: ShmemClient<DaemonRequest, DaemonReply>,
+pub(crate) struct ControlChannel {
+    channel: DaemonChannel,
 }
 
 impl ControlChannel {
-    #[tracing::instrument]
+    #[tracing::instrument(skip(channel))]
     fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
-        daemon_control_region_id: &str,
+        mut channel: DaemonChannel,
     ) -> eyre::Result<Self> {
-        let daemon_events_region = ShmemConf::new()
-            .os_id(daemon_control_region_id)
-            .open()
-            .wrap_err("failed to connect to dora-daemon")?;
-        let mut channel =
-            unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
-                .wrap_err("failed to create ShmemChannel")?;
-
         register(dataflow_id, node_id.clone(), &mut channel)?;
 
         Ok(Self { channel })
@@ -154,10 +160,43 @@ impl ControlChannel {
     }
 }
 
+enum DaemonChannel {
+    Shmem(ShmemClient<DaemonRequest, DaemonReply>),
+    Tcp(TcpStream),
+}
+
+impl DaemonChannel {
+    #[tracing::instrument]
+    fn new_tcp(stream: TcpStream) -> eyre::Result<Self> {
+        stream.set_nodelay(true).context("failed to set nodelay")?;
+        Ok(DaemonChannel::Tcp(stream))
+    }
+
+    #[tracing::instrument]
+    unsafe fn new_shmem(daemon_control_region_id: &str) -> eyre::Result<Self> {
+        let daemon_events_region = ShmemConf::new()
+            .os_id(daemon_control_region_id)
+            .open()
+            .wrap_err("failed to connect to dora-daemon")?;
+        let channel = DaemonChannel::Shmem(
+            unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
+                .wrap_err("failed to create ShmemChannel")?,
+        );
+        Ok(channel)
+    }
+
+    fn request(&mut self, request: &DaemonRequest) -> eyre::Result<DaemonReply> {
+        match self {
+            DaemonChannel::Shmem(client) => client.request(request),
+            DaemonChannel::Tcp(stream) => tcp::request(stream, request),
+        }
+    }
+}
+
 fn register(
     dataflow_id: DataflowId,
     node_id: NodeId,
-    channel: &mut ShmemClient<DaemonRequest, DaemonReply>,
+    channel: &mut DaemonChannel,
 ) -> eyre::Result<()> {
     let msg = DaemonRequest::Register {
         dataflow_id,
@@ -186,16 +225,8 @@ impl EventStream {
     fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
-        daemon_events_region_id: &str,
+        mut channel: DaemonChannel,
     ) -> eyre::Result<(Self, JoinHandle<()>)> {
-        let daemon_events_region = ShmemConf::new()
-            .os_id(daemon_events_region_id)
-            .open()
-            .wrap_err("failed to connect to dora-daemon")?;
-        let mut channel: ShmemClient<DaemonRequest, DaemonReply> =
-            unsafe { ShmemClient::new(daemon_events_region, None) }
-                .wrap_err("failed to create ShmemChannel")?;
-
         register(dataflow_id, node_id.clone(), &mut channel)?;
 
         channel
