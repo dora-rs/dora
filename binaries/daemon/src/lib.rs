@@ -400,39 +400,44 @@ impl Daemon {
 
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
 
-                // notify downstream nodes
-                let dataflow = self
-                    .running
-                    .get_mut(&dataflow_id)
-                    .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
-                send_input_closed_events(dataflow, |(source_id, _)| source_id == &node_id).await;
+                self.handle_node_stop(dataflow_id, &node_id).await?;
+            }
+        }
+        Ok(())
+    }
 
-                // TODO: notify remote nodes
-
-                dataflow.running_nodes.remove(&node_id);
-                if dataflow.running_nodes.is_empty() {
-                    tracing::info!(
-                        "Dataflow `{dataflow_id}` finished on machine `{}`",
-                        self.machine_id
-                    );
-                    if let Some(addr) = self.coordinator_addr {
-                        if coordinator::send_event(
-                            addr,
-                            self.machine_id.clone(),
-                            DaemonEvent::AllNodesFinished {
-                                dataflow_id,
-                                result: Ok(()),
-                            },
-                        )
-                        .await
-                        .is_err()
-                        {
-                            tracing::warn!("failed to report dataflow finish to coordinator");
-                        }
-                    }
-                    self.running.remove(&dataflow_id);
+    #[tracing::instrument(skip(self))]
+    async fn handle_node_stop(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: &NodeId,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
+        })?;
+        send_input_closed_events(dataflow, |(source_id, _)| source_id == node_id).await;
+        dataflow.running_nodes.remove(node_id);
+        if dataflow.running_nodes.is_empty() {
+            tracing::info!(
+                "Dataflow `{dataflow_id}` finished on machine `{}`",
+                self.machine_id
+            );
+            if let Some(addr) = self.coordinator_addr {
+                if coordinator::send_event(
+                    addr,
+                    self.machine_id.clone(),
+                    DaemonEvent::AllNodesFinished {
+                        dataflow_id,
+                        result: Ok(()),
+                    },
+                )
+                .await
+                .is_err()
+                {
+                    tracing::warn!("failed to report dataflow finish to coordinator");
                 }
             }
+            self.running.remove(&dataflow_id);
         }
         Ok(())
     }
@@ -494,6 +499,7 @@ impl Daemon {
                     tracing::warn!(
                         "node `{dataflow_id}/{node_id}` finished without sending `Stopped` message"
                     );
+                    self.handle_node_stop(dataflow_id, &node_id).await?;
                 }
                 match result {
                     Ok(()) => {
