@@ -493,7 +493,7 @@ impl Daemon {
                 if self
                     .running
                     .get(&dataflow_id)
-                    .and_then(|d| d.subscribe_channels.get(&node_id))
+                    .and_then(|d| d.running_nodes.get(&node_id))
                     .is_some()
                 {
                     tracing::warn!(
