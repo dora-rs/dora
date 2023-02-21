@@ -71,6 +71,7 @@ pub fn run_operator(
     Ok(())
 }
 
+#[derive(Debug)]
 pub enum OperatorEvent {
     Output {
         output_id: DataId,
@@ -84,6 +85,7 @@ pub enum OperatorEvent {
     },
 }
 
+#[derive(Debug)]
 pub enum IncomingEvent {
     Stop,
     Input {
