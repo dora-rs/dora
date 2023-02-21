@@ -173,6 +173,14 @@ async fn daemon_communication_config(
                 .local_addr()
                 .wrap_err("failed to get local addr of socket")?;
 
+            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+            let daemon_tx = daemon_tx.clone();
+            let shmem_handler_tx = shmem_handler_tx.clone();
+            tokio::spawn(async move {
+                listener::tcp::listener_loop(socket, daemon_tx, shmem_handler_tx).await;
+                tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
+            });
+
             Ok(DaemonCommunication::Tcp { socket_addr })
         }
         DaemonCommunicationConfig::Shmem => {
