@@ -1080,6 +1080,7 @@ dependencies = [
 name = "dora-node-api"
 version = "0.1.2"
 dependencies = [
+ "bincode",
  "capnp",
  "dora-core",
  "dora-message",
