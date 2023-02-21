@@ -89,7 +89,7 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     create_custom_node("node_1".into(), Some(root.join("node_1")))?;
 
     println!(
-        "Created new C dataflow at `{name}` at {}",
+        "Created new yaml dataflow `{name}` at {}",
         Path::new(".").join(root).display()
     );
 
