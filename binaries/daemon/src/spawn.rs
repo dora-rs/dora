@@ -1,18 +1,16 @@
 use crate::{
-    listener, runtime_node_inputs, runtime_node_outputs, shared_mem_handler, DoraEvent, Event,
+    listener::spawn_listener_loop, runtime_node_inputs, runtime_node_outputs, shared_mem_handler,
+    DoraEvent, Event,
 };
 use dora_core::{
-    config::{NodeId, NodeRunConfig},
-    daemon_messages::{
-        DaemonCommunication, DaemonCommunicationConfig, DataflowId, NodeConfig, RuntimeConfig,
-    },
+    config::NodeRunConfig,
+    daemon_messages::{DaemonCommunicationConfig, DataflowId, NodeConfig, RuntimeConfig},
     descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode},
 };
 use dora_download::download_file;
 use eyre::{eyre, WrapErr};
-use shared_memory_server::{ShmemConf, ShmemServer};
-use std::{env::consts::EXE_EXTENSION, net::Ipv4Addr, path::Path, process::Stdio};
-use tokio::{net::TcpListener, sync::mpsc};
+use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
+use tokio::sync::mpsc;
 
 pub async fn spawn_node(
     dataflow_id: DataflowId,
@@ -25,7 +23,7 @@ pub async fn spawn_node(
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 
-    let daemon_communication = daemon_communication_config(
+    let daemon_communication = spawn_listener_loop(
         &dataflow_id,
         &node_id,
         &daemon_tx,
@@ -149,78 +147,4 @@ pub async fn spawn_node(
         let _ = daemon_tx.send(event.into()).await;
     });
     Ok(())
-}
-
-async fn daemon_communication_config(
-    dataflow_id: &DataflowId,
-    node_id: &NodeId,
-    daemon_tx: &mpsc::Sender<Event>,
-    shmem_handler_tx: &flume::Sender<shared_mem_handler::NodeEvent>,
-    config: DaemonCommunicationConfig,
-) -> eyre::Result<DaemonCommunication> {
-    match config {
-        DaemonCommunicationConfig::Tcp => {
-            let localhost = Ipv4Addr::new(127, 0, 0, 1);
-            let socket = match TcpListener::bind((localhost, 0)).await {
-                Ok(socket) => socket,
-                Err(err) => {
-                    return Err(
-                        eyre::Report::new(err).wrap_err("failed to create local TCP listener")
-                    )
-                }
-            };
-            let socket_addr = socket
-                .local_addr()
-                .wrap_err("failed to get local addr of socket")?;
-
-            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-            let daemon_tx = daemon_tx.clone();
-            let shmem_handler_tx = shmem_handler_tx.clone();
-            tokio::spawn(async move {
-                listener::tcp::listener_loop(socket, daemon_tx, shmem_handler_tx).await;
-                tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-            });
-
-            Ok(DaemonCommunication::Tcp { socket_addr })
-        }
-        DaemonCommunicationConfig::Shmem => {
-            let daemon_control_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_control_region")?;
-            let daemon_events_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_events_region")?;
-            let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
-            let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_control_region) }
-                    .wrap_err("failed to create control server")?;
-                let daemon_tx = daemon_tx.clone();
-                let shmem_handler_tx = shmem_handler_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    listener::shmem::listener_loop(server, daemon_tx, shmem_handler_tx)
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_region) }
-                    .wrap_err("failed to create events server")?;
-                let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let shmem_handler_tx = shmem_handler_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    listener::shmem::listener_loop(server, daemon_tx, shmem_handler_tx);
-                    tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-                });
-            }
-
-            Ok(DaemonCommunication::Shmem {
-                daemon_control_region_id,
-                daemon_events_region_id,
-            })
-        }
-    }
 }
