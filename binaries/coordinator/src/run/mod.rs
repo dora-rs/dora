@@ -2,9 +2,7 @@ use crate::tcp_utils::{tcp_receive, tcp_send};
 
 use dora_core::{
     config::{CommunicationConfig, NodeId},
-    daemon_messages::{
-        DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes, SpawnNodeParams,
-    },
+    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
     descriptor::{CoreNodeKind, Descriptor},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
@@ -63,26 +61,11 @@ pub async fn spawn_dataflow(
         }
     }
 
-    let mut custom_nodes = BTreeMap::new();
-    for node in nodes {
-        match node.kind {
-            CoreNodeKind::Runtime(_) => todo!(),
-            CoreNodeKind::Custom(n) => {
-                custom_nodes.insert(
-                    node.id.clone(),
-                    SpawnNodeParams {
-                        node_id: node.id,
-                        node: n,
-                        working_dir: working_dir.clone(),
-                    },
-                );
-            }
-        }
-    }
-
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
-        nodes: custom_nodes,
+        working_dir,
+        nodes,
+        daemon_communication: descriptor.daemon_config,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 

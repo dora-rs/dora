@@ -2,6 +2,8 @@ use dora_core::topics::DORA_COORDINATOR_PORT_DEFAULT;
 use dora_daemon::Daemon;
 use eyre::Context;
 use std::{net::Ipv4Addr, path::PathBuf};
+use tracing::metadata::LevelFilter;
+use tracing_subscriber::Layer;
 
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora daemon")]
@@ -43,7 +45,9 @@ async fn run() -> eyre::Result<()> {
 fn set_up_tracing() -> eyre::Result<()> {
     use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_filter(LevelFilter::DEBUG);
     let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to set tracing global subscriber")

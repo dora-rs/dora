@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 dora-node-api = { workspace = true }
 eyre = "0.6.8"
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"

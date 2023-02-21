@@ -1,7 +1,11 @@
 use dora_node_api::{self, daemon::Event, DoraNode};
+use eyre::Context;
 use std::time::{Duration, Instant};
+use tracing_subscriber::Layer;
 
 fn main() -> eyre::Result<()> {
+    set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
+
     let (_node, mut events) = DoraNode::init_from_env()?;
 
     // latency is tested first
@@ -73,4 +77,15 @@ fn record_results(
         format!("size {current_size:<#8x}: {msg_per_sec:.0} messages per second")
     };
     println!("{msg}");
+}
+
+fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_filter(tracing::metadata::LevelFilter::DEBUG);
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
 }

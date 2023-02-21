@@ -10,12 +10,13 @@ members = [
     "binaries/cli",
     "binaries/coordinator",
     "binaries/daemon",
-    # "binaries/runtime",
+    "binaries/runtime",
     "examples/rust-dataflow/*",
     "examples/benchmark/*",
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
+    "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/zenoh-logger",
@@ -66,6 +67,10 @@ path = "examples/c++-dataflow/run.rs"
 [[example]]
 name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
+
+[[example]]
+name = "python-operator-dataflow"
+path = "examples/python-operator-dataflow/run.rs"
 
 [[example]]
 name = "benchmark"
