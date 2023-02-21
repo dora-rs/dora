@@ -171,14 +171,14 @@ impl Listener {
             };
 
             // handle incoming events
-            self.handle_events()?;
+            self.handle_events().await?;
 
             self.handle_message(message).await?;
         }
         Ok(())
     }
 
-    fn handle_events(&mut self) -> eyre::Result<()> {
+    async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
             while let Ok(event) = events.try_recv() {
                 self.queue.push_back(event);
@@ -191,12 +191,12 @@ impl Listener {
                 .filter(|e| matches!(e, NodeEvent::Input { .. }))
                 .count();
             let drop_n = input_event_count.saturating_sub(self.max_queue_len);
-            self.drop_oldest_inputs(drop_n)?;
+            self.drop_oldest_inputs(drop_n).await?;
         }
         Ok(())
     }
 
-    fn drop_oldest_inputs(&mut self, number: usize) -> Result<(), eyre::ErrReport> {
+    async fn drop_oldest_inputs(&mut self, number: usize) -> Result<(), eyre::ErrReport> {
         let mut drop_tokens = Vec::new();
         for i in 0..number {
             // find index of oldest input event
@@ -216,7 +216,7 @@ impl Listener {
                 }
             }
         }
-        self.report_drop_tokens(drop_tokens)?;
+        self.report_drop_tokens(drop_tokens).await?;
         Ok(())
     }
 
@@ -245,7 +245,7 @@ impl Listener {
                     data_len,
                     reply_sender,
                 };
-                self.send_shared_memory_event(event)?;
+                self.send_shared_memory_event(event).await?;
                 let reply = reply
                     .await
                     .wrap_err("failed to receive prepare output reply")?;
@@ -255,7 +255,7 @@ impl Listener {
             DaemonRequest::SendPreparedMessage { id } => {
                 let (reply_sender, reply) = oneshot::channel();
                 let event = shared_mem_handler::NodeEvent::SendPreparedMessage { id, reply_sender };
-                self.send_shared_memory_event(event)?;
+                self.send_shared_memory_event(event).await?;
                 self.send_reply(
                     &reply
                         .await
@@ -289,24 +289,27 @@ impl Listener {
                 self.subscribed_events = Some(rx);
             }
             DaemonRequest::NextEvent { drop_tokens } => {
-                self.report_drop_tokens(drop_tokens)?;
+                self.report_drop_tokens(drop_tokens).await?;
 
                 // try to take the latest queued event first
                 let queued_event = self.queue.pop_front().map(DaemonReply::NodeEvent);
-                let reply = queued_event.unwrap_or_else(|| {
-                    match self.subscribed_events.as_mut() {
-                        // wait for next event
-                        Some(events) => match events.recv() {
-                            Ok(event) => DaemonReply::NodeEvent(event),
-                            Err(flume::RecvError::Disconnected) => DaemonReply::Closed,
-                        },
-                        None => {
-                            DaemonReply::Result(Err("Ignoring event request because no subscribe \
-                                message was sent yet"
-                                .into()))
+                let reply = match queued_event {
+                    Some(reply) => reply,
+                    None => {
+                        match self.subscribed_events.as_mut() {
+                            // wait for next event
+                            Some(events) => match events.recv_async().await {
+                                Ok(event) => DaemonReply::NodeEvent(event),
+                                Err(flume::RecvError::Disconnected) => DaemonReply::Closed,
+                            },
+                            None => DaemonReply::Result(Err(
+                                "Ignoring event request because no subscribe \
+                                    message was sent yet"
+                                    .into(),
+                            )),
                         }
                     }
-                });
+                };
 
                 self.send_reply(&reply).await?;
             }
@@ -314,7 +317,7 @@ impl Listener {
         Ok(())
     }
 
-    fn report_drop_tokens(
+    async fn report_drop_tokens(
         &mut self,
         drop_tokens: Vec<dora_core::daemon_messages::DropToken>,
     ) -> eyre::Result<()> {
@@ -322,7 +325,7 @@ impl Listener {
             let drop_event = shared_mem_handler::NodeEvent::Drop(DropEvent {
                 tokens: drop_tokens,
             });
-            self.send_shared_memory_event(drop_event)?;
+            self.send_shared_memory_event(drop_event).await?;
         }
         Ok(())
     }
@@ -353,9 +356,13 @@ impl Listener {
             .wrap_err("failed to send reply to node")
     }
 
-    fn send_shared_memory_event(&self, event: shared_mem_handler::NodeEvent) -> eyre::Result<()> {
+    async fn send_shared_memory_event(
+        &self,
+        event: shared_mem_handler::NodeEvent,
+    ) -> eyre::Result<()> {
         self.shmem_handler_tx
-            .send(event)
+            .send_async(event)
+            .await
             .map_err(|_| eyre!("failed to send event to shared_mem_handler"))
     }
 
