@@ -98,7 +98,8 @@ pub async fn handle_connection_loop(
                 }
             }
         }
-        _ => {
+        other => {
+            tracing::warn!("expected register message, got `{other:?}`");
             let reply = DaemonReply::Result(Err("must send register message first".into()));
             if let Err(err) = send_reply(&mut connection, &reply)
                 .await
@@ -220,6 +221,7 @@ impl Listener {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(%self.dataflow_id, %self.node_id))]
     async fn handle_message(&mut self, message: DaemonRequest) -> eyre::Result<()> {
         match message {
             DaemonRequest::Register { .. } => {

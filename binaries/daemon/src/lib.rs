@@ -168,7 +168,7 @@ impl Daemon {
 
         while let Some(event) = events.next().await {
             let start = Instant::now();
-            let event_debug = format!("{event:?}");
+
             match event {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
                     let (reply, status) = self.handle_coordinator_event(event).await;
