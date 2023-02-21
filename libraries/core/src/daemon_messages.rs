@@ -138,6 +138,6 @@ pub enum DaemonCommunicationConfig {
 
 impl Default for DaemonCommunicationConfig {
     fn default() -> Self {
-        Self::Shmem // TODO change to TCP
+        Self::Tcp
     }
 }
