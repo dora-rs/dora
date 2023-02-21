@@ -1,52 +1,26 @@
 use dora_core::{
-    config::NodeId,
+    config::{DataId, NodeId},
     descriptor::{OperatorDefinition, OperatorSource},
 };
-use dora_node_api::communication::{self, CommunicationLayer};
+use dora_message::{Metadata, MetadataParameters};
 use eyre::Context;
 #[cfg(feature = "tracing")]
 use opentelemetry::sdk::trace::Tracer;
 use std::any::Any;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{Receiver, Sender};
 
 #[cfg(not(feature = "tracing"))]
 type Tracer = ();
 
 mod python;
-mod shared_lib;
+// mod shared_lib;
 
-#[tracing::instrument(skip(communication))]
-pub fn spawn_operator(
+pub fn run_operator(
     node_id: &NodeId,
     operator_definition: OperatorDefinition,
+    incoming_events: Receiver<IncomingEvent>,
     events_tx: Sender<OperatorEvent>,
-    communication: &mut dyn CommunicationLayer,
 ) -> eyre::Result<()> {
-    let inputs = communication::subscribe_all(communication, &operator_definition.config.inputs)
-        .wrap_err_with(|| {
-            format!(
-                "failed to subscribe to inputs of operator {}",
-                operator_definition.id
-            )
-        })?;
-
-    let publishers = operator_definition
-        .config
-        .outputs
-        .iter()
-        .map(|output_id| {
-            let topic = format!(
-                "{node_id}/{operator_id}/{output_id}",
-                operator_id = operator_definition.id
-            );
-            communication
-                .publisher(&topic)
-                .map_err(|err| eyre::eyre!(err))
-                .wrap_err_with(|| format!("failed to create publisher for output {output_id}"))
-                .map(|p| (output_id.to_owned(), p))
-        })
-        .collect::<Result<_, _>>()?;
-
     #[cfg(feature = "tracing")]
     let tracer =
         dora_tracing::init_tracing(format!("{node_id}/{}", operator_definition.id).as_str())
@@ -57,30 +31,30 @@ pub fn spawn_operator(
 
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
-            shared_lib::spawn(
-                node_id,
-                &operator_definition.id,
-                source,
-                events_tx,
-                inputs,
-                publishers,
-                tracer,
-            )
-            .wrap_err_with(|| {
-                format!(
-                    "failed to spawn shared library operator for {}",
-                    operator_definition.id
-                )
-            })?;
+            // shared_lib::spawn(
+            //     node_id,
+            //     &operator_definition.id,
+            //     source,
+            //     events_tx,
+            //     input_events,
+            //     publishers,
+            //     tracer,
+            // )
+            // .wrap_err_with(|| {
+            //     format!(
+            //         "failed to spawn shared library operator for {}",
+            //         operator_definition.id
+            //     )
+            // })?;
+            todo!()
         }
         OperatorSource::Python(source) => {
-            python::spawn(
+            python::run(
                 node_id,
                 &operator_definition.id,
                 source,
                 events_tx,
-                inputs,
-                publishers,
+                incoming_events,
                 tracer,
             )
             .wrap_err_with(|| {
@@ -97,10 +71,28 @@ pub fn spawn_operator(
     Ok(())
 }
 
+#[derive(Debug)]
 pub enum OperatorEvent {
+    Output {
+        output_id: DataId,
+        metadata: MetadataParameters<'static>,
+        data: Vec<u8>,
+    },
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
-    Finished { reason: StopReason },
+    Finished {
+        reason: StopReason,
+    },
+}
+
+#[derive(Debug)]
+pub enum IncomingEvent {
+    Stop,
+    Input {
+        input_id: DataId,
+        metadata: Metadata<'static>,
+        data: Option<Vec<u8>>,
+    },
 }
 
 #[derive(Debug)]

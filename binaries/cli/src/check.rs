@@ -1,7 +1,7 @@
 use crate::{control_connection, graph::read_descriptor};
 use dora_core::{
     adjust_shared_library_path,
-    config::{InputMapping, UserInputMapping},
+    config::{DataId, InputMapping, OperatorId, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
     topics::ControlRequest,
 };
@@ -193,54 +193,40 @@ fn check_input(
 ) -> Result<(), eyre::ErrReport> {
     match mapping {
         InputMapping::Timer { interval: _ } => {}
-        InputMapping::User(UserInputMapping {
-            source,
-            operator,
-            output,
-        }) => {
+        InputMapping::User(UserInputMapping { source, output }) => {
             let source_node = nodes.iter().find(|n| &n.id == source).ok_or_else(|| {
                 eyre!("source node `{source}` mapped to input `{input_id_str}` does not exist",)
             })?;
-            if let Some(operator_id) = operator {
-                let operator = match &source_node.kind {
-                    CoreNodeKind::Runtime(runtime) => {
-                        let operator = runtime.operators.iter().find(|o| &o.id == operator_id);
-                        operator.ok_or_else(|| {
+            match &source_node.kind {
+                CoreNodeKind::Custom(custom_node) => {
+                    if !custom_node.run_config.outputs.contains(output) {
+                        bail!(
+                            "output `{source}/{output}` mapped to \
+                            input `{input_id_str}` does not exist",
+                        );
+                    }
+                }
+                CoreNodeKind::Runtime(runtime) => {
+                    let (operator_id, output) = output.split_once('/').unwrap_or_default();
+                    let operator_id = OperatorId::from(operator_id.to_owned());
+                    let output = DataId::from(output.to_owned());
+
+                    let operator = runtime
+                        .operators
+                        .iter()
+                        .find(|o| o.id == operator_id)
+                        .ok_or_else(|| {
                             eyre!(
                                 "source operator `{source}/{operator_id}` used \
                                 for input `{input_id_str}` does not exist",
                             )
-                        })?
-                    }
-                    CoreNodeKind::Custom(_) => {
-                        bail!(
-                            "input `{input_id_str}` references operator \
-                            `{source}/{operator_id}`, but `{source}` is a \
-                            custom node",
-                        );
-                    }
-                };
+                        })?;
 
-                if !operator.config.outputs.contains(output) {
-                    bail!(
-                        "output `{source}/{operator_id}/{output}` mapped to \
-                        input `{input_id_str}` does not exist",
-                    );
-                }
-            } else {
-                match &source_node.kind {
-                    CoreNodeKind::Runtime(_) => bail!(
-                        "input `{input_id_str}` references output \
-                        `{source}/{output}`, but `{source}` is a \
-                        runtime node",
-                    ),
-                    CoreNodeKind::Custom(custom_node) => {
-                        if !custom_node.run_config.outputs.contains(output) {
-                            bail!(
-                                "output `{source}/{output}` mapped to \
-                                input `{input_id_str}` does not exist",
-                            );
-                        }
+                    if !operator.config.outputs.contains(&output) {
+                        bail!(
+                            "output `{source}/{operator_id}/{output}` mapped to \
+                            input `{input_id_str}` does not exist",
+                        );
                     }
                 }
             }

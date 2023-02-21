@@ -1,9 +1,12 @@
-use std::time::Duration;
-
 use dora_node_api::{self, dora_core::config::DataId, DoraNode};
+use eyre::Context;
 use rand::Rng;
+use std::time::Duration;
+use tracing_subscriber::Layer;
 
 fn main() -> eyre::Result<()> {
+    set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
+
     let latency = DataId::from("latency".to_owned());
     let throughput = DataId::from("throughput".to_owned());
 
@@ -55,4 +58,15 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_filter(tracing::metadata::LevelFilter::DEBUG);
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
 }

@@ -6,7 +6,7 @@ python3 -m venv .env
 pip install maturin
 cd ../../apis/python/node
 maturin develop
-cd ../../../examples/python-dataflow
+cd ../../../examples/python-operator-dataflow
 
 # Dependencies
 pip install --upgrade pip
