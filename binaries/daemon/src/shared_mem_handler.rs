@@ -159,9 +159,12 @@ impl SharedMemHandler {
                     metadata,
                     data,
                 } = message;
-                let data = data.map(|(m, len)| SharedMemSample {
-                    shared_memory: m,
-                    len,
+                let data = data.map(|(m, len)| {
+                    SharedMemSample {
+                        shared_memory: m,
+                        len,
+                    }
+                    .into()
                 });
 
                 let send_result = self
