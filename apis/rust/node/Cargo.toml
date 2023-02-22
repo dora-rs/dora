@@ -9,6 +9,8 @@ default = ["tracing-subscriber"]
 tracing-subscriber = ["dep:tracing-subscriber"]
 
 [dependencies]
+dora-core = { path = "../../../libraries/core" }
+shared-memory-server = { path = "../../../libraries/shared-memory-server" }
 eyre = "0.6.7"
 once_cell = "1.13.0"
 serde = { version = "1.0.136", features = ["derive"] }
@@ -20,9 +22,6 @@ tracing-subscriber = { version = "0.3.15", optional = true }
 flume = "0.10.14"
 uuid = { version = "1.1.2", features = ["v4"] }
 capnp = "0.14.11"
-dora-message = { path = "../../../libraries/message" }
-dora-core = { path = "../../../libraries/core" }
-shared-memory-server = { path = "../../../libraries/shared-memory-server" }
 bincode = "1.3.3"
 
 [dev-dependencies]

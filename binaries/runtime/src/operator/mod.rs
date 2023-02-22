@@ -1,8 +1,8 @@
 use dora_core::{
     config::{DataId, NodeId},
     descriptor::{OperatorDefinition, OperatorSource},
+    message::{Metadata, MetadataParameters},
 };
-use dora_message::{Metadata, MetadataParameters};
 use eyre::Context;
 #[cfg(feature = "tracing")]
 use opentelemetry::sdk::trace::Tracer;

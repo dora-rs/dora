@@ -1,8 +1,8 @@
 use dora_core::{
     config::{DataId, NodeId},
     daemon_messages::{DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, NodeEvent},
+    message::Metadata,
 };
-use dora_message::Metadata;
 use eyre::{bail, eyre, Context};
 use shared_memory_server::{Shmem, ShmemClient, ShmemConf};
 use std::{marker::PhantomData, net::TcpStream, thread::JoinHandle, time::Duration};
@@ -104,7 +104,7 @@ impl ControlChannel {
     pub fn prepare_message(
         &mut self,
         output_id: DataId,
-        metadata: dora_message::Metadata<'static>,
+        metadata: Metadata<'static>,
         data_len: usize,
     ) -> eyre::Result<MessageSample> {
         let reply = self
@@ -142,7 +142,7 @@ impl ControlChannel {
     pub fn send_empty_message(
         &mut self,
         output_id: DataId,
-        metadata: dora_message::Metadata<'static>,
+        metadata: Metadata<'static>,
     ) -> eyre::Result<()> {
         let reply = self
             .channel

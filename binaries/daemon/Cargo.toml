@@ -15,7 +15,6 @@ futures-concurrency = "7.1.0"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_json = "1.0.86"
 dora-core = { path = "../../libraries/core" }
-dora-message = { path = "../../libraries/message" }
 flume = "0.10.14"
 dora-download = { path = "../../libraries/extensions/download" }
 serde_yaml = "0.8.23"

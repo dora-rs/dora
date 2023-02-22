@@ -258,7 +258,7 @@ pub enum NodeEvent {
         dataflow_id: DataflowId,
         node_id: NodeId,
         output_id: DataId,
-        metadata: dora_message::Metadata<'static>,
+        metadata: dora_core::message::Metadata<'static>,
         data_len: usize,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
@@ -294,7 +294,7 @@ struct PreparedMessage {
     dataflow_id: DataflowId,
     node_id: NodeId,
     output_id: DataId,
-    metadata: dora_message::Metadata<'static>,
+    metadata: dora_core::message::Metadata<'static>,
     data: Option<(ShmemHandle, usize)>,
 }
 

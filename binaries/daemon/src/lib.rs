@@ -1,4 +1,5 @@
 use coordinator::CoordinatorEvent;
+use dora_core::message::uhlc::HLC;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
@@ -8,7 +9,6 @@ use dora_core::{
     },
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
-use dora_message::uhlc::HLC;
 use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
@@ -348,7 +348,7 @@ impl Daemon {
                     let event = DoraEvent::Timer {
                         dataflow_id,
                         interval,
-                        metadata: dora_message::Metadata::from_parameters(
+                        metadata: dora_core::message::Metadata::from_parameters(
                             hlc.new_timestamp(),
                             Default::default(),
                         ),
@@ -784,7 +784,7 @@ pub enum ShmemHandlerEvent {
         dataflow_id: DataflowId,
         node_id: NodeId,
         output_id: DataId,
-        metadata: dora_message::Metadata<'static>,
+        metadata: dora_core::message::Metadata<'static>,
         data: Option<Box<SharedMemSample>>,
     },
     HandlerError(eyre::ErrReport),
@@ -819,7 +819,7 @@ pub enum DoraEvent {
     Timer {
         dataflow_id: DataflowId,
         interval: Duration,
-        metadata: dora_message::Metadata<'static>,
+        metadata: dora_core::message::Metadata<'static>,
     },
     SpawnedNodeResult {
         dataflow_id: DataflowId,

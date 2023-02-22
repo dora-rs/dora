@@ -21,7 +21,6 @@ uuid = { version = "1.2.1" }
 time = "0.3.9"
 rand = "0.8.5"
 dora-core = { workspace = true }
-dora-message = { path = "../../libraries/message" }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
 futures-concurrency = "7.1.0"
