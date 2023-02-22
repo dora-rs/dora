@@ -496,31 +496,66 @@ impl Daemon {
             DoraEvent::SpawnedNodeResult {
                 dataflow_id,
                 node_id,
-                result,
+                exit_status,
             } => {
+                let mut signal_exit = false;
+                match exit_status {
+                    NodeExitStatus::Success => {
+                        tracing::info!("node {dataflow_id}/{node_id} finished successfully");
+                    }
+                    NodeExitStatus::IoError(err) => {
+                        let err = eyre!(err).wrap_err(format!(
+                            "I/O error while waiting for node `{dataflow_id}/{node_id}`"
+                        ));
+                        tracing::error!("{err:?}",);
+                    }
+                    NodeExitStatus::ExitCode(code) => {
+                        tracing::warn!(
+                            "node {dataflow_id}/{node_id} finished with exit code {code}"
+                        );
+                    }
+                    NodeExitStatus::Signal(signal) => {
+                        signal_exit = true;
+                        let signal: Cow<_> = match signal {
+                            1 => "SIGHUP".into(),
+                            2 => "SIGINT".into(),
+                            3 => "SIGQUIT".into(),
+                            4 => "SIGILL".into(),
+                            6 => "SIGABRT".into(),
+                            8 => "SIGFPE".into(),
+                            9 => "SIGKILL".into(),
+                            11 => "SIGSEGV".into(),
+                            13 => "SIGPIPE".into(),
+                            14 => "SIGALRM".into(),
+                            15 => "SIGTERM".into(),
+                            22 => "SIGABRT".into(),
+                            23 => "NSIG".into(),
+
+                            other => other.to_string().into(),
+                        };
+                        tracing::warn!(
+                            "node {dataflow_id}/{node_id} finished because of signal `{signal}`"
+                        );
+                    }
+                    NodeExitStatus::Unknown => {
+                        tracing::warn!(
+                            "node {dataflow_id}/{node_id} finished with unknown exit code"
+                        );
+                    }
+                }
+
                 if self
                     .running
                     .get(&dataflow_id)
                     .and_then(|d| d.running_nodes.get(&node_id))
                     .is_some()
                 {
-                    tracing::warn!(
-                        "node `{dataflow_id}/{node_id}` finished without sending `Stopped` message"
-                    );
+                    if !signal_exit {
+                        tracing::warn!(
+                            "node `{dataflow_id}/{node_id}` finished without sending `Stopped` message"
+                        );
+                    }
                     self.handle_node_stop(dataflow_id, &node_id).await?;
-                }
-                match result {
-                    Ok(()) => {
-                        tracing::info!("node {dataflow_id}/{node_id} finished successfully");
-                    }
-                    Err(err) => {
-                        let err = err.wrap_err(format!("error in node `{dataflow_id}/{node_id}`"));
-                        if self.exit_when_done.is_some() {
-                            bail!(err);
-                        } else {
-                            tracing::error!("{err:?}",);
-                        }
-                    }
                 }
 
                 if let Some(exit_when_done) = &mut self.exit_when_done {
@@ -786,8 +821,41 @@ pub enum DoraEvent {
     SpawnedNodeResult {
         dataflow_id: DataflowId,
         node_id: NodeId,
-        result: eyre::Result<()>,
+        exit_status: NodeExitStatus,
     },
+}
+
+#[derive(Debug)]
+pub enum NodeExitStatus {
+    Success,
+    IoError(io::Error),
+    ExitCode(i32),
+    Signal(i32),
+    Unknown,
+}
+
+impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
+    fn from(result: Result<std::process::ExitStatus, io::Error>) -> Self {
+        match result {
+            Ok(status) => {
+                if status.success() {
+                    NodeExitStatus::Success
+                } else if let Some(code) = status.code() {
+                    Self::ExitCode(code)
+                } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Some(signal) = status.signal() {
+                            return Self::Signal(signal);
+                        }
+                    }
+                    Self::Unknown
+                }
+            }
+            Err(err) => Self::IoError(err),
+        }
+    }
 }
 
 type MessageId = String;

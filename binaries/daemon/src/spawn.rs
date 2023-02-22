@@ -1,6 +1,6 @@
 use crate::{
     listener::spawn_listener_loop, runtime_node_inputs, runtime_node_outputs, shared_mem_handler,
-    DoraEvent, Event,
+    DoraEvent, Event, NodeExitStatus,
 };
 use dora_core::{
     config::NodeRunConfig,
@@ -126,23 +126,12 @@ pub async fn spawn_node(
         }
     };
 
-    let node_id_cloned = node_id.clone();
-    let wait_task = async move {
-        let status = child.wait().await.context("child process failed")?;
-        if status.success() {
-            Ok(())
-        } else if let Some(code) = status.code() {
-            Err(eyre!("node {node_id} failed with exit code: {code}"))
-        } else {
-            Err(eyre!("node {node_id} failed (unknown exit code)"))
-        }
-    };
     tokio::spawn(async move {
-        let result = wait_task.await;
+        let exit_status = NodeExitStatus::from(child.wait().await);
         let event = DoraEvent::SpawnedNodeResult {
             dataflow_id,
-            node_id: node_id_cloned,
-            result,
+            node_id,
+            exit_status,
         };
         let _ = daemon_tx.send(event.into()).await;
     });
