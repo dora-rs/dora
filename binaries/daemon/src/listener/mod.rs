@@ -184,7 +184,7 @@ where
             {
                 Ok(Some(m)) => m,
                 Ok(None) => {
-                    tracing::info!(
+                    tracing::debug!(
                         "channel disconnected: {}/{}",
                         self.dataflow_id,
                         self.node_id
