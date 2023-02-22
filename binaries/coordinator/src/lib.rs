@@ -13,7 +13,7 @@ use dora_core::{
     },
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
@@ -55,40 +55,32 @@ pub async fn run(args: Args) -> eyre::Result<()> {
 }
 
 async fn start(runtime_path: &Path) -> eyre::Result<()> {
-    let (ctrlc_tx, ctrlc_rx) = set_up_ctrlc_handler()?;
-    let mut ctrlc_tx_handle = Some(ctrlc_tx);
+    let ctrlc_events = set_up_ctrlc_handler()?;
 
     let listener = listener::create_listener(DORA_COORDINATOR_PORT_DEFAULT).await?;
-    let (new_daemon_connections, new_daemon_connections_abort) =
-        futures::stream::abortable(TcpListenerStream::new(listener).map(|c| {
-            c.map(Event::NewDaemonConnection)
-                .wrap_err("failed to open connection")
-                .unwrap_or_else(Event::DaemonConnectError)
-        }));
+    let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
+        c.map(Event::NewDaemonConnection)
+            .wrap_err("failed to open connection")
+            .unwrap_or_else(Event::DaemonConnectError)
+    });
 
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
     let mut daemon_events_tx = Some(daemon_events_tx);
     let daemon_events = ReceiverStream::new(daemon_events);
 
-    let (control_events, control_events_abort) = futures::stream::abortable(
-        control::control_events(control_socket_addr())
-            .await
-            .wrap_err("failed to create control events")?,
-    );
+    let control_events = control::control_events(control_socket_addr())
+        .await
+        .wrap_err("failed to create control events")?;
 
     let daemon_watchdog_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(1)))
             .map(|_| Event::DaemonWatchdogInterval);
-    let ctrlc_events = ReceiverStream::new(ctrlc_rx);
 
-    let mut events = (
-        new_daemon_connections,
-        daemon_events,
-        control_events,
-        daemon_watchdog_interval,
-        ctrlc_events,
-    )
-        .merge();
+    // events that should be aborted on `dora destroy`
+    let (abortable_events, abort_handle) =
+        futures::stream::abortable((control_events, new_daemon_connections, ctrlc_events).merge());
+
+    let mut events = (abortable_events, daemon_events, daemon_watchdog_interval).merge();
 
     let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, TcpStream> = HashMap::new();
@@ -255,12 +247,10 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                             tracing::info!("Received destroy command");
 
                             handle_destroy(
-                                &control_events_abort,
                                 &running_dataflows,
                                 &mut daemon_connections,
-                                &new_daemon_connections_abort,
+                                &abort_handle,
                                 &mut daemon_events_tx,
-                                &mut ctrlc_tx_handle,
                             )
                             .await?;
 
@@ -316,12 +306,10 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
             Event::CtrlC => {
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
                 handle_destroy(
-                    &control_events_abort,
                     &running_dataflows,
                     &mut daemon_connections,
-                    &new_daemon_connections_abort,
+                    &abort_handle,
                     &mut daemon_events_tx,
-                    &mut ctrlc_tx_handle,
                 )
                 .await?;
             }
@@ -333,10 +321,9 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-fn set_up_ctrlc_handler() -> Result<(mpsc::Sender<Event>, mpsc::Receiver<Event>), eyre::ErrReport> {
+fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
     let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
 
-    let ctrlc_tx_weak = ctrlc_tx.downgrade();
     let mut ctrlc_sent = false;
     ctrlc::set_handler(move || {
         if ctrlc_sent {
@@ -344,35 +331,30 @@ fn set_up_ctrlc_handler() -> Result<(mpsc::Sender<Event>, mpsc::Receiver<Event>)
             std::process::abort();
         } else {
             tracing::info!("received ctrlc signal");
-            if let Some(ctrlc_tx) = ctrlc_tx_weak.upgrade() {
-                if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                    tracing::error!("failed to report ctrl-c event to dora-coordinator");
-                }
+            if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
+                tracing::error!("failed to report ctrl-c event to dora-coordinator");
             }
+
             ctrlc_sent = true;
         }
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
-    Ok((ctrlc_tx, ctrlc_rx))
+    Ok(ReceiverStream::new(ctrlc_rx))
 }
 
 async fn handle_destroy(
-    control_events_abort: &futures::stream::AbortHandle,
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     daemon_connections: &mut HashMap<String, TcpStream>,
-    new_daemon_connections_abort: &futures::stream::AbortHandle,
+    abortable_events: &futures::stream::AbortHandle,
     daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
-    ctrlc_tx: &mut Option<mpsc::Sender<Event>>,
 ) -> Result<(), eyre::ErrReport> {
-    control_events_abort.abort();
+    abortable_events.abort();
     for &uuid in running_dataflows.keys() {
         stop_dataflow(running_dataflows, uuid, daemon_connections).await?;
     }
     destroy_daemons(daemon_connections).await?;
-    new_daemon_connections_abort.abort();
     *daemon_events_tx = None;
-    *ctrlc_tx = None;
     Ok(())
 }
 
