@@ -27,7 +27,6 @@ tokio = { version = "1.17.0", features = ["full"] }
 tokio-stream = "0.1.8"
 # pyo3-abi3 flag allow simpler linking. See: https://pyo3.rs/v0.13.2/building_and_distribution.html
 pyo3 = { version = "0.16", features = ["eyre", "abi3-py37"] }
-dora-message = { path = "../../libraries/message" }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
 dora-download = { path = "../../libraries/extensions/download" }

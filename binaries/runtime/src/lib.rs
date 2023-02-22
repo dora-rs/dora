@@ -141,8 +141,8 @@ async fn run(
                     OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
                     OperatorEvent::Finished { reason } => {
                         if let StopReason::ExplicitStopAll = reason {
-                            let hlc = dora_message::uhlc::HLC::default();
-                            let metadata = dora_message::Metadata::new(hlc.new_timestamp());
+                            let hlc = dora_core::message::uhlc::HLC::default();
+                            let metadata = dora_core::message::Metadata::new(hlc.new_timestamp());
                             let data = metadata
                                 .serialize()
                                 .wrap_err("failed to serialize stop message")?;
@@ -254,7 +254,7 @@ enum Event {
     Stop,
     Input {
         id: dora_core::config::DataId,
-        metadata: dora_message::Metadata<'static>,
+        metadata: dora_core::message::Metadata<'static>,
         data: Option<Vec<u8>>,
     },
     InputClosed(dora_core::config::DataId),

@@ -2,11 +2,11 @@ use std::thread::JoinHandle;
 
 use daemon::{ControlChannel, DaemonConnection, EventStream};
 pub use dora_core;
+pub use dora_core::message::{uhlc, Metadata, MetadataParameters};
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     daemon_messages::NodeConfig,
 };
-pub use dora_message::{uhlc, Metadata, MetadataParameters};
 use eyre::WrapErr;
 pub use flume::Receiver;
 use shared_memory_server::ShmemConf;
