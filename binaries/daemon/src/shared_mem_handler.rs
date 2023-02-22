@@ -1,6 +1,6 @@
 use core::fmt;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -23,6 +23,8 @@ pub struct SharedMemHandler {
     prepared_messages: HashMap<String, PreparedMessage>,
     sent_out_shared_memory: HashMap<DropToken, Arc<ShmemHandle>>,
     dropped: HashSet<DropToken>,
+
+    cache: VecDeque<ShmemHandle>,
 }
 
 impl SharedMemHandler {
@@ -32,6 +34,7 @@ impl SharedMemHandler {
             prepared_messages: HashMap::new(),
             sent_out_shared_memory: HashMap::new(),
             dropped: HashSet::new(),
+            cache: VecDeque::new(),
         }
     }
 
@@ -77,12 +80,7 @@ impl SharedMemHandler {
                     match self.sent_out_shared_memory.remove(&token) {
                         Some(arc) => {
                             if let Ok(shmem) = Arc::try_unwrap(arc) {
-                                tokio::task::spawn_blocking(move || {
-                                    tracing::trace!(
-                                        "freeing shared memory after receiving last drop token"
-                                    );
-                                    std::mem::drop(shmem);
-                                });
+                                self.add_to_cache(shmem);
                             }
                         }
                         None => {
@@ -110,12 +108,28 @@ impl SharedMemHandler {
                 );
 
                 let memory = if data_len > 0 {
-                    Some(ShmemHandle(
-                        ShmemConf::new()
-                            .size(data_len)
-                            .create()
-                            .wrap_err("failed to allocate shared memory")?,
-                    ))
+                    let cache_index = self
+                        .cache
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .filter(|(_, s)| s.size() >= data_len)
+                        .min_by_key(|(_, s)| s.size())
+                        .map(|(i, _)| i);
+                    let memory = match cache_index {
+                        Some(i) => {
+                            // we know that this index exists, so we can safely unwrap here
+                            self.cache.remove(i).unwrap()
+                        }
+                        None => ShmemHandle(Box::new(
+                            ShmemConf::new()
+                                .size(data_len)
+                                .create()
+                                .wrap_err("failed to allocate shared memory")?,
+                        )),
+                    };
+                    assert!(memory.size() >= data_len);
+                    Some(memory)
                 } else {
                     None
                 };
@@ -191,9 +205,21 @@ impl SharedMemHandler {
                             .insert(drop_token, memory.clone());
                     }
                 }
+                if let Ok(memory) = Arc::try_unwrap(memory) {
+                    self.add_to_cache(memory);
+                }
             }
         }
         Ok(())
+    }
+
+    fn add_to_cache(&mut self, memory: ShmemHandle) {
+        const MAX_CACHE_SIZE: usize = 20;
+
+        self.cache.push_back(memory);
+        while self.cache.len() > MAX_CACHE_SIZE {
+            self.cache.pop_front();
+        }
     }
 }
 
@@ -272,7 +298,12 @@ struct PreparedMessage {
     data: Option<(ShmemHandle, usize)>,
 }
 
-struct ShmemHandle(Shmem);
+struct ShmemHandle(Box<Shmem>);
+impl ShmemHandle {
+    fn size(&self) -> usize {
+        self.0.len()
+    }
+}
 
 unsafe impl Send for ShmemHandle {}
 unsafe impl Sync for ShmemHandle {}
