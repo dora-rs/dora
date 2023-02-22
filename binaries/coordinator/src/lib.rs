@@ -77,10 +77,17 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
             .map(|_| Event::DaemonWatchdogInterval);
 
     // events that should be aborted on `dora destroy`
-    let (abortable_events, abort_handle) =
-        futures::stream::abortable((control_events, new_daemon_connections, ctrlc_events).merge());
+    let (abortable_events, abort_handle) = futures::stream::abortable(
+        (
+            control_events,
+            new_daemon_connections,
+            ctrlc_events,
+            daemon_watchdog_interval,
+        )
+            .merge(),
+    );
 
-    let mut events = (abortable_events, daemon_events, daemon_watchdog_interval).merge();
+    let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, TcpStream> = HashMap::new();
