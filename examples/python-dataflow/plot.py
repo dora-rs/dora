@@ -2,24 +2,17 @@
 # -*- coding: utf-8 -*-
 
 import os
-from enum import Enum
 from typing import Callable
 from dora import Node
+from dora import DoraStatus
 
 import cv2
 import numpy as np
-
 from utils import LABELS
 
 CI = os.environ.get("CI")
 
 font = cv2.FONT_HERSHEY_SIMPLEX
-
-class Status(Enum):
-    CONTINUE = 0
-    STOP = 1
-
-
 class Plotter:
     """
     Plot image and bounding box
@@ -32,7 +25,7 @@ class Plotter:
     def on_input(
         self,
         dora_input: dict,
-    ) -> Status:
+    ) -> DoraStatus:
         """
         Put image and bounding box on cv2 window.
 
@@ -79,12 +72,10 @@ class Plotter:
         if CI != "true":
             cv2.imshow("frame", self.image)
             if cv2.waitKey(1) & 0xFF == ord("q"):
-                return Status.STOP
+                return DoraStatus.STOP
 
-        return Status.CONTINUE
+        return DoraStatus.CONTINUE
 
-    def __del__(self):
-        cv2.destroyAllWindows()
 
 
 plotter = Plotter()
@@ -95,9 +86,9 @@ for event in node:
         case "INPUT":
             status = plotter.on_input(event)
             match status:
-                case Status.CONTINUE:
+                case DoraStatus.CONTINUE:
                     pass
-                case Status.STOP:
+                case DoraStatus.STOP:
                     print("plotter returned stop status")
                     break
         case "STOP":

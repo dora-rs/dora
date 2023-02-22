@@ -10,5 +10,5 @@ license = "Apache-2.0"
 eyre = "0.6.8"
 tempfile = "3.3.0"
 reqwest = "0.11.12"
-tokio = { version = "1.17.0" }
+tokio = { version = "1.24.2" }
 tracing = "0.1.36"

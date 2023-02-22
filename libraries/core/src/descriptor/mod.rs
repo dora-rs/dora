@@ -4,6 +4,7 @@ use crate::{
 };
 use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_with_expand_env::with_expand_envs;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
@@ -225,8 +226,11 @@ pub struct CustomNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EnvValue {
+    #[serde(deserialize_with = "with_expand_envs")]
     Bool(bool),
+    #[serde(deserialize_with = "with_expand_envs")]
     Integer(u64),
+    #[serde(deserialize_with = "with_expand_envs")]
     String(String),
 }
 
