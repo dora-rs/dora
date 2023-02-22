@@ -1187,7 +1187,6 @@ dependencies = [
 name = "dora-runtime"
 version = "0.1.2"
 dependencies = [
- "clap 3.2.20",
  "dora-core",
  "dora-download",
  "dora-message",
@@ -1197,8 +1196,6 @@ dependencies = [
  "dora-operator-api-types",
  "dora-tracing",
  "eyre",
- "fern",
- "flume",
  "futures",
  "futures-concurrency",
  "libloading",
@@ -1210,8 +1207,6 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
- "zenoh",
- "zenoh-config",
 ]
 
 [[package]]
@@ -1292,15 +1287,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3fcf0cee53519c866c09b5de1f6c56ff9d647101f81c1964fa632e148896cdf"
 dependencies = [
  "instant",
-]
-
-[[package]]
-name = "fern"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bdd7b0849075e79ee9a1836df22c717d1eba30451796fdc631b04565dd11e2a"
-dependencies = [
- "log",
 ]
 
 [[package]]
@@ -3353,6 +3339,8 @@ version = "0.1.2"
 dependencies = [
  "dora-node-api",
  "eyre",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
