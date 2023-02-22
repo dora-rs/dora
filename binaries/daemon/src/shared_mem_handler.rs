@@ -2,7 +2,6 @@ use core::fmt;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
-    time::Instant,
 };
 
 use dora_core::{
@@ -63,16 +62,10 @@ impl SharedMemHandler {
         )
             .merge();
         while let Some(event) = events.next().await {
-            let start = Instant::now();
-
             match event {
                 Event::Node(event) => self.handle_node_event(event).await?,
                 Event::Daemon(event) => self.handle_daemon_event(event).await?,
             }
-            let elapsed = start.elapsed();
-            // if elapsed.as_micros() > 10 {
-            // tracing::debug!("handled event in {elapsed:?}: {event_debug}");
-            // }
         }
         Ok(())
     }

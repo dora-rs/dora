@@ -11,7 +11,6 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use operator::{run_operator, OperatorEvent, StopReason};
 
-use core::fmt;
 use std::{
     collections::{BTreeSet, HashMap},
     mem,

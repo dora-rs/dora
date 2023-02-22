@@ -8,7 +8,7 @@ use dora_core::{
     descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode},
 };
 use dora_download::download_file;
-use eyre::{eyre, WrapErr};
+use eyre::WrapErr;
 use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
 use tokio::sync::mpsc;
 
