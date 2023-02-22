@@ -30,3 +30,4 @@ dora-download = { path = "../../libraries/extensions/download" }
 which = "4.3.0"
 communication-layer-request-reply = { path = "../../libraries/communication-layer/request-reply" }
 thiserror = "1.0.37"
+ctrlc = "3.2.5"
