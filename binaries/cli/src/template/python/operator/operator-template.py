@@ -1,11 +1,6 @@
 from typing import Callable
 
-from enum import Enum
-
-
-class DoraStatus(Enum):
-    CONTINUE = 0
-    STOP = 1
+from dora import DoraStatus
 
 
 class Operator:

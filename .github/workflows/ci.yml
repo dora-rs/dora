@@ -72,6 +72,53 @@ jobs:
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
 
+  CLI:
+    name: "CLI Test"
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install libacl-dev (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y libacl1-dev
+
+      - name: "Build cli and binaries"
+        timeout-minutes: 30
+        run: |
+          cargo install --path binaries/coordinator
+          cargo install --path binaries/runtime
+          cargo install --path binaries/cli
+
+      - name: "Start dora-coordinator"
+        run: |
+          dora-coordinator &
+
+      - name: "Test dora `list"
+        run: dora-cli list
+
+      - name: "Test new command"
+        run: |
+          dora-cli new test_project
+
+      - name: "Test start and stop command"
+        timeout-minutes: 30
+        run: |
+          cd test_project
+          cargo build --all
+          UUID=$(dora-cli start dataflow.yml)
+          sleep 10
+          dora-cli stop $UUID
+          cd ..
+
+      - name: "Test dora `destroy"
+        run: dora-cli destroy
+
   examples-remote:
     name: "Examples (Remote)"
     runs-on: ubuntu-latest

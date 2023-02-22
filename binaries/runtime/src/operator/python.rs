@@ -8,7 +8,7 @@ use dora_core::{
 use dora_download::download_file;
 use dora_operator_api_python::metadata_to_pydict;
 use dora_operator_api_types::DoraStatus;
-use eyre::{bail, eyre, Context};
+use eyre::{bail, eyre, Context, Result};
 use pyo3::{
     pyclass,
     types::IntoPyDict,
@@ -138,23 +138,35 @@ pub fn run(
                     };
                     metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
 
-                    let status_enum = Python::with_gil(|py| {
+                    let status = Python::with_gil(|py| -> Result<i32> {
+                        // We need to create a new scoped `GILPool` because the dora-runtime
+                        // is currently started through a `start_runtime` wrapper function,
+                        // which is annotated with `#[pyfunction]`. This attribute creates an
+                        // initial `GILPool` that lasts for the entire lifetime of the `dora-runtime`.
+                        // However, we want the `PyBytes` created below to be freed earlier.
+                        // creating a new scoped `GILPool` tied to this closure, will free `PyBytes`
+                        // at the end of the closure.
+                        // See https://github.com/PyO3/pyo3/pull/2864 and
+                        // https://github.com/PyO3/pyo3/issues/2853 for more details.
+                        let pool = unsafe { py.new_pool() };
+                        let py = pool.python();
                         let input_dict = PyDict::new(py);
 
                         input_dict.set_item("id", input_id.as_str())?;
                         if let Some(data) = data {
-                            input_dict.set_item("data", PyBytes::new(py, &data))?;
+                            let bytes = PyBytes::new(py, &data);
+                            input_dict.set_item("data", bytes)?;
                         }
                         input_dict.set_item("metadata", metadata_to_pydict(&metadata, py))?;
 
-                        operator
+                        let status_enum = operator
                             .call_method1(py, "on_input", (input_dict, send_output.clone()))
-                            .map_err(traceback)
+                            .map_err(traceback)?;
+                        let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
+                            .wrap_err("on_input must have enum return value")?;
+                        Python::with_gil(|py| status_val.extract(py))
+                            .wrap_err("on_input has invalid return value")
                     })?;
-                    let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
-                        .wrap_err("on_input must have enum return value")?;
-                    let status: i32 = Python::with_gil(|py| status_val.extract(py))
-                        .wrap_err("on_input has invalid return value")?;
                     match status {
                         s if s == DoraStatus::Continue as i32 => {} // ok
                         s if s == DoraStatus::Stop as i32 => break StopReason::ExplicitStop,
