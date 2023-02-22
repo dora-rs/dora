@@ -14,8 +14,9 @@ use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use shared_mem_handler::SharedMemSample;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
-    fmt,
+    fmt, io,
     net::SocketAddr,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -118,10 +119,17 @@ impl Daemon {
     ) -> eyre::Result<()> {
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let ctrlc_tx = dora_events_tx.clone();
+        let mut ctrlc_sent = false;
         ctrlc::set_handler(move || {
-            tracing::info!("received ctrc signal");
-            if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                tracing::error!("failed to report ctrl-c event to dora-daemon");
+            if ctrlc_sent {
+                tracing::warn!("received second ctrc signal -> aborting immediately");
+                std::process::abort();
+            } else {
+                tracing::info!("received ctrc signal");
+                if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
+                    tracing::error!("failed to report ctrl-c event to dora-daemon");
+                }
+                ctrlc_sent = true;
             }
         })
         .wrap_err("failed to set ctrl-c handler")?;

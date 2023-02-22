@@ -1187,6 +1187,7 @@ dependencies = [
 name = "dora-runtime"
 version = "0.1.2"
 dependencies = [
+ "ctrlc",
  "dora-core",
  "dora-download",
  "dora-message",
@@ -3339,8 +3340,6 @@ version = "0.1.2"
 dependencies = [
  "dora-node-api",
  "eyre",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
