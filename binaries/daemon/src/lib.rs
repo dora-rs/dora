@@ -642,7 +642,10 @@ impl Daemon {
                 if let Some(data) = data {
                     if let Err(err) = self
                         .shared_memory_handler
-                        .send_async(shared_mem_handler::DaemonEvent::SentOut { data, drop_tokens })
+                        .send_async(shared_mem_handler::DaemonEvent::SentOut {
+                            data: *data,
+                            drop_tokens,
+                        })
                         .await
                         .wrap_err("shared mem handler crashed after send out")
                     {
@@ -782,7 +785,7 @@ pub enum ShmemHandlerEvent {
         node_id: NodeId,
         output_id: DataId,
         metadata: dora_message::Metadata<'static>,
-        data: Option<SharedMemSample>,
+        data: Option<Box<SharedMemSample>>,
     },
     HandlerError(eyre::ErrReport),
 }
