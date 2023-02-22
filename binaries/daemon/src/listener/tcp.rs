@@ -1,3 +1,5 @@
+use std::io::ErrorKind;
+
 use super::Listener;
 use crate::{
     shared_mem_handler,
@@ -58,9 +60,9 @@ impl super::Connection for TcpConnection {
         let raw = match tcp_receive(&mut self.0).await {
             Ok(raw) => raw,
             Err(err) => match err.kind() {
-                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionAborted => {
-                    return Ok(None)
-                }
+                ErrorKind::UnexpectedEof
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::ConnectionReset => return Ok(None),
                 _other => {
                     return Err(err)
                         .context("unexpected I/O error while trying to receive DaemonRequest")
