@@ -95,7 +95,7 @@ pub fn main() -> eyre::Result<()> {
     .wrap_err_with(|| format!("failed to run operator {operator_id}"))?;
 
     match main_task.join() {
-        Ok(result) => result.wrap_err("Stop loop thread failed unexpectedly.")?,
+        Ok(result) => result.wrap_err("main task failed")?,
         Err(panic) => std::panic::resume_unwind(panic),
     }
 
@@ -125,8 +125,6 @@ async fn run(
         .iter()
         .map(|(id, config)| (id, config.inputs.keys().collect()))
         .collect();
-
-    // let mut stopped_operators = BTreeSet::new();
 
     while let Some(event) = events.next().await {
         match event {
@@ -168,8 +166,15 @@ async fn run(
                             let result = node.close_outputs(outputs);
                             (node, result)
                         })
-                        .await?;
+                        .await
+                        .wrap_err("failed to wait for close_outputs task")?;
                         result.wrap_err("failed to close outputs of finished operator")?;
+
+                        operator_channels.remove(&operator_id);
+
+                        if operator_channels.is_empty() {
+                            break;
+                        }
                     }
                     OperatorEvent::Output {
                         output_id,
@@ -184,7 +189,8 @@ async fn run(
                             });
                             (node, result)
                         })
-                        .await?;
+                        .await
+                        .wrap_err("failed to wait for send_output task")?;
                         result.wrap_err("failed to send node output")?;
                     }
                 }
@@ -207,13 +213,19 @@ async fn run(
                     continue;
                 };
 
-                operator_channel
+                if let Err(err) = operator_channel
                     .send(operator::IncomingEvent::Input {
-                        input_id,
+                        input_id: input_id.clone(),
                         metadata,
                         data,
                     })
-                    .await?;
+                    .await
+                    .wrap_err_with(|| {
+                        format!("failed to send input `{input_id}` to operator `{operator_id}`")
+                    })
+                {
+                    tracing::warn!("{err}");
+                }
             }
             Event::InputClosed(id) => {
                 let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
@@ -246,6 +258,7 @@ fn operator_output_id(operator_id: &OperatorId, output_id: &DataId) -> DataId {
     DataId::from(format!("{operator_id}/{output_id}"))
 }
 
+#[derive(Debug)]
 enum Event {
     Operator {
         id: OperatorId,

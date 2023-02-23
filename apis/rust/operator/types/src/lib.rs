@@ -37,20 +37,29 @@ pub struct DoraResult {
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct DoraOnInput {
-    pub on_input: OnInputFn,
+pub struct DoraOnEvent {
+    pub on_event: OnEventFn,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[repr(transparent)]
-pub struct OnInputFn(
+pub struct OnEventFn(
     pub  unsafe extern "C" fn(
-        input: &Input,
+        event: &FfiEvent,
         send_output: &SendOutput,
         operator_context: *mut std::ffi::c_void,
-    ) -> OnInputResult,
+    ) -> OnEventResult,
 );
+
+#[derive_ReprC]
+#[ffi_export]
+#[repr(C)]
+#[derive(Debug)]
+pub struct FfiEvent {
+    pub input: Option<safer_ffi::boxed::Box<Input>>,
+    pub stop: bool,
+}
 
 #[derive_ReprC]
 #[ffi_export]
@@ -91,7 +100,7 @@ pub struct Output {
 #[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
-pub struct OnInputResult {
+pub struct OnEventResult {
     pub result: DoraResult,
     pub status: DoraStatus,
 }

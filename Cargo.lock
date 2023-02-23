@@ -3227,6 +3227,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-dataflow-example-operator"
+version = "0.1.3"
+dependencies = [
+ "dora-operator-api",
+]
+
+[[package]]
 name = "rust-dataflow-example-sink"
 version = "0.1.3"
 dependencies = [

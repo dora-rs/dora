@@ -18,7 +18,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 type Tracer = ();
 
 mod python;
-// mod shared_lib;
+mod shared_lib;
 
 pub fn run_operator(
     node_id: &NodeId,
@@ -36,22 +36,20 @@ pub fn run_operator(
 
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
-            // shared_lib::spawn(
-            //     node_id,
-            //     &operator_definition.id,
-            //     source,
-            //     events_tx,
-            //     input_events,
-            //     publishers,
-            //     tracer,
-            // )
-            // .wrap_err_with(|| {
-            //     format!(
-            //         "failed to spawn shared library operator for {}",
-            //         operator_definition.id
-            //     )
-            // })?;
-            todo!()
+            shared_lib::run(
+                node_id,
+                &operator_definition.id,
+                source,
+                events_tx,
+                incoming_events,
+                tracer,
+            )
+            .wrap_err_with(|| {
+                format!(
+                    "failed to spawn shared library operator for {}",
+                    operator_definition.id
+                )
+            })?;
         }
         OperatorSource::Python(source) => {
             python::run(

@@ -8,12 +8,16 @@ use types::{Metadata, Output, SendOutput};
 
 pub mod raw;
 
+pub enum Event<'a> {
+    Input { id: &'a str, data: &'a [u8] },
+    Stop,
+}
+
 pub trait DoraOperator: Default {
     #[allow(clippy::result_unit_err)] // we use a () error type only for testing
-    fn on_input(
+    fn on_event(
         &mut self,
-        id: &str,
-        data: &[u8],
+        event: &Event,
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, String>;
 }

@@ -19,6 +19,7 @@ pub async fn spawn_node(
     daemon_tx: mpsc::Sender<Event>,
     shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
     config: DaemonCommunicationConfig,
+    dora_runtime_path: Option<&Path>,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -97,7 +98,9 @@ pub async fn spawn_node(
                 command.args(["-c", "import dora; dora.start_runtime()"]);
                 command
             } else if !has_python_operator && has_other_operator {
-                tokio::process::Command::new("dora-runtime")
+                tokio::process::Command::new(
+                    dora_runtime_path.unwrap_or_else(|| Path::new("dora-runtime")),
+                )
             } else {
                 eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
             };
