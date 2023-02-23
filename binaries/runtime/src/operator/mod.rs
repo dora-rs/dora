@@ -3,9 +3,14 @@ use dora_core::{
     descriptor::{OperatorDefinition, OperatorSource},
     message::{Metadata, MetadataParameters},
 };
+use dora_operator_api_python::metadata_to_pydict;
 use eyre::Context;
 #[cfg(feature = "tracing")]
 use opentelemetry::sdk::trace::Tracer;
+use pyo3::{
+    types::{PyBytes, PyDict},
+    IntoPy, PyObject, Python,
+};
 use std::any::Any;
 use tokio::sync::mpsc::{Receiver, Sender};
 
@@ -93,6 +98,41 @@ pub enum IncomingEvent {
         metadata: Metadata<'static>,
         data: Option<Vec<u8>>,
     },
+}
+
+impl IntoPy<PyObject> for IncomingEvent {
+    fn into_py(self, py: Python) -> PyObject {
+        let dict = PyDict::new(py);
+
+        let ty = match self {
+            Self::Stop => "STOP",
+            Self::Input {
+                input_id,
+                metadata,
+                data,
+            } => {
+                dict.set_item("id", input_id.to_string())
+                    .wrap_err("failed to add input ID")
+                    .unwrap();
+                dict.set_item(
+                    "data",
+                    PyBytes::new(py, data.as_deref().unwrap_or_default()),
+                )
+                .wrap_err("failed to add input data")
+                .unwrap();
+                dict.set_item("metadata", metadata_to_pydict(&metadata, py))
+                    .wrap_err("failed to add input metadata")
+                    .unwrap();
+                "INPUT"
+            }
+        };
+
+        dict.set_item("type", ty)
+            .wrap_err("could not make type a python dictionary item")
+            .unwrap();
+
+        dict.into()
+    }
 }
 
 #[derive(Debug)]
