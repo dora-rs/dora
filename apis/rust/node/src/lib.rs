@@ -1,6 +1,7 @@
 use std::thread::JoinHandle;
 
-use daemon::{ControlChannel, DaemonConnection, EventStream};
+use daemon::{ControlChannel, DaemonConnection};
+pub use daemon::{Event, EventStream};
 pub use dora_core;
 pub use dora_core::message::{uhlc, Metadata, MetadataParameters};
 use dora_core::{
@@ -11,7 +12,7 @@ use eyre::WrapErr;
 pub use flume::Receiver;
 use shared_memory_server::ShmemConf;
 
-pub mod daemon;
+mod daemon;
 
 pub struct DoraNode {
     id: NodeId,

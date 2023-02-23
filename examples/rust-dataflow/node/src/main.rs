@@ -1,4 +1,4 @@
-use dora_node_api::{self, daemon::Event, dora_core::config::DataId, DoraNode};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
 
 fn main() -> eyre::Result<()> {
     println!("hello");

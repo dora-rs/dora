@@ -1,7 +1,4 @@
-use dora_node_api::{
-    self,
-    daemon::{Event, EventStream},
-};
+use dora_node_api::{self, Event, EventStream};
 use eyre::bail;
 
 #[cxx::bridge]

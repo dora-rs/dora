@@ -52,14 +52,14 @@ pub fn main() -> eyre::Result<()> {
     });
     let daemon_events = Box::pin(futures::stream::unfold(daemon_events, |mut stream| async {
         let event = stream.recv_async().await.map(|event| match event {
-            dora_node_api::daemon::Event::Stop => Event::Stop,
-            dora_node_api::daemon::Event::Input { id, metadata, data } => Event::Input {
+            dora_node_api::Event::Stop => Event::Stop,
+            dora_node_api::Event::Input { id, metadata, data } => Event::Input {
                 id,
                 metadata,
                 data: data.map(|data| data.to_owned()),
             },
-            dora_node_api::daemon::Event::InputClosed { id } => Event::InputClosed(id),
-            dora_node_api::daemon::Event::Error(err) => Event::Error(err),
+            dora_node_api::Event::InputClosed { id } => Event::InputClosed(id),
+            dora_node_api::Event::Error(err) => Event::Error(err),
             _ => todo!(),
         });
         event.map(|event| (event, stream))
