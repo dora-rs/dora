@@ -10,6 +10,9 @@ use tracing_subscriber::Layer;
 pub struct Args {
     #[clap(long)]
     pub run_dataflow: Option<PathBuf>,
+
+    #[clap(long)]
+    pub dora_runtime_path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -22,13 +25,16 @@ async fn main() -> eyre::Result<()> {
 async fn run() -> eyre::Result<()> {
     set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
 
-    let Args { run_dataflow } = clap::Parser::parse();
+    let Args {
+        run_dataflow,
+        dora_runtime_path,
+    } = clap::Parser::parse();
 
     match run_dataflow {
         Some(dataflow_path) => {
             tracing::info!("Starting dataflow `{}`", dataflow_path.display());
 
-            Daemon::run_dataflow(&dataflow_path).await
+            Daemon::run_dataflow(&dataflow_path, dora_runtime_path).await
         }
         None => {
             tracing::info!("Starting in local mode");
@@ -37,7 +43,7 @@ async fn run() -> eyre::Result<()> {
 
             let machine_id = String::new(); // TODO
 
-            Daemon::run(coordinator_socket.into(), machine_id).await
+            Daemon::run(coordinator_socket.into(), machine_id, dora_runtime_path).await
         }
     }
 }

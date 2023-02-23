@@ -49,19 +49,35 @@ pub struct Daemon {
 
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
+
+    dora_runtime_path: Option<PathBuf>,
 }
 
 impl Daemon {
-    pub async fn run(coordinator_addr: SocketAddr, machine_id: String) -> eyre::Result<()> {
+    pub async fn run(
+        coordinator_addr: SocketAddr,
+        machine_id: String,
+        dora_runtime_path: Option<PathBuf>,
+    ) -> eyre::Result<()> {
         // connect to the coordinator
         let coordinator_events = coordinator::register(coordinator_addr, machine_id.clone())
             .await
             .wrap_err("failed to connect to dora-coordinator")?
             .map(Event::Coordinator);
-        Self::run_general(coordinator_events, Some(coordinator_addr), machine_id, None).await
+        Self::run_general(
+            coordinator_events,
+            Some(coordinator_addr),
+            machine_id,
+            None,
+            dora_runtime_path,
+        )
+        .await
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
+    pub async fn run_dataflow(
+        dataflow_path: &Path,
+        dora_runtime_path: Option<PathBuf>,
+    ) -> eyre::Result<()> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canoncialize dataflow path")?
@@ -96,6 +112,7 @@ impl Daemon {
             None,
             "".into(),
             Some(exit_when_done),
+            dora_runtime_path,
         );
 
         let spawn_result = reply_rx
@@ -116,6 +133,7 @@ impl Daemon {
         coordinator_addr: Option<SocketAddr>,
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
+        dora_runtime_path: Option<PathBuf>,
     ) -> eyre::Result<()> {
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let ctrlc_tx = dora_events_tx.clone();
@@ -144,6 +162,7 @@ impl Daemon {
             coordinator_addr,
             machine_id,
             exit_when_done,
+            dora_runtime_path,
         };
         let (shmem_events_tx, shmem_events_rx) = flume::bounded(5);
         tokio::spawn(async {
@@ -333,6 +352,7 @@ impl Daemon {
                 self.events_tx.clone(),
                 self.shared_memory_handler_node.clone(),
                 daemon_communication_config,
+                self.dora_runtime_path.as_deref(),
             )
             .await
             .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;

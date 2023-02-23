@@ -1,5 +1,5 @@
-use crate::{DoraOperator, DoraOutputSender, DoraStatus};
-use dora_operator_api_types::{DoraInitResult, DoraResult, Input, OnInputResult, SendOutput};
+use crate::{DoraOperator, DoraOutputSender, DoraStatus, Event};
+use dora_operator_api_types::{DoraInitResult, DoraResult, FfiEvent, OnEventResult, SendOutput};
 use std::ffi::c_void;
 
 pub type OutputFnRaw = unsafe extern "C" fn(
@@ -26,21 +26,36 @@ pub unsafe fn dora_drop_operator<O>(operator_context: *mut c_void) -> DoraResult
     DoraResult { error: None }
 }
 
-pub unsafe fn dora_on_input<O: DoraOperator>(
-    input: &Input,
+pub unsafe fn dora_on_event<O: DoraOperator>(
+    event: &FfiEvent,
     send_output: &SendOutput,
     operator_context: *mut std::ffi::c_void,
-) -> OnInputResult {
+) -> OnEventResult {
     let mut output_sender = DoraOutputSender(send_output);
 
     let operator: &mut O = unsafe { &mut *operator_context.cast() };
-    let data = input.data.as_ref().as_slice();
-    match operator.on_input(&input.id, data, &mut output_sender) {
-        Ok(status) => OnInputResult {
+
+    let event_variant = if let Some(input) = &event.input {
+        let data = input.data.as_ref().as_slice();
+        Event::Input {
+            id: &input.id,
+            data,
+        }
+    } else if event.stop {
+        Event::Stop
+    } else {
+        // ignore unknown events
+        return OnEventResult {
+            result: DoraResult { error: None },
+            status: DoraStatus::Continue,
+        };
+    };
+    match operator.on_event(&event_variant, &mut output_sender) {
+        Ok(status) => OnEventResult {
             result: DoraResult { error: None },
             status,
         },
-        Err(error) => OnInputResult {
+        Err(error) => OnEventResult {
             result: DoraResult {
                 error: Some(error.into()),
             },
