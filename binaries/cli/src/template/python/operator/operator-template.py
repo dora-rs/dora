@@ -12,6 +12,15 @@ class Operator:
         """Called on initialisation"""
         pass
 
+    def on_event(
+        self,
+        dora_event: dict,
+        send_output: Callable[[str, bytes], None],
+    ) -> DoraStatus:
+        if dora_event["type"] == "INPUT":
+            return self.on_input(dora_event, send_output)
+        return DoraStatus.CONTINUE
+
     def on_input(
         self,
         dora_input: dict,
