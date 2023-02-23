@@ -109,7 +109,7 @@ jobs:
         timeout-minutes: 30
         run: |
           cd test_project
-          cargo build --all
+          cargo build --all --config "patch.'https://github.com/dora-rs/dora.git'.dora-node-api.path=\"../apis/rust/node\"" --config "patch.'https://github.com/dora-rs/dora.git'.dora-operator-api.path=\"../apis/rust/operator\""
           UUID=$(dora-cli start dataflow.yml)
           sleep 10
           dora-cli stop $UUID
