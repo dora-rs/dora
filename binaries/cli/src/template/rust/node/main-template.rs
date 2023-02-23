@@ -1,4 +1,4 @@
-use dora_node_api::DoraNode;
+use dora_node_api::{DoraNode, Event};
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
