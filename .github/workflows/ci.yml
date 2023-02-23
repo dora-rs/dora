@@ -98,7 +98,7 @@ jobs:
 
       - run: dora-cli up
 
-      - name: "Test dora `list"
+      - name: "Test dora list"
         run: dora-cli list
 
       - name: "Test new command"
@@ -115,7 +115,7 @@ jobs:
           dora-cli stop $UUID
           cd ..
 
-      - name: "Test dora `destroy"
+      - name: "Test dora destroy"
         run: dora-cli destroy
 
   examples-remote:
