@@ -1,9 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use dora_node_api::{
-    daemon::{Event, EventStream},
-    DoraNode,
-};
+use dora_node_api::{DoraNode, Event, EventStream};
 use eyre::Context;
 use std::{ffi::c_void, ptr, slice};
 

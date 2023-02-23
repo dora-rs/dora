@@ -1,4 +1,4 @@
-use dora_node_api::{self, daemon::Event, DoraNode};
+use dora_node_api::{self, DoraNode, Event};
 use eyre::ContextCompat;
 
 fn main() -> eyre::Result<()> {
