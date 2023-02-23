@@ -92,12 +92,11 @@ jobs:
         timeout-minutes: 30
         run: |
           cargo install --path binaries/coordinator
+          cargo install --path binaries/daemon
           cargo install --path binaries/runtime
           cargo install --path binaries/cli
 
-      - name: "Start dora-coordinator"
-        run: |
-          dora-coordinator &
+      - run: dora-cli up
 
       - name: "Test dora `list"
         run: dora-cli list
