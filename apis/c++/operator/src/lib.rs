@@ -1,7 +1,9 @@
 #![cfg(not(test))]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{self, register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+use dora_operator_api::{
+    self, register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event,
+};
 use ffi::DoraSendOutputResult;
 
 #[cxx::bridge]
@@ -64,23 +66,30 @@ impl Default for OperatorWrapper {
 }
 
 impl DoraOperator for OperatorWrapper {
-    fn on_input(
+    fn on_event(
         &mut self,
-        id: &str,
-        data: &[u8],
+        event: &Event,
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, std::string::String> {
-        let operator = self.operator.as_mut().unwrap();
-        let mut output_sender = OutputSender(output_sender);
+        match event {
+            Event::Input { id, data } => {
+                let operator = self.operator.as_mut().unwrap();
+                let mut output_sender = OutputSender(output_sender);
 
-        let result = ffi::on_input(operator, id, data, &mut output_sender);
-        if result.error.is_empty() {
-            Ok(match result.stop {
-                false => DoraStatus::Continue,
-                true => DoraStatus::Stop,
-            })
-        } else {
-            Err(result.error)
+                let result = ffi::on_input(operator, id, data, &mut output_sender);
+                if result.error.is_empty() {
+                    Ok(match result.stop {
+                        false => DoraStatus::Continue,
+                        true => DoraStatus::Stop,
+                    })
+                } else {
+                    Err(result.error)
+                }
+            }
+            _ => {
+                // ignore other events for now
+                Ok(DoraStatus::Continue)
+            }
         }
     }
 }
