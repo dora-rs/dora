@@ -1,5 +1,5 @@
 use crate::{DoraOperator, DoraOutputSender, DoraStatus, Event};
-use dora_operator_api_types::{DoraInitResult, DoraResult, FfiEvent, OnEventResult, SendOutput};
+use dora_operator_api_types::{DoraInitResult, DoraResult, OnEventResult, RawEvent, SendOutput};
 use std::ffi::c_void;
 
 pub type OutputFnRaw = unsafe extern "C" fn(
@@ -27,7 +27,7 @@ pub unsafe fn dora_drop_operator<O>(operator_context: *mut c_void) -> DoraResult
 }
 
 pub unsafe fn dora_on_event<O: DoraOperator>(
-    event: &FfiEvent,
+    event: &RawEvent,
     send_output: &SendOutput,
     operator_context: *mut std::ffi::c_void,
 ) -> OnEventResult {
