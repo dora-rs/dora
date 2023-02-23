@@ -8,15 +8,18 @@ struct ExampleOperator {
 }
 
 impl DoraOperator for ExampleOperator {
-    fn on_input(
+    fn on_event(
         &mut self,
-        id: &str,
-        data: &[u8],
+        event: &Event,
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, String> {
-        match id {
-            other => eprintln!("Received input {other}"),
+        match event {
+            Event::Input { id, data } => match id {
+                other => eprintln!("Received input {other}"),
+            },
+            _ => {}
         }
+
         Ok(DoraStatus::Continue)
     }
 }
