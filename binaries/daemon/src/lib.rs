@@ -49,6 +49,8 @@ pub struct Daemon {
 
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
+    /// used to record dataflow results when `exit_when_done` is used
+    dataflow_errors: Vec<(Uuid, NodeId, eyre::Report)>,
 
     dora_runtime_path: Option<PathBuf>,
 }
@@ -72,6 +74,7 @@ impl Daemon {
             dora_runtime_path,
         )
         .await
+        .map(|_| ())
     }
 
     pub async fn run_dataflow(
@@ -124,8 +127,18 @@ impl Daemon {
                 }
             });
 
-        future::try_join(run_result, spawn_result).await?;
-        Ok(())
+        let (dataflow_errors, _) = future::try_join(run_result, spawn_result).await?;
+
+        if dataflow_errors.is_empty() {
+            Ok(())
+        } else {
+            let mut output = "some nodes failed:".to_owned();
+            for (dataflow, node, error) in dataflow_errors {
+                use std::fmt::Write;
+                write!(&mut output, "\n  - {dataflow}/{node}: {error}").unwrap();
+            }
+            bail!("{output}");
+        }
     }
 
     async fn run_general(
@@ -134,7 +147,7 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         dora_runtime_path: Option<PathBuf>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let ctrlc_tx = dora_events_tx.clone();
         let mut ctrlc_sent = false;
@@ -163,6 +176,7 @@ impl Daemon {
             machine_id,
             exit_when_done,
             dora_runtime_path,
+            dataflow_errors: Vec::new(),
         };
         let (shmem_events_tx, shmem_events_rx) = flume::bounded(5);
         tokio::spawn(async {
@@ -190,7 +204,7 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Event> + Unpin,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
@@ -251,7 +265,7 @@ impl Daemon {
             // }
         }
 
-        Ok(())
+        Ok(self.dataflow_errors)
     }
 
     async fn handle_coordinator_event(
@@ -519,20 +533,23 @@ impl Daemon {
                 exit_status,
             } => {
                 let mut signal_exit = false;
-                match exit_status {
+                let node_error = match exit_status {
                     NodeExitStatus::Success => {
                         tracing::info!("node {dataflow_id}/{node_id} finished successfully");
+                        None
                     }
                     NodeExitStatus::IoError(err) => {
                         let err = eyre!(err).wrap_err(format!(
                             "I/O error while waiting for node `{dataflow_id}/{node_id}`"
                         ));
-                        tracing::error!("{err:?}",);
+                        tracing::error!("{err:?}");
+                        Some(err)
                     }
                     NodeExitStatus::ExitCode(code) => {
-                        tracing::warn!(
-                            "node {dataflow_id}/{node_id} finished with exit code {code}"
-                        );
+                        let err =
+                            eyre!("node {dataflow_id}/{node_id} finished with exit code {code}");
+                        tracing::warn!("{err}");
+                        Some(err)
                     }
                     NodeExitStatus::Signal(signal) => {
                         signal_exit = true;
@@ -553,16 +570,19 @@ impl Daemon {
 
                             other => other.to_string().into(),
                         };
-                        tracing::warn!(
+                        let err = eyre!(
                             "node {dataflow_id}/{node_id} finished because of signal `{signal}`"
                         );
+                        tracing::warn!("{err}");
+                        Some(err)
                     }
                     NodeExitStatus::Unknown => {
-                        tracing::warn!(
-                            "node {dataflow_id}/{node_id} finished with unknown exit code"
-                        );
+                        let err =
+                            eyre!("node {dataflow_id}/{node_id} finished with unknown exit code");
+                        tracing::warn!("{err}");
+                        Some(err)
                     }
-                }
+                };
 
                 if self
                     .running
@@ -579,6 +599,10 @@ impl Daemon {
                 }
 
                 if let Some(exit_when_done) = &mut self.exit_when_done {
+                    if let Some(err) = node_error {
+                        self.dataflow_errors
+                            .push((dataflow_id, node_id.clone(), err));
+                    }
                     exit_when_done.remove(&(dataflow_id, node_id));
                     if exit_when_done.is_empty() {
                         tracing::info!(
