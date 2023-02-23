@@ -171,7 +171,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             }
 
             let operator_event = match event {
-                IncomingEvent::Stop => dora_operator_api_types::FfiEvent {
+                IncomingEvent::Stop => dora_operator_api_types::RawEvent {
                     input: None,
                     stop: true,
                 },
@@ -191,7 +191,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                                 .into(),
                         },
                     };
-                    dora_operator_api_types::FfiEvent {
+                    dora_operator_api_types::RawEvent {
                         input: Some(Box::new(operator_input).into()),
                         stop: false,
                     }

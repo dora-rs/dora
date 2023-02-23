@@ -107,13 +107,13 @@ typedef struct Input {
 #include <stdbool.h>
 
 /** <No documentation available> */
-typedef struct FfiEvent {
+typedef struct RawEvent {
     /** <No documentation available> */
     Input_t * input;
 
     /** <No documentation available> */
     bool stop;
-} FfiEvent_t;
+} RawEvent_t;
 
 /** <No documentation available> */
 typedef struct Output {
@@ -153,7 +153,7 @@ typedef struct SendOutput {
 /** <No documentation available> */
 typedef struct DoraOnEvent {
     /** <No documentation available> */
-    OnEventResult_t (*on_event)(FfiEvent_t const *, SendOutput_t const *, void *);
+    OnEventResult_t (*on_event)(RawEvent_t const *, SendOutput_t const *, void *);
 } DoraOnEvent_t;
 
 

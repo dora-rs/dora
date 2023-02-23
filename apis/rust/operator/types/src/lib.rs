@@ -46,7 +46,7 @@ pub struct DoraOnEvent {
 #[repr(transparent)]
 pub struct OnEventFn(
     pub  unsafe extern "C" fn(
-        event: &FfiEvent,
+        event: &RawEvent,
         send_output: &SendOutput,
         operator_context: *mut std::ffi::c_void,
     ) -> OnEventResult,
@@ -56,7 +56,7 @@ pub struct OnEventFn(
 #[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
-pub struct FfiEvent {
+pub struct RawEvent {
     pub input: Option<safer_ffi::boxed::Box<Input>>,
     pub stop: bool,
 }
