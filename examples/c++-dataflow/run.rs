@@ -41,6 +41,22 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
 
+    build_package("dora-operator-api-cxx").await?;
+    let operator_cxxbridge = target
+        .join("cxxbridge")
+        .join("dora-operator-api-cxx")
+        .join("src");
+    tokio::fs::copy(
+        operator_cxxbridge.join("lib.rs.cc"),
+        build_dir.join("operator-bridge.cc"),
+    )
+    .await?;
+    tokio::fs::copy(
+        operator_cxxbridge.join("lib.rs.h"),
+        build_dir.join("dora-operator-api.h"),
+    )
+    .await?;
+
     build_package("dora-node-api-c").await?;
     // build_package("dora-operator-api-c").await?;
     build_cxx_node(
@@ -62,20 +78,20 @@ async fn main() -> eyre::Result<()> {
     //     &["-l", "dora_node_api_c"],
     // )
     // .await?;
-    // build_cxx_operator(
-    //     &[
-    //         &dunce::canonicalize(Path::new("operator-rust-api").join("operator.cc"))?,
-    //         &dunce::canonicalize(build_dir.join("operator-bridge.cc"))?,
-    //     ],
-    //     "operator_rust_api",
-    //     &[
-    //         "-l",
-    //         "dora_operator_api_cxx",
-    //         "-L",
-    //         &root.join("target").join("debug").to_str().unwrap(),
-    //     ],
-    // )
-    // .await?;
+    build_cxx_operator(
+        &[
+            &dunce::canonicalize(Path::new("operator-rust-api").join("operator.cc"))?,
+            &dunce::canonicalize(build_dir.join("operator-bridge.cc"))?,
+        ],
+        "operator_rust_api",
+        &[
+            "-l",
+            "dora_operator_api_cxx",
+            "-L",
+            root.join("target").join("debug").to_str().unwrap(),
+        ],
+    )
+    .await?;
     // build_cxx_operator(
     //     &[&dunce::canonicalize(
     //         Path::new("operator-c-api").join("operator.cc"),
@@ -88,7 +104,9 @@ async fn main() -> eyre::Result<()> {
     // build_package("dora-runtime").await?;
 
     let dataflow = Path::new("dataflow.yml").to_owned();
-    dora_daemon::Daemon::run_dataflow(&dataflow, None).await?;
+    build_package("dora-runtime").await?;
+    let dora_runtime_path = Some(root.join("target").join("debug").join("dora-runtime"));
+    dora_daemon::Daemon::run_dataflow(&dataflow, dora_runtime_path).await?;
 
     Ok(())
 }

@@ -18,15 +18,15 @@ nodes:
   #     outputs:
   #       - counter
 
-  # - id: runtime-node
-  #   operators:
-  #     - id: operator-rust-api
-  #       shared-library: build/operator_rust_api
-  #       inputs:
-  #         counter_1: cxx-node-c-api/counter
-  #         counter_2: cxx-node-rust-api/counter
-  #       outputs:
-  #         - status
+  - id: runtime-node
+    operators:
+      - id: operator-rust-api
+        shared-library: build/operator_rust_api
+        inputs:
+          # counter_1: cxx-node-c-api/counter
+          counter_2: cxx-node-rust-api/counter
+        outputs:
+          - status
   #     - id: operator-c-api
   #       shared-library: build/operator_c_api
   #       inputs:
