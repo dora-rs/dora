@@ -4,8 +4,7 @@ use crate::{
 use dora_core::{
     config::{NodeId, NodeRunConfig},
     daemon_messages::{
-        DaemonCommunication, DaemonCommunicationConfig, DataflowId, NodeConfig, RunningNode,
-        RuntimeConfig,
+        DaemonCommunication, DaemonCommunicationConfig, DataflowId, NodeConfig, RuntimeConfig,
     },
     descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode},
 };
@@ -22,7 +21,7 @@ pub async fn spawn_node(
     daemon_tx: mpsc::Sender<Event>,
     shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
     config: DaemonCommunicationConfig,
-) -> eyre::Result<RunningNode> {
+) -> eyre::Result<usize> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 

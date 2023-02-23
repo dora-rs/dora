@@ -84,6 +84,7 @@ pub enum OperatorEvent {
     },
 }
 
+#[derive(Debug)]
 pub enum IncomingEvent {
     Stop,
     Input {

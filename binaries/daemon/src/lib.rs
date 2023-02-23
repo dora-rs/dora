@@ -4,7 +4,7 @@ use dora_core::{
     coordinator_messages::DaemonEvent,
     daemon_messages::{
         self, DaemonCommunicationConfig, DaemonCoordinatorEvent, DaemonCoordinatorReply,
-        DaemonReply, DataflowId, DropToken, RunningNodes, SpawnDataflowNodes,
+        DaemonReply, DataflowId, DropToken, RunningNode, RunningNodes, SpawnDataflowNodes,
     },
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
@@ -270,8 +270,10 @@ impl Daemon {
                         let mut system = sysinfo::System::new();
                         system.refresh_all();
 
-                        for (node, id) in dataflow.running_nodes.iter() {
-                            if let Some(process) = system.process(Pid::from(id.clone())) {
+                        for (node, node_details) in dataflow.running_nodes.iter() {
+                            if let Some(process) =
+                                system.process(Pid::from(node_details.os_pid.clone()))
+                            {
                                 process.kill();
                                 warn!("{node} was killed due to not stopping within grace period")
                             }
@@ -340,7 +342,8 @@ impl Daemon {
             }
 
             let node_id = node.id.clone();
-            let running_node = spawn::spawn_node(
+
+            let os_pid = spawn::spawn_node(
                 dataflow_id,
                 &working_dir,
                 node,
@@ -350,6 +353,7 @@ impl Daemon {
             )
             .await
             .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
+            let running_node = RunningNode { os_pid };
             running_nodes.insert(node_id, running_node);
         }
         dataflow.running_nodes = running_nodes;

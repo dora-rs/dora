@@ -119,14 +119,18 @@ pub enum DaemonCoordinatorEvent {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorReply {
-    SpawnResult(Result<(), String>),
+    SpawnResult(Result<RunningNodes, String>),
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
     WatchdogAck,
 }
 
 pub type RunningNodes = BTreeMap<NodeId, RunningNode>;
-pub type RunningNode = usize; // Currently only represent the pid of the process.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct RunningNode {
+    pub os_pid: usize,
+}
+
 pub type DataflowId = Uuid;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
