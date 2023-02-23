@@ -33,6 +33,7 @@ class Operator:
     ) -> DoraStatus:
         if dora_event["type"] == "INPUT":
             return self.on_input(dora_event, send_output)
+        return DoraStatus.CONTINUE
 
     def on_input(
         self,
