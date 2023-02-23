@@ -26,6 +26,14 @@ class Operator:
         self.image = []
         self.bboxs = []
 
+    def on_event(
+        self,
+        dora_event: dict,
+        send_output: Callable[[str, bytes], None],
+    ) -> DoraStatus:
+        if dora_event["type"] == "INPUT":
+            return self.on_input(dora_event, send_output)
+
     def on_input(
         self,
         dora_input: dict,
