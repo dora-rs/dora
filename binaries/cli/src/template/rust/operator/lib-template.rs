@@ -1,4 +1,4 @@
-use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
 
 register_operator!(ExampleOperator);
 
