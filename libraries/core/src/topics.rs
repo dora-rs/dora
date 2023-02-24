@@ -30,22 +30,15 @@ pub enum ControlRequest {
     DaemonConnected,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum StartDataflowResult {
-    Ok { uuid: Uuid },
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum ControlRequestReply {
     Error(String),
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum StopDataflowResult {
-    Ok,
-    Error(String),
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ListDataflowResult {
-    Ok { dataflows: Vec<DataflowId> },
-    Error(String),
+    CoordinatorStopped,
+    DataflowStarted { uuid: Uuid },
+    DataflowStopped { uuid: Uuid },
+    DataflowList { dataflows: Vec<DataflowId> },
+    DestroyOk,
+    DaemonConnected(bool),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
