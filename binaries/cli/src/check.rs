@@ -3,7 +3,7 @@ use dora_core::{
     adjust_shared_library_path,
     config::{DataId, InputMapping, OperatorId, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
-    topics::ControlRequest,
+    topics::{ControlRequest, ControlRequestReply},
 };
 use eyre::{bail, eyre, Context};
 use std::{env::consts::EXE_EXTENSION, io::Write, path::Path};
@@ -66,14 +66,17 @@ pub fn daemon_running() -> Result<bool, eyre::ErrReport> {
                 .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
                 .wrap_err("failed to send DaemonConnected message")?;
 
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?
+            let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+            match reply {
+                ControlRequestReply::DaemonConnected(running) => running,
+                other => bail!("unexpected reply to daemon connection check: {other:?}"),
+            }
         }
         Err(_) => {
             // coordinator is not running
             false
         }
     };
-
     Ok(running)
 }
 
