@@ -44,5 +44,7 @@ int main()
         }
     }
 
+    std::cout << "GOODBYE FROM C++ node (using Rust API)" << std::endl;
+
     return 0;
 }
