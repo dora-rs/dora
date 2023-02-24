@@ -1,22 +1,18 @@
 use crate::tcp_utils::{tcp_receive, tcp_send};
 
 use dora_core::{
-    config::{CommunicationConfig, NodeId},
+    config::CommunicationConfig,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
     descriptor::{CoreNodeKind, Descriptor},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
-use futures::{stream::FuturesUnordered, StreamExt};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
     path::Path,
 };
 use tokio::net::TcpStream;
-use tracing::warn;
 use uuid::Uuid;
-
-mod runtime;
 
 pub async fn spawn_dataflow(
     runtime: &Path,
@@ -115,21 +111,4 @@ async fn read_descriptor(file: &Path) -> Result<Descriptor, eyre::Error> {
     let descriptor: Descriptor =
         serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
     Ok(descriptor)
-}
-
-fn command_init_common_env(
-    command: &mut tokio::process::Command,
-    node_id: &NodeId,
-    communication: &dora_core::config::CommunicationConfig,
-) -> Result<(), eyre::Error> {
-    command.env(
-        "DORA_NODE_ID",
-        serde_yaml::to_string(&node_id).wrap_err("failed to serialize custom node ID")?,
-    );
-    command.env(
-        "DORA_COMMUNICATION_CONFIG",
-        serde_yaml::to_string(communication)
-            .wrap_err("failed to serialize communication config")?,
-    );
-    Ok(())
 }
