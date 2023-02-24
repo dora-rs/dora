@@ -8,8 +8,8 @@ use dora_core::{
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
     topics::{
-        control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
-        StopDataflowResult, DORA_COORDINATOR_PORT_DEFAULT,
+        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
+        DORA_COORDINATOR_PORT_DEFAULT,
     },
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
@@ -50,10 +50,6 @@ pub async fn run(args: Args) -> eyre::Result<()> {
 
     // start in daemon mode
     start(&runtime_path).await?;
-
-    // wait a bit before exiting to allow the background control connection threads to send
-    // out a destroy confirmation to the CLI (if any)
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     Ok(())
 }
@@ -193,18 +189,11 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                 .await?;
                                 Ok(dataflow)
                             };
-                            let reply = match inner.await {
-                                Ok(dataflow) => {
-                                    let uuid = dataflow.uuid;
-                                    running_dataflows.insert(uuid, dataflow);
-                                    StartDataflowResult::Ok { uuid }
-                                }
-                                Err(err) => {
-                                    tracing::error!("{err:?}");
-                                    StartDataflowResult::Error(format!("{err:?}"))
-                                }
-                            };
-                            serde_json::to_vec(&reply).unwrap()
+                            inner.await.map(|dataflow| {
+                                let uuid = dataflow.uuid;
+                                running_dataflows.insert(uuid, dataflow);
+                                ControlRequestReply::DataflowStarted { uuid }
+                            })
                         }
                         ControlRequest::Stop { dataflow_uuid } => {
                             let stop = async {
@@ -216,12 +205,9 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
-                            let reply = match stop.await {
-                                Ok(()) => StopDataflowResult::Ok,
-                                Err(err) => StopDataflowResult::Error(format!("{err:?}")),
-                            };
-
-                            serde_json::to_vec(&reply).unwrap()
+                            stop.await.map(|()| ControlRequestReply::DataflowStopped {
+                                uuid: dataflow_uuid,
+                            })
                         }
                         ControlRequest::StopByName { name } => {
                             let stop = async {
@@ -245,14 +231,10 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                     &mut daemon_connections,
                                 )
                                 .await?;
-                                Result::<_, eyre::Report>::Ok(())
+                                Result::<_, eyre::Report>::Ok(dataflow_uuid)
                             };
-                            let reply = match stop.await {
-                                Ok(()) => StopDataflowResult::Ok,
-                                Err(err) => StopDataflowResult::Error(format!("{err:?}")),
-                            };
-
-                            serde_json::to_vec(&reply).unwrap()
+                            stop.await
+                                .map(|uuid| ControlRequestReply::DataflowStopped { uuid })
                         }
                         ControlRequest::Destroy => {
                             tracing::info!("Received destroy command");
@@ -263,15 +245,14 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                 &abort_handle,
                                 &mut daemon_events_tx,
                             )
-                            .await?;
-
-                            b"ok".as_slice().into()
+                            .await
+                            .map(|()| ControlRequestReply::DestroyOk)
                         }
                         ControlRequest::List => {
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
-                            let reply = ListDataflowResult::Ok {
+                            Ok(ControlRequestReply::DataflowList {
                                 dataflows: dataflows
                                     .into_iter()
                                     .map(|d| DataflowId {
@@ -279,13 +260,11 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                                         name: d.name.clone(),
                                     })
                                     .collect(),
-                            };
-
-                            serde_json::to_vec(&reply).unwrap()
+                            })
                         }
                         ControlRequest::DaemonConnected => {
                             let running = !daemon_connections.is_empty();
-                            serde_json::to_vec(&running).unwrap()
+                            Ok(ControlRequestReply::DaemonConnected(running))
                         }
                     };
                     let _ = reply_sender.send(reply);
