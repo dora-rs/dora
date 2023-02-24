@@ -379,7 +379,7 @@ async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
         .wrap_err("failed to deserialize stop reply from daemon")?
     {
         DaemonCoordinatorReply::WatchdogAck => Ok(()),
-        _ => bail!("unexpected reply"),
+        other => bail!("unexpected reply after sending `watchdog`: {other:?}"),
     }
 }
 
@@ -427,7 +427,7 @@ async fn stop_dataflow(
             DaemonCoordinatorReply::StopResult(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to stop dataflow")?,
-            _ => bail!("unexpected reply"),
+            other => bail!("unexpected reply after sending stop: {other:?}"),
         }
     }
     tracing::info!("successfully stopped dataflow `{uuid}`");
@@ -474,7 +474,7 @@ async fn destroy_daemons(daemon_connections: &mut HashMap<String, TcpStream>) ->
             DaemonCoordinatorReply::DestroyResult(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to destroy dataflow")?,
-            _ => bail!("unexpected reply"),
+            other => bail!("unexpected reply after sending `destroy`: {other:?}"),
         }
 
         tracing::info!("successfully destroyed daemon `{machine_id}`");
