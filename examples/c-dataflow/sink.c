@@ -18,7 +18,6 @@ int main()
 
     while (1)
     {
-        printf("[c sink] waiting for next input\n");
         void *event = dora_next_event(dora_context);
         if (event == NULL)
         {
@@ -40,7 +39,7 @@ int main()
 
             printf("[c sink] received input `");
             fwrite(id, id_len, 1, stdout);
-            printf("` with data: %d\n", *data);
+            printf("` with data: %s\n", data);
         }
         else if (ty == DoraEventType_InputClosed)
         {

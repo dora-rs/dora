@@ -9,9 +9,17 @@ nodes:
       inputs:
         timer: dora/timer/millis/50
       outputs:
-        - counter
+        - message
+  - id: runtime-node
+    operators:
+      - id: c_operator
+        shared-library: build/operator
+        inputs:
+          message: c_node/message
+        outputs:
+          - counter
   - id: c_sink
     custom:
       source: build/c_sink
       inputs:
-        counter: c_node/counter
+        counter: runtime-node/c_operator/counter
