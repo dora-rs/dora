@@ -301,7 +301,7 @@ impl Daemon {
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };
-                let reply = DaemonCoordinatorReply::SpawnResult(
+                let reply = DaemonCoordinatorReply::StopResult(
                     stop.await.map_err(|err| format!("{err:?}")),
                 );
                 (reply, RunStatus::Continue)
