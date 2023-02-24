@@ -51,6 +51,10 @@ pub async fn run(args: Args) -> eyre::Result<()> {
     // start in daemon mode
     start(&runtime_path).await?;
 
+    // wait a bit before exiting to allow the background control connection threads to send
+    // out a destroy confirmation to the CLI (if any)
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
     Ok(())
 }
 
