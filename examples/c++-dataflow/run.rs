@@ -58,7 +58,7 @@ async fn main() -> eyre::Result<()> {
     .await?;
 
     build_package("dora-node-api-c").await?;
-    // build_package("dora-operator-api-c").await?;
+    build_package("dora-operator-api-c").await?;
     build_cxx_node(
         root,
         &[
@@ -69,15 +69,15 @@ async fn main() -> eyre::Result<()> {
         &["-l", "dora_node_api_cxx"],
     )
     .await?;
-    // build_cxx_node(
-    //     root,
-    //     &[&dunce::canonicalize(
-    //         Path::new("node-c-api").join("main.cc"),
-    //     )?],
-    //     "node_c_api",
-    //     &["-l", "dora_node_api_c"],
-    // )
-    // .await?;
+    build_cxx_node(
+        root,
+        &[&dunce::canonicalize(
+            Path::new("node-c-api").join("main.cc"),
+        )?],
+        "node_c_api",
+        &["-l", "dora_node_api_c"],
+    )
+    .await?;
     build_cxx_operator(
         &[
             &dunce::canonicalize(Path::new("operator-rust-api").join("operator.cc"))?,
@@ -92,16 +92,14 @@ async fn main() -> eyre::Result<()> {
         ],
     )
     .await?;
-    // build_cxx_operator(
-    //     &[&dunce::canonicalize(
-    //         Path::new("operator-c-api").join("operator.cc"),
-    //     )?],
-    //     "operator_c_api",
-    //     &[],
-    // )
-    // .await?;
-
-    // build_package("dora-runtime").await?;
+    build_cxx_operator(
+        &[&dunce::canonicalize(
+            Path::new("operator-c-api").join("operator.cc"),
+        )?],
+        "operator_c_api",
+        &[],
+    )
+    .await?;
 
     let dataflow = Path::new("dataflow.yml").to_owned();
     build_package("dora-runtime").await?;

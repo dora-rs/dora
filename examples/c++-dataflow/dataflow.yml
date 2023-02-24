@@ -10,26 +10,28 @@ nodes:
         tick: dora/timer/millis/300
       outputs:
         - counter
-  # - id: cxx-node-c-api
-  #   custom:
-  #     source: build/node_c_api
-  #     inputs:
-  #       tick: dora/timer/millis/300
-  #     outputs:
-  #       - counter
+  - id: cxx-node-c-api
+    custom:
+      source: build/node_c_api
+      inputs:
+        tick: dora/timer/millis/300
+      outputs:
+        - counter
 
-  - id: runtime-node
+  - id: runtime-node-1
     operators:
       - id: operator-rust-api
         shared-library: build/operator_rust_api
         inputs:
-          # counter_1: cxx-node-c-api/counter
+          counter_1: cxx-node-c-api/counter
           counter_2: cxx-node-rust-api/counter
         outputs:
           - status
-  #     - id: operator-c-api
-  #       shared-library: build/operator_c_api
-  #       inputs:
-  #         op_status: runtime-node/operator-rust-api/status
-  #       outputs:
-  #         - half-status
+  - id: runtime-node-2
+    operators:
+      - id: operator-c-api
+        shared-library: build/operator_c_api
+        inputs:
+          op_status: runtime-node-1/operator-rust-api/status
+        outputs:
+          - half-status
