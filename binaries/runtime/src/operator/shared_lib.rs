@@ -5,7 +5,7 @@ use dora_core::{
     descriptor::source_is_url,
 };
 use dora_download::download_file;
-use dora_node_api::{uhlc, MetadataParameters};
+use dora_node_api::MetadataParameters;
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent,
     DoraResult, DoraStatus, Metadata, OnEventResult, Output, SendOutput,
@@ -15,7 +15,6 @@ use libloading::Symbol;
 use std::{
     borrow::Cow,
     ffi::c_void,
-    ops::Deref,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
     sync::Arc,
@@ -27,7 +26,7 @@ pub fn run(
     operator_id: &OperatorId,
     source: &str,
     events_tx: Sender<OperatorEvent>,
-    mut incoming_events: Receiver<IncomingEvent>,
+    incoming_events: Receiver<IncomingEvent>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
@@ -51,7 +50,6 @@ pub fn run(
         libloading::Library::new(&path)
             .wrap_err_with(|| format!("failed to load shared library at `{}`", path.display()))?
     };
-    let hlc = uhlc::HLC::default();
 
     let closure = AssertUnwindSafe(|| {
         let bindings = Bindings::init(&library).context("failed to init operator")?;
@@ -59,7 +57,6 @@ pub fn run(
         let operator = SharedLibraryOperator {
             incoming_events,
             bindings,
-            hlc,
             events_tx: events_tx.clone(),
         };
 
@@ -85,7 +82,6 @@ struct SharedLibraryOperator<'lib> {
     events_tx: Sender<OperatorEvent>,
 
     bindings: Bindings<'lib>,
-    hlc: uhlc::HLC,
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
@@ -165,6 +161,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 #[cfg(not(feature = "tracing"))]
                 let string_cx = {
                     let () = tracer;
+                    let _ = input_id;
                     "".to_string()
                 };
                 metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
