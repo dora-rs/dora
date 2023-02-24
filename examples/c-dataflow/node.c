@@ -25,7 +25,6 @@ int main()
 
     for (char i = 0; i < 100; i++)
     {
-        printf("[c node] waiting for next input\n");
         void *event = dora_next_event(dora_context);
         if (event == NULL)
         {
@@ -43,8 +42,11 @@ int main()
 
             assert(data_len == 0);
 
-            char out_id[] = "counter";
-            dora_send_output(dora_context, out_id, strlen(out_id), &i, 1);
+            char out_id[] = "message";
+            char out_data[50];
+            int out_data_len = sprintf(out_data, "loop iteration %d", i);
+
+            dora_send_output(dora_context, out_id, strlen(out_id), out_data, out_data_len);
         }
         else if (ty == DoraEventType_Stop)
         {
