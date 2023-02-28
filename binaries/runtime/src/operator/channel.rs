@@ -52,8 +52,6 @@ impl InputBuffer {
                             // received a new event -> push it to the queue
                             self.add_event(event);
 
-                            // TODO: drop oldest events when queue becomes too full
-
                             // if outgoing queue is empty, fill it again
                             if send_out.is_terminated() {
                                 send_out = self.send_next_queued(&outgoing);
