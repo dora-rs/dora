@@ -25,6 +25,8 @@ class Operator:
     def __init__(self):
         self.image = []
         self.bboxs = []
+        self.bounding_box_messages = 0
+        self.image_messages = 0
 
     def on_event(
         self,
@@ -53,9 +55,16 @@ class Operator:
             frame = cv2.imdecode(frame, -1)
             self.image = frame
 
+            self.image_messages += 1
+            print("received " + str(self.image_messages) + " images")
+
         elif dora_input["id"] == "bbox" and len(self.image) != 0:
             bboxs = np.frombuffer(dora_input["data"], dtype="float32")
             self.bboxs = np.reshape(bboxs, (-1, 6))
+
+            self.bounding_box_messages += 1
+            print("received " + str(self.bounding_box_messages) + " bounding boxes")
+
         for bbox in self.bboxs:
             [
                 min_x,
