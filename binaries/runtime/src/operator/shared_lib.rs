@@ -19,14 +19,14 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 
 pub fn run(
     node_id: &NodeId,
     operator_id: &OperatorId,
     source: &str,
     events_tx: Sender<OperatorEvent>,
-    incoming_events: Receiver<IncomingEvent>,
+    incoming_events: flume::Receiver<IncomingEvent>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
@@ -78,14 +78,14 @@ pub fn run(
 }
 
 struct SharedLibraryOperator<'lib> {
-    incoming_events: Receiver<IncomingEvent>,
+    incoming_events: flume::Receiver<IncomingEvent>,
     events_tx: Sender<OperatorEvent>,
 
     bindings: Bindings<'lib>,
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
-    fn run(mut self, tracer: Tracer) -> eyre::Result<StopReason> {
+    fn run(self, tracer: Tracer) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
                 result,
@@ -134,7 +134,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
         });
 
         let reason = loop {
-            let Some(mut event) = self.incoming_events.blocking_recv() else {
+            let Ok(mut event) = self.incoming_events.recv() else {
                 break StopReason::InputsClosed
             };
 

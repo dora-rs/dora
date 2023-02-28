@@ -14,7 +14,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
     let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
@@ -31,7 +31,7 @@ pub fn run(
     operator_id: &OperatorId,
     source: &str,
     events_tx: Sender<OperatorEvent>,
-    mut incoming_events: Receiver<IncomingEvent>,
+    incoming_events: flume::Receiver<IncomingEvent>,
     tracer: Tracer,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
@@ -100,7 +100,7 @@ pub fn run(
             Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
 
         let reason = loop {
-            let Some(mut event) = incoming_events.blocking_recv() else { break StopReason::InputsClosed };
+            let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
 
             if let IncomingEvent::Input {
                 input_id, metadata, ..

@@ -12,18 +12,19 @@ use pyo3::{
     IntoPy, PyObject, Python,
 };
 use std::any::Any;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 
 #[cfg(not(feature = "tracing"))]
 type Tracer = ();
 
+pub mod channel;
 mod python;
 mod shared_lib;
 
 pub fn run_operator(
     node_id: &NodeId,
     operator_definition: OperatorDefinition,
-    incoming_events: Receiver<IncomingEvent>,
+    incoming_events: flume::Receiver<IncomingEvent>,
     events_tx: Sender<OperatorEvent>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
