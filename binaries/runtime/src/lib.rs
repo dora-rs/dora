@@ -71,7 +71,7 @@ pub fn main() -> eyre::Result<()> {
         .wrap_err("Could not build a tokio runtime.")?;
 
     let mut operator_channels = HashMap::new();
-    let (operator_channel, incoming_events) = mpsc::channel(10);
+    let (operator_channel, incoming_events) = operator::channel::channel(tokio_runtime.handle());
     operator_channels.insert(operator_definition.id.clone(), operator_channel);
 
     tracing::info!("spawning main task");
@@ -107,7 +107,7 @@ async fn run(
     mut node: DoraNode,
     operators: HashMap<OperatorId, OperatorConfig>,
     mut events: impl Stream<Item = Event> + Unpin,
-    mut operator_channels: HashMap<OperatorId, mpsc::Sender<operator::IncomingEvent>>,
+    mut operator_channels: HashMap<OperatorId, flume::Sender<operator::IncomingEvent>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
     let _started = {
@@ -198,7 +198,7 @@ async fn run(
             Event::Stop => {
                 // forward stop event to all operators and close the event channels
                 for (_, channel) in operator_channels.drain() {
-                    let _ = channel.send(operator::IncomingEvent::Stop).await;
+                    let _ = channel.send_async(operator::IncomingEvent::Stop).await;
                 }
             }
             Event::Input { id, metadata, data } => {
@@ -214,7 +214,7 @@ async fn run(
                 };
 
                 if let Err(err) = operator_channel
-                    .send(operator::IncomingEvent::Input {
+                    .send_async(operator::IncomingEvent::Input {
                         input_id: input_id.clone(),
                         metadata,
                         data,

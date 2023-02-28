@@ -1179,6 +1179,7 @@ dependencies = [
  "dora-operator-api-types",
  "dora-tracing",
  "eyre",
+ "flume",
  "futures",
  "futures-concurrency",
  "libloading",
