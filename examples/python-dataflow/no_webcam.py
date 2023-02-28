@@ -26,5 +26,3 @@ while time.time() - start < 20:
             print("received stop")
         case other:
             print("received unexpected event:", other)
-
-    time.sleep(1)
