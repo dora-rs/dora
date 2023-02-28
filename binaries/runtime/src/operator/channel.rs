@@ -21,12 +21,14 @@ pub fn channel(
 
 struct InputBuffer {
     queue: VecDeque<IncomingEvent>,
+    max_queue_len: usize,
 }
 
 impl InputBuffer {
     pub fn new() -> Self {
         Self {
             queue: VecDeque::new(),
+            max_queue_len: 10,
         }
     }
 
@@ -43,7 +45,7 @@ impl InputBuffer {
                     match event {
                         Ok(event) => {
                             // received a new event -> push it to the queue
-                            self.queue.push_back(event);
+                            self.add_event(event);
 
                             // TODO: drop oldest events when queue becomes too full
 
