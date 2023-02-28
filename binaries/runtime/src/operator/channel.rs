@@ -83,6 +83,36 @@ impl InputBuffer {
             future::Fuse::terminated()
         }
     }
+
+    fn add_event(&mut self, event: IncomingEvent) {
+        self.queue.push_back(event);
+
+        // drop oldest input events to maintain max queue length queue
+        let input_event_count = self
+            .queue
+            .iter()
+            .filter(|e| matches!(e, IncomingEvent::Input { .. }))
+            .count();
+        let drop_n = input_event_count.saturating_sub(self.max_queue_len);
+        if drop_n > 0 {
+            self.drop_oldest_inputs(drop_n);
+        }
+    }
+
+    fn drop_oldest_inputs(&mut self, number: usize) {
+        tracing::debug!("dropping {number} operator inputs because event queue is too full");
+        for i in 0..number {
+            // find index of oldest input event
+            let index = self
+                .queue
+                .iter()
+                .position(|e| matches!(e, IncomingEvent::Input { .. }))
+                .unwrap_or_else(|| panic!("no input event found in drop iteration {i}"));
+
+            // remove that event
+            self.queue.remove(index);
+        }
+    }
 }
 
 impl Default for InputBuffer {
