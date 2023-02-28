@@ -153,10 +153,10 @@ impl Daemon {
         let mut ctrlc_sent = false;
         ctrlc::set_handler(move || {
             if ctrlc_sent {
-                tracing::warn!("received second ctrc signal -> aborting immediately");
+                tracing::warn!("received second ctrlc signal -> aborting immediately");
                 std::process::abort();
             } else {
-                tracing::info!("received ctrc signal");
+                tracing::info!("received ctrlc signal");
                 if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
                     tracing::error!("failed to report ctrl-c event to dora-daemon");
                 }
