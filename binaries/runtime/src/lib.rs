@@ -136,7 +136,9 @@ async fn run(
                     OperatorEvent::Error(err) => {
                         bail!(err.wrap_err(format!("operator {operator_id} failed")))
                     }
-                    OperatorEvent::Panic(payload) => std::panic::resume_unwind(payload),
+                    OperatorEvent::Panic(payload) => {
+                        bail!("operator {operator_id} panicked: {payload:?}");
+                    }
                     OperatorEvent::Finished { reason } => {
                         if let StopReason::ExplicitStopAll = reason {
                             let hlc = dora_core::message::uhlc::HLC::default();
