@@ -42,6 +42,7 @@ fn tcp_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::R
     let len_raw = (message.len() as u64).to_le_bytes();
     connection.write_all(&len_raw)?;
     connection.write_all(message)?;
+    connection.flush()?;
     Ok(())
 }
 
