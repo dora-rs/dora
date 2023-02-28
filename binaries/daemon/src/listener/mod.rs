@@ -218,12 +218,15 @@ where
                 .filter(|e| matches!(e, NodeEvent::Input { .. }))
                 .count();
             let drop_n = input_event_count.saturating_sub(self.max_queue_len);
-            self.drop_oldest_inputs(drop_n).await?;
+            if drop_n > 0 {
+                self.drop_oldest_inputs(drop_n).await?;
+            }
         }
         Ok(())
     }
 
     async fn drop_oldest_inputs(&mut self, number: usize) -> Result<(), eyre::ErrReport> {
+        tracing::debug!("dropping {number} inputs because event queue is too full");
         let mut drop_tokens = Vec::new();
         for i in 0..number {
             // find index of oldest input event
