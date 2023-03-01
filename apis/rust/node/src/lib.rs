@@ -1,5 +1,3 @@
-use std::thread::JoinHandle;
-
 use daemon::{ControlChannel, DaemonConnection};
 pub use daemon::{Event, EventStream};
 pub use dora_core;
@@ -19,7 +17,6 @@ pub struct DoraNode {
     node_config: NodeRunConfig,
     control_channel: ControlChannel,
     hlc: uhlc::HLC,
-    event_stream_thread: Option<JoinHandle<()>>,
 }
 
 impl DoraNode {
@@ -46,7 +43,6 @@ impl DoraNode {
         let DaemonConnection {
             control_channel,
             event_stream,
-            event_stream_thread,
         } = DaemonConnection::init(dataflow_id, &node_id, &daemon_communication)
             .wrap_err("failed to connect to dora-daemon")?;
 
@@ -55,7 +51,6 @@ impl DoraNode {
             node_config: run_config,
             control_channel,
             hlc: uhlc::HLC::default(),
-            event_stream_thread: Some(event_stream_thread),
         };
         Ok((node, event_stream))
     }
@@ -128,15 +123,9 @@ impl DoraNode {
 impl Drop for DoraNode {
     #[tracing::instrument(skip(self), fields(self.id = %self.id))]
     fn drop(&mut self) {
-        match self.control_channel.report_stop() {
-            Ok(()) => {
-                if let Some(thread) = self.event_stream_thread.take() {
-                    if let Err(panic) = thread.join() {
-                        std::panic::resume_unwind(panic);
-                    }
-                }
-            }
-            Err(err) => tracing::error!("{err:?}"),
+        tracing::info!("reporting node stop for node `{}`", self.id);
+        if let Err(err) = self.control_channel.report_stop() {
+            tracing::error!("{err:?}")
         }
     }
 }
