@@ -127,7 +127,7 @@ impl Daemon {
                 }
             });
 
-        let (dataflow_errors, _) = future::try_join(run_result, spawn_result).await?;
+        let (dataflow_errors, ()) = future::try_join(run_result, spawn_result).await?;
 
         if dataflow_errors.is_empty() {
             Ok(())
