@@ -9,11 +9,14 @@ license = "Apache-2.0"
 [lib]
 crate-type = ["staticlib"]
 
+[features]
+default = ["tracing-subscriber"]
+tracing-subscriber = ["dora-node-api/tracing-subscriber"]
+
 [dependencies]
 eyre = "0.6.8"
 flume = "0.10.14"
 tracing = "0.1.33"
 
 [dependencies.dora-node-api]
-default-features = false
-path = "../../rust/node"
+workspace = true
