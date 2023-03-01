@@ -7,6 +7,7 @@ pub async fn tcp_send(connection: &mut TcpStream, message: &[u8]) -> std::io::Re
     let len_raw = (message.len() as u64).to_le_bytes();
     connection.write_all(&len_raw).await?;
     connection.write_all(message).await?;
+    connection.flush().await?;
     Ok(())
 }
 
