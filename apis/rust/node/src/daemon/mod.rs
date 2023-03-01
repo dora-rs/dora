@@ -4,8 +4,9 @@ use dora_core::{
     message::Metadata,
 };
 use eyre::{bail, eyre, Context};
+use flume::RecvTimeoutError;
 use shared_memory_server::{Shmem, ShmemClient, ShmemConf};
-use std::{marker::PhantomData, net::TcpStream, time::Duration};
+use std::{marker::PhantomData, net::TcpStream, sync::Arc, time::Duration};
 
 mod tcp;
 
@@ -42,11 +43,14 @@ impl DaemonConnection {
             }
         };
 
-        let control_channel = ControlChannel::init(dataflow_id, node_id, control)
+        let mut control_channel = ControlChannel::init(dataflow_id, node_id, control)
             .wrap_err("failed to init control stream")?;
 
-        let event_stream = EventStream::init(dataflow_id, node_id, events)
-            .wrap_err("failed to init event stream")?;
+        let (event_stream, event_stream_thread_handle) =
+            EventStream::init(dataflow_id, node_id, events)
+                .wrap_err("failed to init event stream")?;
+
+        control_channel.event_stream_thread_handle = Some(event_stream_thread_handle);
 
         Ok(Self {
             control_channel,
@@ -57,6 +61,7 @@ impl DaemonConnection {
 
 pub(crate) struct ControlChannel {
     channel: DaemonChannel,
+    event_stream_thread_handle: Option<Arc<EventStreamThreadHandle>>,
 }
 
 impl ControlChannel {
@@ -68,7 +73,10 @@ impl ControlChannel {
     ) -> eyre::Result<Self> {
         register(dataflow_id, node_id.clone(), &mut channel)?;
 
-        Ok(Self { channel })
+        Ok(Self {
+            channel,
+            event_stream_thread_handle: None,
+        })
     }
 
     pub fn report_stop(&mut self) -> eyre::Result<()> {
@@ -223,6 +231,7 @@ enum EventItem {
 
 pub struct EventStream {
     receiver: flume::Receiver<EventItem>,
+    _thread_handle: Arc<EventStreamThreadHandle>,
 }
 
 impl EventStream {
@@ -230,7 +239,7 @@ impl EventStream {
         dataflow_id: DataflowId,
         node_id: &NodeId,
         mut channel: DaemonChannel,
-    ) -> eyre::Result<Self> {
+    ) -> eyre::Result<(Self, Arc<EventStreamThreadHandle>)> {
         register(dataflow_id, node_id.clone(), &mut channel)?;
 
         channel
@@ -241,7 +250,7 @@ impl EventStream {
         let (tx, rx) = flume::bounded(0);
         let mut drop_tokens = Vec::new();
         let node_id = node_id.clone();
-        std::thread::spawn(move || {
+        let join_handle = std::thread::spawn(move || {
             let result = loop {
                 let daemon_request = DaemonRequest::NextEvent {
                     drop_tokens: std::mem::take(&mut drop_tokens),
@@ -307,7 +316,15 @@ impl EventStream {
             }
         });
 
-        Ok(EventStream { receiver: rx })
+        let thread_handle = EventStreamThreadHandle::new(join_handle);
+
+        Ok((
+            EventStream {
+                receiver: rx,
+                _thread_handle: thread_handle.clone(),
+            },
+            thread_handle,
+        ))
     }
 
     pub fn recv(&mut self) -> Option<Event> {
@@ -421,5 +438,33 @@ impl std::ops::Deref for MappedInputData<'_> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { &self.memory.as_slice()[..self.len] }
+    }
+}
+
+struct EventStreamThreadHandle(flume::Receiver<std::thread::Result<()>>);
+impl EventStreamThreadHandle {
+    fn new(join_handle: std::thread::JoinHandle<()>) -> Arc<Self> {
+        let (tx, rx) = flume::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(join_handle.join());
+        });
+        Arc::new(Self(rx))
+    }
+}
+
+impl Drop for EventStreamThreadHandle {
+    fn drop(&mut self) {
+        match self.0.recv_timeout(Duration::from_secs(2)) {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                tracing::error!("event stream thread panicked");
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                tracing::warn!("timeout while waiting for event stream thread");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                tracing::warn!("event stream thread result channel closed unexpectedly");
+            }
+        }
     }
 }
