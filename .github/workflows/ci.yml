@@ -96,27 +96,19 @@ jobs:
           cargo install --path binaries/runtime
           cargo install --path binaries/cli
 
-      - run: dora-cli up
-
-      - name: "Test dora list"
-        run: dora-cli list
-
-      - name: "Test new command"
-        run: |
-          dora-cli new test_project
-
       - name: "Test start and stop command"
         timeout-minutes: 30
         run: |
+          dora-cli up
+          dora-cli list
           cd test_project
+          dora-cli new test_project
           cargo build --all --config "patch.'https://github.com/dora-rs/dora.git'.dora-node-api.path=\"../apis/rust/node\"" --config "patch.'https://github.com/dora-rs/dora.git'.dora-operator-api.path=\"../apis/rust/operator\""
           UUID=$(dora-cli start dataflow.yml)
           sleep 10
           dora-cli stop $UUID
           cd ..
-
-      - name: "Test dora destroy"
-        run: dora-cli destroy
+          dora-cli destroy
 
   examples-remote:
     name: "Examples (Remote)"
