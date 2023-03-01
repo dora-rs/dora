@@ -12,7 +12,6 @@ mod tcp;
 pub(crate) struct DaemonConnection {
     pub control_channel: ControlChannel,
     pub event_stream: EventStream,
-    pub(crate) event_stream_thread: JoinHandle<()>,
 }
 
 impl DaemonConnection {
@@ -46,13 +45,12 @@ impl DaemonConnection {
         let control_channel = ControlChannel::init(dataflow_id, node_id, control)
             .wrap_err("failed to init control stream")?;
 
-        let (event_stream, event_stream_thread) = EventStream::init(dataflow_id, node_id, events)
+        let event_stream = EventStream::init(dataflow_id, node_id, events)
             .wrap_err("failed to init event stream")?;
 
         Ok(Self {
             control_channel,
             event_stream,
-            event_stream_thread,
         })
     }
 }
@@ -226,7 +224,7 @@ impl EventStream {
         dataflow_id: DataflowId,
         node_id: &NodeId,
         mut channel: DaemonChannel,
-    ) -> eyre::Result<(Self, JoinHandle<()>)> {
+    ) -> eyre::Result<Self> {
         register(dataflow_id, node_id.clone(), &mut channel)?;
 
         channel
@@ -288,7 +286,7 @@ impl EventStream {
             }
         });
 
-        Ok((EventStream { receiver: rx }, thread))
+        Ok(EventStream { receiver: rx })
     }
 
     pub fn recv(&mut self) -> Option<Event> {
