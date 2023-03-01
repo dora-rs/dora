@@ -5,7 +5,7 @@ use dora_core::{
 };
 use eyre::{bail, eyre, Context};
 use shared_memory_server::{Shmem, ShmemClient, ShmemConf};
-use std::{marker::PhantomData, net::TcpStream, thread::JoinHandle, time::Duration};
+use std::{marker::PhantomData, net::TcpStream, time::Duration};
 
 mod tcp;
 
@@ -213,7 +213,13 @@ fn register(
     Ok(())
 }
 
-type EventItem = (NodeEvent, std::sync::mpsc::Sender<()>);
+enum EventItem {
+    NodeEvent {
+        event: NodeEvent,
+        ack_channel: std::sync::mpsc::Sender<()>,
+    },
+    FatalError(eyre::Report),
+}
 
 pub struct EventStream {
     receiver: flume::Receiver<EventItem>,
@@ -234,55 +240,70 @@ impl EventStream {
 
         let (tx, rx) = flume::bounded(0);
         let mut drop_tokens = Vec::new();
-        let thread = std::thread::spawn(move || loop {
-            let daemon_request = DaemonRequest::NextEvent {
-                drop_tokens: std::mem::take(&mut drop_tokens),
-            };
-            let event: NodeEvent = match channel.request(&daemon_request) {
-                Ok(DaemonReply::NodeEvent(event)) => event,
-                Ok(DaemonReply::Closed) => {
-                    tracing::debug!("Event stream closed");
-                    break;
-                }
-                Ok(other) => {
-                    let err = eyre!("unexpected control reply: {other:?}");
-                    tracing::warn!("{err:?}");
-                    continue;
-                }
-                Err(err) => {
-                    let err = eyre!(err).wrap_err("failed to receive incoming event");
-                    tracing::warn!("{err:?}");
-                    continue;
-                }
-            };
-            let drop_token = match &event {
-                NodeEvent::Input {
-                    data: Some(data), ..
-                } => Some(data.drop_token.clone()),
-                NodeEvent::Stop
-                | NodeEvent::InputClosed { .. }
-                | NodeEvent::Input { data: None, .. } => None,
-            };
+        let node_id = node_id.clone();
+        std::thread::spawn(move || {
+            let result = loop {
+                let daemon_request = DaemonRequest::NextEvent {
+                    drop_tokens: std::mem::take(&mut drop_tokens),
+                };
+                let event: NodeEvent = match channel.request(&daemon_request) {
+                    Ok(DaemonReply::NodeEvent(event)) => event,
+                    Ok(DaemonReply::Closed) => {
+                        tracing::debug!("Event stream closed for node ID `{node_id}`");
+                        break Ok(());
+                    }
+                    Ok(other) => {
+                        let err = eyre!("unexpected control reply: {other:?}");
+                        tracing::warn!("{err:?}");
+                        continue;
+                    }
+                    Err(err) => {
+                        let err = eyre!(err).wrap_err("failed to receive incoming event");
+                        tracing::warn!("{err:?}");
+                        continue;
+                    }
+                };
+                let drop_token = match &event {
+                    NodeEvent::Input {
+                        data: Some(data), ..
+                    } => Some(data.drop_token.clone()),
+                    NodeEvent::Stop
+                    | NodeEvent::InputClosed { .. }
+                    | NodeEvent::Input { data: None, .. } => None,
+                };
 
-            let (drop_tx, drop_rx) = std::sync::mpsc::channel();
-            match tx.send((event, drop_tx)) {
-                Ok(()) => {}
-                Err(_) => {
-                    // receiving end of channel was closed
-                    break;
+                let (drop_tx, drop_rx) = std::sync::mpsc::channel();
+                match tx.send(EventItem::NodeEvent {
+                    event,
+                    ack_channel: drop_tx,
+                }) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        // receiving end of channel was closed
+                        break Ok(());
+                    }
                 }
-            }
 
-            match drop_rx.recv_timeout(Duration::from_secs(30)) {
-                Ok(()) => panic!("Node API should not send anything on ACK channel"),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    tracing::warn!("timeout while waiting for input ACK");
+                match drop_rx.recv_timeout(Duration::from_secs(30)) {
+                    Ok(()) => break Err(eyre!("Node API should not send anything on ACK channel")),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        tracing::warn!("timeout while waiting for input ACK");
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
-            }
 
-            if let Some(token) = drop_token {
-                drop_tokens.push(token);
+                if let Some(token) = drop_token {
+                    drop_tokens.push(token);
+                }
+            };
+            if let Err(err) = result {
+                if let Err(flume::SendError(item)) = tx.send(EventItem::FatalError(err)) {
+                    let err = match item {
+                        EventItem::FatalError(err) => err,
+                        _ => unreachable!(),
+                    };
+                    tracing::error!("failed to report fatal EventStream error: {err:?}");
+                }
             }
         });
 
@@ -300,28 +321,36 @@ impl EventStream {
     }
 
     fn recv_common(&mut self, event: Result<EventItem, flume::RecvError>) -> Option<Event> {
-        let (node_event, drop_sender) = match event {
-            Ok(d) => d,
-            Err(flume::RecvError::Disconnected) => return None,
+        let event = match event {
+            Ok(event) => event,
+            Err(flume::RecvError::Disconnected) => {
+                tracing::info!("event channel disconnected");
+                return None;
+            }
         };
-        let event = match node_event {
-            NodeEvent::Stop => Event::Stop,
-            NodeEvent::InputClosed { id } => Event::InputClosed { id },
-            NodeEvent::Input { id, metadata, data } => {
-                let mapped = data
-                    .map(|d| unsafe { MappedInputData::map(&d.shared_memory_id, d.len) })
-                    .transpose();
-                match mapped {
-                    Ok(mapped) => Event::Input {
-                        id,
-                        metadata,
-                        data: mapped.map(|data| Data {
-                            data,
-                            _drop: drop_sender,
-                        }),
-                    },
-                    Err(err) => Event::Error(format!("{err:?}")),
+        let event = match event {
+            EventItem::NodeEvent { event, ack_channel } => match event {
+                NodeEvent::Stop => Event::Stop,
+                NodeEvent::InputClosed { id } => Event::InputClosed { id },
+                NodeEvent::Input { id, metadata, data } => {
+                    let mapped = data
+                        .map(|d| unsafe { MappedInputData::map(&d.shared_memory_id, d.len) })
+                        .transpose();
+                    match mapped {
+                        Ok(mapped) => Event::Input {
+                            id,
+                            metadata,
+                            data: mapped.map(|data| Data {
+                                data,
+                                _drop: ack_channel,
+                            }),
+                        },
+                        Err(err) => Event::Error(format!("{err:?}")),
+                    }
                 }
+            },
+            EventItem::FatalError(err) => {
+                Event::Error(format!("fatal event stream error: {err:?}"))
             }
         };
 
