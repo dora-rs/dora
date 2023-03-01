@@ -33,7 +33,6 @@ mod ffi {
         type DoraEvent<'a>;
 
         fn init_dora_node() -> Result<DoraNode>;
-        fn free_dora_node(node: DoraNode);
 
         fn next_event(inputs: &mut Box<Events>) -> Box<DoraEvent<'_>>;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
@@ -55,10 +54,6 @@ fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
         events: Box::new(inputs),
         send_output: Box::new(send_output),
     })
-}
-
-fn free_dora_node(node: ffi::DoraNode) {
-    let _ = node;
 }
 
 pub struct Events(EventStream);
