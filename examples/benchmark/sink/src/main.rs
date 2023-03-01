@@ -47,7 +47,14 @@ fn main() -> eyre::Result<()> {
                 }
 
                 n += 1;
-                latencies.push(metadata.timestamp().get_time().to_system_time().elapsed()?);
+                latencies.push(
+                    metadata
+                        .timestamp()
+                        .get_time()
+                        .to_system_time()
+                        .elapsed()
+                        .unwrap_or_default(),
+                );
             }
             Event::InputClosed { id } => {
                 println!("Input `{id}` was closed");
