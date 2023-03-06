@@ -112,6 +112,9 @@ typedef struct RawEvent {
     Input_t * input;
 
     /** <No documentation available> */
+    Vec_uint8_t input_closed;
+
+    /** <No documentation available> */
     bool stop;
 } RawEvent_t;
 

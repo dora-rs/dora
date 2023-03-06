@@ -170,6 +170,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let operator_event = match event {
                 IncomingEvent::Stop => dora_operator_api_types::RawEvent {
                     input: None,
+                    input_closed: None,
                     stop: true,
                 },
                 IncomingEvent::Input {
@@ -190,9 +191,15 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     };
                     dora_operator_api_types::RawEvent {
                         input: Some(Box::new(operator_input).into()),
+                        input_closed: None,
                         stop: false,
                     }
                 }
+                IncomingEvent::InputClosed { input_id } => dora_operator_api_types::RawEvent {
+                    input_closed: Some(input_id.to_string().into()),
+                    input: None,
+                    stop: false,
+                },
             };
 
             let send_output = SendOutput {

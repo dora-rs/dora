@@ -41,6 +41,8 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
             id: &input.id,
             data,
         }
+    } else if let Some(input_id) = &event.input_closed {
+        Event::InputClosed { id: input_id }
     } else if event.stop {
         Event::Stop
     } else {
