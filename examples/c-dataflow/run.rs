@@ -117,21 +117,10 @@ async fn build_c_operator() -> eyre::Result<()> {
     let mut link = tokio::process::Command::new("clang");
     link.arg("-shared").arg("build/operator.o");
     link.arg("-o")
-        .arg(Path::new("build").join(library_filename("operator")));
+        .arg(Path::new("build").join(format!("{DLL_PREFIX}operator{DLL_SUFFIX}")));
     if !link.status().await?.success() {
         bail!("failed to link c operator");
     };
 
     Ok(())
-}
-
-// taken from `rust_libloading` crate by Simonas Kazlauskas, licensed under the ISC license (
-// see https://github.com/nagisa/rust_libloading/blob/master/LICENSE)
-pub fn library_filename<S: AsRef<OsStr>>(name: S) -> OsString {
-    let name = name.as_ref();
-    let mut string = OsString::with_capacity(name.len() + DLL_PREFIX.len() + DLL_SUFFIX.len());
-    string.push(DLL_PREFIX);
-    string.push(name);
-    string.push(DLL_SUFFIX);
-    string
 }
