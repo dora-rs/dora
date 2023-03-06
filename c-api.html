@@ -212,51 +212,62 @@ DoraResult_t dora_drop_operator(void *operator_context)
     return result;
 }
 
-OnInputResult_t dora_on_input(
-    const Input_t *input,
+OnEventResult_t dora_on_event(
+    const RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
 {
     char *counter = (char *)operator_context;
 
-    char id[input-&gt;id.len + 1];
-    memcpy(id, input-&gt;id.ptr, input-&gt;id.len);
-    id[input-&gt;id.len] = 0;
-
-    if (strcmp(id, &quot;tick&quot;) == 0)
+    if (event-&gt;input != NULL)
     {
-        char data[input-&gt;data.len + 1];
-        memcpy(data, input-&gt;data.ptr, input-&gt;data.len);
-        data[input-&gt;data.len] = 0;
+        // input event
+        Input_t *input = event-&gt;input;
 
-        *counter += 1;
-        printf(&quot;C operator received tick input with data `%s`, counter: %i\n&quot;, data, *counter);
+        char id[input-&gt;id.len + 1];
+        memcpy(id, input-&gt;id.ptr, input-&gt;id.len);
+        id[input-&gt;id.len] = 0;
 
-        char *out_id = &quot;counter&quot;;
-        char *out_id_heap = strdup(out_id);
+        if (strcmp(id, &quot;message&quot;) == 0)
+        {
+            char data[input-&gt;data.len + 1];
+            memcpy(data, input-&gt;data.ptr, input-&gt;data.len);
+            data[input-&gt;data.len] = 0;
 
-        int data_alloc_size = 100;
-        char *out_data = (char *)malloc(data_alloc_size);
-        int count = snprintf(out_data, data_alloc_size, &quot;The current counter value is %d&quot;, *counter);
-        assert(count &gt;= 0 &amp;&amp; count &lt; 100);
+            *counter += 1;
+            printf(&quot;C operator received message `%s`, counter: %i\n&quot;, data, *counter);
 
-        Output_t output = {.id = {
-                               .ptr = (uint8_t *)out_id_heap,
-                               .len = strlen(out_id_heap),
-                               .cap = strlen(out_id_heap) + 1,
-                           },
-                           .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
-        DoraResult_t res = (send_output-&gt;send_output.call)(send_output-&gt;send_output.env_ptr, output);
+            char *out_id = &quot;counter&quot;;
+            char *out_id_heap = strdup(out_id);
 
-        OnInputResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
-        return result;
+            int data_alloc_size = 100;
+            char *out_data = (char *)malloc(data_alloc_size);
+            int count = snprintf(out_data, data_alloc_size, &quot;The current counter value is %d&quot;, *counter);
+            assert(count &gt;= 0 &amp;&amp; count &lt; 100);
+
+            Output_t output = {.id = {
+                                   .ptr = (uint8_t *)out_id_heap,
+                                   .len = strlen(out_id_heap),
+                                   .cap = strlen(out_id_heap) + 1,
+                               },
+                               .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
+            DoraResult_t res = (send_output-&gt;send_output.call)(send_output-&gt;send_output.env_ptr, output);
+
+            OnEventResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
+            return result;
+        }
+        else
+        {
+            printf(&quot;C operator received unexpected input %s, context: %i\n&quot;, id, *counter);
+        }
     }
-    else
+    if (event-&gt;stop)
     {
-        printf(&quot;C operator received unexpected input %s, context: %i\n&quot;, id, *counter);
-        OnInputResult_t result = {.status = DORA_STATUS_CONTINUE};
-        return result;
+        printf(&quot;C operator received stop event\n&quot;);
     }
+
+    OnEventResult_t result = {.status = DORA_STATUS_CONTINUE};
+    return result;
 }
 </code></pre>
 <pre><code>  -ladvapi32 -luserenv -lkernel32 -lws2_32 -lbcrypt -lncrypt -lschannel -lntdll -liphlpapi
@@ -279,7 +290,7 @@ OnInputResult_t dora_on_input(
       - id: c_operator
         shared-library: build/operator
         inputs:
-          tick: c_node/tick
+          message: c_node/message
         outputs:
           - counter
 </code></pre>
@@ -338,29 +349,44 @@ int main()
 
     printf(&quot;[c node] dora context initialized\n&quot;);
 
-    for (char i = 0; i &lt; 10; i++)
+    for (char i = 0; i &lt; 100; i++)
     {
-        printf(&quot;[c node] waiting for next input\n&quot;);
-        void *input = dora_next_input(dora_context);
-        if (input == NULL)
+        void *event = dora_next_event(dora_context);
+        if (event == NULL)
         {
-            printf(&quot;[c node] ERROR: unexpected end of input\n&quot;);
+            printf(&quot;[c node] ERROR: unexpected end of event\n&quot;);
             return -1;
         }
 
-        char *data;
-        size_t data_len;
-        read_dora_input_data(input, &amp;data, &amp;data_len);
+        enum DoraEventType ty = read_dora_event_type(event);
 
-        assert(data_len == 0);
+        if (ty == DoraEventType_Input)
+        {
+            char *data;
+            size_t data_len;
+            read_dora_input_data(event, &amp;data, &amp;data_len);
 
-        char out_id[] = &quot;tick&quot;;
-        dora_send_output(dora_context, out_id, strlen(out_id), &amp;i, 1);
+            assert(data_len == 0);
 
-        free_dora_input(input);
+            char out_id[] = &quot;message&quot;;
+            char out_data[50];
+            int out_data_len = sprintf(out_data, &quot;loop iteration %d&quot;, i);
+
+            dora_send_output(dora_context, out_id, strlen(out_id), out_data, out_data_len);
+        }
+        else if (ty == DoraEventType_Stop)
+        {
+            printf(&quot;[c node] received stop event\n&quot;);
+        }
+        else
+        {
+            printf(&quot;[c node] received unexpected event: %d\n&quot;, ty);
+        }
+
+        free_dora_event(event);
     }
 
-    printf(&quot;[c node] received 10 inputs\n&quot;);
+    printf(&quot;[c node] received 10 events\n&quot;);
 
     free_dora_context(dora_context);
 
@@ -398,9 +424,9 @@ int main()
     custom:
       source: build/c_node
       inputs:
-        timer: dora/timer/secs/1
+        timer: dora/timer/millis/50
       outputs:
-        - tick
+        - message
 </code></pre>
 
                     </main>

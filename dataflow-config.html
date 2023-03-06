@@ -221,13 +221,15 @@ deployment:
   zenoh:
     prefix: /example-rust-dataflow
 
+daemon_config: Tcp # or Shmem
+
 nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
       source: ../../target/debug/rust-dataflow-example-node
       inputs:
-        tick: dora/timer/millis/300
+        tick: dora/timer/millis/10
       outputs:
         - random
   - id: runtime-node

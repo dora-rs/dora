@@ -236,42 +236,46 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true, features = [&quot;zenoh&quot;] }
+dora-node-api = { workspace = true }
 eyre = &quot;0.6.8&quot;
 futures = &quot;0.3.21&quot;
 rand = &quot;0.8.5&quot;
 tokio = { version = &quot;1.24.2&quot;, features = [&quot;rt&quot;, &quot;macros&quot;] }
 </code></pre>
 <p>with <code>src/main.rs</code>:</p>
-<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, dora_core::config::DataId, DoraNode};
+<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
 
 fn main() -&gt; eyre::Result&lt;()&gt; {
+    println!(&quot;hello&quot;);
+
     let output = DataId::from(&quot;random&quot;.to_owned());
 
-    let mut operator = DoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
-    let inputs = operator.inputs()?;
-
-    for _ in 0..20 {
-        let input = match inputs.recv() {
-            Ok(input) =&gt; input,
-            Err(_) =&gt; break,
+    for i in 0..100 {
+        let event = match events.recv() {
+            Some(input) =&gt; input,
+            None =&gt; break,
         };
 
-        match input.id.as_str() {
-            &quot;tick&quot; =&gt; {
-                let random: u64 = rand::random();
-                let data: &amp;[u8] = &amp;random.to_le_bytes();
-                operator.send_output(
-                    &amp;output,
-                    input.metadata().parameters.clone(),
-                    data.len(),
-                    |out| {
+        match event {
+            Event::Input {
+                id,
+                metadata,
+                data: _,
+            } =&gt; match id.as_str() {
+                &quot;tick&quot; =&gt; {
+                    let random: u64 = rand::random();
+                    println!(&quot;tick {i}, sending {random:#x}&quot;);
+                    let data: &amp;[u8] = &amp;random.to_le_bytes();
+                    node.send_output(output.clone(), metadata.parameters, data.len(), |out| {
                         out.copy_from_slice(data);
-                    },
-                )?;
-            }
-            other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
+                    })?;
+                }
+                other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
+            },
+            Event::Stop =&gt; println!(&quot;Received manual stop&quot;),
+            other =&gt; eprintln!(&quot;Received unexpected input: {other:?}&quot;),
         }
     }
 
@@ -305,48 +309,53 @@ dora-operator-api = { path = &quot;../../../apis/rust/operator&quot; }
 </span>#![warn(unsafe_op_in_unsafe_fn)]
 
 <span class="boring">fn main() {
-</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
-use std::time::{Duration, Instant};
+</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
 
 register_operator!(ExampleOperator);
 
 #[derive(Debug, Default)]
 struct ExampleOperator {
     ticks: usize,
-    last_random_at: Option&lt;Instant&gt;,
 }
 
 impl DoraOperator for ExampleOperator {
-    fn on_input(
+    fn on_event(
         &amp;mut self,
-        id: &amp;str,
-        data: &amp;[u8],
+        event: &amp;Event,
         output_sender: &amp;mut DoraOutputSender,
     ) -&gt; Result&lt;DoraStatus, String&gt; {
-        match id {
-            &quot;tick&quot; =&gt; {
-                self.ticks += 1;
+        match event {
+            Event::Input { id, data } =&gt; match *id {
+                &quot;tick&quot; =&gt; {
+                    self.ticks += 1;
+                }
+                &quot;random&quot; =&gt; {
+                    let parsed = {
+                        let data: [u8; 8] =
+                            (*data).try_into().map_err(|_| &quot;unexpected random data&quot;)?;
+                        u64::from_le_bytes(data)
+                    };
+                    let output = format!(
+                        &quot;operator received random value {parsed:#x} after {} ticks&quot;,
+                        self.ticks
+                    );
+                    output_sender.send(&quot;status&quot;.into(), output.into_bytes())?;
+                }
+                other =&gt; eprintln!(&quot;ignoring unexpected input {other}&quot;),
+            },
+            Event::Stop =&gt; {}
+            Event::InputClosed { id } =&gt; {
+                println!(&quot;input `{id}` was closed&quot;);
+                if *id == &quot;random&quot; {
+                    println!(&quot;`random` input was closed -&gt; exiting&quot;);
+                    return Ok(DoraStatus::Stop);
+                }
             }
-            &quot;random&quot; =&gt; {
-                let parsed = {
-                    let data: [u8; 8] = data.try_into().map_err(|_| &quot;unexpected random data&quot;)?;
-                    u64::from_le_bytes(data)
-                };
-                let output = format!(
-                    &quot;operator received random value {parsed} after {} ticks&quot;,
-                    self.ticks
-                );
-                output_sender.send(&quot;status&quot;.into(), output.into_bytes())?;
-                self.last_random_at = Some(Instant::now());
+            other =&gt; {
+                println!(&quot;received unknown event {other:?}&quot;);
             }
-            other =&gt; eprintln!(&quot;ignoring unexpected input {other}&quot;),
         }
-        if let Some(last_random_at) = self.last_random_at {
-            if last_random_at.elapsed() &gt; Duration::from_secs(1) {
-                // looks like the node sending the random values finished -&gt; exit too
-                return Ok(DoraStatus::Stop);
-            }
-        }
+
         Ok(DoraStatus::Continue)
     }
 }
@@ -378,33 +387,44 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true, features = [&quot;zenoh&quot;] }
+dora-node-api = { workspace = true }
 eyre = &quot;0.6.8&quot;
 </code></pre>
 <p>with <code>src/main.rs</code>:</p>
-<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, DoraNode};
-use eyre::{bail, Context};
+<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, DoraNode, Event};
+use eyre::{bail, Context, ContextCompat};
 
 fn main() -&gt; eyre::Result&lt;()&gt; {
-    let mut operator = DoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
-    let inputs = operator.inputs()?;
-
-    while let Ok(input) = inputs.recv() {
-        match input.id.as_str() {
-            &quot;message&quot; =&gt; {
-                let data = input.data();
-                let received_string =
-                    std::str::from_utf8(&amp;data).wrap_err(&quot;received message was not utf8-encoded&quot;)?;
-                println!(&quot;received message: {}&quot;, received_string);
-                if !received_string.starts_with(&quot;operator received random value &quot;) {
-                    bail!(&quot;unexpected message format (should start with 'operator received random value')&quot;)
+    while let Some(event) = events.recv() {
+        match event {
+            Event::Input {
+                id,
+                metadata: _,
+                data,
+            } =&gt; match id.as_str() {
+                &quot;message&quot; =&gt; {
+                    let data = data.wrap_err(&quot;no data&quot;)?;
+                    let received_string = std::str::from_utf8(&amp;data)
+                        .wrap_err(&quot;received message was not utf8-encoded&quot;)?;
+                    println!(&quot;sink received message: {}&quot;, received_string);
+                    if !received_string.starts_with(&quot;operator received random value &quot;) {
+                        bail!(&quot;unexpected message format (should start with 'operator received random value')&quot;)
+                    }
+                    if !received_string.ends_with(&quot; ticks&quot;) {
+                        bail!(&quot;unexpected message format (should end with 'ticks')&quot;)
+                    }
                 }
-                if !received_string.ends_with(&quot; ticks&quot;) {
-                    bail!(&quot;unexpected message format (should end with 'ticks')&quot;)
-                }
+                other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
+            },
+            Event::Stop =&gt; {
+                println!(&quot;Received manual stop&quot;);
             }
-            other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
+            Event::InputClosed { id } =&gt; {
+                println!(&quot;Input `{id}` was closed&quot;);
+            }
+            other =&gt; eprintln!(&quot;Received unexpected input: {other:?}&quot;),
         }
     }
 
@@ -432,13 +452,15 @@ members = [
   zenoh:
     prefix: /example-rust-dataflow
 
+daemon_config: Tcp # or Shmem
+
 nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
       source: ../../target/debug/rust-dataflow-example-node
       inputs:
-        tick: dora/timer/millis/300
+        tick: dora/timer/millis/10
       outputs:
         - random
   - id: runtime-node
@@ -573,13 +595,15 @@ deployment:
   zenoh:
     prefix: /example-rust-dataflow
 
+daemon_config: Tcp # or Shmem
+
 nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
       source: ../../target/debug/rust-dataflow-example-node
       inputs:
-        tick: dora/timer/millis/300
+        tick: dora/timer/millis/10
       outputs:
         - random
   - id: runtime-node
@@ -682,48 +706,53 @@ dora-operator-api = { path = &quot;../../../apis/rust/operator&quot; }
 </span>#![warn(unsafe_op_in_unsafe_fn)]
 
 <span class="boring">fn main() {
-</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
-use std::time::{Duration, Instant};
+</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
 
 register_operator!(ExampleOperator);
 
 #[derive(Debug, Default)]
 struct ExampleOperator {
     ticks: usize,
-    last_random_at: Option&lt;Instant&gt;,
 }
 
 impl DoraOperator for ExampleOperator {
-    fn on_input(
+    fn on_event(
         &amp;mut self,
-        id: &amp;str,
-        data: &amp;[u8],
+        event: &amp;Event,
         output_sender: &amp;mut DoraOutputSender,
     ) -&gt; Result&lt;DoraStatus, String&gt; {
-        match id {
-            &quot;tick&quot; =&gt; {
-                self.ticks += 1;
+        match event {
+            Event::Input { id, data } =&gt; match *id {
+                &quot;tick&quot; =&gt; {
+                    self.ticks += 1;
+                }
+                &quot;random&quot; =&gt; {
+                    let parsed = {
+                        let data: [u8; 8] =
+                            (*data).try_into().map_err(|_| &quot;unexpected random data&quot;)?;
+                        u64::from_le_bytes(data)
+                    };
+                    let output = format!(
+                        &quot;operator received random value {parsed:#x} after {} ticks&quot;,
+                        self.ticks
+                    );
+                    output_sender.send(&quot;status&quot;.into(), output.into_bytes())?;
+                }
+                other =&gt; eprintln!(&quot;ignoring unexpected input {other}&quot;),
+            },
+            Event::Stop =&gt; {}
+            Event::InputClosed { id } =&gt; {
+                println!(&quot;input `{id}` was closed&quot;);
+                if *id == &quot;random&quot; {
+                    println!(&quot;`random` input was closed -&gt; exiting&quot;);
+                    return Ok(DoraStatus::Stop);
+                }
             }
-            &quot;random&quot; =&gt; {
-                let parsed = {
-                    let data: [u8; 8] = data.try_into().map_err(|_| &quot;unexpected random data&quot;)?;
-                    u64::from_le_bytes(data)
-                };
-                let output = format!(
-                    &quot;operator received random value {parsed} after {} ticks&quot;,
-                    self.ticks
-                );
-                output_sender.send(&quot;status&quot;.into(), output.into_bytes())?;
-                self.last_random_at = Some(Instant::now());
+            other =&gt; {
+                println!(&quot;received unknown event {other:?}&quot;);
             }
-            other =&gt; eprintln!(&quot;ignoring unexpected input {other}&quot;),
         }
-        if let Some(last_random_at) = self.last_random_at {
-            if last_random_at.elapsed() &gt; Duration::from_secs(1) {
-                // looks like the node sending the random values finished -&gt; exit too
-                return Ok(DoraStatus::Stop);
-            }
-        }
+
         Ok(DoraStatus::Continue)
     }
 }
@@ -737,15 +766,15 @@ impl DoraOperator for ExampleOperator {
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">        - random
+<pre><code class="language-yaml">        tick: dora/timer/millis/10
+      outputs:
+        - random
   - id: runtime-node
     operators:
       - id: rust-operator
         build: cargo build -p rust-dataflow-example-operator
         shared-library: ../../target/debug/rust_dataflow_example_operator
         inputs:
-          tick: dora/timer/millis/100
-          random: rust-node/random
 </code></pre>
 <p>This example can be found in <code>examples</code>.</p>
 <h2 id="custom-node"><a class="header" href="#custom-node">Custom Node</a></h2>
@@ -788,42 +817,46 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true, features = [&quot;zenoh&quot;] }
+dora-node-api = { workspace = true }
 eyre = &quot;0.6.8&quot;
 futures = &quot;0.3.21&quot;
 rand = &quot;0.8.5&quot;
 tokio = { version = &quot;1.24.2&quot;, features = [&quot;rt&quot;, &quot;macros&quot;] }
 </code></pre>
 <p><code>src/main.rs</code></p>
-<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, dora_core::config::DataId, DoraNode};
+<pre><pre class="playground"><code class="language-rust">use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
 
 fn main() -&gt; eyre::Result&lt;()&gt; {
+    println!(&quot;hello&quot;);
+
     let output = DataId::from(&quot;random&quot;.to_owned());
 
-    let mut operator = DoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
-    let inputs = operator.inputs()?;
-
-    for _ in 0..20 {
-        let input = match inputs.recv() {
-            Ok(input) =&gt; input,
-            Err(_) =&gt; break,
+    for i in 0..100 {
+        let event = match events.recv() {
+            Some(input) =&gt; input,
+            None =&gt; break,
         };
 
-        match input.id.as_str() {
-            &quot;tick&quot; =&gt; {
-                let random: u64 = rand::random();
-                let data: &amp;[u8] = &amp;random.to_le_bytes();
-                operator.send_output(
-                    &amp;output,
-                    input.metadata().parameters.clone(),
-                    data.len(),
-                    |out| {
+        match event {
+            Event::Input {
+                id,
+                metadata,
+                data: _,
+            } =&gt; match id.as_str() {
+                &quot;tick&quot; =&gt; {
+                    let random: u64 = rand::random();
+                    println!(&quot;tick {i}, sending {random:#x}&quot;);
+                    let data: &amp;[u8] = &amp;random.to_le_bytes();
+                    node.send_output(output.clone(), metadata.parameters, data.len(), |out| {
                         out.copy_from_slice(data);
-                    },
-                )?;
-            }
-            other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
+                    })?;
+                }
+                other =&gt; eprintln!(&quot;Ignoring unexpected input `{other}`&quot;),
+            },
+            Event::Stop =&gt; println!(&quot;Received manual stop&quot;),
+            other =&gt; eprintln!(&quot;Received unexpected input: {other:?}&quot;),
         }
     }
 
@@ -833,13 +866,13 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">  - id: rust-node
+<pre><code class="language-yaml">
+nodes:
+  - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
       source: ../../target/debug/rust-dataflow-example-node
       inputs:
-        tick: dora/timer/millis/300
-      outputs:
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="c-api"><a class="header" href="#c-api">C API</a></h1>
 <h2 id="operator-1"><a class="header" href="#operator-1">Operator</a></h2>
@@ -910,51 +943,62 @@ DoraResult_t dora_drop_operator(void *operator_context)
     return result;
 }
 
-OnInputResult_t dora_on_input(
-    const Input_t *input,
+OnEventResult_t dora_on_event(
+    const RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
 {
     char *counter = (char *)operator_context;
 
-    char id[input-&gt;id.len + 1];
-    memcpy(id, input-&gt;id.ptr, input-&gt;id.len);
-    id[input-&gt;id.len] = 0;
-
-    if (strcmp(id, &quot;tick&quot;) == 0)
+    if (event-&gt;input != NULL)
     {
-        char data[input-&gt;data.len + 1];
-        memcpy(data, input-&gt;data.ptr, input-&gt;data.len);
-        data[input-&gt;data.len] = 0;
+        // input event
+        Input_t *input = event-&gt;input;
 
-        *counter += 1;
-        printf(&quot;C operator received tick input with data `%s`, counter: %i\n&quot;, data, *counter);
+        char id[input-&gt;id.len + 1];
+        memcpy(id, input-&gt;id.ptr, input-&gt;id.len);
+        id[input-&gt;id.len] = 0;
 
-        char *out_id = &quot;counter&quot;;
-        char *out_id_heap = strdup(out_id);
+        if (strcmp(id, &quot;message&quot;) == 0)
+        {
+            char data[input-&gt;data.len + 1];
+            memcpy(data, input-&gt;data.ptr, input-&gt;data.len);
+            data[input-&gt;data.len] = 0;
 
-        int data_alloc_size = 100;
-        char *out_data = (char *)malloc(data_alloc_size);
-        int count = snprintf(out_data, data_alloc_size, &quot;The current counter value is %d&quot;, *counter);
-        assert(count &gt;= 0 &amp;&amp; count &lt; 100);
+            *counter += 1;
+            printf(&quot;C operator received message `%s`, counter: %i\n&quot;, data, *counter);
 
-        Output_t output = {.id = {
-                               .ptr = (uint8_t *)out_id_heap,
-                               .len = strlen(out_id_heap),
-                               .cap = strlen(out_id_heap) + 1,
-                           },
-                           .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
-        DoraResult_t res = (send_output-&gt;send_output.call)(send_output-&gt;send_output.env_ptr, output);
+            char *out_id = &quot;counter&quot;;
+            char *out_id_heap = strdup(out_id);
 
-        OnInputResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
-        return result;
+            int data_alloc_size = 100;
+            char *out_data = (char *)malloc(data_alloc_size);
+            int count = snprintf(out_data, data_alloc_size, &quot;The current counter value is %d&quot;, *counter);
+            assert(count &gt;= 0 &amp;&amp; count &lt; 100);
+
+            Output_t output = {.id = {
+                                   .ptr = (uint8_t *)out_id_heap,
+                                   .len = strlen(out_id_heap),
+                                   .cap = strlen(out_id_heap) + 1,
+                               },
+                               .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
+            DoraResult_t res = (send_output-&gt;send_output.call)(send_output-&gt;send_output.env_ptr, output);
+
+            OnEventResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
+            return result;
+        }
+        else
+        {
+            printf(&quot;C operator received unexpected input %s, context: %i\n&quot;, id, *counter);
+        }
     }
-    else
+    if (event-&gt;stop)
     {
-        printf(&quot;C operator received unexpected input %s, context: %i\n&quot;, id, *counter);
-        OnInputResult_t result = {.status = DORA_STATUS_CONTINUE};
-        return result;
+        printf(&quot;C operator received stop event\n&quot;);
     }
+
+    OnEventResult_t result = {.status = DORA_STATUS_CONTINUE};
+    return result;
 }
 </code></pre>
 <pre><code>  -ladvapi32 -luserenv -lkernel32 -lws2_32 -lbcrypt -lncrypt -lschannel -lntdll -liphlpapi
@@ -977,7 +1021,7 @@ OnInputResult_t dora_on_input(
       - id: c_operator
         shared-library: build/operator
         inputs:
-          tick: c_node/tick
+          message: c_node/message
         outputs:
           - counter
 </code></pre>
@@ -1036,29 +1080,44 @@ int main()
 
     printf(&quot;[c node] dora context initialized\n&quot;);
 
-    for (char i = 0; i &lt; 10; i++)
+    for (char i = 0; i &lt; 100; i++)
     {
-        printf(&quot;[c node] waiting for next input\n&quot;);
-        void *input = dora_next_input(dora_context);
-        if (input == NULL)
+        void *event = dora_next_event(dora_context);
+        if (event == NULL)
         {
-            printf(&quot;[c node] ERROR: unexpected end of input\n&quot;);
+            printf(&quot;[c node] ERROR: unexpected end of event\n&quot;);
             return -1;
         }
 
-        char *data;
-        size_t data_len;
-        read_dora_input_data(input, &amp;data, &amp;data_len);
+        enum DoraEventType ty = read_dora_event_type(event);
 
-        assert(data_len == 0);
+        if (ty == DoraEventType_Input)
+        {
+            char *data;
+            size_t data_len;
+            read_dora_input_data(event, &amp;data, &amp;data_len);
 
-        char out_id[] = &quot;tick&quot;;
-        dora_send_output(dora_context, out_id, strlen(out_id), &amp;i, 1);
+            assert(data_len == 0);
 
-        free_dora_input(input);
+            char out_id[] = &quot;message&quot;;
+            char out_data[50];
+            int out_data_len = sprintf(out_data, &quot;loop iteration %d&quot;, i);
+
+            dora_send_output(dora_context, out_id, strlen(out_id), out_data, out_data_len);
+        }
+        else if (ty == DoraEventType_Stop)
+        {
+            printf(&quot;[c node] received stop event\n&quot;);
+        }
+        else
+        {
+            printf(&quot;[c node] received unexpected event: %d\n&quot;, ty);
+        }
+
+        free_dora_event(event);
     }
 
-    printf(&quot;[c node] received 10 inputs\n&quot;);
+    printf(&quot;[c node] received 10 events\n&quot;);
 
     free_dora_context(dora_context);
 
@@ -1096,9 +1155,9 @@ int main()
     custom:
       source: build/c_node
       inputs:
-        timer: dora/timer/secs/1
+        timer: dora/timer/millis/50
       outputs:
-        - tick
+        - message
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="python-api"><a class="header" href="#python-api">Python API</a></h1>
 <h2 id="operator-2"><a class="header" href="#operator-2">Operator</a></h2>
@@ -1118,49 +1177,46 @@ int main()
 <ul>
 <li>Create an operator python file called <code>object_detection.py</code>:</li>
 </ul>
-<pre><code class="language-python">from typing import Callable
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from typing import Callable
+from dora import Node
 
 import cv2
 import numpy as np
 import torch
 
-from dora import DoraStatus
+model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
 
+node = Node()
 
-class Operator:
-    &quot;&quot;&quot;
-    Infering object from images
-    &quot;&quot;&quot;
+for event in node:
+    match event[&quot;type&quot;]:
+        case &quot;INPUT&quot;:
+            match event[&quot;id&quot;]:
+                case &quot;image&quot;:
+                    print(&quot;received image input&quot;)
+                    frame = np.frombuffer(event[&quot;data&quot;], dtype=&quot;uint8&quot;)
+                    frame = cv2.imdecode(frame, -1)
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                    results = model(frame)  # includes NMS
+                    arrays = np.array(results.xyxy[0].cpu()).tobytes()
 
-    def __init__(self):
-        self.model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
-
-    def on_input(
-        self,
-        dora_input: dict,
-        send_output: Callable[[str, bytes], None],
-    ) -&gt; DoraStatus:
-        &quot;&quot;&quot;Handle image
-
-        Args:
-            dora_input (dict): Dict containing the &quot;id&quot;, &quot;data&quot;, and &quot;metadata&quot;
-            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
-        &quot;&quot;&quot;
-
-        frame = np.frombuffer(dora_input[&quot;data&quot;], dtype=&quot;uint8&quot;)
-        frame = cv2.imdecode(frame, -1)
-        frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
-        results = self.model(frame)  # includes NMS
-        arrays = np.array(results.xyxy[0].cpu()).tobytes()
-        send_output(&quot;bbox&quot;, arrays, dora_input[&quot;metadata&quot;])
-        return DoraStatus.CONTINUE
+                    node.send_output(&quot;bbox&quot;, arrays, event[&quot;metadata&quot;])
+                case other:
+                    print(&quot;ignoring unexpected input:&quot;, other)
+        case &quot;STOP&quot;:
+            print(&quot;received stop&quot;)
+        case other:
+            print(&quot;received unexpected event:&quot;, other)
 </code></pre>
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
 <pre><code class="language-yaml">  - id: object_detection
-    operator:
-      python: object_detection.py
+    custom:
+      source: ./object_detection.py
       inputs:
         image: webcam/image
       outputs:
@@ -1212,10 +1268,18 @@ start = time.time()
 # Run for 20 seconds
 while time.time() - start &lt; 10:
     # Wait next dora_input
-    node.next()
-    ret, frame = video_capture.read()
-    if ret:
-        node.send_output(&quot;image&quot;, cv2.imencode(&quot;.jpg&quot;, frame)[1].tobytes())
+    event = node.next()
+    match event[&quot;type&quot;]:
+        case &quot;INPUT&quot;:
+            ret, frame = video_capture.read()
+            if ret:
+                node.send_output(&quot;image&quot;, cv2.imencode(&quot;.jpg&quot;, frame)[1].tobytes())
+        case &quot;STOP&quot;:
+            print(&quot;received stop&quot;)
+            break
+        case other:
+            print(&quot;received unexpected event:&quot;, other)
+            break
 
 video_capture.release()
 </code></pre>

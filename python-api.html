@@ -161,49 +161,46 @@
 <ul>
 <li>Create an operator python file called <code>object_detection.py</code>:</li>
 </ul>
-<pre><code class="language-python">from typing import Callable
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from typing import Callable
+from dora import Node
 
 import cv2
 import numpy as np
 import torch
 
-from dora import DoraStatus
+model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
 
+node = Node()
 
-class Operator:
-    &quot;&quot;&quot;
-    Infering object from images
-    &quot;&quot;&quot;
+for event in node:
+    match event[&quot;type&quot;]:
+        case &quot;INPUT&quot;:
+            match event[&quot;id&quot;]:
+                case &quot;image&quot;:
+                    print(&quot;received image input&quot;)
+                    frame = np.frombuffer(event[&quot;data&quot;], dtype=&quot;uint8&quot;)
+                    frame = cv2.imdecode(frame, -1)
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                    results = model(frame)  # includes NMS
+                    arrays = np.array(results.xyxy[0].cpu()).tobytes()
 
-    def __init__(self):
-        self.model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
-
-    def on_input(
-        self,
-        dora_input: dict,
-        send_output: Callable[[str, bytes], None],
-    ) -&gt; DoraStatus:
-        &quot;&quot;&quot;Handle image
-
-        Args:
-            dora_input (dict): Dict containing the &quot;id&quot;, &quot;data&quot;, and &quot;metadata&quot;
-            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
-        &quot;&quot;&quot;
-
-        frame = np.frombuffer(dora_input[&quot;data&quot;], dtype=&quot;uint8&quot;)
-        frame = cv2.imdecode(frame, -1)
-        frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
-        results = self.model(frame)  # includes NMS
-        arrays = np.array(results.xyxy[0].cpu()).tobytes()
-        send_output(&quot;bbox&quot;, arrays, dora_input[&quot;metadata&quot;])
-        return DoraStatus.CONTINUE
+                    node.send_output(&quot;bbox&quot;, arrays, event[&quot;metadata&quot;])
+                case other:
+                    print(&quot;ignoring unexpected input:&quot;, other)
+        case &quot;STOP&quot;:
+            print(&quot;received stop&quot;)
+        case other:
+            print(&quot;received unexpected event:&quot;, other)
 </code></pre>
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
 <pre><code class="language-yaml">  - id: object_detection
-    operator:
-      python: object_detection.py
+    custom:
+      source: ./object_detection.py
       inputs:
         image: webcam/image
       outputs:
@@ -255,10 +252,18 @@ start = time.time()
 # Run for 20 seconds
 while time.time() - start &lt; 10:
     # Wait next dora_input
-    node.next()
-    ret, frame = video_capture.read()
-    if ret:
-        node.send_output(&quot;image&quot;, cv2.imencode(&quot;.jpg&quot;, frame)[1].tobytes())
+    event = node.next()
+    match event[&quot;type&quot;]:
+        case &quot;INPUT&quot;:
+            ret, frame = video_capture.read()
+            if ret:
+                node.send_output(&quot;image&quot;, cv2.imencode(&quot;.jpg&quot;, frame)[1].tobytes())
+        case &quot;STOP&quot;:
+            print(&quot;received stop&quot;)
+            break
+        case other:
+            print(&quot;received unexpected event:&quot;, other)
+            break
 
 video_capture.release()
 </code></pre>
