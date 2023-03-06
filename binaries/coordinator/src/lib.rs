@@ -78,7 +78,7 @@ async fn start(runtime_path: &Path, tasks: &FuturesUnordered<JoinHandle<()>>) ->
     let mut daemon_events_tx = Some(daemon_events_tx);
     let daemon_events = ReceiverStream::new(daemon_events);
 
-    let control_events = control::control_events(control_socket_addr())
+    let control_events = control::control_events(control_socket_addr(), tasks)
         .await
         .wrap_err("failed to create control events")?;
 
