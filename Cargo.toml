@@ -7,12 +7,16 @@ members = [
     "apis/rust/*",
     "apis/rust/operator/macros",
     "apis/rust/operator/types",
-    "binaries/*",
+    "binaries/cli",
+    "binaries/coordinator",
+    "binaries/daemon",
+    "binaries/runtime",
     "examples/rust-dataflow/*",
-    "examples/iceoryx/*",
+    "examples/benchmark/*",
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
+    "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/zenoh-logger",
@@ -36,8 +40,13 @@ license = "Apache-2.0"
 [dev-dependencies]
 eyre = "0.6.8"
 tokio = "1.24.2"
-dora-coordinator = { path = "binaries/coordinator" }
+dora-daemon = { path = "binaries/daemon" }
+dora-core = { path = "libraries/core" }
 dunce = "1.0.2"
+serde_yaml = "0.8.23"
+uuid = { version = "1.2.1", features = ["v4", "serde"] }
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"
 
 [[example]]
 name = "c-dataflow"
@@ -60,5 +69,9 @@ name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
 
 [[example]]
-name = "iceoryx"
-path = "examples/iceoryx/run.rs"
+name = "python-operator-dataflow"
+path = "examples/python-operator-dataflow/run.rs"
+
+[[example]]
+name = "benchmark"
+path = "examples/benchmark/run.rs"

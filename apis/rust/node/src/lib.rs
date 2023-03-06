@@ -1,65 +1,63 @@
-pub use communication::Input;
-use communication::STOP_TOPIC;
-use communication_layer_pub_sub::{CommunicationLayer, Publisher};
+use daemon::{ControlChannel, DaemonConnection};
+pub use daemon::{Event, EventStream};
 pub use dora_core;
-use dora_core::config::{CommunicationConfig, DataId, NodeId, NodeRunConfig};
-pub use dora_message::{uhlc, Metadata, MetadataParameters};
+pub use dora_core::message::{uhlc, Metadata, MetadataParameters};
+use dora_core::{
+    config::{DataId, NodeId, NodeRunConfig},
+    daemon_messages::NodeConfig,
+};
 use eyre::WrapErr;
 pub use flume::Receiver;
+use shared_memory_server::ShmemConf;
 
-pub mod communication;
+mod daemon;
 
 pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
-    communication: Box<dyn CommunicationLayer>,
+    control_channel: ControlChannel,
     hlc: uhlc::HLC,
 }
 
 impl DoraNode {
-    pub fn init_from_env() -> eyre::Result<Self> {
+    pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
         #[cfg(feature = "tracing-subscriber")]
         set_up_tracing().context("failed to set up tracing subscriber")?;
 
-        let id = {
-            let raw =
-                std::env::var("DORA_NODE_ID").wrap_err("env variable DORA_NODE_ID must be set")?;
-            serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
-        };
         let node_config = {
-            let raw = std::env::var("DORA_NODE_RUN_CONFIG")
-                .wrap_err("env variable DORA_NODE_RUN_CONFIG must be set")?;
+            let raw = std::env::var("DORA_NODE_CONFIG")
+                .wrap_err("env variable DORA_NODE_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
-        let communication_config = {
-            let raw = std::env::var("DORA_COMMUNICATION_CONFIG")
-                .wrap_err("env variable DORA_COMMUNICATION_CONFIG must be set")?;
-            serde_yaml::from_str(&raw).context("failed to deserialize communication config")?
-        };
-        Self::init(id, node_config, communication_config)
+        Self::init(node_config)
     }
 
-    pub fn init(
-        id: NodeId,
-        node_config: NodeRunConfig,
-        communication_config: CommunicationConfig,
-    ) -> eyre::Result<Self> {
-        let communication = communication::init(&communication_config)?;
-        Ok(Self {
-            id,
-            node_config,
-            communication,
+    pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
+        let NodeConfig {
+            dataflow_id,
+            node_id,
+            run_config,
+            daemon_communication,
+        } = node_config;
+
+        let DaemonConnection {
+            control_channel,
+            event_stream,
+        } = DaemonConnection::init(dataflow_id, &node_id, &daemon_communication)
+            .wrap_err("failed to connect to dora-daemon")?;
+
+        let node = Self {
+            id: node_id,
+            node_config: run_config,
+            control_channel,
             hlc: uhlc::HLC::default(),
-        })
-    }
-
-    pub fn inputs(&mut self) -> eyre::Result<flume::Receiver<Input>> {
-        communication::subscribe_all(self.communication.as_mut(), &self.node_config.inputs)
+        };
+        Ok((node, event_stream))
     }
 
     pub fn send_output<F>(
         &mut self,
-        output_id: &DataId,
+        output_id: DataId,
         parameters: MetadataParameters,
         data_len: usize,
         data: F,
@@ -67,33 +65,49 @@ impl DoraNode {
     where
         F: FnOnce(&mut [u8]),
     {
-        if !self.node_config.outputs.contains(output_id) {
+        if !self.node_config.outputs.contains(&output_id) {
             eyre::bail!("unknown output");
         }
-        let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters);
-        let serialized_metadata = metadata
-            .serialize()
-            .with_context(|| format!("failed to serialize `{}` message", output_id))?;
-        let full_len = serialized_metadata.len() + data_len;
+        let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters.into_owned());
 
-        let self_id = &self.id;
-        let topic = format!("{self_id}/{output_id}");
-        let publisher = self
-            .communication
-            .publisher(&topic)
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err_with(|| format!("failed create publisher for output {output_id}"))?;
+        if data_len > 0 {
+            let sample = self
+                .control_channel
+                .prepare_message(output_id.clone(), metadata, data_len)
+                .wrap_err("failed to prepare sample for output message")?;
+            // map shared memory and fill in data
+            let mut shared_memory = ShmemConf::new()
+                .os_id(&sample.id)
+                .open()
+                .wrap_err("failed to open shared memory sample")?;
 
-        let mut sample = publisher
-            .prepare(full_len)
-            .map_err(|err| eyre::eyre!(err))?;
-        let raw = sample.as_mut_slice();
-        raw[..serialized_metadata.len()].copy_from_slice(&serialized_metadata);
-        data(&mut raw[serialized_metadata.len()..]);
-        sample
-            .publish()
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
+            let raw = unsafe { shared_memory.as_slice_mut() };
+            data(&mut raw[..data_len]);
+
+            self.control_channel
+                .send_prepared_message(sample)
+                .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
+        } else {
+            data(&mut []);
+            self.control_channel
+                .send_empty_message(output_id.clone(), metadata)
+                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        }
+
+        Ok(())
+    }
+
+    pub fn close_outputs(&mut self, outputs: Vec<DataId>) -> eyre::Result<()> {
+        for output_id in &outputs {
+            if !self.node_config.outputs.remove(output_id) {
+                eyre::bail!("unknown output {output_id}");
+            }
+        }
+
+        self.control_channel
+            .report_closed_outputs(outputs)
+            .wrap_err("failed to report closed outputs to daemon")?;
+
         Ok(())
     }
 
@@ -109,25 +123,9 @@ impl DoraNode {
 impl Drop for DoraNode {
     #[tracing::instrument(skip(self), fields(self.id = %self.id))]
     fn drop(&mut self) {
-        let self_id = &self.id;
-        let topic = format!("{self_id}/{STOP_TOPIC}");
-        let result = self
-            .communication
-            .publisher(&topic)
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err_with(|| {
-                format!("failed to create publisher for stop message for node `{self_id}`")
-            })
-            .and_then(|p| {
-                p.publish(&[])
-                    .map_err(|err| eyre::eyre!(err))
-                    .wrap_err_with(|| format!("failed to send stop message for node `{self_id}`"))
-            });
-        match result {
-            Ok(()) => tracing::info!("sent stop message for {self_id}"),
-            Err(err) => {
-                tracing::error!("{err:?}")
-            }
+        tracing::info!("reporting node stop for node `{}`", self.id);
+        if let Err(err) = self.control_channel.report_stop() {
+            tracing::error!("{err:?}")
         }
     }
 }
@@ -142,38 +140,4 @@ fn set_up_tracing() -> eyre::Result<()> {
     let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to set tracing global subscriber")
-}
-
-pub fn manual_stop_publisher(
-    communication: &mut dyn CommunicationLayer,
-) -> eyre::Result<Box<dyn Publisher>> {
-    let publisher = communication
-        .publisher(dora_core::topics::MANUAL_STOP)
-        .map_err(|err| eyre::eyre!(err))?;
-    Ok(publisher)
-}
-
-#[cfg(test)]
-mod tests {
-    use dora_core::config;
-
-    use super::*;
-
-    #[test]
-    fn no_op_operator() {
-        let id = uuid::Uuid::new_v4().to_string().into();
-        let node_config = config::NodeRunConfig {
-            inputs: Default::default(),
-            outputs: Default::default(),
-        };
-        let communication_config = config::CommunicationConfig::Zenoh {
-            config: Default::default(),
-            prefix: format!("/{}", uuid::Uuid::new_v4()),
-        };
-
-        let mut node = DoraNode::init(id, node_config, communication_config).unwrap();
-
-        let inputs = node.inputs().unwrap();
-        assert!(inputs.recv().is_err());
-    }
 }

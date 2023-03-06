@@ -1,13 +1,19 @@
-use dora_node_api::DoraNode;
+use dora_node_api::{DoraNode, Event};
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut node = DoraNode::init_from_env()?;
-    let inputs = node.inputs()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
-    while let Ok(input) = inputs.recv() {
-        match input.id.as_str() {
-            other => eprintln!("Received input `{other}`"),
+    while let Some(event) = events.recv() {
+        match event {
+            Event::Input {
+                id,
+                metadata,
+                data: _,
+            } => match id.as_str() {
+                other => eprintln!("Received input `{other}`"),
+            },
+            _ => {}
         }
     }
 

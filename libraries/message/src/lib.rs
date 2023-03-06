@@ -7,14 +7,14 @@ pub mod message_capnp {
 }
 pub use uhlc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Metadata<'a> {
     metadata_version: u16,
     timestamp: uhlc::Timestamp,
     pub parameters: MetadataParameters<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct MetadataParameters<'a> {
     pub watermark: u64,
     pub deadline: u64,
@@ -22,7 +22,7 @@ pub struct MetadataParameters<'a> {
 }
 
 impl MetadataParameters<'_> {
-    fn into_owned(self) -> MetadataParameters<'static> {
+    pub fn into_owned(self) -> MetadataParameters<'static> {
         MetadataParameters {
             open_telemetry_context: self.open_telemetry_context.into_owned().into(),
             ..self

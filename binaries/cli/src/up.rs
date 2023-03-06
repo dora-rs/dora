@@ -1,35 +1,31 @@
-use crate::{check::coordinator_running, control_connection};
+use crate::{
+    check::{coordinator_running, daemon_running},
+    control_connection,
+};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::ControlRequest;
-use eyre::{bail, Context};
-use std::{fs, path::Path, process::Command};
-use sysinfo::{ProcessExt, SystemExt};
+use eyre::Context;
+use std::{fs, path::Path, process::Command, time::Duration};
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct UpConfig {
-    iceoryx: bool,
-}
-
-impl Default for UpConfig {
-    fn default() -> Self {
-        Self { iceoryx: true }
-    }
-}
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct UpConfig {}
 
 pub(crate) fn up(
     config_path: Option<&Path>,
-    roudi: Option<&Path>,
     coordinator: Option<&Path>,
+    daemon: Option<&Path>,
 ) -> eyre::Result<()> {
-    let UpConfig { iceoryx } = parse_dora_config(config_path)?;
+    let UpConfig {} = parse_dora_config(config_path)?;
 
     if !coordinator_running()? {
         start_coordinator(coordinator).wrap_err("failed to start dora-coordinator")?;
+        // sleep a bit until the coordinator accepts connections
+        while !coordinator_running()? {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
-
-    if iceoryx {
-        // try to start roudi
-        start_roudi(roudi).wrap_err("failed to start iceoryx roudi daemon")?;
+    if !daemon_running()? {
+        start_daemon(daemon).wrap_err("failed to start dora-daemon")?;
     }
 
     Ok(())
@@ -39,7 +35,7 @@ pub(crate) fn destroy(
     config_path: Option<&Path>,
     session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<(), eyre::ErrReport> {
-    let UpConfig { iceoryx } = parse_dora_config(config_path)?;
+    let UpConfig {} = parse_dora_config(config_path)?;
 
     if coordinator_running()? {
         // send destroy command to dora-coordinator
@@ -49,25 +45,6 @@ pub(crate) fn destroy(
         println!("Send destroy command to dora-coordinator");
     } else {
         eprintln!("The dora-coordinator is not running");
-    }
-
-    if iceoryx {
-        // kill iox-roudi process
-        let system = sysinfo::System::new_all();
-        let processes: Vec<_> = system.processes_by_exact_name("iox-roudi").collect();
-        if processes.is_empty() {
-            eprintln!("No `iox-roudi` process found");
-        } else if processes.len() == 1 {
-            let process = processes[0];
-            let success = process.kill();
-            if success {
-                println!("Killed `iox-roudi` process");
-            } else {
-                bail!("failed to kill iox-roudi process");
-            }
-        } else {
-            bail!("multiple iox-roudi processes found, please kill the correct processes manually");
-        }
     }
 
     Ok(())
@@ -99,14 +76,14 @@ fn start_coordinator(coordinator: Option<&Path>) -> eyre::Result<()> {
     Ok(())
 }
 
-fn start_roudi(roudi: Option<&Path>) -> eyre::Result<()> {
-    let roudi = roudi.unwrap_or_else(|| Path::new("iox-roudi"));
+fn start_daemon(daemon: Option<&Path>) -> eyre::Result<()> {
+    let daemon = daemon.unwrap_or_else(|| Path::new("dora-daemon"));
 
-    let mut cmd = Command::new(roudi);
+    let mut cmd = Command::new(daemon);
     cmd.spawn()
-        .wrap_err_with(|| format!("failed to run {}", roudi.display()))?;
+        .wrap_err_with(|| format!("failed to run {}", daemon.display()))?;
 
-    println!("started iox-roudi daemon");
+    println!("started dora daemon");
 
     Ok(())
 }

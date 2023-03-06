@@ -55,6 +55,12 @@ impl std::fmt::Display for OperatorId {
     }
 }
 
+impl AsRef<str> for OperatorId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DataId(String);
 
@@ -123,13 +129,6 @@ impl InputMapping {
             InputMapping::Timer { .. } => DORA_NODE_ID.get_or_init(|| NodeId("dora".to_string())),
         }
     }
-
-    pub fn operator(&self) -> &Option<OperatorId> {
-        match self {
-            InputMapping::User(mapping) => &mapping.operator,
-            InputMapping::Timer { .. } => &None,
-        }
-    }
 }
 
 impl fmt::Display for InputMapping {
@@ -140,11 +139,7 @@ impl fmt::Display for InputMapping {
                 write!(f, "dora/timer/{duration}")
             }
             InputMapping::User(mapping) => {
-                if let Some(operator) = &mapping.operator {
-                    write!(f, "{}/{operator}/{}", mapping.source, mapping.output)
-                } else {
-                    write!(f, "{}/{}", mapping.source, mapping.output)
-                }
+                write!(f, "{}/{}", mapping.source, mapping.output)
             }
         }
     }
@@ -165,18 +160,13 @@ impl<'de> Deserialize<'de> for InputMapping {
         D: serde::Deserializer<'de>,
     {
         let string = String::deserialize(deserializer)?;
-        let (source, rest) = string
+        let (source, output) = string
             .split_once('/')
             .ok_or_else(|| serde::de::Error::custom("input must start with `<source>/`"))?;
 
-        let (operator, output) = rest
-            .split_once('/')
-            .map(|(op, out)| (Some(op), out))
-            .unwrap_or((None, rest));
-
         let deserialized = match source {
-            "dora" => match operator {
-                Some("timer") => {
+            "dora" => match output.split_once('/') {
+                Some(("timer", output)) => {
                     let (unit, value) = output.split_once('/').ok_or_else(|| {
                         serde::de::Error::custom(
                             "timer input must specify unit and value (e.g. `secs/5` or `millis/100`)",
@@ -207,20 +197,19 @@ impl<'de> Deserialize<'de> for InputMapping {
                     };
                     Self::Timer { interval }
                 }
-                Some(other) => {
+                Some((other, _)) => {
                     return Err(serde::de::Error::custom(format!(
                         "unknown dora input `{other}`"
                     )))
                 }
                 None => {
-                    return Err(serde::de::Error::custom(
-                        "dora input has invalid format".to_string(),
-                    ))
+                    return Err(serde::de::Error::custom(format!(
+                        "dora input has invalid format"
+                    )))
                 }
             },
             _ => Self::User(UserInputMapping {
                 source: source.to_owned().into(),
-                operator: operator.map(|o| o.to_owned().into()),
                 output: output.to_owned().into(),
             }),
         };
@@ -232,7 +221,6 @@ impl<'de> Deserialize<'de> for InputMapping {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UserInputMapping {
     pub source: NodeId,
-    pub operator: Option<OperatorId>,
     pub output: DataId,
 }
 

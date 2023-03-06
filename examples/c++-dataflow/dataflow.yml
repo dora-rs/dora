@@ -18,7 +18,7 @@ nodes:
       outputs:
         - counter
 
-  - id: runtime-node
+  - id: runtime-node-1
     operators:
       - id: operator-rust-api
         shared-library: build/operator_rust_api
@@ -27,9 +27,11 @@ nodes:
           counter_2: cxx-node-rust-api/counter
         outputs:
           - status
+  - id: runtime-node-2
+    operators:
       - id: operator-c-api
         shared-library: build/operator_c_api
         inputs:
-          op_status: runtime-node/operator-rust-api/status
+          op_status: runtime-node-1/operator-rust-api/status
         outputs:
           - half-status

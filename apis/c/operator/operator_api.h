@@ -18,8 +18,8 @@ extern "C"
 
     EXPORT DoraResult_t dora_drop_operator(void *operator_context);
 
-    EXPORT OnInputResult_t dora_on_input(
-        const Input_t *input,
+    EXPORT OnEventResult_t dora_on_event(
+        const RawEvent_t *event,
         const SendOutput_t *send_output,
         void *operator_context);
 
@@ -27,7 +27,7 @@ extern "C"
     {
         DoraInitOperator_t __dora_init_operator = {.init_operator = dora_init_operator};
         DoraDropOperator_t __dora_drop_operator = {.drop_operator = dora_drop_operator};
-        DoraOnInput_t __dora_on_input = {.on_input = dora_on_input};
+        DoraOnEvent_t __dora_on_event = {.on_event = dora_on_event};
     }
 #ifdef __cplusplus
 } /* extern \"C\" */

@@ -1,25 +1,24 @@
-use self::{custom::spawn_custom_node, runtime::spawn_runtime_node};
+use crate::tcp_utils::{tcp_receive, tcp_send};
+
 use dora_core::{
-    config::{format_duration, CommunicationConfig, NodeId},
-    descriptor::{self, collect_dora_timers, CoreNodeKind, Descriptor},
+    config::CommunicationConfig,
+    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
+    descriptor::{CoreNodeKind, Descriptor},
 };
-use dora_node_api::communication;
-use eyre::{bail, eyre, WrapErr};
-use futures::{stream::FuturesUnordered, StreamExt};
-use std::{env::consts::EXE_EXTENSION, path::Path};
-use tokio_stream::wrappers::IntervalStream;
-use tracing::warn;
+use eyre::{bail, eyre, ContextCompat, WrapErr};
+use std::{
+    collections::{BTreeSet, HashMap},
+    env::consts::EXE_EXTENSION,
+    path::Path,
+};
+use tokio::net::TcpStream;
 use uuid::Uuid;
 
-mod custom;
-mod runtime;
-
-pub async fn run_dataflow(dataflow_path: &Path, runtime: &Path) -> eyre::Result<()> {
-    let tasks = spawn_dataflow(runtime, dataflow_path).await?.tasks;
-    await_tasks(tasks).await
-}
-
-pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Result<SpawnedDataflow> {
+pub async fn spawn_dataflow(
+    runtime: &Path,
+    dataflow_path: &Path,
+    daemon_connections: &mut HashMap<String, TcpStream>,
+) -> eyre::Result<SpawnedDataflow> {
     let mut runtime = runtime.with_extension(EXE_EXTENSION);
     let descriptor = read_descriptor(dataflow_path).await.wrap_err_with(|| {
         format!(
@@ -34,7 +33,6 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
         .ok_or_else(|| eyre!("canonicalized dataflow path has no parent"))?
         .to_owned();
     let nodes = descriptor.resolve_aliases();
-    let dora_timers = collect_dora_timers(&nodes);
     let uuid = Uuid::new_v4();
     let communication_config = {
         let mut config = descriptor.communication;
@@ -59,87 +57,51 @@ pub async fn spawn_dataflow(runtime: &Path, dataflow_path: &Path) -> eyre::Resul
             }
         }
     }
-    let tasks = FuturesUnordered::new();
-    for node in nodes {
-        let node_id = node.id.clone();
 
-        match node.kind {
-            descriptor::CoreNodeKind::Custom(custom) => {
-                let result = spawn_custom_node(
-                    node_id.clone(),
-                    &custom,
-                    &node.env,
-                    &communication_config,
-                    &working_dir,
-                )
-                .await
-                .wrap_err_with(|| format!("failed to spawn custom node {node_id}"))?;
-                tasks.push(result);
-            }
-            descriptor::CoreNodeKind::Runtime(runtime_node) => {
-                if !runtime_node.operators.is_empty() {
-                    let result = spawn_runtime_node(
-                        &runtime,
-                        node_id.clone(),
-                        &runtime_node,
-                        &node.env,
-                        &communication_config,
-                        &working_dir,
-                    )
-                    .wrap_err_with(|| format!("failed to spawn runtime node {node_id}"))?;
-                    tasks.push(result);
-                }
-            }
-        }
+    let spawn_command = SpawnDataflowNodes {
+        dataflow_id: uuid,
+        working_dir,
+        nodes,
+        daemon_communication: descriptor.daemon_config,
+    };
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
+
+    // TODO allow partitioning a dataflow across multiple machines
+    let machine_id = "";
+    let machines = [machine_id.to_owned()].into();
+
+    let daemon_connection = daemon_connections
+        .get_mut(machine_id)
+        .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
+    tcp_send(daemon_connection, &message)
+        .await
+        .wrap_err("failed to send spawn message to daemon")?;
+
+    // wait for reply
+    let reply_raw = tcp_receive(daemon_connection)
+        .await
+        .wrap_err("failed to receive spawn reply from daemon")?;
+    match serde_json::from_slice(&reply_raw)
+        .wrap_err("failed to deserialize spawn reply from daemon")?
+    {
+        DaemonCoordinatorReply::SpawnResult(result) => result
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to spawn dataflow")?,
+        _ => bail!("unexpected reply"),
     }
-    for interval in dora_timers {
-        let communication_config = communication_config.clone();
-        let mut communication =
-            tokio::task::spawn_blocking(move || communication::init(&communication_config))
-                .await
-                .wrap_err("failed to join communication layer init task")?
-                .wrap_err("failed to init communication layer")?;
-        tokio::spawn(async move {
-            let topic = {
-                let duration = format_duration(interval);
-                format!("dora/timer/{duration}")
-            };
-            let hlc = dora_message::uhlc::HLC::default();
-            let mut stream = IntervalStream::new(tokio::time::interval(interval));
-            while (stream.next().await).is_some() {
-                let metadata = dora_message::Metadata::new(hlc.new_timestamp());
-                let data = metadata.serialize().unwrap();
-                communication
-                    .publisher(&topic)
-                    .unwrap()
-                    .publish(&data)
-                    .expect("failed to publish timer tick message");
-            }
-        });
-    }
+    tracing::info!("successfully spawned dataflow `{uuid}`");
+
     Ok(SpawnedDataflow {
-        tasks,
         communication_config,
         uuid,
+        machines,
     })
 }
 
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
     pub communication_config: CommunicationConfig,
-    pub tasks: FuturesUnordered<tokio::task::JoinHandle<Result<(), eyre::ErrReport>>>,
-}
-
-pub async fn await_tasks(
-    mut tasks: FuturesUnordered<tokio::task::JoinHandle<Result<(), eyre::ErrReport>>>,
-) -> eyre::Result<()> {
-    while let Some(task_result) = tasks.next().await {
-        task_result
-            .wrap_err("failed to join async task")?
-            .wrap_err("One node failed!")
-            .unwrap_or_else(|err| warn!("{err}"))
-    }
-    Ok(())
+    pub machines: BTreeSet<String>,
 }
 
 async fn read_descriptor(file: &Path) -> Result<Descriptor, eyre::Error> {
@@ -149,21 +111,4 @@ async fn read_descriptor(file: &Path) -> Result<Descriptor, eyre::Error> {
     let descriptor: Descriptor =
         serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
     Ok(descriptor)
-}
-
-fn command_init_common_env(
-    command: &mut tokio::process::Command,
-    node_id: &NodeId,
-    communication: &dora_core::config::CommunicationConfig,
-) -> Result<(), eyre::Error> {
-    command.env(
-        "DORA_NODE_ID",
-        serde_yaml::to_string(&node_id).wrap_err("failed to serialize custom node ID")?,
-    );
-    command.env(
-        "DORA_COMMUNICATION_CONFIG",
-        serde_yaml::to_string(communication)
-            .wrap_err("failed to serialize communication config")?,
-    );
-    Ok(())
 }

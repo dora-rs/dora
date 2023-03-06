@@ -22,49 +22,60 @@ DoraResult_t dora_drop_operator(void *operator_context)
     return result;
 }
 
-OnInputResult_t dora_on_input(
-    const Input_t *input,
+OnEventResult_t dora_on_event(
+    const RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
 {
     char *counter = (char *)operator_context;
 
-    char id[input->id.len + 1];
-    memcpy(id, input->id.ptr, input->id.len);
-    id[input->id.len] = 0;
-
-    if (strcmp(id, "tick") == 0)
+    if (event->input != NULL)
     {
-        char data[input->data.len + 1];
-        memcpy(data, input->data.ptr, input->data.len);
-        data[input->data.len] = 0;
+        // input event
+        Input_t *input = event->input;
 
-        *counter += 1;
-        printf("C operator received tick input with data `%s`, counter: %i\n", data, *counter);
+        char id[input->id.len + 1];
+        memcpy(id, input->id.ptr, input->id.len);
+        id[input->id.len] = 0;
 
-        char *out_id = "counter";
-        char *out_id_heap = strdup(out_id);
+        if (strcmp(id, "message") == 0)
+        {
+            char data[input->data.len + 1];
+            memcpy(data, input->data.ptr, input->data.len);
+            data[input->data.len] = 0;
 
-        int data_alloc_size = 100;
-        char *out_data = (char *)malloc(data_alloc_size);
-        int count = snprintf(out_data, data_alloc_size, "The current counter value is %d", *counter);
-        assert(count >= 0 && count < 100);
+            *counter += 1;
+            printf("C operator received message `%s`, counter: %i\n", data, *counter);
 
-        Output_t output = {.id = {
-                               .ptr = (uint8_t *)out_id_heap,
-                               .len = strlen(out_id_heap),
-                               .cap = strlen(out_id_heap) + 1,
-                           },
-                           .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
-        DoraResult_t res = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
+            char *out_id = "counter";
+            char *out_id_heap = strdup(out_id);
 
-        OnInputResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
-        return result;
+            int data_alloc_size = 100;
+            char *out_data = (char *)malloc(data_alloc_size);
+            int count = snprintf(out_data, data_alloc_size, "The current counter value is %d", *counter);
+            assert(count >= 0 && count < 100);
+
+            Output_t output = {.id = {
+                                   .ptr = (uint8_t *)out_id_heap,
+                                   .len = strlen(out_id_heap),
+                                   .cap = strlen(out_id_heap) + 1,
+                               },
+                               .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
+            DoraResult_t res = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
+
+            OnEventResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
+            return result;
+        }
+        else
+        {
+            printf("C operator received unexpected input %s, context: %i\n", id, *counter);
+        }
     }
-    else
+    if (event->stop)
     {
-        printf("C operator received unexpected input %s, context: %i\n", id, *counter);
-        OnInputResult_t result = {.status = DORA_STATUS_CONTINUE};
-        return result;
+        printf("C operator received stop event\n");
     }
+
+    OnEventResult_t result = {.status = DORA_STATUS_CONTINUE};
+    return result;
 }

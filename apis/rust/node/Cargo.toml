@@ -5,25 +5,24 @@ edition = "2021"
 license = "Apache-2.0"
 
 [features]
-default = ["zenoh", "iceoryx", "tracing-subscriber"]
-zenoh = ["communication-layer-pub-sub/zenoh"]
-iceoryx = ["communication-layer-pub-sub/iceoryx"]
+default = ["tracing-subscriber"]
 tracing-subscriber = ["dep:tracing-subscriber"]
 
 [dependencies]
+dora-core = { path = "../../../libraries/core" }
+shared-memory-server = { path = "../../../libraries/shared-memory-server" }
 eyre = "0.6.7"
 once_cell = "1.13.0"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.8.23"
+serde_json = "1.0.89"
 thiserror = "1.0.30"
 tracing = "0.1.33"
 tracing-subscriber = { version = "0.3.15", optional = true }
 flume = "0.10.14"
-communication-layer-pub-sub = { path = "../../../libraries/communication-layer/pub-sub", default-features = false }
 uuid = { version = "1.1.2", features = ["v4"] }
 capnp = "0.14.11"
-dora-message = { path = "../../../libraries/message" }
-dora-core = { path = "../../../libraries/core" }
+bincode = "1.3.3"
 
 [dev-dependencies]
 tokio = { version = "1.24.2", features = ["rt"] }

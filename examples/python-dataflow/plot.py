@@ -1,16 +1,19 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 from typing import Callable
+from dora import Node
+from dora import DoraStatus
 
 import cv2
 import numpy as np
 from utils import LABELS
 
-from dora import DoraStatus
-
 CI = os.environ.get("CI")
 
 font = cv2.FONT_HERSHEY_SIMPLEX
-class Operator:
+class Plotter:
     """
     Plot image and bounding box
     """
@@ -22,7 +25,6 @@ class Operator:
     def on_input(
         self,
         dora_input: dict,
-        send_output: Callable[[str, bytes], None],
     ) -> DoraStatus:
         """
         Put image and bounding box on cv2 window.
@@ -30,7 +32,6 @@ class Operator:
         Args:
             dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
             dora_input["data"] (bytes): Bytes message of the dora_input
-            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         """
         if dora_input["id"] == "image":
             frame = np.frombuffer(dora_input["data"], dtype="uint8")
@@ -74,3 +75,23 @@ class Operator:
                 return DoraStatus.STOP
 
         return DoraStatus.CONTINUE
+
+
+
+plotter = Plotter()
+node = Node()
+
+for event in node:
+    match event["type"]:
+        case "INPUT":
+            status = plotter.on_input(event)
+            match status:
+                case DoraStatus.CONTINUE:
+                    pass
+                case DoraStatus.STOP:
+                    print("plotter returned stop status")
+                    break
+        case "STOP":
+            print("received stop")
+        case other:
+            print("received unexpected event:", other)

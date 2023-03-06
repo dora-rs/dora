@@ -1,12 +1,15 @@
 [package]
-name = "iceoryx-example-sink"
+name = "benchmark-example-node"
 version.workspace = true
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true, features = ["iceoryx"] }
+dora-node-api = { workspace = true }
 eyre = "0.6.8"
 futures = "0.3.21"
-tokio = { version = "1.24.2", features = ["macros"] }
+rand = "0.8.5"
+tokio = { version = "1.20.1", features = ["rt", "macros"] }
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"

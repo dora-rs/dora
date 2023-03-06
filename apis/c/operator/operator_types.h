@@ -77,13 +77,13 @@ enum DoraStatus {
 DoraStatus_t;
 
 /** <No documentation available> */
-typedef struct OnInputResult {
+typedef struct OnEventResult {
     /** <No documentation available> */
     DoraResult_t result;
 
     /** <No documentation available> */
     DoraStatus_t status;
-} OnInputResult_t;
+} OnEventResult_t;
 
 /** <No documentation available> */
 typedef struct Metadata {
@@ -102,6 +102,21 @@ typedef struct Input {
     /** <No documentation available> */
     Metadata_t metadata;
 } Input_t;
+
+
+#include <stdbool.h>
+
+/** <No documentation available> */
+typedef struct RawEvent {
+    /** <No documentation available> */
+    Input_t * input;
+
+    /** <No documentation available> */
+    Vec_uint8_t input_closed;
+
+    /** <No documentation available> */
+    bool stop;
+} RawEvent_t;
 
 /** <No documentation available> */
 typedef struct Output {
@@ -139,10 +154,10 @@ typedef struct SendOutput {
 } SendOutput_t;
 
 /** <No documentation available> */
-typedef struct DoraOnInput {
+typedef struct DoraOnEvent {
     /** <No documentation available> */
-    OnInputResult_t (*on_input)(Input_t const *, SendOutput_t const *, void *);
-} DoraOnInput_t;
+    OnEventResult_t (*on_event)(RawEvent_t const *, SendOutput_t const *, void *);
+} DoraOnEvent_t;
 
 
 #ifdef __cplusplus

@@ -1,36 +1,33 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 from typing import Callable
+from dora import Node
 
 import cv2
 import numpy as np
 import torch
 
-from dora import DoraStatus
+model = torch.hub.load("ultralytics/yolov5", "yolov5n")
 
+node = Node()
 
-class Operator:
-    """
-    Infering object from images
-    """
+for event in node:
+    match event["type"]:
+        case "INPUT":
+            match event["id"]:
+                case "image":
+                    print("received image input")
+                    frame = np.frombuffer(event["data"], dtype="uint8")
+                    frame = cv2.imdecode(frame, -1)
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                    results = model(frame)  # includes NMS
+                    arrays = np.array(results.xyxy[0].cpu()).tobytes()
 
-    def __init__(self):
-        self.model = torch.hub.load("ultralytics/yolov5", "yolov5n")
-
-    def on_input(
-        self,
-        dora_input: dict,
-        send_output: Callable[[str, bytes], None],
-    ) -> DoraStatus:
-        """Handle image
-
-        Args:
-            dora_input (dict): Dict containing the "id", "data", and "metadata"
-            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
-        """
-
-        frame = np.frombuffer(dora_input["data"], dtype="uint8")
-        frame = cv2.imdecode(frame, -1)
-        frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
-        results = self.model(frame)  # includes NMS
-        arrays = np.array(results.xyxy[0].cpu()).tobytes()
-        send_output("bbox", arrays, dora_input["metadata"])
-        return DoraStatus.CONTINUE
+                    node.send_output("bbox", arrays, event["metadata"])
+                case other:
+                    print("ignoring unexpected input:", other)
+        case "STOP":
+            print("received stop")
+        case other:
+            print("received unexpected event:", other)
