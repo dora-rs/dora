@@ -59,10 +59,6 @@ impl InputBuffer {
                         }
                         Err(flume::RecvError::Disconnected) => {
                             incoming_closed = true;
-                            // the incoming channel was closed -> exit if we sent out all events already
-                            if send_out.is_terminated() && self.queue.is_empty() {
-                                break;
-                            }
                         }
                     }
 
@@ -76,6 +72,9 @@ impl InputBuffer {
                     Err(flume::SendError(_)) => break,
                 },
             };
+            if incoming_closed && send_out_buf.is_terminated() && self.queue.is_empty() {
+                break;
+            }
         }
     }
 
