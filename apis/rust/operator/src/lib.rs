@@ -8,6 +8,7 @@ use types::{Metadata, Output, SendOutput};
 
 pub mod raw;
 
+#[non_exhaustive]
 pub enum Event<'a> {
     Input { id: &'a str, data: &'a [u8] },
     Stop,
