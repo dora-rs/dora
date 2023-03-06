@@ -13,7 +13,7 @@ use dora_core::{
     },
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
-use futures::{Stream, StreamExt};
+use futures::{stream::FuturesUnordered, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
@@ -21,7 +21,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::{net::TcpStream, sync::mpsc, task::JoinHandle};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use uuid::Uuid;
 
@@ -48,13 +48,23 @@ pub async fn run(args: Args) -> eyre::Result<()> {
             .with_file_name("dora-runtime")
     });
 
+    let mut tasks = FuturesUnordered::new();
+
     // start in daemon mode
-    start(&runtime_path).await?;
+    start(&runtime_path, &tasks).await?;
+
+    tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
+    while let Some(join_result) = tasks.next().await {
+        if let Err(err) = join_result {
+            tracing::error!("task panicked: {err}");
+        }
+    }
+    tracing::debug!("all spawned tasks finished, exiting..");
 
     Ok(())
 }
 
-async fn start(runtime_path: &Path) -> eyre::Result<()> {
+async fn start(runtime_path: &Path, tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
     let ctrlc_events = set_up_ctrlc_handler()?;
 
     let listener = listener::create_listener(DORA_COORDINATOR_PORT_DEFAULT).await?;
@@ -101,7 +111,8 @@ async fn start(runtime_path: &Path) -> eyre::Result<()> {
                 connection.set_nodelay(true)?;
                 let events_tx = daemon_events_tx.clone();
                 if let Some(events_tx) = events_tx {
-                    tokio::spawn(listener::handle_connection(connection, events_tx));
+                    let task = tokio::spawn(listener::handle_connection(connection, events_tx));
+                    tasks.push(task);
                 } else {
                     tracing::warn!(
                         "ignoring new daemon connection because events_tx was closed already"
