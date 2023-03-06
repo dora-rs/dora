@@ -22,6 +22,6 @@ nodes:
   - id: rust-sink
     custom:
       build: cargo build -p rust-dataflow-example-sink
-      source: ../../target/debug/rust-dataflow-example-sink
+      source: ../../target/debug/rust-dataflow-url-example-sink
       inputs:
         message: runtime-node/rust-operator/status
