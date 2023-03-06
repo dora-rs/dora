@@ -97,6 +97,9 @@ pub enum IncomingEvent {
         metadata: Metadata<'static>,
         data: Option<Vec<u8>>,
     },
+    InputClosed {
+        input_id: DataId,
+    },
 }
 
 impl IntoPy<PyObject> for IncomingEvent {
@@ -123,6 +126,12 @@ impl IntoPy<PyObject> for IncomingEvent {
                     .wrap_err("failed to add input metadata")
                     .unwrap();
                 "INPUT"
+            }
+            Self::InputClosed { input_id } => {
+                dict.set_item("id", input_id.to_string())
+                    .wrap_err("failed to add input ID")
+                    .unwrap();
+                "INPUT_CLOSED"
             }
         };
 

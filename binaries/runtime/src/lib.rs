@@ -237,6 +237,24 @@ async fn run(
                 let operator_id = OperatorId::from(operator_id.to_owned());
                 let input_id = DataId::from(input_id.to_owned());
 
+                let Some(operator_channel) = operator_channels.get(&operator_id) else {
+                    tracing::warn!("received input {id} for unknown operator");
+                    continue;
+                };
+                if let Err(err) = operator_channel
+                    .send_async(operator::IncomingEvent::InputClosed {
+                        input_id: input_id.clone(),
+                    })
+                    .await
+                    .wrap_err_with(|| {
+                        format!(
+                            "failed to send InputClosed({input_id}) to operator `{operator_id}`"
+                        )
+                    })
+                {
+                    tracing::warn!("{err}");
+                }
+
                 if let Some(open_inputs) = open_operator_inputs.get_mut(&operator_id) {
                     open_inputs.remove(&input_id);
                     if open_inputs.is_empty() {
