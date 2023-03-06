@@ -260,7 +260,7 @@ async fn build_cxx_operator(
         link.arg("-fms-runtime-lib=static");
     }
     link.arg("-o")
-        .arg(Path::new("../build").join(library_filename(out_name)));
+        .arg(Path::new("../build").join(format!("{DLL_PREFIX}{out_name}{DLL_SUFFIX}")));
     if let Some(parent) = paths[0].parent() {
         link.current_dir(parent);
     }
@@ -269,17 +269,6 @@ async fn build_cxx_operator(
     };
 
     Ok(())
-}
-
-// taken from `rust_libloading` crate by Simonas Kazlauskas, licensed under the ISC license (
-// see https://github.com/nagisa/rust_libloading/blob/master/LICENSE)
-pub fn library_filename<S: AsRef<OsStr>>(name: S) -> OsString {
-    let name = name.as_ref();
-    let mut string = OsString::with_capacity(name.len() + DLL_PREFIX.len() + DLL_SUFFIX.len());
-    string.push(DLL_PREFIX);
-    string.push(name);
-    string.push(DLL_SUFFIX);
-    string
 }
 
 fn set_up_tracing() -> eyre::Result<()> {
