@@ -1,5 +1,5 @@
 [package]
-name = "rust-dataflow-example-sink"
+name = "rust-dataflow-url-example-sink"
 version.workspace = true
 edition = "2021"
 
