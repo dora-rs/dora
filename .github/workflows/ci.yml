@@ -60,19 +60,17 @@ jobs:
       - name: "Rust Dataflow example"
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
+
+      - name: "Benchmark example"
+        timeout-minutes: 30
+        run: cargo run --example benchmark --release
+
       - name: "C Dataflow example"
         timeout-minutes: 15
         run: cargo run --example c-dataflow
       - name: "C++ Dataflow example"
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
-      - name: "Start RouDi (iceoryx)"
-        if: runner.os != 'Windows'
-        run: find target -type f -wholename "*/iceoryx-install/bin/iox-roudi" -exec {} \; &
-      - name: "Rust iceoryx example"
-        if: runner.os != 'Windows'
-        timeout-minutes: 30
-        run: cargo run --example iceoryx
 
   CLI:
     name: "CLI Test"
@@ -90,36 +88,31 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           sudo apt-get install -y libacl1-dev
 
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
+
       - name: "Build cli and binaries"
         timeout-minutes: 30
         run: |
           cargo install --path binaries/coordinator
+          cargo install --path binaries/daemon
           cargo install --path binaries/runtime
           cargo install --path binaries/cli
 
-      - name: "Start dora-coordinator"
-        run: |
-          dora-coordinator &
-
-      - name: "Test dora `list"
-        run: dora-cli list
-
-      - name: "Test new command"
-        run: |
-            dora-cli new test_project
-
-      - name: "Test start and stop command"
+      - name: "Test CLI"
         timeout-minutes: 30
         run: |
-            cd test_project
-            cargo build --all
-            UUID=$(dora-cli start dataflow.yml)
-            sleep 10
-            dora-cli stop $UUID
-            cd .. 
-
-      - name: "Test dora `destroy"
-        run: dora-cli destroy
+          dora-cli up
+          dora-cli list
+          dora-cli new test_project
+          cd test_project
+          cargo build --all --config "patch.'https://github.com/dora-rs/dora.git'.dora-node-api.path=\"../apis/rust/node\"" --config "patch.'https://github.com/dora-rs/dora.git'.dora-operator-api.path=\"../apis/rust/operator\""
+          UUID=$(dora-cli start dataflow.yml)
+          sleep 10
+          dora-cli stop $UUID
+          cd ..
+          dora-cli destroy
 
   examples-remote:
     name: "Examples (Remote)"
@@ -138,6 +131,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: "Remote Rust Dataflow example"
+        if: false # skip this example for now until we uploaded new test nodes
         timeout-minutes: 30
         run: cargo run --example rust-dataflow-url
 
@@ -159,8 +153,10 @@ jobs:
         run: cargo clippy --all
       - name: "Clippy (tracing feature)"
         run: cargo clippy --all --features tracing
+        if: false # only the dora-runtime has this feature, but it is currently commented out
       - name: "Clippy (metrics feature)"
         run: cargo clippy --all --features metrics
+        if: false # only the dora-runtime has this feature, but it is currently commented out
 
   rustfmt:
     name: "Formatting"

@@ -49,26 +49,26 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
         };
     };
 
-    let on_input = quote! {
+    let on_event = quote! {
         #[no_mangle]
-        pub unsafe extern "C" fn dora_on_input(
-            input: &dora_operator_api::types::Input,
+        pub unsafe extern "C" fn dora_on_event(
+            event: &dora_operator_api::types::RawEvent,
             send_output: &dora_operator_api::types::SendOutput,
             operator_context: *mut std::ffi::c_void,
-        ) -> dora_operator_api::types::OnInputResult {
-            dora_operator_api::raw::dora_on_input::<#operator_ty>(
-                input, send_output, operator_context
+        ) -> dora_operator_api::types::OnEventResult {
+            dora_operator_api::raw::dora_on_event::<#operator_ty>(
+                event, send_output, operator_context
             )
         }
 
-        const _DORA_ON_INPUT: dora_operator_api::types::DoraOnInput = dora_operator_api::types::DoraOnInput {
-            on_input: dora_operator_api::types::OnInputFn(dora_on_input),
+        const _DORA_ON_EVENT: dora_operator_api::types::DoraOnEvent = dora_operator_api::types::DoraOnEvent {
+            on_event: dora_operator_api::types::OnEventFn(dora_on_event),
         };
     };
 
     Ok(quote! {
         #init
         #drop
-        #on_input
+        #on_event
     })
 }

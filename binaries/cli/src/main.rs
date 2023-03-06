@@ -1,9 +1,6 @@
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
-use dora_core::topics::{
-    control_socket_addr, ControlRequest, DataflowId, ListDataflowResult, StartDataflowResult,
-    StopDataflowResult,
-};
+use dora_core::topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId};
 use eyre::{bail, Context};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -48,9 +45,9 @@ enum Command {
         #[clap(long)]
         config: Option<PathBuf>,
         #[clap(long)]
-        roudi_path: Option<PathBuf>,
-        #[clap(long)]
         coordinator_path: Option<PathBuf>,
+        #[clap(long)]
+        daemon_path: Option<PathBuf>,
     },
     Destroy {
         #[clap(long)]
@@ -126,12 +123,12 @@ fn main() -> eyre::Result<()> {
         Command::Dashboard => todo!(),
         Command::Up {
             config,
-            roudi_path,
             coordinator_path,
+            daemon_path,
         } => up::up(
             config.as_deref(),
-            roudi_path.as_deref(),
             coordinator_path.as_deref(),
+            daemon_path.as_deref(),
         )?,
         Command::Start { dataflow, name } => start_dataflow(dataflow, name, &mut session)?,
         Command::List => list(&mut session)?,
@@ -169,14 +166,15 @@ fn start_dataflow(
         )
         .wrap_err("failed to send start dataflow message")?;
 
-    let result: StartDataflowResult =
+    let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        StartDataflowResult::Ok { uuid } => {
+        ControlRequestReply::DataflowStarted { uuid } => {
             println!("{uuid}");
             Ok(())
         }
-        StartDataflowResult::Error(err) => bail!(err),
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
     }
 }
 
@@ -206,11 +204,12 @@ fn stop_dataflow(
             .unwrap(),
         )
         .wrap_err("failed to send dataflow stop message")?;
-    let result: StopDataflowResult =
+    let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        StopDataflowResult::Ok => Ok(()),
-        StopDataflowResult::Error(err) => bail!(err),
+        ControlRequestReply::DataflowStopped { uuid: _ } => Ok(()),
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected stop dataflow reply: {other:?}"),
     }
 }
 
@@ -221,11 +220,12 @@ fn stop_dataflow_by_name(
     let reply_raw = control_connection(session)?
         .request(&serde_json::to_vec(&ControlRequest::StopByName { name }).unwrap())
         .wrap_err("failed to send dataflow stop_by_name message")?;
-    let result: StopDataflowResult =
+    let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        StopDataflowResult::Ok => Ok(()),
-        StopDataflowResult::Error(err) => bail!(err),
+        ControlRequestReply::DataflowStopped { uuid: _ } => Ok(()),
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected stop dataflow reply: {other:?}"),
     }
 }
 
@@ -250,11 +250,12 @@ fn query_running_dataflows(
     let reply_raw = control_connection(session)?
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send list message")?;
-    let reply: ListDataflowResult =
+    let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     let ids = match reply {
-        ListDataflowResult::Ok { dataflows } => dataflows,
-        ListDataflowResult::Error(err) => bail!(err),
+        ControlRequestReply::DataflowList { dataflows } => dataflows,
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected list dataflow reply: {other:?}"),
     };
 
     Ok(ids)

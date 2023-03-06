@@ -7,15 +7,15 @@ nodes:
     custom:
       source: build/c_node
       inputs:
-        timer: dora/timer/secs/1
+        timer: dora/timer/millis/50
       outputs:
-        - tick
+        - message
   - id: runtime-node
     operators:
       - id: c_operator
         shared-library: build/operator
         inputs:
-          tick: c_node/tick
+          message: c_node/message
         outputs:
           - counter
   - id: c_sink

@@ -1,3 +1,5 @@
+set -e
+
 python3 -m venv .env
 . $(pwd)/.env/bin/activate
 # Dev dependencies
@@ -10,4 +12,4 @@ cd ../../../examples/python-dataflow
 pip install --upgrade pip
 pip install -r requirements.txt
 
-cargo run -p dora-coordinator -- --run-dataflow dataflow_without_webcam.yml
+cargo run -p dora-daemon -- --run-dataflow dataflow_without_webcam.yml

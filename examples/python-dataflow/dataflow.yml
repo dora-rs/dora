@@ -12,16 +12,16 @@ nodes:
         - image
 
   - id: object_detection
-    operator:
-      python: object_detection.py
+    custom:
+      source: ./object_detection.py
       inputs:
         image: webcam/image
       outputs:
         - bbox
 
   - id: plot
-    operator:
-      python: plot.py
+    custom:
+      source: ./plot.py
       inputs:
         image: webcam/image
         bbox: object_detection/bbox

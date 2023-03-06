@@ -1,13 +1,12 @@
 [package]
-name = "iceoryx-example-operator"
+name = "benchmark-example-sink"
 version.workspace = true
 edition = "2021"
-license = "Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-crate-type = ["cdylib"]
-
 [dependencies]
-dora-operator-api = { path = "../../../apis/rust/operator" }
+dora-node-api = { workspace = true }
+eyre = "0.6.8"
+tracing = "0.1.36"
+tracing-subscriber = "0.3.15"

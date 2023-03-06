@@ -1,0 +1,19 @@
+communication:
+  zenoh:
+    prefix: /benchmark-example
+
+nodes:
+  - id: rust-node
+    custom:
+      build: cargo build -p benchmark-example-node --release
+      source: ../../target/release/benchmark-example-node
+      outputs:
+        - latency
+        - throughput
+  - id: rust-sink
+    custom:
+      build: cargo build -p benchmark-example-sink --release
+      source: ../../target/release/benchmark-example-sink
+      inputs:
+        latency: rust-node/latency
+        throughput: rust-node/throughput

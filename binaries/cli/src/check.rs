@@ -1,12 +1,12 @@
 use crate::{control_connection, graph::read_descriptor};
 use dora_core::{
     adjust_shared_library_path,
-    config::{InputMapping, UserInputMapping},
+    config::{DataId, InputMapping, OperatorId, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
+    topics::{ControlRequest, ControlRequestReply},
 };
 use eyre::{bail, eyre, Context};
 use std::{env::consts::EXE_EXTENSION, io::Write, path::Path};
-use sysinfo::SystemExt;
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
 pub fn check_environment() -> eyre::Result<()> {
@@ -20,7 +20,6 @@ pub fn check_environment() -> eyre::Result<()> {
     let mut stdout = termcolor::StandardStream::stdout(color_choice);
 
     // check whether coordinator is running
-
     write!(stdout, "Dora Coordinator: ")?;
     if coordinator_running()? {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
@@ -32,20 +31,18 @@ pub fn check_environment() -> eyre::Result<()> {
     }
     let _ = stdout.reset();
 
-    // check whether roudi is running
-    write!(stdout, "Iceoryx Daemon: ")?;
-    let system = sysinfo::System::new_all();
-    match system.processes_by_exact_name("iox-roudi").next() {
-        Some(_) => {
-            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
-            writeln!(stdout, "ok")?;
-        }
-        None => {
-            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
-            writeln!(stdout, "not running")?;
-            error_occured = true;
-        }
+    // check whether daemon is running
+    write!(stdout, "Dora Daemon: ")?;
+    if daemon_running()? {
+        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
+        writeln!(stdout, "ok")?;
+    } else {
+        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+        writeln!(stdout, "not running")?;
+        error_occured = true;
     }
+    let _ = stdout.reset();
+
     writeln!(stdout)?;
 
     if error_occured {
@@ -59,6 +56,28 @@ pub fn coordinator_running() -> Result<bool, eyre::ErrReport> {
     let mut control_session = None;
     let connected = control_connection(&mut control_session).is_ok();
     Ok(connected)
+}
+
+pub fn daemon_running() -> Result<bool, eyre::ErrReport> {
+    let mut control_session = None;
+    let running = match control_connection(&mut control_session) {
+        Ok(connection) => {
+            let reply_raw = connection
+                .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
+                .wrap_err("failed to send DaemonConnected message")?;
+
+            let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+            match reply {
+                ControlRequestReply::DaemonConnected(running) => running,
+                other => bail!("unexpected reply to daemon connection check: {other:?}"),
+            }
+        }
+        Err(_) => {
+            // coordinator is not running
+            false
+        }
+    };
+    Ok(running)
 }
 
 pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Result<()> {
@@ -177,54 +196,40 @@ fn check_input(
 ) -> Result<(), eyre::ErrReport> {
     match mapping {
         InputMapping::Timer { interval: _ } => {}
-        InputMapping::User(UserInputMapping {
-            source,
-            operator,
-            output,
-        }) => {
+        InputMapping::User(UserInputMapping { source, output }) => {
             let source_node = nodes.iter().find(|n| &n.id == source).ok_or_else(|| {
                 eyre!("source node `{source}` mapped to input `{input_id_str}` does not exist",)
             })?;
-            if let Some(operator_id) = operator {
-                let operator = match &source_node.kind {
-                    CoreNodeKind::Runtime(runtime) => {
-                        let operator = runtime.operators.iter().find(|o| &o.id == operator_id);
-                        operator.ok_or_else(|| {
+            match &source_node.kind {
+                CoreNodeKind::Custom(custom_node) => {
+                    if !custom_node.run_config.outputs.contains(output) {
+                        bail!(
+                            "output `{source}/{output}` mapped to \
+                            input `{input_id_str}` does not exist",
+                        );
+                    }
+                }
+                CoreNodeKind::Runtime(runtime) => {
+                    let (operator_id, output) = output.split_once('/').unwrap_or_default();
+                    let operator_id = OperatorId::from(operator_id.to_owned());
+                    let output = DataId::from(output.to_owned());
+
+                    let operator = runtime
+                        .operators
+                        .iter()
+                        .find(|o| o.id == operator_id)
+                        .ok_or_else(|| {
                             eyre!(
                                 "source operator `{source}/{operator_id}` used \
                                 for input `{input_id_str}` does not exist",
                             )
-                        })?
-                    }
-                    CoreNodeKind::Custom(_) => {
-                        bail!(
-                            "input `{input_id_str}` references operator \
-                            `{source}/{operator_id}`, but `{source}` is a \
-                            custom node",
-                        );
-                    }
-                };
+                        })?;
 
-                if !operator.config.outputs.contains(output) {
-                    bail!(
-                        "output `{source}/{operator_id}/{output}` mapped to \
-                        input `{input_id_str}` does not exist",
-                    );
-                }
-            } else {
-                match &source_node.kind {
-                    CoreNodeKind::Runtime(_) => bail!(
-                        "input `{input_id_str}` references output \
-                        `{source}/{output}`, but `{source}` is a \
-                        runtime node",
-                    ),
-                    CoreNodeKind::Custom(custom_node) => {
-                        if !custom_node.run_config.outputs.contains(output) {
-                            bail!(
-                                "output `{source}/{output}` mapped to \
-                                input `{input_id_str}` does not exist",
-                            );
-                        }
+                    if !operator.config.outputs.contains(&output) {
+                        bail!(
+                            "output `{source}/{operator_id}/{output}` mapped to \
+                            input `{input_id_str}` does not exist",
+                        );
                     }
                 }
             }

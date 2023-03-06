@@ -4,11 +4,17 @@ use std::{
     ffi::{OsStr, OsString},
     path::Path,
 };
+use tracing::metadata::LevelFilter;
+use tracing_subscriber::Layer;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    set_up_tracing().wrap_err("failed to set up tracing")?;
+
     if cfg!(windows) {
-        eprintln!("The c++ example does not work on Windows currently because of a linker error");
+        tracing::error!(
+            "The c++ example does not work on Windows currently because of a linker error"
+        );
         return Ok(());
     }
 
@@ -19,22 +25,6 @@ async fn main() -> eyre::Result<()> {
 
     tokio::fs::create_dir_all("build").await?;
     let build_dir = Path::new("build");
-
-    build_package("dora-operator-api-cxx").await?;
-    let operator_cxxbridge = target
-        .join("cxxbridge")
-        .join("dora-operator-api-cxx")
-        .join("src");
-    tokio::fs::copy(
-        operator_cxxbridge.join("lib.rs.cc"),
-        build_dir.join("operator-bridge.cc"),
-    )
-    .await?;
-    tokio::fs::copy(
-        operator_cxxbridge.join("lib.rs.h"),
-        build_dir.join("dora-operator-api.h"),
-    )
-    .await?;
 
     build_package("dora-node-api-cxx").await?;
     let node_cxxbridge = target
@@ -54,6 +44,22 @@ async fn main() -> eyre::Result<()> {
     tokio::fs::write(
         build_dir.join("operator.h"),
         r###"#include "../operator-rust-api/operator.h""###,
+    )
+    .await?;
+
+    build_package("dora-operator-api-cxx").await?;
+    let operator_cxxbridge = target
+        .join("cxxbridge")
+        .join("dora-operator-api-cxx")
+        .join("src");
+    tokio::fs::copy(
+        operator_cxxbridge.join("lib.rs.cc"),
+        build_dir.join("operator-bridge.cc"),
+    )
+    .await?;
+    tokio::fs::copy(
+        operator_cxxbridge.join("lib.rs.h"),
+        build_dir.join("dora-operator-api.h"),
     )
     .await?;
 
@@ -88,7 +94,7 @@ async fn main() -> eyre::Result<()> {
             "-l",
             "dora_operator_api_cxx",
             "-L",
-            &root.join("target").join("debug").to_str().unwrap(),
+            root.join("target").join("debug").to_str().unwrap(),
         ],
     )
     .await?;
@@ -101,13 +107,10 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
 
+    let dataflow = Path::new("dataflow.yml").to_owned();
     build_package("dora-runtime").await?;
-
-    dora_coordinator::run(dora_coordinator::Args {
-        run_dataflow: Path::new("dataflow.yml").to_owned().into(),
-        runtime: Some(root.join("target").join("debug").join("dora-runtime")),
-    })
-    .await?;
+    let dora_runtime_path = Some(root.join("target").join("debug").join("dora-runtime"));
+    dora_daemon::Daemon::run_dataflow(&dataflow, dora_runtime_path).await?;
 
     Ok(())
 }
@@ -266,4 +269,15 @@ async fn build_cxx_operator(
     };
 
     Ok(())
+}
+
+fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_filter(LevelFilter::DEBUG);
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
 }
