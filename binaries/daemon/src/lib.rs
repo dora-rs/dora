@@ -754,15 +754,13 @@ where
         .flat_map(|(_, v)| v)
         .collect();
     for (receiver_id, input_id) in downstream_nodes {
-        let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-            continue;
+        if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+            let _ = channel
+                .send_async(daemon_messages::NodeEvent::InputClosed {
+                    id: input_id.clone(),
+                })
+                .await;
         };
-
-        let _ = channel
-            .send_async(daemon_messages::NodeEvent::InputClosed {
-                id: input_id.clone(),
-            })
-            .await;
 
         if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
             open_inputs.remove(input_id);
