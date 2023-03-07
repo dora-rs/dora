@@ -59,6 +59,16 @@ pub enum DaemonRequest {
     },
 }
 
+impl DaemonRequest {
+    pub fn expects_tcp_reply(&self) -> bool {
+        #[allow(clippy::match_like_matches_macro)]
+        match self {
+            DaemonRequest::SendMessage { .. } => false,
+            _ => true,
+        }
+    }
+}
+
 type SharedMemoryId = String;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -66,6 +76,7 @@ pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
     NextEvents(Vec<NodeEvent>),
+    Empty,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

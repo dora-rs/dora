@@ -7,8 +7,12 @@ use std::{
 
 pub fn request(connection: &mut TcpStream, request: &DaemonRequest) -> eyre::Result<DaemonReply> {
     send_message(connection, request)?;
-    receive_reply(connection)
-        .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
+    if request.expects_tcp_reply() {
+        receive_reply(connection)
+            .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
+    } else {
+        Ok(DaemonReply::Empty)
+    }
 }
 
 fn send_message(connection: &mut TcpStream, message: &DaemonRequest) -> eyre::Result<()> {
