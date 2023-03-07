@@ -47,9 +47,10 @@ pub enum DaemonRequest {
     SendPreparedMessage {
         id: SharedMemoryId,
     },
-    SendEmptyMessage {
+    SendMessage {
         output_id: DataId,
         metadata: Metadata<'static>,
+        data: Vec<u8>,
     },
     CloseOutputs(Vec<DataId>),
     Stopped,
@@ -87,7 +88,7 @@ pub struct DropEvent {
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub struct DropToken(Uuid);
 
@@ -98,7 +99,22 @@ impl DropToken {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct InputData {
+pub enum InputData {
+    SharedMemory(SharedMemoryInput),
+    Vec(Vec<u8>),
+}
+
+impl InputData {
+    pub fn drop_token(&self) -> Option<DropToken> {
+        match self {
+            InputData::SharedMemory(data) => Some(data.drop_token),
+            InputData::Vec(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SharedMemoryInput {
     pub shared_memory_id: SharedMemoryId,
     pub len: usize,
     pub drop_token: DropToken,
