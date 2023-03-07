@@ -253,16 +253,16 @@ impl EventStream {
         let mut drop_tokens = Vec::new();
         let node_id = node_id.clone();
         let join_handle = std::thread::spawn(move || {
-            let result = loop {
+            let result = 'outer: loop {
                 let daemon_request = DaemonRequest::NextEvent {
                     drop_tokens: std::mem::take(&mut drop_tokens),
                 };
-                let event: NodeEvent = match channel.request(&daemon_request) {
-                    Ok(DaemonReply::NodeEvent(event)) => event,
-                    Ok(DaemonReply::Closed) => {
+                let events = match channel.request(&daemon_request) {
+                    Ok(DaemonReply::NextEvents(events)) if events.is_empty() => {
                         tracing::debug!("Event stream closed for node ID `{node_id}`");
                         break Ok(());
                     }
+                    Ok(DaemonReply::NextEvents(events)) => events,
                     Ok(other) => {
                         let err = eyre!("unexpected control reply: {other:?}");
                         tracing::warn!("{err:?}");
@@ -274,37 +274,44 @@ impl EventStream {
                         continue;
                     }
                 };
-                let drop_token = match &event {
-                    NodeEvent::Input {
-                        data: Some(data), ..
-                    } => data.drop_token(),
-                    NodeEvent::Stop
-                    | NodeEvent::InputClosed { .. }
-                    | NodeEvent::Input { data: None, .. } => None,
-                };
+                for event in events {
+                    let drop_token = match &event {
+                        NodeEvent::Input {
+                            data: Some(data), ..
+                        } => data.drop_token(),
+                        NodeEvent::Stop
+                        | NodeEvent::InputClosed { .. }
+                        | NodeEvent::Input { data: None, .. } => None,
+                    };
 
-                let (drop_tx, drop_rx) = std::sync::mpsc::channel();
-                match tx.send(EventItem::NodeEvent {
-                    event,
-                    ack_channel: drop_tx,
-                }) {
-                    Ok(()) => {}
-                    Err(_) => {
-                        // receiving end of channel was closed
-                        break Ok(());
+                    let (drop_tx, drop_rx) = std::sync::mpsc::channel();
+                    match tx.send(EventItem::NodeEvent {
+                        event,
+                        ack_channel: drop_tx,
+                    }) {
+                        Ok(()) => {}
+                        Err(_) => {
+                            // receiving end of channel was closed
+                            break 'outer Ok(());
+                        }
                     }
-                }
 
-                match drop_rx.recv_timeout(Duration::from_secs(30)) {
-                    Ok(()) => break Err(eyre!("Node API should not send anything on ACK channel")),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        tracing::warn!("timeout while waiting for input ACK");
+                    let timeout = Duration::from_secs(30);
+                    match drop_rx.recv_timeout(timeout) {
+                        Ok(()) => {
+                            break 'outer Err(eyre!(
+                                "Node API should not send anything on ACK channel"
+                            ))
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            tracing::warn!("timeout: event was not dropped after {timeout:?}");
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
                     }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
-                }
 
-                if let Some(token) = drop_token {
-                    drop_tokens.push(token);
+                    if let Some(token) = drop_token {
+                        drop_tokens.push(token);
+                    }
                 }
             };
             if let Err(err) = result {
