@@ -65,8 +65,7 @@ type SharedMemoryId = String;
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
-    Closed,
-    NodeEvent(NodeEvent),
+    NextEvents(Vec<NodeEvent>),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
