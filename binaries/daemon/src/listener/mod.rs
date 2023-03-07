@@ -316,7 +316,10 @@ where
                     .send_daemon_event(event)
                     .await
                     .map_err(|_| "failed to receive send_empty_message reply".to_owned());
-                self.send_reply(DaemonReply::Result(result))
+                if let Err(err) = result {
+                    tracing::warn!("{err:?}");
+                }
+                self.send_reply(DaemonReply::Empty)
                     .await
                     .wrap_err("failed to send SendEmptyMessage reply")?;
             }

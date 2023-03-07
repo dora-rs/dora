@@ -151,19 +151,18 @@ impl ControlChannel {
         metadata: Metadata<'static>,
         data: Vec<u8>,
     ) -> eyre::Result<()> {
+        let request = DaemonRequest::SendMessage {
+            output_id,
+            metadata,
+            data,
+        };
         let reply = self
             .channel
-            .request(&DaemonRequest::SendMessage {
-                output_id,
-                metadata,
-                data,
-            })
-            .wrap_err("failed to send SendEmptyMessage request to dora-daemon")?;
+            .request(&request)
+            .wrap_err("failed to send SendMessage request to dora-daemon")?;
         match reply {
-            dora_core::daemon_messages::DaemonReply::Result(result) => {
-                result.map_err(|err| eyre!(err))
-            }
-            other => bail!("unexpected SendEmptyMessage reply: {other:?}"),
+            dora_core::daemon_messages::DaemonReply::Empty => Ok(()),
+            other => bail!("unexpected SendMessage reply: {other:?}"),
         }
     }
 }

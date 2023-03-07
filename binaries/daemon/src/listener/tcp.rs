@@ -75,6 +75,10 @@ impl super::Connection for TcpConnection {
     }
 
     async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()> {
+        if matches!(message, DaemonReply::Empty) {
+            // don't send empty replies
+            return Ok(());
+        }
         let serialized =
             bincode::serialize(&message).wrap_err("failed to serialize DaemonReply")?;
         tcp_send(&mut self.0, &serialized)
