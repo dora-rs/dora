@@ -98,6 +98,7 @@ struct Listener<C> {
     subscribed_events: Option<flume::Receiver<NodeEvent>>,
     queue: Vec<NodeEvent>,
     max_queue_len: usize,
+    queue_overshoot: usize,
     connection: C,
 }
 
@@ -146,7 +147,8 @@ where
                             daemon_tx,
                             shmem_handler_tx,
                             subscribed_events: None,
-                            max_queue_len: 50,    // TODO: make this configurable
+                            max_queue_len: 50,   // TODO: make this configurable
+                            queue_overshoot: 30, // TODO: make this configurable
                             queue: Vec::new(),
                         };
                         match listener.run_inner().await.wrap_err("listener failed") {
@@ -218,7 +220,7 @@ where
                 .filter(|e| matches!(e, NodeEvent::Input { .. }))
                 .count();
             let drop_n = input_event_count.saturating_sub(self.max_queue_len);
-            if drop_n > 0 {
+            if drop_n > self.queue_overshoot {
                 self.drop_oldest_inputs(drop_n).await?;
             }
         }
