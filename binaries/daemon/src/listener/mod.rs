@@ -241,7 +241,9 @@ where
                 data: Some(data), ..
             }) = self.queue.remove(index)
             {
-                drop_tokens.push(data.drop_token);
+                if let Some(drop_token) = data.drop_token() {
+                    drop_tokens.push(drop_token);
+                }
             }
         }
         self.report_drop_tokens(drop_tokens).await?;
@@ -296,9 +298,10 @@ where
                 )
                 .await?;
             }
-            DaemonRequest::SendEmptyMessage {
+            DaemonRequest::SendMessage {
                 output_id,
                 metadata,
+                data,
             } => {
                 // let elapsed = metadata.timestamp().get_time().to_system_time().elapsed()?;
                 // tracing::debug!("listener SendEmptyMessage: {elapsed:?}");
@@ -307,7 +310,7 @@ where
                     node_id: self.node_id.clone(),
                     output_id,
                     metadata,
-                    data: None,
+                    data: data.into(),
                 });
                 let result = self
                     .send_daemon_event(event)

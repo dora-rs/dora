@@ -181,7 +181,7 @@ impl SharedMemHandler {
                         node_id,
                         output_id,
                         metadata,
-                        data,
+                        data: data.into(),
                     })
                     .await;
                 let _ = reply_sender.send(DaemonReply::Result(

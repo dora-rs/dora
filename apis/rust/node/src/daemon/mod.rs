@@ -145,16 +145,18 @@ impl ControlChannel {
         }
     }
 
-    pub fn send_empty_message(
+    pub fn send_message(
         &mut self,
         output_id: DataId,
         metadata: Metadata<'static>,
+        data: Vec<u8>,
     ) -> eyre::Result<()> {
         let reply = self
             .channel
-            .request(&DaemonRequest::SendEmptyMessage {
+            .request(&DaemonRequest::SendMessage {
                 output_id,
                 metadata,
+                data,
             })
             .wrap_err("failed to send SendEmptyMessage request to dora-daemon")?;
         match reply {
@@ -275,7 +277,7 @@ impl EventStream {
                 let drop_token = match &event {
                     NodeEvent::Input {
                         data: Some(data), ..
-                    } => Some(data.drop_token.clone()),
+                    } => data.drop_token(),
                     NodeEvent::Stop
                     | NodeEvent::InputClosed { .. }
                     | NodeEvent::Input { data: None, .. } => None,
@@ -350,18 +352,21 @@ impl EventStream {
                 NodeEvent::Stop => Event::Stop,
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::Input { id, metadata, data } => {
-                    let mapped = data
-                        .map(|d| unsafe { MappedInputData::map(&d.shared_memory_id, d.len) })
+                    let data = data
+                        .map(|data| match data {
+                            dora_core::daemon_messages::InputData::Vec(d) => Ok(Data::Vec(d)),
+                            dora_core::daemon_messages::InputData::SharedMemory(d) => unsafe {
+                                MappedInputData::map(&d.shared_memory_id, d.len).map(|data| {
+                                    Data::SharedMemory {
+                                        data,
+                                        _drop: ack_channel,
+                                    }
+                                })
+                            },
+                        })
                         .transpose();
-                    match mapped {
-                        Ok(mapped) => Event::Input {
-                            id,
-                            metadata,
-                            data: mapped.map(|data| Data {
-                                data,
-                                _drop: ack_channel,
-                            }),
-                        },
+                    match data {
+                        Ok(data) => Event::Input { id, metadata, data },
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
                 }
@@ -394,16 +399,22 @@ pub enum Event<'a> {
     Error(String),
 }
 
-pub struct Data<'a> {
-    data: MappedInputData<'a>,
-    _drop: std::sync::mpsc::Sender<()>,
+pub enum Data<'a> {
+    Vec(Vec<u8>),
+    SharedMemory {
+        data: MappedInputData<'a>,
+        _drop: std::sync::mpsc::Sender<()>,
+    },
 }
 
 impl std::ops::Deref for Data<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.data
+        match self {
+            Data::SharedMemory { data, .. } => data,
+            Data::Vec(data) => data,
+        }
     }
 }
 

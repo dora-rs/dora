@@ -687,20 +687,35 @@ impl Daemon {
                 let mut drop_tokens = Vec::new();
                 for (receiver_id, input_id) in local_receivers {
                     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-                        let drop_token = DropToken::generate();
-                        let send_result = channel.send_async(daemon_messages::NodeEvent::Input {
+                        let mut drop_token = None;
+                        let item = daemon_messages::NodeEvent::Input {
                             id: input_id.clone(),
                             metadata: metadata.clone(),
-                            data: data.as_ref().map(|data| daemon_messages::InputData {
-                                shared_memory_id: data.get_os_id().to_owned(),
-                                len: data.len(),
-                                drop_token: drop_token.clone(),
-                            }),
-                        });
+                            data: match &data {
+                                Data::None => None,
+                                Data::SharedMemory(data) => {
+                                    let token = DropToken::generate();
+                                    drop_token = Some(token);
+                                    Some(daemon_messages::InputData::SharedMemory(
+                                        daemon_messages::SharedMemoryInput {
+                                            shared_memory_id: data.get_os_id().to_owned(),
+                                            len: data.len(),
+                                            drop_token: token,
+                                        },
+                                    ))
+                                }
+                                Data::Vec(data) => {
+                                    Some(daemon_messages::InputData::Vec(data.clone()))
+                                }
+                            },
+                        };
+                        let send_result = channel.send_async(item);
 
                         match timeout(Duration::from_millis(10), send_result).await {
                             Ok(Ok(())) => {
-                                drop_tokens.push(drop_token);
+                                if let Some(token) = drop_token {
+                                    drop_tokens.push(token);
+                                }
                             }
                             Ok(Err(_)) => {
                                 closed.push(receiver_id);
@@ -716,25 +731,32 @@ impl Daemon {
                 for id in closed {
                     dataflow.subscribe_channels.remove(id);
                 }
-                let data_bytes = data.as_ref().map(|d| unsafe { d.as_slice() }.to_owned());
 
-                // report drop tokens to shared memory handler
-                if let Some(data) = data {
-                    if let Err(err) = self
-                        .shared_memory_handler
-                        .send_async(shared_mem_handler::DaemonEvent::SentOut {
-                            data: *data,
-                            drop_tokens,
-                        })
-                        .await
-                        .wrap_err("shared mem handler crashed after send out")
-                    {
-                        tracing::error!("{err:?}");
+                let data_bytes = match data {
+                    Data::SharedMemory(data) => {
+                        let bytes = unsafe { data.as_slice() }.to_owned();
+
+                        // report drop tokens to shared memory handler
+                        let send_result = self
+                            .shared_memory_handler
+                            .send_async(shared_mem_handler::DaemonEvent::SentOut {
+                                data: *data,
+                                drop_tokens,
+                            })
+                            .await;
+                        if let Err(err) =
+                            send_result.wrap_err("shared mem handler crashed after send out")
+                        {
+                            tracing::error!("{err:?}");
+                        }
+
+                        bytes
                     }
-                }
+                    Data::Vec(data) => data,
+                    Data::None => Vec::new(),
+                };
 
                 // TODO send `data` via network to all remove receivers
-                if let Some(data) = data_bytes {}
             }
             ShmemHandlerEvent::HandlerError(err) => {
                 bail!(err.wrap_err("shared memory handler failed"))
@@ -882,7 +904,7 @@ pub enum ShmemHandlerEvent {
         node_id: NodeId,
         output_id: DataId,
         metadata: dora_core::message::Metadata<'static>,
-        data: Option<Box<SharedMemSample>>,
+        data: Data,
     },
     HandlerError(eyre::ErrReport),
 }
@@ -902,12 +924,40 @@ impl fmt::Debug for ShmemHandlerEvent {
                 .field("node_id", node_id)
                 .field("output_id", output_id)
                 .field("metadata", metadata)
-                .field("data", &data.as_ref().map(|_| "Some(..)").unwrap_or("None"))
+                .field(
+                    "data",
+                    match &data {
+                        Data::None => &"None",
+                        Data::SharedMemory(_) => &"SharedMemory(..)",
+                        Data::Vec(_) => &"Vec(..)",
+                    },
+                )
                 .finish(),
             ShmemHandlerEvent::HandlerError(err) => {
                 f.debug_tuple("HandlerError").field(err).finish()
             }
         }
+    }
+}
+
+pub enum Data {
+    None,
+    SharedMemory(Box<SharedMemSample>),
+    Vec(Vec<u8>),
+}
+
+impl From<Option<Box<SharedMemSample>>> for Data {
+    fn from(data: Option<Box<SharedMemSample>>) -> Self {
+        match data {
+            Some(data) => Self::SharedMemory(data),
+            None => Self::None,
+        }
+    }
+}
+
+impl From<Vec<u8>> for Data {
+    fn from(data: Vec<u8>) -> Self {
+        Self::Vec(data)
     }
 }
 

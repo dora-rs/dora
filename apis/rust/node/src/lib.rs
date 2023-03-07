@@ -12,6 +12,8 @@ use shared_memory_server::ShmemConf;
 
 mod daemon;
 
+const ZERO_COPY_THRESHOLD: usize = 4096;
+
 pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
@@ -70,7 +72,7 @@ impl DoraNode {
         }
         let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters.into_owned());
 
-        if data_len > 0 {
+        if data_len >= ZERO_COPY_THRESHOLD {
             let sample = self
                 .control_channel
                 .prepare_message(output_id.clone(), metadata, data_len)
@@ -88,9 +90,10 @@ impl DoraNode {
                 .send_prepared_message(sample)
                 .wrap_err_with(|| format!("failed to send data for output {output_id}"))?;
         } else {
-            data(&mut []);
+            let mut buffer = vec![0; data_len];
+            data(&mut buffer);
             self.control_channel
-                .send_empty_message(output_id.clone(), metadata)
+                .send_message(output_id.clone(), metadata, buffer)
                 .wrap_err_with(|| format!("failed to send output {output_id}"))?;
         }
 
