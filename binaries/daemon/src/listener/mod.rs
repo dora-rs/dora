@@ -146,7 +146,7 @@ where
                             daemon_tx,
                             shmem_handler_tx,
                             subscribed_events: None,
-                            max_queue_len: 10, // TODO: make this configurable
+                            max_queue_len: 50,    // TODO: make this configurable
                             queue: Vec::new(),
                         };
                         match listener.run_inner().await.wrap_err("listener failed") {
