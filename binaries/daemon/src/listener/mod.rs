@@ -8,7 +8,7 @@ use dora_core::{
 };
 use eyre::{eyre, Context};
 use shared_memory_server::{ShmemConf, ShmemServer};
-use std::{collections::VecDeque, net::Ipv4Addr};
+use std::{mem, net::Ipv4Addr};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot},
@@ -96,8 +96,8 @@ struct Listener<C> {
     daemon_tx: mpsc::Sender<Event>,
     shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
     subscribed_events: Option<flume::Receiver<NodeEvent>>,
+    queue: Vec<NodeEvent>,
     max_queue_len: usize,
-    queue: VecDeque<NodeEvent>,
     connection: C,
 }
 
@@ -147,7 +147,7 @@ where
                             shmem_handler_tx,
                             subscribed_events: None,
                             max_queue_len: 10, // TODO: make this configurable
-                            queue: VecDeque::new(),
+                            queue: Vec::new(),
                         };
                         match listener.run_inner().await.wrap_err("listener failed") {
                             Ok(()) => {}
@@ -208,7 +208,7 @@ where
     async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
             while let Ok(event) = events.try_recv() {
-                self.queue.push_back(event);
+                self.queue.push(event);
             }
 
             // drop oldest input events to maintain max queue length queue
@@ -237,9 +237,9 @@ where
                 .unwrap_or_else(|| panic!("no input event found in drop iteration {i}"));
 
             // remove that event
-            if let Some(NodeEvent::Input {
+            if let NodeEvent::Input {
                 data: Some(data), ..
-            }) = self.queue.remove(index)
+            } = self.queue.remove(index)
             {
                 if let Some(drop_token) = data.drop_token() {
                     drop_tokens.push(drop_token);
@@ -329,24 +329,23 @@ where
             DaemonRequest::NextEvent { drop_tokens } => {
                 self.report_drop_tokens(drop_tokens).await?;
 
-                // try to take the latest queued event first
-                let queued_event = self.queue.pop_front().map(DaemonReply::NodeEvent);
-                let reply = match queued_event {
-                    Some(reply) => reply,
-                    None => {
-                        match self.subscribed_events.as_mut() {
-                            // wait for next event
-                            Some(events) => match events.recv_async().await {
-                                Ok(event) => DaemonReply::NodeEvent(event),
-                                Err(flume::RecvError::Disconnected) => DaemonReply::Closed,
-                            },
-                            None => DaemonReply::Result(Err(
-                                "Ignoring event request because no subscribe \
-                                    message was sent yet"
-                                    .into(),
-                            )),
+                // try to take the queued events first
+                let queued_events = mem::take(&mut self.queue);
+                let reply = if queued_events.is_empty() {
+                    match self.subscribed_events.as_mut() {
+                        // wait for next event
+                        Some(events) => match events.recv_async().await {
+                            Ok(event) => DaemonReply::NextEvents(vec![event]),
+                            Err(flume::RecvError::Disconnected) => DaemonReply::NextEvents(vec![]),
+                        },
+                        None => {
+                            DaemonReply::Result(Err("Ignoring event request because no subscribe \
+                                message was sent yet"
+                                .into()))
                         }
                     }
+                } else {
+                    DaemonReply::NextEvents(queued_events)
                 };
 
                 self.send_reply(reply)
