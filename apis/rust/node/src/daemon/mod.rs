@@ -296,14 +296,15 @@ impl EventStream {
                         }
                     }
 
-                    match drop_rx.recv_timeout(Duration::from_secs(30)) {
+                    let timeout = Duration::from_secs(30);
+                    match drop_rx.recv_timeout(timeout) {
                         Ok(()) => {
                             break 'outer Err(eyre!(
                                 "Node API should not send anything on ACK channel"
                             ))
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            tracing::warn!("timeout while waiting for input ACK");
+                            tracing::warn!("timeout: event was not dropped after {timeout:?}");
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {} // expected result
                     }
