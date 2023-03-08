@@ -31,8 +31,9 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
 
       - name: "Build binaries"
-        timeout-minutes: 30
-        run: cargo build --release -p dora-runtime -p dora-coordinator -p dora-cli
+        timeout-minutes: 60
+        run: "cargo build --release -p dora-runtime 
+         -p dora-coordinator -p dora-cli -p dora-daemon"
 
       - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
@@ -40,6 +41,7 @@ jobs:
           mkdir archive
           cp target/release/dora-runtime archive
           cp target/release/dora-coordinator archive
+          cp target/release/dora-daemon archive
           cp target/release/dora-cli archive/dora
           cd archive
           zip -r ../archive.zip .
@@ -52,6 +54,7 @@ jobs:
           New-Item -Path archive -ItemType Directory
           Copy-Item target/release/dora-runtime.exe -Destination archive
           Copy-Item target/release/dora-coordinator.exe -Destination archive
+          Copy-Item target/release/dora-daemon.exe -Destination archive
           Copy-Item target/release/dora-cli.exe -Destination archive/dora.exe
           Compress-Archive -Path archive\* -DestinationPath archive.zip
 
