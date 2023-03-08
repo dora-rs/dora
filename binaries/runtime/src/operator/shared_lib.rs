@@ -151,8 +151,8 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     };
 
                     let span = tracer.start_with_context(
-                        format!("{}", input.id),
-                        &deserialize_context(&input.metadata.parameters.open_telemetry_context),
+                        format!("{}", input_id),
+                        &deserialize_context(&metadata.parameters.open_telemetry_context),
                     );
                     let child_cx = OtelContext::current_with_span(span);
                     let string_cx = serialize_context(&child_cx);

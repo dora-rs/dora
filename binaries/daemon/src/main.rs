@@ -1,9 +1,11 @@
 use dora_core::topics::DORA_COORDINATOR_PORT_DEFAULT;
 use dora_daemon::Daemon;
+#[cfg(feature = "tracing")]
+use dora_tracing::set_up_tracing;
+#[cfg(feature = "tracing")]
 use eyre::Context;
+
 use std::{net::Ipv4Addr, path::PathBuf};
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::Layer;
 
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora daemon")]
@@ -23,6 +25,7 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn run() -> eyre::Result<()> {
+    #[cfg(feature = "tracing")]
     set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
 
     let Args {
@@ -46,15 +49,4 @@ async fn run() -> eyre::Result<()> {
             Daemon::run(coordinator_socket.into(), machine_id, dora_runtime_path).await
         }
     }
-}
-
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_filter(LevelFilter::DEBUG);
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
 }

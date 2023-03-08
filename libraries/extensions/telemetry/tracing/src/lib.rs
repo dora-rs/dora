@@ -5,10 +5,12 @@
 
 use std::collections::HashMap;
 
+use eyre::Context as EyreContext;
 use opentelemetry::propagation::Extractor;
 use opentelemetry::sdk::{propagation::TraceContextPropagator, trace as sdktrace};
 use opentelemetry::trace::TraceError;
 use opentelemetry::{global, Context};
+use tracing_subscriber::{EnvFilter, Layer};
 
 struct MetadataMap<'a>(HashMap<&'a str, &'a str>);
 
@@ -68,4 +70,16 @@ pub fn deserialize_context(string_context: &str) -> Context {
         map.0.insert(key, value);
     }
     global::get_text_map_propagator(|prop| prop.extract(&map))
+}
+
+pub fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+    let filter = EnvFilter::from_default_env();
+
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_filter(filter);
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
 }
