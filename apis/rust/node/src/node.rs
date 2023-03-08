@@ -11,6 +11,9 @@ use crate::{
     EventStream,
 };
 
+#[cfg(feature = "tracing")]
+use dora_tracing::set_up_tracing;
+
 const ZERO_COPY_THRESHOLD: usize = 4096;
 
 pub struct DoraNode {
@@ -22,7 +25,7 @@ pub struct DoraNode {
 
 impl DoraNode {
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
-        #[cfg(feature = "tracing-subscriber")]
+        #[cfg(feature = "tracing")]
         set_up_tracing().context("failed to set up tracing subscriber")?;
 
         let node_config = {
@@ -130,14 +133,4 @@ impl Drop for DoraNode {
             tracing::error!("{err:?}")
         }
     }
-}
-
-#[cfg(feature = "tracing-subscriber")]
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
 }
