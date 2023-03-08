@@ -1,7 +1,7 @@
-use super::{communication::DaemonChannel, EventStreamThreadHandle, MessageSample};
+use super::{communication::DaemonChannel, EventStreamThreadHandle};
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{DaemonRequest, DataflowId},
+    daemon_messages::{DaemonRequest, Data, DataflowId},
     message::Metadata,
 };
 use eyre::{bail, eyre, Context};
@@ -56,49 +56,11 @@ impl ControlChannel {
         Ok(())
     }
 
-    pub fn prepare_message(
-        &mut self,
-        output_id: DataId,
-        metadata: Metadata<'static>,
-        data_len: usize,
-    ) -> eyre::Result<MessageSample> {
-        let reply = self
-            .channel
-            .request(&DaemonRequest::PrepareOutputMessage {
-                output_id,
-                metadata,
-                data_len,
-            })
-            .wrap_err("failed to send PrepareOutputMessage request to dora-daemon")?;
-        match reply {
-            dora_core::daemon_messages::DaemonReply::PreparedMessage {
-                shared_memory_id: id,
-            } => Ok(MessageSample { id }),
-            dora_core::daemon_messages::DaemonReply::Result(Err(err)) => {
-                Err(eyre!(err).wrap_err("failed to report stop event to dora-daemon"))
-            }
-            other => bail!("unexpected PrepareOutputMessage reply: {other:?}"),
-        }
-    }
-
-    pub fn send_prepared_message(&mut self, sample: MessageSample) -> eyre::Result<()> {
-        let reply = self
-            .channel
-            .request(&DaemonRequest::SendPreparedMessage { id: sample.id })
-            .wrap_err("failed to send SendOutMessage request to dora-daemon")?;
-        match reply {
-            dora_core::daemon_messages::DaemonReply::Result(result) => {
-                result.map_err(|err| eyre!(err))
-            }
-            other => bail!("unexpected SendOutMessage reply: {other:?}"),
-        }
-    }
-
     pub fn send_message(
         &mut self,
         output_id: DataId,
         metadata: Metadata<'static>,
-        data: Vec<u8>,
+        data: Option<Data>,
     ) -> eyre::Result<()> {
         let request = DaemonRequest::SendMessage {
             output_id,
