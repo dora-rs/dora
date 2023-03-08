@@ -1070,6 +1070,7 @@ dependencies = [
  "serde_json",
  "serde_yaml 0.8.23",
  "shared-memory-server",
+ "shared_memory",
  "thiserror",
  "tokio",
  "tracing",

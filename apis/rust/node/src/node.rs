@@ -7,7 +7,7 @@ use eyre::WrapErr;
 use shared_memory_server::ShmemConf;
 
 use crate::{
-    daemon::{ControlChannel, DaemonConnection},
+    daemon_connection::{ControlChannel, DaemonConnection},
     EventStream,
 };
 
