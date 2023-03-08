@@ -4,8 +4,8 @@
 import time
 import urllib.request
 
-import cv2
 import numpy as np
+
 from dora import Node
 
 print("Hello from no_webcam.py")
