@@ -129,7 +129,7 @@ Composability as:
 Low latency as:
 - [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
 - [x] PubSub communication with shared memory!
-- [ ] Zero-copy on read. Copy on write!
+- [ ] Zero-copy on read! 
 
 Distributed as:
 - [ ] PubSub communication between machines with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
