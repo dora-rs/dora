@@ -9,8 +9,8 @@ edition = "2021"
 crate-type = ["staticlib"]
 
 [features]
-default = ["tracing-subscriber"]
-tracing-subscriber = ["dora-node-api/tracing-subscriber"]
+default = ["tracing"]
+tracing = ["dora-node-api/tracing"]
 
 [dependencies]
 cxx = "1.0.73"

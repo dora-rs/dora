@@ -10,3 +10,6 @@ license = "Apache-2.0"
 opentelemetry = { version = "0.17", features = ["rt-tokio", "metrics"] }
 opentelemetry-jaeger = { version = "0.16", features = ["rt-tokio"] }
 tokio = { version = "1.24.2", features = ["full"] }
+tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+eyre = "0.6.8"
+tracing = "0.1.36"

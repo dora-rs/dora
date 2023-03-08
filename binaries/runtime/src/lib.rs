@@ -11,16 +11,18 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use operator::{run_operator, OperatorEvent, StopReason};
 
+#[cfg(feature = "tracing")]
+use dora_tracing::set_up_tracing;
 use std::{
     collections::{BTreeSet, HashMap},
     mem,
 };
 use tokio::{runtime::Builder, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
-
 mod operator;
 
 pub fn main() -> eyre::Result<()> {
+    #[cfg(feature = "tracing")]
     set_up_tracing().context("failed to set up tracing subscriber")?;
 
     let config: RuntimeConfig = {
@@ -292,13 +294,4 @@ enum Event {
     },
     InputClosed(dora_core::config::DataId),
     Error(String),
-}
-
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer().pretty();
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
 }
