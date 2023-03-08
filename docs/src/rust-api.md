@@ -4,25 +4,10 @@
 
 The operator API is a framework for you to implement. The implemented operator will be managed by `dora`. This framework enable us to make optimisation and provide advanced features. It is the recommended way of using `dora`.
 
-An operator requires to be registered and implement the `DoraOperator` trait. It is composed of an `on_input` method that defines the behaviour of the operator when there is an input.
+An operator requires to be registered and implement the `DoraOperator` trait. It is composed of an `on_event` method that defines the behaviour of the operator when there is an event such as receiving an input for exemple.
 
 ```rust
-use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
-
-register_operator!(ExampleOperator);
-
-#[derive(Debug, Default)]
-struct ExampleOperator {
-    time: Option<String>,
-}
-
-impl DoraOperator for ExampleOperator {
-    fn on_input(
-        &mut self,
-        id: &str,
-        data: &[u8],
-        output_sender: &mut DoraOutputSender,
-    ) -> Result<DoraStatus, ()> {
+{{#include ../../examples/rust-dataflow/operator/src/lib.rs:0:17}}
 ```
 
 ### Try it out!
@@ -63,23 +48,30 @@ The custom node API allow you to integrate `dora` into your application. It allo
 `DoraNode::init_from_env()` initiate a node from environment variables set by `dora-coordinator` 
 
 ```rust
-let node = DoraNode::init_from_env().await?;
+let (mut node, mut events) = DoraNode::init_from_env()?;
 ```
 
-#### `.inputs()`
+#### `.recv()`
 
-`.inputs()` gives you a stream of input that you can access using `next()` on the input stream.
+`.recv()` wait for the next event on the events stream.
 
 ```rust
-let mut inputs = node.inputs().await?;
+let event = events.recv();
 ```
 
-#### `.send_output(output_id, data)`
+#### `.send_output(...)`
 
-`send_output` send data from the node.
+`send_output` send data from the node to the other nodes.
+We take a closure as an input to enable zero copy on send.
 
 ```rust
-node.send_output(&data_id, data.as_bytes()).await?;
+node.send_output(
+    &data_id, 
+    metadata.parameters,
+    data.len(),
+    |out| {
+        out.copy_from_slice(data);
+    })?;
 ```
 
 ### Try it out!

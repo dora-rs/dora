@@ -119,7 +119,7 @@ nodes:
 
 Composability as:
 - [x] `YAML` declarative programming
-- [x] language-agnostic:
+- [x] polyglot:
   - [x] Rust
   - [x] C
   - [x] C++
@@ -128,10 +128,11 @@ Composability as:
 
 Low latency as:
 - [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
-- [x] PubSub communication with [`iceoryx`](https://iceoryx.io/v1.0.1/)
+- [x] PubSub communication with shared memory!
+- [ ] Zero-copy on read. Copy on write!
 
 Distributed as:
-- [x] PubSub communication with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
+- [ ] PubSub communication between machines with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
 - [x] Distributed telemetry with [`opentelemetry`](https://github.com/open-telemetry/opentelemetry-rust)
 
 ---

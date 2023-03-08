@@ -21,12 +21,6 @@ Build it using:
 ```bash
 git clone https://github.com/dora-rs/dora.git
 cd dora
-cargo build -p dora-coordinator -p dora-runtime --release
+cargo build --all --release
 PATH=$PATH:$(pwd)/target/release
-```
-
-If you want to use `Iceoryx`. Add `iox-roudi` to the path.
-You can find `iox-roudi` with:
-```bash
-find target -type f -wholename "*/iceoryx-install/bin/iox-roudi"
 ```
