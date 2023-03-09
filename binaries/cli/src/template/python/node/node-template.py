@@ -5,6 +5,11 @@ from dora import Node
 
 node = Node()
 
-input_id, value, metadata = node.next()
-
-print(f"id: {input_id}, value: {value}, metadata: {metadata}")
+event = node.next()
+if event["type"] == "INPUT":
+    print(
+        f"""Node received:
+    id: {event["id"]},
+    value: {event["data"]},
+    metadata: {event["metadata"]}"""
+    )
