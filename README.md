@@ -31,7 +31,7 @@ For linux
 wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Linux.zip
 unzip dora-<version>-x86_64-Linux.zip
 python3 -m pip install dora-rs==<version>
-PATH=$PATH:$(pwd):$(pwd)/iceoryx
+PATH=$PATH:$(pwd)
 dora --help
 ```
 
