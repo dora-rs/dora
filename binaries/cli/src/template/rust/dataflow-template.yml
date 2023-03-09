@@ -3,16 +3,16 @@ communication:
     prefix: /___name___
 
 nodes:
-  - id: runtime-node_1
-    operators:
-      - id: op_1
+  - id: op_1
+    operator:
         build: cargo build -p op_1
         shared-library: target/debug/op_1
         inputs:
           tick: dora/timer/millis/100
         outputs:
           - some-output
-      - id: op_2
+  - id: op_2
+    operator:
         build: cargo build -p op_2
         shared-library: target/debug/op_2
         inputs:
