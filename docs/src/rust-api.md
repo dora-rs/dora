@@ -4,7 +4,7 @@
 
 The operator API is a framework for you to implement. The implemented operator will be managed by `dora`. This framework enable us to make optimisation and provide advanced features. It is the recommended way of using `dora`.
 
-An operator requires to be registered and implement the `DoraOperator` trait. It is composed of an `on_event` method that defines the behaviour of the operator when there is an event such as receiving an input for exemple.
+An operator requires to be registered and implement the `DoraOperator` trait. It is composed of an `on_event` method that defines the behaviour of the operator when there is an event such as receiving an input for example.
 
 ```rust
 {{#include ../../examples/rust-dataflow/operator/src/lib.rs:0:17}}
