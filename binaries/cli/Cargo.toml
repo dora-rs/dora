@@ -15,7 +15,7 @@ eyre = "0.6.8"
 dora-core = { path = "../../libraries/core" }
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.9.11"
-tempfile = "3.3.0"
+tempfile = "3.4.0"
 webbrowser = "0.8.3"
 serde_json = "1.0.86"
 termcolor = "1.1.3"
