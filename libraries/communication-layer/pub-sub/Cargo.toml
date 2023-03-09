@@ -4,18 +4,13 @@ version.workspace = true
 edition = "2021"
 
 [features]
-default = ["zenoh", "iceoryx"]
+default = ["zenoh"]
 zenoh = ["dep:zenoh", "dep:zenoh-config"]
-iceoryx = ["dep:iceoryx-rs", "dep:iceoryx-sys"]
 
 [dependencies]
 eyre = "0.6.8"
 zenoh = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a136e4fd90b11ff5d775ced981af53c4f1071b", optional = true }
 zenoh-config = { git = "https://github.com/eclipse-zenoh/zenoh.git", rev = "79a136e4fd90b11ff5d775ced981af53c4f1071b", optional = true }
-
-[target.'cfg(unix)'.dependencies]
-iceoryx-rs = { git = "https://github.com/eclipse-iceoryx/iceoryx-rs.git", optional = true }
-iceoryx-sys = { git = "https://github.com/eclipse-iceoryx/iceoryx-rs.git", optional = true }
 
 [package.metadata.docs.rs]
 all-features = true
