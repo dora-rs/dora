@@ -37,7 +37,7 @@ void *dora_context = init_dora_context_from_env();
 
 #### `dora_next_event`
 
-`dora_next_event` waits for the next input. To extract the input ID and data, use `read_dora_input_id`  and `read_dora_input_data` on the returned pointer.
+`dora_next_event` waits for the next event (e.g. an input). Use `read_dora_event_type` to read the event's type. Inputs are of type `DoraEventType_Input`. To extract the ID and data of an input event, use `read_dora_input_id`  and `read_dora_input_data` on the returned pointer. It is safe to ignore any events and handle only the events that are relevant to the node.
 
 ```c
 void *input = dora_next_input(dora_context);
