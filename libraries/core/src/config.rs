@@ -257,11 +257,6 @@ pub enum CommunicationConfig {
         config: Box<zenoh_config::Config>,
         prefix: String,
     },
-    Iceoryx {
-        app_name_prefix: String,
-        #[serde(default)]
-        topic_prefix: String,
-    },
 }
 
 impl CommunicationConfig {
@@ -272,12 +267,6 @@ impl CommunicationConfig {
                 ..
             } => {
                 write!(zenoh_prefix, "/{}", prefix).unwrap();
-            }
-            CommunicationConfig::Iceoryx { topic_prefix, .. } => {
-                if !topic_prefix.is_empty() {
-                    topic_prefix.push('-');
-                }
-                topic_prefix.push_str(prefix);
             }
         }
     }
