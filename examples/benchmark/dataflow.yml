@@ -1,6 +1,6 @@
 communication:
   zenoh:
-    prefix: /benchmark-example
+    prefix: benchmark-example
 
 nodes:
   - id: rust-node

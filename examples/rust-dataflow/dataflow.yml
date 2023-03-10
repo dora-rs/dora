@@ -1,6 +1,6 @@
 communication:
   zenoh:
-    prefix: /example-rust-dataflow
+    prefix: example-rust-dataflow
 
 daemon_config: Tcp # or Shmem
 
