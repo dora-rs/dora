@@ -53,7 +53,8 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
 fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const OPERATOR: &str = include_str!("operator/operator-template.c");
-    const HEADER: &str = include_str!("../../../../../apis/c/operator/operator_api.h");
+    const HEADER_API: &str = include_str!("../../../../../apis/c/operator/operator_api.h");
+    const HEADER_TYPE: &str = include_str!("../../../../../apis/c/operator/operator_types.h");
 
     if name.contains('/') {
         bail!("operator name must not contain `/` separators");
@@ -73,9 +74,12 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     let operator_path = root.join("operator.c");
     fs::write(&operator_path, OPERATOR)
         .with_context(|| format!("failed to write `{}`", operator_path.display()))?;
-    let header_path = root.join("operator_api.h");
-    fs::write(&header_path, HEADER)
-        .with_context(|| format!("failed to write `{}`", header_path.display()))?;
+    let header_api_path = root.join("operator_api.h");
+    let header_type_path = root.join("operator_types.h");
+    fs::write(&header_api_path, HEADER_API)
+        .with_context(|| format!("failed to write `{}`", header_api_path.display()))?;
+    fs::write(&header_type_path, HEADER_TYPE)
+        .with_context(|| format!("failed to write `{}`", header_type_path.display()))?;
 
     // TODO: Makefile?
 

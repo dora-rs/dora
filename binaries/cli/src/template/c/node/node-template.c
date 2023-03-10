@@ -21,26 +21,30 @@ int main()
 
     while (1)
     {
-        void *input = dora_next_input(dora_context);
-        if (input == NULL)
+        void *event = dora_next_event(dora_context);
+        if (event == NULL)
         {
-            // end of input
-            break;
+            printf("[c node] ERROR: unexpected end of event\n");
+            return -1;
         }
 
-        char *id;
-        size_t id_len;
-        read_dora_input_id(input, &id, &id_len);
+        enum DoraEventType ty = read_dora_event_type(event);
+        if (ty == DoraEventType_Input)
+        {
+            char *id;
+            size_t id_len;
+            read_dora_input_id(event, &id, &id_len);
 
-        char *data;
-        size_t data_len;
-        read_dora_input_data(input, &data, &data_len);
+            char *data;
+            size_t data_len;
+            read_dora_input_data(event, &data, &data_len);
 
-        char out_id[] = "foo";
-        char out_data[] = "bar";
-        dora_send_output(dora_context, out_id, strlen(out_id), out_data, strlen(out_data));
+            char out_id[] = "foo";
+            char out_data[] = "bar";
+            dora_send_output(dora_context, out_id, strlen(out_id), out_data, strlen(out_data));
 
-        free_dora_input(input); // do not use `id` or `data` pointer after freeing
+            free_dora_event(event); // do not use `id` or `data` pointer after freeing
+        }
     }
 
     free_dora_context(dora_context);
