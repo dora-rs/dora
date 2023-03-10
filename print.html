@@ -450,7 +450,7 @@ members = [
 <p><code>dataflow.yml</code></p>
 <pre><code class="language-yaml">communication:
   zenoh:
-    prefix: /example-rust-dataflow
+    prefix: example-rust-dataflow
 
 daemon_config: Tcp # or Shmem
 
@@ -597,7 +597,7 @@ nodes:
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-yaml">communication:
   zenoh:
-    prefix: /example-rust-dataflow
+    prefix: example-rust-dataflow
 
 daemon_config: Tcp # or Shmem
 
@@ -634,7 +634,7 @@ nodes:
 <p><strong><a href="https://zenoh.io/">Zenoh</a>:</strong> The zenoh project implements a distributed publisher/subscriber system with automated routing. To communicate over zenoh, add the following key to your dataflow configuration:</p>
 <pre><code class="language-yaml">communication:
   zenoh:
-    prefix: /some-unique-prefix
+    prefix: some-unique-prefix
 </code></pre>
 <p>The specified <code>prefix</code> is added to all pub/sub topics. It is useful for filtering messages (e.g. in a logger) when other applications use <code>zenoh</code> in parallel. Dora will extend the given prefix with a newly generated UUID on each run, to ensure that multiple instances of the same dataflow run concurrently without interfering with each other.</p>
 <p>Zenoh is quite flexible and can be easily scaled to distributed deployment. It does not require any extra setup since it supports peer-to-peer communication without an external broker. The drawback of zenoh is that it is still in an early stage of development, so it might still have reliability and performance issues.</p>
