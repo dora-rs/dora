@@ -254,7 +254,7 @@ pub struct NodeRunConfig {
 pub enum CommunicationConfig {
     Zenoh {
         #[serde(default)]
-        config: Box<zenoh_config::Config>,
+        config: Box<zenoh::prelude::Config>,
         prefix: String,
     },
 }

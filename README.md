@@ -96,7 +96,7 @@ You need to add the created operators/nodes to your dataflow YAML file.
 ```yaml
 communication:
   zenoh:
-    prefix: /abc_project
+    prefix: abc_project
 
 nodes:
   - id: op_1

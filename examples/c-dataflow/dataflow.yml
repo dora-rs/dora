@@ -1,6 +1,6 @@
 communication:
   zenoh:
-    prefix: /example-c-dataflow
+    prefix: example-c-dataflow
 
 nodes:
   - id: c_node

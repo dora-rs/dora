@@ -112,7 +112,7 @@ The mandatory `communication` key specifies how dora nodes and operators should 
   ```yaml
   communication:
     zenoh:
-      prefix: /some-unique-prefix
+      prefix: some-unique-prefix
   ```
 
   The specified `prefix` is added to all pub/sub topics. It is useful for filtering messages (e.g. in a logger) when other applications use `zenoh` in parallel. Dora will extend the given prefix with a newly generated UUID on each run, to ensure that multiple instances of the same dataflow run concurrently without interfering with each other.
