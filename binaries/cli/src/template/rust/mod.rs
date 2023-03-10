@@ -84,7 +84,7 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
     let cargo_toml = CARGO_TOML
         .replace("___name___", &name)
-        .replace("___version___", &VERSION);
+        .replace("___version___", VERSION);
     let cargo_toml_path = root.join("Cargo.toml");
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
@@ -122,7 +122,7 @@ fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::E
 
     let cargo_toml = CARGO_TOML
         .replace("___name___", &name)
-        .replace("___version___", &VERSION);
+        .replace("___version___", VERSION);
     let cargo_toml_path = root.join("Cargo.toml");
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
