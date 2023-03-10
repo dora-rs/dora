@@ -19,7 +19,7 @@ use std::{
     fmt, io,
     net::SocketAddr,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tcp_utils::tcp_receive;
 use tokio::{
@@ -208,8 +208,6 @@ impl Daemon {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
-            let start = Instant::now();
-
             match event {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
                     let (reply, status) = self.handle_coordinator_event(event).await;
@@ -256,11 +254,6 @@ impl Daemon {
                     }
                 }
             }
-
-            let elapsed = start.elapsed();
-            // if elapsed.as_micros() > 10 {
-            //     tracing::debug!("handled event in {elapsed:?}: {event_debug}");
-            // }
         }
 
         Ok(self.dataflow_errors)
@@ -732,7 +725,7 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(id);
                 }
 
-                let data_bytes = match data {
+                let _data_bytes = match data {
                     Data::SharedMemory(data) => {
                         let bytes = unsafe { data.as_slice() }.to_owned();
 
