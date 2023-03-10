@@ -18,7 +18,7 @@ use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeSet, HashMap},
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 use tokio::{net::TcpStream, sync::mpsc, task::JoinHandle};
@@ -30,28 +30,11 @@ mod listener;
 mod run;
 mod tcp_utils;
 
-#[derive(Debug, Clone, clap::Parser)]
-#[clap(about = "Dora coordinator")]
-pub struct Args {
-    #[clap(long)]
-    pub runtime: Option<PathBuf>,
-}
-
-pub async fn run(args: Args) -> eyre::Result<()> {
-    let Args { runtime } = args;
-
-    let runtime_path = runtime.unwrap_or_else(|| {
-        std::env::args()
-            .next()
-            .map(PathBuf::from)
-            .unwrap_or_default()
-            .with_file_name("dora-runtime")
-    });
-
+pub async fn run() -> eyre::Result<()> {
     let mut tasks = FuturesUnordered::new();
 
     // start in daemon mode
-    start(&runtime_path, &tasks).await?;
+    start(&tasks).await?;
 
     tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
     while let Some(join_result) = tasks.next().await {
@@ -64,7 +47,7 @@ pub async fn run(args: Args) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn start(runtime_path: &Path, tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
+async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
     let ctrlc_events = set_up_ctrlc_handler()?;
 
     let listener = listener::create_listener(DORA_COORDINATOR_PORT_DEFAULT).await?;
@@ -191,13 +174,9 @@ async fn start(runtime_path: &Path, tasks: &FuturesUnordered<JoinHandle<()>>) ->
                                         bail!("there is already a running dataflow with name `{name}`");
                                     }
                                 }
-                                let dataflow = start_dataflow(
-                                    &dataflow_path,
-                                    name,
-                                    runtime_path,
-                                    &mut daemon_connections,
-                                )
-                                .await?;
+                                let dataflow =
+                                    start_dataflow(&dataflow_path, name, &mut daemon_connections)
+                                        .await?;
                                 Ok(dataflow)
                             };
                             inner.await.map(|dataflow| {
@@ -377,6 +356,7 @@ async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
     }
 }
 
+#[allow(dead_code)] // Keeping the communication layer for later use.
 struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
@@ -432,16 +412,13 @@ async fn stop_dataflow(
 async fn start_dataflow(
     path: &Path,
     name: Option<String>,
-    runtime_path: &Path,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<RunningDataflow> {
-    let runtime_path = runtime_path.to_owned();
-
     let SpawnedDataflow {
         uuid,
         communication_config,
         machines,
-    } = spawn_dataflow(&runtime_path, path, daemon_connections).await?;
+    } = spawn_dataflow(path, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,

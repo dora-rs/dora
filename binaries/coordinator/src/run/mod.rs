@@ -3,23 +3,20 @@ use crate::tcp_utils::{tcp_receive, tcp_send};
 use dora_core::{
     config::CommunicationConfig,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
-    descriptor::{CoreNodeKind, Descriptor},
+    descriptor::Descriptor,
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{
     collections::{BTreeSet, HashMap},
-    env::consts::EXE_EXTENSION,
     path::Path,
 };
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
 pub async fn spawn_dataflow(
-    runtime: &Path,
     dataflow_path: &Path,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<SpawnedDataflow> {
-    let mut runtime = runtime.with_extension(EXE_EXTENSION);
     let descriptor = read_descriptor(dataflow_path).await.wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
@@ -40,23 +37,6 @@ pub async fn spawn_dataflow(
         config.add_topic_prefix(&uuid.to_string());
         config
     };
-    if nodes
-        .iter()
-        .any(|n| matches!(n.kind, CoreNodeKind::Runtime(_)))
-    {
-        match which::which(runtime.as_os_str()) {
-            Ok(path) => {
-                runtime = path;
-            }
-            Err(err) => {
-                let err = eyre!(err).wrap_err(format!(
-                    "There is no runtime at {}, or it is not a file",
-                    runtime.display()
-                ));
-                bail!("{err:?}")
-            }
-        }
-    }
 
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
