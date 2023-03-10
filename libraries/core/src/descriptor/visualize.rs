@@ -182,7 +182,7 @@ fn visualize_user_mapping(
                 if let Some(operator) = operators.iter().find(|o| o.id.as_ref() == operator_id) {
                     if operator.config.outputs.contains(output) {
                         let data = if output == input_id.as_str() {
-                            format!("{output}")
+                            output.to_string()
                         } else {
                             format!("{output} as {input_id}")
                         };
