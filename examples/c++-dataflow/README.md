@@ -53,5 +53,5 @@ For a manual build, follow these steps:
 - Start the `dora-coordinator`, passing the paths to the dataflow file and the `dora-runtime` as arguments:
 
   ```
-  ../../target/release/dora-coordinator --run-dataflow dataflow.yml ../../target/release/dora-runtime
+  ../../target/release/dora-daemon --run-dataflow dataflow.yml ../../target/release/dora-runtime
   ```

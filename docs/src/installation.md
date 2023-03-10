@@ -11,7 +11,7 @@ Install `dora` binaries from GitHub releases:
 wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Linux.zip
 unzip dora-<version>-x86_64-Linux.zip
 python3 -m pip install dora-rs==<version> ## For Python API
-PATH=$PATH:$(pwd):$(pwd)/iceoryx
+PATH=$PATH:$(pwd)
 dora --help
 ```
 
@@ -21,12 +21,6 @@ Build it using:
 ```bash
 git clone https://github.com/dora-rs/dora.git
 cd dora
-cargo build -p dora-coordinator -p dora-runtime --release
+cargo build --all --release
 PATH=$PATH:$(pwd)/target/release
-```
-
-If you want to use `Iceoryx`. Add `iox-roudi` to the path.
-You can find `iox-roudi` with:
-```bash
-find target -type f -wholename "*/iceoryx-install/bin/iox-roudi"
 ```
