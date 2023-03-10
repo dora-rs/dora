@@ -147,36 +147,40 @@
                         <h1 id="welcome-to-dora"><a class="header" href="#welcome-to-dora">Welcome to <code>dora</code>!</a></h1>
 <p><code>dora</code> goal is to be a low latency, composable, and distributed data flow.</p>
 <p>By using <code>dora</code>, you can define robotic applications as a graph of nodes that can be easily swapped and replaced. Those nodes can be shared and implemented in different languages such as Rust, Python or C. <code>dora</code> will then connect those nodes and try to provide as many features as possible to facilitate the dataflow.</p>
-<h2 id="-features-that-we-want-to-provide"><a class="header" href="#-features-that-we-want-to-provide">✨ Features that we want to provide</a></h2>
+<h2 id="-features"><a class="header" href="#-features">✨ Features</a></h2>
 <p>Composability as:</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 <code>YAML</code> declarative programming</li>
 <li><input disabled="" type="checkbox" checked=""/>
-language-agnostic:
+polyglot:
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 Rust</li>
 <li><input disabled="" type="checkbox" checked=""/>
 C</li>
 <li><input disabled="" type="checkbox" checked=""/>
+C++</li>
+<li><input disabled="" type="checkbox" checked=""/>
 Python</li>
 </ul>
 </li>
-<li><input disabled="" type="checkbox"/>
-Isolated operators and nodes that can be reused.</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Isolated operators and custom nodes that can be reused.</li>
 </ul>
 <p>Low latency as:</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.</li>
+<li><input disabled="" type="checkbox" checked=""/>
+PubSub communication with shared memory!</li>
 <li><input disabled="" type="checkbox"/>
-Minimal abstraction, close to the metal.</li>
+Zero-copy on read!</li>
 </ul>
 <p>Distributed as:</p>
 <ul>
-<li><input disabled="" type="checkbox" checked=""/>
-PubSub communication with <a href="https://github.com/eclipse-zenoh/zenoh"><code>zenoh</code></a></li>
+<li><input disabled="" type="checkbox"/>
+PubSub communication between machines with <a href="https://github.com/eclipse-zenoh/zenoh"><code>zenoh</code></a></li>
 <li><input disabled="" type="checkbox" checked=""/>
 Distributed telemetry with <a href="https://github.com/open-telemetry/opentelemetry-rust"><code>opentelemetry</code></a></li>
 </ul>
@@ -189,19 +193,15 @@ Distributed telemetry with <a href="https://github.com/open-telemetry/openteleme
 <pre><code class="language-bash">wget https://github.com/dora-rs/dora/releases/download/&lt;version&gt;/dora-&lt;version&gt;-x86_64-Linux.zip
 unzip dora-&lt;version&gt;-x86_64-Linux.zip
 python3 -m pip install dora-rs==&lt;version&gt; ## For Python API
-PATH=$PATH:$(pwd):$(pwd)/iceoryx
+PATH=$PATH:$(pwd)
 dora --help
 </code></pre>
 <h4 id="or-compile-from-source"><a class="header" href="#or-compile-from-source">Or compile from Source</a></h4>
 <p>Build it using:</p>
 <pre><code class="language-bash">git clone https://github.com/dora-rs/dora.git
 cd dora
-cargo build -p dora-coordinator -p dora-runtime --release
+cargo build --all --release
 PATH=$PATH:$(pwd)/target/release
-</code></pre>
-<p>If you want to use <code>Iceoryx</code>. Add <code>iox-roudi</code> to the path.
-You can find <code>iox-roudi</code> with:</p>
-<pre><code class="language-bash">find target -type f -wholename &quot;*/iceoryx-install/bin/iox-roudi&quot;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h3 id="create-a-rust-workspace"><a class="header" href="#create-a-rust-workspace">Create a Rust workspace</a></h3>
 <ul>
@@ -484,7 +484,7 @@ nodes:
 <ul>
 <li>Run the <code>dataflow</code>: </li>
 </ul>
-<pre><code class="language-bash">dora-coordinator --run-dataflow dataflow.yml dora-runtime
+<pre><code class="language-bash">dora-daemon --run-dataflow dataflow.yml
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="design-overview"><a class="header" href="#design-overview">Design Overview</a></h1>
 <p>The dora framework is structured into different components:</p>
@@ -521,45 +521,49 @@ nodes:
 <p>Dataflows are specified through a YAML file. This section presents our current draft for the file format. It only includes basic functionality for now, we will extend it later when we introduce more advanced features.</p>
 <h2 id="dataflow"><a class="header" href="#dataflow">Dataflow</a></h2>
 <p>Dataflows are specified through the following format:</p>
-<pre><code class="language-yaml">nodes:
+<pre><code class="language-yaml">communication:
+  zenoh:
+    prefix: /example-python-no-webcam-dataflow
+
+nodes:
     - id: foo
       # ... (see below)
     - id: bar
       # ... (see below)
-deployment:
-    # (not specified yet, these fields are just examples)
-    zenoh_routers:
-      - 127.0.0.1
-    kubernetes:
 </code></pre>
 <h3 id="inputs-and-outputs"><a class="header" href="#inputs-and-outputs">Inputs and Outputs</a></h3>
 <p>Each operator or custom node has a separate namespace for its outputs. To refer to outputs, the <operator>/<output> syntax is used. This way, there are no name conflicts between operators.</p>
 <p>Input operands are specified using the <name>: <operator>/<output> syntax, where <data> is the internal name that should be used for the operand. The main advantage of this name mapping is that the same operator executable can be reused multiple times on different input.</p>
 <h2 id="nodes"><a class="header" href="#nodes">Nodes</a></h2>
 <p>Nodes are defined using the following format:</p>
-<pre><code class="language-yaml">- id: some-unique-id
-  name: Human-Readable Node Name
-  description: An optional description of the node's purpose.
+<pre><code class="language-yaml">nodes:
+  - id: some-unique-id
+    # For nodes with multiple operators
+    operators:
+      - id: operator-1
+        # ... (see below)
+      - id: operator-2
+        # ... (see below)
 
-  # EITHER:
-  operators:
-    - id: operator-1
-      # ... (see below)
-    - id: operator-2
-      # ... (see below)
 
-  # OR:
-  custom:
-    run: path/to/timestamp
-    env:
-      - ENVIRONMENT_VARIABLE_1: true
-    working-directory: some/path
 
-    inputs:
-      input_1: operator_2/output_4
-      input_2: custom_node_2/output_4
-    outputs:
-      - output_1
+  - id: some-unique-id-2
+    custom:
+      source: path/to/timestamp
+      env:
+        - ENVIRONMENT_VARIABLE_1: true
+      working-directory: some/path
+
+      inputs:
+        input_1: operator_2/output_4
+        input_2: custom_node_2/output_4
+      outputs:
+        - output_1
+ 
+  # Unique operator
+  - id: some-unique-id-3
+    operator:
+        # ... (see below)
 </code></pre>
 <p>Nodes must provide either a <code>operators</code> field, or a <code>custom</code> field, but not both. Nodes with an <code>operators</code> field run a dora runtime process, which runs and manages the specified operators. Nodes with a <code>custom</code> field, run a custom executable.</p>
 <h3 id="custom-nodes"><a class="header" href="#custom-nodes">Custom Nodes</a></h3>
@@ -636,20 +640,6 @@ nodes:
 <p>Zenoh is quite flexible and can be easily scaled to distributed deployment. It does not require any extra setup since it supports peer-to-peer communication without an external broker. The drawback of zenoh is that it is still in an early stage of development, so it might still have reliability and performance issues.</p>
 <p><em>Note:</em> Dora currently only supports local deployments, so interacting with remote nodes/operators is not possible yet.</p>
 </li>
-<li>
-<p><strong><a href="https://iceoryx.io/">Iceoryx</a>:</strong> The Eclipse iceoryx™ project provides an IPC middleware based on shared memory. It is very fast, but it only supports local communication. To use iceoryx as the communication backend, set the  <code>communication</code> field to the following:</p>
-<pre><code class="language-yaml">communication:
-  iceoryx:
-    app_name_prefix: dora-iceoryx-example
-</code></pre>
-<p>The <code>app_name_prefix</code> defines a prefix for the <em>application name</em> that the dataflow will use. An additional UUID will be added to that prefix to ensure that the application name remains unique even if multiple instances of the same dataflow are running.</p>
-<p>In order to use iceoryx, you need to start its broker deamon called <a href="https://iceoryx.io/v2.0.2/getting-started/overview/#roudi"><em>RouDi</em></a>. Its executable name is <code>iox-roudi</code>. There are two ways to obtain it:</p>
-<ul>
-<li>Follow the <a href="https://iceoryx.io/v2.0.2/getting-started/installation/">iceoryx installation chapter</a></li>
-<li>Clone the <code>dora-rs</code> project and build its iceoryx example using <code>cargo build --example iceoryx</code>. After building, you can find the <code>iox-roudi</code> executable inside the <code>target</code> directory using the following command: <code>find target -type f -wholename &quot;*/iox-roudi&quot;</code>.</li>
-</ul>
-<p>Run the <code>iox-roudi</code> executable to start the iceoryx broker deamon. Afterwards, you should be able to run your dataflow.</p>
-</li>
 </ul>
 <h2 id="todo-integration-with-ros-12"><a class="header" href="#todo-integration-with-ros-12">TODO: Integration with ROS 1/2</a></h2>
 <p>To integrate dora-rs operators with ROS1 or ROS2 operators, we plan to provide special <em>bridge operators</em>. These operators act as a sink in one dataflow framework and push all messages to a different dataflow framework, where they act as source.</p>
@@ -657,26 +647,27 @@ nodes:
 <div style="break-before: page; page-break-before: always;"></div><h1 id="rust-api"><a class="header" href="#rust-api">Rust API</a></h1>
 <h2 id="operator"><a class="header" href="#operator">Operator</a></h2>
 <p>The operator API is a framework for you to implement. The implemented operator will be managed by <code>dora</code>. This framework enable us to make optimisation and provide advanced features. It is the recommended way of using <code>dora</code>.</p>
-<p>An operator requires to be registered and implement the <code>DoraOperator</code> trait. It is composed of an <code>on_input</code> method that defines the behaviour of the operator when there is an input.</p>
+<p>An operator requires to be registered and implement the <code>DoraOperator</code> trait. It is composed of an <code>on_event</code> method that defines the behaviour of the operator when there is an event such as receiving an input for example.</p>
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+</span>#![warn(unsafe_op_in_unsafe_fn)]
+
+<span class="boring">fn main() {
+</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
 
 register_operator!(ExampleOperator);
 
 #[derive(Debug, Default)]
 struct ExampleOperator {
-    time: Option&lt;String&gt;,
+    ticks: usize,
 }
 
 impl DoraOperator for ExampleOperator {
-    fn on_input(
+    fn on_event(
         &amp;mut self,
-        id: &amp;str,
-        data: &amp;[u8],
+        event: &amp;Event,
         output_sender: &amp;mut DoraOutputSender,
-    ) -&gt; Result&lt;DoraStatus, ()&gt; {
+    ) -&gt; Result&lt;DoraStatus, String&gt; {
 <span class="boring">}
 </span></code></pre></pre>
 <h3 id="try-it-out"><a class="header" href="#try-it-out">Try it out!</a></h3>
@@ -784,23 +775,30 @@ impl DoraOperator for ExampleOperator {
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let node = DoraNode::init_from_env().await?;
+</span>let (mut node, mut events) = DoraNode::init_from_env()?;
 <span class="boring">}
 </span></code></pre></pre>
-<h4 id="inputs"><a class="header" href="#inputs"><code>.inputs()</code></a></h4>
-<p><code>.inputs()</code> gives you a stream of input that you can access using <code>next()</code> on the input stream.</p>
+<h4 id="recv"><a class="header" href="#recv"><code>.recv()</code></a></h4>
+<p><code>.recv()</code> wait for the next event on the events stream.</p>
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let mut inputs = node.inputs().await?;
+</span>let event = events.recv();
 <span class="boring">}
 </span></code></pre></pre>
-<h4 id="send_outputoutput_id-data"><a class="header" href="#send_outputoutput_id-data"><code>.send_output(output_id, data)</code></a></h4>
-<p><code>send_output</code> send data from the node.</p>
+<h4 id="send_output"><a class="header" href="#send_output"><code>.send_output(...)</code></a></h4>
+<p><code>send_output</code> send data from the node to the other nodes.
+We take a closure as an input to enable zero copy on send.</p>
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>node.send_output(&amp;data_id, data.as_bytes()).await?;
+</span>node.send_output(
+    &amp;data_id, 
+    metadata.parameters,
+    data.len(),
+    |out| {
+        out.copy_from_slice(data);
+    })?;
 <span class="boring">}
 </span></code></pre></pre>
 <h3 id="try-it-out-1"><a class="header" href="#try-it-out-1">Try it out!</a></h3>
@@ -877,43 +875,36 @@ nodes:
 <div style="break-before: page; page-break-before: always;"></div><h1 id="c-api"><a class="header" href="#c-api">C API</a></h1>
 <h2 id="operator-1"><a class="header" href="#operator-1">Operator</a></h2>
 <p>The operator API is a framework for you to implement. The implemented operator will be managed by <code>dora</code>. This framework enable us to make optimisation and provide advanced features.</p>
-<p>The operator definition is composed of 3 functions, <code>dora_init_operator</code> that initialise the operator and its context. <code>dora_drop_operator</code> that free the memory, and <code>dora_on_input</code> that action the logic of the operator on receiving an input.</p>
-<pre><code class="language-c">int dora_init_operator(void **operator_context)
-{
-    // allocate a single byte to store a counter
-    // (the operator context pointer can be used to keep arbitrary data between calls)
-    void *context = malloc(1);
+<p>The operator definition is composed of 3 functions, <code>dora_init_operator</code> that initialise the operator and its context. <code>dora_drop_operator</code> that free the memory, and <code>dora_on_event</code> that action the logic of the operator on receiving an input.</p>
+<pre><code class="language-c">#include &quot;../../apis/c/operator/operator_api.h&quot;
+#include &lt;assert.h&gt;
+#include &lt;string.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
 
+DoraInitResult_t dora_init_operator(void)
+{
+    void *context = malloc(1);
     char *context_char = (char *)context;
     *context_char = 0;
 
-    *operator_context = context;
-
-    return 0;
+    DoraInitResult_t result = {.operator_context = context};
+    return result;
 }
 
-void dora_drop_operator(void *operator_context)
+DoraResult_t dora_drop_operator(void *operator_context)
 {
     free(operator_context);
+
+    DoraResult_t result = {};
+    return result;
 }
 
-int dora_on_input(
-    const char *id_start,
-    size_t id_len,
-    const char *data_start,
-    size_t data_len,
-    const int (*output_fn_raw)(const char *id_start,
-                               size_t id_len,
-                               const char *data_start,
-                               size_t data_len,
-                               const void *output_context),
-    void *output_context,
-    const void *operator_context)
+OnEventResult_t dora_on_event(
+    const RawEvent_t *event,
+    const SendOutput_t *send_output,
+    void *operator_context)
 {
-    // handle the input ...
-    // (sending outputs is possible using `output_fn_raw`)
-    // (the `operator_context` is the pointer created in `dora_init_operator`, i.e., a counter in our case)
-}
 </code></pre>
 <h3 id="try-it-out-2"><a class="header" href="#try-it-out-2">Try it out!</a></h3>
 <ul>
@@ -1031,8 +1022,8 @@ OnEventResult_t dora_on_event(
 <p><code>init_dora_context_from_env</code> initiate a node from environment variables set by <code>dora-coordinator</code> </p>
 <pre><code class="language-c">void *dora_context = init_dora_context_from_env();
 </code></pre>
-<h4 id="dora_next_input"><a class="header" href="#dora_next_input"><code>dora_next_input</code></a></h4>
-<p><code>dora_next_input</code> waits for the next input. To extract the input ID and data, use <code>read_dora_input_id</code>  and <code>read_dora_input_data</code> on the returned pointer.</p>
+<h4 id="dora_next_event"><a class="header" href="#dora_next_event"><code>dora_next_event</code></a></h4>
+<p><code>dora_next_event</code> waits for the next event (e.g. an input). Use <code>read_dora_event_type</code> to read the event's type. Inputs are of type <code>DoraEventType_Input</code>. To extract the ID and data of an input event, use <code>read_dora_input_id</code>  and <code>read_dora_input_data</code> on the returned pointer. It is safe to ignore any events and handle only the events that are relevant to the node.</p>
 <pre><code class="language-c">void *input = dora_next_input(dora_context);
 
 // read out the ID as a UTF8-encoded string
@@ -1048,8 +1039,8 @@ read_dora_input_data(input, &amp;data, &amp;data_len);
 <h4 id="dora_send_output"><a class="header" href="#dora_send_output"><code>dora_send_output</code></a></h4>
 <p><code>dora_send_output</code> send data from the node.</p>
 <pre><code class="language-c">char out_id[] = &quot;tick&quot;;
-char out_data[] = {0, 0, 0};
-dora_send_output(dora_context, out_id, strlen(out_id), &amp;out_data, sizeof out_data);
+char out_data[50];
+dora_send_output(dora_context, out_id, strlen(out_id), out_data, out_data_len);
 </code></pre>
 <h3 id="try-it-out-3"><a class="header" href="#try-it-out-3">Try it out!</a></h3>
 <ul>
@@ -1162,11 +1153,30 @@ int main()
 <div style="break-before: page; page-break-before: always;"></div><h1 id="python-api"><a class="header" href="#python-api">Python API</a></h1>
 <h2 id="operator-2"><a class="header" href="#operator-2">Operator</a></h2>
 <p>The operator API is a framework for you to implement. The implemented operator will be managed by <code>dora</code>. This framework enable us to make optimisation and provide advanced features. It is the recommended way of using <code>dora</code>.</p>
-<p>An operator requires an <code>on_input</code> method and requires to return a <code>DoraStatus</code> of 0 or 1, depending of it needs to continue or stop.</p>
-<pre><code class="language-python">class Operator:
-    def on_input(
+<p>An operator requires an <code>on_event</code> method and requires to return a <code>DoraStatus</code> , depending of it needs to continue or stop.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from typing import Callable
+
+import cv2
+import numpy as np
+import torch
+
+from dora import DoraStatus
+    
+
+class Operator:
+    &quot;&quot;&quot;
+    Infering object from images
+    &quot;&quot;&quot;
+
+    def __init__(self):
+        self.model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
+
+    def on_event(
         self,
-        dora_input: dict,
+        dora_event: dict,
         send_output: Callable[[str, bytes], None],
     ) -&gt; DoraStatus:
 </code></pre>
@@ -1238,7 +1248,7 @@ node = Node()
 
 for input_id, value, metadata in node:
 </code></pre>
-<h4 id="send_outputoutput_id-data-1"><a class="header" href="#send_outputoutput_id-data-1"><code>.send_output(output_id, data)</code></a></h4>
+<h4 id="send_outputoutput_id-data"><a class="header" href="#send_outputoutput_id-data"><code>.send_output(output_id, data)</code></a></h4>
 <p><code>send_output</code> send data from the node.</p>
 <pre><code class="language-python">node.send_output(&quot;string&quot;, b&quot;string&quot;, {&quot;open_telemetry_context&quot;: &quot;7632e76&quot;})
 </code></pre>

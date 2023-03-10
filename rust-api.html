@@ -146,26 +146,27 @@
                         <h1 id="rust-api"><a class="header" href="#rust-api">Rust API</a></h1>
 <h2 id="operator"><a class="header" href="#operator">Operator</a></h2>
 <p>The operator API is a framework for you to implement. The implemented operator will be managed by <code>dora</code>. This framework enable us to make optimisation and provide advanced features. It is the recommended way of using <code>dora</code>.</p>
-<p>An operator requires to be registered and implement the <code>DoraOperator</code> trait. It is composed of an <code>on_input</code> method that defines the behaviour of the operator when there is an input.</p>
+<p>An operator requires to be registered and implement the <code>DoraOperator</code> trait. It is composed of an <code>on_event</code> method that defines the behaviour of the operator when there is an event such as receiving an input for example.</p>
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus};
+</span>#![warn(unsafe_op_in_unsafe_fn)]
+
+<span class="boring">fn main() {
+</span>use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
 
 register_operator!(ExampleOperator);
 
 #[derive(Debug, Default)]
 struct ExampleOperator {
-    time: Option&lt;String&gt;,
+    ticks: usize,
 }
 
 impl DoraOperator for ExampleOperator {
-    fn on_input(
+    fn on_event(
         &amp;mut self,
-        id: &amp;str,
-        data: &amp;[u8],
+        event: &amp;Event,
         output_sender: &amp;mut DoraOutputSender,
-    ) -&gt; Result&lt;DoraStatus, ()&gt; {
+    ) -&gt; Result&lt;DoraStatus, String&gt; {
 <span class="boring">}
 </span></code></pre></pre>
 <h3 id="try-it-out"><a class="header" href="#try-it-out">Try it out!</a></h3>
@@ -273,23 +274,30 @@ impl DoraOperator for ExampleOperator {
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let node = DoraNode::init_from_env().await?;
+</span>let (mut node, mut events) = DoraNode::init_from_env()?;
 <span class="boring">}
 </span></code></pre></pre>
-<h4 id="inputs"><a class="header" href="#inputs"><code>.inputs()</code></a></h4>
-<p><code>.inputs()</code> gives you a stream of input that you can access using <code>next()</code> on the input stream.</p>
+<h4 id="recv"><a class="header" href="#recv"><code>.recv()</code></a></h4>
+<p><code>.recv()</code> wait for the next event on the events stream.</p>
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let mut inputs = node.inputs().await?;
+</span>let event = events.recv();
 <span class="boring">}
 </span></code></pre></pre>
-<h4 id="send_outputoutput_id-data"><a class="header" href="#send_outputoutput_id-data"><code>.send_output(output_id, data)</code></a></h4>
-<p><code>send_output</code> send data from the node.</p>
+<h4 id="send_output"><a class="header" href="#send_output"><code>.send_output(...)</code></a></h4>
+<p><code>send_output</code> send data from the node to the other nodes.
+We take a closure as an input to enable zero copy on send.</p>
 <pre><pre class="playground"><code class="language-rust">
 <span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>node.send_output(&amp;data_id, data.as_bytes()).await?;
+</span>node.send_output(
+    &amp;data_id, 
+    metadata.parameters,
+    data.len(),
+    |out| {
+        out.copy_from_slice(data);
+    })?;
 <span class="boring">}
 </span></code></pre></pre>
 <h3 id="try-it-out-1"><a class="header" href="#try-it-out-1">Try it out!</a></h3>

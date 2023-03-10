@@ -146,11 +146,30 @@
                         <h1 id="python-api"><a class="header" href="#python-api">Python API</a></h1>
 <h2 id="operator"><a class="header" href="#operator">Operator</a></h2>
 <p>The operator API is a framework for you to implement. The implemented operator will be managed by <code>dora</code>. This framework enable us to make optimisation and provide advanced features. It is the recommended way of using <code>dora</code>.</p>
-<p>An operator requires an <code>on_input</code> method and requires to return a <code>DoraStatus</code> of 0 or 1, depending of it needs to continue or stop.</p>
-<pre><code class="language-python">class Operator:
-    def on_input(
+<p>An operator requires an <code>on_event</code> method and requires to return a <code>DoraStatus</code> , depending of it needs to continue or stop.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from typing import Callable
+
+import cv2
+import numpy as np
+import torch
+
+from dora import DoraStatus
+    
+
+class Operator:
+    &quot;&quot;&quot;
+    Infering object from images
+    &quot;&quot;&quot;
+
+    def __init__(self):
+        self.model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
+
+    def on_event(
         self,
-        dora_input: dict,
+        dora_event: dict,
         send_output: Callable[[str, bytes], None],
     ) -&gt; DoraStatus:
 </code></pre>

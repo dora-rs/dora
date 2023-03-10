@@ -146,36 +146,40 @@
                         <h1 id="welcome-to-dora"><a class="header" href="#welcome-to-dora">Welcome to <code>dora</code>!</a></h1>
 <p><code>dora</code> goal is to be a low latency, composable, and distributed data flow.</p>
 <p>By using <code>dora</code>, you can define robotic applications as a graph of nodes that can be easily swapped and replaced. Those nodes can be shared and implemented in different languages such as Rust, Python or C. <code>dora</code> will then connect those nodes and try to provide as many features as possible to facilitate the dataflow.</p>
-<h2 id="-features-that-we-want-to-provide"><a class="header" href="#-features-that-we-want-to-provide">✨ Features that we want to provide</a></h2>
+<h2 id="-features"><a class="header" href="#-features">✨ Features</a></h2>
 <p>Composability as:</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 <code>YAML</code> declarative programming</li>
 <li><input disabled="" type="checkbox" checked=""/>
-language-agnostic:
+polyglot:
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 Rust</li>
 <li><input disabled="" type="checkbox" checked=""/>
 C</li>
 <li><input disabled="" type="checkbox" checked=""/>
+C++</li>
+<li><input disabled="" type="checkbox" checked=""/>
 Python</li>
 </ul>
 </li>
-<li><input disabled="" type="checkbox"/>
-Isolated operators and nodes that can be reused.</li>
+<li><input disabled="" type="checkbox" checked=""/>
+Isolated operators and custom nodes that can be reused.</li>
 </ul>
 <p>Low latency as:</p>
 <ul>
 <li><input disabled="" type="checkbox" checked=""/>
 written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.</li>
+<li><input disabled="" type="checkbox" checked=""/>
+PubSub communication with shared memory!</li>
 <li><input disabled="" type="checkbox"/>
-Minimal abstraction, close to the metal.</li>
+Zero-copy on read!</li>
 </ul>
 <p>Distributed as:</p>
 <ul>
-<li><input disabled="" type="checkbox" checked=""/>
-PubSub communication with <a href="https://github.com/eclipse-zenoh/zenoh"><code>zenoh</code></a></li>
+<li><input disabled="" type="checkbox"/>
+PubSub communication between machines with <a href="https://github.com/eclipse-zenoh/zenoh"><code>zenoh</code></a></li>
 <li><input disabled="" type="checkbox" checked=""/>
 Distributed telemetry with <a href="https://github.com/open-telemetry/opentelemetry-rust"><code>opentelemetry</code></a></li>
 </ul>
