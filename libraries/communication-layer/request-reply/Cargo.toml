@@ -2,6 +2,8 @@
 name = "communication-layer-request-reply"
 version.workspace = true
 edition = "2021"
+documentation.workspace = true
+description.workspace = true
 
 
 [package.metadata.docs.rs]

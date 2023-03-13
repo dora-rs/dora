@@ -30,6 +30,7 @@ jobs:
          -p dora-coordinator -p dora-cli -p dora-daemon"
       
       - name: "Publish packages on `crates.io`"
+        if: runner.os == 'Linux'
         run: |
             # Publish libraries crates
             cargo publish -p dora-message --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

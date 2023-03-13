@@ -2,6 +2,8 @@
 name = "communication-layer-pub-sub"
 version.workspace = true
 edition = "2021"
+documentation.workspace = true
+description.workspace = true
 
 [features]
 default = ["zenoh"]

@@ -2,6 +2,8 @@
 name = "dora-operator-api-cxx"
 version.workspace = true
 edition = "2021"
+documentation.workspace = true
+description.workspace = true
 
 [lib]
 crate-type = ["staticlib"]
