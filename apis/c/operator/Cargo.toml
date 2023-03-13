@@ -6,4 +6,4 @@ license = "Apache-2.0"
 description = "C API implemetation for Dora Operator"
 
 [build-dependencies]
-dora-operator-api-types = { path = "../../rust/operator/types" }
+dora-operator-api-types = { workspace = true }

@@ -16,5 +16,5 @@ quote = "1.0.10"
 proc-macro2 = "1.0.32"
 
 [dev-dependencies]
-dora-operator-api = { path = ".." }
-dora-operator-api-types = { path = "../types" }
+dora-operator-api = { workspace = true }
+dora-operator-api-types = { workspace = true }
