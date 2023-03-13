@@ -25,7 +25,7 @@ members = [
 [workspace.package]
 version = "0.2.0-rc"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
-documentation = "https://dora-rs.github.io/dora"
+documentation = "https://dora.carsmos.ai/dora/"
 
 [workspace.dependencies]
 dora-node-api = { version = "0.2.0-rc", path = "apis/rust/node", default-features = false }
