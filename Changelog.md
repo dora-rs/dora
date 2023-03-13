@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.0 (2023-01-18)
+
+* Use self-made shared memory pub sub
+* Use event instead for input
+* Use dora daemon to manage messages
+* Better Error handling when operator fails
+
 ## v0.1.3 (2023-01-18)
 
 * Package `DoraStatus` into dora python package: https://github.com/dora-rs/dora/pull/172
