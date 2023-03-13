@@ -4,6 +4,9 @@ version.workspace = true
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust API implemetation for Dora Operator"
+homepage = "https://github.com/dora-rs/dora"
+repository = "https://github.com/dora-rs/dora"
+documentation = "https://dora.carsmos.ai/dora/rust-api.html"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
