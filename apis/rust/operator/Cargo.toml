@@ -8,5 +8,5 @@ description = "Rust API implemetation for Dora Operator"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-operator-api-macros = { path = "macros" }
-dora-operator-api-types = { path = "types" }
+dora-operator-api-macros = { workspace = true }
+dora-operator-api-types = { workspace = true }
