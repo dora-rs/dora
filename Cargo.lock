@@ -527,7 +527,6 @@ dependencies = [
 name = "communication-layer-pub-sub"
 version = "0.2.0"
 dependencies = [
- "eyre",
  "flume",
  "zenoh",
 ]
@@ -535,9 +534,6 @@ dependencies = [
 [[package]]
 name = "communication-layer-request-reply"
 version = "0.2.0"
-dependencies = [
- "eyre",
-]
 
 [[package]]
 name = "concurrent-queue"
@@ -842,7 +838,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml 0.9.19",
- "tempfile",
  "termcolor",
  "uuid",
  "webbrowser",
@@ -852,13 +847,8 @@ dependencies = [
 name = "dora-coordinator"
 version = "0.2.0"
 dependencies = [
- "bincode",
- "clap 3.2.23",
- "communication-layer-request-reply",
  "ctrlc",
  "dora-core",
- "dora-download",
- "dora-node-api",
  "dora-tracing",
  "eyre",
  "futures",
@@ -868,10 +858,8 @@ dependencies = [
  "serde_json",
  "serde_yaml 0.8.23",
  "thiserror",
- "time",
  "tokio",
  "tokio-stream",
- "tokio-util 0.7.1",
  "tracing",
  "uuid",
  "which",
@@ -925,7 +913,6 @@ version = "0.2.0"
 dependencies = [
  "eyre",
  "reqwest",
- "tempfile",
  "tokio",
  "tracing",
 ]
@@ -1043,18 +1030,12 @@ dependencies = [
  "cxx",
  "cxx-build",
  "dora-operator-api",
- "eyre",
- "futures",
- "rand",
- "tokio",
 ]
 
 [[package]]
 name = "dora-operator-api-macros"
 version = "0.2.0"
 dependencies = [
- "dora-operator-api",
- "dora-operator-api-types",
  "proc-macro2",
  "quote",
  "syn",
@@ -2292,15 +2273,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fac9e2da13b5eb447a6ce3d392f23a29d8694bff781bf03a16cd9ac8697593b"
 dependencies = [
  "hermit-abi 0.2.6",
- "libc",
-]
-
-[[package]]
-name = "num_threads"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aba1801fb138d8e85e11d0fc70baf4fe1cdfffda7c6cd34a854905df588e5ed0"
-dependencies = [
  "libc",
 ]
 
@@ -3775,16 +3747,6 @@ dependencies = [
  "log",
  "ordered-float 1.1.1",
  "threadpool",
-]
-
-[[package]]
-name = "time"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2702e08a7a860f005826c6815dcac101b19b5eb330c27fe4a5928fec1d20ddd"
-dependencies = [
- "libc",
- "num_threads",
 ]
 
 [[package]]
