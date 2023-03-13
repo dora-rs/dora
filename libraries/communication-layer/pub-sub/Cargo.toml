@@ -9,7 +9,6 @@ zenoh = ["dep:zenoh"]
 
 [dependencies]
 zenoh = { version = "0.7.0-rc", optional = true, features = ["transport_tcp"] }
-eyre = "0.6.8"
 flume = "0.10"
 
 [package.metadata.docs.rs]
