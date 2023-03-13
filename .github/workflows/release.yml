@@ -1,4 +1,4 @@
-ame: Release
+name: Release
 
 permissions:
   contents: write
