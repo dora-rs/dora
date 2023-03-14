@@ -9,4 +9,4 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-dora-operator-api = { git = "https://github.com/dora-rs/dora.git", tag = "v___version___" }
+dora-operator-api = {}
