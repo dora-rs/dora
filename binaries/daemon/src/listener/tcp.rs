@@ -2,7 +2,6 @@ use std::io::ErrorKind;
 
 use super::Listener;
 use crate::{
-    shared_mem_handler,
     tcp_utils::{tcp_receive, tcp_send},
     Event,
 };
@@ -13,12 +12,8 @@ use tokio::{
     sync::mpsc,
 };
 
-#[tracing::instrument(skip(listener, daemon_tx, shmem_handler_tx))]
-pub async fn listener_loop(
-    listener: TcpListener,
-    daemon_tx: mpsc::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
-) {
+#[tracing::instrument(skip(listener, daemon_tx))]
+pub async fn listener_loop(listener: TcpListener, daemon_tx: mpsc::Sender<Event>) {
     loop {
         match listener
             .accept()
@@ -29,27 +24,19 @@ pub async fn listener_loop(
                 tracing::info!("{err}");
             }
             Ok((connection, _)) => {
-                tokio::spawn(handle_connection_loop(
-                    connection,
-                    daemon_tx.clone(),
-                    shmem_handler_tx.clone(),
-                ));
+                tokio::spawn(handle_connection_loop(connection, daemon_tx.clone()));
             }
         }
     }
 }
 
-#[tracing::instrument(skip(connection, daemon_tx, shmem_handler_tx))]
-async fn handle_connection_loop(
-    connection: TcpStream,
-    daemon_tx: mpsc::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
-) {
+#[tracing::instrument(skip(connection, daemon_tx))]
+async fn handle_connection_loop(connection: TcpStream, daemon_tx: mpsc::Sender<Event>) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, shmem_handler_tx).await
+    Listener::run(TcpConnection(connection), daemon_tx).await
 }
 
 struct TcpConnection(TcpStream);
