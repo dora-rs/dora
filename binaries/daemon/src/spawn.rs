@@ -1,6 +1,6 @@
 use crate::{
-    listener::spawn_listener_loop, runtime_node_inputs, runtime_node_outputs, shared_mem_handler,
-    DoraEvent, Event, NodeExitStatus,
+    listener::spawn_listener_loop, runtime_node_inputs, runtime_node_outputs, DoraEvent, Event,
+    NodeExitStatus,
 };
 use dora_core::{
     config::NodeRunConfig,
@@ -19,21 +19,14 @@ pub async fn spawn_node(
     working_dir: &Path,
     node: ResolvedNode,
     daemon_tx: mpsc::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
     config: DaemonCommunicationConfig,
     dora_runtime_path: Option<&Path>,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 
-    let daemon_communication = spawn_listener_loop(
-        &dataflow_id,
-        &node_id,
-        &daemon_tx,
-        &shmem_handler_tx,
-        config,
-    )
-    .await?;
+    let daemon_communication =
+        spawn_listener_loop(&dataflow_id, &node_id, &daemon_tx, config).await?;
 
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {

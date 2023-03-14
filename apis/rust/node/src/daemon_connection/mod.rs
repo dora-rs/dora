@@ -1,7 +1,7 @@
 use communication::DaemonChannel;
 use dora_core::{
     config::NodeId,
-    daemon_messages::{DaemonCommunication, DataflowId},
+    daemon_messages::{DaemonCommunication, DataflowId, DropToken},
 };
 use eyre::Context;
 use flume::RecvTimeoutError;
@@ -17,6 +17,7 @@ mod event_stream;
 pub(crate) struct DaemonConnection {
     pub control_channel: ControlChannel,
     pub event_stream: EventStream,
+    pub finished_drop_tokens: flume::Receiver<DropToken>,
 }
 
 impl DaemonConnection {
@@ -47,7 +48,7 @@ impl DaemonConnection {
             }
         };
 
-        let (event_stream, event_stream_thread_handle) =
+        let (event_stream, event_stream_thread_handle, finished_drop_tokens) =
             EventStream::init(dataflow_id, node_id, events)
                 .wrap_err("failed to init event stream")?;
         let control_channel =
@@ -57,12 +58,9 @@ impl DaemonConnection {
         Ok(Self {
             control_channel,
             event_stream,
+            finished_drop_tokens,
         })
     }
-}
-
-pub struct MessageSample {
-    pub id: String,
 }
 
 pub(crate) struct EventStreamThreadHandle(flume::Receiver<std::thread::Result<()>>);

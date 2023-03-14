@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{fmt, net::SocketAddr, path::PathBuf};
 
 use crate::{
     config::{DataId, NodeId, NodeRunConfig},
@@ -39,18 +39,10 @@ pub enum DaemonRequest {
         node_id: NodeId,
     },
     Subscribe,
-    PrepareOutputMessage {
-        output_id: DataId,
-        metadata: Metadata<'static>,
-        data_len: usize,
-    },
-    SendPreparedMessage {
-        id: SharedMemoryId,
-    },
     SendMessage {
         output_id: DataId,
         metadata: Metadata<'static>,
-        data: Vec<u8>,
+        data: Option<Data>,
     },
     CloseOutputs(Vec<DataId>),
     Stopped,
@@ -65,6 +57,46 @@ impl DaemonRequest {
         match self {
             DaemonRequest::SendMessage { .. } => false,
             _ => true,
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub enum Data {
+    Vec(Vec<u8>),
+    SharedMemory {
+        shared_memory_id: String,
+        len: usize,
+        drop_token: DropToken,
+    },
+}
+
+impl Data {
+    pub fn drop_token(&self) -> Option<DropToken> {
+        match self {
+            Data::Vec(_) => None,
+            Data::SharedMemory { drop_token, .. } => Some(*drop_token),
+        }
+    }
+}
+
+impl fmt::Debug for Data {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vec(v) => f
+                .debug_struct("Vec")
+                .field("len", &v.len())
+                .finish_non_exhaustive(),
+            Self::SharedMemory {
+                shared_memory_id,
+                len,
+                drop_token,
+            } => f
+                .debug_struct("SharedMemory")
+                .field("shared_memory_id", shared_memory_id)
+                .field("len", len)
+                .field("drop_token", drop_token)
+                .finish(),
         }
     }
 }
@@ -85,10 +117,14 @@ pub enum NodeEvent {
     Input {
         id: DataId,
         metadata: Metadata<'static>,
-        data: Option<InputData>,
+        data: Option<Data>,
     },
     InputClosed {
         id: DataId,
+    },
+    AllInputsClosed,
+    OutputDropped {
+        drop_token: DropToken,
     },
 }
 

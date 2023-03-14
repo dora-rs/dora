@@ -1,15 +1,14 @@
 use super::Listener;
-use crate::{shared_mem_handler, Event};
+use crate::Event;
 use dora_core::daemon_messages::{DaemonReply, DaemonRequest};
 use eyre::eyre;
 use shared_memory_server::ShmemServer;
 use tokio::sync::{mpsc, oneshot};
 
-#[tracing::instrument(skip(server, daemon_tx, shmem_handler_tx))]
+#[tracing::instrument(skip(server, daemon_tx))]
 pub async fn listener_loop(
     mut server: ShmemServer<DaemonRequest, DaemonReply>,
     daemon_tx: mpsc::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
 ) {
     let (tx, rx) = flume::bounded(0);
     tokio::task::spawn_blocking(move || {
@@ -33,7 +32,7 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx, shmem_handler_tx).await
+    Listener::run(connection, daemon_tx).await
 }
 
 enum Operation {

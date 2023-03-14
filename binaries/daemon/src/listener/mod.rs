@@ -1,9 +1,9 @@
-use crate::{shared_mem_handler, DaemonNodeEvent, Event};
+use crate::{DaemonNodeEvent, Event};
 use dora_core::{
     config::NodeId,
     daemon_messages::{
         DaemonCommunication, DaemonCommunicationConfig, DaemonReply, DaemonRequest, DataflowId,
-        DropEvent, NodeEvent,
+        NodeEvent,
     },
 };
 use eyre::{eyre, Context};
@@ -22,7 +22,6 @@ pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
     daemon_tx: &mpsc::Sender<Event>,
-    shmem_handler_tx: &flume::Sender<shared_mem_handler::NodeEvent>,
     config: DaemonCommunicationConfig,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
@@ -42,9 +41,8 @@ pub async fn spawn_listener_loop(
 
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
-            let shmem_handler_tx = shmem_handler_tx.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, shmem_handler_tx).await;
+                tcp::listener_loop(socket, daemon_tx).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -66,8 +64,7 @@ pub async fn spawn_listener_loop(
                 let server = unsafe { ShmemServer::new(daemon_control_region) }
                     .wrap_err("failed to create control server")?;
                 let daemon_tx = daemon_tx.clone();
-                let shmem_handler_tx = shmem_handler_tx.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, shmem_handler_tx));
+                tokio::spawn(shmem::listener_loop(server, daemon_tx));
             }
 
             {
@@ -75,9 +72,8 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create events server")?;
                 let event_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
-                let shmem_handler_tx = shmem_handler_tx.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, shmem_handler_tx).await;
+                    shmem::listener_loop(server, daemon_tx).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -94,7 +90,6 @@ struct Listener<C> {
     dataflow_id: DataflowId,
     node_id: NodeId,
     daemon_tx: mpsc::Sender<Event>,
-    shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
     subscribed_events: Option<flume::Receiver<NodeEvent>>,
     queue: Vec<NodeEvent>,
     max_queue_len: usize,
@@ -105,11 +100,7 @@ impl<C> Listener<C>
 where
     C: Connection,
 {
-    pub(crate) async fn run(
-        mut connection: C,
-        daemon_tx: mpsc::Sender<Event>,
-        shmem_handler_tx: flume::Sender<shared_mem_handler::NodeEvent>,
-    ) {
+    pub(crate) async fn run(mut connection: C, daemon_tx: mpsc::Sender<Event>) {
         // receive the first message
         let message = match connection
             .receive_message()
@@ -144,7 +135,6 @@ where
                             node_id,
                             connection,
                             daemon_tx,
-                            shmem_handler_tx,
                             subscribed_events: None,
                             max_queue_len: 10, // TODO: make this configurable
                             queue: Vec::new(),
@@ -237,11 +227,8 @@ where
                 .unwrap_or_else(|| panic!("no input event found in drop iteration {i}"));
 
             // remove that event
-            if let NodeEvent::Input {
-                data: Some(data), ..
-            } = self.queue.remove(index)
-            {
-                if let Some(drop_token) = data.drop_token() {
+            if let NodeEvent::Input { data, .. } = self.queue.remove(index) {
+                if let Some(drop_token) = data.as_ref().and_then(|d| d.drop_token()) {
                     drop_tokens.push(drop_token);
                 }
             }
@@ -259,74 +246,45 @@ where
                     .await
                     .wrap_err("failed to send register reply")?;
             }
-            DaemonRequest::Stopped => self.process_daemon_event(DaemonNodeEvent::Stopped).await?,
-            DaemonRequest::CloseOutputs(outputs) => {
-                self.process_daemon_event(DaemonNodeEvent::CloseOutputs(outputs))
+            DaemonRequest::Stopped => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(DaemonNodeEvent::Stopped { reply_sender }, Some(reply))
                     .await?
             }
-            DaemonRequest::PrepareOutputMessage {
-                output_id,
-                metadata,
-                data_len,
-            } => {
+            DaemonRequest::CloseOutputs(outputs) => {
                 let (reply_sender, reply) = oneshot::channel();
-                let event = shared_mem_handler::NodeEvent::PrepareOutputMessage {
-                    dataflow_id: self.dataflow_id,
-                    node_id: self.node_id.clone(),
-                    output_id,
-                    metadata,
-                    data_len,
-                    reply_sender,
-                };
-                self.send_shared_memory_event(event).await?;
-                let reply = reply
-                    .await
-                    .wrap_err("failed to receive prepare output reply")?;
-                // tracing::debug!("prepare latency: {:?}", start.elapsed()?);
-                self.send_reply(reply)
-                    .await
-                    .wrap_err("failed to send PrepareOutputMessage reply")?;
-            }
-            DaemonRequest::SendPreparedMessage { id } => {
-                let (reply_sender, reply) = oneshot::channel();
-                let event = shared_mem_handler::NodeEvent::SendPreparedMessage { id, reply_sender };
-                self.send_shared_memory_event(event).await?;
-                self.send_reply(
-                    reply
-                        .await
-                        .wrap_err("failed to receive SendPreparedMessage reply")?,
+                self.process_daemon_event(
+                    DaemonNodeEvent::CloseOutputs {
+                        outputs,
+                        reply_sender,
+                    },
+                    Some(reply),
                 )
-                .await?;
+                .await?
             }
             DaemonRequest::SendMessage {
                 output_id,
                 metadata,
                 data,
             } => {
-                // let elapsed = metadata.timestamp().get_time().to_system_time().elapsed()?;
-                // tracing::debug!("listener SendEmptyMessage: {elapsed:?}");
-                let event = crate::Event::ShmemHandler(crate::ShmemHandlerEvent::SendOut {
-                    dataflow_id: self.dataflow_id,
-                    node_id: self.node_id.clone(),
+                let event = crate::DaemonNodeEvent::SendOut {
                     output_id,
                     metadata,
-                    data: data.into(),
-                });
-                let result = self
-                    .send_daemon_event(event)
-                    .await
-                    .map_err(|_| "failed to receive send_empty_message reply".to_owned());
-                if let Err(err) = result {
-                    tracing::warn!("{err:?}");
-                }
-                self.send_reply(DaemonReply::Empty)
-                    .await
-                    .wrap_err("failed to send SendEmptyMessage reply")?;
+                    data,
+                };
+                self.process_daemon_event(event, None).await?;
             }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = flume::bounded(100);
-                self.process_daemon_event(DaemonNodeEvent::Subscribe { event_sender: tx })
-                    .await?;
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::Subscribe {
+                        event_sender: tx,
+                        reply_sender,
+                    },
+                    Some(reply),
+                )
+                .await?;
                 self.subscribed_events = Some(rx);
             }
             DaemonRequest::NextEvent { drop_tokens } => {
@@ -364,30 +322,36 @@ where
         drop_tokens: Vec<dora_core::daemon_messages::DropToken>,
     ) -> eyre::Result<()> {
         if !drop_tokens.is_empty() {
-            let drop_event = shared_mem_handler::NodeEvent::Drop(DropEvent {
+            let drop_event = DaemonNodeEvent::ReportDrop {
                 tokens: drop_tokens,
-            });
-            self.send_shared_memory_event(drop_event).await?;
+            };
+            self.process_daemon_event(drop_event, None).await?;
         }
         Ok(())
     }
 
-    async fn process_daemon_event(&mut self, event: DaemonNodeEvent) -> eyre::Result<()> {
+    async fn process_daemon_event(
+        &mut self,
+        event: DaemonNodeEvent,
+        reply: Option<oneshot::Receiver<DaemonReply>>,
+    ) -> eyre::Result<()> {
         // send NodeEvent to daemon main loop
-        let (reply_tx, reply) = oneshot::channel();
         let event = Event::Node {
             dataflow_id: self.dataflow_id,
             node_id: self.node_id.clone(),
             event,
-            reply_sender: reply_tx,
         };
         self.daemon_tx
             .send(event)
             .await
             .map_err(|_| eyre!("failed to send event to daemon"))?;
-        let reply = reply
-            .await
-            .map_err(|_| eyre!("failed to receive reply from daemon"))?;
+        let reply = if let Some(reply) = reply {
+            reply
+                .await
+                .map_err(|_| eyre!("failed to receive reply from daemon"))?
+        } else {
+            DaemonReply::Empty
+        };
         self.send_reply(reply).await?;
         Ok(())
     }
@@ -397,23 +361,6 @@ where
             .send_reply(reply)
             .await
             .wrap_err_with(|| format!("failed to send reply to node `{}`", self.node_id))
-    }
-
-    async fn send_shared_memory_event(
-        &self,
-        event: shared_mem_handler::NodeEvent,
-    ) -> eyre::Result<()> {
-        self.shmem_handler_tx
-            .send_async(event)
-            .await
-            .map_err(|_| eyre!("failed to send event to shared_mem_handler"))
-    }
-
-    async fn send_daemon_event(&self, event: crate::Event) -> eyre::Result<()> {
-        self.daemon_tx
-            .send(event)
-            .await
-            .map_err(|_| eyre!("failed to send event to daemon"))
     }
 }
 
