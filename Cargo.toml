@@ -23,13 +23,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.2.0"
 
 [workspace.dependencies]
-dora-node-api = { version = "0.1.3", path = "apis/rust/node", default-features = false }
-dora-operator-api = { version = "0.1.3", path = "apis/rust/operator", default-features = false }
-dora-core = { version = "0.1.3", path = "libraries/core" }
-dora-tracing = { version = "0.1.3", path = "libraries/extensions/telemetry/tracing" }
+dora-node-api = { version = "0.2.0", path = "apis/rust/node", default-features = false }
+dora-operator-api = { version = "0.2.0", path = "apis/rust/operator", default-features = false }
+dora-core = { version = "0.2.0", path = "libraries/core" }
+dora-tracing = { version = "0.2.0", path = "libraries/extensions/telemetry/tracing" }
 
 [package]
 name = "dora-examples"
