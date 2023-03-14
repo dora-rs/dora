@@ -11,13 +11,13 @@ default = ["tracing"]
 tracing = ["dora-node-api/tracing"]
 
 [dependencies]
-dora-node-api = { path = "../../rust/node" }
-dora-operator-api-python = { path = "../operator" }
+dora-node-api = { workspace = true }
+dora-operator-api-python = { workspace = true }
 pyo3 = { version = "0.16", features = ["eyre", "abi3-py37"] }
 eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
-dora-runtime = { path = "../../../binaries/runtime" }
+dora-runtime = { workspace = true }
 
 [lib]
 name = "dora"

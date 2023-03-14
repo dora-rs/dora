@@ -7,12 +7,12 @@ license = "Apache-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { path = "../../apis/rust/node", default-features = false }
-dora-operator-api-python = { path = "../../apis/python/operator" }
-dora-operator-api-types = { path = "../../apis/rust/operator/types" }
+dora-node-api = { workspace = true, default-features = false }
+dora-operator-api-python = { workspace = true }
+dora-operator-api-types = { workspace = true }
 dora-core = { workspace = true }
-dora-tracing = { path = "../../libraries/extensions/telemetry/tracing", optional = true }
-dora-metrics = { path = "../../libraries/extensions/telemetry/metrics", optional = true }
+dora-tracing = { workspace = true, optional = true }
+dora-metrics = { workspace = true, optional = true }
 opentelemetry = { version = "0.17", features = [
     "rt-tokio",
     "metrics",
@@ -29,7 +29,7 @@ tokio-stream = "0.1.8"
 pyo3 = { version = "0.16", features = ["eyre", "abi3-py37"] }
 tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
-dora-download = { path = "../../libraries/extensions/download" }
+dora-download = { workspace = true }
 flume = "0.10.14"
 
 [features]
