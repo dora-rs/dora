@@ -16,12 +16,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v3
-      - name: Install libacl-dev (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y libacl1-dev
-
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
@@ -42,12 +36,6 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v3
-
-      - name: Install libacl-dev (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y libacl1-dev
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
@@ -82,12 +70,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install libacl-dev (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y libacl1-dev
-
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
@@ -120,12 +102,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install libacl-dev (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y libacl1-dev
-
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
@@ -140,10 +116,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Install libacl-dev
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get install -y libacl1-dev
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose

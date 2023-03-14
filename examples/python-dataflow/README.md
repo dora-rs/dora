@@ -16,18 +16,10 @@ The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the fo
 cargo run --example python-dataflow 
 ```
 
-## Installation
-
-To install, you should run the `install.sh` script.
-
-```bash
-install.sh
-```
-
 ## Run the dataflow as a standalone
 
-- Start the `dora-coordinator`, passing the paths to the dataflow file and the `dora-runtime` as arguments:
+- Start the `dora-daemon`:
 
 ```
-../../target/release/dora-coordinator --run-dataflow dataflow.yml ../../target/release/dora-runtime
+../../target/release/dora-daemon --run-dataflow dataflow.yml
 ```

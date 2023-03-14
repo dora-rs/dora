@@ -202,11 +202,7 @@ impl<'de> Deserialize<'de> for InputMapping {
                         "unknown dora input `{other}`"
                     )))
                 }
-                None => {
-                    return Err(serde::de::Error::custom(format!(
-                        "dora input has invalid format"
-                    )))
-                }
+                None => return Err(serde::de::Error::custom("dora input has invalid format")),
             },
             _ => Self::User(UserInputMapping {
                 source: source.to_owned().into(),
@@ -254,13 +250,8 @@ pub struct NodeRunConfig {
 pub enum CommunicationConfig {
     Zenoh {
         #[serde(default)]
-        config: Box<zenoh_config::Config>,
+        config: Box<zenoh::prelude::Config>,
         prefix: String,
-    },
-    Iceoryx {
-        app_name_prefix: String,
-        #[serde(default)]
-        topic_prefix: String,
     },
 }
 
@@ -272,12 +263,6 @@ impl CommunicationConfig {
                 ..
             } => {
                 write!(zenoh_prefix, "/{}", prefix).unwrap();
-            }
-            CommunicationConfig::Iceoryx { topic_prefix, .. } => {
-                if !topic_prefix.is_empty() {
-                    topic_prefix.push('-');
-                }
-                topic_prefix.push_str(prefix);
             }
         }
     }

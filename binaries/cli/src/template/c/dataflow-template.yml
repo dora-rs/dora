@@ -1,27 +1,28 @@
 communication:
   zenoh:
-    prefix: /___name___
+    prefix: ___name___
 
 nodes:
-  - id: runtime-node_1
-    operators:
-      - id: op_1
-        shared-library: build/op_1
-        inputs:
-          tick: dora/timer/millis/100
-        outputs:
-          - some-output
-      - id: op_2
-        shared-library: build/op_2
-        inputs:
-          tick: dora/timer/secs/2
-        outputs:
-          - some-output
+  - id: op_1
+    operator:
+      shared-library: build/op_1
+      inputs:
+        foo: dora/timer/millis/100
+      outputs:
+        - bar
+  - id: op_2
+    operator:
+      shared-library: build/op_2
+      inputs:
+        foo: dora/timer/secs/2
+      outputs:
+        - bar
 
   - id: custom-node_1
     custom:
       source: build/node_1
       inputs:
-        tick: dora/timer/secs/1
-        input-1: op_1/some-output
-        input-2: op_2/some-output
+        input-1: op_1/bar
+        input-2: op_2/bar
+      outputs:
+        - foo

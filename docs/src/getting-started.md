@@ -119,5 +119,5 @@ Let's write the graph definition so that the nodes know who to communicate with.
 
 - Run the `dataflow`: 
 ```bash 
-dora-coordinator --run-dataflow dataflow.yml dora-runtime
+dora-daemon --run-dataflow dataflow.yml
 ```
