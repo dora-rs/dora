@@ -40,7 +40,6 @@ enum Command {
         #[clap(flatten)]
         args: CommandNew,
     },
-    Dashboard,
     Up {
         #[clap(long)]
         config: Option<PathBuf>,
@@ -63,12 +62,14 @@ enum Command {
         #[clap(long)]
         name: Option<String>,
     },
-    Logs,
-    Metrics,
-    Stats,
     List,
-    Get,
-    Upgrade,
+    // Planned for future releases:
+    // Dashboard,
+    // Logs,
+    // Metrics,
+    // Stats,
+    // Get,
+    // Upgrade,
 }
 
 #[derive(Debug, clap::Args)]
@@ -120,7 +121,6 @@ fn main() -> eyre::Result<()> {
             build::build(&dataflow)?;
         }
         Command::New { args } => template::create(args)?,
-        Command::Dashboard => todo!(),
         Command::Up {
             config,
             coordinator_path,
@@ -138,11 +138,6 @@ fn main() -> eyre::Result<()> {
             (None, None) => stop_dataflow_interactive(&mut session)?,
         },
         Command::Destroy { config } => up::destroy(config.as_deref(), &mut session)?,
-        Command::Logs => todo!(),
-        Command::Metrics => todo!(),
-        Command::Stats => todo!(),
-        Command::Get => todo!(),
-        Command::Upgrade => todo!(),
     }
 
     Ok(())

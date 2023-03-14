@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from enum import Enum
 from typing import Callable
 
 import cv2
 import numpy as np
 import torch
 
-
-class DoraStatus(Enum):
-    CONTINUE = 0
-    STOP = 1
-
+from dora import DoraStatus
+    
 
 class Operator:
     """

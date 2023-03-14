@@ -9,14 +9,9 @@
 //! - **[Zenoh](https://zenoh.io/):** The zenoh project implements a distributed
 //!   publisher/subscriber system with automated routing. To use zenoh, use the
 //!   [`ZenohCommunicationLayer`][zenoh::ZenohCommunicationLayer] struct.
-//! - **[Iceoryx](https://iceoryx.io/):** The Eclipse iceoryx™ project provides an IPC middleware
-//!   based on shared memory. It is very fast, but it only supports local communication. To use
-//!   iceoryx, use the [`IceoryxCommunicationLayer`][iceoryx::IceoryxCommunicationLayer] struct.
 
 use std::borrow::Cow;
 
-#[cfg(all(unix, feature = "iceoryx"))]
-pub mod iceoryx;
 #[cfg(feature = "zenoh")]
 pub mod zenoh;
 

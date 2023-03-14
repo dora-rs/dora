@@ -1,20 +1,18 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-from enum import Enum
 from typing import Callable
 
 import cv2
 import numpy as np
-
 from utils import LABELS
+
+from dora import DoraStatus
 
 CI = os.environ.get("CI")
 
 font = cv2.FONT_HERSHEY_SIMPLEX
-
-
-class DoraStatus(Enum):
-    CONTINUE = 0
-    STOP = 1
 
 
 class Operator:
@@ -63,7 +61,11 @@ class Operator:
             self.bboxs = np.reshape(bboxs, (-1, 6))
 
             self.bounding_box_messages += 1
-            print("received " + str(self.bounding_box_messages) + " bounding boxes")
+            print(
+                "received "
+                + str(self.bounding_box_messages)
+                + " bounding boxes"
+            )
 
         for bbox in self.bboxs:
             [

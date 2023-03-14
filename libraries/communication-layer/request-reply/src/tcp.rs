@@ -16,6 +16,12 @@ impl TcpLayer {
     }
 }
 
+impl Default for TcpLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RequestReplyLayer for TcpLayer {
     type Address = SocketAddr;
     type RequestData = Vec<u8>;
