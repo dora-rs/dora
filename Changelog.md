@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.2.0 (2023-01-18)
+
+### Breaking
+
+* [Redesign: Create a `dora-daemon` as a communication broker](https://github.com/dora-rs/dora/pull/162)
+  * New `dora-daemon` executable that acts as a communication hub for all local nodes
+  * Large messages are passed through shared memory without any copying
+  * [Replaces the previous `iceoryx` communication layer](https://github.com/dora-rs/dora/pull/201)
+  * Small API change: Nodes and operators now receive _events_ instead of just inputs
+    * Inputs are one type of event
+    * Other supported events: `InputClosed` when an input stream is closed and `Stop` when the user stops the dataflow (e.g. through the CLI)
+
+### Features
+
+* Better Error handling when operator fails
+* [Send small messages directly without shared memory](https://github.com/dora-rs/dora/pull/193)
+* [Send all queued incoming events at once on `NextEvent` request](https://github.com/dora-rs/dora/pull/194)
+* [Don't send replies for `SendMessage` requests when using TCP](https://github.com/dora-rs/dora/pull/195)
+* [Allocate shared memory in nodes to improve throughput](https://github.com/dora-rs/dora/pull/200)
+
+### Fixes
+
+* [Manage node failure: Await all nodes to finish before marking dataflow as finished](https://github.com/dora-rs/dora/pull/183)
+
+### Other
+
+* [Use `DoraStatus` from dora library in template](https://github.com/dora-rs/dora/pull/182)
+* [Simplify: Replace `library_filename` function with `format!` call](https://github.com/dora-rs/dora/pull/191)
+* [Refactor Rust node API implementation](https://github.com/dora-rs/dora/pull/196)
+* [Remove code duplicate for tracing subscriber and use env variable to manage log level.](https://github.com/dora-rs/dora/pull/197)
+* [Add daemon to the release archive](https://github.com/dora-rs/dora/pull/199)
+* [Remove `remove_dir_all` from `Cargo.lock`as it is vulnerable to a race condition according to dependabot](https://github.com/dora-rs/dora/pull/202)
+* [Update the documentation to the new daemon format](https://github.com/dora-rs/dora/pull/198)
+* [Removing legacy `libacl` which was required by Iceoryx](https://github.com/dora-rs/dora/pull/205)
+* [Remove unimplemented CLI arguments for now](https://github.com/dora-rs/dora/pull/207)
+* [Update zenoh to remove git dependencies](https://github.com/dora-rs/dora/pull/203)
+* [Fix cli template to new daemon API](https://github.com/dora-rs/dora/pull/204)
+* [Cleanup warnings](https://github.com/dora-rs/dora/pull/208)
+* Dependency updates
+
 ## v0.1.3 (2023-01-18)
 
 * Package `DoraStatus` into dora python package: https://github.com/dora-rs/dora/pull/172
