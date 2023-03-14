@@ -18,6 +18,7 @@
 * [Send small messages directly without shared memory](https://github.com/dora-rs/dora/pull/193)
 * [Send all queued incoming events at once on `NextEvent` request](https://github.com/dora-rs/dora/pull/194)
 * [Don't send replies for `SendMessage` requests when using TCP](https://github.com/dora-rs/dora/pull/195)
+* [Allocate shared memory in nodes to improve throughput](https://github.com/dora-rs/dora/pull/200)
 
 ### Fixes
 
