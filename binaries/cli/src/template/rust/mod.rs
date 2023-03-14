@@ -5,7 +5,7 @@ use std::{
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
+pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
     let crate::CommandNew {
         kind,
         lang: _,
@@ -14,13 +14,17 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     } = args;
 
     match kind {
-        crate::Kind::Operator => create_operator(name, path),
-        crate::Kind::CustomNode => create_custom_node(name, path),
-        crate::Kind::Dataflow => create_dataflow(name, path),
+        crate::Kind::Operator => create_operator(name, path, use_path_deps),
+        crate::Kind::CustomNode => create_custom_node(name, path, use_path_deps),
+        crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
 
-fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+fn create_dataflow(
+    name: String,
+    path: Option<PathBuf>,
+    use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
     const WORKSPACE_CARGO_TOML: &str = include_str!("Cargo-template.toml");
 
@@ -45,9 +49,9 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
 
-    create_operator("op_1".into(), Some(root.join("op_1")))?;
-    create_operator("op_2".into(), Some(root.join("op_2")))?;
-    create_custom_node("node_1".into(), Some(root.join("node_1")))?;
+    create_operator("op_1".into(), Some(root.join("op_1")), use_path_deps)?;
+    create_operator("op_2".into(), Some(root.join("op_2")), use_path_deps)?;
+    create_custom_node("node_1".into(), Some(root.join("node_1")), use_path_deps)?;
 
     println!(
         "Created new Rust dataflow at `{name}` at {}",
@@ -57,7 +61,11 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     Ok(())
 }
 
-fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+fn create_operator(
+    name: String,
+    path: Option<PathBuf>,
+    use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
     const CARGO_TOML: &str = include_str!("operator/Cargo-template.toml");
     const LIB_RS: &str = include_str!("operator/lib-template.rs");
 
@@ -82,9 +90,17 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     fs::create_dir(&src)
         .with_context(|| format!("failed to create directory `{}`", src.display()))?;
 
+    let dep = if use_path_deps {
+        r#"dora-operator-api = { path = "../../apis/rust/operator" }"#.to_string()
+    } else {
+        format!(
+            r#"dora-operator-api = {{ git = "https://github.com/dora-rs/dora.git", tag = "v{VERSION}" }}"#
+        )
+    };
     let cargo_toml = CARGO_TOML
         .replace("___name___", &name)
-        .replace("___version___", VERSION);
+        .replace("dora-operator-api = {}", &dep);
+
     let cargo_toml_path = root.join("Cargo.toml");
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
@@ -101,7 +117,11 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     Ok(())
 }
 
-fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+fn create_custom_node(
+    name: String,
+    path: Option<PathBuf>,
+    use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
     const CARGO_TOML: &str = include_str!("node/Cargo-template.toml");
     const MAIN_RS: &str = include_str!("node/main-template.rs");
 
@@ -120,9 +140,16 @@ fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::E
     fs::create_dir(&src)
         .with_context(|| format!("failed to create directory `{}`", src.display()))?;
 
+    let dep = if use_path_deps {
+        r#"dora-node-api = { path = "../../apis/rust/node" }"#.to_string()
+    } else {
+        format!(
+            r#"dora-node-api = {{ git = "https://github.com/dora-rs/dora.git", tag = "v{VERSION}" }}"#
+        )
+    };
     let cargo_toml = CARGO_TOML
         .replace("___name___", &name)
-        .replace("___version___", VERSION);
+        .replace("dora-node-api = {}", &dep);
     let cargo_toml_path = root.join("Cargo.toml");
     fs::write(&cargo_toml_path, &cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;

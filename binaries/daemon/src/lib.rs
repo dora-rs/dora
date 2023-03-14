@@ -1,4 +1,5 @@
 use coordinator::CoordinatorEvent;
+use dora_core::daemon_messages::Data;
 use dora_core::message::uhlc::HLC;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
@@ -12,11 +13,11 @@ use dora_core::{
 use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
-use shared_mem_handler::SharedMemSample;
+use shared_memory_server::ShmemConf;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
-    fmt, io,
+    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
@@ -32,7 +33,6 @@ use uuid::Uuid;
 
 mod coordinator;
 mod listener;
-mod shared_mem_handler;
 mod spawn;
 mod tcp_utils;
 
@@ -40,9 +40,6 @@ pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
 
     events_tx: mpsc::Sender<Event>,
-
-    shared_memory_handler: flume::Sender<shared_mem_handler::DaemonEvent>,
-    shared_memory_handler_node: flume::Sender<shared_mem_handler::NodeEvent>,
 
     coordinator_addr: Option<SocketAddr>,
     machine_id: String,
@@ -165,39 +162,22 @@ impl Daemon {
         })
         .wrap_err("failed to set ctrl-c handler")?;
 
-        let (shared_memory_handler, shared_memory_daemon_rx) = flume::unbounded();
-        let (shared_memory_handler_node, shared_memory_node_rx) = flume::bounded(10);
         let daemon = Self {
             running: HashMap::new(),
             events_tx: dora_events_tx,
-            shared_memory_handler,
-            shared_memory_handler_node,
             coordinator_addr,
             machine_id,
             exit_when_done,
             dora_runtime_path,
             dataflow_errors: Vec::new(),
         };
-        let (shmem_events_tx, shmem_events_rx) = flume::bounded(5);
-        tokio::spawn(async {
-            let mut handler = shared_mem_handler::SharedMemHandler::new(shmem_events_tx);
-            handler
-                .run(shared_memory_node_rx, shared_memory_daemon_rx)
-                .await;
-        });
+
         let dora_events = ReceiverStream::new(dora_events_rx);
-        let shmem_events = shmem_events_rx.into_stream().map(Event::ShmemHandler);
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
         ))
         .map(|_| Event::WatchdogInterval);
-        let events = (
-            external_events,
-            dora_events,
-            shmem_events,
-            watchdog_interval,
-        )
-            .merge();
+        let events = (external_events, dora_events, watchdog_interval).merge();
         daemon.run_inner(events).await
     }
 
@@ -221,16 +201,11 @@ impl Daemon {
                     dataflow_id: dataflow,
                     node_id,
                     event,
-                    reply_sender,
-                } => {
-                    self.handle_node_event(event, dataflow, node_id, reply_sender)
-                        .await?
-                }
+                } => self.handle_node_event(event, dataflow, node_id).await?,
                 Event::Dora(event) => match self.handle_dora_event(event).await? {
                     RunStatus::Continue => {}
                     RunStatus::Exit => break,
                 },
-                Event::ShmemHandler(event) => self.handle_shmem_handler_event(event).await?,
                 Event::WatchdogInterval => {
                     if let Some(addr) = self.coordinator_addr {
                         let mut connection = coordinator::send_event(
@@ -332,7 +307,7 @@ impl Daemon {
                     InputMapping::User(mapping) => {
                         dataflow
                             .mappings
-                            .entry((mapping.source, mapping.output))
+                            .entry(OutputId(mapping.source, mapping.output))
                             .or_default()
                             .insert((node.id.clone(), input_id));
                     }
@@ -352,7 +327,6 @@ impl Daemon {
                 &working_dir,
                 node,
                 self.events_tx.clone(),
-                self.shared_memory_handler_node.clone(),
                 daemon_communication_config,
                 self.dora_runtime_path.as_deref(),
             )
@@ -392,21 +366,26 @@ impl Daemon {
         event: DaemonNodeEvent,
         dataflow_id: DataflowId,
         node_id: NodeId,
-        reply_sender: oneshot::Sender<DaemonReply>,
     ) -> eyre::Result<()> {
         match event {
-            DaemonNodeEvent::Subscribe { event_sender } => {
+            DaemonNodeEvent::Subscribe {
+                event_sender,
+                reply_sender,
+            } => {
                 let result = self.subscribe(dataflow_id, node_id, event_sender).await;
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
-            DaemonNodeEvent::CloseOutputs(outputs) => {
+            DaemonNodeEvent::CloseOutputs {
+                outputs,
+                reply_sender,
+            } => {
                 // notify downstream nodes
                 let inner = async {
                     let dataflow = self
-                    .running
-                    .get_mut(&dataflow_id)
-                    .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
-                    send_input_closed_events(dataflow, |(source_id, output_id)| {
+                        .running
+                        .get_mut(&dataflow_id)
+                        .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
+                    send_input_closed_events(dataflow, |OutputId(source_id, output_id)| {
                         source_id == &node_id && outputs.contains(output_id)
                     })
                     .await;
@@ -417,14 +396,121 @@ impl Daemon {
                 let _ = reply_sender.send(DaemonReply::Result(reply));
                 // TODO: notify remote nodes
             }
-            DaemonNodeEvent::Stopped => {
+            DaemonNodeEvent::Stopped { reply_sender } => {
                 tracing::info!("Stopped: {dataflow_id}/{node_id}");
 
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
 
                 self.handle_node_stop(dataflow_id, &node_id).await?;
             }
+            DaemonNodeEvent::SendOut {
+                output_id,
+                metadata,
+                data,
+            } => {
+                self.send_out(dataflow_id, node_id, output_id, metadata, data)
+                    .await?
+            }
+            DaemonNodeEvent::ReportDrop { tokens } => {
+                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                    format!(
+                        "failed to get handle drop tokens: \
+                        no running dataflow with ID `{dataflow_id}`"
+                    )
+                })?;
+
+                for token in tokens {
+                    match dataflow.pending_drop_tokens.get_mut(&token) {
+                        Some(info) => {
+                            if info.pending_nodes.remove(&node_id) {
+                                dataflow.check_drop_token(token).await?;
+                            } else {
+                                tracing::warn!(
+                                    "node `{node_id}` is not pending for drop token `{token:?}`"
+                                );
+                            }
+                        }
+                        None => tracing::warn!("unknown drop token `{token:?}`"),
+                    }
+                }
+            }
         }
+        Ok(())
+    }
+
+    async fn send_out(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        output_id: DataId,
+        metadata: dora_core::message::Metadata<'static>,
+        data: Option<Data>,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+        let empty_set = BTreeSet::new();
+        let output_id = OutputId(node_id, output_id);
+        let local_receivers = { dataflow.mappings.get(&output_id).unwrap_or(&empty_set) };
+        let OutputId(node_id, _) = output_id;
+        let mut closed = Vec::new();
+        for (receiver_id, input_id) in local_receivers {
+            if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+                let item = daemon_messages::NodeEvent::Input {
+                    id: input_id.clone(),
+                    metadata: metadata.clone(),
+                    data: data.clone(),
+                };
+                let send_result = channel.send_async(item);
+
+                match timeout(Duration::from_millis(10), send_result).await {
+                    Ok(Ok(())) => {
+                        if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
+                            dataflow
+                                .pending_drop_tokens
+                                .entry(token)
+                                .or_insert_with(|| DropTokenInformation {
+                                    owner: node_id.clone(),
+                                    pending_nodes: Default::default(),
+                                })
+                                .pending_nodes
+                                .insert(receiver_id.clone());
+                        }
+                    }
+                    Ok(Err(_)) => {
+                        closed.push(receiver_id);
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "dropping input event `{receiver_id}/{input_id}` (send timeout)"
+                        );
+                    }
+                }
+            }
+        }
+        for id in closed {
+            dataflow.subscribe_channels.remove(id);
+        }
+        let (data_bytes, drop_token) = match data {
+            None => (None, None),
+            Some(Data::SharedMemory {
+                shared_memory_id,
+                len,
+                drop_token,
+            }) => {
+                let memory = ShmemConf::new()
+                    .os_id(shared_memory_id)
+                    .open()
+                    .wrap_err("failed to map shared memory output")?;
+                let data = Some(unsafe { memory.as_slice() }[..len].to_owned());
+                (data, Some(drop_token))
+            }
+            Some(Data::Vec(v)) => (Some(v), None),
+        };
+        if let Some(token) = drop_token {
+            dataflow.check_drop_token(token).await?;
+        }
+        let data_bytes = data_bytes;
         Ok(())
     }
 
@@ -459,6 +545,11 @@ impl Daemon {
                 })
                 .await;
         }
+        if dataflow.open_inputs(&node_id).is_empty() {
+            let _ = event_sender
+                .send_async(daemon_messages::NodeEvent::AllInputsClosed)
+                .await;
+        }
 
         // if a stop event was already sent for the dataflow, send it to
         // the newly connected node too
@@ -468,11 +559,7 @@ impl Daemon {
                 .await;
         }
 
-        if dataflow.stop_sent || dataflow.open_inputs(&node_id).is_empty() {
-            tracing::debug!("Received subscribe message for closed event stream");
-        } else {
-            dataflow.subscribe_channels.insert(node_id, event_sender);
-        }
+        dataflow.subscribe_channels.insert(node_id, event_sender);
 
         Ok(())
     }
@@ -486,7 +573,7 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
-        send_input_closed_events(dataflow, |(source_id, _)| source_id == node_id).await;
+        send_input_closed_events(dataflow, |OutputId(source_id, _)| source_id == node_id).await;
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
             tracing::info!(
@@ -644,120 +731,6 @@ impl Daemon {
         }
         Ok(RunStatus::Continue)
     }
-
-    async fn handle_shmem_handler_event(&mut self, event: ShmemHandlerEvent) -> eyre::Result<()> {
-        match event {
-            ShmemHandlerEvent::SendOut {
-                dataflow_id,
-                node_id,
-                output_id,
-                metadata,
-                data,
-            } => {
-                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                    format!("send out failed: no running dataflow with ID `{dataflow_id}`")
-                })?;
-
-                tracing::trace!(
-                    "Time between prepare and send out: {:?}",
-                    metadata
-                        .timestamp()
-                        .get_time()
-                        .to_system_time()
-                        .elapsed()
-                        .unwrap()
-                );
-
-                // figure out receivers from dataflow graph
-                let empty_set = BTreeSet::new();
-                let local_receivers = dataflow
-                    .mappings
-                    .get(&(node_id, output_id))
-                    .unwrap_or(&empty_set);
-
-                // send shared memory ID to all local receivers
-                let mut closed = Vec::new();
-                let mut drop_tokens = Vec::new();
-                for (receiver_id, input_id) in local_receivers {
-                    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-                        let mut drop_token = None;
-                        let item = daemon_messages::NodeEvent::Input {
-                            id: input_id.clone(),
-                            metadata: metadata.clone(),
-                            data: match &data {
-                                Data::None => None,
-                                Data::SharedMemory(data) => {
-                                    let token = DropToken::generate();
-                                    drop_token = Some(token);
-                                    Some(daemon_messages::InputData::SharedMemory(
-                                        daemon_messages::SharedMemoryInput {
-                                            shared_memory_id: data.get_os_id().to_owned(),
-                                            len: data.len(),
-                                            drop_token: token,
-                                        },
-                                    ))
-                                }
-                                Data::Vec(data) => {
-                                    Some(daemon_messages::InputData::Vec(data.clone()))
-                                }
-                            },
-                        };
-                        let send_result = channel.send_async(item);
-
-                        match timeout(Duration::from_millis(10), send_result).await {
-                            Ok(Ok(())) => {
-                                if let Some(token) = drop_token {
-                                    drop_tokens.push(token);
-                                }
-                            }
-                            Ok(Err(_)) => {
-                                closed.push(receiver_id);
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    "dropping input event `{receiver_id}/{input_id}` (send timeout)"
-                                );
-                            }
-                        }
-                    }
-                }
-                for id in closed {
-                    dataflow.subscribe_channels.remove(id);
-                }
-
-                let _data_bytes = match data {
-                    Data::SharedMemory(data) => {
-                        let bytes = unsafe { data.as_slice() }.to_owned();
-
-                        // report drop tokens to shared memory handler
-                        let send_result = self
-                            .shared_memory_handler
-                            .send_async(shared_mem_handler::DaemonEvent::SentOut {
-                                data: *data,
-                                drop_tokens,
-                            })
-                            .await;
-                        if let Err(err) =
-                            send_result.wrap_err("shared mem handler crashed after send out")
-                        {
-                            tracing::error!("{err:?}");
-                        }
-
-                        bytes
-                    }
-                    Data::Vec(data) => data,
-                    Data::None => Vec::new(),
-                };
-
-                // TODO send `data` via network to all remove receivers
-            }
-            ShmemHandlerEvent::HandlerError(err) => {
-                bail!(err.wrap_err("shared memory handler failed"))
-            }
-        }
-
-        Ok(())
-    }
 }
 
 fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, InputMapping> {
@@ -796,7 +769,7 @@ fn runtime_node_outputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeSet<Data
 
 async fn send_input_closed_events<F>(dataflow: &mut RunningDataflow, mut filter: F)
 where
-    F: FnMut(&(NodeId, DataId)) -> bool,
+    F: FnMut(&OutputId) -> bool,
 {
     let downstream_nodes: BTreeSet<_> = dataflow
         .mappings
@@ -805,19 +778,20 @@ where
         .flat_map(|(_, v)| v)
         .collect();
     for (receiver_id, input_id) in downstream_nodes {
+        if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            open_inputs.remove(input_id);
+        }
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
             let _ = channel
                 .send_async(daemon_messages::NodeEvent::InputClosed {
                     id: input_id.clone(),
                 })
                 .await;
-        };
 
-        if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
-            open_inputs.remove(input_id);
-            if open_inputs.is_empty() {
-                // close the subscriber channel
-                dataflow.subscribe_channels.remove(receiver_id);
+            if dataflow.open_inputs(receiver_id).is_empty() {
+                let _ = channel
+                    .send_async(daemon_messages::NodeEvent::AllInputsClosed)
+                    .await;
             }
         }
     }
@@ -830,6 +804,9 @@ pub struct RunningDataflow {
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     running_nodes: BTreeSet<NodeId>,
+
+    pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
+
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
     _timer_handles: Vec<futures::future::RemoteHandle<()>>,
     stop_sent: bool,
@@ -851,10 +828,49 @@ impl RunningDataflow {
     fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
+
+    async fn check_drop_token(&mut self, token: DropToken) -> eyre::Result<()> {
+        match self.pending_drop_tokens.entry(token) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                if entry.get().pending_nodes.is_empty() {
+                    let (drop_token, info) = entry.remove_entry();
+                    let result = match self.subscribe_channels.get_mut(&info.owner) {
+                        Some(channel) => channel
+                            .send_async(daemon_messages::NodeEvent::OutputDropped { drop_token })
+                            .await
+                            .wrap_err("send failed"),
+                        None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
+                    };
+                    if let Err(err) = result.wrap_err_with(|| {
+                        format!(
+                            "failed to report drop token `{drop_token:?}` to owner `{}`",
+                            &info.owner
+                        )
+                    }) {
+                        tracing::warn!("{err:?}");
+                    }
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(_) => {
+                tracing::warn!("check_drop_token called with already closed token")
+            }
+        }
+
+        Ok(())
+    }
 }
 
-type OutputId = (NodeId, DataId);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OutputId(NodeId, DataId);
 type InputId = (NodeId, DataId);
+
+struct DropTokenInformation {
+    /// The node that created the associated drop token.
+    owner: NodeId,
+    /// Contains the set of pending nodes that still have access to the input
+    /// associated with a drop token.
+    pending_nodes: BTreeSet<NodeId>,
+}
 
 #[derive(Debug)]
 pub enum Event {
@@ -862,11 +878,9 @@ pub enum Event {
         dataflow_id: DataflowId,
         node_id: NodeId,
         event: DaemonNodeEvent,
-        reply_sender: oneshot::Sender<DaemonReply>,
     },
     Coordinator(CoordinatorEvent),
     Dora(DoraEvent),
-    ShmemHandler(ShmemHandlerEvent),
     WatchdogInterval,
     CtrlC,
 }
@@ -876,82 +890,28 @@ impl From<DoraEvent> for Event {
         Event::Dora(event)
     }
 }
-impl From<ShmemHandlerEvent> for Event {
-    fn from(event: ShmemHandlerEvent) -> Self {
-        Event::ShmemHandler(event)
-    }
-}
 
 #[derive(Debug)]
 pub enum DaemonNodeEvent {
-    Stopped,
+    Stopped {
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
     Subscribe {
         event_sender: flume::Sender<daemon_messages::NodeEvent>,
+        reply_sender: oneshot::Sender<DaemonReply>,
     },
-    CloseOutputs(Vec<dora_core::config::DataId>),
-}
-
-pub enum ShmemHandlerEvent {
+    CloseOutputs {
+        outputs: Vec<dora_core::config::DataId>,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
     SendOut {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
         output_id: DataId,
         metadata: dora_core::message::Metadata<'static>,
-        data: Data,
+        data: Option<Data>,
     },
-    HandlerError(eyre::ErrReport),
-}
-
-impl fmt::Debug for ShmemHandlerEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SendOut {
-                dataflow_id,
-                node_id,
-                output_id,
-                metadata,
-                data,
-            } => f
-                .debug_struct("SendOut")
-                .field("dataflow_id", dataflow_id)
-                .field("node_id", node_id)
-                .field("output_id", output_id)
-                .field("metadata", metadata)
-                .field(
-                    "data",
-                    match &data {
-                        Data::None => &"None",
-                        Data::SharedMemory(_) => &"SharedMemory(..)",
-                        Data::Vec(_) => &"Vec(..)",
-                    },
-                )
-                .finish(),
-            ShmemHandlerEvent::HandlerError(err) => {
-                f.debug_tuple("HandlerError").field(err).finish()
-            }
-        }
-    }
-}
-
-pub enum Data {
-    None,
-    SharedMemory(Box<SharedMemSample>),
-    Vec(Vec<u8>),
-}
-
-impl From<Option<Box<SharedMemSample>>> for Data {
-    fn from(data: Option<Box<SharedMemSample>>) -> Self {
-        match data {
-            Some(data) => Self::SharedMemory(data),
-            None => Self::None,
-        }
-    }
-}
-
-impl From<Vec<u8>> for Data {
-    fn from(data: Vec<u8>) -> Self {
-        Self::Vec(data)
-    }
+    ReportDrop {
+        tokens: Vec<DropToken>,
+    },
 }
 
 #[derive(Debug)]
@@ -1000,8 +960,6 @@ impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
         }
     }
 }
-
-type MessageId = String;
 
 #[must_use]
 enum RunStatus {

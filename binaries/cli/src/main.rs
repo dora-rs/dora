@@ -39,6 +39,8 @@ enum Command {
     New {
         #[clap(flatten)]
         args: CommandNew,
+        #[clap(hide = true, long)]
+        internal_create_with_path_dependencies: bool,
     },
     Up {
         #[clap(long)]
@@ -120,7 +122,10 @@ fn main() -> eyre::Result<()> {
         Command::Build { dataflow } => {
             build::build(&dataflow)?;
         }
-        Command::New { args } => template::create(args)?,
+        Command::New {
+            args,
+            internal_create_with_path_dependencies,
+        } => template::create(args, internal_create_with_path_dependencies)?,
         Command::Up {
             config,
             coordinator_path,
