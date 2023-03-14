@@ -18,6 +18,7 @@ eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
 dora-runtime = { workspace = true }
+arrow2 = "0.16"
 
 [lib]
 name = "dora"
