@@ -870,7 +870,6 @@ dependencies = [
  "tracing",
  "uuid",
  "which",
- "zenoh",
 ]
 
 [[package]]
