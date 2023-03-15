@@ -118,7 +118,7 @@ async fn run(
         use opentelemetry_system_metrics::init_process_observer;
 
         let _started = init_meter();
-        let meter = global::meter(Box::leak(node_id.to_string().into_boxed_str()));
+        let meter = global::meter(Box::leak(node.id().to_string().into_boxed_str()));
         init_process_observer(meter);
         _started
     };
