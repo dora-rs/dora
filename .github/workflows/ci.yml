@@ -20,7 +20,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.platform }}
+          shared-key: ""
 
       - name: "Check"
         run: cargo check --all
@@ -43,7 +43,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.platform }}
+          shared-key: ""
 
       - name: "Build examples"
         timeout-minutes: 30
@@ -78,7 +78,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.platform }}
+          shared-key: ""
 
       - name: "Build cli and binaries"
         timeout-minutes: 30
@@ -116,7 +116,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ${{ matrix.platform }}
+          shared-key: ""
 
       - name: "Remote Rust Dataflow example"
         if: false # skip this example for now until we uploaded new test nodes
@@ -133,7 +133,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-latest
+          shared-key: ""
 
       - name: "Clippy"
         run: cargo clippy --all
@@ -163,7 +163,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ubuntu-latest
+          shared-key: ""
 
       - run: cargo install cargo-lichking
       - name: "Check dependency licenses"
