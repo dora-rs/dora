@@ -23,6 +23,8 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ubuntu-latest"
 
       - name: "Python Dataflow example"
         run: cargo run --example python-dataflow

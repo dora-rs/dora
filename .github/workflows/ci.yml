@@ -19,6 +19,8 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.platform }}
 
       - name: "Check"
         run: cargo check --all
@@ -40,6 +42,8 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.platform }}
 
       - name: "Build examples"
         timeout-minutes: 30
@@ -73,6 +77,8 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.platform }}
 
       - name: "Build cli and binaries"
         timeout-minutes: 30
@@ -98,13 +104,19 @@ jobs:
 
   examples-remote:
     name: "Examples (Remote)"
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [ubuntu-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v3
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.platform }}
 
       - name: "Remote Rust Dataflow example"
         if: false # skip this example for now until we uploaded new test nodes
@@ -120,6 +132,8 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-latest
 
       - name: "Clippy"
         run: cargo clippy --all
@@ -148,6 +162,8 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ubuntu-latest
 
       - run: cargo install cargo-lichking
       - name: "Check dependency licenses"
