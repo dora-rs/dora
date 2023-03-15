@@ -16,4 +16,3 @@ uuid = { version = "1.2.1", features = ["serde"] }
 dora-message = { workspace = true }
 tracing = "0.1"
 serde-with-expand-env = "1.1.0"
-zenoh = "0.7.0-rc"
