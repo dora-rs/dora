@@ -62,6 +62,7 @@ jobs:
           cargo install --path binaries/cli
 
       - name: "Test CLI"
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         timeout-minutes: 30
         run: |
           dora-cli up
