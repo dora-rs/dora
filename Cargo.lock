@@ -3,12 +3,6 @@
 version = 3
 
 [[package]]
-name = "adler"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f26201604c87b1e01bd3d98f8d5d9a8fcbb815e8cedb41ffccbeb4bf593a35fe"
-
-[[package]]
 name = "aes"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -412,12 +406,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
-name = "chunked_transfer"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fff857943da45f546682664a79488be82e69e43c1a7a2307679ab9afb3a66d2e"
-
-[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -586,15 +574,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59a6001667ab124aebae2a495118e11d30984c3a653e99d86d58971708cf5e4b"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "crc32fast"
-version = "1.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b540bd8bc810d3885c6ea91e2018302f68baba2129ab3e88f32389ee9370880d"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]
@@ -1184,6 +1163,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
 
 [[package]]
+name = "ext-trait"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d772df1c1a777963712fb68e014235e80863d6a91a85c4e06ba2d16243a310e5"
+dependencies = [
+ "ext-trait-proc_macros",
+]
+
+[[package]]
+name = "ext-trait-proc_macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ab7934152eaf26aa5aa9f7371408ad5af4c31357073c9e84c3b9d7f11ad639a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "extension-traits"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a296e5a895621edf9fa8329c83aa1cb69a964643e36cf54d8d7a69b789089537"
+dependencies = [
+ "ext-trait",
+]
+
+[[package]]
 name = "eyre"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1213,16 +1221,6 @@ name = "fixedbitset"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "279fb028e20b3c4c320317955b77c5e0c9701f05a1d309905d6fc702cdc5053e"
-
-[[package]]
-name = "flate2"
-version = "1.0.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f82b0f4c27ad9f8bfd1f3208d882da2b09c301bc1c828fd3a00d0216d2fbbff6"
-dependencies = [
- "crc32fast",
- "miniz_oxide",
-]
 
 [[package]]
 name = "flume"
@@ -1926,9 +1924,9 @@ dependencies = [
 
 [[package]]
 name = "macro_rules_attribute"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "258c86475e1616d6f2d8f5227cfaabd3dae1f6d5388b9597df8a199d4497aba7"
+checksum = "cf0c9b980bf4f3a37fd7b1c066941dd1b1d0152ce6ee6e8fe8c49b9f6810d862"
 dependencies = [
  "macro_rules_attribute-proc_macro",
  "paste",
@@ -1936,9 +1934,9 @@ dependencies = [
 
 [[package]]
 name = "macro_rules_attribute-proc_macro"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f26a8d2502d5aa4d411ef494ba7470eb299f05725179ce3b5de77aa01a9ffdea"
+checksum = "58093314a45e00c77d5c508f76e77c3396afbbc0d01506e7fae47b018bac2b1d"
 
 [[package]]
 name = "malloc_buf"
@@ -2001,30 +1999,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a60c7ce501c71e03a9c9c0d35b861413ae925bd979cc7a4e30d060069aaac8d"
 
 [[package]]
-name = "mini_paste"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2499b7bd9834270bf24cfc4dd96be59020ba6fd7f3276b772aee2de66e82b63"
-dependencies = [
- "mini_paste-proc_macro",
-]
-
-[[package]]
-name = "mini_paste-proc_macro"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6c5f1f52e39b728e73af4b454f1b29173d4544607bd395dafe1918fd149db67"
-
-[[package]]
-name = "miniz_oxide"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f5c75688da582b8ffc1f1799e9db273f32133c49e048f614d22ec3256773ccc"
-dependencies = [
- "adler",
-]
-
-[[package]]
 name = "mio"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2050,94 +2024,6 @@ checksum = "6a51313c5820b0b02bd422f4b44776fbf47961755c74ce64afc73bfad10226c3"
 dependencies = [
  "getrandom",
 ]
-
-[[package]]
-name = "napi"
-version = "1.3.2"
-source = "git+https://github.com/getditto/napi-rs?branch=ditto/closure-into-jsfunction#da095cc3f1af133344083b525d7e9763b347e249"
-dependencies = [
- "napi-build",
- "napi-sys",
- "once_cell",
- "tokio",
- "winapi",
-]
-
-[[package]]
-name = "napi-build"
-version = "1.0.1"
-source = "git+https://github.com/getditto/napi-rs?branch=ditto/closure-into-jsfunction#da095cc3f1af133344083b525d7e9763b347e249"
-dependencies = [
- "cfg-if",
- "ureq",
-]
-
-[[package]]
-name = "napi-derive"
-version = "1.0.0"
-source = "git+https://github.com/getditto/napi-rs?branch=ditto/closure-into-jsfunction#da095cc3f1af133344083b525d7e9763b347e249"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "napi-dispatcher"
-version = "0.1.0"
-source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
-dependencies = [
- "napi",
- "napi-dispatcher-nodejs-derive",
- "napi-dispatcher-wasm",
-]
-
-[[package]]
-name = "napi-dispatcher-nodejs-derive"
-version = "0.1.0"
-source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
-dependencies = [
- "napi-derive",
- "napi-dispatcher-nodejs-derive-proc_macros",
-]
-
-[[package]]
-name = "napi-dispatcher-nodejs-derive-proc_macros"
-version = "0.1.0"
-source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "napi-dispatcher-wasm"
-version = "0.1.0"
-source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
-dependencies = [
- "js-sys",
- "napi-dispatcher-wasm-proc_macros",
- "ref-cast",
- "serde",
- "wasm-bindgen",
- "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "napi-dispatcher-wasm-proc_macros"
-version = "0.1.0"
-source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "napi-sys"
-version = "1.0.0"
-source = "git+https://github.com/getditto/napi-rs?branch=ditto/closure-into-jsfunction#da095cc3f1af133344083b525d7e9763b347e249"
 
 [[package]]
 name = "native-tls"
@@ -3071,26 +2957,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ref-cast"
-version = "1.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed13bcd201494ab44900a96490291651d200730904221832b9547d24a87d332b"
-dependencies = [
- "ref-cast-impl",
-]
-
-[[package]]
-name = "ref-cast-impl"
-version = "1.0.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5234cd6063258a5e32903b53b1b6ac043a0541c8adc1f610f67b0326c7a578fa"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "regex"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3295,16 +3161,17 @@ checksum = "73b4b750c782965c211b42f022f59af1fbceabdd026623714f104152f1ec149f"
 
 [[package]]
 name = "safer-ffi"
-version = "0.1.0"
-source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
+version = "0.1.0-rc1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7270b08a2af50909969cfc28a239cfdda9ab1b3df74749b265c46956183e5bf7"
 dependencies = [
  "inventory",
  "libc",
  "macro_rules_attribute",
- "mini_paste",
- "napi-dispatcher",
+ "paste",
  "safer_ffi-proc_macros",
  "scopeguard",
+ "uninit",
  "unwind_safe",
  "with_builtin_macros",
 ]
@@ -3312,7 +3179,8 @@ dependencies = [
 [[package]]
 name = "safer_ffi-proc_macros"
 version = "0.1.0-rc1"
-source = "git+https://github.com/getditto/safer_ffi.git#f69aeb1727bc2f2d68ea5de6bc887411bad12b0a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1438fb328c52f5148ea02a317603efd802f2cd6eb9e721adfd51b94bb55d9ddb"
 dependencies = [
  "macro_rules_attribute",
  "prettyplease",
@@ -4112,6 +3980,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "514672a55d7380da379785a4d70ca8386c8883ff7eaae877be4d2081cebe73d8"
 
 [[package]]
+name = "uninit"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e130f2ed46ca5d8ec13c7ff95836827f92f5f5f37fd2b2bf16f33c408d98bb6"
+dependencies = [
+ "extension-traits",
+]
+
+[[package]]
 name = "unsafe-libyaml"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4138,23 +4015,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "ureq"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97acb4c28a254fd7a4aeec976c46a7fa404eac4d7c134b30c75144846d7cb8f"
-dependencies = [
- "base64 0.13.1",
- "chunked_transfer",
- "flate2",
- "log",
- "once_cell",
- "rustls",
- "url",
- "webpki",
- "webpki-roots",
 ]
 
 [[package]]
@@ -4283,8 +4143,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25f1af7423d8588a3d840681122e72e6a24ddbcb3f0ec385cac0d12d24256c06"
 dependencies = [
  "cfg-if",
- "serde",
- "serde_json",
  "wasm-bindgen-macro",
 ]
 
