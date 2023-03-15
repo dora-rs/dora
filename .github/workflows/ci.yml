@@ -19,6 +19,8 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "true"
 
       - name: "Check"
         run: cargo check --all
