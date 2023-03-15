@@ -249,8 +249,7 @@ pub struct NodeRunConfig {
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
 pub enum CommunicationConfig {
     Zenoh {
-        #[serde(default)]
-        config: Box<zenoh::prelude::Config>,
+        config: Option<serde_yaml::Value>,
         prefix: String,
     },
 }
