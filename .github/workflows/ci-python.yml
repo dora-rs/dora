@@ -24,7 +24,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ""
+          shared-key: "dora"
 
       - name: "Python Dataflow example"
         run: cargo run --example python-dataflow
