@@ -510,7 +510,6 @@ impl Daemon {
         if let Some(token) = drop_token {
             dataflow.check_drop_token(token).await?;
         }
-        let data_bytes = data_bytes;
         Ok(())
     }
 
