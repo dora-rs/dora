@@ -142,9 +142,9 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 input_id, metadata, ..
             } = &mut event
             {
-                #[cfg(feature = "tracing")]
+                #[cfg(feature = "telemetry")]
                 let (_child_cx, string_cx) = {
-                    use dora_tracing::{deserialize_context, serialize_context};
+                    use dora_tracing::telemetry::{deserialize_context, serialize_context};
                     use opentelemetry::{
                         trace::{TraceContextExt, Tracer},
                         Context as OtelContext,
@@ -158,7 +158,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     let string_cx = serialize_context(&child_cx);
                     (child_cx, string_cx)
                 };
-                #[cfg(not(feature = "tracing"))]
+                #[cfg(not(feature = "telemetry"))]
                 let string_cx = {
                     let () = tracer;
                     let _ = input_id;

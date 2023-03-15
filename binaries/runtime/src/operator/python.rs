@@ -106,9 +106,9 @@ pub fn run(
                 input_id, metadata, ..
             } = &mut event
             {
-                #[cfg(feature = "tracing")]
+                #[cfg(feature = "telemetry")]
                 let (_child_cx, string_cx) = {
-                    use dora_tracing::{deserialize_context, serialize_context};
+                    use dora_tracing::telemetry::{deserialize_context, serialize_context};
                     use opentelemetry::trace::TraceContextExt;
                     use opentelemetry::{trace::Tracer, Context as OtelContext};
 
@@ -120,7 +120,7 @@ pub fn run(
                     (child_cx, string_cx)
                 };
 
-                #[cfg(not(feature = "tracing"))]
+                #[cfg(not(feature = "telemetry"))]
                 let string_cx = {
                     let _ = input_id;
                     let () = tracer;
