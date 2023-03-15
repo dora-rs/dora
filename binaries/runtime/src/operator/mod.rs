@@ -5,7 +5,7 @@ use dora_core::{
 };
 use dora_operator_api_python::metadata_to_pydict;
 use eyre::Context;
-#[cfg(feature = "tracing")]
+#[cfg(feature = "telemetry")]
 use opentelemetry::sdk::trace::Tracer;
 use pyo3::{
     types::{PyBytes, PyDict},
@@ -14,7 +14,7 @@ use pyo3::{
 use std::any::Any;
 use tokio::sync::mpsc::Sender;
 
-#[cfg(not(feature = "tracing"))]
+#[cfg(not(feature = "telemetry"))]
 type Tracer = ();
 
 pub mod channel;
@@ -27,11 +27,12 @@ pub fn run_operator(
     incoming_events: flume::Receiver<IncomingEvent>,
     events_tx: Sender<OperatorEvent>,
 ) -> eyre::Result<()> {
-    #[cfg(feature = "tracing")]
-    let tracer =
-        dora_tracing::init_tracing(format!("{node_id}/{}", operator_definition.id).as_str())
-            .wrap_err("could not initiate tracing for operator")?;
-    #[cfg(not(feature = "tracing"))]
+    #[cfg(feature = "telemetry")]
+    let tracer = dora_tracing::telemetry::init_tracing(
+        format!("{node_id}/{}", operator_definition.id).as_str(),
+    )
+    .wrap_err("could not initiate tracing for operator")?;
+    #[cfg(not(feature = "telemetry"))]
     #[allow(clippy::let_unit_value)]
     let tracer = ();
 
