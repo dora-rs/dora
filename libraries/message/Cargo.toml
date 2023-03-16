@@ -2,9 +2,9 @@
 name = "dora-message"
 version.workspace = true
 edition = "2021"
-license = "Apache-2.0"
 documentation.workspace = true
 description.workspace = true
+license.workspace = true
 
 # Building capnp schema script is disabled by default as it requires to install capnp.
 # To change the schema install capnp at: https://capnproto.org/install.html
