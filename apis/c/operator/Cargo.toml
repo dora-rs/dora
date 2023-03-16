@@ -2,9 +2,9 @@
 name = "dora-operator-api-c"
 version.workspace = true
 edition = "2021"
-license = "Apache-2.0"
 description = "C API implemetation for Dora Operator"
 documentation.workspace = true
+license.workspace = true
 
 [build-dependencies]
 dora-operator-api-types = { workspace = true }
