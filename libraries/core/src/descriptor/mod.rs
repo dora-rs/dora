@@ -154,6 +154,7 @@ pub struct SingleOperatorDefinition {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct OperatorConfig {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -202,6 +203,7 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct PythonOperatorConfig {
     pub path: PathBuf,
     #[serde(default)]
@@ -211,6 +213,7 @@ pub struct PythonOperatorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CustomNode {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
