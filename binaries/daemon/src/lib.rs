@@ -510,7 +510,9 @@ impl Daemon {
         if let Some(token) = drop_token {
             dataflow.check_drop_token(token).await?;
         }
-        let data_bytes = data_bytes;
+        // TODO: Send the data to remote daemon instances if the dataflow
+        // is split across multiple machines
+        let _data_bytes = data_bytes;
         Ok(())
     }
 
