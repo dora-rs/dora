@@ -47,6 +47,8 @@ jobs:
             
             # Publish rust API
             cargo publish -p dora-operator-api-macros --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+            cargo publish -p dora-operator-api-types --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+            cargo publish -p dora-operator-api --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
