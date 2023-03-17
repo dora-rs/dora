@@ -2780,9 +2780,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "raw_sync"
+name = "raw_sync_2"
 version = "0.1.5"
-source = "git+https://github.com/cameronelliott/raw_sync-rs.git#b1d6e16381b498fe618e5c1a1d1f2b1d2e6ef019"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f067b45fa17e31d15636789c2638bd562da5496d498876cf0495df78f7e4fdcb"
 dependencies = [
  "cfg-if",
  "libc",
@@ -3252,7 +3253,7 @@ version = "0.2.0-rc-7"
 dependencies = [
  "bincode",
  "eyre",
- "raw_sync",
+ "raw_sync_2",
  "serde",
  "shared_memory",
  "tracing",
