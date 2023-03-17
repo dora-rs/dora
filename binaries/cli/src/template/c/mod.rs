@@ -53,8 +53,8 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
 fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const OPERATOR: &str = include_str!("operator/operator-template.c");
-    const HEADER_API: &str = include_str!("../../../../../apis/c/operator/operator_api.h");
-    const HEADER_TYPE: &str = include_str!("../../../../../apis/c/operator/operator_types.h");
+    const HEADER_API: &str = include_str!("operator/operator_api.h");
+    const HEADER_TYPE: &str = include_str!("operator/operator_types.h");
 
     if name.contains('/') {
         bail!("operator name must not contain `/` separators");
@@ -93,7 +93,7 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
 fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const NODE: &str = include_str!("node/node-template.c");
-    const HEADER: &str = include_str!("../../../../../apis/c/node/node_api.h");
+    const HEADER: &str = include_str!("node/node_api.h");
 
     if name.contains('/') {
         bail!("node name must not contain `/` separators");
