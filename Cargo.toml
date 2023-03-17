@@ -23,26 +23,26 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-rc-7"
+version = "0.2.0-rc-8"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora.carsmos.ai/dora/"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-dora-node-api = { version = "0.2.0-rc-7", path = "apis/rust/node", default-features = false }
-dora-operator-api = { version = "0.2.0-rc-7", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "0.2.0-rc-7", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "0.2.0-rc-7", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "0.2.0-rc-7", path = "apis/python/operator" }
-dora-core = { version = "0.2.0-rc-7", path = "libraries/core" }
-dora-tracing = { version = "0.2.0-rc-7", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "0.2.0-rc-7", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "0.2.0-rc-7", path = "libraries/extensions/download" }
-shared-memory-server = { version = "0.2.0-rc-7", path = "libraries/shared-memory-server" }
-communication-layer-request-reply = { version = "0.2.0-rc-7", path = "libraries/communication-layer/request-reply" }
-dora-message = { version = "0.2.0-rc-7", path = "libraries/message" }
-dora-runtime = { version = "0.2.0-rc-7", path = "binaries/runtime" }
-dora-daemon = { version = "0.2.0-rc-7", path = "binaries/daemon" }
+dora-node-api = { version = "0.2.0-rc-8", path = "apis/rust/node", default-features = false }
+dora-operator-api = { version = "0.2.0-rc-8", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "0.2.0-rc-8", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "0.2.0-rc-8", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "0.2.0-rc-8", path = "apis/python/operator" }
+dora-core = { version = "0.2.0-rc-8", path = "libraries/core" }
+dora-tracing = { version = "0.2.0-rc-8", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "0.2.0-rc-8", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "0.2.0-rc-8", path = "libraries/extensions/download" }
+shared-memory-server = { version = "0.2.0-rc-8", path = "libraries/shared-memory-server" }
+communication-layer-request-reply = { version = "0.2.0-rc-8", path = "libraries/communication-layer/request-reply" }
+dora-message = { version = "0.2.0-rc-8", path = "libraries/message" }
+dora-runtime = { version = "0.2.0-rc-8", path = "binaries/runtime" }
+dora-daemon = { version = "0.2.0-rc-8", path = "binaries/daemon" }
 
 [package]
 name = "dora-examples"
