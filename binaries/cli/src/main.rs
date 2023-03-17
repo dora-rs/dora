@@ -18,14 +18,17 @@ struct Args {
     command: Command,
 }
 
+/// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 enum Command {
+    /// Check if the coordinator and the daemon is running.
     Check {
         #[clap(long)]
         dataflow: Option<PathBuf>,
         #[clap(long)]
         runtime_path: Option<PathBuf>,
     },
+    /// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
     Graph {
         dataflow: PathBuf,
         #[clap(long, action)]
@@ -33,15 +36,16 @@ enum Command {
         #[clap(long, action)]
         open: bool,
     },
-    Build {
-        dataflow: PathBuf,
-    },
+    /// Run build commands provided in the given dataflow.
+    Build { dataflow: PathBuf },
+    /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
         args: CommandNew,
         #[clap(hide = true, long)]
         internal_create_with_path_dependencies: bool,
     },
+    /// Spawn a coordinator and a daemon.
     Up {
         #[clap(long)]
         config: Option<PathBuf>,
@@ -50,20 +54,24 @@ enum Command {
         #[clap(long)]
         daemon_path: Option<PathBuf>,
     },
+    /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
         #[clap(long)]
         config: Option<PathBuf>,
     },
+    /// Start the given dataflow path. Attach a name to the running dataflow by using --name.
     Start {
         dataflow: PathBuf,
         #[clap(long)]
         name: Option<String>,
     },
+    /// Stop the given dataflow UUID. If no id is provided, you will be able to choose between the running dataflows.
     Stop {
         uuid: Option<Uuid>,
         #[clap(long)]
         name: Option<String>,
     },
+    /// List running dataflows.
     List,
     // Planned for future releases:
     // Dashboard,
