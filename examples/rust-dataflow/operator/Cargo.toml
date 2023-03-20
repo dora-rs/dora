@@ -2,7 +2,7 @@
 name = "rust-dataflow-example-operator"
 version.workspace = true
 edition = "2021"
-license = "Apache-2.0"
+license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
