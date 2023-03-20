@@ -86,8 +86,8 @@ dora stop c95d118b-cded-4531-a0e4-cd85b7c3916c
 
 7. You can then add or modify operators or nodes. For adding nodes easily, you can use the `dora` CLI again:
 
-- Run `dora new --kind operator --lang Rust <name>` to create a new Rust operator named `<name>`.
-- Run `dora new --kind custom-node --lang Rust <name>` to create a new custom node named `<name>`.
+- Run `dora new --kind operator --lang rust <name>` to create a new Rust operator named `<name>`.
+- Run `dora new --kind custom-node --lang rust <name>` to create a new custom node named `<name>`.
 
 You need to add the created operators/nodes to your dataflow YAML file.
 
