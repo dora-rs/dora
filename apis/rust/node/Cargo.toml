@@ -2,11 +2,9 @@
 name = "dora-node-api"
 version.workspace = true
 edition = "2021"
-license = "Apache-2.0"
-description = "Dora Rust Node API"
-homepage = "https://github.com/dora-rs/dora"
-repository = "https://github.com/dora-rs/dora"
-documentation = "https://dora.carsmos.ai/dora/rust-api.html"
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
 
 [features]
 default = ["tracing"]
