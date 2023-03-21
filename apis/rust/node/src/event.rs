@@ -9,7 +9,7 @@ use shared_memory::{Shmem, ShmemConf};
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum Event<'a> {
+pub enum Event {
     Stop,
     Reload {
         operator_id: Option<OperatorId>,
@@ -17,7 +17,7 @@ pub enum Event<'a> {
     Input {
         id: DataId,
         metadata: Metadata<'static>,
-        data: Option<Data<'a>>,
+        data: Option<Data>,
     },
     InputClosed {
         id: DataId,
@@ -25,15 +25,15 @@ pub enum Event<'a> {
     Error(String),
 }
 
-pub enum Data<'a> {
+pub enum Data {
     Vec(Vec<u8>),
     SharedMemory {
-        data: MappedInputData<'a>,
-        _drop: std::sync::mpsc::Sender<()>,
+        data: MappedInputData,
+        _drop: flume::Sender<()>,
     },
 }
 
-impl std::ops::Deref for Data<'_> {
+impl std::ops::Deref for Data {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -44,33 +44,28 @@ impl std::ops::Deref for Data<'_> {
     }
 }
 
-impl std::fmt::Debug for Data<'_> {
+impl std::fmt::Debug for Data {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Data").finish_non_exhaustive()
     }
 }
 
-pub struct MappedInputData<'a> {
+pub struct MappedInputData {
     memory: Shmem,
     len: usize,
-    _data: PhantomData<&'a [u8]>,
 }
 
-impl MappedInputData<'_> {
+impl MappedInputData {
     pub(crate) unsafe fn map(shared_memory_id: &str, len: usize) -> eyre::Result<Self> {
         let memory = ShmemConf::new()
             .os_id(shared_memory_id)
             .open()
             .wrap_err("failed to map shared memory input")?;
-        Ok(MappedInputData {
-            memory,
-            len,
-            _data: PhantomData,
-        })
+        Ok(MappedInputData { memory, len })
     }
 }
 
-impl std::ops::Deref for MappedInputData<'_> {
+impl std::ops::Deref for MappedInputData {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
