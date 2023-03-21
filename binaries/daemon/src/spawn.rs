@@ -138,8 +138,18 @@ pub async fn spawn_node(
                 serde_yaml::to_string(&runtime_config)
                     .wrap_err("failed to serialize runtime config")?,
             );
+            // Injecting the env variable defined in the `yaml` into
+            // the node runtime.
+            if let Some(envs) = node.env {
+                for (key, value) in envs {
+                    command.env(key, value.to_string());
+                }
+            }
 
-            command.spawn().wrap_err("failed to run runtime")?
+            command.spawn().wrap_err(format!(
+                "failed to run runtime {}/{}",
+                runtime_config.node.dataflow_id, runtime_config.node.node_id
+            ))?
         }
     };
 
