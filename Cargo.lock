@@ -515,7 +515,6 @@ dependencies = [
 name = "communication-layer-pub-sub"
 version = "0.2.0"
 dependencies = [
- "eyre",
  "flume",
  "zenoh",
 ]
@@ -523,9 +522,6 @@ dependencies = [
 [[package]]
 name = "communication-layer-request-reply"
 version = "0.2.0"
-dependencies = [
- "eyre",
-]
 
 [[package]]
 name = "concurrent-queue"
@@ -816,12 +812,13 @@ dependencies = [
  "clap 4.0.3",
  "communication-layer-request-reply",
  "dora-core",
+ "dora-node-api-c",
+ "dora-operator-api-c",
  "eyre",
  "inquire",
  "serde",
  "serde_json",
  "serde_yaml 0.9.19",
- "tempfile",
  "termcolor",
  "uuid",
  "webbrowser",
@@ -831,13 +828,8 @@ dependencies = [
 name = "dora-coordinator"
 version = "0.2.0"
 dependencies = [
- "bincode",
- "clap 3.2.23",
- "communication-layer-request-reply",
  "ctrlc",
  "dora-core",
- "dora-download",
- "dora-node-api",
  "dora-tracing",
  "eyre",
  "futures",
@@ -847,10 +839,8 @@ dependencies = [
  "serde_json",
  "serde_yaml 0.8.23",
  "thiserror",
- "time",
  "tokio",
  "tokio-stream",
- "tokio-util 0.7.1",
  "tracing",
  "uuid",
  "which",
@@ -903,7 +893,6 @@ version = "0.2.0"
 dependencies = [
  "eyre",
  "reqwest",
- "tempfile",
  "tokio",
  "tracing",
 ]
@@ -1021,18 +1010,12 @@ dependencies = [
  "cxx",
  "cxx-build",
  "dora-operator-api",
- "eyre",
- "futures",
- "rand",
- "tokio",
 ]
 
 [[package]]
 name = "dora-operator-api-macros"
 version = "0.2.0"
 dependencies = [
- "dora-operator-api",
- "dora-operator-api-types",
  "proc-macro2",
  "quote",
  "syn",
@@ -2135,15 +2118,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num_threads"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aba1801fb138d8e85e11d0fc70baf4fe1cdfffda7c6cd34a854905df588e5ed0"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2808,9 +2782,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "raw_sync"
+name = "raw_sync_2"
 version = "0.1.5"
-source = "git+https://github.com/cameronelliott/raw_sync-rs.git#b1d6e16381b498fe618e5c1a1d1f2b1d2e6ef019"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f067b45fa17e31d15636789c2638bd562da5496d498876cf0495df78f7e4fdcb"
 dependencies = [
  "cfg-if",
  "libc",
@@ -3280,7 +3255,7 @@ version = "0.2.0"
 dependencies = [
  "bincode",
  "eyre",
- "raw_sync",
+ "raw_sync_2",
  "serde",
  "shared_memory",
  "tracing",
@@ -3552,16 +3527,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "time"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2702e08a7a860f005826c6815dcac101b19b5eb330c27fe4a5928fec1d20ddd"
-dependencies = [
- "libc",
- "num_threads",
-]
-
-[[package]]
 name = "tinyvec"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3578,9 +3543,9 @@ checksum = "cda74da7e1a664f795bb1f8a87ec406fb89a02522cf6e50620d016add6dbbf5c"
 
 [[package]]
 name = "tokio"
-version = "1.24.2"
+version = "1.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "597a12a59981d9e3c38d216785b0c37399f6e415e8d0712047620f189371b0bb"
+checksum = "03201d01c3c27a29c8a5cee5b55a93ddae1ccf6f08f65365c2c918f8c1b76f64"
 dependencies = [
  "autocfg",
  "bytes",
@@ -3593,7 +3558,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
- "windows-sys 0.42.0",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
