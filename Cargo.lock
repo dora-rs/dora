@@ -812,6 +812,8 @@ dependencies = [
  "clap 4.0.3",
  "communication-layer-request-reply",
  "dora-core",
+ "dora-node-api-c",
+ "dora-operator-api-c",
  "eyre",
  "inquire",
  "serde",

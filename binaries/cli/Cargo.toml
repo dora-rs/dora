@@ -16,6 +16,8 @@ path = "src/main.rs"
 clap = { version = "4.0.3", features = ["derive"] }
 eyre = "0.6.8"
 dora-core = { workspace = true }
+dora-node-api-c = { workspace = true }
+dora-operator-api-c = { workspace = true }
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.9.11"
 webbrowser = "0.8.3"
