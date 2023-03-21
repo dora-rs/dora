@@ -34,6 +34,8 @@ dora-operator-api = { version = "0.2.0", path = "apis/rust/operator", default-fe
 dora-operator-api-macros = { version = "0.2.0", path = "apis/rust/operator/macros" }
 dora-operator-api-types = { version = "0.2.0", path = "apis/rust/operator/types" }
 dora-operator-api-python = { version = "0.2.0", path = "apis/python/operator" }
+dora-operator-api-c = { version = "0.2.0", path = "apis/c/operator" }
+dora-node-api-c = { version = "0.2.0", path = "apis/c/node" }
 dora-core = { version = "0.2.0", path = "libraries/core" }
 dora-tracing = { version = "0.2.0", path = "libraries/extensions/telemetry/tracing" }
 dora-metrics = { version = "0.2.0", path = "libraries/extensions/telemetry/metrics" }
