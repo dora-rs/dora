@@ -2,7 +2,9 @@
 name = "dora-node-api"
 version.workspace = true
 edition = "2021"
-license = "Apache-2.0"
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
 
 [features]
 default = ["tracing"]

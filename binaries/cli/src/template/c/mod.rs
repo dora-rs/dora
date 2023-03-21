@@ -1,3 +1,5 @@
+use dora_node_api_c::HEADER_NODE_API;
+use dora_operator_api_c::{HEADER_OPERATOR_API, HEADER_OPERATOR_TYPES};
 use eyre::{bail, Context};
 use std::{
     fs,
@@ -53,8 +55,6 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
 fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const OPERATOR: &str = include_str!("operator/operator-template.c");
-    const HEADER_API: &str = include_str!("../../../../../apis/c/operator/operator_api.h");
-    const HEADER_TYPE: &str = include_str!("../../../../../apis/c/operator/operator_types.h");
 
     if name.contains('/') {
         bail!("operator name must not contain `/` separators");
@@ -76,9 +76,9 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
         .with_context(|| format!("failed to write `{}`", operator_path.display()))?;
     let header_api_path = root.join("operator_api.h");
     let header_type_path = root.join("operator_types.h");
-    fs::write(&header_api_path, HEADER_API)
+    fs::write(&header_api_path, HEADER_OPERATOR_API)
         .with_context(|| format!("failed to write `{}`", header_api_path.display()))?;
-    fs::write(&header_type_path, HEADER_TYPE)
+    fs::write(&header_type_path, HEADER_OPERATOR_TYPES)
         .with_context(|| format!("failed to write `{}`", header_type_path.display()))?;
 
     // TODO: Makefile?
@@ -93,7 +93,6 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
 fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const NODE: &str = include_str!("node/node-template.c");
-    const HEADER: &str = include_str!("../../../../../apis/c/node/node_api.h");
 
     if name.contains('/') {
         bail!("node name must not contain `/` separators");
@@ -111,7 +110,7 @@ fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::E
     fs::write(&node_path, NODE)
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
     let header_path = root.join("node_api.h");
-    fs::write(&header_path, HEADER)
+    fs::write(&header_path, HEADER_NODE_API)
         .with_context(|| format!("failed to write `{}`", header_path.display()))?;
 
     // TODO: Makefile?

@@ -2,8 +2,9 @@
 name = "dora-operator-api-macros"
 version.workspace = true
 edition = "2021"
-license = "Apache-2.0"
 description = "Rust API Macros for Dora Operator"
+documentation.workspace = true
+license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,7 +15,3 @@ proc-macro = true
 syn = { version = "1.0.81", features = ["full"] }
 quote = "1.0.10"
 proc-macro2 = "1.0.32"
-
-[dev-dependencies]
-dora-operator-api = { workspace = true }
-dora-operator-api-types = { workspace = true }

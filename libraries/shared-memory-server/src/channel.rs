@@ -1,5 +1,5 @@
 use eyre::{eyre, Context};
-use raw_sync::events::{Event, EventImpl, EventInit, EventState};
+use raw_sync_2::events::{Event, EventImpl, EventInit, EventState};
 use serde::{Deserialize, Serialize};
 use shared_memory::Shmem;
 use std::{
@@ -130,8 +130,8 @@ impl ShmemChannel {
             &self.client_event
         };
         let timeout = timeout
-            .map(raw_sync::Timeout::Val)
-            .unwrap_or(raw_sync::Timeout::Infinite);
+            .map(raw_sync_2::Timeout::Val)
+            .unwrap_or(raw_sync_2::Timeout::Infinite);
         event
             .wait(timeout)
             .map_err(|err| eyre!("failed to receive from ShmemChannel: {err}"))?;
