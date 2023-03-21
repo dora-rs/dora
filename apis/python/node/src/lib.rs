@@ -14,9 +14,9 @@ pub struct Node {
     node: DoraNode,
 }
 
-pub struct PyInput<'a>(Event<'a>);
+pub struct PyInput(Event);
 
-impl IntoPy<PyObject> for PyInput<'_> {
+impl IntoPy<PyObject> for PyInput {
     fn into_py(self, py: Python) -> PyObject {
         let dict = PyDict::new(py);
 
