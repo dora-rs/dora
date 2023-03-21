@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{ptr::NonNull, sync::Arc};
 
 use dora_core::{
     config::{DataId, OperatorId},
@@ -31,6 +31,26 @@ pub enum Data {
         data: MappedInputData,
         _drop: flume::Sender<()>,
     },
+}
+impl Data {
+    pub fn into_arrow_array(self) -> arrow::array::ArrayData {
+        let ptr = NonNull::new(self.as_ptr() as *mut _).unwrap();
+        let len = self.len();
+        let owner = Arc::new(self);
+
+        let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, owner) };
+        unsafe {
+            arrow::array::ArrayData::new_unchecked(
+                arrow::datatypes::DataType::UInt8,
+                len,
+                Some(0),
+                None,
+                0,
+                vec![buffer],
+                vec![],
+            )
+        }
+    }
 }
 
 impl std::ops::Deref for Data {
@@ -72,3 +92,6 @@ impl std::ops::Deref for MappedInputData {
         unsafe { &self.memory.as_slice()[..self.len] }
     }
 }
+
+unsafe impl Send for MappedInputData {}
+unsafe impl Sync for MappedInputData {}
