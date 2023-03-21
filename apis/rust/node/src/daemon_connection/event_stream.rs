@@ -85,7 +85,7 @@ impl EventStream {
                     };
 
                     if let Some(tx) = tx.as_ref() {
-                        let (drop_tx, drop_rx) = std::sync::mpsc::channel();
+                        let (drop_tx, drop_rx) = flume::bounded(0);
                         match tx.send(EventItem::NodeEvent {
                             event,
                             ack_channel: drop_tx,
@@ -104,13 +104,13 @@ impl EventStream {
                                     "Node API should not send anything on ACK channel"
                                 ))
                             }
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            Err(flume::RecvTimeoutError::Timeout) => {
                                 tracing::warn!("timeout: event was not dropped after {timeout:?}");
                                 if let Some(drop_token) = drop_token {
                                     tracing::warn!("leaking drop token {drop_token:?}");
                                 }
                             }
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            Err(flume::RecvTimeoutError::Disconnected) => {
                                 // the event was dropped -> add the drop token to the list
                                 if let Some(token) = drop_token {
                                     drop_tokens.push(token);
@@ -221,7 +221,7 @@ impl EventStream {
 enum EventItem {
     NodeEvent {
         event: NodeEvent,
-        ack_channel: std::sync::mpsc::Sender<()>,
+        ack_channel: flume::Sender<()>,
     },
     FatalError(eyre::Report),
 }
