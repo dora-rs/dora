@@ -4,7 +4,7 @@ use dora_node_api::{DoraNode, Event, EventStream};
 use eyre::Context;
 use std::{ffi::c_void, ptr, slice};
 
-pub static HEADER_NODE_API: &str = include_str!("../node_api.h");
+pub const HEADER_NODE_API: &str = include_str!("../node_api.h");
 
 struct DoraContext {
     node: &'static mut DoraNode,
