@@ -19,7 +19,7 @@ use tokio::sync::mpsc::Sender;
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
     let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
     if let Some(traceback) = traceback {
-        eyre::eyre!("{err}:\n{traceback}")
+        eyre::eyre!("{err}{traceback}")
     } else {
         eyre::eyre!("{err}")
     }
