@@ -246,10 +246,53 @@ pub struct NodeRunConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, from = "InputDef", into = "InputDef")]
 pub struct Input {
     pub mapping: InputMapping,
     pub queue_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InputDef {
+    MappingOnly(InputMapping),
+    WithOptions {
+        source: InputMapping,
+        queue_size: Option<usize>,
+    },
+}
+
+impl From<Input> for InputDef {
+    fn from(input: Input) -> Self {
+        match input {
+            Input {
+                mapping,
+                queue_size: None,
+            } => Self::MappingOnly(mapping),
+            Input {
+                mapping,
+                queue_size,
+            } => Self::WithOptions {
+                source: mapping,
+                queue_size,
+            },
+        }
+    }
+}
+
+impl From<InputDef> for Input {
+    fn from(value: InputDef) -> Self {
+        match value {
+            InputDef::MappingOnly(mapping) => Self {
+                mapping,
+                queue_size: None,
+            },
+            InputDef::WithOptions { source, queue_size } => Self {
+                mapping: source,
+                queue_size,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
