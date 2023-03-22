@@ -463,8 +463,8 @@ impl Daemon {
                 };
                 let send_result = channel.send_async(item);
 
-                match timeout(Duration::from_millis(10), send_result).await {
-                    Ok(Ok(())) => {
+                match send_result.now_or_never() {
+                    Some(Ok(())) => {
                         if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
                             dataflow
                                 .pending_drop_tokens
@@ -477,10 +477,10 @@ impl Daemon {
                                 .insert(receiver_id.clone());
                         }
                     }
-                    Ok(Err(_)) => {
+                    Some(Err(_)) => {
                         closed.push(receiver_id);
                     }
-                    Err(_) => {
+                    None => {
                         tracing::warn!(
                             "dropping input event `{receiver_id}/{input_id}` (send timeout)"
                         );
@@ -629,12 +629,12 @@ impl Daemon {
                         metadata: metadata.clone(),
                         data: None,
                     });
-                    match timeout(Duration::from_millis(1), send_result).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(_)) => {
+                    match send_result.now_or_never() {
+                        Some(Ok(())) => {}
+                        Some(Err(_)) => {
                             closed.push(receiver_id);
                         }
-                        Err(_) => {
+                        None => {
                             tracing::info!(
                                 "dropping timer tick event for `{receiver_id}` (send timeout)"
                             );
