@@ -23,10 +23,10 @@ use std::{
     time::Duration,
 };
 use tcp_utils::tcp_receive;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::{
     fs,
     sync::{mpsc, oneshot},
-    time::timeout,
 };
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use uuid::Uuid;
@@ -461,10 +461,8 @@ impl Daemon {
                     metadata: metadata.clone(),
                     data: data.clone(),
                 };
-                let send_result = channel.send_async(item);
-
-                match send_result.now_or_never() {
-                    Some(Ok(())) => {
+                match channel.send(item) {
+                    Ok(()) => {
                         if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
                             dataflow
                                 .pending_drop_tokens
@@ -477,13 +475,8 @@ impl Daemon {
                                 .insert(receiver_id.clone());
                         }
                     }
-                    Some(Err(_)) => {
+                    Err(_) => {
                         closed.push(receiver_id);
-                    }
-                    None => {
-                        tracing::warn!(
-                            "dropping input event `{receiver_id}/{input_id}` (send timeout)"
-                        );
                     }
                 }
             }
@@ -520,7 +513,7 @@ impl Daemon {
         &mut self,
         dataflow_id: Uuid,
         node_id: NodeId,
-        event_sender: flume::Sender<daemon_messages::NodeEvent>,
+        event_sender: UnboundedSender<daemon_messages::NodeEvent>,
     ) -> Result<(), String> {
         let dataflow = self.running.get_mut(&dataflow_id).ok_or_else(|| {
             format!("subscribe failed: no running dataflow with ID `{dataflow_id}`")
@@ -541,24 +534,18 @@ impl Daemon {
                     .unwrap_or(true)
             });
         for input_id in closed_inputs {
-            let _ = event_sender
-                .send_async(daemon_messages::NodeEvent::InputClosed {
-                    id: input_id.clone(),
-                })
-                .await;
+            let _ = event_sender.send(daemon_messages::NodeEvent::InputClosed {
+                id: input_id.clone(),
+            });
         }
         if dataflow.open_inputs(&node_id).is_empty() {
-            let _ = event_sender
-                .send_async(daemon_messages::NodeEvent::AllInputsClosed)
-                .await;
+            let _ = event_sender.send(daemon_messages::NodeEvent::AllInputsClosed);
         }
 
         // if a stop event was already sent for the dataflow, send it to
         // the newly connected node too
         if dataflow.stop_sent {
-            let _ = event_sender
-                .send_async(daemon_messages::NodeEvent::Stop)
-                .await;
+            let _ = event_sender.send(daemon_messages::NodeEvent::Stop);
         }
 
         dataflow.subscribe_channels.insert(node_id, event_sender);
@@ -624,20 +611,15 @@ impl Daemon {
                         continue;
                     };
 
-                    let send_result = channel.send_async(daemon_messages::NodeEvent::Input {
+                    let send_result = channel.send(daemon_messages::NodeEvent::Input {
                         id: input_id.clone(),
                         metadata: metadata.clone(),
                         data: None,
                     });
-                    match send_result.now_or_never() {
-                        Some(Ok(())) => {}
-                        Some(Err(_)) => {
+                    match send_result {
+                        Ok(()) => {}
+                        Err(_) => {
                             closed.push(receiver_id);
-                        }
-                        None => {
-                            tracing::info!(
-                                "dropping timer tick event for `{receiver_id}` (send timeout)"
-                            );
                         }
                     }
                 }
@@ -784,16 +766,12 @@ where
             open_inputs.remove(input_id);
         }
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-            let _ = channel
-                .send_async(daemon_messages::NodeEvent::InputClosed {
-                    id: input_id.clone(),
-                })
-                .await;
+            let _ = channel.send(daemon_messages::NodeEvent::InputClosed {
+                id: input_id.clone(),
+            });
 
             if dataflow.open_inputs(receiver_id).is_empty() {
-                let _ = channel
-                    .send_async(daemon_messages::NodeEvent::AllInputsClosed)
-                    .await;
+                let _ = channel.send(daemon_messages::NodeEvent::AllInputsClosed);
             }
         }
     }
@@ -801,7 +779,7 @@ where
 
 #[derive(Default)]
 pub struct RunningDataflow {
-    subscribe_channels: HashMap<NodeId, flume::Sender<daemon_messages::NodeEvent>>,
+    subscribe_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeEvent>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
@@ -822,7 +800,7 @@ pub struct RunningDataflow {
 impl RunningDataflow {
     async fn stop_all(&mut self) {
         for (_node_id, channel) in self.subscribe_channels.drain() {
-            let _ = channel.send_async(daemon_messages::NodeEvent::Stop).await;
+            let _ = channel.send(daemon_messages::NodeEvent::Stop);
         }
         self.stop_sent = true;
     }
@@ -838,8 +816,7 @@ impl RunningDataflow {
                     let (drop_token, info) = entry.remove_entry();
                     let result = match self.subscribe_channels.get_mut(&info.owner) {
                         Some(channel) => channel
-                            .send_async(daemon_messages::NodeEvent::OutputDropped { drop_token })
-                            .await
+                            .send(daemon_messages::NodeEvent::OutputDropped { drop_token })
                             .wrap_err("send failed"),
                         None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
                     };
@@ -899,7 +876,7 @@ pub enum DaemonNodeEvent {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     Subscribe {
-        event_sender: flume::Sender<daemon_messages::NodeEvent>,
+        event_sender: UnboundedSender<daemon_messages::NodeEvent>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
