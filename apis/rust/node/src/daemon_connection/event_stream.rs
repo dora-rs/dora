@@ -97,6 +97,7 @@ impl EventStream {
                             }
                         }
 
+                        // TODO: don't wait here, instead use shared collection/queue
                         let timeout = Duration::from_secs(30);
                         match drop_rx.recv_timeout(timeout) {
                             Ok(()) => {
