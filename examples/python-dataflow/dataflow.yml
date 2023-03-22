@@ -6,6 +6,7 @@ nodes:
   - id: webcam
     custom:
       source: ./webcam.py
+      max_queue_len: 1000
       inputs:
         tick: dora/timer/millis/100
       outputs:

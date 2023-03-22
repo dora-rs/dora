@@ -61,6 +61,8 @@ impl Descriptor {
                 }
             }
 
+            let max_queue_len = node.max_queue_len();
+
             // resolve nodes
             let kind = match node.kind {
                 NodeKind::Custom(node) => CoreNodeKind::Custom(node),
@@ -72,11 +74,13 @@ impl Descriptor {
                     }],
                 }),
             };
+
             resolved.push(ResolvedNode {
                 id: node.id,
                 name: node.name,
                 description: node.description,
                 env: node.env,
+                max_queue_len,
                 kind,
             });
         }
@@ -102,6 +106,15 @@ pub struct Node {
     pub kind: NodeKind,
 }
 
+impl Node {
+    fn max_queue_len(&self) -> usize {
+        match &self.kind {
+            NodeKind::Runtime(_) | NodeKind::Operator(_) => 100,
+            NodeKind::Custom(node) => node.max_queue_len.unwrap_or(10),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeKind {
@@ -118,6 +131,7 @@ pub struct ResolvedNode {
     pub name: Option<String>,
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
+    pub max_queue_len: usize,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
@@ -221,6 +235,7 @@ pub struct CustomNode {
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    pub max_queue_len: Option<usize>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
