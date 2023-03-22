@@ -240,9 +240,16 @@ pub fn format_duration(interval: Duration) -> FormattedDuration {
 #[serde(deny_unknown_fields)]
 pub struct NodeRunConfig {
     #[serde(default)]
-    pub inputs: BTreeMap<DataId, InputMapping>,
+    pub inputs: BTreeMap<DataId, Input>,
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Input {
+    pub mapping: InputMapping,
+    pub queue_size: Option<usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
