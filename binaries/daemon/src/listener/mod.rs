@@ -223,6 +223,7 @@ where
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(%self.node_id))]
     async fn drop_oldest_inputs(&mut self, number: usize) -> Result<(), eyre::ErrReport> {
         tracing::debug!("dropping {number} inputs because event queue is too full");
         let mut drop_tokens = Vec::new();
