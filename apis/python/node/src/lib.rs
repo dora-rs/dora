@@ -104,7 +104,7 @@ impl Node {
 
 #[pyfunction]
 fn start_runtime() -> Result<()> {
-    dora_runtime::main().wrap_err("Python Dora Runtime failed.")
+    dora_runtime::main().wrap_err("Dora Runtime raised an error.")
 }
 
 #[pymodule]

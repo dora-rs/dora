@@ -136,7 +136,10 @@ async fn run(
             } => {
                 match event {
                     OperatorEvent::Error(err) => {
-                        bail!(err.wrap_err(format!("operator {operator_id} failed")))
+                        bail!(err.wrap_err(format!(
+                            "operator {}/{operator_id} raised an error",
+                            node.id()
+                        )))
                     }
                     OperatorEvent::Panic(payload) => {
                         bail!("operator {operator_id} panicked: {payload:?}");
