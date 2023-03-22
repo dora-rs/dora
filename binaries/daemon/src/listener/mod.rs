@@ -249,7 +249,9 @@ where
         }
         self.report_drop_tokens(drop_tokens).await?;
 
-        tracing::debug!("dropped {dropped} inputs because event queue was too full");
+        if dropped > 0 {
+            tracing::debug!("dropped {dropped} inputs because event queue was too full");
+        }
         Ok(())
     }
 
