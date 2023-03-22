@@ -11,7 +11,10 @@ use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{mem, net::Ipv4Addr};
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, oneshot},
+    sync::{
+        mpsc::{self, UnboundedReceiver},
+        oneshot,
+    },
 };
 
 // TODO unify and avoid duplication;
@@ -90,7 +93,7 @@ struct Listener<C> {
     dataflow_id: DataflowId,
     node_id: NodeId,
     daemon_tx: mpsc::Sender<Event>,
-    subscribed_events: Option<flume::Receiver<NodeEvent>>,
+    subscribed_events: Option<UnboundedReceiver<NodeEvent>>,
     queue: Vec<NodeEvent>,
     max_queue_len: usize,
     connection: C,
@@ -275,7 +278,7 @@ where
                 self.process_daemon_event(event, None).await?;
             }
             DaemonRequest::Subscribe => {
-                let (tx, rx) = flume::bounded(100);
+                let (tx, rx) = mpsc::unbounded_channel();
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::Subscribe {
@@ -295,9 +298,9 @@ where
                 let reply = if queued_events.is_empty() {
                     match self.subscribed_events.as_mut() {
                         // wait for next event
-                        Some(events) => match events.recv_async().await {
-                            Ok(event) => DaemonReply::NextEvents(vec![event]),
-                            Err(flume::RecvError::Disconnected) => DaemonReply::NextEvents(vec![]),
+                        Some(events) => match events.recv().await {
+                            Some(event) => DaemonReply::NextEvents(vec![event]),
+                            None => DaemonReply::NextEvents(vec![]),
                         },
                         None => {
                             DaemonReply::Result(Err("Ignoring event request because no subscribe \
