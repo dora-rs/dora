@@ -1,11 +1,14 @@
-use std::io::ErrorKind;
+use std::{collections::BTreeMap, io::ErrorKind};
 
 use super::Listener;
 use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     Event,
 };
-use dora_core::daemon_messages::{DaemonReply, DaemonRequest};
+use dora_core::{
+    config::DataId,
+    daemon_messages::{DaemonReply, DaemonRequest},
+};
 use eyre::Context;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -16,7 +19,7 @@ use tokio::{
 pub async fn listener_loop(
     listener: TcpListener,
     daemon_tx: mpsc::Sender<Event>,
-    max_queue_len: usize,
+    max_queue_len: BTreeMap<DataId, usize>,
 ) {
     loop {
         match listener
@@ -31,7 +34,7 @@ pub async fn listener_loop(
                 tokio::spawn(handle_connection_loop(
                     connection,
                     daemon_tx.clone(),
-                    max_queue_len,
+                    max_queue_len.clone(),
                 ));
             }
         }
@@ -42,7 +45,7 @@ pub async fn listener_loop(
 async fn handle_connection_loop(
     connection: TcpStream,
     daemon_tx: mpsc::Sender<Event>,
-    max_queue_len: usize,
+    max_queue_len: BTreeMap<DataId, usize>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");

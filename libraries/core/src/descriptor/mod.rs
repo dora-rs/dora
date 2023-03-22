@@ -1,5 +1,5 @@
 use crate::{
-    config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId},
+    config::{CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     daemon_messages::DaemonCommunicationConfig,
 };
 use eyre::{bail, Result};
@@ -52,16 +52,17 @@ impl Descriptor {
                 NodeKind::Custom(node) => node.run_config.inputs.values_mut().collect(),
                 NodeKind::Operator(operator) => operator.config.inputs.values_mut().collect(),
             };
-            for mapping in input_mappings.into_iter().filter_map(|m| match m {
-                InputMapping::Timer { .. } => None,
-                InputMapping::User(m) => Some(m),
-            }) {
+            for mapping in input_mappings
+                .into_iter()
+                .filter_map(|i| match &mut i.mapping {
+                    InputMapping::Timer { .. } => None,
+                    InputMapping::User(m) => Some(m),
+                })
+            {
                 if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
                     mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
                 }
             }
-
-            let queue_size = node.queue_size();
 
             // resolve nodes
             let kind = match node.kind {
@@ -80,7 +81,6 @@ impl Descriptor {
                 name: node.name,
                 description: node.description,
                 env: node.env,
-                queue_size,
                 kind,
             });
         }
@@ -106,15 +106,6 @@ pub struct Node {
     pub kind: NodeKind,
 }
 
-impl Node {
-    fn queue_size(&self) -> usize {
-        match &self.kind {
-            NodeKind::Runtime(_) | NodeKind::Operator(_) => 100,
-            NodeKind::Custom(node) => node.queue_size.unwrap_or(10),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeKind {
@@ -131,7 +122,6 @@ pub struct ResolvedNode {
     pub name: Option<String>,
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
-    pub queue_size: usize,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
@@ -174,7 +164,7 @@ pub struct OperatorConfig {
     pub description: Option<String>,
 
     #[serde(default)]
-    pub inputs: BTreeMap<DataId, InputMapping>,
+    pub inputs: BTreeMap<DataId, Input>,
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 
@@ -235,7 +225,6 @@ pub struct CustomNode {
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
-    pub queue_size: Option<usize>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,

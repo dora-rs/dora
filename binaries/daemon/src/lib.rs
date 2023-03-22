@@ -1,4 +1,5 @@
 use coordinator::CoordinatorEvent;
+use dora_core::config::Input;
 use dora_core::daemon_messages::Data;
 use dora_core::message::uhlc::HLC;
 use dora_core::{
@@ -297,13 +298,13 @@ impl Daemon {
             dataflow.running_nodes.insert(node.id.clone());
             let inputs = node_inputs(&node);
 
-            for (input_id, mapping) in inputs {
+            for (input_id, input) in inputs {
                 dataflow
                     .open_inputs
                     .entry(node.id.clone())
                     .or_default()
                     .insert(input_id.clone());
-                match mapping {
+                match input.mapping {
                     InputMapping::User(mapping) => {
                         dataflow
                             .mappings
@@ -717,14 +718,14 @@ impl Daemon {
     }
 }
 
-fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, InputMapping> {
+fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
     match &node.kind {
         CoreNodeKind::Custom(n) => n.run_config.inputs.clone(),
         CoreNodeKind::Runtime(n) => runtime_node_inputs(n),
     }
 }
 
-fn runtime_node_inputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeMap<DataId, InputMapping> {
+fn runtime_node_inputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeMap<DataId, Input> {
     n.operators
         .iter()
         .flat_map(|operator| {

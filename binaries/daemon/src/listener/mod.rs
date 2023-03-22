@@ -1,6 +1,6 @@
 use crate::{DaemonNodeEvent, Event};
 use dora_core::{
-    config::NodeId,
+    config::{DataId, NodeId},
     daemon_messages::{
         DaemonCommunication, DaemonCommunicationConfig, DaemonReply, DaemonRequest, DataflowId,
         NodeEvent,
@@ -8,7 +8,11 @@ use dora_core::{
 };
 use eyre::{eyre, Context};
 use shared_memory_server::{ShmemConf, ShmemServer};
-use std::{mem, net::Ipv4Addr};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    mem,
+    net::Ipv4Addr,
+};
 use tokio::{
     net::TcpListener,
     sync::{
@@ -26,7 +30,7 @@ pub async fn spawn_listener_loop(
     node_id: &NodeId,
     daemon_tx: &mpsc::Sender<Event>,
     config: DaemonCommunicationConfig,
-    max_queue_len: usize,
+    max_queue_len: BTreeMap<DataId, usize>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         DaemonCommunicationConfig::Tcp => {
@@ -68,6 +72,7 @@ pub async fn spawn_listener_loop(
                 let server = unsafe { ShmemServer::new(daemon_control_region) }
                     .wrap_err("failed to create control server")?;
                 let daemon_tx = daemon_tx.clone();
+                let max_queue_len = max_queue_len.clone();
                 tokio::spawn(shmem::listener_loop(server, daemon_tx, max_queue_len));
             }
 
@@ -95,8 +100,8 @@ struct Listener<C> {
     node_id: NodeId,
     daemon_tx: mpsc::Sender<Event>,
     subscribed_events: Option<UnboundedReceiver<NodeEvent>>,
-    queue: Vec<NodeEvent>,
-    max_queue_len: usize,
+    queue: VecDeque<Box<Option<NodeEvent>>>,
+    max_queue_len: BTreeMap<DataId, usize>,
     connection: C,
 }
 
@@ -107,7 +112,7 @@ where
     pub(crate) async fn run(
         mut connection: C,
         daemon_tx: mpsc::Sender<Event>,
-        max_queue_len: usize,
+        max_queue_len: BTreeMap<DataId, usize>,
     ) {
         // receive the first message
         let message = match connection
@@ -145,7 +150,7 @@ where
                             daemon_tx,
                             subscribed_events: None,
                             max_queue_len,
-                            queue: Vec::new(),
+                            queue: VecDeque::new(),
                         };
                         match listener.run_inner().await.wrap_err("listener failed") {
                             Ok(()) => {}
@@ -206,43 +211,45 @@ where
     async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
             while let Ok(event) = events.try_recv() {
-                self.queue.push(event);
+                self.queue.push_back(Box::new(Some(event)));
             }
 
             // drop oldest input events to maintain max queue length queue
-            let input_event_count = self
-                .queue
-                .iter()
-                .filter(|e| matches!(e, NodeEvent::Input { .. }))
-                .count();
-            let drop_n = input_event_count.saturating_sub(self.max_queue_len);
-            if drop_n > 0 {
-                self.drop_oldest_inputs(drop_n).await?;
-            }
+            self.drop_oldest_inputs().await?;
         }
         Ok(())
     }
 
     #[tracing::instrument(skip(self), fields(%self.node_id))]
-    async fn drop_oldest_inputs(&mut self, number: usize) -> Result<(), eyre::ErrReport> {
-        tracing::debug!("dropping {number} inputs because event queue is too full");
+    async fn drop_oldest_inputs(&mut self) -> Result<(), eyre::ErrReport> {
+        let mut queue_size_remaining = self.max_queue_len.clone();
+        let mut dropped = 0;
         let mut drop_tokens = Vec::new();
-        for i in 0..number {
-            // find index of oldest input event
-            let index = self
-                .queue
-                .iter()
-                .position(|e| matches!(e, NodeEvent::Input { .. }))
-                .unwrap_or_else(|| panic!("no input event found in drop iteration {i}"));
 
-            // remove that event
-            if let NodeEvent::Input { data, .. } = self.queue.remove(index) {
-                if let Some(drop_token) = data.as_ref().and_then(|d| d.drop_token()) {
-                    drop_tokens.push(drop_token);
+        // iterate over queued events, newest first
+        for event in self.queue.iter_mut().rev() {
+            let Some(NodeEvent::Input { id, data, .. }) = event.as_mut() else {
+                continue;
+            };
+            match queue_size_remaining.get_mut(id) {
+                Some(0) => {
+                    dropped += 1;
+                    if let Some(drop_token) = data.as_ref().and_then(|d| d.drop_token()) {
+                        drop_tokens.push(drop_token);
+                    }
+                    *event.as_mut() = None;
+                }
+                Some(size_remaining) => {
+                    *size_remaining = size_remaining.saturating_sub(1);
+                }
+                None => {
+                    tracing::warn!("no queue size known for received input `{id}`");
                 }
             }
         }
         self.report_drop_tokens(drop_tokens).await?;
+
+        tracing::debug!("dropped {dropped} inputs because event queue was too full");
         Ok(())
     }
 
@@ -300,7 +307,10 @@ where
                 self.report_drop_tokens(drop_tokens).await?;
 
                 // try to take the queued events first
-                let queued_events = mem::take(&mut self.queue);
+                let queued_events: Vec<_> = mem::take(&mut self.queue)
+                    .into_iter()
+                    .filter_map(|e| *e)
+                    .collect();
                 let reply = if queued_events.is_empty() {
                     match self.subscribed_events.as_mut() {
                         // wait for next event
