@@ -5,7 +5,6 @@
 ### Features
 
 * [Make dora-rs publishable on crates.io](https://github.com/dora-rs/dora/pull/211)
-* [Add an internal cli argument to create template with path dependencies](https://github.com/dora-rs/dora/pull/212)
 
 ### Fixes
 
@@ -25,6 +24,7 @@
 * [Remove zenoh dependency from dora node API to speed up build](https://github.com/dora-rs/dora/pull/220)
 * [Update to Rust v1.68](https://github.com/dora-rs/dora/pull/221)
 * [Deny unknown fields to avoid typos](https://github.com/dora-rs/dora/pull/223)
+* [Add an internal cli argument to create template with path dependencies](https://github.com/dora-rs/dora/pull/212)
 
 ## v0.2.0 (2023-03-14)
 
