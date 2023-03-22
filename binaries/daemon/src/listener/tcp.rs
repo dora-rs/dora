@@ -13,7 +13,11 @@ use tokio::{
 };
 
 #[tracing::instrument(skip(listener, daemon_tx))]
-pub async fn listener_loop(listener: TcpListener, daemon_tx: mpsc::Sender<Event>) {
+pub async fn listener_loop(
+    listener: TcpListener,
+    daemon_tx: mpsc::Sender<Event>,
+    max_queue_len: usize,
+) {
     loop {
         match listener
             .accept()
@@ -24,19 +28,27 @@ pub async fn listener_loop(listener: TcpListener, daemon_tx: mpsc::Sender<Event>
                 tracing::info!("{err}");
             }
             Ok((connection, _)) => {
-                tokio::spawn(handle_connection_loop(connection, daemon_tx.clone()));
+                tokio::spawn(handle_connection_loop(
+                    connection,
+                    daemon_tx.clone(),
+                    max_queue_len,
+                ));
             }
         }
     }
 }
 
 #[tracing::instrument(skip(connection, daemon_tx))]
-async fn handle_connection_loop(connection: TcpStream, daemon_tx: mpsc::Sender<Event>) {
+async fn handle_connection_loop(
+    connection: TcpStream,
+    daemon_tx: mpsc::Sender<Event>,
+    max_queue_len: usize,
+) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx).await
+    Listener::run(TcpConnection(connection), daemon_tx, max_queue_len).await
 }
 
 struct TcpConnection(TcpStream);
