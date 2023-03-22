@@ -1,6 +1,32 @@
 # Changelog
 
-## v0.2.0 (2023-01-18)
+## v0.2.1 (2023-03-22)
+
+### Features
+
+* [Make dora-rs publishable on crates.io](https://github.com/dora-rs/dora/pull/211)
+
+### Fixes
+
+* [Avoid blocking the daemon main loop by using unbounded queue](https://github.com/dora-rs/dora/pull/230)
+* [Inject YAML declared env variable into the runtime](https://github.com/dora-rs/dora/pull/227)
+* [Use rustls instead of system SSL implementation](https://github.com/dora-rs/dora/pull/216)
+
+### Other
+
+* [Refactor python error](https://github.com/dora-rs/dora/pull/229)
+* [The first letter of rust should be lowercase in the command](https://github.com/dora-rs/dora/pull/226)
+* [Add documentation to the cli within the helper mode](https://github.com/dora-rs/dora/pull/225)
+* [Update to safer-ffi v0.1.0-rc1](https://github.com/dora-rs/dora/pull/218)
+* [remove unused variable: data_bytes](https://github.com/dora-rs/dora/pull/215)
+* [Clean up: Remove workspace path](https://github.com/dora-rs/dora/pull/210)
+* [Decouple opentelemetry from tracing](https://github.com/dora-rs/dora/pull/222)
+* [Remove zenoh dependency from dora node API to speed up build](https://github.com/dora-rs/dora/pull/220)
+* [Update to Rust v1.68](https://github.com/dora-rs/dora/pull/221)
+* [Deny unknown fields to avoid typos](https://github.com/dora-rs/dora/pull/223)
+* [Add an internal cli argument to create template with path dependencies](https://github.com/dora-rs/dora/pull/212)
+
+## v0.2.0 (2023-03-14)
 
 ### Breaking
 
