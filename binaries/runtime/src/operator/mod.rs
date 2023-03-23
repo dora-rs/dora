@@ -29,13 +29,20 @@ pub fn run_operator(
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "telemetry")]
-    let tracer = dora_tracing::telemetry::init_tracing(
-        format!("{node_id}/{}", operator_definition.id).as_str(),
-    )
-    .wrap_err("could not initiate tracing for operator")?;
+    let tracer = match std::env::var_os("DORA_TELEMETRY") {
+        Some(_) => Some(
+            dora_tracing::telemetry::init_tracing(
+                format!("{node_id}/{}", operator_definition.id).as_str(),
+            )
+            .wrap_err(format!(
+                "could not initiate tracing for {node_id}/{}",
+                operator_definition.id
+            ))?,
+        ),
+        None => None,
+    };
     #[cfg(not(feature = "telemetry"))]
-    #[allow(clippy::let_unit_value)]
-    let tracer = ();
+    let tracer = None;
 
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
