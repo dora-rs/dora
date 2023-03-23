@@ -12,7 +12,7 @@ use pyo3::{
     IntoPy, PyObject, Python,
 };
 use std::any::Any;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, oneshot};
 
 #[cfg(not(feature = "telemetry"))]
 type Tracer = ();
@@ -26,6 +26,7 @@ pub fn run_operator(
     operator_definition: OperatorDefinition,
     incoming_events: flume::Receiver<IncomingEvent>,
     events_tx: Sender<OperatorEvent>,
+    init_done: oneshot::Sender<()>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "telemetry")]
     let tracer = dora_tracing::telemetry::init_tracing(
@@ -45,6 +46,7 @@ pub fn run_operator(
                 events_tx,
                 incoming_events,
                 tracer,
+                init_done,
             )
             .wrap_err_with(|| {
                 format!(
@@ -61,6 +63,7 @@ pub fn run_operator(
                 events_tx,
                 incoming_events,
                 tracer,
+                init_done,
             )
             .wrap_err_with(|| {
                 format!(
