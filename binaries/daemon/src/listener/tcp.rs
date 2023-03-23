@@ -19,7 +19,7 @@ use tokio::{
 pub async fn listener_loop(
     listener: TcpListener,
     daemon_tx: mpsc::Sender<Event>,
-    max_queue_len: BTreeMap<DataId, usize>,
+    queue_sizes: BTreeMap<DataId, usize>,
 ) {
     loop {
         match listener
@@ -34,7 +34,7 @@ pub async fn listener_loop(
                 tokio::spawn(handle_connection_loop(
                     connection,
                     daemon_tx.clone(),
-                    max_queue_len.clone(),
+                    queue_sizes.clone(),
                 ));
             }
         }
@@ -45,13 +45,13 @@ pub async fn listener_loop(
 async fn handle_connection_loop(
     connection: TcpStream,
     daemon_tx: mpsc::Sender<Event>,
-    max_queue_len: BTreeMap<DataId, usize>,
+    queue_sizes: BTreeMap<DataId, usize>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, max_queue_len).await
+    Listener::run(TcpConnection(connection), daemon_tx, queue_sizes).await
 }
 
 struct TcpConnection(TcpStream);

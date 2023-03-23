@@ -25,12 +25,12 @@ pub async fn spawn_node(
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 
-    let max_queue_len = node_inputs(&node)
+    let queue_sizes = node_inputs(&node)
         .into_iter()
         .map(|(k, v)| (k, v.queue_size.unwrap_or(10)))
         .collect();
     let daemon_communication =
-        spawn_listener_loop(&dataflow_id, &node_id, &daemon_tx, config, max_queue_len).await?;
+        spawn_listener_loop(&dataflow_id, &node_id, &daemon_tx, config, queue_sizes).await?;
 
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
