@@ -32,7 +32,7 @@ pub fn run(
     source: &str,
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<IncomingEvent>,
-    tracer: Tracer,
+    tracer: Option<Tracer>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
@@ -112,32 +112,6 @@ pub fn run(
         let reason = loop {
             let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
 
-            if let IncomingEvent::Input {
-                input_id, metadata, ..
-            } = &mut event
-            {
-                #[cfg(feature = "telemetry")]
-                let (_child_cx, string_cx) = {
-                    use dora_tracing::telemetry::{deserialize_context, serialize_context};
-                    use opentelemetry::trace::TraceContextExt;
-                    use opentelemetry::{trace::Tracer, Context as OtelContext};
-
-                    let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
-                    let span = tracer.start_with_context(format!("{}", input_id), &cx);
-
-                    let child_cx = OtelContext::current_with_span(span);
-                    let string_cx = serialize_context(&child_cx);
-                    (child_cx, string_cx)
-                };
-
-                #[cfg(not(feature = "telemetry"))]
-                let string_cx = {
-                    let _ = input_id;
-                    let () = tracer;
-                    "".to_string()
-                };
-                metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
-            }
             let status = Python::with_gil(|py| -> Result<i32> {
                 // We need to create a new scoped `GILPool` because the dora-runtime
                 // is currently started through a `start_runtime` wrapper function,
@@ -150,8 +124,32 @@ pub fn run(
                 // https://github.com/PyO3/pyo3/issues/2853 for more details.
                 let pool = unsafe { py.new_pool() };
                 let py = pool.python();
-                let input_dict = event.into_py(py);
 
+                // Add metadata context if we have a tracer and
+                // incoming input has some metadata.
+                #[cfg(feature = "telemetry")]
+                let _child_cx = if let (
+                    IncomingEvent::Input {
+                        input_id, metadata, ..
+                    },
+                    Some(tracer),
+                ) = (&mut event, tracer.clone())
+                {
+                    use dora_tracing::telemetry::{deserialize_context, serialize_context};
+                    use opentelemetry::trace::TraceContextExt;
+                    use opentelemetry::{trace::Tracer, Context as OtelContext};
+                    let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
+                    let span = tracer.start_with_context(format!("{}", input_id), &cx);
+
+                    let child_cx = OtelContext::current_with_span(span);
+                    let string_cx = serialize_context(&child_cx);
+                    metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
+                    Some(child_cx)
+                } else {
+                    None
+                };
+
+                let input_dict = event.into_py(py);
                 let status_enum = operator
                     .call_method1(py, "on_event", (input_dict, send_output.clone()))
                     .map_err(traceback)?;
