@@ -35,6 +35,7 @@ dora-download = { workspace = true }
 flume = "0.10.14"
 
 [features]
+default = ["tracing"]
 tracing = ["dora-tracing"]
 telemetry = ["tracing", "opentelemetry", "dora-tracing/telemetry"]
 metrics = ["opentelemetry", "opentelemetry-system-metrics", "dora-metrics"]
