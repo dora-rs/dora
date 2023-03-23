@@ -15,6 +15,7 @@ use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use shared_memory_server::ShmemConf;
+use std::collections::HashSet;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -288,8 +289,9 @@ impl Daemon {
         nodes: Vec<ResolvedNode>,
         daemon_communication_config: DaemonCommunicationConfig,
     ) -> eyre::Result<()> {
+        let dataflow = RunningDataflow::new(&nodes);
         let dataflow = match self.running.entry(dataflow_id) {
-            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Default::default()),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(dataflow),
             std::collections::hash_map::Entry::Occupied(_) => {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
@@ -373,8 +375,28 @@ impl Daemon {
                 event_sender,
                 reply_sender,
             } => {
-                let result = self.subscribe(dataflow_id, node_id, event_sender).await;
-                let _ = reply_sender.send(DaemonReply::Result(result));
+                let result = self
+                    .subscribe(dataflow_id, node_id.clone(), event_sender)
+                    .await;
+                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                    format!("failed to subscribe: no running dataflow with ID `{dataflow_id}`")
+                })?;
+                tracing::debug!("node `{node_id}` is ready");
+
+                dataflow
+                    .subscribe_replies
+                    .insert(node_id.clone(), (reply_sender, result));
+                dataflow.pending_nodes.remove(&node_id);
+                if dataflow.pending_nodes.is_empty() {
+                    // TODO synchronize with dora-coordinator if dataflow is
+                    // split across multiple daemons
+                    tracing::info!("all nodes are ready, starting dataflow `{dataflow_id}`");
+                    // answer all subscribe requests
+                    let subscribe_replies = std::mem::take(&mut dataflow.subscribe_replies);
+                    for (reply_sender, subscribe_result) in subscribe_replies.into_values() {
+                        let _ = reply_sender.send(DaemonReply::Result(subscribe_result));
+                    }
+                }
             }
             DaemonNodeEvent::CloseOutputs {
                 outputs,
@@ -778,8 +800,14 @@ where
     }
 }
 
-#[derive(Default)]
 pub struct RunningDataflow {
+    /// Nodes that are not started yet
+    pending_nodes: HashSet<NodeId>,
+    /// Used to synchronize node starts.
+    ///
+    /// Subscribe requests block the node until all other nodes are ready too.
+    subscribe_replies: HashMap<NodeId, (oneshot::Sender<DaemonReply>, Result<(), String>)>,
+
     subscribe_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeEvent>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
@@ -799,6 +827,22 @@ pub struct RunningDataflow {
 }
 
 impl RunningDataflow {
+    fn new(nodes: &[ResolvedNode]) -> RunningDataflow {
+        Self {
+            pending_nodes: nodes.iter().map(|n| n.id.clone()).collect(),
+            subscribe_replies: HashMap::new(),
+            subscribe_channels: HashMap::new(),
+            mappings: HashMap::new(),
+            timers: BTreeMap::new(),
+            open_inputs: BTreeMap::new(),
+            running_nodes: BTreeSet::new(),
+            pending_drop_tokens: HashMap::new(),
+            _timer_handles: Vec::new(),
+            stop_sent: false,
+            empty_set: BTreeSet::new(),
+        }
+    }
+
     async fn stop_all(&mut self) {
         for (_node_id, channel) in self.subscribe_channels.drain() {
             let _ = channel.send(daemon_messages::NodeEvent::Stop);
