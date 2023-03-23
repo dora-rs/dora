@@ -1,6 +1,11 @@
+use std::collections::BTreeMap;
+
 use super::Listener;
 use crate::Event;
-use dora_core::daemon_messages::{DaemonReply, DaemonRequest};
+use dora_core::{
+    config::DataId,
+    daemon_messages::{DaemonReply, DaemonRequest},
+};
 use eyre::eyre;
 use shared_memory_server::ShmemServer;
 use tokio::sync::{mpsc, oneshot};
@@ -9,6 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 pub async fn listener_loop(
     mut server: ShmemServer<DaemonRequest, DaemonReply>,
     daemon_tx: mpsc::Sender<Event>,
+    queue_sizes: BTreeMap<DataId, usize>,
 ) {
     let (tx, rx) = flume::bounded(0);
     tokio::task::spawn_blocking(move || {
@@ -32,7 +38,7 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx).await
+    Listener::run(connection, daemon_tx, queue_sizes).await
 }
 
 enum Operation {

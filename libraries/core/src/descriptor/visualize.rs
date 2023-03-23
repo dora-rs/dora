@@ -1,5 +1,5 @@
 use super::{CoreNodeKind, CustomNode, OperatorDefinition, ResolvedNode, RuntimeNode};
-use crate::config::{format_duration, DataId, InputMapping, NodeId, UserInputMapping};
+use crate::config::{format_duration, DataId, Input, InputMapping, NodeId, UserInputMapping};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write as _,
@@ -52,11 +52,11 @@ pub fn collect_dora_timers(nodes: &[ResolvedNode]) -> BTreeSet<Duration> {
 }
 
 fn collect_dora_nodes(
-    values: std::collections::btree_map::Values<DataId, InputMapping>,
+    values: std::collections::btree_map::Values<DataId, Input>,
     dora_timers: &mut BTreeSet<Duration>,
 ) {
     for input in values {
-        match input {
+        match &input.mapping {
             InputMapping::User(_) => {}
             InputMapping::Timer { interval } => {
                 dora_timers.insert(*interval);
@@ -139,12 +139,12 @@ fn visualize_node_inputs(
 
 fn visualize_inputs(
     target: &str,
-    inputs: &BTreeMap<DataId, InputMapping>,
+    inputs: &BTreeMap<DataId, Input>,
     flowchart: &mut String,
     nodes: &HashMap<&NodeId, &ResolvedNode>,
 ) {
-    for (input_id, mapping) in inputs {
-        match mapping {
+    for (input_id, input) in inputs {
+        match &input.mapping {
             mapping @ InputMapping::Timer { .. } => {
                 writeln!(flowchart, "  {} -- {input_id} --> {target}", mapping).unwrap();
             }

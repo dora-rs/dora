@@ -1,11 +1,14 @@
-use std::io::ErrorKind;
+use std::{collections::BTreeMap, io::ErrorKind};
 
 use super::Listener;
 use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     Event,
 };
-use dora_core::daemon_messages::{DaemonReply, DaemonRequest};
+use dora_core::{
+    config::DataId,
+    daemon_messages::{DaemonReply, DaemonRequest},
+};
 use eyre::Context;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -13,7 +16,11 @@ use tokio::{
 };
 
 #[tracing::instrument(skip(listener, daemon_tx))]
-pub async fn listener_loop(listener: TcpListener, daemon_tx: mpsc::Sender<Event>) {
+pub async fn listener_loop(
+    listener: TcpListener,
+    daemon_tx: mpsc::Sender<Event>,
+    queue_sizes: BTreeMap<DataId, usize>,
+) {
     loop {
         match listener
             .accept()
@@ -24,19 +31,27 @@ pub async fn listener_loop(listener: TcpListener, daemon_tx: mpsc::Sender<Event>
                 tracing::info!("{err}");
             }
             Ok((connection, _)) => {
-                tokio::spawn(handle_connection_loop(connection, daemon_tx.clone()));
+                tokio::spawn(handle_connection_loop(
+                    connection,
+                    daemon_tx.clone(),
+                    queue_sizes.clone(),
+                ));
             }
         }
     }
 }
 
 #[tracing::instrument(skip(connection, daemon_tx))]
-async fn handle_connection_loop(connection: TcpStream, daemon_tx: mpsc::Sender<Event>) {
+async fn handle_connection_loop(
+    connection: TcpStream,
+    daemon_tx: mpsc::Sender<Event>,
+    queue_sizes: BTreeMap<DataId, usize>,
+) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx).await
+    Listener::run(TcpConnection(connection), daemon_tx, queue_sizes).await
 }
 
 struct TcpConnection(TcpStream);

@@ -14,7 +14,7 @@ use operator::{run_operator, OperatorEvent, StopReason};
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     mem,
 };
 use tokio::{runtime::Builder, sync::mpsc};
@@ -73,7 +73,9 @@ pub fn main() -> eyre::Result<()> {
         .wrap_err("Could not build a tokio runtime.")?;
 
     let mut operator_channels = HashMap::new();
-    let (operator_channel, incoming_events) = operator::channel::channel(tokio_runtime.handle());
+    let queue_sizes = queue_sizes(&operator_definition.config);
+    let (operator_channel, incoming_events) =
+        operator::channel::channel(tokio_runtime.handle(), queue_sizes);
     operator_channels.insert(operator_definition.id.clone(), operator_channel);
 
     tracing::info!("spawning main task");
@@ -102,6 +104,15 @@ pub fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, usize> {
+    let mut sizes = BTreeMap::new();
+    for (input_id, input) in &config.inputs {
+        let queue_size = input.queue_size.unwrap_or(10);
+        sizes.insert(input_id.clone(), queue_size);
+    }
+    sizes
 }
 
 #[tracing::instrument(skip(node, events, operator_channels), fields(node.id))]

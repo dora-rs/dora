@@ -1,5 +1,5 @@
 use crate::{
-    config::{CommunicationConfig, DataId, InputMapping, NodeId, NodeRunConfig, OperatorId},
+    config::{CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     daemon_messages::DaemonCommunicationConfig,
 };
 use eyre::{bail, Result};
@@ -52,10 +52,13 @@ impl Descriptor {
                 NodeKind::Custom(node) => node.run_config.inputs.values_mut().collect(),
                 NodeKind::Operator(operator) => operator.config.inputs.values_mut().collect(),
             };
-            for mapping in input_mappings.into_iter().filter_map(|m| match m {
-                InputMapping::Timer { .. } => None,
-                InputMapping::User(m) => Some(m),
-            }) {
+            for mapping in input_mappings
+                .into_iter()
+                .filter_map(|i| match &mut i.mapping {
+                    InputMapping::Timer { .. } => None,
+                    InputMapping::User(m) => Some(m),
+                })
+            {
                 if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
                     mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
                 }
@@ -72,6 +75,7 @@ impl Descriptor {
                     }],
                 }),
             };
+
             resolved.push(ResolvedNode {
                 id: node.id,
                 name: node.name,
@@ -160,7 +164,7 @@ pub struct OperatorConfig {
     pub description: Option<String>,
 
     #[serde(default)]
-    pub inputs: BTreeMap<DataId, InputMapping>,
+    pub inputs: BTreeMap<DataId, Input>,
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 
