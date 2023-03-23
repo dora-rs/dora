@@ -1,18 +1,20 @@
 use super::IncomingEvent;
+use dora_core::config::DataId;
 use futures::{
     future::{self, FusedFuture},
     FutureExt,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 pub fn channel(
     runtime: &tokio::runtime::Handle,
+    queue_sizes: BTreeMap<DataId, usize>,
 ) -> (flume::Sender<IncomingEvent>, flume::Receiver<IncomingEvent>) {
     let (incoming_tx, incoming_rx) = flume::bounded(10);
     let (outgoing_tx, outgoing_rx) = flume::bounded(0);
 
     runtime.spawn(async {
-        let mut buffer = InputBuffer::new();
+        let mut buffer = InputBuffer::new(queue_sizes);
         buffer.run(incoming_rx, outgoing_tx).await;
     });
 
@@ -20,15 +22,15 @@ pub fn channel(
 }
 
 struct InputBuffer {
-    queue: VecDeque<IncomingEvent>,
-    max_queue_len: usize,
+    queue: VecDeque<Option<IncomingEvent>>,
+    queue_sizes: BTreeMap<DataId, usize>,
 }
 
 impl InputBuffer {
-    pub fn new() -> Self {
+    pub fn new(queue_sizes: BTreeMap<DataId, usize>) -> Self {
         Self {
             queue: VecDeque::new(),
-            max_queue_len: 10,
+            queue_sizes,
         }
     }
 
@@ -82,46 +84,49 @@ impl InputBuffer {
         &mut self,
         outgoing: &'a flume::Sender<IncomingEvent>,
     ) -> future::Fuse<flume::r#async::SendFut<'a, IncomingEvent>> {
-        if let Some(next) = self.queue.pop_front() {
-            outgoing.send_async(next).fuse()
-        } else {
-            future::Fuse::terminated()
+        loop {
+            match self.queue.pop_front() {
+                Some(Some(next)) => break outgoing.send_async(next).fuse(),
+                Some(None) => {
+                    // dropped event, try again with next one
+                }
+                None => break future::Fuse::terminated(),
+            }
         }
     }
 
     fn add_event(&mut self, event: IncomingEvent) {
-        self.queue.push_back(event);
+        self.queue.push_back(Some(event));
 
         // drop oldest input events to maintain max queue length queue
-        let input_event_count = self
-            .queue
-            .iter()
-            .filter(|e| matches!(e, IncomingEvent::Input { .. }))
-            .count();
-        let drop_n = input_event_count.saturating_sub(self.max_queue_len);
-        if drop_n > 0 {
-            self.drop_oldest_inputs(drop_n);
-        }
+        self.drop_oldest_inputs();
     }
 
-    fn drop_oldest_inputs(&mut self, number: usize) {
-        tracing::debug!("dropping {number} operator inputs because event queue is too full");
-        for i in 0..number {
-            // find index of oldest input event
-            let index = self
-                .queue
-                .iter()
-                .position(|e| matches!(e, IncomingEvent::Input { .. }))
-                .unwrap_or_else(|| panic!("no input event found in drop iteration {i}"));
+    fn drop_oldest_inputs(&mut self) {
+        let mut queue_size_remaining = self.queue_sizes.clone();
+        let mut dropped = 0;
 
-            // remove that event
-            self.queue.remove(index);
+        // iterate over queued events, newest first
+        for event in self.queue.iter_mut().rev() {
+            let Some(IncomingEvent::Input { input_id, .. }) = event.as_mut() else {
+                continue;
+            };
+            match queue_size_remaining.get_mut(input_id) {
+                Some(0) => {
+                    dropped += 1;
+                    *event = None;
+                }
+                Some(size_remaining) => {
+                    *size_remaining = size_remaining.saturating_sub(1);
+                }
+                None => {
+                    tracing::warn!("no queue size known for received operator input `{input_id}`");
+                }
+            }
         }
-    }
-}
 
-impl Default for InputBuffer {
-    fn default() -> Self {
-        Self::new()
+        if dropped > 0 {
+            tracing::debug!("dropped {dropped} operator inputs because event queue was too full");
+        }
     }
 }
