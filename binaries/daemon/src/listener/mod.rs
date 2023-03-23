@@ -7,6 +7,10 @@ use dora_core::{
     },
 };
 use eyre::{eyre, Context};
+use futures::{
+    future::{self, Fuse},
+    FutureExt,
+};
 use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -177,33 +181,44 @@ impl Listener {
 
     async fn run_inner<C: Connection>(&mut self, mut connection: C) -> eyre::Result<()> {
         loop {
+            let mut next_message = connection.receive_message();
+            let message = loop {
+                let next_event = if let Some(events) = &mut self.subscribed_events {
+                    Box::pin(events.recv()).fuse()
+                } else {
+                    Fuse::terminated()
+                };
+                let event = match future::select(next_event, next_message).await {
+                    future::Either::Left((event, n)) => {
+                        next_message = n;
+                        event
+                    }
+                    future::Either::Right((message, _)) => break message,
+                };
+                if let Some(event) = event {
+                    self.queue.push_back(Box::new(Some(event)));
+                    self.handle_events().await?;
+                }
+            };
+
             // TODO: wait for event queue and connection simultaneously
 
-            // receive the next node message
-            let message = match connection
-                .receive_message()
-                .await
-                .wrap_err("failed to receive DaemonRequest")
-            {
-                Ok(Some(m)) => m,
+            match message.wrap_err("failed to receive DaemonRequest") {
+                Ok(Some(message)) => {
+                    self.handle_message(message, &mut connection).await?;
+                }
+                Err(err) => {
+                    tracing::warn!("{err:?}");
+                }
                 Ok(None) => {
                     tracing::debug!(
                         "channel disconnected: {}/{}",
                         self.dataflow_id,
                         self.node_id
                     );
-                    break;
-                } // disconnected
-                Err(err) => {
-                    tracing::warn!("{err:?}");
-                    continue;
+                    break; // disconnected
                 }
-            };
-
-            // handle incoming events
-            self.handle_events().await?;
-
-            self.handle_message(message, &mut connection).await?;
+            }
         }
         Ok(())
     }
