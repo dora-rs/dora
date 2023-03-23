@@ -30,7 +30,7 @@ pub async fn spawn_listener_loop(
     node_id: &NodeId,
     daemon_tx: &mpsc::Sender<Event>,
     config: DaemonCommunicationConfig,
-    max_queue_len: BTreeMap<DataId, usize>,
+    queue_sizes: BTreeMap<DataId, usize>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         DaemonCommunicationConfig::Tcp => {
@@ -50,7 +50,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, max_queue_len).await;
+                tcp::listener_loop(socket, daemon_tx, queue_sizes).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -72,8 +72,8 @@ pub async fn spawn_listener_loop(
                 let server = unsafe { ShmemServer::new(daemon_control_region) }
                     .wrap_err("failed to create control server")?;
                 let daemon_tx = daemon_tx.clone();
-                let max_queue_len = max_queue_len.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, max_queue_len));
+                let queue_sizes = queue_sizes.clone();
+                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes));
             }
 
             {
@@ -82,7 +82,7 @@ pub async fn spawn_listener_loop(
                 let event_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, max_queue_len).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -101,7 +101,7 @@ struct Listener<C> {
     daemon_tx: mpsc::Sender<Event>,
     subscribed_events: Option<UnboundedReceiver<NodeEvent>>,
     queue: VecDeque<Box<Option<NodeEvent>>>,
-    max_queue_len: BTreeMap<DataId, usize>,
+    queue_sizes: BTreeMap<DataId, usize>,
     connection: C,
 }
 
@@ -112,7 +112,7 @@ where
     pub(crate) async fn run(
         mut connection: C,
         daemon_tx: mpsc::Sender<Event>,
-        max_queue_len: BTreeMap<DataId, usize>,
+        queue_sizes: BTreeMap<DataId, usize>,
     ) {
         // receive the first message
         let message = match connection
@@ -149,7 +149,7 @@ where
                             connection,
                             daemon_tx,
                             subscribed_events: None,
-                            max_queue_len,
+                            queue_sizes,
                             queue: VecDeque::new(),
                         };
                         match listener.run_inner().await.wrap_err("listener failed") {
@@ -222,7 +222,7 @@ where
 
     #[tracing::instrument(skip(self), fields(%self.node_id))]
     async fn drop_oldest_inputs(&mut self) -> Result<(), eyre::ErrReport> {
-        let mut queue_size_remaining = self.max_queue_len.clone();
+        let mut queue_size_remaining = self.queue_sizes.clone();
         let mut dropped = 0;
         let mut drop_tokens = Vec::new();
 

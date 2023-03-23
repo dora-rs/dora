@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 pub async fn listener_loop(
     mut server: ShmemServer<DaemonRequest, DaemonReply>,
     daemon_tx: mpsc::Sender<Event>,
-    max_queue_len: BTreeMap<DataId, usize>,
+    queue_sizes: BTreeMap<DataId, usize>,
 ) {
     let (tx, rx) = flume::bounded(0);
     tokio::task::spawn_blocking(move || {
@@ -38,7 +38,7 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx, max_queue_len).await
+    Listener::run(connection, daemon_tx, queue_sizes).await
 }
 
 enum Operation {
