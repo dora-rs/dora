@@ -7,7 +7,9 @@ nodes:
     custom:
       source: ./webcam.py
       inputs:
-        tick: dora/timer/millis/100
+        tick:
+          source: dora/timer/millis/100
+          queue_size: 1000
       outputs:
         - image
 

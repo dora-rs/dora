@@ -1,7 +1,7 @@
 use crate::{control_connection, graph::read_descriptor};
 use dora_core::{
     adjust_shared_library_path,
-    config::{DataId, InputMapping, OperatorId, UserInputMapping},
+    config::{DataId, Input, InputMapping, OperatorId, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
     topics::{ControlRequest, ControlRequestReply},
 };
@@ -166,15 +166,15 @@ pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Res
     for node in &nodes {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom_node) => {
-                for (input_id, mapping) in &custom_node.run_config.inputs {
-                    check_input(mapping, &nodes, &format!("{}/{input_id}", node.id))?;
+                for (input_id, input) in &custom_node.run_config.inputs {
+                    check_input(input, &nodes, &format!("{}/{input_id}", node.id))?;
                 }
             }
             descriptor::CoreNodeKind::Runtime(runtime_node) => {
                 for operator_definition in &runtime_node.operators {
-                    for (input_id, mapping) in &operator_definition.config.inputs {
+                    for (input_id, input) in &operator_definition.config.inputs {
                         check_input(
-                            mapping,
+                            input,
                             &nodes,
                             &format!("{}/{}/{input_id}", operator_definition.id, node.id),
                         )?;
@@ -190,11 +190,11 @@ pub fn check_dataflow(dataflow_path: &Path, runtime: Option<&Path>) -> eyre::Res
 }
 
 fn check_input(
-    mapping: &InputMapping,
+    input: &Input,
     nodes: &[dora_core::descriptor::ResolvedNode],
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
-    match mapping {
+    match &input.mapping {
         InputMapping::Timer { interval: _ } => {}
         InputMapping::User(UserInputMapping { source, output }) => {
             let source_node = nodes.iter().find(|n| &n.id == source).ok_or_else(|| {
