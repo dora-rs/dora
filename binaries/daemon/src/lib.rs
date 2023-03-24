@@ -2,6 +2,7 @@ use coordinator::CoordinatorEvent;
 use dora_core::config::Input;
 use dora_core::daemon_messages::Data;
 use dora_core::message::uhlc::HLC;
+use dora_core::message::MetadataParameters;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
@@ -34,6 +35,11 @@ mod coordinator;
 mod listener;
 mod spawn;
 mod tcp_utils;
+
+#[cfg(feature = "telemetry")]
+use dora_tracing::telemetry::serialize_context;
+#[cfg(feature = "telemetry")]
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
@@ -831,13 +837,25 @@ impl RunningDataflow {
                 loop {
                     interval_stream.tick().await;
 
+                    let span = tracing::span!(tracing::Level::TRACE, "tick");
+                    let _ = span.enter();
+
+                    let metadata = dora_core::message::Metadata::from_parameters(
+                        hlc.new_timestamp(),
+                        MetadataParameters {
+                            watermark: 0,
+                            deadline: 0,
+                            #[cfg(feature = "telemetry")]
+                            open_telemetry_context: serialize_context(&span.context()).into(),
+                            #[cfg(not(feature = "telemetry"))]
+                            open_telemetry_context: "".into(),
+                        },
+                    );
+
                     let event = DoraEvent::Timer {
                         dataflow_id,
                         interval,
-                        metadata: dora_core::message::Metadata::from_parameters(
-                            hlc.new_timestamp(),
-                            Default::default(),
-                        ),
+                        metadata,
                     };
                     if events_tx.send(event.into()).await.is_err() {
                         break;
