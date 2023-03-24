@@ -32,10 +32,10 @@ impl<'a> Extractor for MetadataMap<'a> {
 ///
 /// TODO: Make Jaeger configurable
 ///
-pub fn init_tracing(name: &str) -> Result<sdktrace::Tracer, TraceError> {
+pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> Result<sdktrace::Tracer, TraceError> {
     global::set_text_map_propagator(TraceContextPropagator::new());
     opentelemetry_jaeger::new_agent_pipeline()
-        .with_endpoint("172.17.0.1:6831")
+        .with_endpoint(endpoint)
         .with_service_name(name)
         .install_simple()
 }
