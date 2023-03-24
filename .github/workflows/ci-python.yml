@@ -13,6 +13,9 @@ jobs:
   examples:
     name: "Python Examples"
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v3
 
@@ -24,9 +27,6 @@ jobs:
       - run: cargo --version --verbose
       - name: Run sccache-cache
         uses: mozilla-actions/sccache-action@v0.0.3
-        env:
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
 
       - name: "Python Dataflow example"
         run: cargo run --example python-dataflow
