@@ -13,7 +13,7 @@ pub(crate) struct ControlChannel {
 }
 
 impl ControlChannel {
-    #[tracing::instrument(skip(channel, event_stream_thread_handle))]
+    #[tracing::instrument(skip(channel, event_stream_thread_handle), level = "trace")]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,

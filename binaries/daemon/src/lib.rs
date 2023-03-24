@@ -546,7 +546,7 @@ impl Daemon {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), level = "trace")]
     async fn handle_node_stop(
         &mut self,
         dataflow_id: Uuid,

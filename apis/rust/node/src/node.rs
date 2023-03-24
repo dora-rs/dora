@@ -201,7 +201,7 @@ impl DoraNode {
 }
 
 impl Drop for DoraNode {
-    #[tracing::instrument(skip(self), fields(self.id = %self.id))]
+    #[tracing::instrument(skip(self), fields(self.id = %self.id), level = "trace")]
     fn drop(&mut self) {
         if !self.sent_out_shared_memory.is_empty() {
             tracing::info!(
