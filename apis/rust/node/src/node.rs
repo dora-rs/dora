@@ -35,14 +35,14 @@ pub struct DoraNode {
 
 impl DoraNode {
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
-        #[cfg(feature = "tracing")]
-        set_up_tracing().context("failed to set up tracing subscriber")?;
-
-        let node_config = {
+        let node_config: NodeConfig = {
             let raw = std::env::var("DORA_NODE_CONFIG")
                 .wrap_err("env variable DORA_NODE_CONFIG must be set")?;
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
+        #[cfg(feature = "tracing")]
+        set_up_tracing(&node_config.node_id.to_string())
+            .context("failed to set up tracing subscriber")?;
         Self::init(node_config)
     }
 

@@ -28,22 +28,6 @@ pub fn run_operator(
     events_tx: Sender<OperatorEvent>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
-    #[cfg(feature = "telemetry")]
-    let tracer = match std::env::var_os("DORA_TELEMETRY") {
-        Some(_) => Some(
-            dora_tracing::telemetry::init_tracing(
-                format!("{node_id}/{}", operator_definition.id).as_str(),
-            )
-            .wrap_err(format!(
-                "could not initiate tracing for {node_id}/{}",
-                operator_definition.id
-            ))?,
-        ),
-        None => None,
-    };
-    #[cfg(not(feature = "telemetry"))]
-    let tracer = None;
-
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
             shared_lib::run(
@@ -52,7 +36,6 @@ pub fn run_operator(
                 source,
                 events_tx,
                 incoming_events,
-                tracer,
                 init_done,
             )
             .wrap_err_with(|| {
@@ -69,7 +52,6 @@ pub fn run_operator(
                 source,
                 events_tx,
                 incoming_events,
-                tracer,
                 init_done,
             )
             .wrap_err_with(|| {

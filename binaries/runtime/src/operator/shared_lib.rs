@@ -27,7 +27,6 @@ pub fn run(
     source: &str,
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<IncomingEvent>,
-    tracer: Option<Tracer>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
