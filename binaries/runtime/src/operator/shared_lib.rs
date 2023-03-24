@@ -19,7 +19,7 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, oneshot};
 
 pub fn run(
     node_id: &NodeId,
@@ -28,6 +28,7 @@ pub fn run(
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<IncomingEvent>,
     tracer: Tracer,
+    init_done: oneshot::Sender<()>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
         let target_path = adjust_shared_library_path(
@@ -60,7 +61,7 @@ pub fn run(
             events_tx: events_tx.clone(),
         };
 
-        operator.run(tracer)
+        operator.run(tracer, init_done)
     });
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
@@ -85,7 +86,7 @@ struct SharedLibraryOperator<'lib> {
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
-    fn run(self, tracer: Tracer) -> eyre::Result<StopReason> {
+    fn run(self, tracer: Tracer, init_done: oneshot::Sender<()>) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
                 result,
@@ -100,6 +101,8 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 drop_fn: self.bindings.drop_operator.clone(),
             }
         };
+
+        let _ = init_done.send(());
 
         let send_output_closure = Arc::new(move |output: Output| {
             let Output {

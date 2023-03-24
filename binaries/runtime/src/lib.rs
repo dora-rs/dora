@@ -2,7 +2,7 @@
 
 use dora_core::{
     config::{DataId, OperatorId},
-    daemon_messages::RuntimeConfig,
+    daemon_messages::{NodeConfig, RuntimeConfig},
     descriptor::OperatorConfig,
 };
 use dora_node_api::DoraNode;
@@ -17,7 +17,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
 };
-use tokio::{runtime::Builder, sync::mpsc};
+use tokio::{
+    runtime::Builder,
+    sync::{mpsc, oneshot},
+};
 use tokio_stream::wrappers::ReceiverStream;
 mod operator;
 
@@ -35,7 +38,6 @@ pub fn main() -> eyre::Result<()> {
         operators,
     } = config;
     let node_id = config.node_id.clone();
-    let (node, daemon_events) = DoraNode::init(config)?;
 
     let operator_definition = if operators.is_empty() {
         bail!("no operators");
@@ -52,21 +54,7 @@ pub fn main() -> eyre::Result<()> {
         id: operator_id.clone(),
         event,
     });
-    let daemon_events = Box::pin(futures::stream::unfold(daemon_events, |mut stream| async {
-        let event = stream.recv_async().await.map(|event| match event {
-            dora_node_api::Event::Stop => Event::Stop,
-            dora_node_api::Event::Input { id, metadata, data } => Event::Input {
-                id,
-                metadata,
-                data: data.map(|data| data.to_owned()),
-            },
-            dora_node_api::Event::InputClosed { id } => Event::InputClosed(id),
-            dora_node_api::Event::Error(err) => Event::Error(err),
-            _ => todo!(),
-        });
-        event.map(|event| (event, stream))
-    }));
-    let events = (operator_events, daemon_events).merge();
+
     let tokio_runtime = Builder::new_current_thread()
         .enable_all()
         .build()
@@ -85,8 +73,15 @@ pub fn main() -> eyre::Result<()> {
     )]
     .into_iter()
     .collect();
+    let (init_done_tx, init_done) = oneshot::channel();
     let main_task = std::thread::spawn(move || -> Result<()> {
-        tokio_runtime.block_on(run(node, operator_config, events, operator_channels))
+        tokio_runtime.block_on(run(
+            operator_config,
+            config,
+            operator_events,
+            operator_channels,
+            init_done,
+        ))
     });
 
     let operator_id = operator_definition.id.clone();
@@ -95,6 +90,7 @@ pub fn main() -> eyre::Result<()> {
         operator_definition,
         incoming_events,
         operator_events_tx,
+        init_done_tx,
     )
     .wrap_err_with(|| format!("failed to run operator {operator_id}"))?;
 
@@ -115,12 +111,13 @@ fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, us
     sizes
 }
 
-#[tracing::instrument(skip(node, events, operator_channels), fields(node.id))]
+#[tracing::instrument(skip(operator_events, operator_channels), fields(node.id))]
 async fn run(
-    mut node: DoraNode,
     operators: HashMap<OperatorId, OperatorConfig>,
-    mut events: impl Stream<Item = Event> + Unpin,
+    config: NodeConfig,
+    operator_events: impl Stream<Item = Event> + Unpin,
     mut operator_channels: HashMap<OperatorId, flume::Sender<operator::IncomingEvent>>,
+    init_done: oneshot::Receiver<()>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
     let _started = {
@@ -133,6 +130,28 @@ async fn run(
         init_process_observer(meter);
         _started
     };
+
+    init_done
+        .await
+        .wrap_err("the `init_done` channel was closed unexpectedly")?;
+    tracing::info!("All operators are ready, starting runtime");
+
+    let (mut node, daemon_events) = DoraNode::init(config)?;
+    let daemon_events = Box::pin(futures::stream::unfold(daemon_events, |mut stream| async {
+        let event = stream.recv_async().await.map(|event| match event {
+            dora_node_api::Event::Stop => Event::Stop,
+            dora_node_api::Event::Input { id, metadata, data } => Event::Input {
+                id,
+                metadata,
+                data: data.map(|data| data.to_owned()),
+            },
+            dora_node_api::Event::InputClosed { id } => Event::InputClosed(id),
+            dora_node_api::Event::Error(err) => Event::Error(err),
+            _ => todo!(),
+        });
+        event.map(|event| (event, stream))
+    }));
+    let mut events = (operator_events, daemon_events).merge();
 
     let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
         .iter()
