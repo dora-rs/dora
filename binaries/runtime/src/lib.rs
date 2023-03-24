@@ -111,7 +111,7 @@ fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, us
     sizes
 }
 
-#[tracing::instrument(skip(operator_events, operator_channels), fields(node.id))]
+#[tracing::instrument(skip(operator_events, operator_channels), fields(node.id), level = "trace" )]
 async fn run(
     operators: HashMap<OperatorId, OperatorConfig>,
     config: NodeConfig,
