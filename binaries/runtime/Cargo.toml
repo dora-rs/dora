@@ -15,7 +15,7 @@ dora-operator-api-types = { workspace = true }
 dora-core = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 dora-metrics = { workspace = true, optional = true }
-opentelemetry = { version = "0.17", features = [
+opentelemetry = { version = "0.18.0", features = [
     "rt-tokio",
     "metrics",
 ], optional = true }

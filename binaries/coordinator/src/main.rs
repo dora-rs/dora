@@ -6,7 +6,7 @@ use eyre::Context;
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
-    set_up_tracing().context("failed to set up tracing subscriber")?;
+    set_up_tracing("dora-coordinator").context("failed to set up tracing subscriber")?;
 
     dora_coordinator::run().await
 }

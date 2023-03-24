@@ -26,7 +26,7 @@ mod operator;
 
 pub fn main() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
-    set_up_tracing().context("failed to set up tracing subscriber")?;
+    set_up_tracing("dora-runtime").context("failed to set up tracing subscriber")?;
 
     let config: RuntimeConfig = {
         let raw = std::env::var("DORA_RUNTIME_CONFIG")
