@@ -8,15 +8,13 @@ use dora_core::{
 use dora_download::download_file;
 use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
-use opentelemetry::trace::FutureExt;
 use pyo3::{pyclass, types::IntoPyDict, IntoPy, Py, Python};
 use std::{
-    borrow::Cow,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
 };
 use tokio::sync::{mpsc::Sender, oneshot};
-use tracing::span;
+use tracing::{field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
     let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
@@ -111,9 +109,12 @@ pub fn run(
             };
 
         let reason = loop {
+            #[allow(unused_mut)]
             let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
 
             let status = Python::with_gil(|py| -> Result<i32> {
+                let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
+                let _ = span.enter();
                 // We need to create a new scoped `GILPool` because the dora-runtime
                 // is currently started through a `start_runtime` wrapper function,
                 // which is annotated with `#[pyfunction]`. This attribute creates an
@@ -129,23 +130,21 @@ pub fn run(
                 // Add metadata context if we have a tracer and
                 // incoming input has some metadata.
                 #[cfg(feature = "telemetry")]
-                let _child_cx = if let IncomingEvent::Input {
+                if let IncomingEvent::Input {
                     input_id, metadata, ..
                 } = &mut event
                 {
                     use dora_tracing::telemetry::{deserialize_context, serialize_context};
-                    use opentelemetry::trace::TraceContextExt;
-                    use opentelemetry::{trace::Tracer, Context as OtelContext};
-                    let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
-                    let span = span!(tracing::Level::TRACE, "app_start", work_units = 2);
-                    span.with_context(cx);
-                    let _enter = span.enter();
+                    use std::borrow::Cow;
+                    use tracing_opentelemetry::OpenTelemetrySpanExt;
+                    span.record("input_id", input_id.as_str());
 
+                    let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
+                    span.set_parent(cx);
+                    let cx = span.context();
+                    let string_cx = serialize_context(&cx);
                     metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
-                    Some(cx)
-                } else {
-                    None
-                };
+                }
 
                 let input_dict = event.into_py(py);
                 let status_enum = operator

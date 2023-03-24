@@ -34,9 +34,15 @@ tracing-subscriber = "0.3.15"
 dora-download = { workspace = true }
 flume = "0.10.14"
 clap = { version = "4.0.3", features = ["derive"] }
+tracing-opentelemetry = { version = "0.18.0", optional = true }
 
 [features]
 default = ["tracing"]
 tracing = ["dora-tracing"]
-telemetry = ["tracing", "opentelemetry", "dora-tracing/telemetry"]
+telemetry = [
+    "tracing",
+    "opentelemetry",
+    "dora-tracing/telemetry",
+    "tracing-opentelemetry",
+]
 metrics = ["opentelemetry", "opentelemetry-system-metrics", "dora-metrics"]

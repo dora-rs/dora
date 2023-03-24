@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::{mpsc::Sender, oneshot};
+use tracing::{field, span};
 
 pub fn run(
     node_id: &NodeId,
@@ -139,32 +140,30 @@ impl<'lib> SharedLibraryOperator<'lib> {
         });
 
         let reason = loop {
+            #[allow(unused_mut)]
             let Ok(mut event) = self.incoming_events.recv() else {
                 break StopReason::InputsClosed
             };
+
+            let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
+            let _ = span.enter();
             // Add metadata context if we have a tracer and
             // incoming input has some metadata.
             #[cfg(feature = "telemetry")]
-            let _child_cx = if let (
-                IncomingEvent::Input {
-                    input_id, metadata, ..
-                },
-                Some(tracer),
-            ) = (&mut event, tracer.clone())
+            if let IncomingEvent::Input {
+                input_id, metadata, ..
+            } = &mut event
             {
                 use dora_tracing::telemetry::{deserialize_context, serialize_context};
-                use opentelemetry::trace::TraceContextExt;
-                use opentelemetry::{trace::Tracer, Context as OtelContext};
-                let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
-                let span = tracer.start_with_context(format!("{}", input_id), &cx);
+                use tracing_opentelemetry::OpenTelemetrySpanExt;
+                span.record("input_id", input_id.as_str());
 
-                let child_cx = OtelContext::current_with_span(span);
-                let string_cx = serialize_context(&child_cx);
+                let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
+                span.set_parent(cx);
+                let cx = span.context();
+                let string_cx = serialize_context(&cx);
                 metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
-                Some(child_cx)
-            } else {
-                None
-            };
+            }
 
             let operator_event = match event {
                 IncomingEvent::Stop => dora_operator_api_types::RawEvent {
