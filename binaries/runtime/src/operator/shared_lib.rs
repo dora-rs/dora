@@ -1,4 +1,4 @@
-use super::{IncomingEvent, OperatorEvent, StopReason, Tracer};
+use super::{IncomingEvent, OperatorEvent, StopReason};
 use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
@@ -60,7 +60,7 @@ pub fn run(
             events_tx: events_tx.clone(),
         };
 
-        operator.run(tracer, init_done)
+        operator.run(init_done)
     });
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
@@ -85,11 +85,7 @@ struct SharedLibraryOperator<'lib> {
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
-    fn run(
-        self,
-        tracer: Option<Tracer>,
-        init_done: oneshot::Sender<Result<()>>,
-    ) -> eyre::Result<StopReason> {
+    fn run(self, init_done: oneshot::Sender<Result<()>>) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
                 result,

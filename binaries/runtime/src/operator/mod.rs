@@ -14,9 +14,6 @@ use pyo3::{
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
 
-#[cfg(not(feature = "telemetry"))]
-type Tracer = ();
-
 pub mod channel;
 mod python;
 mod shared_lib;

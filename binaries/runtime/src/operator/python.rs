@@ -27,7 +27,7 @@ fn traceback(err: pyo3::PyErr) -> eyre::Report {
     }
 }
 
-#[tracing::instrument(skip(events_tx, incoming_events))]
+#[tracing::instrument(skip(events_tx, incoming_events), level = "trace")]
 pub fn run(
     node_id: &NodeId,
     operator_id: &OperatorId,
