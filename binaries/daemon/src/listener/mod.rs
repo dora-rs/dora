@@ -201,8 +201,6 @@ impl Listener {
                 }
             };
 
-            // TODO: wait for event queue and connection simultaneously
-
             match message.wrap_err("failed to receive DaemonRequest") {
                 Ok(Some(message)) => {
                     self.handle_message(message, &mut connection).await?;
