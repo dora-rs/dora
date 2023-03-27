@@ -857,6 +857,7 @@ dependencies = [
  "serde",
  "serde-with-expand-env",
  "serde_yaml 0.9.19",
+ "tokio",
  "tracing",
  "uuid",
  "which",

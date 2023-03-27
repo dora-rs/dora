@@ -2,7 +2,7 @@ use crate::{
     config::{CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     daemon_messages::DaemonCommunicationConfig,
 };
-use eyre::{bail, Result};
+use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_with_expand_env::with_expand_envs;
 use std::{
@@ -92,6 +92,22 @@ impl Descriptor {
         let flowchart = visualize::visualize_nodes(&resolved);
 
         Ok(flowchart)
+    }
+
+    pub async fn read(file: &Path) -> eyre::Result<Descriptor> {
+        let descriptor_file = tokio::fs::read(file)
+            .await
+            .context("failed to open given file")?;
+        let descriptor: Descriptor =
+            serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
+        Ok(descriptor)
+    }
+
+    pub fn blocking_read(file: &Path) -> eyre::Result<Descriptor> {
+        let descriptor_file = std::fs::read(file).context("failed to open given file")?;
+        let descriptor: Descriptor =
+            serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
+        Ok(descriptor)
     }
 }
 

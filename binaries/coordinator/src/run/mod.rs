@@ -17,7 +17,7 @@ pub async fn spawn_dataflow(
     dataflow_path: &Path,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<SpawnedDataflow> {
-    let descriptor = read_descriptor(dataflow_path).await.wrap_err_with(|| {
+    let descriptor = Descriptor::read(dataflow_path).await.wrap_err_with(|| {
         format!(
             "failed to read dataflow descriptor at {}",
             dataflow_path.display()
@@ -82,13 +82,4 @@ pub struct SpawnedDataflow {
     pub uuid: Uuid,
     pub communication_config: CommunicationConfig,
     pub machines: BTreeSet<String>,
-}
-
-async fn read_descriptor(file: &Path) -> Result<Descriptor, eyre::Error> {
-    let descriptor_file = tokio::fs::read(file)
-        .await
-        .context("failed to open given file")?;
-    let descriptor: Descriptor =
-        serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
-    Ok(descriptor)
 }
