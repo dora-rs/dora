@@ -13,8 +13,6 @@ use std::{
 };
 pub use visualize::collect_dora_timers;
 
-use self::validate::check_dataflow;
-
 mod validate;
 mod visualize;
 
@@ -117,9 +115,11 @@ impl Descriptor {
         let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
         descriptor.base_path = base;
 
-        // Check if the dataflow is valid
-        check_dataflow(&descriptor)?;
         Ok(descriptor)
+    }
+
+    pub fn is_valid(&self) -> eyre::Result<()> {
+        validate::check_dataflow(self).wrap_err("Dataflow could not be validated.")
     }
 }
 

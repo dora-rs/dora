@@ -121,7 +121,7 @@ fn main() -> eyre::Result<()> {
             runtime_path: _,
         } => match dataflow {
             Some(dataflow) => {
-                Descriptor::blocking_read(&dataflow)?;
+                Descriptor::blocking_read(&dataflow)?.is_valid()?;
                 check::check_environment()?
             }
             None => check::check_environment()?,
