@@ -36,7 +36,9 @@ pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
                     .with_filter(filter.add_directive(LevelFilter::TRACE.into()))
             }
             None => {
-                let tracer = stdout::new_pipeline().install_simple();
+                let tracer = stdout::new_pipeline()
+                    .with_pretty_print(true)
+                    .install_simple();
                 tracing_opentelemetry::layer()
                     .with_tracer(tracer)
                     .with_filter(filter)
