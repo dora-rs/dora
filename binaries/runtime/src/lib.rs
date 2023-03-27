@@ -117,7 +117,7 @@ async fn run(
     config: NodeConfig,
     operator_events: impl Stream<Item = Event> + Unpin,
     mut operator_channels: HashMap<OperatorId, flume::Sender<operator::IncomingEvent>>,
-    init_done: oneshot::Receiver<()>,
+    init_done: oneshot::Receiver<Result<()>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
     let _started = {
@@ -133,7 +133,8 @@ async fn run(
 
     init_done
         .await
-        .wrap_err("the `init_done` channel was closed unexpectedly")?;
+        .wrap_err("the `init_done` channel was closed unexpectedly")?
+        .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
     let (mut node, daemon_events) = DoraNode::init(config)?;
