@@ -4,7 +4,7 @@ use dora_core::{
     message::{Metadata, MetadataParameters},
 };
 use dora_operator_api_python::metadata_to_pydict;
-use eyre::Context;
+use eyre::{Context, Result};
 #[cfg(feature = "telemetry")]
 use opentelemetry::sdk::trace::Tracer;
 use pyo3::{
@@ -26,7 +26,7 @@ pub fn run_operator(
     operator_definition: OperatorDefinition,
     incoming_events: flume::Receiver<IncomingEvent>,
     events_tx: Sender<OperatorEvent>,
-    init_done: oneshot::Sender<()>,
+    init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "telemetry")]
     let tracer = dora_tracing::telemetry::init_tracing(

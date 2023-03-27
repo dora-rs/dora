@@ -33,7 +33,7 @@ pub fn run(
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<IncomingEvent>,
     tracer: Tracer,
-    init_done: oneshot::Sender<()>,
+    init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
         let target_path = Path::new("build")
@@ -98,9 +98,16 @@ pub fn run(
 
     let python_runner = move || {
         let operator =
-            Python::with_gil(init_operator).wrap_err("failed to init python operator")?;
-
-        let _ = init_done.send(());
+            match Python::with_gil(init_operator).wrap_err("failed to init python operator") {
+                Ok(op) => {
+                    let _ = init_done.send(Ok(()));
+                    op
+                }
+                Err(err) => {
+                    let _ = init_done.send(Err(err));
+                    bail!("Could not init python operator")
+                }
+            };
 
         let reason = loop {
             let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
