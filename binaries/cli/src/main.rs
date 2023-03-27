@@ -1,6 +1,9 @@
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
-use dora_core::topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId};
+use dora_core::{
+    descriptor::Descriptor,
+    topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId},
+};
 use eyre::{bail, Context};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -115,9 +118,12 @@ fn main() -> eyre::Result<()> {
     match args.command {
         Command::Check {
             dataflow,
-            runtime_path,
+            runtime_path: _,
         } => match dataflow {
-            Some(dataflow) => check::check_dataflow(&dataflow, runtime_path.as_deref())?,
+            Some(dataflow) => {
+                Descriptor::blocking_read(&dataflow)?;
+                check::check_environment()?
+            }
             None => check::check_environment()?,
         },
         Command::Graph {

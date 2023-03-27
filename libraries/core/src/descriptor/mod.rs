@@ -13,6 +13,9 @@ use std::{
 };
 pub use visualize::collect_dora_timers;
 
+use self::validate::check_dataflow;
+
+mod validate;
 mod visualize;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,6 +27,8 @@ pub struct Descriptor {
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub daemon_config: DaemonCommunicationConfig,
+    #[serde(default)]
+    pub base_path: PathBuf,
 }
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
@@ -94,19 +99,26 @@ impl Descriptor {
         Ok(flowchart)
     }
 
-    pub async fn read(file: &Path) -> eyre::Result<Descriptor> {
-        let descriptor_file = tokio::fs::read(file)
+    pub async fn read(path: &Path) -> eyre::Result<Descriptor> {
+        let buf = tokio::fs::read(path)
             .await
             .context("failed to open given file")?;
-        let descriptor: Descriptor =
-            serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
-        Ok(descriptor)
+        Descriptor::parse(buf, path)
     }
 
-    pub fn blocking_read(file: &Path) -> eyre::Result<Descriptor> {
-        let descriptor_file = std::fs::read(file).context("failed to open given file")?;
-        let descriptor: Descriptor =
-            serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
+    pub fn blocking_read(path: &Path) -> eyre::Result<Descriptor> {
+        let buf = std::fs::read(path).context("failed to open given file")?;
+        Descriptor::parse(buf, path)
+    }
+
+    pub fn parse(buf: Vec<u8>, path: &Path) -> eyre::Result<Descriptor> {
+        let mut descriptor: Descriptor =
+            serde_yaml::from_slice(&buf).context("failed to parse given descriptor")?;
+        let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
+        descriptor.base_path = base;
+
+        // Check if the dataflow is valid
+        check_dataflow(&descriptor)?;
         Ok(descriptor)
     }
 }
