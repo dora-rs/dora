@@ -198,6 +198,10 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     input: None,
                     stop: false,
                 },
+                IncomingEvent::Reload => {
+                    // TODO: Reload shared library.
+                    continue;
+                }
             };
 
             let send_output = SendOutput {

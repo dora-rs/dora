@@ -138,7 +138,7 @@ pub enum NodeKind {
     Operator(SingleOperatorDefinition),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedNode {
     pub id: NodeId,
     pub name: Option<String>,
@@ -149,7 +149,7 @@ pub struct ResolvedNode {
     pub kind: CoreNodeKind,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CoreNodeKind {
     /// Dora runtime node
