@@ -1,7 +1,7 @@
 use std::{fmt, net::SocketAddr, path::PathBuf};
 
 use crate::{
-    config::{DataId, NodeId, NodeRunConfig},
+    config::{DataId, NodeId, NodeRunConfig, OperatorId},
     descriptor::{OperatorDefinition, ResolvedNode},
 };
 use dora_message::Metadata;
@@ -114,6 +114,9 @@ pub enum DaemonReply {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum NodeEvent {
     Stop,
+    Reload {
+        operator_id: Option<OperatorId>,
+    },
     Input {
         id: DataId,
         metadata: Metadata<'static>,

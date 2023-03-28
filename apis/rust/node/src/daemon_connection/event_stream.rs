@@ -171,6 +171,12 @@ impl EventStream {
         let event = match event {
             EventItem::NodeEvent { event, ack_channel } => match event {
                 NodeEvent::Stop => Event::Stop,
+                NodeEvent::Reload {
+                    operator_id: Some(operator_id),
+                } => Event::Reload { operator_id },
+                NodeEvent::Reload { operator_id: None } => {
+                    Event::Error(format!("Received reload event without operator id"))
+                }
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::Input { id, metadata, data } => {
                     let data = match data {

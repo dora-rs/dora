@@ -934,6 +934,11 @@ pub enum Event {
     Dora(DoraEvent),
     WatchdogInterval,
     CtrlC,
+    Reload {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    },
 }
 
 impl From<DoraEvent> for Event {
