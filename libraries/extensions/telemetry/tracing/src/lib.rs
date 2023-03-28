@@ -4,7 +4,6 @@
 //! able to serialize and deserialize context that has been sent via the middleware.
 
 use eyre::Context as EyreContext;
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter, Layer};
 
 #[cfg(feature = "telemetry")]
@@ -21,6 +20,7 @@ pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     let subscriber = {
         use eyre::ContextCompat;
         use opentelemetry::sdk::export::trace::stdout;
+        use tracing::metadata::LevelFilter;
         use tracing_subscriber::Registry;
 
         let filter = EnvFilter::from_default_env();
