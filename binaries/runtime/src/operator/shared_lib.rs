@@ -10,7 +10,7 @@ use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent,
     DoraResult, DoraStatus, Metadata, OnEventResult, Output, SendOutput,
 };
-use eyre::{bail, eyre, Context};
+use eyre::{bail, eyre, Context, Result};
 use libloading::Symbol;
 use std::{
     borrow::Cow,
@@ -28,7 +28,7 @@ pub fn run(
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<IncomingEvent>,
     tracer: Tracer,
-    init_done: oneshot::Sender<()>,
+    init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
         let target_path = adjust_shared_library_path(
@@ -86,14 +86,21 @@ struct SharedLibraryOperator<'lib> {
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
-    fn run(self, tracer: Tracer, init_done: oneshot::Sender<()>) -> eyre::Result<StopReason> {
+    fn run(
+        self,
+        tracer: Tracer,
+        init_done: oneshot::Sender<Result<()>>,
+    ) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
                 result,
                 operator_context,
             } = unsafe { (self.bindings.init_operator.init_operator)() };
             let raw = match result.error {
-                Some(error) => bail!("init_operator failed: {}", String::from(error)),
+                Some(error) => {
+                    let _ = init_done.send(Err(eyre!(error.to_string())));
+                    bail!("init_operator failed: {}", String::from(error))
+                }
                 None => operator_context,
             };
             OperatorContext {
@@ -102,7 +109,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             }
         };
 
-        let _ = init_done.send(());
+        let _ = init_done.send(Ok(()));
 
         let send_output_closure = Arc::new(move |output: Output| {
             let Output {
