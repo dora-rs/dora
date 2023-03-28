@@ -8,13 +8,17 @@ use dora_core::{
 use dora_download::download_file;
 use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
-use pyo3::{pyclass, types::IntoPyDict, IntoPy, Py, Python};
+use pyo3::{
+    pyclass,
+    types::{IntoPyDict, PyDict},
+    IntoPy, Py, PyAny, Python,
+};
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
 };
 use tokio::sync::{mpsc::Sender, oneshot};
-use tracing::{field, span, warn};
+use tracing::{error, field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
     let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
@@ -55,14 +59,19 @@ pub fn run(
     let path = path
         .canonicalize()
         .wrap_err_with(|| format!("no file found at `{}`", path.display()))?;
-    let path_cloned = path.clone();
+    let module_name = path
+        .file_stem()
+        .ok_or_else(|| eyre!("module path has no file stem"))?
+        .to_str()
+        .ok_or_else(|| eyre!("module file stem is not valid utf8"))?;
+    let path_parent = path.parent();
 
     let send_output = SendOutputCallback {
         events_tx: events_tx.clone(),
     };
 
     let init_operator = move |py: Python| {
-        if let Some(parent_path) = path.parent() {
+        if let Some(parent_path) = path_parent {
             let parent_path = parent_path
                 .to_str()
                 .ok_or_else(|| eyre!("module path is not valid utf8"))?;
@@ -78,11 +87,6 @@ pub fn run(
                 .wrap_err("failed to append module path to python search path")?;
         }
 
-        let module_name = path
-            .file_stem()
-            .ok_or_else(|| eyre!("module path has no file stem"))?
-            .to_str()
-            .ok_or_else(|| eyre!("module file stem is not valid utf8"))?;
         let module = py.import(module_name).map_err(traceback)?;
         let operator_class = module
             .getattr("Operator")
@@ -111,6 +115,56 @@ pub fn run(
         let reason = loop {
             #[allow(unused_mut)]
             let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
+
+            if let IncomingEvent::Reload { .. } = event {
+                // Reloading method
+                match Python::with_gil(|py| -> Result<Py<PyAny>> {
+                    // Saving current state
+                    let current_state = operator
+                        .getattr(py, "__dict__")
+                        .wrap_err("Could not retrieve current operator state")?;
+                    let current_state = current_state
+                        .extract::<&PyDict>(py)
+                        .wrap_err("could not extract operator state as a PyDict")?;
+                    // Reload module
+                    let module = py
+                        .import(module_name)
+                        .map_err(traceback)
+                        .wrap_err(format!("Could not retrieve {module_name} while reloading"))?;
+                    let importlib = py
+                        .import("importlib")
+                        .wrap_err("failed to import `importlib` module")?;
+                    let module = importlib
+                        .call_method("reload", (module,), None)
+                        .wrap_err(format!("Could not reload {module_name} while reloading"))?;
+                    let reloaded_operator_class = module
+                        .getattr("Operator")
+                        .wrap_err("no `Operator` class found in module")?;
+
+                    // Create a new reloaded operator
+                    let locals = [("Operator", reloaded_operator_class)].into_py_dict(py);
+                    let operator: Py<pyo3::PyAny> = py
+                        .eval("Operator()", None, Some(locals))
+                        .map_err(traceback)
+                        .wrap_err("Could not initialize reloaded operator")?
+                        .into();
+
+                    // Replace initialized state with current state
+                    for (key, value) in current_state.iter() {
+                        operator.setattr(py, key, value).wrap_err(format!(
+                            "Could not set previous `{key}` value for reloaded operator"
+                        ))?;
+                    }
+                    Ok(operator)
+                }) {
+                    Ok(reloaded_operator) => {
+                        operator = reloaded_operator;
+                    }
+                    Err(err) => {
+                        error!("Failed to reload operator.\n {err}");
+                    }
+                }
+            }
 
             let status = Python::with_gil(|py| -> Result<i32> {
                 let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
@@ -173,8 +227,7 @@ pub fn run(
     };
 
     let closure = AssertUnwindSafe(|| {
-        python_runner()
-            .wrap_err_with(|| format!("error in Python module at {}", path_cloned.display()))
+        python_runner().wrap_err_with(|| format!("error in Python module at {}", path.display()))
     });
 
     match catch_unwind(closure) {
