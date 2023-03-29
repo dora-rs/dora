@@ -23,7 +23,7 @@ pub async fn spawn_dataflow(
             dataflow_path.display()
         )
     })?;
-    descriptor.is_valid()?;
+    descriptor.check(dataflow_path, None)?;
     let working_dir = dataflow_path
         .canonicalize()
         .context("failed to canoncialize dataflow path")?
