@@ -25,8 +25,6 @@ pub struct Descriptor {
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub daemon_config: DaemonCommunicationConfig,
-    #[serde(default)]
-    pub base_path: PathBuf,
 }
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
@@ -101,25 +99,21 @@ impl Descriptor {
         let buf = tokio::fs::read(path)
             .await
             .context("failed to open given file")?;
-        Descriptor::parse(buf, path)
+        Descriptor::parse(buf)
     }
 
     pub fn blocking_read(path: &Path) -> eyre::Result<Descriptor> {
         let buf = std::fs::read(path).context("failed to open given file")?;
-        Descriptor::parse(buf, path)
+        Descriptor::parse(buf)
     }
 
-    pub fn parse(buf: Vec<u8>, path: &Path) -> eyre::Result<Descriptor> {
-        let mut descriptor: Descriptor =
-            serde_yaml::from_slice(&buf).context("failed to parse given descriptor")?;
-        let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
-        descriptor.base_path = base;
-
-        Ok(descriptor)
+    pub fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor> {
+        serde_yaml::from_slice(&buf).context("failed to parse given descriptor")
     }
 
-    pub fn is_valid(&self) -> eyre::Result<()> {
-        validate::check_dataflow(self).wrap_err("Dataflow could not be validated.")
+    pub fn check(&self, path: &Path, runtime_path: Option<PathBuf>) -> eyre::Result<()> {
+        validate::check_dataflow(self, path, runtime_path)
+            .wrap_err("Dataflow could not be validated.")
     }
 }
 
