@@ -1,31 +1,46 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import time
+from typing import Callable
 
 import cv2
-from dora import Node
 
-node = Node()
+from dora import DoraStatus
 
-video_capture = cv2.VideoCapture(0)
 
-start = time.time()
+class Operator:
+    """
+    Sending image from webcam to the dataflow
+    """
 
-# Run for 20 seconds
-while time.time() - start < 10:
-    # Wait next dora_input
-    event = node.next()
-    match event["type"]:
-        case "INPUT":
-            ret, frame = video_capture.read()
-            if ret:
-                node.send_output("image", cv2.imencode(".jpg", frame)[1].tobytes())
-        case "STOP":
-            print("received stop")
-            break
-        case other:
-            print("received unexpected event:", other)
-            break
+    def __init__(self):
+        self.video_capture = cv2.VideoCapture(0)
+        self.start_time = time.time()
 
-video_capture.release()
+    def on_event(
+        self,
+        dora_event: dict,
+        send_output: Callable[[str, bytes], None],
+    ) -> DoraStatus:
+        match dora_event["type"]:
+            case "INPUT":
+                ret, frame = self.video_capture.read()
+                if ret:
+                    send_output(
+                        "image",
+                        cv2.imencode(".jpg", frame)[1].tobytes(),
+                        dora_event["metadata"],
+                    )
+            case "STOP":
+                print("received stop")
+            case other:
+                print("received unexpected event:", other)
+
+        if time.time() - self.start_time < 20:
+            return DoraStatus.CONTINUE
+        else:
+            return DoraStatus.STOP
+
+    def __del__(self):
+        self.video_capture.release()
