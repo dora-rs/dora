@@ -5,12 +5,24 @@ use crate::{
 };
 
 use eyre::{bail, eyre, Context};
-use std::{env::consts::EXE_EXTENSION, path::Path};
+use std::{
+    env::consts::EXE_EXTENSION,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use super::Descriptor;
-pub fn check_dataflow(dataflow: &Descriptor) -> eyre::Result<()> {
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub fn check_dataflow(
+    dataflow: &Descriptor,
+    path: &Path,
+    runtime_path: Option<PathBuf>,
+) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases();
-    let base = &dataflow.base_path;
+    let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
+    let mut has_python_operator = false;
+    let mut has_shared_lib_operator = false;
 
     // check that nodes and operators exist
     for node in &nodes {
@@ -34,6 +46,7 @@ pub fn check_dataflow(dataflow: &Descriptor) -> eyre::Result<()> {
                 for operator_definition in &node.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
+                            has_shared_lib_operator = true;
                             if source_is_url(path) {
                                 todo!("check URL");
                             } else {
@@ -44,6 +57,7 @@ pub fn check_dataflow(dataflow: &Descriptor) -> eyre::Result<()> {
                             }
                         }
                         OperatorSource::Python(path) => {
+                            has_python_operator = true;
                             if source_is_url(path) {
                                 todo!("check URL");
                             } else if !base.join(path).exists() {
@@ -85,7 +99,13 @@ pub fn check_dataflow(dataflow: &Descriptor) -> eyre::Result<()> {
         };
     }
 
-    //   check_environment()?;
+    if has_python_operator {
+        check_python_runtime()?;
+    }
+
+    if has_shared_lib_operator {
+        check_rust_runtime(runtime_path)?;
+    }
 
     Ok(())
 }
@@ -136,5 +156,79 @@ fn check_input(
             }
         }
     };
+    Ok(())
+}
+
+pub fn check_rust_runtime(runtime_path: Option<PathBuf>) -> eyre::Result<()> {
+    // Check if runtime path exists
+    let runtime_bin = if let Some(runtime_bin) = runtime_path {
+        if runtime_bin.with_extension(EXE_EXTENSION).is_file() == false {
+            bail!(
+                "Provided Dora Runtime could not be found: {}",
+                runtime_bin.display()
+            )
+        } else {
+            runtime_bin
+        }
+    } else {
+        match which::which("dora-runtime") {
+            Err(err) => {
+                bail!("Dora Runtime binary could not be found: {}", err);
+            }
+            Ok(runtime_bin) => runtime_bin,
+        }
+    };
+
+    // Get runtime version
+    let mut command = Command::new(runtime_bin.clone());
+    command.arg("--version");
+    let result = command.spawn().wrap_err(format!(
+        "Could not find version of the dora-runtime. Please reinstall dora-runtime"
+    ))?;
+    let stdout = result
+        .wait_with_output()
+        .wrap_err(format!(
+            "Could not retrieve dora version from dora-runtime. Please reinstall dora-runtime`"
+        ))?
+        .stdout;
+    let rust_version = String::from_utf8(stdout).wrap_err("Could not read python version")?;
+
+    // Check runtime version
+    if rust_version == format!("dora-runtime {VERSION}") {
+        bail!(
+            "Dora Runtime version {:#?} should be {}",
+            rust_version,
+            VERSION
+        )
+    };
+
+    Ok(())
+}
+
+pub fn check_python_runtime() -> eyre::Result<()> {
+    // Check if python dora-rs is installed and match cli version
+    let reinstall_command =
+        format!("Please reinstall it with: `pip install dora-rs=={VERSION} --force`");
+    let mut command = Command::new("python3");
+    command.args([
+        "-c",
+        &format!(
+            "
+import dora;
+assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}. {reinstall_command}'
+        "
+        ),
+    ]);
+    let mut result = command
+        .spawn()
+        .wrap_err(format!("Could not spawn python dora-rs command."))?;
+    let status = result.wait().wrap_err(format!(
+        "Could not get exit status when checking python dora-rs"
+    ))?;
+
+    if !status.success() {
+        bail!("Something went wrong with Python dora-rs. {reinstall_command}")
+    }
+
     Ok(())
 }
