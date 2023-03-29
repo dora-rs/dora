@@ -17,10 +17,7 @@ use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use notify::event::ModifyKind;
-use notify::{
-    Config, Event as NotifyEvent, EventKind, INotifyWatcher, RecommendedWatcher, RecursiveMode,
-    Watcher,
-};
+use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use shared_memory_server::ShmemConf;
 use std::collections::HashSet;
 use std::{
@@ -60,7 +57,7 @@ pub struct Daemon {
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     /// used to record dataflow results when `exit_when_done` is used
     dataflow_errors: Vec<(Uuid, NodeId, eyre::Report)>,
-    watchers: Vec<INotifyWatcher>,
+    watchers: Vec<RecommendedWatcher>,
 
     dora_runtime_path: Option<PathBuf>,
 }
