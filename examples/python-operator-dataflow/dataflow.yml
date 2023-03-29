@@ -4,8 +4,8 @@ communication:
 
 nodes:
   - id: webcam
-    custom:
-      source: webcam.py
+    operator:
+      python: webcam.py
       inputs:
         tick: dora/timer/millis/100
       outputs:
