@@ -5,8 +5,6 @@ use dora_core::{
 };
 use dora_operator_api_python::metadata_to_pydict;
 use eyre::{Context, Result};
-#[cfg(feature = "telemetry")]
-use opentelemetry::sdk::trace::Tracer;
 use pyo3::{
     types::{PyBytes, PyDict},
     IntoPy, PyObject, Python,

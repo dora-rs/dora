@@ -39,10 +39,5 @@ tracing-opentelemetry = { version = "0.18.0", optional = true }
 [features]
 default = ["tracing"]
 tracing = ["dora-tracing"]
-telemetry = [
-    "tracing",
-    "opentelemetry",
-    "dora-tracing/telemetry",
-    "tracing-opentelemetry",
-]
+telemetry = ["tracing", "opentelemetry", "tracing-opentelemetry"]
 metrics = ["opentelemetry", "opentelemetry-system-metrics", "dora-metrics"]
