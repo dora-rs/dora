@@ -104,7 +104,7 @@ pub fn check_dataflow(
     }
 
     if has_shared_lib_operator {
-        check_rust_runtime(runtime_path)?;
+        check_shared_lib_runtime(runtime_path)?;
     }
 
     Ok(())
@@ -159,7 +159,7 @@ fn check_input(
     Ok(())
 }
 
-pub fn check_rust_runtime(runtime_path: Option<PathBuf>) -> eyre::Result<()> {
+fn check_shared_lib_runtime(runtime_path: Option<PathBuf>) -> eyre::Result<()> {
     // Check if runtime path exists
     let runtime_bin = if let Some(runtime_bin) = runtime_path {
         if runtime_bin.with_extension(EXE_EXTENSION).is_file() == false {
@@ -205,7 +205,7 @@ pub fn check_rust_runtime(runtime_path: Option<PathBuf>) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn check_python_runtime() -> eyre::Result<()> {
+fn check_python_runtime() -> eyre::Result<()> {
     // Check if python dora-rs is installed and match cli version
     let reinstall_command =
         format!("Please reinstall it with: `pip install dora-rs=={VERSION} --force`");

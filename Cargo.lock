@@ -1044,6 +1044,7 @@ dependencies = [
 name = "dora-runtime"
 version = "0.2.1"
 dependencies = [
+ "clap 4.0.3",
  "dora-core",
  "dora-download",
  "dora-metrics",

@@ -85,7 +85,7 @@ impl Daemon {
             .to_owned();
 
         let descriptor = Descriptor::read(dataflow_path).await?;
-        descriptor.is_valid()?;
+        descriptor.check(dataflow_path, dora_runtime_path.clone())?;
         let nodes = descriptor.resolve_aliases();
 
         let spawn_command = SpawnDataflowNodes {

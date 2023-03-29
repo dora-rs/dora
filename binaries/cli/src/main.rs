@@ -118,10 +118,10 @@ fn main() -> eyre::Result<()> {
     match args.command {
         Command::Check {
             dataflow,
-            runtime_path: _,
+            runtime_path,
         } => match dataflow {
             Some(dataflow) => {
-                Descriptor::blocking_read(&dataflow)?.is_valid()?;
+                Descriptor::blocking_read(&dataflow)?.check(&dataflow, runtime_path)?;
                 check::check_environment()?
             }
             None => check::check_environment()?,
