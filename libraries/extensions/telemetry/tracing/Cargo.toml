@@ -9,22 +9,12 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-telemetry = [
-    "dep:opentelemetry",
-    "dep:opentelemetry-jaeger",
-    "dep:tracing-opentelemetry",
-]
 
 [dependencies]
 tokio = { version = "1.24.2", features = ["full"] }
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
-tracing-opentelemetry = { version = "0.18.0", optional = true }
+tracing-opentelemetry = { version = "0.18.0" }
 eyre = "0.6.8"
 tracing = "0.1.36"
-opentelemetry = { version = "0.18.0", features = [
-    "rt-tokio",
-    "metrics",
-], optional = true }
-opentelemetry-jaeger = { version = "0.17.0", features = [
-    "rt-tokio",
-], optional = true }
+opentelemetry = { version = "0.18.0", features = ["rt-tokio", "metrics"] }
+opentelemetry-jaeger = { version = "0.17.0", features = ["rt-tokio"] }
