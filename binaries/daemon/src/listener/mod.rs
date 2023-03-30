@@ -195,9 +195,14 @@ impl Listener {
                     }
                     future::Either::Right((message, _)) => break message,
                 };
+
                 if let Some(event) = event {
                     self.queue.push_back(Box::new(Some(event)));
                     self.handle_events().await?;
+                } else {
+                    // the channel is disconnected
+                    drop(next_message);
+                    break Ok(None);
                 }
             };
 
