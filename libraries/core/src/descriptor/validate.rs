@@ -162,7 +162,7 @@ fn check_input(
 fn check_shared_lib_runtime(runtime_path: Option<PathBuf>) -> eyre::Result<()> {
     // Check if runtime path exists
     let runtime_bin = if let Some(runtime_bin) = runtime_path {
-        if runtime_bin.with_extension(EXE_EXTENSION).is_file() == false {
+        if !runtime_bin.with_extension(EXE_EXTENSION).is_file() {
             bail!(
                 "Provided Dora Runtime could not be found: {}",
                 runtime_bin.display()
@@ -180,16 +180,16 @@ fn check_shared_lib_runtime(runtime_path: Option<PathBuf>) -> eyre::Result<()> {
     };
 
     // Get runtime version
-    let mut command = Command::new(runtime_bin.clone());
+    let mut command = Command::new(runtime_bin);
     command.arg("--version");
-    let result = command.spawn().wrap_err(format!(
-        "Could not find version of the dora-runtime. Please reinstall dora-runtime"
-    ))?;
+    let result = command
+        .spawn()
+        .wrap_err("Could not find version of the dora-runtime. Please reinstall dora-runtime")?;
     let stdout = result
         .wait_with_output()
-        .wrap_err(format!(
-            "Could not retrieve dora version from dora-runtime. Please reinstall dora-runtime`"
-        ))?
+        .wrap_err(
+            "Could not retrieve dora version from dora-runtime. Please reinstall dora-runtime`",
+        )?
         .stdout;
     let rust_version = String::from_utf8(stdout).wrap_err("Could not read python version")?;
 
@@ -221,10 +221,10 @@ assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}. {rei
     ]);
     let mut result = command
         .spawn()
-        .wrap_err(format!("Could not spawn python dora-rs command."))?;
-    let status = result.wait().wrap_err(format!(
-        "Could not get exit status when checking python dora-rs"
-    ))?;
+        .wrap_err("Could not spawn python dora-rs command.")?;
+    let status = result
+        .wait()
+        .wrap_err("Could not get exit status when checking python dora-rs")?;
 
     if !status.success() {
         bail!("Something went wrong with Python dora-rs. {reinstall_command}")
