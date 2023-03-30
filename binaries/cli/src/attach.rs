@@ -21,7 +21,7 @@ pub fn attach_dataflow(
     hot_reload: bool,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, rx) = mpsc::sync_channel(2);
-    
+
     // Generate path hashmap
     let mut node_path_lookup = HashMap::new();
 
