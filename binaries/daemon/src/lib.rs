@@ -27,10 +27,7 @@ use std::{
 };
 use tcp_utils::tcp_receive;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::{
-    fs,
-    sync::{mpsc, oneshot},
-};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use uuid::Uuid;
 
@@ -1061,11 +1058,4 @@ impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
 enum RunStatus {
     Continue,
     Exit,
-}
-
-pub async fn read_descriptor(file: &Path) -> eyre::Result<Descriptor> {
-    let descriptor_file = fs::read(file).await.wrap_err("failed to open given file")?;
-    let descriptor: Descriptor =
-        serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
-    Ok(descriptor)
 }

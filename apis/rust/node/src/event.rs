@@ -12,7 +12,7 @@ use shared_memory::{Shmem, ShmemConf};
 pub enum Event<'a> {
     Stop,
     Reload {
-        operator_id: OperatorId,
+        operator_id: Option<OperatorId>,
     },
     Input {
         id: DataId,

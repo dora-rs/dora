@@ -140,7 +140,12 @@ async fn run(
     let daemon_events = Box::pin(futures::stream::unfold(daemon_events, |mut stream| async {
         let event = stream.recv_async().await.map(|event| match event {
             dora_node_api::Event::Stop => Event::Stop,
-            dora_node_api::Event::Reload { operator_id } => Event::Reload { operator_id },
+            dora_node_api::Event::Reload {
+                operator_id: Some(operator_id),
+            } => Event::Reload { operator_id },
+            dora_node_api::Event::Reload { operator_id: None } => Event::Error(
+                "Dora runtime node received reload event without operator id".to_string(),
+            ),
             dora_node_api::Event::Input { id, metadata, data } => Event::Input {
                 id,
                 metadata,
