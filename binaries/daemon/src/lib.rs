@@ -1,7 +1,6 @@
 use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
 use dora_core::daemon_messages::Data;
-use dora_core::descriptor::resolve_path;
 use dora_core::message::uhlc::HLC;
 use dora_core::message::MetadataParameters;
 use dora_core::{
@@ -16,8 +15,6 @@ use dora_core::{
 use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
-use notify::event::ModifyKind;
-use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use shared_memory_server::ShmemConf;
 use std::collections::HashSet;
 use std::{
@@ -29,9 +26,11 @@ use std::{
     time::Duration,
 };
 use tcp_utils::tcp_receive;
-use tokio::runtime::Builder;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    fs,
+    sync::{mpsc, oneshot},
+};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use uuid::Uuid;
 
@@ -57,7 +56,6 @@ pub struct Daemon {
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     /// used to record dataflow results when `exit_when_done` is used
     dataflow_errors: Vec<(Uuid, NodeId, eyre::Report)>,
-    watchers: Vec<RecommendedWatcher>,
 
     dora_runtime_path: Option<PathBuf>,
 }
@@ -181,7 +179,6 @@ impl Daemon {
             exit_when_done,
             dora_runtime_path,
             dataflow_errors: Vec::new(),
-            watchers: Vec::new(),
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -272,6 +269,16 @@ impl Daemon {
                     DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
                 (reply, RunStatus::Continue)
             }
+            DaemonCoordinatorEvent::ReloadDataflow {
+                dataflow_id,
+                node_id,
+                operator_id,
+            } => {
+                let result = self.send_reload(dataflow_id, node_id, operator_id).await;
+                let reply =
+                    DaemonCoordinatorReply::ReloadResult(result.map_err(|err| format!("{err:?}")));
+                (reply, RunStatus::Continue)
+            }
             DaemonCoordinatorEvent::StopDataflow { dataflow_id } => {
                 let stop = async {
                     let dataflow = self
@@ -312,7 +319,6 @@ impl Daemon {
             }
         };
 
-        let mut node_path_lookup = HashMap::new();
         for node in nodes {
             dataflow.running_nodes.insert(node.id.clone());
             let inputs = node_inputs(&node);
@@ -341,29 +347,6 @@ impl Daemon {
                 }
             }
 
-            // Generate path hashmap
-            match &node.kind {
-                CoreNodeKind::Custom(_cn) => (), // TODO: Reloading for custom node,
-                CoreNodeKind::Runtime(rn) => {
-                    for op in rn.operators.iter() {
-                        match &op.config.source {
-                            dora_core::descriptor::OperatorSource::Python(source) => {
-                                let path = resolve_path(&source, &working_dir)
-                                    .wrap_err_with(|| {
-                                        format!("failed to resolve node source `{}`", source)
-                                    })
-                                    .unwrap();
-                                node_path_lookup.insert(
-                                    path,
-                                    (dataflow_id, node.id.clone(), Some(op.id.clone())),
-                                );
-                            }
-                            _ => (),
-                        }
-                    }
-                }
-            }
-
             let node_id = node.id.clone();
             spawn::spawn_node(
                 dataflow_id,
@@ -376,50 +359,6 @@ impl Daemon {
             .await
             .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
         }
-        let hash = node_path_lookup.clone();
-        let paths = hash.keys();
-
-        let tokio_runtime = Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("Could not build a tokio runtime.")?;
-        let sender = self.events_tx.clone();
-
-        let notifier = move |event| match event {
-            Ok(NotifyEvent {
-                paths,
-                kind: EventKind::Modify(ModifyKind::Data(_data)),
-                ..
-            }) => {
-                tokio_runtime.block_on(async {
-                    for path in paths {
-                        let (dataflow_id, node_id, operator_id) =
-                            node_path_lookup.get(&path).unwrap().clone();
-                        sender
-                            .send(Event::Reload {
-                                dataflow_id,
-                                node_id,
-                                operator_id,
-                            })
-                            .await
-                            .unwrap();
-                    }
-                });
-            }
-            _ => (), // TODO: Manage different event
-        };
-
-        let mut watcher = RecommendedWatcher::new(
-            notifier,
-            Config::default().with_poll_interval(Duration::from_secs(1)),
-        )
-        .unwrap();
-
-        for path in paths {
-            watcher.watch(path, RecursiveMode::Recursive)?;
-        }
-
-        self.watchers.push(watcher);
 
         Ok(())
     }
@@ -1122,4 +1061,11 @@ impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
 enum RunStatus {
     Continue,
     Exit,
+}
+
+pub async fn read_descriptor(file: &Path) -> eyre::Result<Descriptor> {
+    let descriptor_file = fs::read(file).await.wrap_err("failed to open given file")?;
+    let descriptor: Descriptor =
+        serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
+    Ok(descriptor)
 }
