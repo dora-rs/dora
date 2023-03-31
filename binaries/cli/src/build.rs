@@ -1,10 +1,12 @@
-use crate::graph;
-use dora_core::{config::OperatorId, descriptor::SINGLE_OPERATOR_DEFAULT_ID};
+use dora_core::{
+    config::OperatorId,
+    descriptor::{Descriptor, SINGLE_OPERATOR_DEFAULT_ID},
+};
 use eyre::{eyre, Context};
 use std::{path::Path, process::Command};
 
 pub fn build(dataflow: &Path) -> eyre::Result<()> {
-    let descriptor = graph::read_descriptor(dataflow)?;
+    let descriptor = Descriptor::blocking_read(dataflow)?;
     let dataflow_absolute = if dataflow.is_relative() {
         std::env::current_dir().unwrap().join(dataflow)
     } else {

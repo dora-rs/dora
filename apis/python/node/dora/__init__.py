@@ -2,6 +2,9 @@ from enum import Enum
 
 from .dora import *
 
+__author__ = "Dora-rs Authors"
+__version__ = "0.2.1"
+
 
 class DoraStatus(Enum):
     """Dora status to indicate if operator `on_input` loop

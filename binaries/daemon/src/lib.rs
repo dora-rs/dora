@@ -26,10 +26,7 @@ use std::{
 };
 use tcp_utils::tcp_receive;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::{
-    fs,
-    sync::{mpsc, oneshot},
-};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use uuid::Uuid;
 
@@ -87,7 +84,8 @@ impl Daemon {
             .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
             .to_owned();
 
-        let descriptor = read_descriptor(dataflow_path).await?;
+        let descriptor = Descriptor::read(dataflow_path).await?;
+        descriptor.check(dataflow_path, dora_runtime_path.clone())?;
         let nodes = descriptor.resolve_aliases();
 
         let spawn_command = SpawnDataflowNodes {
@@ -1000,11 +998,4 @@ impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
 enum RunStatus {
     Continue,
     Exit,
-}
-
-pub async fn read_descriptor(file: &Path) -> eyre::Result<Descriptor> {
-    let descriptor_file = fs::read(file).await.wrap_err("failed to open given file")?;
-    let descriptor: Descriptor =
-        serde_yaml::from_slice(&descriptor_file).context("failed to parse given descriptor")?;
-    Ok(descriptor)
 }
