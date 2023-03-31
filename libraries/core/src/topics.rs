@@ -5,6 +5,8 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::config::{NodeId, OperatorId};
+
 pub const DORA_COORDINATOR_PORT_DEFAULT: u16 = 0xD02A;
 
 pub const MANUAL_STOP: &str = "dora/stop";
@@ -18,6 +20,14 @@ pub enum ControlRequest {
     Start {
         dataflow_path: PathBuf,
         name: Option<String>,
+    },
+    Reload {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    },
+    Check {
+        dataflow_uuid: Uuid,
     },
     Stop {
         dataflow_uuid: Uuid,
@@ -35,6 +45,7 @@ pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowStarted { uuid: Uuid },
+    DataflowReloaded { uuid: Uuid },
     DataflowStopped { uuid: Uuid },
     DataflowList { dataflows: Vec<DataflowId> },
     DestroyOk,

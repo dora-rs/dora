@@ -12,6 +12,10 @@ license.workspace = true
 name = "dora-cli"
 path = "src/main.rs"
 
+[features]
+default = ["tracing"]
+tracing = ["dep:dora-tracing"]
+
 [dependencies]
 clap = { version = "4.0.3", features = ["derive"] }
 eyre = "0.6.8"
@@ -27,3 +31,7 @@ atty = "0.2.14"
 uuid = { version = "1.2.1", features = ["v4", "serde"] }
 inquire = "0.5.2"
 communication-layer-request-reply = { workspace = true }
+notify = "5.1.0"
+ctrlc = "3.2.5"
+tracing = "0.1.36"
+dora-tracing = { workspace = true, optional = true }

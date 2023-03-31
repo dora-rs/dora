@@ -90,9 +90,9 @@ jobs:
           dora-cli new test_project --internal-create-with-path-dependencies
           cd test_project
           cargo build --all
-          UUID=$(dora-cli start dataflow.yml)
+          dora-cli start dataflow.yml --name ci-test
           sleep 10
-          dora-cli stop $UUID
+          dora-cli stop --name ci-test
           cd ..
           dora-cli destroy
 

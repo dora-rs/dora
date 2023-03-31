@@ -1,7 +1,7 @@
 use std::{fmt, net::SocketAddr, path::PathBuf};
 
 use crate::{
-    config::{DataId, NodeId, NodeRunConfig},
+    config::{DataId, NodeId, NodeRunConfig, OperatorId},
     descriptor::{OperatorDefinition, ResolvedNode},
 };
 use dora_message::Metadata;
@@ -114,6 +114,9 @@ pub enum DaemonReply {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum NodeEvent {
     Stop,
+    Reload {
+        operator_id: Option<OperatorId>,
+    },
     Input {
         id: DataId,
         metadata: Metadata<'static>,
@@ -169,7 +172,14 @@ pub struct SharedMemoryInput {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
-    StopDataflow { dataflow_id: DataflowId },
+    StopDataflow {
+        dataflow_id: DataflowId,
+    },
+    ReloadDataflow {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    },
     Destroy,
     Watchdog,
 }
@@ -177,6 +187,7 @@ pub enum DaemonCoordinatorEvent {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorReply {
     SpawnResult(Result<(), String>),
+    ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
     WatchdogAck,

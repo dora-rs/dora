@@ -1,5 +1,5 @@
 use coordinator::CoordinatorEvent;
-use dora_core::config::Input;
+use dora_core::config::{Input, OperatorId};
 use dora_core::daemon_messages::Data;
 use dora_core::message::uhlc::HLC;
 use dora_core::message::MetadataParameters;
@@ -261,6 +261,16 @@ impl Daemon {
                     DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
                 (reply, RunStatus::Continue)
             }
+            DaemonCoordinatorEvent::ReloadDataflow {
+                dataflow_id,
+                node_id,
+                operator_id,
+            } => {
+                let result = self.send_reload(dataflow_id, node_id, operator_id).await;
+                let reply =
+                    DaemonCoordinatorReply::ReloadResult(result.map_err(|err| format!("{err:?}")));
+                (reply, RunStatus::Continue)
+            }
             DaemonCoordinatorEvent::StopDataflow { dataflow_id } => {
                 let stop = async {
                     let dataflow = self
@@ -300,6 +310,7 @@ impl Daemon {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
         };
+
         for node in nodes {
             dataflow.running_nodes.insert(node.id.clone());
             let inputs = node_inputs(&node);
@@ -431,6 +442,27 @@ impl Daemon {
                         }
                         None => tracing::warn!("unknown drop token `{token:?}`"),
                     }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_reload(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+            let item = daemon_messages::NodeEvent::Reload { operator_id };
+            match channel.send(item) {
+                Ok(()) => {}
+                Err(_) => {
+                    dataflow.subscribe_channels.remove(&node_id);
                 }
             }
         }
