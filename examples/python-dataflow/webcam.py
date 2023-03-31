@@ -4,6 +4,7 @@
 import time
 
 import cv2
+
 from dora import Node
 
 node = Node()
@@ -20,7 +21,11 @@ while time.time() - start < 10:
         case "INPUT":
             ret, frame = video_capture.read()
             if ret:
-                node.send_output("image", cv2.imencode(".jpg", frame)[1].tobytes())
+                node.send_output(
+                    "image",
+                    cv2.imencode(".jpg", frame)[1].tobytes(),
+                    event["metadata"],
+                )
         case "STOP":
             print("received stop")
             break

@@ -25,9 +25,6 @@ use tokio_stream::wrappers::ReceiverStream;
 mod operator;
 
 pub fn main() -> eyre::Result<()> {
-    #[cfg(feature = "tracing")]
-    set_up_tracing().context("failed to set up tracing subscriber")?;
-
     let config: RuntimeConfig = {
         let raw = std::env::var("DORA_RUNTIME_CONFIG")
             .wrap_err("env variable DORA_RUNTIME_CONFIG must be set")?;
@@ -38,6 +35,8 @@ pub fn main() -> eyre::Result<()> {
         operators,
     } = config;
     let node_id = config.node_id.clone();
+    #[cfg(feature = "tracing")]
+    set_up_tracing(&node_id.to_string()).context("failed to set up tracing subscriber")?;
 
     let operator_definition = if operators.is_empty() {
         bail!("no operators");
@@ -111,7 +110,7 @@ fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, us
     sizes
 }
 
-#[tracing::instrument(skip(operator_events, operator_channels), fields(node.id))]
+#[tracing::instrument(skip(operator_events, operator_channels), fields(node.id), level = "trace" )]
 async fn run(
     operators: HashMap<OperatorId, OperatorConfig>,
     config: NodeConfig,

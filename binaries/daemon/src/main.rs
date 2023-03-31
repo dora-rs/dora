@@ -26,7 +26,7 @@ async fn main() -> eyre::Result<()> {
 
 async fn run() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
-    set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
+    set_up_tracing("dora-daemon").wrap_err("failed to set up tracing subscriber")?;
 
     let Args {
         run_dataflow,

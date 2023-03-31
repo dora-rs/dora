@@ -14,13 +14,13 @@ pub enum DaemonChannel {
 }
 
 impl DaemonChannel {
-    #[tracing::instrument]
+    #[tracing::instrument(level = "trace")]
     pub fn new_tcp(stream: TcpStream) -> eyre::Result<Self> {
         stream.set_nodelay(true).context("failed to set nodelay")?;
         Ok(DaemonChannel::Tcp(stream))
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(level = "trace")]
     pub unsafe fn new_shmem(daemon_control_region_id: &str) -> eyre::Result<Self> {
         let daemon_events_region = ShmemConf::new()
             .os_id(daemon_control_region_id)

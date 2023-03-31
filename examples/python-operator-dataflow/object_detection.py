@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from dora import DoraStatus
-    
+
 
 class Operator:
     """

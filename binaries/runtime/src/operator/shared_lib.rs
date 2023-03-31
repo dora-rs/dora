@@ -1,4 +1,4 @@
-use super::{IncomingEvent, OperatorEvent, StopReason, Tracer};
+use super::{IncomingEvent, OperatorEvent, StopReason};
 use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::{mpsc::Sender, oneshot};
+use tracing::{field, span};
 
 pub fn run(
     node_id: &NodeId,
@@ -27,7 +28,6 @@ pub fn run(
     source: &str,
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<IncomingEvent>,
-    tracer: Tracer,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
@@ -61,7 +61,7 @@ pub fn run(
             events_tx: events_tx.clone(),
         };
 
-        operator.run(tracer, init_done)
+        operator.run(init_done)
     });
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
@@ -86,11 +86,7 @@ struct SharedLibraryOperator<'lib> {
 }
 
 impl<'lib> SharedLibraryOperator<'lib> {
-    fn run(
-        self,
-        tracer: Tracer,
-        init_done: oneshot::Sender<Result<()>>,
-    ) -> eyre::Result<StopReason> {
+    fn run(self, init_done: oneshot::Sender<Result<()>>) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
                 result,
@@ -144,36 +140,28 @@ impl<'lib> SharedLibraryOperator<'lib> {
         });
 
         let reason = loop {
+            #[allow(unused_mut)]
             let Ok(mut event) = self.incoming_events.recv() else {
                 break StopReason::InputsClosed
             };
 
+            let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
+            let _ = span.enter();
+            // Add metadata context if we have a tracer and
+            // incoming input has some metadata.
+            #[cfg(feature = "telemetry")]
             if let IncomingEvent::Input {
                 input_id, metadata, ..
             } = &mut event
             {
-                #[cfg(feature = "telemetry")]
-                let (_child_cx, string_cx) = {
-                    use dora_tracing::telemetry::{deserialize_context, serialize_context};
-                    use opentelemetry::{
-                        trace::{TraceContextExt, Tracer},
-                        Context as OtelContext,
-                    };
+                use dora_tracing::telemetry::{deserialize_context, serialize_context};
+                use tracing_opentelemetry::OpenTelemetrySpanExt;
+                span.record("input_id", input_id.as_str());
 
-                    let span = tracer.start_with_context(
-                        format!("{}", input_id),
-                        &deserialize_context(&metadata.parameters.open_telemetry_context),
-                    );
-                    let child_cx = OtelContext::current_with_span(span);
-                    let string_cx = serialize_context(&child_cx);
-                    (child_cx, string_cx)
-                };
-                #[cfg(not(feature = "telemetry"))]
-                let string_cx = {
-                    let () = tracer;
-                    let _ = input_id;
-                    "".to_string()
-                };
+                let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
+                span.set_parent(cx);
+                let cx = span.context();
+                let string_cx = serialize_context(&cx);
                 metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
             }
 
