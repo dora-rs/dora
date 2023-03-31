@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.2 (2023-04-01)
+
+### Features
+
+* Make queue length configurable through the dataflow file by @phil-opp in https://github.com/dora-rs/dora/pull/231
+* Hot reloading Python Operator  by @haixuanTao in https://github.com/dora-rs/dora/pull/239
+
+### Fixes
+
+* Synchronize node and operator start by @phil-opp in https://github.com/dora-rs/dora/pull/236
+* Add opentelemetry capability at runtime instead of compile time by @haixuanTao in https://github.com/dora-rs/dora/pull/234
+
+### Others
+
+* Wait on events and messages simultaneously to prevent queue buildup by @phil-opp in https://github.com/dora-rs/dora/pull/235
+* Push error into the `init_done` channel for debugging context by @haixuanTao in https://github.com/dora-rs/dora/pull/238
+* Option communication config by @haixuanTao in https://github.com/dora-rs/dora/pull/241
+* Validate yaml when reading by @haixuanTao in https://github.com/dora-rs/dora/pull/237
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.2.1...v0.2.2
+
 ## v0.2.1 (2023-03-22)
 
 ### Features
