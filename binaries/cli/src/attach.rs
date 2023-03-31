@@ -36,7 +36,8 @@ pub fn attach_dataflow(
 
     for node in nodes {
         match node.kind {
-            CoreNodeKind::Custom(_cn) => (), // TODO: Reloading for custom node
+            // Reloading Custom Nodes is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+            CoreNodeKind::Custom(_cn) => (),
             CoreNodeKind::Runtime(rn) => {
                 for op in rn.operators.iter() {
                     match &op.config.source {
@@ -47,7 +48,8 @@ pub fn attach_dataflow(
                             node_path_lookup
                                 .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
                         }
-                        _ => (), // TODO: Reloading for non-Python Operator
+                        // Reloading non-python operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+                        _ => (),
                     }
                 }
             }
@@ -127,7 +129,7 @@ pub fn attach_dataflow(
         let result: ControlRequestReply =
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
-            ControlRequestReply::DataflowStarted { uuid } => info!("dataflow {uuid} started"),
+            ControlRequestReply::DataflowStarted { uuid: _ } => (),
             ControlRequestReply::DataflowStopped { uuid } => {
                 info!("dataflow {uuid} stopped");
                 break;
