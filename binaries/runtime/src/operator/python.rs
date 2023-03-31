@@ -100,7 +100,7 @@ pub fn run(
     };
 
     let python_runner = move || {
-        let operator =
+        let mut operator =
             match Python::with_gil(init_operator).wrap_err("failed to init python operator") {
                 Ok(op) => {
                     let _ = init_done.send(Ok(()));
