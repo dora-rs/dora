@@ -1,7 +1,6 @@
 use eyre::{bail, Context};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
-    ffi::{OsStr, OsString},
     path::Path,
 };
 use tracing::metadata::LevelFilter;

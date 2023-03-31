@@ -9,8 +9,9 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["tracing"]
+default = ["tracing", "telemetry"]
 tracing = ["dora-node-api/tracing"]
+telemetry = ["dora-runtime/telemetry"]
 
 [dependencies]
 dora-node-api = { workspace = true }
@@ -19,7 +20,7 @@ pyo3 = { version = "0.16", features = ["eyre", "abi3-py37"] }
 eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
-dora-runtime = { workspace = true }
+dora-runtime = { workspace = true, features = ["tracing"] }
 
 [lib]
 name = "dora"

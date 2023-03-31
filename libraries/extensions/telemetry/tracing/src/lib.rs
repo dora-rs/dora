@@ -4,19 +4,34 @@
 //! able to serialize and deserialize context that has been sent via the middleware.
 
 use eyre::Context as EyreContext;
-use tracing_subscriber::{EnvFilter, Layer};
+use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter, Layer};
 
-#[cfg(feature = "telemetry")]
+use eyre::ContextCompat;
+use tracing_subscriber::Registry;
 pub mod telemetry;
 
-pub fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
+    // Filter log using `RUST_LOG`. More useful for CLI.
     let filter = EnvFilter::from_default_env();
-
     let stdout_log = tracing_subscriber::fmt::layer()
         .pretty()
         .with_filter(filter);
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
+
+    let registry = Registry::default().with(stdout_log);
+    if let Some(endpoint) = std::env::var_os("DORA_JAEGER_TRACING") {
+        let endpoint = endpoint
+            .to_str()
+            .wrap_err("Could not parse env variable: DORA_JAEGER_TRACING")?;
+        let tracer = crate::telemetry::init_jaeger_tracing(name, endpoint)
+            .wrap_err("Could not instantiate tracing")?;
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        let subscriber = registry.with(telemetry);
+        tracing::subscriber::set_global_default(subscriber).context(format!(
+            "failed to set tracing global subscriber for {name}"
+        ))
+    } else {
+        tracing::subscriber::set_global_default(registry).context(format!(
+            "failed to set tracing global subscriber for {name}"
+        ))
+    }
 }

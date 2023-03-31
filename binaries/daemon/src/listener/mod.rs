@@ -233,7 +233,7 @@ impl Listener {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), fields(%self.node_id))]
+    #[tracing::instrument(skip(self), fields(%self.node_id), level = "trace")]
     async fn drop_oldest_inputs(&mut self) -> Result<(), eyre::ErrReport> {
         let mut queue_size_remaining = self.queue_sizes.clone();
         let mut dropped = 0;
@@ -268,7 +268,7 @@ impl Listener {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, connection), fields(%self.dataflow_id, %self.node_id))]
+    #[tracing::instrument(skip(self, connection), fields(%self.dataflow_id, %self.node_id), level = "trace")]
     async fn handle_message<C: Connection>(
         &mut self,
         message: DaemonRequest,

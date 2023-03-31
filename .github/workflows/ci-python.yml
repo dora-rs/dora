@@ -6,6 +6,8 @@ on:
     paths:
       - apis/python/**
       - binaries/runtime/**
+      - examples/python-dataflow/**
+      - examples/python-operator-dataflow/**
   pull_request:
   workflow_dispatch:
 

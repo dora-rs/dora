@@ -5,17 +5,12 @@ use dora_core::{
 };
 use dora_operator_api_python::metadata_to_pydict;
 use eyre::{Context, Result};
-#[cfg(feature = "telemetry")]
-use opentelemetry::sdk::trace::Tracer;
 use pyo3::{
     types::{PyBytes, PyDict},
     IntoPy, PyObject, Python,
 };
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
-
-#[cfg(not(feature = "telemetry"))]
-type Tracer = ();
 
 pub mod channel;
 mod python;
@@ -28,15 +23,6 @@ pub fn run_operator(
     events_tx: Sender<OperatorEvent>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
-    #[cfg(feature = "telemetry")]
-    let tracer = dora_tracing::telemetry::init_tracing(
-        format!("{node_id}/{}", operator_definition.id).as_str(),
-    )
-    .wrap_err("could not initiate tracing for operator")?;
-    #[cfg(not(feature = "telemetry"))]
-    #[allow(clippy::let_unit_value)]
-    let tracer = ();
-
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
             shared_lib::run(
@@ -45,7 +31,6 @@ pub fn run_operator(
                 source,
                 events_tx,
                 incoming_events,
-                tracer,
                 init_done,
             )
             .wrap_err_with(|| {
@@ -62,7 +47,6 @@ pub fn run_operator(
                 source,
                 events_tx,
                 incoming_events,
-                tracer,
                 init_done,
             )
             .wrap_err_with(|| {

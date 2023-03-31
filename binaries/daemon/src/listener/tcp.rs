@@ -15,7 +15,7 @@ use tokio::{
     sync::mpsc,
 };
 
-#[tracing::instrument(skip(listener, daemon_tx))]
+#[tracing::instrument(skip(listener, daemon_tx), level = "trace")]
 pub async fn listener_loop(
     listener: TcpListener,
     daemon_tx: mpsc::Sender<Event>,
@@ -41,7 +41,7 @@ pub async fn listener_loop(
     }
 }
 
-#[tracing::instrument(skip(connection, daemon_tx))]
+#[tracing::instrument(skip(connection, daemon_tx), level = "trace")]
 async fn handle_connection_loop(
     connection: TcpStream,
     daemon_tx: mpsc::Sender<Event>,

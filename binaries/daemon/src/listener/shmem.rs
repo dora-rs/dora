@@ -10,7 +10,7 @@ use eyre::eyre;
 use shared_memory_server::ShmemServer;
 use tokio::sync::{mpsc, oneshot};
 
-#[tracing::instrument(skip(server, daemon_tx))]
+#[tracing::instrument(skip(server, daemon_tx), level = "trace")]
 pub async fn listener_loop(
     mut server: ShmemServer<DaemonRequest, DaemonReply>,
     daemon_tx: mpsc::Sender<Event>,
