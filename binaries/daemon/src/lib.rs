@@ -234,11 +234,6 @@ impl Daemon {
                         dataflow.stop_all().await;
                     }
                 }
-                Event::Reload {
-                    dataflow_id,
-                    node_id,
-                    operator_id,
-                } => self.send_reload(dataflow_id, node_id, operator_id).await?,
             }
         }
 
@@ -971,11 +966,6 @@ pub enum Event {
     Dora(DoraEvent),
     WatchdogInterval,
     CtrlC,
-    Reload {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    },
 }
 
 impl From<DoraEvent> for Event {

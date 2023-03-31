@@ -199,7 +199,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     stop: false,
                 },
                 IncomingEvent::Reload => {
-                    // TODO: Reload shared library.
+                    // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
                     continue;
                 }
             };
