@@ -1,13 +1,18 @@
+use std::path::PathBuf;
+
+use attach::attach_dataflow;
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_core::{
     descriptor::Descriptor,
     topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId},
 };
+#[cfg(feature = "tracing")]
+use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
-use std::path::PathBuf;
 use uuid::Uuid;
 
+mod attach;
 mod build;
 mod check;
 mod graph;
@@ -67,6 +72,10 @@ enum Command {
         dataflow: PathBuf,
         #[clap(long)]
         name: Option<String>,
+        #[clap(long, action)]
+        attach: bool,
+        #[clap(long, action)]
+        hot_reload: bool,
     },
     /// Stop the given dataflow UUID. If no id is provided, you will be able to choose between the running dataflows.
     Stop {
@@ -111,6 +120,8 @@ enum Lang {
 }
 
 fn main() -> eyre::Result<()> {
+    #[cfg(feature = "tracing")]
+    set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
     let args = Args::parse();
 
     let mut session = None;
@@ -149,7 +160,29 @@ fn main() -> eyre::Result<()> {
             coordinator_path.as_deref(),
             daemon_path.as_deref(),
         )?,
-        Command::Start { dataflow, name } => start_dataflow(dataflow, name, &mut session)?,
+        Command::Start {
+            dataflow,
+            name,
+            attach,
+            hot_reload,
+        } => {
+            let dataflow_description =
+                Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
+            dataflow_description
+                .check(&dataflow, None)
+                .wrap_err("Could not validate yaml")?;
+            let dataflow_id = start_dataflow(dataflow.clone(), name, &mut session)?;
+
+            if attach {
+                attach_dataflow(
+                    dataflow_description,
+                    dataflow,
+                    dataflow_id,
+                    &mut session,
+                    hot_reload,
+                )?
+            }
+        }
         Command::List => list(&mut session)?,
         Command::Stop { uuid, name } => match (uuid, name) {
             (Some(uuid), _) => stop_dataflow(uuid, &mut session)?,
@@ -166,7 +199,7 @@ fn start_dataflow(
     dataflow: PathBuf,
     name: Option<String>,
     session: &mut Option<Box<TcpRequestReplyConnection>>,
-) -> Result<(), eyre::ErrReport> {
+) -> Result<Uuid, eyre::ErrReport> {
     let canonicalized = dataflow
         .canonicalize()
         .wrap_err("given dataflow file does not exist")?;
@@ -184,8 +217,8 @@ fn start_dataflow(
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         ControlRequestReply::DataflowStarted { uuid } => {
-            println!("{uuid}");
-            Ok(())
+            eprintln!("{uuid}");
+            Ok(uuid)
         }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),

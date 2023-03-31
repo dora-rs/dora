@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
-use dora_core::{config::DataId, message::Metadata};
+use dora_core::{
+    config::{DataId, OperatorId},
+    message::Metadata,
+};
 use eyre::Context;
 use shared_memory::{Shmem, ShmemConf};
 
@@ -8,6 +11,9 @@ use shared_memory::{Shmem, ShmemConf};
 #[non_exhaustive]
 pub enum Event<'a> {
     Stop,
+    Reload {
+        operator_id: Option<OperatorId>,
+    },
     Input {
         id: DataId,
         metadata: Metadata<'static>,

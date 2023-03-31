@@ -198,6 +198,10 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     input: None,
                     stop: false,
                 },
+                IncomingEvent::Reload => {
+                    // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+                    continue;
+                }
             };
 
             let send_output = SendOutput {

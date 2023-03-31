@@ -88,6 +88,7 @@ pub enum IncomingEvent {
     InputClosed {
         input_id: DataId,
     },
+    Reload,
 }
 
 impl IntoPy<PyObject> for IncomingEvent {
@@ -121,6 +122,7 @@ impl IntoPy<PyObject> for IncomingEvent {
                     .unwrap();
                 "INPUT_CLOSED"
             }
+            Self::Reload => "RELOADED",
         };
 
         dict.set_item("type", ty)

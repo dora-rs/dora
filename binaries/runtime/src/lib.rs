@@ -140,6 +140,12 @@ async fn run(
     let daemon_events = Box::pin(futures::stream::unfold(daemon_events, |mut stream| async {
         let event = stream.recv_async().await.map(|event| match event {
             dora_node_api::Event::Stop => Event::Stop,
+            dora_node_api::Event::Reload {
+                operator_id: Some(operator_id),
+            } => Event::Reload { operator_id },
+            dora_node_api::Event::Reload { operator_id: None } => Event::Error(
+                "Dora runtime node received reload event without operator id".to_string(),
+            ),
             dora_node_api::Event::Input { id, metadata, data } => Event::Input {
                 id,
                 metadata,
@@ -238,6 +244,13 @@ async fn run(
                     let _ = channel.send_async(operator::IncomingEvent::Stop).await;
                 }
             }
+            Event::Reload { operator_id } => {
+                let _ = operator_channels
+                    .get(&operator_id)
+                    .unwrap()
+                    .send_async(operator::IncomingEvent::Reload)
+                    .await;
+            }
             Event::Input { id, metadata, data } => {
                 let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
                     tracing::warn!("received non-operator input {id}");
@@ -327,4 +340,7 @@ enum Event {
     },
     InputClosed(dora_core::config::DataId),
     Error(String),
+    Reload {
+        operator_id: OperatorId,
+    },
 }
