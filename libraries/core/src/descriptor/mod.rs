@@ -2,7 +2,7 @@ use crate::{
     config::{CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     daemon_messages::DaemonCommunicationConfig,
 };
-use eyre::{bail, Result};
+use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_with_expand_env::with_expand_envs;
 use std::{
@@ -13,6 +13,7 @@ use std::{
 };
 pub use visualize::collect_dora_timers;
 
+mod validate;
 mod visualize;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,6 +93,27 @@ impl Descriptor {
         let flowchart = visualize::visualize_nodes(&resolved);
 
         Ok(flowchart)
+    }
+
+    pub async fn read(path: &Path) -> eyre::Result<Descriptor> {
+        let buf = tokio::fs::read(path)
+            .await
+            .context("failed to open given file")?;
+        Descriptor::parse(buf)
+    }
+
+    pub fn blocking_read(path: &Path) -> eyre::Result<Descriptor> {
+        let buf = std::fs::read(path).context("failed to open given file")?;
+        Descriptor::parse(buf)
+    }
+
+    pub fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor> {
+        serde_yaml::from_slice(&buf).context("failed to parse given descriptor")
+    }
+
+    pub fn check(&self, path: &Path, runtime_path: Option<PathBuf>) -> eyre::Result<()> {
+        validate::check_dataflow(self, path, runtime_path)
+            .wrap_err("Dataflow could not be validated.")
     }
 }
 

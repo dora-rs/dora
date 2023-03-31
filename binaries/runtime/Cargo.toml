@@ -33,6 +33,7 @@ tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
 dora-download = { workspace = true }
 flume = "0.10.14"
+clap = { version = "4.0.3", features = ["derive"] }
 
 [features]
 default = ["tracing"]

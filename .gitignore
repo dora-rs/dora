@@ -9,7 +9,8 @@
 *.jpg
 *.png
 
-
+# Remove *.html. Likely be outputed mermaid graph.
+*.html
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
