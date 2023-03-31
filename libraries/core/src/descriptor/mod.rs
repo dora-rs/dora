@@ -20,7 +20,7 @@ mod visualize;
 pub struct Descriptor {
     // see https://github.com/dtolnay/serde-yaml/issues/298
     #[serde(with = "serde_yaml::with::singleton_map")]
-    pub communication: CommunicationConfig,
+    pub communication: Option<CommunicationConfig>,
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub daemon_config: DaemonCommunicationConfig,

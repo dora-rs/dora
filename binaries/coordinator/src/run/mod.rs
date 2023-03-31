@@ -32,10 +32,11 @@ pub async fn spawn_dataflow(
     let nodes = descriptor.resolve_aliases();
     let uuid = Uuid::new_v4();
     let communication_config = {
-        let mut config = descriptor.communication;
-        // add uuid as prefix to ensure isolation
-        config.add_topic_prefix(&uuid.to_string());
-        config
+        let config = descriptor.communication;
+        config.map(|mut config| {
+            config.add_topic_prefix(&uuid.to_string());
+            config
+        })
     };
 
     let spawn_command = SpawnDataflowNodes {
@@ -80,7 +81,7 @@ pub async fn spawn_dataflow(
 
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
-    pub communication_config: CommunicationConfig,
+    pub communication_config: Option<CommunicationConfig>,
     pub machines: BTreeSet<String>,
 }
 

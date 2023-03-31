@@ -360,7 +360,7 @@ async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
 struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
-    communication_config: CommunicationConfig,
+    communication_config: Option<CommunicationConfig>,
     /// The IDs of the machines that the dataflow is running on.
     machines: BTreeSet<String>,
 }
