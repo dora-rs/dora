@@ -40,17 +40,15 @@ pub fn attach_dataflow(
             CoreNodeKind::Custom(_cn) => (),
             CoreNodeKind::Runtime(rn) => {
                 for op in rn.operators.iter() {
-                    match &op.config.source {
-                        dora_core::descriptor::OperatorSource::Python(source) => {
-                            let path = resolve_path(&source, &working_dir).wrap_err_with(|| {
-                                format!("failed to resolve node source `{}`", source)
-                            })?;
-                            node_path_lookup
-                                .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
-                        }
-                        // Reloading non-python operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
-                        _ => (),
+                    if let dora_core::descriptor::OperatorSource::Python(source) = &op.config.source
+                    {
+                        let path = resolve_path(source, &working_dir).wrap_err_with(|| {
+                            format!("failed to resolve node source `{}`", source)
+                        })?;
+                        node_path_lookup
+                            .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
                     }
+                    // Reloading non-python operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
                 }
             }
         }
@@ -61,25 +59,27 @@ pub fn attach_dataflow(
     let _watcher = if hot_reload {
         let hash = node_path_lookup.clone();
         let paths = hash.keys();
-        let notifier = move |event| match event {
-            Ok(NotifyEvent {
+        let notifier = move |event| {
+            if let Ok(NotifyEvent {
                 paths,
                 kind: EventKind::Modify(ModifyKind::Data(_data)),
                 ..
-            }) => {
+            }) = event
+            {
                 for path in paths {
-                    let (dataflow_id, node_id, operator_id) =
-                        node_path_lookup.get(&path).unwrap().clone();
-                    watcher_tx
-                        .send(ControlRequest::Reload {
-                            dataflow_id,
-                            node_id,
-                            operator_id,
-                        })
-                        .unwrap();
+                    if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
+                        watcher_tx
+                            .send(ControlRequest::Reload {
+                                dataflow_id: dataflow_id.clone(),
+                                node_id: node_id.clone(),
+                                operator_id: operator_id.clone(),
+                            })
+                            .context("Could not send reload request to the cli loop")
+                            .unwrap();
+                    }
                 }
+                // TODO: Manage different file event
             }
-            _ => (), // TODO: Manage different file event
         };
 
         let mut watcher = RecommendedWatcher::new(
@@ -96,7 +96,7 @@ pub fn attach_dataflow(
     };
 
     // Setup Ctrlc Watcher to stop dataflow after ctrlc
-    let ctrlc_tx = tx.clone();
+    let ctrlc_tx = tx;
     let mut ctrlc_sent = false;
     ctrlc::set_handler(move || {
         if ctrlc_sent {
