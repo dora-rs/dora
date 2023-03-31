@@ -121,7 +121,7 @@ enum Lang {
 
 fn main() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
-    set_up_tracing().context("failed to set up tracing subscriber")?;
+    set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
     let args = Args::parse();
 
     let mut session = None;
