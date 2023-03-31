@@ -1164,7 +1164,7 @@ import numpy as np
 import torch
 
 from dora import DoraStatus
-    
+
 
 class Operator:
     &quot;&quot;&quot;
@@ -1267,6 +1267,7 @@ for input_id, value, metadata in node:
 import time
 
 import cv2
+
 from dora import Node
 
 node = Node()
@@ -1283,7 +1284,11 @@ while time.time() - start &lt; 10:
         case &quot;INPUT&quot;:
             ret, frame = video_capture.read()
             if ret:
-                node.send_output(&quot;image&quot;, cv2.imencode(&quot;.jpg&quot;, frame)[1].tobytes())
+                node.send_output(
+                    &quot;image&quot;,
+                    cv2.imencode(&quot;.jpg&quot;, frame)[1].tobytes(),
+                    event[&quot;metadata&quot;],
+                )
         case &quot;STOP&quot;:
             print(&quot;received stop&quot;)
             break
