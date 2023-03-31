@@ -188,21 +188,17 @@ impl Listener {
                 } else {
                     Fuse::terminated()
                 };
-                let event = match future::select(next_event, next_message).await {
-                    future::Either::Left((event, n)) => {
+                let event = match future::select(next_message, next_event).await {
+                    future::Either::Left((message, _)) => break message,
+                    future::Either::Right((event, n)) => {
                         next_message = n;
                         event
                     }
-                    future::Either::Right((message, _)) => break message,
                 };
 
                 if let Some(event) = event {
                     self.queue.push_back(Box::new(Some(event)));
                     self.handle_events().await?;
-                } else {
-                    // the channel is disconnected
-                    drop(next_message);
-                    break Ok(None);
                 }
             };
 
