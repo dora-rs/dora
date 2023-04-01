@@ -10,8 +10,9 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use tracing::info;
 
-use super::Descriptor;
+use super::{Descriptor, SHELL_SOURCE};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_dataflow(
@@ -27,28 +28,31 @@ pub fn check_dataflow(
     // check that nodes and operators exist
     for node in &nodes {
         match &node.kind {
-            descriptor::CoreNodeKind::Custom(node) => {
-                let path = if source_is_url(&node.source) {
-                    todo!("check URL");
-                } else {
-                    let raw = Path::new(&node.source);
-                    if raw.extension().is_none() {
-                        raw.with_extension(EXE_EXTENSION)
+            descriptor::CoreNodeKind::Custom(node) => match node.source.as_str() {
+                SHELL_SOURCE => (),
+                source => {
+                    if source_is_url(source) {
+                        info!("{source} is a URL."); // TODO: Implement url check.
                     } else {
-                        raw.to_owned()
-                    }
-                };
-                base.join(&path)
-                    .canonicalize()
-                    .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?;
-            }
+                        let raw = Path::new(source);
+                        let path = if raw.extension().is_none() {
+                            raw.with_extension(EXE_EXTENSION)
+                        } else {
+                            raw.to_owned()
+                        };
+                        base.join(&path)
+                            .canonicalize()
+                            .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?;
+                    };
+                }
+            },
             descriptor::CoreNodeKind::Runtime(node) => {
                 for operator_definition in &node.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
                             has_shared_lib_operator = true;
                             if source_is_url(path) {
-                                todo!("check URL");
+                                info!("{path} is a URL."); // TODO: Implement url check.
                             } else {
                                 let path = adjust_shared_library_path(Path::new(&path))?;
                                 if !base.join(&path).exists() {
@@ -59,14 +63,14 @@ pub fn check_dataflow(
                         OperatorSource::Python(path) => {
                             has_python_operator = true;
                             if source_is_url(path) {
-                                todo!("check URL");
+                                info!("{path} is a URL."); // TODO: Implement url check.
                             } else if !base.join(path).exists() {
                                 bail!("no Python library at `{path}`");
                             }
                         }
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
-                                todo!("check URL");
+                                info!("{path} is a URL."); // TODO: Implement url check.
                             } else if !base.join(path).exists() {
                                 bail!("no WASM library at `{path}`");
                             }
