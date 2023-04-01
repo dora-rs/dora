@@ -15,6 +15,7 @@ pub use visualize::collect_dora_timers;
 
 mod validate;
 mod visualize;
+pub const SHELL_SOURCE: &str = "shell";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
