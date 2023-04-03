@@ -5,14 +5,12 @@ use crate::{
 use dora_core::{
     config::NodeRunConfig,
     daemon_messages::{DaemonCommunicationConfig, DataflowId, NodeConfig, RuntimeConfig},
-    descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode},
+    descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode, SHELL_SOURCE},
 };
 use dora_download::download_file;
 use eyre::WrapErr;
 use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
 use tokio::sync::mpsc;
-
-const SHELL_SOURCE: &str = "shell";
 
 pub async fn spawn_node(
     dataflow_id: DataflowId,
