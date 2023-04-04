@@ -117,11 +117,22 @@ impl Node {
     pub fn send_output(
         &mut self,
         output_id: String,
-        data: PyObject,
+        data: &PyBytes,
+        metadata: Option<&PyDict>,
+        _py: Python,
+    ) -> eyre::Result<()> {
+        let data = data.as_bytes();
+        self.send_output_slice(output_id, data.len(), data, metadata)
+    }
+
+    pub fn send_output_arrow(
+        &mut self,
+        output_id: String,
+        data_arrow: PyObject,
         metadata: Option<&PyDict>,
         py: Python,
     ) -> eyre::Result<()> {
-        let data = arrow::array::ArrayData::from_pyarrow(data.as_ref(py))
+        let data = arrow::array::ArrayData::from_pyarrow(data_arrow.as_ref(py))
             .wrap_err("failed to read data as Arrow array")?;
         if data.buffers().len() != 1 {
             eyre::bail!("output arrow array must contain a single buffer");
@@ -130,12 +141,24 @@ impl Node {
         let len = data.len();
         let slice = &data.buffer(0)[..len];
 
+        self.send_output_slice(output_id, len, slice, metadata)
+    }
+}
+
+impl Node {
+    fn send_output_slice(
+        &mut self,
+        output_id: String,
+        len: usize,
+        data: &[u8],
+        metadata: Option<&PyDict>,
+    ) -> eyre::Result<()> {
         let metadata = pydict_to_metadata(metadata)?;
         self.node
             .send_output(output_id.into(), metadata, len, |out| {
-                out.copy_from_slice(slice);
+                out.copy_from_slice(data);
             })
-            .wrap_err("Could not send output")
+            .wrap_err("failed to send output")
     }
 
     pub fn id(&self) -> String {
