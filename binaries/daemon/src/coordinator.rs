@@ -30,7 +30,10 @@ pub async fn register(
     stream
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
-    let register = serde_json::to_vec(&CoordinatorRequest::Register { machine_id })?;
+    let register = serde_json::to_vec(&CoordinatorRequest::Register {
+        machine_id,
+        dora_version: env!("CARGO_PKG_VERSION").to_owned(),
+    })?;
     tcp_send(&mut stream, &register)
         .await
         .wrap_err("failed to send register request to dora-coordinator")?;
