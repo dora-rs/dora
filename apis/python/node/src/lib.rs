@@ -3,7 +3,7 @@
 use arrow::pyarrow::PyArrowConvert;
 use dora_node_api::{DoraNode, Event, EventStream};
 use dora_operator_api_python::{metadata_to_pydict, pydict_to_metadata};
-use eyre::{Context, Result};
+use eyre::Context;
 use pyo3::exceptions::PyLookupError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -95,7 +95,7 @@ impl PyEvent {
 #[pymethods]
 impl Node {
     #[new]
-    pub fn new() -> Result<Self> {
+    pub fn new() -> eyre::Result<Self> {
         let (node, events) = DoraNode::init_from_env()?;
 
         Ok(Node { events, node })
@@ -120,7 +120,7 @@ impl Node {
         data: PyObject,
         metadata: Option<&PyDict>,
         py: Python,
-    ) -> Result<()> {
+    ) -> eyre::Result<()> {
         let data = arrow::array::ArrayData::from_pyarrow(data.as_ref(py))
             .wrap_err("failed to read data as Arrow array")?;
         if data.buffers().len() != 1 {
@@ -144,7 +144,7 @@ impl Node {
 }
 
 #[pyfunction]
-fn start_runtime() -> Result<()> {
+fn start_runtime() -> eyre::Result<()> {
     dora_runtime::main().wrap_err("Dora Runtime raised an error.")
 }
 
