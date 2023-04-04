@@ -15,11 +15,13 @@ pub use visualize::collect_dora_timers;
 
 mod validate;
 mod visualize;
+pub const SHELL_SOURCE: &str = "shell";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
     // see https://github.com/dtolnay/serde-yaml/issues/298
+    #[serde(default)]
     #[serde(with = "serde_yaml::with::singleton_map")]
     pub communication: Option<CommunicationConfig>,
     pub nodes: Vec<Node>,
