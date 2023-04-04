@@ -4,63 +4,91 @@ use arrow::pyarrow::PyArrowConvert;
 use dora_node_api::{DoraNode, Event, EventStream};
 use dora_operator_api_python::{metadata_to_pydict, pydict_to_metadata};
 use eyre::{Context, Result};
+use pyo3::exceptions::PyLookupError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict};
+
 #[pyclass]
 pub struct Node {
     events: EventStream,
     node: DoraNode,
 }
 
-pub struct PyInput(Event);
+#[pyclass]
+pub struct PyEvent(Event);
 
-impl IntoPy<PyObject> for PyInput {
-    fn into_py(self, py: Python) -> PyObject {
-        let dict = PyDict::new(py);
-
-        let ty = match self.0 {
-            Event::Stop => "STOP",
-            Event::Input { id, metadata, data } => {
-                dict.set_item("id", id.to_string())
-                    .wrap_err("failed to add input ID")
-                    .unwrap();
-                if let Some(data) = data {
-                    let array = data.into_arrow_array();
-                    // TODO: Does this call leak data?
-                    let array_data = array
-                        .to_pyarrow(py)
-                        .wrap_err("failed to convert arrow data to Python")
-                        .unwrap();
-                    dict.set_item("data", array_data)
-                        .wrap_err("failed to add input data")
-                        .unwrap();
-                }
-
-                dict.set_item("metadata", metadata_to_pydict(&metadata, py))
-                    .wrap_err("failed to add input metadata")
-                    .unwrap();
-                "INPUT"
+#[pymethods]
+impl PyEvent {
+    pub fn __getitem__(&mut self, key: &str, py: Python<'_>) -> PyResult<PyObject> {
+        let value = match key {
+            "type" => Some(self.ty().to_object(py)),
+            "id" => self.id().map(|v| v.to_object(py)),
+            "data" => self.data(py),
+            "data_arrow" => self.data_arrow(py)?,
+            "metadata" => self.metadata(py),
+            "error" => self.error().map(|v| v.to_object(py)),
+            other => {
+                return Err(PyLookupError::new_err(format!(
+                    "event has no property `{other}`"
+                )))
             }
-            Event::InputClosed { id } => {
-                dict.set_item("id", id.to_string())
-                    .wrap_err("failed to add closed-input ID")
-                    .unwrap();
-                "INPUT_CLOSED"
-            }
-            Event::Error(err) => {
-                dict.set_item("error", err)
-                    .wrap_err("failed to add error")
-                    .unwrap();
-                "ERROR"
-            }
-            _other => "UNKNOWN",
         };
+        value.ok_or_else(|| PyLookupError::new_err(format!("event has no property `{key}`")))
+    }
+}
 
-        dict.set_item("type", ty)
-            .wrap_err("could not make type a python dictionary item")
-            .unwrap();
+impl PyEvent {
+    fn ty(&self) -> &str {
+        match &self.0 {
+            Event::Stop => "STOP",
+            Event::Input { .. } => "INPUT",
+            Event::InputClosed { .. } => "INPUT_CLOSED",
+            Event::Error(_) => "ERROR",
+            _other => "UNKNOWN",
+        }
+    }
 
-        dict.into()
+    fn id(&self) -> Option<&str> {
+        match &self.0 {
+            Event::Input { id, .. } => Some(id),
+            Event::InputClosed { id } => Some(id),
+            _ => None,
+        }
+    }
+
+    fn data(&self, py: Python<'_>) -> Option<PyObject> {
+        match &self.0 {
+            Event::Input {
+                data: Some(data), ..
+            } => Some(PyBytes::new(py, data).into()),
+            _ => None,
+        }
+    }
+
+    fn data_arrow(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        if let Event::Input { data, .. } = &mut self.0 {
+            if let Some(data) = data.take() {
+                let array = data.into_arrow_array();
+                // TODO: Does this call leak data?
+                let array_data = array.to_pyarrow(py)?;
+                return Ok(Some(array_data));
+            }
+        }
+        Ok(None)
+    }
+
+    fn metadata(&self, py: Python<'_>) -> Option<PyObject> {
+        match &self.0 {
+            Event::Input { metadata, .. } => Some(metadata_to_pydict(metadata, py).to_object(py)),
+            _ => None,
+        }
+    }
+
+    fn error(&self) -> Option<&str> {
+        match &self.0 {
+            Event::Error(error) => Some(error),
+            _other => None,
+        }
     }
 }
 
@@ -74,12 +102,12 @@ impl Node {
     }
 
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> PyResult<Option<PyInput>> {
+    pub fn next(&mut self) -> PyResult<Option<PyEvent>> {
         self.__next__()
     }
 
-    pub fn __next__(&mut self) -> PyResult<Option<PyInput>> {
-        Ok(self.events.recv().map(PyInput))
+    pub fn __next__(&mut self) -> PyResult<Option<PyEvent>> {
+        Ok(self.events.recv().map(PyEvent))
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
