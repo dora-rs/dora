@@ -150,11 +150,14 @@ pub fn run(
                         .into();
 
                     // Replace initialized state with current state
-                    for (key, value) in current_state.iter() {
-                        operator.setattr(py, key, value).wrap_err(format!(
-                            "Could not set previous `{key}` value for reloaded operator"
-                        ))?;
-                    }
+                    operator
+                        .getattr(py, "__dict__")
+                        .wrap_err("Could not retrieve new operator state")?
+                        .extract::<&PyDict>(py)
+                        .wrap_err("could not extract new operator state as a PyDict")?
+                        .update(current_state.as_mapping())
+                        .wrap_err("could not restore operator state")?;
+
                     Ok(operator)
                 }) {
                     Ok(reloaded_operator) => {
