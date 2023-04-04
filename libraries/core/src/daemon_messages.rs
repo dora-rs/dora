@@ -37,6 +37,7 @@ pub enum DaemonRequest {
     Register {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        dora_version: String,
     },
     Subscribe,
     SendMessage {
