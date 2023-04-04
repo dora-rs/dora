@@ -105,28 +105,41 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
             Event::DaemonConnectError(err) => {
                 tracing::warn!("{:?}", err.wrap_err("failed to connect to dora-daemon"));
             }
-            Event::Daemon(event) => {
-                match event {
-                    DaemonEvent::Register {
-                        machine_id,
-                        mut connection,
-                    } => {
-                        let reply = RegisterResult::Ok;
-                        match tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await {
-                            Ok(()) => {
-                                let previous =
-                                    daemon_connections.insert(machine_id.clone(), connection);
-                                if let Some(_previous) = previous {
-                                    tracing::info!("closing previous connection `{machine_id}` on new register");
-                                }
+            Event::Daemon(event) => match event {
+                DaemonEvent::Register {
+                    machine_id,
+                    mut connection,
+                    dora_version: daemon_version,
+                } => {
+                    let coordinator_version = &env!("CARGO_PKG_VERSION");
+                    let reply = if &daemon_version == coordinator_version {
+                        RegisterResult::Ok
+                    } else {
+                        RegisterResult::Err(format!(
+                            "version mismatch: daemon v{daemon_version} is \
+                            not compatible with coordinator v{coordinator_version}"
+                        ))
+                    };
+                    let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await;
+                    match (reply, send_result) {
+                        (RegisterResult::Ok, Ok(())) => {
+                            let previous =
+                                daemon_connections.insert(machine_id.clone(), connection);
+                            if let Some(_previous) = previous {
+                                tracing::info!(
+                                    "closing previous connection `{machine_id}` on new register"
+                                );
                             }
-                            Err(err) => {
-                                tracing::warn!("failed to register daemon connection for machine `{machine_id}`: {err}");
-                            }
+                        }
+                        (RegisterResult::Err(err), _) => {
+                            tracing::warn!("failed to register daemon connection for machine `{machine_id}`: {err}");
+                        }
+                        (RegisterResult::Ok, Err(err)) => {
+                            tracing::warn!("failed to confirm daemon connection for machine `{machine_id}`: {err}");
                         }
                     }
                 }
-            }
+            },
             Event::Dataflow { uuid, event } => match event {
                 DataflowEvent::DataflowFinishedOnMachine { machine_id, result } => {
                     match running_dataflows.entry(uuid) {
@@ -564,5 +577,6 @@ pub enum DaemonEvent {
     Register {
         machine_id: String,
         connection: TcpStream,
+        dora_version: String,
     },
 }
