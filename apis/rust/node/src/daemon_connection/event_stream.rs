@@ -13,6 +13,7 @@ use crate::{event::Data, Event, MappedInputData};
 use super::{DaemonChannel, EventStreamThreadHandle};
 
 pub struct EventStream {
+    node_id: NodeId,
     receiver: flume::Receiver<EventItem>,
     _thread_handle: Arc<EventStreamThreadHandle>,
 }
@@ -35,15 +36,17 @@ impl EventStream {
             .wrap_err("failed to create subscription with dora-daemon")?;
 
         let (tx, rx) = flume::bounded(0);
-        let node_id = node_id.clone();
+        let node_id_cloned = node_id.clone();
         let (finished_drop_tokens, finished_drop_tokens_rx) = flume::unbounded();
 
-        let join_handle =
-            std::thread::spawn(|| event_stream_loop(node_id, tx, channel, finished_drop_tokens));
+        let join_handle = std::thread::spawn(|| {
+            event_stream_loop(node_id_cloned, tx, channel, finished_drop_tokens)
+        });
         let thread_handle = EventStreamThreadHandle::new(join_handle);
 
         Ok((
             EventStream {
+                node_id: node_id.clone(),
                 receiver: rx,
                 _thread_handle: thread_handle.clone(),
             },
@@ -62,11 +65,12 @@ impl EventStream {
         self.recv_common(event)
     }
 
+    #[tracing::instrument(skip(self), fields(%self.node_id))]
     fn recv_common(&mut self, event: Result<EventItem, flume::RecvError>) -> Option<Event> {
         let event = match event {
             Ok(event) => event,
             Err(flume::RecvError::Disconnected) => {
-                tracing::info!("event channel disconnected");
+                tracing::trace!("event channel disconnected");
                 return None;
             }
         };
@@ -121,6 +125,7 @@ impl EventStream {
     }
 }
 
+#[tracing::instrument(skip(tx, channel, finished_drop_tokens))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: flume::Sender<EventItem>,
