@@ -50,6 +50,9 @@ pub enum DaemonRequest {
     NextEvent {
         drop_tokens: Vec<DropToken>,
     },
+    ReportDropTokens {
+        drop_tokens: Vec<DropToken>,
+    },
 }
 
 impl DaemonRequest {

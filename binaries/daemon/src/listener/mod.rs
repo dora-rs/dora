@@ -364,6 +364,13 @@ impl Listener {
                     .await
                     .wrap_err("failed to send NextEvent reply")?;
             }
+            DaemonRequest::ReportDropTokens { drop_tokens } => {
+                self.report_drop_tokens(drop_tokens).await?;
+
+                self.send_reply(DaemonReply::Empty, connection)
+                    .await
+                    .wrap_err("failed to send ReportDropTokens reply")?;
+            }
         }
         Ok(())
     }
