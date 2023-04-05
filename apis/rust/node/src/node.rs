@@ -203,6 +203,19 @@ impl DoraNode {
 impl Drop for DoraNode {
     #[tracing::instrument(skip(self), fields(self.id = %self.id), level = "trace")]
     fn drop(&mut self) {
+        // close all outputs first to notify subscribers as early as possible
+        if let Err(err) = self
+            .control_channel
+            .report_closed_outputs(
+                std::mem::take(&mut self.node_config.outputs)
+                    .into_iter()
+                    .collect(),
+            )
+            .context("failed to close outputs on drop")
+        {
+            tracing::warn!("{err:?}")
+        }
+
         if !self.sent_out_shared_memory.is_empty() {
             tracing::debug!(
                 "waiting for {} remaining drop tokens",
