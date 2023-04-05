@@ -33,23 +33,20 @@ pub enum Data {
     },
 }
 impl Data {
-    pub fn into_arrow_array(self) -> arrow::array::ArrayData {
+    pub fn into_arrow_array(self) -> Result<arrow::array::ArrayData, arrow::error::ArrowError> {
         let ptr = NonNull::new(self.as_ptr() as *mut _).unwrap();
         let len = self.len();
         let owner = Arc::new(self);
 
         let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, owner) };
-        unsafe {
-            arrow::array::ArrayData::new_unchecked(
-                arrow::datatypes::DataType::UInt8,
-                len,
-                Some(0),
-                None,
-                0,
-                vec![buffer],
-                vec![],
-            )
-        }
+        arrow::array::ArrayData::try_new(
+            arrow::datatypes::DataType::UInt8,
+            len,
+            None,
+            0,
+            vec![buffer],
+            vec![],
+        )
     }
 }
 

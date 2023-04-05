@@ -68,7 +68,9 @@ impl PyEvent {
     fn data_arrow(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         if let Event::Input { data, .. } = &mut self.0 {
             if let Some(data) = data.take() {
-                let array = data.into_arrow_array();
+                let array = data
+                    .into_arrow_array()
+                    .map_err(|err| arrow::pyarrow::PyArrowException::new_err(err.to_string()))?;
                 // TODO: Does this call leak data?
                 let array_data = array.to_pyarrow(py)?;
                 return Ok(Some(array_data));
