@@ -3,7 +3,10 @@ use dora_core::{
     daemon_messages::{self, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeEvent},
 };
 use eyre::{eyre, Context};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{event::Data, Event, MappedInputData};
 
@@ -125,9 +128,36 @@ fn event_stream_loop(
     finished_drop_tokens: flume::Sender<DropToken>,
 ) {
     let mut tx = Some(tx);
+    let mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)> = Vec::new();
     let mut drop_tokens = Vec::new();
 
     let result = 'outer: loop {
+        // handle pending drop tokens
+        {
+            let mut still_pending = Vec::new();
+            for (token, rx, since, warn) in pending_drop_tokens {
+                match rx.try_recv() {
+                    Ok(()) => {
+                        break 'outer Err(eyre!("Node API should not send anything on ACK channel"))
+                    }
+                    Err(flume::TryRecvError::Disconnected) => {
+                        // the event was dropped -> add the drop token to the list
+                        drop_tokens.push(token);
+                    }
+                    Err(flume::TryRecvError::Empty) => {
+                        let duration = Duration::from_secs(30 * warn);
+                        if since.elapsed() > duration {
+                            tracing::warn!(
+                                "timeout: token {token:?} was not dropped after {duration:?}"
+                            );
+                        }
+                        still_pending.push((token, rx, since, warn + 1));
+                    }
+                }
+            }
+            pending_drop_tokens = still_pending;
+        }
+
         let daemon_request = DaemonRequest::NextEvent {
             drop_tokens: std::mem::take(&mut drop_tokens),
         };
@@ -189,24 +219,8 @@ fn event_stream_loop(
                     }
                 }
 
-                // TODO: don't wait here, instead use shared collection/queue
-                let timeout = Duration::from_secs(30);
-                match drop_rx.recv_timeout(timeout) {
-                    Ok(()) => {
-                        break 'outer Err(eyre!("Node API should not send anything on ACK channel"))
-                    }
-                    Err(flume::RecvTimeoutError::Timeout) => {
-                        tracing::warn!("timeout: event was not dropped after {timeout:?}");
-                        if let Some(drop_token) = drop_token {
-                            tracing::warn!("leaking drop token {drop_token:?}");
-                        }
-                    }
-                    Err(flume::RecvTimeoutError::Disconnected) => {
-                        // the event was dropped -> add the drop token to the list
-                        if let Some(token) = drop_token {
-                            drop_tokens.push(token);
-                        }
-                    }
+                if let Some(token) = drop_token {
+                    pending_drop_tokens.push((token, drop_rx, Instant::now(), 1));
                 }
             } else {
                 tracing::warn!("dropping event because event `tx` was already closed: `{event:?}`");
