@@ -102,12 +102,13 @@ impl Node {
     }
 
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> PyResult<Option<PyEvent>> {
-        self.__next__()
+    pub fn next(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
+        self.__next__(py)
     }
 
-    pub fn __next__(&mut self) -> PyResult<Option<PyEvent>> {
-        Ok(self.events.recv().map(PyEvent))
+    pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
+        let event = py.allow_threads(|| self.events.recv());
+        Ok(event.map(PyEvent))
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
