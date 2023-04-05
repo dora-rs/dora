@@ -803,7 +803,9 @@ where
         .collect();
     for (receiver_id, input_id) in downstream_nodes {
         if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
-            open_inputs.remove(input_id);
+            if !open_inputs.remove(input_id) {
+                continue;
+            }
         }
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
             let _ = channel.send(daemon_messages::NodeEvent::InputClosed {
