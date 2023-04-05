@@ -120,31 +120,25 @@ impl Node {
     pub fn send_output(
         &mut self,
         output_id: String,
-        data: &PyBytes,
-        metadata: Option<&PyDict>,
-        _py: Python,
-    ) -> eyre::Result<()> {
-        let data = data.as_bytes();
-        self.send_output_slice(output_id, data.len(), data, metadata)
-    }
-
-    pub fn send_output_arrow(
-        &mut self,
-        output_id: String,
-        data_arrow: PyObject,
+        data: PyObject,
         metadata: Option<&PyDict>,
         py: Python,
     ) -> eyre::Result<()> {
-        let data = arrow::array::ArrayData::from_pyarrow(data_arrow.as_ref(py))
-            .wrap_err("failed to read data as Arrow array")?;
-        if data.buffers().len() != 1 {
-            eyre::bail!("output arrow array must contain a single buffer");
+        if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
+            let data = py_bytes.as_bytes();
+            self.send_output_slice(output_id, data.len(), data, metadata)
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
+            if arrow_array.buffers().len() != 1 {
+                eyre::bail!("output arrow array must contain a single buffer");
+            }
+
+            let len = arrow_array.len();
+            let slice = &arrow_array.buffer(0)[..len];
+
+            self.send_output_slice(output_id, len, slice, metadata)
+        } else {
+            eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
         }
-
-        let len = data.len();
-        let slice = &data.buffer(0)[..len];
-
-        self.send_output_slice(output_id, len, slice, metadata)
     }
 }
 
