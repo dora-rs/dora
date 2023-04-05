@@ -74,6 +74,7 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
         clang.arg("-lmsimg32");
         clang.arg("-lmswsock");
         clang.arg("-lole32");
+        clang.arg("-loleaut32");
         clang.arg("-lopengl32");
         clang.arg("-lsecur32");
         clang.arg("-lshell32");
