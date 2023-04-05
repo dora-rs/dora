@@ -176,9 +176,16 @@ fn event_stream_loop(
                     ack_channel: drop_tx,
                 }) {
                     Ok(()) => {}
-                    Err(_) => {
-                        // receiving end of channel was closed
-                        break 'outer Ok(());
+                    Err(send_error) => {
+                        let event = send_error.into_inner();
+                        tracing::debug!(
+                            "event channel was closed already, could no forward `{event:?}`"
+                        );
+                        if finished_drop_tokens.is_disconnected() {
+                            // both the event stream and the dora node were dropped
+                            // -> break from the `event_stream_loop`
+                            break 'outer Ok(());
+                        }
                     }
                 }
 
@@ -220,6 +227,8 @@ fn event_stream_loop(
         }
     }
 }
+
+#[derive(Debug)]
 enum EventItem {
     NodeEvent {
         event: NodeEvent,

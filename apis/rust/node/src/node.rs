@@ -236,6 +236,10 @@ impl Drop for DoraNode {
             }
         }
 
+        // close `finished_drop_tokens` to signal event stream thread that no
+        // more drop tokens are expected
+        self.finished_drop_tokens = flume::bounded(0).1;
+
         tracing::info!("reporting node stop for node `{}`", self.id);
         if let Err(err) = self.control_channel.report_stop() {
             tracing::error!("{err:?}")
