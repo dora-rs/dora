@@ -6,6 +6,7 @@ use crate::daemon_messages::DataflowId;
 pub enum CoordinatorRequest {
     Register {
         machine_id: String,
+        dora_version: String,
     },
     Event {
         machine_id: String,

@@ -37,6 +37,7 @@ impl DaemonChannel {
         let msg = DaemonRequest::Register {
             dataflow_id,
             node_id,
+            dora_version: env!("CARGO_PKG_VERSION").to_owned(),
         };
         let reply = self
             .request(&msg)
