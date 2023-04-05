@@ -133,14 +133,23 @@ impl Listener {
             DaemonRequest::Register {
                 dataflow_id,
                 node_id,
+                dora_version: node_api_version,
             } => {
-                let reply = DaemonReply::Result(Ok(()));
-                match connection
-                    .send_reply(reply)
+                let daemon_version = env!("CARGO_PKG_VERSION");
+                let result = if node_api_version == daemon_version {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "version mismatch: node API v{node_api_version} is not compatible \
+                        with daemon v{daemon_version}"
+                    ))
+                };
+                let send_result = connection
+                    .send_reply(DaemonReply::Result(result.clone()))
                     .await
-                    .wrap_err("failed to send register reply")
-                {
-                    Ok(()) => {
+                    .wrap_err("failed to send register reply");
+                match (result, send_result) {
+                    (Ok(()), Ok(())) => {
                         let mut listener = Listener {
                             dataflow_id,
                             node_id,
@@ -158,8 +167,13 @@ impl Listener {
                             Err(err) => tracing::error!("{err:?}"),
                         }
                     }
-                    Err(err) => {
-                        tracing::warn!("{err:?}");
+                    (Err(err), _) => {
+                        tracing::warn!("failed to register node {dataflow_id}/{node_id}: {err}");
+                    }
+                    (Ok(()), Err(err)) => {
+                        tracing::warn!(
+                            "failed send register reply to node {dataflow_id}/{node_id}: {err:?}"
+                        );
                     }
                 }
             }

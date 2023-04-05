@@ -45,10 +45,14 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
 
         // handle the message and translate it to a DaemonEvent
         match message {
-            coordinator_messages::CoordinatorRequest::Register { machine_id } => {
+            coordinator_messages::CoordinatorRequest::Register {
+                machine_id,
+                dora_version,
+            } => {
                 let event = DaemonEvent::Register {
                     machine_id,
                     connection,
+                    dora_version,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
