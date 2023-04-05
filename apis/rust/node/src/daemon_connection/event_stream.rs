@@ -32,113 +32,11 @@ impl EventStream {
             .wrap_err("failed to create subscription with dora-daemon")?;
 
         let (tx, rx) = flume::bounded(0);
-        let mut drop_tokens = Vec::new();
         let node_id = node_id.clone();
         let (finished_drop_tokens, finished_drop_tokens_rx) = flume::unbounded();
 
-        let join_handle = std::thread::spawn(move || {
-            let mut tx = Some(tx);
-            let result = 'outer: loop {
-                let daemon_request = DaemonRequest::NextEvent {
-                    drop_tokens: std::mem::take(&mut drop_tokens),
-                };
-                let events = match channel.request(&daemon_request) {
-                    Ok(DaemonReply::NextEvents(events)) if events.is_empty() => {
-                        tracing::debug!("Event stream closed for node ID `{node_id}`");
-                        break Ok(());
-                    }
-                    Ok(DaemonReply::NextEvents(events)) => events,
-                    Ok(other) => {
-                        let err = eyre!("unexpected control reply: {other:?}");
-                        tracing::warn!("{err:?}");
-                        continue;
-                    }
-                    Err(err) => {
-                        let err = eyre!(err).wrap_err("failed to receive incoming event");
-                        tracing::warn!("{err:?}");
-                        continue;
-                    }
-                };
-                for event in events {
-                    let drop_token = match &event {
-                        NodeEvent::Input {
-                            data: Some(data), ..
-                        } => data.drop_token(),
-                        NodeEvent::AllInputsClosed => {
-                            // close the event stream
-                            tx = None;
-                            // skip this internal event
-                            continue;
-                        }
-                        NodeEvent::OutputDropped { drop_token } => {
-                            if let Err(flume::SendError(token)) =
-                                finished_drop_tokens.send(*drop_token)
-                            {
-                                tracing::error!(
-                                    "failed to report drop_token `{token:?}` to dora node"
-                                );
-                            }
-                            // skip this internal event
-                            continue;
-                        }
-                        _ => None,
-                    };
-
-                    if let Some(tx) = tx.as_ref() {
-                        let (drop_tx, drop_rx) = flume::bounded(0);
-                        match tx.send(EventItem::NodeEvent {
-                            event,
-                            ack_channel: drop_tx,
-                        }) {
-                            Ok(()) => {}
-                            Err(_) => {
-                                // receiving end of channel was closed
-                                break 'outer Ok(());
-                            }
-                        }
-
-                        // TODO: don't wait here, instead use shared collection/queue
-                        let timeout = Duration::from_secs(30);
-                        match drop_rx.recv_timeout(timeout) {
-                            Ok(()) => {
-                                break 'outer Err(eyre!(
-                                    "Node API should not send anything on ACK channel"
-                                ))
-                            }
-                            Err(flume::RecvTimeoutError::Timeout) => {
-                                tracing::warn!("timeout: event was not dropped after {timeout:?}");
-                                if let Some(drop_token) = drop_token {
-                                    tracing::warn!("leaking drop token {drop_token:?}");
-                                }
-                            }
-                            Err(flume::RecvTimeoutError::Disconnected) => {
-                                // the event was dropped -> add the drop token to the list
-                                if let Some(token) = drop_token {
-                                    drop_tokens.push(token);
-                                }
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            "dropping event because event `tx` was already closed: `{event:?}`"
-                        );
-                    }
-                }
-            };
-            if let Err(err) = result {
-                if let Some(tx) = tx.as_ref() {
-                    if let Err(flume::SendError(item)) = tx.send(EventItem::FatalError(err)) {
-                        let err = match item {
-                            EventItem::FatalError(err) => err,
-                            _ => unreachable!(),
-                        };
-                        tracing::error!("failed to report fatal EventStream error: {err:?}");
-                    }
-                } else {
-                    tracing::error!("received error event after `tx` was closed: {err:?}");
-                }
-            }
-        });
+        let join_handle =
+            std::thread::spawn(|| event_stream_loop(node_id, tx, channel, finished_drop_tokens));
         let thread_handle = EventStreamThreadHandle::new(join_handle);
 
         Ok((
@@ -181,7 +79,7 @@ impl EventStream {
                         Some(daemon_messages::Data::SharedMemory {
                             shared_memory_id,
                             len,
-                            drop_token: _, // handled above
+                            drop_token: _, // handled in `event_stream_loop`
                         }) => unsafe {
                             MappedInputData::map(&shared_memory_id, len).map(|data| {
                                 Some(Data::SharedMemory {
@@ -217,6 +115,109 @@ impl EventStream {
         };
 
         Some(event)
+    }
+}
+
+fn event_stream_loop(
+    node_id: NodeId,
+    tx: flume::Sender<EventItem>,
+    mut channel: DaemonChannel,
+    finished_drop_tokens: flume::Sender<DropToken>,
+) {
+    let mut tx = Some(tx);
+    let mut drop_tokens = Vec::new();
+
+    let result = 'outer: loop {
+        let daemon_request = DaemonRequest::NextEvent {
+            drop_tokens: std::mem::take(&mut drop_tokens),
+        };
+        let events = match channel.request(&daemon_request) {
+            Ok(DaemonReply::NextEvents(events)) if events.is_empty() => {
+                tracing::debug!("Event stream closed for node ID `{node_id}`");
+                break Ok(());
+            }
+            Ok(DaemonReply::NextEvents(events)) => events,
+            Ok(other) => {
+                let err = eyre!("unexpected control reply: {other:?}");
+                tracing::warn!("{err:?}");
+                continue;
+            }
+            Err(err) => {
+                let err = eyre!(err).wrap_err("failed to receive incoming event");
+                tracing::warn!("{err:?}");
+                continue;
+            }
+        };
+        for event in events {
+            let drop_token = match &event {
+                NodeEvent::Input {
+                    data: Some(data), ..
+                } => data.drop_token(),
+                NodeEvent::AllInputsClosed => {
+                    // close the event stream
+                    tx = None;
+                    // skip this internal event
+                    continue;
+                }
+                NodeEvent::OutputDropped { drop_token } => {
+                    if let Err(flume::SendError(token)) = finished_drop_tokens.send(*drop_token) {
+                        tracing::error!("failed to report drop_token `{token:?}` to dora node");
+                    }
+                    // skip this internal event
+                    continue;
+                }
+                _ => None,
+            };
+
+            if let Some(tx) = tx.as_ref() {
+                let (drop_tx, drop_rx) = flume::bounded(0);
+                match tx.send(EventItem::NodeEvent {
+                    event,
+                    ack_channel: drop_tx,
+                }) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        // receiving end of channel was closed
+                        break 'outer Ok(());
+                    }
+                }
+
+                // TODO: don't wait here, instead use shared collection/queue
+                let timeout = Duration::from_secs(30);
+                match drop_rx.recv_timeout(timeout) {
+                    Ok(()) => {
+                        break 'outer Err(eyre!("Node API should not send anything on ACK channel"))
+                    }
+                    Err(flume::RecvTimeoutError::Timeout) => {
+                        tracing::warn!("timeout: event was not dropped after {timeout:?}");
+                        if let Some(drop_token) = drop_token {
+                            tracing::warn!("leaking drop token {drop_token:?}");
+                        }
+                    }
+                    Err(flume::RecvTimeoutError::Disconnected) => {
+                        // the event was dropped -> add the drop token to the list
+                        if let Some(token) = drop_token {
+                            drop_tokens.push(token);
+                        }
+                    }
+                }
+            } else {
+                tracing::warn!("dropping event because event `tx` was already closed: `{event:?}`");
+            }
+        }
+    };
+    if let Err(err) = result {
+        if let Some(tx) = tx.as_ref() {
+            if let Err(flume::SendError(item)) = tx.send(EventItem::FatalError(err)) {
+                let err = match item {
+                    EventItem::FatalError(err) => err,
+                    _ => unreachable!(),
+                };
+                tracing::error!("failed to report fatal EventStream error: {err:?}");
+            }
+        } else {
+            tracing::error!("received error event after `tx` was closed: {err:?}");
+        }
     }
 }
 enum EventItem {
