@@ -132,30 +132,8 @@ fn event_stream_loop(
     let mut drop_tokens = Vec::new();
 
     let result = 'outer: loop {
-        // handle pending drop tokens
-        {
-            let mut still_pending = Vec::new();
-            for (token, rx, since, warn) in pending_drop_tokens {
-                match rx.try_recv() {
-                    Ok(()) => {
-                        break 'outer Err(eyre!("Node API should not send anything on ACK channel"))
-                    }
-                    Err(flume::TryRecvError::Disconnected) => {
-                        // the event was dropped -> add the drop token to the list
-                        drop_tokens.push(token);
-                    }
-                    Err(flume::TryRecvError::Empty) => {
-                        let duration = Duration::from_secs(30 * warn);
-                        if since.elapsed() > duration {
-                            tracing::warn!(
-                                "timeout: token {token:?} was not dropped after {duration:?}"
-                            );
-                        }
-                        still_pending.push((token, rx, since, warn + 1));
-                    }
-                }
-            }
-            pending_drop_tokens = still_pending;
+        if let Err(err) = handle_pending_drop_tokens(&mut pending_drop_tokens, &mut drop_tokens) {
+            break 'outer Err(err);
         }
 
         let daemon_request = DaemonRequest::NextEvent {
@@ -240,6 +218,31 @@ fn event_stream_loop(
             tracing::error!("received error event after `tx` was closed: {err:?}");
         }
     }
+}
+
+fn handle_pending_drop_tokens(
+    pending_drop_tokens: &mut Vec<(DropToken, flume::Receiver<()>, Instant, u64)>,
+    drop_tokens: &mut Vec<DropToken>,
+) -> eyre::Result<()> {
+    let mut still_pending = Vec::new();
+    for (token, rx, since, warn) in pending_drop_tokens.drain(..) {
+        match rx.try_recv() {
+            Ok(()) => return Err(eyre!("Node API should not send anything on ACK channel")),
+            Err(flume::TryRecvError::Disconnected) => {
+                // the event was dropped -> add the drop token to the list
+                drop_tokens.push(token);
+            }
+            Err(flume::TryRecvError::Empty) => {
+                let duration = Duration::from_secs(30 * warn);
+                if since.elapsed() > duration {
+                    tracing::warn!("timeout: token {token:?} was not dropped after {duration:?}");
+                }
+                still_pending.push((token, rx, since, warn + 1));
+            }
+        }
+    }
+    *pending_drop_tokens = still_pending;
+    Ok(())
 }
 
 #[derive(Debug)]
