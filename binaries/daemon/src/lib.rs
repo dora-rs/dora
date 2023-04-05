@@ -532,6 +532,15 @@ impl Daemon {
             Some(Data::Vec(v)) => (Some(v), None),
         };
         if let Some(token) = drop_token {
+            // insert token into `pending_drop_tokens` even if there are no local subscribers
+            dataflow
+                .pending_drop_tokens
+                .entry(token)
+                .or_insert_with(|| DropTokenInformation {
+                    owner: node_id.clone(),
+                    pending_nodes: Default::default(),
+                });
+            // check if all local subscribers are finished with the token
             dataflow.check_drop_token(token).await?;
         }
         // TODO: Send the data to remote daemon instances if the dataflow
