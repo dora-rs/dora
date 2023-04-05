@@ -205,7 +205,7 @@ impl Drop for DoraNode {
     fn drop(&mut self) {
         if !self.sent_out_shared_memory.is_empty() {
             tracing::info!(
-                "waiting for `{}` remaining drop tokens",
+                "waiting for {} remaining drop tokens",
                 self.sent_out_shared_memory.len()
             );
         }
@@ -217,11 +217,18 @@ impl Drop for DoraNode {
                 Ok(token) => {
                     self.sent_out_shared_memory.remove(&token);
                 }
-                Err(flume::RecvTimeoutError::Disconnected) => break,
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    tracing::warn!(
+                        "finished_drop_tokens channel closed while still waiting for drop tokens; \
+                        closing {} shared memory regions that might still be used",
+                        self.sent_out_shared_memory.len()
+                    );
+                    break;
+                }
                 Err(flume::RecvTimeoutError::Timeout) => {
                     tracing::warn!(
                         "timeout while waiting for drop tokens; \
-                            leaking {} shared memory regions",
+                        closing {} shared memory regions that might still be used",
                         self.sent_out_shared_memory.len()
                     );
                 }
