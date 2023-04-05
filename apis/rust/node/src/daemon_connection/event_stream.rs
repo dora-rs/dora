@@ -223,6 +223,12 @@ fn event_stream_loop(
             tracing::error!("received error event after `tx` was closed: {err:?}");
         }
     }
+
+    if let Err(err) = report_remaining_drop_tokens(channel, drop_tokens, pending_drop_tokens)
+        .context("failed to report remaining drop tokens")
+    {
+        tracing::warn!("{err:?}");
+    }
 }
 
 fn handle_pending_drop_tokens(
@@ -248,6 +254,59 @@ fn handle_pending_drop_tokens(
     }
     *pending_drop_tokens = still_pending;
     Ok(())
+}
+
+fn report_remaining_drop_tokens(
+    mut channel: DaemonChannel,
+    mut drop_tokens: Vec<DropToken>,
+    mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)>,
+) -> eyre::Result<()> {
+    while !(pending_drop_tokens.is_empty() && drop_tokens.is_empty()) {
+        report_drop_tokens(&mut drop_tokens, &mut channel)?;
+
+        let mut still_pending = Vec::new();
+        for (token, rx, since, _) in pending_drop_tokens.drain(..) {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(()) => return Err(eyre!("Node API should not send anything on ACK channel")),
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    // the event was dropped -> add the drop token to the list
+                    drop_tokens.push(token);
+                }
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    let duration = Duration::from_secs(30);
+                    if since.elapsed() > duration {
+                        tracing::warn!(
+                            "timeout: node finished, but token {token:?} was still not \
+                            dropped after {duration:?} -> ignoring it"
+                        );
+                    } else {
+                        still_pending.push((token, rx, since, 0));
+                    }
+                }
+            }
+        }
+        tracing::debug!("waiting for drop for {} events", still_pending.len());
+        pending_drop_tokens = still_pending;
+    }
+
+    Ok(())
+}
+
+fn report_drop_tokens(
+    drop_tokens: &mut Vec<DropToken>,
+    channel: &mut DaemonChannel,
+) -> Result<(), eyre::ErrReport> {
+    if drop_tokens.is_empty() {
+        return Ok(());
+    }
+    let daemon_request = DaemonRequest::ReportDropTokens {
+        drop_tokens: std::mem::take(drop_tokens),
+    };
+    let reply = channel.request(&daemon_request)?;
+    match reply {
+        dora_core::daemon_messages::DaemonReply::Empty => Ok(()),
+        other => Err(eyre!("unexpected ReportDropTokens reply: {other:?}")),
+    }
 }
 
 #[derive(Debug)]
