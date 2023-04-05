@@ -204,7 +204,7 @@ impl Drop for DoraNode {
     #[tracing::instrument(skip(self), fields(self.id = %self.id), level = "trace")]
     fn drop(&mut self) {
         if !self.sent_out_shared_memory.is_empty() {
-            tracing::info!(
+            tracing::debug!(
                 "waiting for {} remaining drop tokens",
                 self.sent_out_shared_memory.len()
             );
@@ -240,9 +240,9 @@ impl Drop for DoraNode {
         // more drop tokens are expected
         self.finished_drop_tokens = flume::bounded(0).1;
 
-        tracing::info!("reporting node stop for node `{}`", self.id);
+        tracing::debug!("reporting node stop for node `{}`", self.id);
         if let Err(err) = self.control_channel.report_stop() {
-            tracing::error!("{err:?}")
+            tracing::warn!("{err:?}")
         }
     }
 }
