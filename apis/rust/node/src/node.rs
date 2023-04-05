@@ -231,6 +231,7 @@ impl Drop for DoraNode {
                         closing {} shared memory regions that might still be used",
                         self.sent_out_shared_memory.len()
                     );
+                    break;
                 }
             }
         }
