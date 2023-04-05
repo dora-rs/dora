@@ -71,16 +71,18 @@ impl std::fmt::Debug for Data {
 }
 
 pub struct MappedInputData {
-    memory: Shmem,
+    memory: Box<Shmem>,
     len: usize,
 }
 
 impl MappedInputData {
     pub(crate) unsafe fn map(shared_memory_id: &str, len: usize) -> eyre::Result<Self> {
-        let memory = ShmemConf::new()
-            .os_id(shared_memory_id)
-            .open()
-            .wrap_err("failed to map shared memory input")?;
+        let memory = Box::new(
+            ShmemConf::new()
+                .os_id(shared_memory_id)
+                .open()
+                .wrap_err("failed to map shared memory input")?,
+        );
         Ok(MappedInputData { memory, len })
     }
 }
