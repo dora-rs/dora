@@ -24,7 +24,7 @@ impl PyEvent {
             "type" => Some(self.ty().to_object(py)),
             "id" => self.id().map(|v| v.to_object(py)),
             "data" => self.data(py),
-            "data_arrow" => self.data_arrow(py)?,
+            "value" => self.value(py)?,
             "metadata" => self.metadata(py),
             "error" => self.error().map(|v| v.to_object(py)),
             other => {
@@ -56,6 +56,7 @@ impl PyEvent {
         }
     }
 
+    /// Returns the payload of an input event as a `PyBytes` object (if any).
     fn data(&self, py: Python<'_>) -> Option<PyObject> {
         match &self.0 {
             Event::Input {
@@ -65,7 +66,8 @@ impl PyEvent {
         }
     }
 
-    fn data_arrow(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    /// Returns the payload of an input event as an arrow array (if any).
+    fn value(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         if let Event::Input { data, .. } = &mut self.0 {
             if let Some(data) = data.take() {
                 let array = data
