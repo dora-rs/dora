@@ -3,10 +3,7 @@ use dora_core::{
     daemon_messages::{self, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeEvent},
 };
 use eyre::{eyre, Context};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use crate::{event::Data, Event, MappedInputData};
 
@@ -15,7 +12,7 @@ use super::{DaemonChannel, EventStreamThreadHandle};
 pub struct EventStream {
     node_id: NodeId,
     receiver: flume::Receiver<EventItem>,
-    _thread_handle: Arc<EventStreamThreadHandle>,
+    _thread_handle: EventStreamThreadHandle,
 }
 
 impl EventStream {
@@ -23,11 +20,7 @@ impl EventStream {
         dataflow_id: DataflowId,
         node_id: &NodeId,
         mut channel: DaemonChannel,
-    ) -> eyre::Result<(
-        Self,
-        Arc<EventStreamThreadHandle>,
-        flume::Receiver<DropToken>,
-    )> {
+    ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone())?;
 
         channel
@@ -37,22 +30,15 @@ impl EventStream {
 
         let (tx, rx) = flume::bounded(0);
         let node_id_cloned = node_id.clone();
-        let (finished_drop_tokens, finished_drop_tokens_rx) = flume::unbounded();
 
-        let join_handle = std::thread::spawn(|| {
-            event_stream_loop(node_id_cloned, tx, channel, finished_drop_tokens)
-        });
+        let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel));
         let thread_handle = EventStreamThreadHandle::new(join_handle);
 
-        Ok((
-            EventStream {
-                node_id: node_id.clone(),
-                receiver: rx,
-                _thread_handle: thread_handle.clone(),
-            },
-            thread_handle,
-            finished_drop_tokens_rx,
-        ))
+        Ok(EventStream {
+            node_id: node_id.clone(),
+            receiver: rx,
+            _thread_handle: thread_handle,
+        })
     }
 
     pub fn recv(&mut self) -> Option<Event> {
@@ -108,13 +94,6 @@ impl EventStream {
                     tracing::error!("{err:?}");
                     Event::Error(err.wrap_err("internal error").to_string())
                 }
-                NodeEvent::OutputDropped { .. } => {
-                    let err = eyre!(
-                        "received OutputDrop event, which should be handled by background task"
-                    );
-                    tracing::error!("{err:?}");
-                    Event::Error(err.wrap_err("internal error").to_string())
-                }
             },
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
@@ -125,13 +104,8 @@ impl EventStream {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, finished_drop_tokens))]
-fn event_stream_loop(
-    node_id: NodeId,
-    tx: flume::Sender<EventItem>,
-    mut channel: DaemonChannel,
-    finished_drop_tokens: flume::Sender<DropToken>,
-) {
+#[tracing::instrument(skip(tx, channel))]
+fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel: DaemonChannel) {
     let mut tx = Some(tx);
     let mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)> = Vec::new();
     let mut drop_tokens = Vec::new();
@@ -172,13 +146,6 @@ fn event_stream_loop(
                     // skip this internal event
                     continue;
                 }
-                NodeEvent::OutputDropped { drop_token } => {
-                    if let Err(flume::SendError(token)) = finished_drop_tokens.send(*drop_token) {
-                        tracing::error!("failed to report drop_token `{token:?}` to dora node");
-                    }
-                    // skip this internal event
-                    continue;
-                }
                 _ => None,
             };
 
@@ -191,14 +158,11 @@ fn event_stream_loop(
                     Ok(()) => {}
                     Err(send_error) => {
                         let event = send_error.into_inner();
-                        tracing::debug!(
+                        tracing::trace!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
-                        if finished_drop_tokens.is_disconnected() {
-                            // both the event stream and the dora node were dropped
-                            // -> break from the `event_stream_loop`
-                            break 'outer Ok(());
-                        }
+
+                        break 'outer Ok(());
                     }
                 }
 

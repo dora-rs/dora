@@ -385,6 +385,16 @@ impl Daemon {
                     dataflow.start(&self.events_tx).await?;
                 }
             }
+            DaemonNodeEvent::SubscribeDrop {
+                event_sender,
+                reply_sender,
+            } => {
+                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                    format!("failed to subscribe: no running dataflow with ID `{dataflow_id}`")
+                })?;
+                dataflow.drop_channels.insert(node_id, event_sender);
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+            }
             DaemonNodeEvent::CloseOutputs {
                 outputs,
                 reply_sender,
@@ -829,6 +839,7 @@ pub struct RunningDataflow {
     subscribe_replies: HashMap<NodeId, (oneshot::Sender<DaemonReply>, Result<(), String>)>,
 
     subscribe_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeEvent>>,
+    drop_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeDropEvent>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
@@ -853,6 +864,7 @@ impl RunningDataflow {
             pending_nodes: nodes.iter().map(|n| n.id.clone()).collect(),
             subscribe_replies: HashMap::new(),
             subscribe_channels: HashMap::new(),
+            drop_channels: HashMap::new(),
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
@@ -929,9 +941,9 @@ impl RunningDataflow {
             std::collections::hash_map::Entry::Occupied(entry) => {
                 if entry.get().pending_nodes.is_empty() {
                     let (drop_token, info) = entry.remove_entry();
-                    let result = match self.subscribe_channels.get_mut(&info.owner) {
+                    let result = match self.drop_channels.get_mut(&info.owner) {
                         Some(channel) => channel
-                            .send(daemon_messages::NodeEvent::OutputDropped { drop_token })
+                            .send(daemon_messages::NodeDropEvent::OutputDropped { drop_token })
                             .wrap_err("send failed"),
                         None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
                     };
@@ -992,6 +1004,10 @@ pub enum DaemonNodeEvent {
     },
     Subscribe {
         event_sender: UnboundedSender<daemon_messages::NodeEvent>,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    SubscribeDrop {
+        event_sender: UnboundedSender<daemon_messages::NodeDropEvent>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {

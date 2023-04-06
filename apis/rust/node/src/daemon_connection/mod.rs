@@ -5,13 +5,14 @@ use dora_core::{
 };
 use eyre::Context;
 use flume::RecvTimeoutError;
-use std::{net::TcpStream, sync::Arc, time::Duration};
+use std::{net::TcpStream, time::Duration};
 
 pub(crate) use control_channel::ControlChannel;
 pub use event_stream::EventStream;
 
 mod communication;
 mod control_channel;
+mod drop_stream;
 mod event_stream;
 
 pub(crate) struct DaemonConnection {
@@ -26,34 +27,40 @@ impl DaemonConnection {
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
     ) -> eyre::Result<Self> {
-        let (control, events) = match daemon_communication {
+        let (control, events, drop) = match daemon_communication {
             DaemonCommunication::Shmem {
                 daemon_control_region_id,
                 daemon_events_region_id,
+                daemon_drop_region_id,
             } => {
-                let control = unsafe { DaemonChannel::new_shmem(daemon_control_region_id) }
-                    .wrap_err("failed to create shmem control channel")?;
                 let events = unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
                     .wrap_err("failed to create shmem event channel")?;
-                (control, events)
+                let drop = unsafe { DaemonChannel::new_shmem(daemon_drop_region_id) }
+                    .wrap_err("failed to create shmem event channel")?;
+                let control = unsafe { DaemonChannel::new_shmem(daemon_control_region_id) }
+                    .wrap_err("failed to create shmem control channel")?;
+                (control, events, drop)
             }
             DaemonCommunication::Tcp { socket_addr } => {
-                let control = DaemonChannel::new_tcp(
-                    TcpStream::connect(socket_addr).wrap_err("failed to connect control stream")?,
-                )?;
                 let events = DaemonChannel::new_tcp(
                     TcpStream::connect(socket_addr).wrap_err("failed to connect event stream")?,
                 )?;
-                (control, events)
+                let drop = DaemonChannel::new_tcp(
+                    TcpStream::connect(socket_addr).wrap_err("failed to connect drop stream")?,
+                )?;
+                let control = DaemonChannel::new_tcp(
+                    TcpStream::connect(socket_addr).wrap_err("failed to connect control stream")?,
+                )?;
+                (control, events, drop)
             }
         };
 
-        let (event_stream, event_stream_thread_handle, finished_drop_tokens) =
-            EventStream::init(dataflow_id, node_id, events)
-                .wrap_err("failed to init event stream")?;
-        let control_channel =
-            ControlChannel::init(dataflow_id, node_id, control, event_stream_thread_handle)
-                .wrap_err("failed to init control stream")?;
+        let event_stream = EventStream::init(dataflow_id, node_id, events)
+            .wrap_err("failed to init event stream")?;
+        let control_channel = ControlChannel::init(dataflow_id, node_id, control)
+            .wrap_err("failed to init control stream")?;
+        let finished_drop_tokens =
+            drop_stream::init(dataflow_id, node_id, drop).wrap_err("failed to init drop stream")?;
 
         Ok(Self {
             control_channel,
@@ -65,12 +72,12 @@ impl DaemonConnection {
 
 pub(crate) struct EventStreamThreadHandle(flume::Receiver<std::thread::Result<()>>);
 impl EventStreamThreadHandle {
-    fn new(join_handle: std::thread::JoinHandle<()>) -> Arc<Self> {
+    fn new(join_handle: std::thread::JoinHandle<()>) -> Self {
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {
             let _ = tx.send(join_handle.join());
         });
-        Arc::new(Self(rx))
+        Self(rx)
     }
 }
 
