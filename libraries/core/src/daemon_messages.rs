@@ -20,6 +20,7 @@ pub enum DaemonCommunication {
     Shmem {
         daemon_control_region_id: SharedMemoryId,
         daemon_events_region_id: SharedMemoryId,
+        daemon_drop_region_id: SharedMemoryId,
     },
     Tcp {
         socket_addr: SocketAddr,
@@ -53,6 +54,8 @@ pub enum DaemonRequest {
     ReportDropTokens {
         drop_tokens: Vec<DropToken>,
     },
+    SubscribeDrop,
+    NextFinishedDropTokens,
 }
 
 impl DaemonRequest {
@@ -107,15 +110,16 @@ impl fmt::Debug for Data {
 
 type SharedMemoryId = String;
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
     NextEvents(Vec<NodeEvent>),
+    NextDropEvents(Vec<NodeDropEvent>),
     Empty,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum NodeEvent {
     Stop,
     Reload {
@@ -130,9 +134,11 @@ pub enum NodeEvent {
         id: DataId,
     },
     AllInputsClosed,
-    OutputDropped {
-        drop_token: DropToken,
-    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum NodeDropEvent {
+    OutputDropped { drop_token: DropToken },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

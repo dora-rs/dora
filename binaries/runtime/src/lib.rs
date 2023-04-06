@@ -110,7 +110,7 @@ fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, us
     sizes
 }
 
-#[tracing::instrument(skip(operator_events, operator_channels), fields(node.id), level = "trace" )]
+#[tracing::instrument(skip(operator_events, operator_channels), level = "trace")]
 async fn run(
     operators: HashMap<OperatorId, OperatorConfig>,
     config: NodeConfig,
@@ -200,7 +200,8 @@ async fn run(
                         operator_channels.remove(&operator_id);
 
                         if operator_channels.is_empty() {
-                            break;
+                            tracing::warn!("operator channels is empty");
+                            // break;
                         }
                     }
                     OperatorEvent::Output {

@@ -3,7 +3,7 @@ use dora_core::{
     config::{DataId, NodeId},
     daemon_messages::{
         DaemonCommunication, DaemonCommunicationConfig, DaemonReply, DaemonRequest, DataflowId,
-        NodeEvent,
+        NodeDropEvent, NodeEvent,
     },
 };
 use eyre::{eyre, Context};
@@ -67,8 +67,13 @@ pub async fn spawn_listener_loop(
                 .size(4096)
                 .create()
                 .wrap_err("failed to allocate daemon_events_region")?;
+            let daemon_drop_region = ShmemConf::new()
+                .size(4096)
+                .create()
+                .wrap_err("failed to allocate daemon_drop_region")?;
             let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
             let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
+            let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
 
             {
                 let server = unsafe { ShmemServer::new(daemon_control_region) }
@@ -83,15 +88,28 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create events server")?;
                 let event_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
+                let queue_sizes = queue_sizes.clone();
                 tokio::task::spawn(async move {
                     shmem::listener_loop(server, daemon_tx, queue_sizes).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
 
+            {
+                let server = unsafe { ShmemServer::new(daemon_drop_region) }
+                    .wrap_err("failed to create drop server")?;
+                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
+                let daemon_tx = daemon_tx.clone();
+                tokio::task::spawn(async move {
+                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
+                });
+            }
+
             Ok(DaemonCommunication::Shmem {
                 daemon_control_region_id,
                 daemon_events_region_id,
+                daemon_drop_region_id,
             })
         }
     }
@@ -102,6 +120,7 @@ struct Listener {
     node_id: NodeId,
     daemon_tx: mpsc::Sender<Event>,
     subscribed_events: Option<UnboundedReceiver<NodeEvent>>,
+    subscribed_drop_events: Option<UnboundedReceiver<NodeDropEvent>>,
     queue: VecDeque<Box<Option<NodeEvent>>>,
     queue_sizes: BTreeMap<DataId, usize>,
 }
@@ -155,6 +174,7 @@ impl Listener {
                             node_id,
                             daemon_tx,
                             subscribed_events: None,
+                            subscribed_drop_events: None,
                             queue_sizes,
                             queue: VecDeque::new(),
                         };
@@ -337,6 +357,20 @@ impl Listener {
                 .await?;
                 self.subscribed_events = Some(rx);
             }
+            DaemonRequest::SubscribeDrop => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::SubscribeDrop {
+                        event_sender: tx,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+                self.subscribed_drop_events = Some(rx);
+            }
             DaemonRequest::NextEvent { drop_tokens } => {
                 self.report_drop_tokens(drop_tokens).await?;
 
@@ -362,9 +396,11 @@ impl Listener {
                     DaemonReply::NextEvents(queued_events)
                 };
 
-                self.send_reply(reply, connection)
+                tracing::trace!("sending NextEvent reply: {reply:?}");
+
+                self.send_reply(reply.clone(), connection)
                     .await
-                    .wrap_err("failed to send NextEvent reply")?;
+                    .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
             }
             DaemonRequest::ReportDropTokens { drop_tokens } => {
                 self.report_drop_tokens(drop_tokens).await?;
@@ -372,6 +408,22 @@ impl Listener {
                 self.send_reply(DaemonReply::Empty, connection)
                     .await
                     .wrap_err("failed to send ReportDropTokens reply")?;
+            }
+            DaemonRequest::NextFinishedDropTokens => {
+                let reply = match self.subscribed_drop_events.as_mut() {
+                    // wait for next event
+                    Some(events) => match events.recv().await {
+                        Some(event) => DaemonReply::NextDropEvents(vec![event]),
+                        None => DaemonReply::NextEvents(vec![]),
+                    },
+                    None => DaemonReply::Result(Err("Ignoring event request because no drop \
+                        subscribe message was sent yet"
+                        .into())),
+                };
+
+                self.send_reply(reply.clone(), connection)
+                    .await
+                    .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
             }
         }
         Ok(())
