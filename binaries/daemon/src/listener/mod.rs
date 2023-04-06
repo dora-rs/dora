@@ -210,7 +210,9 @@ impl Listener {
 
             match message.wrap_err("failed to receive DaemonRequest") {
                 Ok(Some(message)) => {
-                    self.handle_message(message, &mut connection).await?;
+                    if let Err(err) = self.handle_message(message, &mut connection).await {
+                        tracing::warn!("{err:?}");
+                    }
                 }
                 Err(err) => {
                     tracing::warn!("{err:?}");

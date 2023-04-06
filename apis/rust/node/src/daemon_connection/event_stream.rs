@@ -192,7 +192,7 @@ fn event_stream_loop(
                     Err(send_error) => {
                         let event = send_error.into_inner();
                         tracing::debug!(
-                            "event channel was closed already, could no forward `{event:?}`"
+                            "event channel was closed already, could not forward `{event:?}`"
                         );
                         if finished_drop_tokens.is_disconnected() {
                             // both the event stream and the dora node were dropped

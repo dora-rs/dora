@@ -1,5 +1,5 @@
-use super::IncomingEvent;
 use dora_core::config::DataId;
+use dora_node_api::Event;
 use futures::{
     future::{self, FusedFuture},
     FutureExt,
@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 pub fn channel(
     runtime: &tokio::runtime::Handle,
     queue_sizes: BTreeMap<DataId, usize>,
-) -> (flume::Sender<IncomingEvent>, flume::Receiver<IncomingEvent>) {
+) -> (flume::Sender<Event>, flume::Receiver<Event>) {
     let (incoming_tx, incoming_rx) = flume::bounded(10);
     let (outgoing_tx, outgoing_rx) = flume::bounded(0);
 
@@ -22,7 +22,7 @@ pub fn channel(
 }
 
 struct InputBuffer {
-    queue: VecDeque<Option<IncomingEvent>>,
+    queue: VecDeque<Option<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
 }
 
@@ -34,11 +34,7 @@ impl InputBuffer {
         }
     }
 
-    pub async fn run(
-        &mut self,
-        incoming: flume::Receiver<IncomingEvent>,
-        outgoing: flume::Sender<IncomingEvent>,
-    ) {
+    pub async fn run(&mut self, incoming: flume::Receiver<Event>, outgoing: flume::Sender<Event>) {
         let mut send_out_buf = future::Fuse::terminated();
         let mut incoming_closed = false;
         loop {
@@ -82,8 +78,8 @@ impl InputBuffer {
 
     fn send_next_queued<'a>(
         &mut self,
-        outgoing: &'a flume::Sender<IncomingEvent>,
-    ) -> future::Fuse<flume::r#async::SendFut<'a, IncomingEvent>> {
+        outgoing: &'a flume::Sender<Event>,
+    ) -> future::Fuse<flume::r#async::SendFut<'a, Event>> {
         loop {
             match self.queue.pop_front() {
                 Some(Some(next)) => break outgoing.send_async(next).fuse(),
@@ -95,7 +91,7 @@ impl InputBuffer {
         }
     }
 
-    fn add_event(&mut self, event: IncomingEvent) {
+    fn add_event(&mut self, event: Event) {
         self.queue.push_back(Some(event));
 
         // drop oldest input events to maintain max queue length queue
@@ -108,7 +104,7 @@ impl InputBuffer {
 
         // iterate over queued events, newest first
         for event in self.queue.iter_mut().rev() {
-            let Some(IncomingEvent::Input { input_id, .. }) = event.as_mut() else {
+            let Some(Event::Input { id: input_id, .. }) = event.as_mut() else {
                 continue;
             };
             match queue_size_remaining.get_mut(input_id) {

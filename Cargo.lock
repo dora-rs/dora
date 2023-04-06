@@ -1269,6 +1269,7 @@ dependencies = [
 name = "dora-operator-api-python"
 version = "0.2.2"
 dependencies = [
+ "arrow",
  "dora-node-api",
  "eyre",
  "flume",

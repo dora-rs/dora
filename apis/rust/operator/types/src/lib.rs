@@ -60,6 +60,7 @@ pub struct RawEvent {
     pub input: Option<safer_ffi::boxed::Box<Input>>,
     pub input_closed: Option<safer_ffi::String>,
     pub stop: bool,
+    pub error: Option<safer_ffi::String>,
 }
 
 #[derive_ReprC]
