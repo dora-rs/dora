@@ -66,8 +66,15 @@ impl DaemonRequest {
     pub fn expects_tcp_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::SendMessage { .. } => false,
-            _ => true,
+            DaemonRequest::SendMessage { .. } | DaemonRequest::ReportDropTokens { .. } => false,
+            DaemonRequest::Register { .. }
+            | DaemonRequest::Subscribe
+            | DaemonRequest::CloseOutputs(_)
+            | DaemonRequest::OutputsDone
+            | DaemonRequest::NextEvent { .. }
+            | DaemonRequest::SubscribeDrop
+            | DaemonRequest::NextFinishedDropTokens
+            | DaemonRequest::EventStreamDropped => true,
         }
     }
 }
