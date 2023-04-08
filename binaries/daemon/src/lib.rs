@@ -417,10 +417,7 @@ impl Daemon {
                 // TODO: notify remote nodes
             }
             DaemonNodeEvent::OutputsDone { reply_sender } => {
-                tracing::trace!("Outputs done: {dataflow_id}/{node_id}");
-
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
-
                 self.handle_outputs_done(dataflow_id, &node_id).await?;
             }
             DaemonNodeEvent::SendOut {
@@ -453,6 +450,19 @@ impl Daemon {
                         None => tracing::warn!("unknown drop token `{token:?}`"),
                     }
                 }
+            }
+            DaemonNodeEvent::EventStreamDropped { reply_sender } => {
+                let inner = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+                    dataflow.subscribe_channels.remove(&node_id);
+                    Result::<_, eyre::Error>::Ok(())
+                };
+
+                let reply = inner.await.map_err(|err| format!("{err:?}"));
+                let _ = reply_sender.send(DaemonReply::Result(reply));
             }
         }
         Ok(())
@@ -693,7 +703,6 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
-                let mut signal_exit = false;
                 let node_error = match exit_status {
                     NodeExitStatus::Success => {
                         tracing::info!("node {dataflow_id}/{node_id} finished successfully");
@@ -713,7 +722,6 @@ impl Daemon {
                         Some(err)
                     }
                     NodeExitStatus::Signal(signal) => {
-                        signal_exit = true;
                         let signal: Cow<_> = match signal {
                             1 => "SIGHUP".into(),
                             2 => "SIGINT".into(),
@@ -1020,6 +1028,9 @@ pub enum DaemonNodeEvent {
     },
     ReportDrop {
         tokens: Vec<DropToken>,
+    },
+    EventStreamDropped {
+        reply_sender: oneshot::Sender<DaemonReply>,
     },
 }
 

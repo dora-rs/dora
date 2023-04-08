@@ -19,8 +19,9 @@ pub struct NodeConfig {
 pub enum DaemonCommunication {
     Shmem {
         daemon_control_region_id: SharedMemoryId,
-        daemon_events_region_id: SharedMemoryId,
         daemon_drop_region_id: SharedMemoryId,
+        daemon_events_region_id: SharedMemoryId,
+        daemon_events_close_region_id: SharedMemoryId,
     },
     Tcp {
         socket_addr: SocketAddr,
@@ -58,6 +59,7 @@ pub enum DaemonRequest {
     },
     SubscribeDrop,
     NextFinishedDropTokens,
+    EventStreamDropped,
 }
 
 impl DaemonRequest {
