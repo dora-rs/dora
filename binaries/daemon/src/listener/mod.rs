@@ -71,9 +71,14 @@ pub async fn spawn_listener_loop(
                 .size(4096)
                 .create()
                 .wrap_err("failed to allocate daemon_drop_region")?;
+            let daemon_events_close_region = ShmemConf::new()
+                .size(4096)
+                .create()
+                .wrap_err("failed to allocate daemon_drop_region")?;
             let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
             let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
             let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
+            let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
 
             {
                 let server = unsafe { ShmemServer::new(daemon_control_region) }
@@ -100,9 +105,23 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create drop server")?;
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
+                let queue_sizes = queue_sizes.clone();
                 tokio::task::spawn(async move {
                     shmem::listener_loop(server, daemon_tx, queue_sizes).await;
                     tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
+                });
+            }
+
+            {
+                let server = unsafe { ShmemServer::new(daemon_events_close_region) }
+                    .wrap_err("failed to create events close server")?;
+                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
+                let daemon_tx = daemon_tx.clone();
+                tokio::task::spawn(async move {
+                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    tracing::debug!(
+                        "events close listener loop finished for `{drop_loop_node_id}`"
+                    );
                 });
             }
 
@@ -110,6 +129,7 @@ pub async fn spawn_listener_loop(
                 daemon_control_region_id,
                 daemon_events_region_id,
                 daemon_drop_region_id,
+                daemon_events_close_region_id,
             })
         }
     }
@@ -238,11 +258,6 @@ impl Listener {
                     tracing::warn!("{err:?}");
                 }
                 Ok(None) => {
-                    tracing::debug!(
-                        "channel disconnected: {}/{}",
-                        self.dataflow_id,
-                        self.node_id
-                    );
                     break; // disconnected
                 }
             }
@@ -396,8 +411,6 @@ impl Listener {
                     DaemonReply::NextEvents(queued_events)
                 };
 
-                tracing::trace!("sending NextEvent reply: {reply:?}");
-
                 self.send_reply(reply.clone(), connection)
                     .await
                     .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
@@ -426,6 +439,15 @@ impl Listener {
                     .wrap_err_with(|| {
                         format!("failed to send NextFinishedDropTokens reply: {reply:?}")
                     })?;
+            }
+            DaemonRequest::EventStreamDropped => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::EventStreamDropped { reply_sender },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
             }
         }
         Ok(())
