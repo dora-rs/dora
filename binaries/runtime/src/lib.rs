@@ -298,7 +298,7 @@ async fn run(
                     open_inputs.remove(&input_id);
                     if open_inputs.is_empty() {
                         // all inputs of the node were closed -> close its event channel
-                        tracing::info!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
+                        tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
                         open_operator_inputs.remove(&operator_id);
                         operator_channels.remove(&operator_id);
                     }
