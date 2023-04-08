@@ -416,12 +416,12 @@ impl Daemon {
                 let _ = reply_sender.send(DaemonReply::Result(reply));
                 // TODO: notify remote nodes
             }
-            DaemonNodeEvent::Stopped { reply_sender } => {
-                tracing::info!("Stopped: {dataflow_id}/{node_id}");
+            DaemonNodeEvent::OutputsDone { reply_sender } => {
+                tracing::trace!("Outputs done: {dataflow_id}/{node_id}");
 
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
 
-                self.handle_node_stop(dataflow_id, &node_id).await?;
+                self.handle_outputs_done(dataflow_id, &node_id).await?;
             }
             DaemonNodeEvent::SendOut {
                 output_id,
@@ -604,15 +604,26 @@ impl Daemon {
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
-    async fn handle_node_stop(
+    async fn handle_outputs_done(
         &mut self,
         dataflow_id: Uuid,
         node_id: &NodeId,
-    ) -> Result<(), eyre::ErrReport> {
+    ) -> eyre::Result<()> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
         send_input_closed_events(dataflow, |OutputId(source_id, _)| source_id == node_id).await;
+        dataflow.drop_channels.remove(node_id);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "trace")]
+    async fn handle_node_stop(&mut self, dataflow_id: Uuid, node_id: &NodeId) -> eyre::Result<()> {
+        self.handle_outputs_done(dataflow_id, node_id).await?;
+
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
+        })?;
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
             tracing::info!(
@@ -734,19 +745,7 @@ impl Daemon {
                     }
                 };
 
-                if self
-                    .running
-                    .get(&dataflow_id)
-                    .and_then(|d| d.running_nodes.get(&node_id))
-                    .is_some()
-                {
-                    if !signal_exit {
-                        tracing::warn!(
-                            "node `{dataflow_id}/{node_id}` finished without sending `Stopped` message"
-                        );
-                    }
-                    self.handle_node_stop(dataflow_id, &node_id).await?;
-                }
+                self.handle_node_stop(dataflow_id, &node_id).await?;
 
                 if let Some(exit_when_done) = &mut self.exit_when_done {
                     if let Some(err) = node_error {
@@ -999,7 +998,7 @@ impl From<DoraEvent> for Event {
 
 #[derive(Debug)]
 pub enum DaemonNodeEvent {
-    Stopped {
+    OutputsDone {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     Subscribe {

@@ -310,10 +310,10 @@ impl Listener {
                     .await
                     .wrap_err("failed to send register reply")?;
             }
-            DaemonRequest::Stopped => {
+            DaemonRequest::OutputsDone => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::Stopped { reply_sender },
+                    DaemonNodeEvent::OutputsDone { reply_sender },
                     Some(reply),
                     connection,
                 )
@@ -414,7 +414,7 @@ impl Listener {
                     // wait for next event
                     Some(events) => match events.recv().await {
                         Some(event) => DaemonReply::NextDropEvents(vec![event]),
-                        None => DaemonReply::NextEvents(vec![]),
+                        None => DaemonReply::NextDropEvents(vec![]),
                     },
                     None => DaemonReply::Result(Err("Ignoring event request because no drop \
                         subscribe message was sent yet"
@@ -423,7 +423,9 @@ impl Listener {
 
                 self.send_reply(reply.clone(), connection)
                     .await
-                    .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
+                    .wrap_err_with(|| {
+                        format!("failed to send NextFinishedDropTokens reply: {reply:?}")
+                    })?;
             }
         }
         Ok(())

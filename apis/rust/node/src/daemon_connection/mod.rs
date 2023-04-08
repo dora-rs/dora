@@ -1,99 +1,65 @@
-use communication::DaemonChannel;
 use dora_core::{
     config::NodeId,
-    daemon_messages::{DaemonCommunication, DataflowId, DropToken},
+    daemon_messages::{DaemonReply, DaemonRequest, DataflowId},
 };
-use eyre::Context;
-use flume::RecvTimeoutError;
-use std::{net::TcpStream, time::Duration};
+use eyre::{bail, eyre, Context};
+use shared_memory_server::{ShmemClient, ShmemConf};
+use std::{
+    net::{SocketAddr, TcpStream},
+    time::Duration,
+};
 
-pub(crate) use control_channel::ControlChannel;
-pub use event_stream::EventStream;
+mod tcp;
 
-mod communication;
-mod control_channel;
-mod drop_stream;
-mod event_stream;
-
-pub(crate) struct DaemonConnection {
-    pub control_channel: ControlChannel,
-    pub event_stream: EventStream,
-    pub finished_drop_tokens: flume::Receiver<DropToken>,
+pub enum DaemonChannel {
+    Shmem(ShmemClient<DaemonRequest, DaemonReply>),
+    Tcp(TcpStream),
 }
 
-impl DaemonConnection {
-    pub(crate) fn init(
-        dataflow_id: DataflowId,
-        node_id: &NodeId,
-        daemon_communication: &DaemonCommunication,
-    ) -> eyre::Result<Self> {
-        let (control, events, drop) = match daemon_communication {
-            DaemonCommunication::Shmem {
-                daemon_control_region_id,
-                daemon_events_region_id,
-                daemon_drop_region_id,
-            } => {
-                let events = unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
-                    .wrap_err("failed to create shmem event channel")?;
-                let drop = unsafe { DaemonChannel::new_shmem(daemon_drop_region_id) }
-                    .wrap_err("failed to create shmem event channel")?;
-                let control = unsafe { DaemonChannel::new_shmem(daemon_control_region_id) }
-                    .wrap_err("failed to create shmem control channel")?;
-                (control, events, drop)
-            }
-            DaemonCommunication::Tcp { socket_addr } => {
-                let events = DaemonChannel::new_tcp(
-                    TcpStream::connect(socket_addr).wrap_err("failed to connect event stream")?,
-                )?;
-                let drop = DaemonChannel::new_tcp(
-                    TcpStream::connect(socket_addr).wrap_err("failed to connect drop stream")?,
-                )?;
-                let control = DaemonChannel::new_tcp(
-                    TcpStream::connect(socket_addr).wrap_err("failed to connect control stream")?,
-                )?;
-                (control, events, drop)
-            }
+impl DaemonChannel {
+    #[tracing::instrument(level = "trace")]
+    pub fn new_tcp(socket_addr: SocketAddr) -> eyre::Result<Self> {
+        let stream = TcpStream::connect(socket_addr).wrap_err("failed to open TCP connection")?;
+        stream.set_nodelay(true).context("failed to set nodelay")?;
+        Ok(DaemonChannel::Tcp(stream))
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub unsafe fn new_shmem(daemon_control_region_id: &str) -> eyre::Result<Self> {
+        let daemon_events_region = ShmemConf::new()
+            .os_id(daemon_control_region_id)
+            .open()
+            .wrap_err("failed to connect to dora-daemon")?;
+        let channel = DaemonChannel::Shmem(
+            unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
+                .wrap_err("failed to create ShmemChannel")?,
+        );
+        Ok(channel)
+    }
+
+    pub fn register(&mut self, dataflow_id: DataflowId, node_id: NodeId) -> eyre::Result<()> {
+        let msg = DaemonRequest::Register {
+            dataflow_id,
+            node_id,
+            dora_version: env!("CARGO_PKG_VERSION").to_owned(),
         };
+        let reply = self
+            .request(&msg)
+            .wrap_err("failed to send register request to dora-daemon")?;
 
-        let event_stream = EventStream::init(dataflow_id, node_id, events)
-            .wrap_err("failed to init event stream")?;
-        let control_channel = ControlChannel::init(dataflow_id, node_id, control)
-            .wrap_err("failed to init control stream")?;
-        let finished_drop_tokens =
-            drop_stream::init(dataflow_id, node_id, drop).wrap_err("failed to init drop stream")?;
-
-        Ok(Self {
-            control_channel,
-            event_stream,
-            finished_drop_tokens,
-        })
+        match reply {
+            dora_core::daemon_messages::DaemonReply::Result(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to register node with dora-daemon")?,
+            other => bail!("unexpected register reply: {other:?}"),
+        }
+        Ok(())
     }
-}
 
-pub(crate) struct EventStreamThreadHandle(flume::Receiver<std::thread::Result<()>>);
-impl EventStreamThreadHandle {
-    fn new(join_handle: std::thread::JoinHandle<()>) -> Self {
-        let (tx, rx) = flume::bounded(1);
-        std::thread::spawn(move || {
-            let _ = tx.send(join_handle.join());
-        });
-        Self(rx)
-    }
-}
-
-impl Drop for EventStreamThreadHandle {
-    fn drop(&mut self) {
-        match self.0.recv_timeout(Duration::from_secs(2)) {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => {
-                tracing::error!("event stream thread panicked");
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                tracing::warn!("timeout while waiting for event stream thread");
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                tracing::warn!("event stream thread result channel closed unexpectedly");
-            }
+    pub fn request(&mut self, request: &DaemonRequest) -> eyre::Result<DaemonReply> {
+        match self {
+            DaemonChannel::Shmem(client) => client.request(request),
+            DaemonChannel::Tcp(stream) => tcp::request(stream, request),
         }
     }
 }

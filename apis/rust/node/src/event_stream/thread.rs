@@ -1,106 +1,70 @@
 use dora_core::{
     config::NodeId,
-    daemon_messages::{self, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeEvent},
+    daemon_messages::{DaemonReply, DaemonRequest, DropToken, NodeEvent},
 };
 use eyre::{eyre, Context};
+use flume::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use crate::{event::Data, Event, MappedInputData};
+use crate::daemon_connection::DaemonChannel;
 
-use super::{DaemonChannel, EventStreamThreadHandle};
-
-pub struct EventStream {
+pub fn init(
     node_id: NodeId,
-    receiver: flume::Receiver<EventItem>,
-    _thread_handle: EventStreamThreadHandle,
+    tx: flume::Sender<EventItem>,
+    channel: DaemonChannel,
+) -> eyre::Result<EventStreamThreadHandle> {
+    let node_id_cloned = node_id.clone();
+    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel));
+    Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
-impl EventStream {
-    pub(crate) fn init(
-        dataflow_id: DataflowId,
-        node_id: &NodeId,
-        mut channel: DaemonChannel,
-    ) -> eyre::Result<Self> {
-        channel.register(dataflow_id, node_id.clone())?;
+#[derive(Debug)]
+pub enum EventItem {
+    NodeEvent {
+        event: NodeEvent,
+        ack_channel: flume::Sender<()>,
+    },
+    FatalError(eyre::Report),
+}
 
-        channel
-            .request(&DaemonRequest::Subscribe)
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with dora-daemon")?;
+pub struct EventStreamThreadHandle {
+    node_id: NodeId,
+    handle: flume::Receiver<std::thread::Result<()>>,
+}
 
-        let (tx, rx) = flume::bounded(0);
-        let node_id_cloned = node_id.clone();
-
-        let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel));
-        let thread_handle = EventStreamThreadHandle::new(join_handle);
-
-        Ok(EventStream {
-            node_id: node_id.clone(),
-            receiver: rx,
-            _thread_handle: thread_handle,
-        })
+impl EventStreamThreadHandle {
+    fn new(node_id: NodeId, join_handle: std::thread::JoinHandle<()>) -> Self {
+        let (tx, rx) = flume::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send(join_handle.join());
+        });
+        Self {
+            node_id,
+            handle: rx,
+        }
     }
+}
 
-    pub fn recv(&mut self) -> Option<Event> {
-        let event = self.receiver.recv();
-        self.recv_common(event)
-    }
-
-    pub async fn recv_async(&mut self) -> Option<Event> {
-        let event = self.receiver.recv_async().await;
-        self.recv_common(event)
-    }
-
-    #[tracing::instrument(skip(self), fields(%self.node_id))]
-    fn recv_common(&mut self, event: Result<EventItem, flume::RecvError>) -> Option<Event> {
-        let event = match event {
-            Ok(event) => event,
-            Err(flume::RecvError::Disconnected) => {
-                tracing::trace!("event channel disconnected");
-                return None;
+impl Drop for EventStreamThreadHandle {
+    #[tracing::instrument(skip(self), fields(node_id = %self.node_id))]
+    fn drop(&mut self) {
+        if self.handle.is_empty() {
+            tracing::trace!("waiting for event stream thread");
+        }
+        match self.handle.recv_timeout(Duration::from_secs(20)) {
+            Ok(Ok(())) => {
+                tracing::trace!("event stream thread finished");
             }
-        };
-        let event = match event {
-            EventItem::NodeEvent { event, ack_channel } => match event {
-                NodeEvent::Stop => Event::Stop,
-                NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
-                NodeEvent::InputClosed { id } => Event::InputClosed { id },
-                NodeEvent::Input { id, metadata, data } => {
-                    let data = match data {
-                        None => Ok(None),
-                        Some(daemon_messages::Data::Vec(v)) => Ok(Some(Data::Vec(v))),
-                        Some(daemon_messages::Data::SharedMemory {
-                            shared_memory_id,
-                            len,
-                            drop_token: _, // handled in `event_stream_loop`
-                        }) => unsafe {
-                            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                                Some(Data::SharedMemory {
-                                    data,
-                                    _drop: ack_channel,
-                                })
-                            })
-                        },
-                    };
-                    match data {
-                        Ok(data) => Event::Input { id, metadata, data },
-                        Err(err) => Event::Error(format!("{err:?}")),
-                    }
-                }
-                NodeEvent::AllInputsClosed => {
-                    let err = eyre!(
-                        "received `AllInputsClosed` event, which should be handled by background task"
-                    );
-                    tracing::error!("{err:?}");
-                    Event::Error(err.wrap_err("internal error").to_string())
-                }
-            },
-            EventItem::FatalError(err) => {
-                Event::Error(format!("fatal event stream error: {err:?}"))
+            Ok(Err(_)) => {
+                tracing::error!("event stream thread panicked");
             }
-        };
-
-        Some(event)
+            Err(RecvTimeoutError::Timeout) => {
+                tracing::warn!("timeout while waiting for event stream thread");
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                tracing::warn!("event stream thread result channel closed unexpectedly");
+            }
+        }
     }
 }
 
@@ -120,7 +84,7 @@ fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel:
         };
         let events = match channel.request(&daemon_request) {
             Ok(DaemonReply::NextEvents(events)) if events.is_empty() => {
-                tracing::debug!("Event stream closed for node ID `{node_id}`");
+                tracing::trace!("event stream closed for node `{node_id}`");
                 break Ok(());
             }
             Ok(DaemonReply::NextEvents(events)) => events,
@@ -249,8 +213,10 @@ fn report_remaining_drop_tokens(
                 }
             }
         }
-        tracing::debug!("waiting for drop for {} events", still_pending.len());
         pending_drop_tokens = still_pending;
+        if !pending_drop_tokens.is_empty() {
+            tracing::trace!("waiting for drop for {} events", pending_drop_tokens.len());
+        }
     }
 
     Ok(())
@@ -266,18 +232,8 @@ fn report_drop_tokens(
     let daemon_request = DaemonRequest::ReportDropTokens {
         drop_tokens: std::mem::take(drop_tokens),
     };
-    let reply = channel.request(&daemon_request)?;
-    match reply {
+    match channel.request(&daemon_request)? {
         dora_core::daemon_messages::DaemonReply::Empty => Ok(()),
         other => Err(eyre!("unexpected ReportDropTokens reply: {other:?}")),
     }
-}
-
-#[derive(Debug)]
-enum EventItem {
-    NodeEvent {
-        event: NodeEvent,
-        ack_channel: flume::Sender<()>,
-    },
-    FatalError(eyre::Report),
 }

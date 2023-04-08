@@ -47,7 +47,9 @@ pub enum DaemonRequest {
         data: Option<Data>,
     },
     CloseOutputs(Vec<DataId>),
-    Stopped,
+    /// Signals that the node is finished sending outputs and that it received all
+    /// required drop tokens.
+    OutputsDone,
     NextEvent {
         drop_tokens: Vec<DropToken>,
     },
