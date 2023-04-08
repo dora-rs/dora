@@ -200,8 +200,7 @@ async fn run(
                         operator_channels.remove(&operator_id);
 
                         if operator_channels.is_empty() {
-                            tracing::warn!("operator channels is empty");
-                            // break;
+                            break;
                         }
                     }
                     OperatorEvent::Output {

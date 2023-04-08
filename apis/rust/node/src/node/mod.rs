@@ -1,9 +1,6 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    ops::{Deref, DerefMut},
-    time::Duration,
-};
+use crate::EventStream;
 
+use self::{control_channel::ControlChannel, drop_stream::DropStream};
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     daemon_messages::{Data, DropToken, NodeConfig},
@@ -11,14 +8,17 @@ use dora_core::{
 };
 use eyre::{bail, WrapErr};
 use shared_memory::{Shmem, ShmemConf};
-
-use crate::{
-    daemon_connection::{ControlChannel, DaemonConnection},
-    EventStream,
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::{Deref, DerefMut},
+    time::Duration,
 };
 
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
+
+mod control_channel;
+mod drop_stream;
 
 const ZERO_COPY_THRESHOLD: usize = 4096;
 
@@ -29,7 +29,7 @@ pub struct DoraNode {
     hlc: uhlc::HLC,
 
     sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
-    finished_drop_tokens: flume::Receiver<DropToken>,
+    drop_stream: DropStream,
     cache: VecDeque<ShmemHandle>,
 }
 
@@ -46,6 +46,7 @@ impl DoraNode {
         Self::init(node_config)
     }
 
+    #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
         let NodeConfig {
             dataflow_id,
@@ -54,12 +55,12 @@ impl DoraNode {
             daemon_communication,
         } = node_config;
 
-        let DaemonConnection {
-            control_channel,
-            event_stream,
-            finished_drop_tokens,
-        } = DaemonConnection::init(dataflow_id, &node_id, &daemon_communication)
-            .wrap_err("failed to connect to dora-daemon")?;
+        let event_stream = EventStream::init(dataflow_id, &node_id, &daemon_communication)
+            .wrap_err("failed to init event stream")?;
+        let drop_stream = DropStream::init(dataflow_id, &node_id, &daemon_communication)
+            .wrap_err("failed to init drop stream")?;
+        let control_channel = ControlChannel::init(dataflow_id, &node_id, &daemon_communication)
+            .wrap_err("failed to init control channel")?;
 
         let node = Self {
             id: node_id,
@@ -67,7 +68,7 @@ impl DoraNode {
             control_channel,
             hlc: uhlc::HLC::default(),
             sent_out_shared_memory: HashMap::new(),
-            finished_drop_tokens,
+            drop_stream,
             cache: VecDeque::new(),
         };
         Ok((node, event_stream))
@@ -176,7 +177,7 @@ impl DoraNode {
 
     fn handle_finished_drop_tokens(&mut self) -> eyre::Result<()> {
         loop {
-            match self.finished_drop_tokens.try_recv() {
+            match self.drop_stream.try_recv() {
                 Ok(token) => match self.sent_out_shared_memory.remove(&token) {
                     Some(region) => self.add_to_cache(region),
                     None => tracing::warn!("received unknown finished drop token `{token:?}`"),
@@ -216,17 +217,15 @@ impl Drop for DoraNode {
             tracing::warn!("{err:?}")
         }
 
-        if !self.sent_out_shared_memory.is_empty() {
-            tracing::debug!(
-                "waiting for {} remaining drop tokens",
-                self.sent_out_shared_memory.len()
-            );
-        }
         while !self.sent_out_shared_memory.is_empty() {
-            match self
-                .finished_drop_tokens
-                .recv_timeout(Duration::from_secs(10))
-            {
+            if self.drop_stream.len() == 0 {
+                tracing::trace!(
+                    "waiting for {} remaining drop tokens",
+                    self.sent_out_shared_memory.len()
+                );
+            }
+
+            match self.drop_stream.recv_timeout(Duration::from_secs(10)) {
                 Ok(token) => {
                     self.sent_out_shared_memory.remove(&token);
                 }
@@ -249,12 +248,7 @@ impl Drop for DoraNode {
             }
         }
 
-        // close `finished_drop_tokens` to signal event stream thread that no
-        // more drop tokens are expected
-        self.finished_drop_tokens = flume::bounded(0).1;
-
-        tracing::debug!("reporting node stop for node `{}`", self.id);
-        if let Err(err) = self.control_channel.report_stop() {
+        if let Err(err) = self.control_channel.report_outputs_done() {
             tracing::warn!("{err:?}")
         }
     }
