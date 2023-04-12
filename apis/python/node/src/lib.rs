@@ -47,6 +47,9 @@ impl Node {
             let data = py_bytes.as_bytes();
             self.send_output_slice(output_id, data.len(), data, metadata)
         } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
+            if arrow_array.data_type() != &arrow::datatypes::DataType::UInt8 {
+                eyre::bail!("only arrow arrays with data type `UInt8` are supported");
+            }
             if arrow_array.buffers().len() != 1 {
                 eyre::bail!("output arrow array must contain a single buffer");
             }
