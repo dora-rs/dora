@@ -264,30 +264,29 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
-    use dora_operator_api_python::pydict_to_metadata;
+    use dora_operator_api_python::{process_python_output, pydict_to_metadata};
     use eyre::{eyre, Context, Result};
-    use pyo3::{
-        pymethods,
-        types::{PyBytes, PyDict},
-    };
+    use pyo3::{pymethods, types::PyDict, PyObject, Python};
 
     #[pymethods]
     impl SendOutputCallback {
         fn __call__(
             &mut self,
             output: &str,
-            data: &PyBytes,
+            data: PyObject,
             metadata: Option<&PyDict>,
+            py: Python,
         ) -> Result<()> {
-            let data = data.as_bytes();
+            let data = process_python_output(&data, py, |data| Ok(data.to_owned()))?;
+
             let metadata = pydict_to_metadata(metadata)
-                .wrap_err("Could not parse metadata.")?
+                .wrap_err("failed to parse metadata")?
                 .into_owned();
 
             let event = OperatorEvent::Output {
                 output_id: output.to_owned().into(),
                 metadata,
-                data: data.to_owned(),
+                data,
             };
 
             self.events_tx
