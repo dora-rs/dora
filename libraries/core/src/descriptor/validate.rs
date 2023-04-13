@@ -20,7 +20,7 @@ pub fn check_dataflow(
     path: &Path,
     runtime_path: Option<PathBuf>,
 ) -> eyre::Result<()> {
-    let nodes = dataflow.resolve_aliases();
+    let nodes = dataflow.resolve_aliases_and_set_defaults();
     let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
     let mut has_python_operator = false;
     let mut has_shared_lib_operator = false;

@@ -33,7 +33,7 @@ pub struct Descriptor {
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl Descriptor {
-    pub fn resolve_aliases(&self) -> Vec<ResolvedNode> {
+    pub fn resolve_aliases_and_set_defaults(&self) -> Vec<ResolvedNode> {
         let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
 
         let single_operator_nodes: HashMap<_, _> = self
@@ -90,11 +90,19 @@ impl Descriptor {
                 kind,
             });
         }
+
+        let default_machine = self.deploy.machine.as_deref().unwrap_or_default();
+        for node in &mut resolved {
+            if let v @ None = &mut node.deploy.machine {
+                *v = Some(default_machine.to_owned());
+            };
+        }
+
         resolved
     }
 
     pub fn visualize_as_mermaid(&self) -> eyre::Result<String> {
-        let resolved = self.resolve_aliases();
+        let resolved = self.resolve_aliases_and_set_defaults();
         let flowchart = visualize::visualize_nodes(&resolved);
 
         Ok(flowchart)
