@@ -78,6 +78,7 @@ impl MappedInputData {
         let memory = Box::new(
             ShmemConf::new()
                 .os_id(shared_memory_id)
+                .writable(false)
                 .open()
                 .wrap_err("failed to map shared memory input")?,
         );

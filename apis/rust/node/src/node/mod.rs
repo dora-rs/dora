@@ -219,6 +219,7 @@ impl DoraNode {
             None => ShmemHandle(Box::new(
                 ShmemConf::new()
                     .size(data_len)
+                    .writable(true)
                     .create()
                     .wrap_err("failed to allocate shared memory")?,
             )),
