@@ -86,16 +86,9 @@ impl Descriptor {
                 name: node.name,
                 description: node.description,
                 env: node.env,
-                deploy: node.deploy,
+                deploy: ResolvedDeploy::new(node.deploy, self),
                 kind,
             });
-        }
-
-        let default_machine = self.deploy.machine.as_deref().unwrap_or_default();
-        for node in &mut resolved {
-            if let v @ None = &mut node.deploy.machine {
-                *v = Some(default_machine.to_owned());
-            };
         }
 
         resolved
@@ -167,10 +160,25 @@ pub struct ResolvedNode {
     pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(default)]
-    pub deploy: Deploy,
+    pub deploy: ResolvedDeploy,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResolvedDeploy {
+    pub machine: String,
+}
+impl ResolvedDeploy {
+    fn new(deploy: Deploy, descriptor: &Descriptor) -> Self {
+        let default_machine = descriptor.deploy.machine.as_deref().unwrap_or_default();
+        let machine = match deploy.machine {
+            Some(m) => m,
+            None => default_machine.to_owned(),
+        };
+        Self { machine }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
