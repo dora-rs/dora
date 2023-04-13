@@ -1,6 +1,12 @@
+use std::collections::BTreeSet;
+
+use dora_message::Metadata;
 use eyre::eyre;
 
-use crate::daemon_messages::DataflowId;
+use crate::{
+    config::{DataId, NodeId},
+    daemon_messages::DataflowId,
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
@@ -11,6 +17,17 @@ pub enum CoordinatorRequest {
     Event {
         machine_id: String,
         event: DaemonEvent,
+    },
+    Output {
+        source_machine: String,
+        dataflow_id: DataflowId,
+        source_node: NodeId,
+        output_id: DataId,
+
+        metadata: Metadata<'static>,
+        data: Option<Vec<u8>>,
+
+        target_machines: BTreeSet<String>,
     },
 }
 

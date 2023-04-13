@@ -203,6 +203,13 @@ pub enum DaemonCoordinatorEvent {
     },
     Destroy,
     Watchdog,
+    Output {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        output_id: DataId,
+        metadata: Metadata<'static>,
+        data: Option<Vec<u8>>,
+    },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

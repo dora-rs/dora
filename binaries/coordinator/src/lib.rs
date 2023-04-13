@@ -4,9 +4,10 @@ use crate::{
 };
 use control::ControlEvent;
 use dora_core::{
-    config::{CommunicationConfig, NodeId, OperatorId},
+    config::{CommunicationConfig, DataId, NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
+    message::Metadata,
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -162,6 +163,27 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                         }
                         std::collections::hash_map::Entry::Vacant(_) => {
                             tracing::warn!("dataflow not running on DataflowFinishedOnMachine");
+                        }
+                    }
+                }
+                DataflowEvent::Output {
+                    machine_id,
+                    source_node,
+                    output_id,
+                    metadata,
+                    data,
+                    target_machines,
+                } => {
+                    for target_machine in target_machines {
+                        match daemon_connections.get_mut(&target_machine) {
+                            Some(connection) => {
+                                tracing::trace!(
+                                    "forwarding output `{uuid}/{source_node}/{output_id}` \
+                                    from machine `{machine_id}` to machine `{target_machine}`"
+                                );
+                                forward_output(connection, uuid, source_node.clone(), output_id.clone(), metadata.clone(), data.clone()).await?;
+                            },
+                            None => tracing::warn!("received output event for unknown target machine `{target_machine}`"),
                         }
                     }
                 }
@@ -343,6 +365,30 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
     }
 
     tracing::info!("stopped");
+
+    Ok(())
+}
+
+async fn forward_output(
+    connection: &mut TcpStream,
+    uuid: Uuid,
+    source_node: NodeId,
+    output_id: DataId,
+    metadata: Metadata<'static>,
+    data: Option<Vec<u8>>,
+) -> eyre::Result<()> {
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Output {
+        dataflow_id: uuid,
+        node_id: source_node,
+        output_id,
+        metadata,
+        data,
+    })
+    .wrap_err("failed to serialize output message")?;
+
+    tcp_send(connection, &message)
+        .await
+        .wrap_err("failed to send output message to daemon")?;
 
     Ok(())
 }
@@ -569,6 +615,16 @@ pub enum DataflowEvent {
     DataflowFinishedOnMachine {
         machine_id: String,
         result: eyre::Result<()>,
+    },
+    Output {
+        machine_id: String,
+        source_node: NodeId,
+        output_id: DataId,
+
+        metadata: Metadata<'static>,
+        data: Option<Vec<u8>>,
+
+        target_machines: BTreeSet<String>,
     },
 }
 

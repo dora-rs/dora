@@ -82,6 +82,30 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                     .await;
                 }
             },
+            coordinator_messages::CoordinatorRequest::Output {
+                source_machine,
+                dataflow_id,
+                source_node,
+                output_id,
+                metadata,
+                data,
+                target_machines,
+            } => {
+                let event = Event::Dataflow {
+                    uuid: dataflow_id,
+                    event: DataflowEvent::Output {
+                        machine_id: source_machine,
+                        source_node,
+                        output_id,
+                        metadata,
+                        data,
+                        target_machines,
+                    },
+                };
+                if events_tx.send(event).await.is_err() {
+                    break;
+                }
+            }
         };
     }
 }
