@@ -40,11 +40,7 @@ pub async fn spawn_dataflow(
         })
     };
 
-    let machines: BTreeSet<_> = nodes
-        .iter()
-        .filter_map(|n| n.deploy.machine.as_ref())
-        .cloned()
-        .collect();
+    let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
 
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,

@@ -312,7 +312,7 @@ impl Daemon {
         };
 
         for node in nodes {
-            if node.deploy.machine.as_ref() == Some(&self.machine_id) {
+            if node.deploy.machine == self.machine_id {
                 dataflow.running_nodes.insert(node.id.clone());
                 let inputs = node_inputs(&node);
 
