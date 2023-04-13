@@ -30,7 +30,7 @@ pub async fn spawn_dataflow(
         .parent()
         .ok_or_else(|| eyre!("canonicalized dataflow path has no parent"))?
         .to_owned();
-    let nodes = descriptor.resolve_aliases();
+    let mut nodes = descriptor.resolve_aliases();
     let uuid = Uuid::new_v4();
     let communication_config = {
         let config = descriptor.communication;
@@ -39,6 +39,21 @@ pub async fn spawn_dataflow(
             config
         })
     };
+
+    let default_machine = descriptor.deploy.machine.unwrap_or_default();
+    let mut machines = BTreeSet::new();
+    for node in &mut nodes {
+        let machine = match &mut node.deploy.machine {
+            Some(machine) => machine,
+            v @ None => {
+                *v = Some(default_machine.clone());
+                &default_machine
+            }
+        };
+        if !machines.contains(machine) {
+            machines.insert(machine.clone());
+        }
+    }
 
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
