@@ -49,34 +49,41 @@ pub async fn spawn_dataflow(
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 
     // TODO allow partitioning a dataflow across multiple machines
-    let machine_id = "";
-    let machines = [machine_id.to_owned()].into();
+    let default_machine = descriptor.deploy.machine.unwrap_or_default();
+    let machines: BTreeSet<&str> = descriptor
+        .nodes
+        .iter()
+        .map(|n| n.deploy.machine.as_deref().unwrap_or(&default_machine))
+        .collect();
 
-    let daemon_connection = daemon_connections
-        .get_mut(machine_id)
-        .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-    tcp_send(daemon_connection, &message)
-        .await
-        .wrap_err("failed to send spawn message to daemon")?;
+    for &machine in &machines {
+        let daemon_connection = daemon_connections
+            .get_mut(machine)
+            .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
+        tcp_send(daemon_connection, &message)
+            .await
+            .wrap_err("failed to send spawn message to daemon")?;
 
-    // wait for reply
-    let reply_raw = tcp_receive(daemon_connection)
-        .await
-        .wrap_err("failed to receive spawn reply from daemon")?;
-    match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize spawn reply from daemon")?
-    {
-        DaemonCoordinatorReply::SpawnResult(result) => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to spawn dataflow")?,
-        _ => bail!("unexpected reply"),
+        // wait for reply
+        let reply_raw = tcp_receive(daemon_connection)
+            .await
+            .wrap_err("failed to receive spawn reply from daemon")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize spawn reply from daemon")?
+        {
+            DaemonCoordinatorReply::SpawnResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine}`"))?,
+            _ => bail!("unexpected reply"),
+        }
     }
+
     tracing::info!("successfully spawned dataflow `{uuid}`");
 
     Ok(SpawnedDataflow {
         communication_config,
         uuid,
-        machines,
+        machines: machines.into_iter().map(|m| m.to_owned()).collect(),
     })
 }
 
