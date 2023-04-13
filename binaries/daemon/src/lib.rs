@@ -92,7 +92,7 @@ impl Daemon {
 
         let descriptor = Descriptor::read(dataflow_path).await?;
         descriptor.check(dataflow_path, dora_runtime_path.clone())?;
-        let nodes = descriptor.resolve_aliases();
+        let nodes = descriptor.resolve_aliases_and_set_defaults();
 
         let spawn_command = SpawnDataflowNodes {
             dataflow_id: Uuid::new_v4(),
