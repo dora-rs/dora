@@ -312,44 +312,48 @@ impl Daemon {
         };
 
         for node in nodes {
-            dataflow.running_nodes.insert(node.id.clone());
-            let inputs = node_inputs(&node);
+            if node.deploy.machine.as_ref() == Some(&self.machine_id) {
+                dataflow.running_nodes.insert(node.id.clone());
+                let inputs = node_inputs(&node);
 
-            for (input_id, input) in inputs {
-                dataflow
-                    .open_inputs
-                    .entry(node.id.clone())
-                    .or_default()
-                    .insert(input_id.clone());
-                match input.mapping {
-                    InputMapping::User(mapping) => {
-                        dataflow
-                            .mappings
-                            .entry(OutputId(mapping.source, mapping.output))
-                            .or_default()
-                            .insert((node.id.clone(), input_id));
-                    }
-                    InputMapping::Timer { interval } => {
-                        dataflow
-                            .timers
-                            .entry(interval)
-                            .or_default()
-                            .insert((node.id.clone(), input_id));
+                for (input_id, input) in inputs {
+                    dataflow
+                        .open_inputs
+                        .entry(node.id.clone())
+                        .or_default()
+                        .insert(input_id.clone());
+                    match input.mapping {
+                        InputMapping::User(mapping) => {
+                            dataflow
+                                .mappings
+                                .entry(OutputId(mapping.source, mapping.output))
+                                .or_default()
+                                .insert((node.id.clone(), input_id));
+                        }
+                        InputMapping::Timer { interval } => {
+                            dataflow
+                                .timers
+                                .entry(interval)
+                                .or_default()
+                                .insert((node.id.clone(), input_id));
+                        }
                     }
                 }
-            }
 
-            let node_id = node.id.clone();
-            spawn::spawn_node(
-                dataflow_id,
-                &working_dir,
-                node,
-                self.events_tx.clone(),
-                daemon_communication_config,
-                self.dora_runtime_path.as_deref(),
-            )
-            .await
-            .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
+                let node_id = node.id.clone();
+                spawn::spawn_node(
+                    dataflow_id,
+                    &working_dir,
+                    node,
+                    self.events_tx.clone(),
+                    daemon_communication_config,
+                    self.dora_runtime_path.as_deref(),
+                )
+                .await
+                .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
+            } else {
+                dataflow.external_nodes.insert(node.id.clone(), node);
+            }
         }
 
         Ok(())
@@ -852,6 +856,8 @@ pub struct RunningDataflow {
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     running_nodes: BTreeSet<NodeId>,
 
+    external_nodes: BTreeMap<NodeId, ResolvedNode>,
+
     pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
 
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
@@ -876,6 +882,7 @@ impl RunningDataflow {
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeSet::new(),
+            external_nodes: BTreeMap::new(),
             pending_drop_tokens: HashMap::new(),
             _timer_handles: Vec::new(),
             stop_sent: false,
