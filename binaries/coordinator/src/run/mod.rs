@@ -13,6 +13,7 @@ use std::{
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
+#[tracing::instrument(skip(daemon_connections))]
 pub async fn spawn_dataflow(
     dataflow_path: &Path,
     daemon_connections: &mut HashMap<String, TcpStream>,
@@ -51,6 +52,7 @@ pub async fn spawn_dataflow(
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 
     for machine in &machines {
+        tracing::trace!("Spawning dataflow `{uuid}` on machine `{machine}`");
         spawn_dataflow_on_machine(daemon_connections, machine, &message)
             .await
             .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine}`"))?;
