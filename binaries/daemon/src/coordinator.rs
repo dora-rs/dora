@@ -3,7 +3,7 @@ use crate::{
     DaemonCoordinatorEvent,
 };
 use dora_core::{
-    coordinator_messages::{CoordinatorRequest, DaemonEvent, RegisterResult},
+    coordinator_messages::{CoordinatorRequest, RegisterResult},
     daemon_messages::DaemonCoordinatorReply,
 };
 use eyre::{eyre, Context};
@@ -95,23 +95,4 @@ pub async fn register(
     });
 
     Ok(ReceiverStream::new(rx))
-}
-
-pub async fn send_event(
-    addr: SocketAddr,
-    machine_id: String,
-    event: DaemonEvent,
-) -> eyre::Result<TcpStream> {
-    let mut stream = TcpStream::connect(addr)
-        .await
-        .wrap_err("failed to connect to dora-coordinator")?;
-    stream
-        .set_nodelay(true)
-        .wrap_err("failed to set TCP_NODELAY")?;
-    let msg = serde_json::to_vec(&CoordinatorRequest::Event { machine_id, event })?;
-    tcp_send(&mut stream, &msg)
-        .await
-        .wrap_err("failed to send event to dora-coordinator")?;
-
-    Ok(stream)
 }
