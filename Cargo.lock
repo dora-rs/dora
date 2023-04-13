@@ -4345,13 +4345,12 @@ dependencies = [
 
 [[package]]
 name = "shared_memory"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba8593196da75d9dc4f69349682bd4c2099f8cde114257d1ef7ef1b33d1aba54"
+version = "0.12.5"
+source = "git+https://github.com/phil-opp/shared_memory.git?branch=read-only#dac07946862bfe459425a86238c7251fd6ee3770"
 dependencies = [
  "cfg-if",
  "libc",
- "nix 0.23.2",
+ "nix 0.26.2",
  "rand",
  "win-sys",
 ]
