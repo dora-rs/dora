@@ -413,12 +413,12 @@ impl Daemon {
                         source_id == &node_id && outputs.contains(output_id)
                     })
                     .await;
+
                     Result::<_, eyre::Error>::Ok(())
                 };
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
-                // TODO: notify remote nodes
             }
             DaemonNodeEvent::OutputsDone { reply_sender } => {
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
@@ -567,9 +567,14 @@ impl Daemon {
             // check if all local subscribers are finished with the token
             dataflow.check_drop_token(token).await?;
         }
-        // TODO: Send the data to remote daemon instances if the dataflow
-        // is split across multiple machines
-        let _data_bytes = data_bytes;
+
+        if !dataflow.external_nodes.is_empty() {
+            // TODO: Send the data to remote daemon instances if the dataflow
+            // is split across multiple machines
+            let _data_bytes = data_bytes;
+            todo!("send to remote nodes");
+        }
+
         Ok(())
     }
 
@@ -837,6 +842,10 @@ where
                 let _ = channel.send(daemon_messages::NodeEvent::AllInputsClosed);
             }
         }
+    }
+
+    if !dataflow.external_nodes.is_empty() {
+        todo!("notify remote nodes");
     }
 }
 
