@@ -24,6 +24,8 @@ pub struct Descriptor {
     #[serde(default)]
     #[serde(with = "serde_yaml::with::singleton_map")]
     pub communication: Option<CommunicationConfig>,
+    #[serde(default)]
+    pub deploy: Deploy,
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub daemon_config: DaemonCommunicationConfig,
@@ -84,6 +86,7 @@ impl Descriptor {
                 name: node.name,
                 description: node.description,
                 env: node.env,
+                deploy: node.deploy,
                 kind,
             });
         }
@@ -119,12 +122,20 @@ impl Descriptor {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Deploy {
+    pub machine: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub name: Option<String>,
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
+
+    #[serde(default)]
+    pub deploy: Deploy,
 
     #[serde(flatten)]
     pub kind: NodeKind,
@@ -146,6 +157,9 @@ pub struct ResolvedNode {
     pub name: Option<String>,
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
+
+    #[serde(default)]
+    pub deploy: Deploy,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
