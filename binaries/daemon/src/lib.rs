@@ -1,5 +1,6 @@
 use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
+use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::Data;
 use dora_core::message::uhlc::HLC;
 use dora_core::message::MetadataParameters;
@@ -25,7 +26,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tcp_utils::tcp_receive;
+use tcp_utils::{tcp_receive, tcp_send};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
@@ -46,7 +48,7 @@ pub struct Daemon {
 
     events_tx: mpsc::Sender<Event>,
 
-    coordinator_addr: Option<SocketAddr>,
+    coordinator_connection: Option<TcpStream>,
     machine_id: String,
 
     /// used for testing and examples
@@ -168,10 +170,23 @@ impl Daemon {
         })
         .wrap_err("failed to set ctrl-c handler")?;
 
+        let coordinator_connection = match coordinator_addr {
+            Some(addr) => {
+                let stream = TcpStream::connect(addr)
+                    .await
+                    .wrap_err("failed to connect to dora-coordinator")?;
+                stream
+                    .set_nodelay(true)
+                    .wrap_err("failed to set TCP_NODELAY")?;
+                Some(stream)
+            }
+            None => None,
+        };
+
         let daemon = Self {
             running: HashMap::new(),
             events_tx: dora_events_tx,
-            coordinator_addr,
+            coordinator_connection,
             machine_id,
             exit_when_done,
             dora_runtime_path,
@@ -213,15 +228,16 @@ impl Daemon {
                     RunStatus::Exit => break,
                 },
                 Event::WatchdogInterval => {
-                    if let Some(addr) = self.coordinator_addr {
-                        let mut connection = coordinator::send_event(
-                            addr,
-                            self.machine_id.clone(),
-                            DaemonEvent::Watchdog,
-                        )
-                        .await
-                        .wrap_err("lost connection to coordinator")?;
-                        let reply_raw = tcp_receive(&mut connection)
+                    if let Some(connection) = &mut self.coordinator_connection {
+                        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
+                            machine_id: self.machine_id.clone(),
+                            event: DaemonEvent::Watchdog,
+                        })?;
+                        tcp_send(connection, &msg)
+                            .await
+                            .wrap_err("failed to send watchdog message to dora-coordinator")?;
+
+                        let reply_raw = tcp_receive(connection)
                             .await
                             .wrap_err("lost connection to coordinator")?;
                         let _: dora_core::coordinator_messages::WatchdogAck =
@@ -649,20 +665,17 @@ impl Daemon {
                 "Dataflow `{dataflow_id}` finished on machine `{}`",
                 self.machine_id
             );
-            if let Some(addr) = self.coordinator_addr {
-                if coordinator::send_event(
-                    addr,
-                    self.machine_id.clone(),
-                    DaemonEvent::AllNodesFinished {
+            if let Some(connection) = &mut self.coordinator_connection {
+                let msg = serde_json::to_vec(&CoordinatorRequest::Event {
+                    machine_id: self.machine_id.clone(),
+                    event: DaemonEvent::AllNodesFinished {
                         dataflow_id,
                         result: Ok(()),
                     },
-                )
-                .await
-                .is_err()
-                {
-                    tracing::warn!("failed to report dataflow finish to coordinator");
-                }
+                })?;
+                tcp_send(connection, &msg)
+                    .await
+                    .wrap_err("failed to report dataflow finish to dora-coordinator")?;
             }
             self.running.remove(&dataflow_id);
         }
