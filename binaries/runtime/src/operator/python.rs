@@ -207,7 +207,7 @@ pub fn run(
                     metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
                 }
 
-                let py_event = PyEvent(event);
+                let py_event = PyEvent::from(event);
                 let status_enum = operator
                     .call_method1(py, "on_event", (py_event, send_output.clone()))
                     .map_err(traceback)?;
