@@ -28,7 +28,7 @@ impl Node {
 
     pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
         let event = py.allow_threads(|| self.events.recv());
-        Ok(event.map(PyEvent))
+        Ok(event.map(PyEvent::from))
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {

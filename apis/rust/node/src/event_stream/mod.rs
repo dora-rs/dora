@@ -1,9 +1,6 @@
-pub use event::{Event, MappedInputData};
+pub use event::{Data, Event, MappedInputData};
 
-use self::{
-    event::Data,
-    thread::{EventItem, EventStreamThreadHandle},
-};
+use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
