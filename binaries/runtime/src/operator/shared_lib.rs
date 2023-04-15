@@ -123,11 +123,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let event = OperatorEvent::Output {
                 output_id: DataId::from(String::from(output_id)),
                 metadata,
-                data: if data.is_empty() {
-                    None
-                } else {
-                    Some(data.to_owned().into())
-                },
+                data: Some(data.to_owned().into()),
             };
 
             let result = self

@@ -84,15 +84,10 @@ impl DoraNode {
     where
         F: FnOnce(&mut [u8]),
     {
-        let sample = if data_len > 0 {
-            let mut sample = self.allocate_data_sample(data_len)?;
-            data(&mut sample);
-            Some(sample)
-        } else {
-            None
-        };
+        let mut sample = self.allocate_data_sample(data_len)?;
+        data(&mut sample);
 
-        self.send_output_sample(output_id, parameters, sample)
+        self.send_output_sample(output_id, parameters, Some(sample))
     }
 
     pub fn send_output_sample(
