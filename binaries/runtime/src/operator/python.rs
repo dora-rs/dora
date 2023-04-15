@@ -279,31 +279,25 @@ mod callback_impl {
             py: Python,
         ) -> Result<()> {
             let data_len = python_output_len(&data, py)?;
-            let data = if data_len == 0 {
-                None
-            } else {
-                let mut sample = py.allow_threads(|| {
-                    let (tx, rx) = oneshot::channel();
-                    self.events_tx
-                        .blocking_send(OperatorEvent::AllocateOutputSample {
-                            len: data_len,
-                            sample: tx,
-                        })
-                        .map_err(|_| eyre!("failed to send output to runtime"))?;
-                    let sample = rx
-                        .blocking_recv()
-                        .wrap_err("failed to request output sample")?
-                        .wrap_err("failed to allocate output sample")?;
-                    Result::<_, eyre::Report>::Ok(sample)
-                })?;
+            let mut sample = py.allow_threads(|| {
+                let (tx, rx) = oneshot::channel();
+                self.events_tx
+                    .blocking_send(OperatorEvent::AllocateOutputSample {
+                        len: data_len,
+                        sample: tx,
+                    })
+                    .map_err(|_| eyre!("failed to send output to runtime"))?;
+                let sample = rx
+                    .blocking_recv()
+                    .wrap_err("failed to request output sample")?
+                    .wrap_err("failed to allocate output sample")?;
+                Result::<_, eyre::Report>::Ok(sample)
+            })?;
 
-                process_python_output(&data, py, |data| {
-                    sample.copy_from_slice(data);
-                    Ok(())
-                })?;
-
-                Some(sample)
-            };
+            process_python_output(&data, py, |data| {
+                sample.copy_from_slice(data);
+                Ok(())
+            })?;
 
             let metadata = pydict_to_metadata(metadata)
                 .wrap_err("failed to parse metadata")?
@@ -312,7 +306,7 @@ mod callback_impl {
             let event = OperatorEvent::Output {
                 output_id: output.to_owned().into(),
                 metadata,
-                data,
+                data: Some(sample),
             };
 
             py.allow_threads(|| {
