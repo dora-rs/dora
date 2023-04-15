@@ -17,7 +17,7 @@ pub struct PyEvent {
 
 #[pymethods]
 impl PyEvent {
-    pub fn __getitem__(&self, key: &str, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn __getitem__(&self, key: &str, py: Python<'_>) -> PyResult<Option<PyObject>> {
         let value = match key {
             "type" => Some(self.ty().to_object(py)),
             "id" => self.id().map(|v| v.to_object(py)),
@@ -31,7 +31,7 @@ impl PyEvent {
                 )))
             }
         };
-        value.ok_or_else(|| PyLookupError::new_err(format!("event has no property `{key}`")))
+        Ok(value)
     }
 }
 
