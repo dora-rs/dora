@@ -152,15 +152,15 @@ impl DoraNode {
             // create shared memory region
             let shared_memory = self.allocate_shared_memory(data_len)?;
 
-            DataSampleInner::Shmem(shared_memory)
+            DataSample {
+                inner: DataSampleInner::Shmem(shared_memory),
+                len: data_len,
+            }
         } else {
-            DataSampleInner::Vec(vec![0; data_len])
+            vec![0; data_len].into()
         };
 
-        Ok(DataSample {
-            inner: data,
-            len: data_len,
-        })
+        Ok(data)
     }
 
     fn allocate_shared_memory(&mut self, data_len: usize) -> eyre::Result<ShmemHandle> {
@@ -309,6 +309,28 @@ impl DerefMut for DataSample {
             DataSampleInner::Vec(data) => data,
         };
         &mut slice[..self.len]
+    }
+}
+
+impl From<Vec<u8>> for DataSample {
+    fn from(value: Vec<u8>) -> Self {
+        Self {
+            len: value.len(),
+            inner: DataSampleInner::Vec(value),
+        }
+    }
+}
+
+impl std::fmt::Debug for DataSample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match &self.inner {
+            DataSampleInner::Shmem(_) => "SharedMemory",
+            DataSampleInner::Vec(_) => "Vec",
+        };
+        f.debug_struct("DataSample")
+            .field("len", &self.len)
+            .field("kind", &kind)
+            .finish_non_exhaustive()
     }
 }
 

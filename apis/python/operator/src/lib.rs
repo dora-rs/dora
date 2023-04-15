@@ -137,6 +137,23 @@ pub fn metadata_to_pydict<'a>(metadata: &'a Metadata, py: Python<'a>) -> &'a PyD
     dict
 }
 
+pub fn python_output_len(data: &PyObject, py: Python) -> eyre::Result<usize> {
+    if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
+        py_bytes.len().wrap_err("failed to get length of PyBytes")
+    } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
+        if arrow_array.data_type() != &arrow::datatypes::DataType::UInt8 {
+            eyre::bail!("only arrow arrays with data type `UInt8` are supported");
+        }
+        if arrow_array.buffers().len() != 1 {
+            eyre::bail!("output arrow array must contain a single buffer");
+        }
+
+        Ok(arrow_array.len())
+    } else {
+        eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
+    }
+}
+
 pub fn process_python_output<T>(
     data: &PyObject,
     py: Python,

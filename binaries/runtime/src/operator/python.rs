@@ -264,9 +264,10 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
-    use dora_operator_api_python::{process_python_output, pydict_to_metadata};
+    use dora_operator_api_python::{process_python_output, pydict_to_metadata, python_output_len};
     use eyre::{eyre, Context, Result};
     use pyo3::{pymethods, types::PyDict, PyObject, Python};
+    use tokio::sync::oneshot;
 
     #[pymethods]
     impl SendOutputCallback {
@@ -277,7 +278,32 @@ mod callback_impl {
             metadata: Option<&PyDict>,
             py: Python,
         ) -> Result<()> {
-            let data = process_python_output(&data, py, |data| Ok(data.to_owned()))?;
+            let data_len = python_output_len(&data, py)?;
+            let data = if data_len == 0 {
+                None
+            } else {
+                let mut sample = py.allow_threads(|| {
+                    let (tx, rx) = oneshot::channel();
+                    self.events_tx
+                        .blocking_send(OperatorEvent::AllocateOutputSample {
+                            len: data_len,
+                            sample: tx,
+                        })
+                        .map_err(|_| eyre!("failed to send output to runtime"))?;
+                    let sample = rx
+                        .blocking_recv()
+                        .wrap_err("failed to request output sample")?
+                        .wrap_err("failed to allocate output sample")?;
+                    Result::<_, eyre::Report>::Ok(sample)
+                })?;
+
+                process_python_output(&data, py, |data| {
+                    sample.copy_from_slice(data);
+                    Ok(())
+                })?;
+
+                Some(sample)
+            };
 
             let metadata = pydict_to_metadata(metadata)
                 .wrap_err("failed to parse metadata")?
@@ -289,9 +315,11 @@ mod callback_impl {
                 data,
             };
 
-            self.events_tx
-                .blocking_send(event)
-                .map_err(|_| eyre!("failed to send output to runtime"))?;
+            py.allow_threads(|| {
+                self.events_tx
+                    .blocking_send(event)
+                    .map_err(|_| eyre!("failed to send output to runtime"))
+            })?;
 
             Ok(())
         }
