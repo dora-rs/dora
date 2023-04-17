@@ -43,3 +43,4 @@ thop>=0.1.1  # FLOPs computation
 # roboflow
 
 opencv-python>=4.1.1
+pyarrow
