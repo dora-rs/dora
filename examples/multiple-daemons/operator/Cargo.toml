@@ -1,0 +1,13 @@
+[package]
+name = "multiple-daemons-example-operator"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dora-operator-api = { workspace = true }

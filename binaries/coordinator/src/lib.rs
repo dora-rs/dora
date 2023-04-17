@@ -14,15 +14,19 @@ use dora_core::{
     },
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
-use futures::{stream::FuturesUnordered, Stream, StreamExt};
+use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeSet, HashMap},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::{net::TcpStream, sync::mpsc, task::JoinHandle};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::mpsc,
+    task::JoinHandle,
+};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use uuid::Uuid;
 
@@ -31,27 +35,60 @@ mod listener;
 mod run;
 mod tcp_utils;
 
-pub async fn run() -> eyre::Result<()> {
-    let mut tasks = FuturesUnordered::new();
+#[derive(Debug, Clone, clap::Parser)]
+#[clap(about = "Dora coordinator")]
+pub struct Args {
+    #[clap(long)]
+    pub port: Option<u16>,
 
-    // start in daemon mode
-    start(&tasks).await?;
+    #[clap(long)]
+    pub run_dataflow: Option<PathBuf>,
 
-    tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
-    while let Some(join_result) = tasks.next().await {
-        if let Err(err) = join_result {
-            tracing::error!("task panicked: {err}");
-        }
-    }
-    tracing::debug!("all spawned tasks finished, exiting..");
+    #[clap(long)]
+    pub dora_runtime_path: Option<PathBuf>,
+}
+
+pub async fn run(args: Args) -> eyre::Result<()> {
+    let ctrlc_events = set_up_ctrlc_handler()?;
+
+    let (_, task) = start(args, ctrlc_events).await?;
+
+    task.await?;
 
     Ok(())
 }
 
-async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
-    let ctrlc_events = set_up_ctrlc_handler()?;
+pub async fn start(
+    args: Args,
+    external_events: impl Stream<Item = Event> + Unpin,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    let port = args.port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
+    let listener = listener::create_listener(port).await?;
+    let port = listener
+        .local_addr()
+        .wrap_err("failed to get local addr of listener")?
+        .port();
+    let mut tasks = FuturesUnordered::new();
+    let future = async move {
+        start_inner(listener, &tasks, external_events).await?;
 
-    let listener = listener::create_listener(DORA_COORDINATOR_PORT_DEFAULT).await?;
+        tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
+        while let Some(join_result) = tasks.next().await {
+            if let Err(err) = join_result {
+                tracing::error!("task panicked: {err}");
+            }
+        }
+        tracing::debug!("all spawned tasks finished, exiting..");
+        Ok(())
+    };
+    Ok((port, future))
+}
+
+async fn start_inner(
+    listener: TcpListener,
+    tasks: &FuturesUnordered<JoinHandle<()>>,
+    external_events: impl Stream<Item = Event> + Unpin,
+) -> eyre::Result<()> {
     let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
         c.map(Event::NewDaemonConnection)
             .wrap_err("failed to open connection")
@@ -75,7 +112,7 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
         (
             control_events,
             new_daemon_connections,
-            ctrlc_events,
+            external_events,
             daemon_watchdog_interval,
         )
             .merge(),

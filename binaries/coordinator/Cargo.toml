@@ -30,3 +30,4 @@ serde_json = "1.0.86"
 which = "4.3.0"
 thiserror = "1.0.37"
 ctrlc = "3.2.5"
+clap = { version = "3.1.8", features = ["derive"] }
