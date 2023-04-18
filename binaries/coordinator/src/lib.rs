@@ -18,7 +18,7 @@ use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -254,6 +254,23 @@ async fn start_inner(
                         }
                     }
                 }
+                DataflowEvent::InputsClosed {
+                    source_machine,
+                    inputs,
+                } => {
+                    for (target_machine, inputs) in inputs {
+                        match daemon_connections.get_mut(&target_machine) {
+                            Some(connection) => {
+                                tracing::trace!(
+                                    "forwarding InputsClosed event for dataflow `{uuid}` \
+                                    from machine `{source_machine}` to machine `{target_machine}`"
+                                );
+                                forward_inputs_closed(connection, uuid, inputs).await?;
+                            },
+                            None => tracing::warn!("received InputsClosed event for unknown target machine `{target_machine}`"),
+                        }
+                    }
+                }
             },
 
             Event::Control(event) => match event {
@@ -460,6 +477,24 @@ async fn forward_output(
     tcp_send(connection, &message)
         .await
         .wrap_err("failed to send output message to daemon")?;
+
+    Ok(())
+}
+
+async fn forward_inputs_closed(
+    connection: &mut TcpStream,
+    uuid: Uuid,
+    inputs: BTreeSet<(NodeId, DataId)>,
+) -> eyre::Result<()> {
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::InputsClosed {
+        dataflow_id: uuid,
+        inputs,
+    })
+    .wrap_err("failed to serialize InputsClosed message")?;
+
+    tcp_send(connection, &message)
+        .await
+        .wrap_err("failed to send InputsClosed message to daemon")?;
 
     Ok(())
 }
@@ -704,6 +739,10 @@ pub enum DataflowEvent {
         data: Option<Vec<u8>>,
 
         target_machines: BTreeSet<String>,
+    },
+    InputsClosed {
+        source_machine: String,
+        inputs: BTreeMap<String, BTreeSet<(NodeId, DataId)>>,
     },
     ReadyOnMachine {
         machine_id: String,

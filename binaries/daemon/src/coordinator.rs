@@ -17,7 +17,7 @@ use tokio_stream::{wrappers::ReceiverStream, Stream};
 #[derive(Debug)]
 pub struct CoordinatorEvent {
     pub event: DaemonCoordinatorEvent,
-    pub reply_tx: oneshot::Sender<DaemonCoordinatorReply>,
+    pub reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
 }
 
 pub async fn register(
@@ -78,19 +78,21 @@ pub async fn register(
                 tracing::warn!("daemon sent no reply");
                 continue;
             };
-            let serialized = match serde_json::to_vec(&reply)
-                .wrap_err("failed to serialize DaemonCoordinatorReply")
-            {
-                Ok(r) => r,
-                Err(err) => {
-                    tracing::error!("{err:?}");
+            if let Some(reply) = reply {
+                let serialized = match serde_json::to_vec(&reply)
+                    .wrap_err("failed to serialize DaemonCoordinatorReply")
+                {
+                    Ok(r) => r,
+                    Err(err) => {
+                        tracing::error!("{err:?}");
+                        continue;
+                    }
+                };
+                if let Err(err) = tcp_send(&mut stream, &serialized).await {
+                    tracing::warn!("failed to send reply to coordinator: {err}");
                     continue;
-                }
-            };
-            if let Err(err) = tcp_send(&mut stream, &serialized).await {
-                tracing::warn!("failed to send reply to coordinator: {err}");
-                continue;
-            };
+                };
+            }
         }
     });
 
