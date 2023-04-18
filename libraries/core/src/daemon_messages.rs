@@ -193,6 +193,9 @@ pub struct SharedMemoryInput {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
+    AllNodesReady {
+        dataflow_id: DataflowId,
+    },
     StopDataflow {
         dataflow_id: DataflowId,
     },

@@ -179,6 +179,38 @@ async fn start_inner(
                 }
             },
             Event::Dataflow { uuid, event } => match event {
+                DataflowEvent::ReadyOnMachine { machine_id } => {
+                    match running_dataflows.entry(uuid) {
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            let dataflow = entry.get_mut();
+                            dataflow.pending_machines.remove(&machine_id);
+                            if dataflow.pending_machines.is_empty() {
+                                let message =
+                                    serde_json::to_vec(&DaemonCoordinatorEvent::AllNodesReady {
+                                        dataflow_id: uuid,
+                                    })
+                                    .wrap_err("failed to serialize AllNodesReady message")?;
+
+                                // notify all machines that run parts of the dataflow
+                                for machine_id in &dataflow.machines {
+                                    let Some(connection) = daemon_connections.get_mut(machine_id) else {
+                                        tracing::warn!("no daemon connection found for machine `{machine_id}`");
+                                        continue;
+                                    };
+                                    tcp_send(connection, &message).await.wrap_err_with(|| {
+                                        format!(
+                                            "failed to send AllNodesReady({uuid}) message \
+                                            to machine {machine_id}"
+                                        )
+                                    })?;
+                                }
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(_) => {
+                            tracing::warn!("dataflow not running on ReadyOnMachine");
+                        }
+                    }
+                }
                 DataflowEvent::DataflowFinishedOnMachine { machine_id, result } => {
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -492,6 +524,8 @@ struct RunningDataflow {
     communication_config: Option<CommunicationConfig>,
     /// The IDs of the machines that the dataflow is running on.
     machines: BTreeSet<String>,
+    /// IDs of machines that are waiting until all nodes are started.
+    pending_machines: BTreeSet<String>,
 }
 
 impl PartialEq for RunningDataflow {
@@ -594,6 +628,11 @@ async fn start_dataflow(
         uuid,
         name,
         communication_config,
+        pending_machines: if machines.len() > 1 {
+            machines.clone()
+        } else {
+            BTreeSet::new()
+        },
         machines,
     })
 }
@@ -662,6 +701,9 @@ pub enum DataflowEvent {
         data: Option<Vec<u8>>,
 
         target_machines: BTreeSet<String>,
+    },
+    ReadyOnMachine {
+        machine_id: String,
     },
 }
 
