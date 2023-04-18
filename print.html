@@ -1161,9 +1161,15 @@ from typing import Callable
 
 import cv2
 import numpy as np
+import pyarrow as pa
 import torch
 
 from dora import DoraStatus
+
+pa.array([])
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
 
 
 class Operator:
@@ -1173,12 +1179,6 @@ class Operator:
 
     def __init__(self):
         self.model = torch.hub.load(&quot;ultralytics/yolov5&quot;, &quot;yolov5n&quot;)
-
-    def on_event(
-        self,
-        dora_event: dict,
-        send_output: Callable[[str, bytes], None],
-    ) -&gt; DoraStatus:
 </code></pre>
 <blockquote>
 <p>For Python, we recommend to allocate the operator on a single runtime. A runtime will share the same GIL with several operators making those operators run almost sequentially. See: <a href="https://docs.rs/pyo3/latest/pyo3/marker/struct.Python.html#deadlocks">https://docs.rs/pyo3/latest/pyo3/marker/struct.Python.html#deadlocks</a></p>
