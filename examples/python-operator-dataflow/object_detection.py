@@ -52,7 +52,7 @@ class Operator:
         frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
         results = self.model(frame)  # includes NMS
         arrays = pa.array(
-            np.array(results.xyxy[0].cpu()).flatten().view(np.uint8)
+            np.array(results.xyxy[0].cpu()).ravel().view(np.uint8)
         )
         send_output("bbox", arrays, dora_input["metadata"])
         return DoraStatus.CONTINUE

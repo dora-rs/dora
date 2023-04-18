@@ -36,7 +36,7 @@ class Operator:
                 if ret:
                     send_output(
                         "image",
-                        pa.array(frame.flatten()),
+                        pa.array(frame.ravel()),
                         dora_event["metadata"],
                     )
             case "STOP":
