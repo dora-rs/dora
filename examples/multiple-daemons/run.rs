@@ -32,9 +32,18 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
-    let daemon_a =
-        dora_daemon::Daemon::run(coordinator_addr, "A".into(), dora_runtime_path.clone());
-    let daemon_b = dora_daemon::Daemon::run(coordinator_addr, "B".into(), dora_runtime_path);
+    let daemon_a = dora_daemon::Daemon::run(
+        coordinator_addr,
+        "A".into(),
+        dora_runtime_path.clone(),
+        stream::empty(),
+    );
+    let daemon_b = dora_daemon::Daemon::run(
+        coordinator_addr,
+        "B".into(),
+        dora_runtime_path,
+        stream::empty(),
+    );
 
     let mut tasks = JoinSet::new();
     tasks.spawn(coordinator);
