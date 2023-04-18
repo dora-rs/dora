@@ -1,12 +1,22 @@
+use dora_coordinator::{ControlEvent, Event};
+use dora_core::topics::{ControlRequest, ControlRequestReply};
 use eyre::{bail, Context};
 use futures::stream;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::Path,
 };
-use tokio::task::JoinSet;
+use tokio::{
+    sync::{
+        mpsc::{self, Sender},
+        oneshot,
+    },
+    task::JoinSet,
+};
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::Layer;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -22,13 +32,13 @@ async fn main() -> eyre::Result<()> {
     build_package("dora-runtime").await?;
     let dora_runtime_path = Some(root.join("target").join("debug").join("dora-runtime"));
 
+    let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
     let (coordinator_port, coordinator) = dora_coordinator::start(
         dora_coordinator::Args {
             port: Some(0),
-            run_dataflow: Some(dataflow.to_path_buf()),
             dora_runtime_path: dora_runtime_path.clone(),
         },
-        stream::empty(),
+        ReceiverStream::new(coordinator_events_rx),
     )
     .await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
@@ -49,12 +59,58 @@ async fn main() -> eyre::Result<()> {
     tasks.spawn(coordinator);
     tasks.spawn(daemon_a);
     tasks.spawn(daemon_b);
+    std::thread::sleep_ms(3000);
+
+    let uuid = start_dataflow(dataflow, &coordinator_events_tx).await?;
+
+    std::thread::sleep_ms(3000);
+
+    destroy(&coordinator_events_tx).await?;
 
     while let Some(res) = tasks.join_next().await {
         res.unwrap()?;
     }
 
     Ok(())
+}
+
+async fn start_dataflow(
+    dataflow: &Path,
+    coordinator_events_tx: &Sender<Event>,
+) -> eyre::Result<Uuid> {
+    let (reply_sender, reply) = oneshot::channel();
+    coordinator_events_tx
+        .send(Event::Control(ControlEvent::IncomingRequest {
+            request: ControlRequest::Start {
+                dataflow_path: dataflow.to_owned(),
+                name: None,
+            },
+            reply_sender,
+        }))
+        .await?;
+    let result = reply.await??;
+    let uuid = match result {
+        ControlRequestReply::DataflowStarted { uuid } => uuid,
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
+    };
+    Ok(uuid)
+}
+
+async fn destroy(coordinator_events_tx: &Sender<Event>) -> eyre::Result<()> {
+    let (reply_sender, reply) = oneshot::channel();
+    coordinator_events_tx
+        .send(Event::Control(ControlEvent::IncomingRequest {
+            request: ControlRequest::Destroy,
+            reply_sender,
+        }))
+        .await?;
+    let result = reply.await??;
+    match result {
+        ControlRequestReply::DestroyOk => Ok(()),
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
+    }
 }
 
 async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
