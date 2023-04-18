@@ -1,4 +1,4 @@
-use std::{fmt, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeSet, fmt, net::SocketAddr, path::PathBuf};
 
 use crate::{
     config::{DataId, NodeId, NodeRunConfig, OperatorId},
@@ -212,6 +212,10 @@ pub enum DaemonCoordinatorEvent {
         output_id: DataId,
         metadata: Metadata<'static>,
         data: Option<Vec<u8>>,
+    },
+    InputsClosed {
+        dataflow_id: DataflowId,
+        inputs: BTreeSet<(NodeId, DataId)>,
     },
 }
 

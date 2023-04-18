@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dora_message::Metadata;
 use eyre::eyre;
@@ -18,8 +18,14 @@ pub enum CoordinatorRequest {
         machine_id: String,
         event: DaemonEvent,
     },
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum DaemonEvent {
+    AllNodesReady {
+        dataflow_id: DataflowId,
+    },
     Output {
-        source_machine: String,
         dataflow_id: DataflowId,
         source_node: NodeId,
         output_id: DataId,
@@ -29,12 +35,9 @@ pub enum CoordinatorRequest {
 
         target_machines: BTreeSet<String>,
     },
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum DaemonEvent {
-    AllNodesReady {
+    InputsClosed {
         dataflow_id: DataflowId,
+        inputs: BTreeMap<String, BTreeSet<(NodeId, DataId)>>,
     },
     AllNodesFinished {
         dataflow_id: DataflowId,

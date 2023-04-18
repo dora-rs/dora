@@ -130,7 +130,9 @@ impl Daemon {
             .map_err(|err| eyre!("failed to receive spawn result: {err}"))
             .and_then(|r| async {
                 match r {
-                    DaemonCoordinatorReply::SpawnResult(result) => result.map_err(|err| eyre!(err)),
+                    Some(DaemonCoordinatorReply::SpawnResult(result)) => {
+                        result.map_err(|err| eyre!(err))
+                    }
                     _ => Err(eyre!("unexpected spawn reply")),
                 }
             });
@@ -200,9 +202,8 @@ impl Daemon {
             match event {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
                     let (reply, status) = self.handle_coordinator_event(event).await?;
-                    if let Some(reply) = reply {
-                        let _ = reply_tx.send(reply);
-                    }
+                    let _ = reply_tx.send(reply);
+
                     match status {
                         RunStatus::Continue => {}
                         RunStatus::Exit => break,
@@ -350,6 +351,28 @@ impl Daemon {
                 }
                 (None, RunStatus::Continue)
             }
+            DaemonCoordinatorEvent::InputsClosed {
+                dataflow_id,
+                inputs,
+            } => {
+                tracing::debug!(?dataflow_id, ?inputs, "received InputsClosed event");
+                let inner = async {
+                    let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                        format!("send out failed: no running dataflow with ID `{dataflow_id}`")
+                    })?;
+                    for (receiver_id, input_id) in &inputs {
+                        close_input(dataflow, receiver_id, input_id);
+                    }
+                    Result::<(), eyre::Report>::Ok(())
+                };
+                if let Err(err) = inner
+                    .await
+                    .wrap_err("failed to handle InputsClosed event sent by coordinator")
+                {
+                    tracing::warn!("{err:?}")
+                }
+                (None, RunStatus::Continue)
+            }
         };
         Ok((reply, status))
     }
@@ -399,10 +422,12 @@ impl Daemon {
                     }
                 } else if let InputMapping::User(mapping) = input.mapping {
                     dataflow
-                        .external_mappings
+                        .open_external_mappings
                         .entry(OutputId(mapping.source, mapping.output))
                         .or_default()
-                        .insert(node.deploy.machine.clone());
+                        .entry(node.deploy.machine.clone())
+                        .or_default()
+                        .insert((node.id.clone(), input_id));
                 }
             }
             if local {
@@ -463,7 +488,7 @@ impl Daemon {
 
                         // dataflow is split across multiple daemons -> synchronize with dora-coordinator
                         let Some(connection) = &mut self.coordinator_connection else {
-                            bail!("no coordinator connection to forward output to remote receivers");
+                            bail!("no coordinator connection to send AllNodesReady");
                         };
                         let msg = serde_json::to_vec(&CoordinatorRequest::Event {
                             machine_id: self.machine_id.clone(),
@@ -495,12 +520,16 @@ impl Daemon {
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
-                    send_input_closed_events(dataflow, |OutputId(source_id, output_id)| {
-                        source_id == &node_id && outputs.contains(output_id)
-                    })
-                    .await;
-
-                    Result::<_, eyre::Error>::Ok(())
+                    let coordinator_connection = self.coordinator_connection.as_mut();
+                    send_input_closed_events(
+                        dataflow,
+                        coordinator_connection,
+                        &self.machine_id,
+                        |OutputId(source_id, output_id)| {
+                            source_id == &node_id && outputs.contains(output_id)
+                        },
+                    )
+                    .await
                 };
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
@@ -599,24 +628,26 @@ impl Daemon {
         )
         .await?;
 
-        let empty_set = BTreeSet::new();
         let output_id = OutputId(node_id, output_id);
-        let remote_receivers = dataflow
-            .external_mappings
+        let remote_receivers: BTreeSet<_> = dataflow
+            .open_external_mappings
             .get(&output_id)
-            .unwrap_or(&empty_set);
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
         if !remote_receivers.is_empty() {
             let Some(connection) = &mut self.coordinator_connection else {
                 bail!("no coordinator connection to forward output to remote receivers");
             };
-            let msg = serde_json::to_vec(&CoordinatorRequest::Output {
-                source_machine: self.machine_id.clone(),
-                dataflow_id,
-                source_node: output_id.0,
-                output_id: output_id.1,
-                metadata,
-                data: data_bytes,
-                target_machines: remote_receivers.clone(),
+            let msg = serde_json::to_vec(&CoordinatorRequest::Event {
+                machine_id: self.machine_id.clone(),
+                event: DaemonEvent::Output {
+                    dataflow_id,
+                    source_node: output_id.0,
+                    output_id: output_id.1,
+                    metadata,
+                    data: data_bytes,
+                    target_machines: remote_receivers,
+                },
             })?;
             tcp_send(connection, &msg)
                 .await
@@ -679,7 +710,13 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
-        send_input_closed_events(dataflow, |OutputId(source_id, _)| source_id == node_id).await;
+        send_input_closed_events(
+            dataflow,
+            self.coordinator_connection.as_mut(),
+            &self.machine_id,
+            |OutputId(source_id, _)| source_id == node_id,
+        )
+        .await?;
         dataflow.drop_channels.remove(node_id);
         Ok(())
     }
@@ -935,35 +972,66 @@ fn runtime_node_outputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeSet<Data
         .collect()
 }
 
-async fn send_input_closed_events<F>(dataflow: &mut RunningDataflow, mut filter: F)
+async fn send_input_closed_events<F>(
+    dataflow: &mut RunningDataflow,
+    coordinator_connection: Option<&mut TcpStream>,
+    machine_id: &str,
+    mut filter: F,
+) -> eyre::Result<()>
 where
     F: FnMut(&OutputId) -> bool,
 {
-    let downstream_nodes: BTreeSet<_> = dataflow
+    let local_node_inputs: BTreeSet<_> = dataflow
         .mappings
         .iter()
         .filter(|(k, _)| filter(k))
         .flat_map(|(_, v)| v)
+        .cloned()
         .collect();
-    for (receiver_id, input_id) in downstream_nodes {
-        if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
-            if !open_inputs.remove(input_id) {
-                continue;
-            }
-        }
-        if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-            let _ = channel.send(daemon_messages::NodeEvent::InputClosed {
-                id: input_id.clone(),
-            });
-
-            if dataflow.open_inputs(receiver_id).is_empty() {
-                let _ = channel.send(daemon_messages::NodeEvent::AllInputsClosed);
-            }
-        }
+    for (receiver_id, input_id) in &local_node_inputs {
+        close_input(dataflow, receiver_id, input_id);
     }
 
-    if !dataflow.external_nodes.is_empty() {
-        todo!("notify remote nodes");
+    let mut external_node_inputs = BTreeMap::new();
+    for (output_id, mapping) in &mut dataflow.open_external_mappings {
+        if filter(output_id) {
+            external_node_inputs.append(mapping);
+        }
+    }
+    if !external_node_inputs.is_empty() {
+        let Some(connection) = coordinator_connection else {
+            bail!("no coordinator connection");
+        };
+
+        tracing::debug!(?dataflow.id, ?external_node_inputs, "sending InputsClosed event");
+        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
+            machine_id: machine_id.to_owned(),
+            event: DaemonEvent::InputsClosed {
+                dataflow_id: dataflow.id,
+                inputs: external_node_inputs,
+            },
+        })?;
+        tcp_send(connection, &msg)
+            .await
+            .wrap_err("failed to send InputsClosed event to dora-coordinator")?;
+    }
+    Ok(())
+}
+
+fn close_input(dataflow: &mut RunningDataflow, receiver_id: &NodeId, input_id: &DataId) {
+    if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+        if !open_inputs.remove(input_id) {
+            return;
+        }
+    }
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+        let _ = channel.send(daemon_messages::NodeEvent::InputClosed {
+            id: input_id.clone(),
+        });
+
+        if dataflow.open_inputs(receiver_id).is_empty() {
+            let _ = channel.send(daemon_messages::NodeEvent::AllInputsClosed);
+        }
     }
 }
 
@@ -984,7 +1052,7 @@ pub struct RunningDataflow {
     running_nodes: BTreeSet<NodeId>,
 
     external_nodes: BTreeMap<NodeId, ResolvedNode>,
-    external_mappings: HashMap<OutputId, BTreeSet<String>>,
+    open_external_mappings: HashMap<OutputId, BTreeMap<String, BTreeSet<InputId>>>,
 
     pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
 
@@ -1011,7 +1079,7 @@ impl RunningDataflow {
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeSet::new(),
             external_nodes: BTreeMap::new(),
-            external_mappings: HashMap::new(),
+            open_external_mappings: HashMap::new(),
             pending_drop_tokens: HashMap::new(),
             _timer_handles: Vec::new(),
             stop_sent: false,
