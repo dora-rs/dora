@@ -232,6 +232,7 @@ pub struct SpawnDataflowNodes {
     pub working_dir: PathBuf,
     pub nodes: Vec<ResolvedNode>,
     pub daemon_communication: DaemonCommunicationConfig,
+    pub runtime_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

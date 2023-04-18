@@ -1152,6 +1152,7 @@ dependencies = [
  "futures",
  "serde_yaml 0.8.26",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
  "uuid",

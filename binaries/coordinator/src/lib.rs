@@ -2,7 +2,7 @@ use crate::{
     run::spawn_dataflow,
     tcp_utils::{tcp_receive, tcp_send},
 };
-use control::ControlEvent;
+pub use control::ControlEvent;
 use dora_core::{
     config::{CommunicationConfig, DataId, NodeId, OperatorId},
     coordinator_messages::RegisterResult,
@@ -42,9 +42,6 @@ pub struct Args {
     pub port: Option<u16>,
 
     #[clap(long)]
-    pub run_dataflow: Option<PathBuf>,
-
-    #[clap(long)]
     pub dora_runtime_path: Option<PathBuf>,
 }
 
@@ -70,7 +67,7 @@ pub async fn start(
         .port();
     let mut tasks = FuturesUnordered::new();
     let future = async move {
-        start_inner(listener, &tasks, external_events).await?;
+        start_inner(listener, &tasks, external_events, args.dora_runtime_path).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -88,6 +85,7 @@ async fn start_inner(
     listener: TcpListener,
     tasks: &FuturesUnordered<JoinHandle<()>>,
     external_events: impl Stream<Item = Event> + Unpin,
+    runtime_path: Option<PathBuf>,
 ) -> eyre::Result<()> {
     let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
         c.map(Event::NewDaemonConnection)
@@ -278,9 +276,13 @@ async fn start_inner(
                                         bail!("there is already a running dataflow with name `{name}`");
                                     }
                                 }
-                                let dataflow =
-                                    start_dataflow(&dataflow_path, name, &mut daemon_connections)
-                                        .await?;
+                                let dataflow = start_dataflow(
+                                    &dataflow_path,
+                                    name,
+                                    runtime_path.clone(),
+                                    &mut daemon_connections,
+                                )
+                                .await?;
                                 Ok(dataflow)
                             };
                             inner.await.map(|dataflow| {
@@ -617,13 +619,14 @@ async fn reload_dataflow(
 async fn start_dataflow(
     path: &Path,
     name: Option<String>,
+    runtime_path: Option<PathBuf>,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
         communication_config,
         machines,
-    } = spawn_dataflow(path, daemon_connections).await?;
+    } = spawn_dataflow(path, runtime_path, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
