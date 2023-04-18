@@ -84,6 +84,18 @@ impl DoraNode {
     where
         F: FnOnce(&mut [u8]),
     {
+        let mut sample = self.allocate_data_sample(data_len)?;
+        data(&mut sample);
+
+        self.send_output_sample(output_id, parameters, Some(sample))
+    }
+
+    pub fn send_output_sample(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        sample: Option<DataSample>,
+    ) -> eyre::Result<()> {
         self.handle_finished_drop_tokens()?;
 
         if !self.node_config.outputs.contains(&output_id) {
@@ -91,28 +103,9 @@ impl DoraNode {
         }
         let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters.into_owned());
 
-        let (data, shmem) = if data_len >= ZERO_COPY_THRESHOLD {
-            // create shared memory region
-            let mut shared_memory = self.allocate_shared_memory(data_len)?;
-
-            // fill in the data
-            let raw = unsafe { shared_memory.as_slice_mut() };
-            data(&mut raw[..data_len]);
-
-            let drop_token = DropToken::generate();
-            let data = Data::SharedMemory {
-                shared_memory_id: shared_memory.get_os_id().to_owned(),
-                len: data_len,
-                drop_token,
-            };
-            (Some(data), Some((shared_memory, drop_token)))
-        } else if data_len == 0 {
-            data(&mut []);
-            (None, None)
-        } else {
-            let mut buffer = vec![0; data_len];
-            data(&mut buffer);
-            (Some(Data::Vec(buffer)), None)
+        let (data, shmem) = match sample {
+            Some(sample) => sample.finalize(),
+            None => (None, None),
         };
 
         self.control_channel
@@ -147,6 +140,22 @@ impl DoraNode {
 
     pub fn node_config(&self) -> &NodeRunConfig {
         &self.node_config
+    }
+
+    pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
+        let data = if data_len >= ZERO_COPY_THRESHOLD {
+            // create shared memory region
+            let shared_memory = self.allocate_shared_memory(data_len)?;
+
+            DataSample {
+                inner: DataSampleInner::Shmem(shared_memory),
+                len: data_len,
+            }
+        } else {
+            vec![0; data_len].into()
+        };
+
+        Ok(data)
     }
 
     fn allocate_shared_memory(&mut self, data_len: usize) -> eyre::Result<ShmemHandle> {
@@ -252,6 +261,77 @@ impl Drop for DoraNode {
             tracing::warn!("{err:?}")
         }
     }
+}
+
+pub struct DataSample {
+    inner: DataSampleInner,
+    len: usize,
+}
+
+impl DataSample {
+    fn finalize(self) -> (Option<Data>, Option<(ShmemHandle, DropToken)>) {
+        match self.inner {
+            DataSampleInner::Shmem(shared_memory) => {
+                let drop_token = DropToken::generate();
+                let data = Data::SharedMemory {
+                    shared_memory_id: shared_memory.get_os_id().to_owned(),
+                    len: self.len,
+                    drop_token,
+                };
+                (Some(data), Some((shared_memory, drop_token)))
+            }
+            DataSampleInner::Vec(buffer) => (Some(Data::Vec(buffer)), None),
+        }
+    }
+}
+
+impl Deref for DataSample {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        let slice = match &self.inner {
+            DataSampleInner::Shmem(handle) => unsafe { handle.as_slice() },
+            DataSampleInner::Vec(data) => data,
+        };
+        &slice[..self.len]
+    }
+}
+
+impl DerefMut for DataSample {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        let slice = match &mut self.inner {
+            DataSampleInner::Shmem(handle) => unsafe { handle.as_slice_mut() },
+            DataSampleInner::Vec(data) => data,
+        };
+        &mut slice[..self.len]
+    }
+}
+
+impl From<Vec<u8>> for DataSample {
+    fn from(value: Vec<u8>) -> Self {
+        Self {
+            len: value.len(),
+            inner: DataSampleInner::Vec(value),
+        }
+    }
+}
+
+impl std::fmt::Debug for DataSample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match &self.inner {
+            DataSampleInner::Shmem(_) => "SharedMemory",
+            DataSampleInner::Vec(_) => "Vec",
+        };
+        f.debug_struct("DataSample")
+            .field("len", &self.len)
+            .field("kind", &kind)
+            .finish_non_exhaustive()
+    }
+}
+
+enum DataSampleInner {
+    Shmem(ShmemHandle),
+    Vec(Vec<u8>),
 }
 
 struct ShmemHandle(Box<Shmem>);

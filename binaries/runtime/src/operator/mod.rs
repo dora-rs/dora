@@ -3,7 +3,7 @@ use dora_core::{
     descriptor::{OperatorDefinition, OperatorSource},
     message::MetadataParameters,
 };
-use dora_node_api::Event;
+use dora_node_api::{DataSample, Event};
 use eyre::{Context, Result};
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -61,10 +61,14 @@ pub fn run_operator(
 
 #[derive(Debug)]
 pub enum OperatorEvent {
+    AllocateOutputSample {
+        len: usize,
+        sample: oneshot::Sender<eyre::Result<DataSample>>,
+    },
     Output {
         output_id: DataId,
         metadata: MetadataParameters<'static>,
-        data: Vec<u8>,
+        data: Option<DataSample>,
     },
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
