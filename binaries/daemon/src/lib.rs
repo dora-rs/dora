@@ -385,6 +385,16 @@ impl Daemon {
                     dataflow.start(&self.events_tx).await?;
                 }
             }
+            DaemonNodeEvent::SubscribeDrop {
+                event_sender,
+                reply_sender,
+            } => {
+                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                    format!("failed to subscribe: no running dataflow with ID `{dataflow_id}`")
+                })?;
+                dataflow.drop_channels.insert(node_id, event_sender);
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+            }
             DaemonNodeEvent::CloseOutputs {
                 outputs,
                 reply_sender,
@@ -406,12 +416,9 @@ impl Daemon {
                 let _ = reply_sender.send(DaemonReply::Result(reply));
                 // TODO: notify remote nodes
             }
-            DaemonNodeEvent::Stopped { reply_sender } => {
-                tracing::info!("Stopped: {dataflow_id}/{node_id}");
-
+            DaemonNodeEvent::OutputsDone { reply_sender } => {
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
-
-                self.handle_node_stop(dataflow_id, &node_id).await?;
+                self.handle_outputs_done(dataflow_id, &node_id).await?;
             }
             DaemonNodeEvent::SendOut {
                 output_id,
@@ -443,6 +450,19 @@ impl Daemon {
                         None => tracing::warn!("unknown drop token `{token:?}`"),
                     }
                 }
+            }
+            DaemonNodeEvent::EventStreamDropped { reply_sender } => {
+                let inner = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+                    dataflow.subscribe_channels.remove(&node_id);
+                    Result::<_, eyre::Error>::Ok(())
+                };
+
+                let reply = inner.await.map_err(|err| format!("{err:?}"));
+                let _ = reply_sender.send(DaemonReply::Result(reply));
             }
         }
         Ok(())
@@ -532,6 +552,15 @@ impl Daemon {
             Some(Data::Vec(v)) => (Some(v), None),
         };
         if let Some(token) = drop_token {
+            // insert token into `pending_drop_tokens` even if there are no local subscribers
+            dataflow
+                .pending_drop_tokens
+                .entry(token)
+                .or_insert_with(|| DropTokenInformation {
+                    owner: node_id.clone(),
+                    pending_nodes: Default::default(),
+                });
+            // check if all local subscribers are finished with the token
             dataflow.check_drop_token(token).await?;
         }
         // TODO: Send the data to remote daemon instances if the dataflow
@@ -585,15 +614,26 @@ impl Daemon {
     }
 
     #[tracing::instrument(skip(self), level = "trace")]
-    async fn handle_node_stop(
+    async fn handle_outputs_done(
         &mut self,
         dataflow_id: Uuid,
         node_id: &NodeId,
-    ) -> Result<(), eyre::ErrReport> {
+    ) -> eyre::Result<()> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
         send_input_closed_events(dataflow, |OutputId(source_id, _)| source_id == node_id).await;
+        dataflow.drop_channels.remove(node_id);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "trace")]
+    async fn handle_node_stop(&mut self, dataflow_id: Uuid, node_id: &NodeId) -> eyre::Result<()> {
+        self.handle_outputs_done(dataflow_id, node_id).await?;
+
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
+        })?;
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
             tracing::info!(
@@ -663,7 +703,6 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
-                let mut signal_exit = false;
                 let node_error = match exit_status {
                     NodeExitStatus::Success => {
                         tracing::info!("node {dataflow_id}/{node_id} finished successfully");
@@ -683,7 +722,6 @@ impl Daemon {
                         Some(err)
                     }
                     NodeExitStatus::Signal(signal) => {
-                        signal_exit = true;
                         let signal: Cow<_> = match signal {
                             1 => "SIGHUP".into(),
                             2 => "SIGINT".into(),
@@ -715,19 +753,7 @@ impl Daemon {
                     }
                 };
 
-                if self
-                    .running
-                    .get(&dataflow_id)
-                    .and_then(|d| d.running_nodes.get(&node_id))
-                    .is_some()
-                {
-                    if !signal_exit {
-                        tracing::warn!(
-                            "node `{dataflow_id}/{node_id}` finished without sending `Stopped` message"
-                        );
-                    }
-                    self.handle_node_stop(dataflow_id, &node_id).await?;
-                }
+                self.handle_node_stop(dataflow_id, &node_id).await?;
 
                 if let Some(exit_when_done) = &mut self.exit_when_done {
                     if let Some(err) = node_error {
@@ -794,7 +820,9 @@ where
         .collect();
     for (receiver_id, input_id) in downstream_nodes {
         if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
-            open_inputs.remove(input_id);
+            if !open_inputs.remove(input_id) {
+                continue;
+            }
         }
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
             let _ = channel.send(daemon_messages::NodeEvent::InputClosed {
@@ -818,6 +846,7 @@ pub struct RunningDataflow {
     subscribe_replies: HashMap<NodeId, (oneshot::Sender<DaemonReply>, Result<(), String>)>,
 
     subscribe_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeEvent>>,
+    drop_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeDropEvent>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
@@ -842,6 +871,7 @@ impl RunningDataflow {
             pending_nodes: nodes.iter().map(|n| n.id.clone()).collect(),
             subscribe_replies: HashMap::new(),
             subscribe_channels: HashMap::new(),
+            drop_channels: HashMap::new(),
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
@@ -918,9 +948,9 @@ impl RunningDataflow {
             std::collections::hash_map::Entry::Occupied(entry) => {
                 if entry.get().pending_nodes.is_empty() {
                     let (drop_token, info) = entry.remove_entry();
-                    let result = match self.subscribe_channels.get_mut(&info.owner) {
+                    let result = match self.drop_channels.get_mut(&info.owner) {
                         Some(channel) => channel
-                            .send(daemon_messages::NodeEvent::OutputDropped { drop_token })
+                            .send(daemon_messages::NodeDropEvent::OutputDropped { drop_token })
                             .wrap_err("send failed"),
                         None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
                     };
@@ -976,11 +1006,15 @@ impl From<DoraEvent> for Event {
 
 #[derive(Debug)]
 pub enum DaemonNodeEvent {
-    Stopped {
+    OutputsDone {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     Subscribe {
         event_sender: UnboundedSender<daemon_messages::NodeEvent>,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    SubscribeDrop {
+        event_sender: UnboundedSender<daemon_messages::NodeDropEvent>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
@@ -994,6 +1028,9 @@ pub enum DaemonNodeEvent {
     },
     ReportDrop {
         tokens: Vec<DropToken>,
+    },
+    EventStreamDropped {
+        reply_sender: oneshot::Sender<DaemonReply>,
     },
 }
 

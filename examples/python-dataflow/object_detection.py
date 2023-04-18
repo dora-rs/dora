@@ -17,7 +17,7 @@ for event in node:
         case "INPUT":
             match event["id"]:
                 case "image":
-                    print("received image input")
+                    print("[object detection] received image input")
                     frame = np.frombuffer(event["data"], dtype="uint8")
                     frame = cv2.imdecode(frame, -1)
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
@@ -26,8 +26,10 @@ for event in node:
 
                     node.send_output("bbox", arrays, event["metadata"])
                 case other:
-                    print("ignoring unexpected input:", other)
+                    print("[object detection] ignoring unexpected input:", other)
         case "STOP":
-            print("received stop")
+            print("[object detection] received stop")
+        case "ERROR":
+            print("[object detection] error: ", event["error"])
         case other:
-            print("received unexpected event:", other)
+            print("[object detection] received unexpected event:", other)

@@ -116,6 +116,9 @@ typedef struct RawEvent {
 
     /** <No documentation available> */
     bool stop;
+
+    /** <No documentation available> */
+    Vec_uint8_t error;
 } RawEvent_t;
 
 /** <No documentation available> */
