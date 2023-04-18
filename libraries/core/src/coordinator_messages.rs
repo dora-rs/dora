@@ -33,6 +33,9 @@ pub enum CoordinatorRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum DaemonEvent {
+    AllNodesReady {
+        dataflow_id: DataflowId,
+    },
     AllNodesFinished {
         dataflow_id: DataflowId,
         result: Result<(), String>,

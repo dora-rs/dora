@@ -197,7 +197,7 @@ impl Daemon {
         while let Some(event) = events.next().await {
             match event {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
-                    let (reply, status) = self.handle_coordinator_event(event).await;
+                    let (reply, status) = self.handle_coordinator_event(event).await?;
                     if let Some(reply) = reply {
                         let _ = reply_tx.send(reply);
                     }
@@ -247,8 +247,8 @@ impl Daemon {
     async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
-    ) -> (Option<DaemonCoordinatorReply>, RunStatus) {
-        match event {
+    ) -> eyre::Result<(Option<DaemonCoordinatorReply>, RunStatus)> {
+        let (reply, status) = match event {
             DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes {
                 dataflow_id,
                 working_dir,
@@ -264,6 +264,20 @@ impl Daemon {
                 let reply =
                     DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
                 (Some(reply), RunStatus::Continue)
+            }
+            DaemonCoordinatorEvent::AllNodesReady { dataflow_id } => {
+                match self.running.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
+                        dataflow.start(&self.events_tx).await?;
+                    }
+                    None => {
+                        tracing::warn!(
+                            "received AllNodesReady for unknown dataflow (ID `{dataflow_id}`)"
+                        );
+                    }
+                }
+                (None, RunStatus::Continue)
             }
             DaemonCoordinatorEvent::ReloadDataflow {
                 dataflow_id,
@@ -327,7 +341,8 @@ impl Daemon {
                 }
                 (None, RunStatus::Continue)
             }
-        }
+        };
+        Ok((reply, status))
     }
 
     async fn spawn_dataflow(
@@ -337,7 +352,7 @@ impl Daemon {
         nodes: Vec<ResolvedNode>,
         daemon_communication_config: DaemonCommunicationConfig,
     ) -> eyre::Result<()> {
-        let dataflow = RunningDataflow::new(dataflow_id, &nodes);
+        let dataflow = RunningDataflow::new(dataflow_id);
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(dataflow),
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -381,6 +396,8 @@ impl Daemon {
                 }
             }
             if local {
+                dataflow.pending_nodes.insert(node.id.clone());
+
                 let node_id = node.id.clone();
                 spawn::spawn_node(
                     dataflow_id,
@@ -425,10 +442,27 @@ impl Daemon {
                     .insert(node_id.clone(), (reply_sender, result));
                 dataflow.pending_nodes.remove(&node_id);
                 if dataflow.pending_nodes.is_empty() {
-                    // TODO synchronize with dora-coordinator if dataflow is
-                    // split across multiple daemons
-                    tracing::info!("all nodes are ready, starting dataflow `{dataflow_id}`");
-                    dataflow.start(&self.events_tx).await?;
+                    if dataflow.external_nodes.is_empty() {
+                        tracing::info!("all nodes are ready, starting dataflow `{dataflow_id}`");
+                        dataflow.start(&self.events_tx).await?;
+                    } else {
+                        tracing::info!(
+                            "all local nodes are ready, waiting for remote nodes \
+                            for dataflow `{dataflow_id}`"
+                        );
+
+                        // dataflow is split across multiple daemons -> synchronize with dora-coordinator
+                        let Some(connection) = &mut self.coordinator_connection else {
+                            bail!("no coordinator connection to forward output to remote receivers");
+                        };
+                        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
+                            machine_id: self.machine_id.clone(),
+                            event: DaemonEvent::AllNodesReady { dataflow_id },
+                        })?;
+                        tcp_send(connection, &msg)
+                            .await
+                            .wrap_err("failed to send AllNodesReady message to dora-coordinator")?;
+                    }
                 }
             }
             DaemonNodeEvent::SubscribeDrop {
@@ -925,7 +959,7 @@ where
 
 pub struct RunningDataflow {
     id: Uuid,
-    /// Nodes that are not started yet
+    /// Local nodes that are not started yet
     pending_nodes: HashSet<NodeId>,
     /// Used to synchronize node starts.
     ///
@@ -955,10 +989,10 @@ pub struct RunningDataflow {
 }
 
 impl RunningDataflow {
-    fn new(id: Uuid, nodes: &[ResolvedNode]) -> RunningDataflow {
+    fn new(id: Uuid) -> RunningDataflow {
         Self {
             id,
-            pending_nodes: nodes.iter().map(|n| n.id.clone()).collect(),
+            pending_nodes: HashSet::new(),
             subscribe_replies: HashMap::new(),
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
