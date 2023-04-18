@@ -1,10 +1,12 @@
 use dora_coordinator::{ControlEvent, Event};
-use dora_core::topics::{ControlRequest, ControlRequestReply};
+use dora_core::topics::{ControlRequest, ControlRequestReply, DataflowId};
 use eyre::{bail, Context};
 use futures::stream;
 use std::{
+    collections::BTreeSet,
     net::{Ipv4Addr, SocketAddr},
     path::Path,
+    time::Duration,
 };
 use tokio::{
     sync::{
@@ -55,22 +57,59 @@ async fn main() -> eyre::Result<()> {
         stream::empty(),
     );
 
+    tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
     tasks.spawn(coordinator);
     tasks.spawn(daemon_a);
     tasks.spawn(daemon_b);
-    std::thread::sleep_ms(3000);
 
+    // wait until both daemons are connected
+    tracing::info!("waiting until daemons are connected to coordinator");
+    let mut retries = 0;
+    loop {
+        let connected_machines = connected_machines(&coordinator_events_tx).await?;
+        if connected_machines.contains("A") && connected_machines.contains("B") {
+            break;
+        } else if retries > 20 {
+            bail!("daemon not connected after {retries} retries");
+        } else {
+            std::thread::sleep(Duration::from_millis(100));
+            retries += 1
+        }
+    }
+
+    tracing::info!("starting dataflow");
     let uuid = start_dataflow(dataflow, &coordinator_events_tx).await?;
+    tracing::info!("started dataflow under ID `{uuid}`");
 
-    std::thread::sleep_ms(3000);
+    let running = running_dataflows(&coordinator_events_tx).await?;
+    if !running.iter().map(|d| d.uuid).any(|id| id == uuid) {
+        bail!("dataflow `{uuid}` is not running");
+    }
 
+    tracing::info!("waiting for dataflow `{uuid}` to finish");
+    let mut retries = 0;
+    loop {
+        let running = running_dataflows(&coordinator_events_tx).await?;
+        if running.is_empty() {
+            break;
+        } else if retries > 100 {
+            bail!("dataflow not finished after {retries} retries");
+        } else {
+            tracing::debug!("not done yet");
+            std::thread::sleep(Duration::from_millis(500));
+            retries += 1
+        }
+    }
+    tracing::info!("dataflow `{uuid}` finished, destroying coordinator");
     destroy(&coordinator_events_tx).await?;
 
+    tracing::info!("joining tasks");
     while let Some(res) = tasks.join_next().await {
         res.unwrap()?;
     }
 
+    tracing::info!("done");
     Ok(())
 }
 
@@ -95,6 +134,42 @@ async fn start_dataflow(
         other => bail!("unexpected start dataflow reply: {other:?}"),
     };
     Ok(uuid)
+}
+
+async fn connected_machines(
+    coordinator_events_tx: &Sender<Event>,
+) -> eyre::Result<BTreeSet<String>> {
+    let (reply_sender, reply) = oneshot::channel();
+    coordinator_events_tx
+        .send(Event::Control(ControlEvent::IncomingRequest {
+            request: ControlRequest::ConnectedMachines,
+            reply_sender,
+        }))
+        .await?;
+    let result = reply.await??;
+    let machines = match result {
+        ControlRequestReply::ConnectedMachines(machines) => machines,
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
+    };
+    Ok(machines)
+}
+
+async fn running_dataflows(coordinator_events_tx: &Sender<Event>) -> eyre::Result<Vec<DataflowId>> {
+    let (reply_sender, reply) = oneshot::channel();
+    coordinator_events_tx
+        .send(Event::Control(ControlEvent::IncomingRequest {
+            request: ControlRequest::List,
+            reply_sender,
+        }))
+        .await?;
+    let result = reply.await??;
+    let dataflows = match result {
+        ControlRequestReply::DataflowList { dataflows } => dataflows,
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
+    };
+    Ok(dataflows)
 }
 
 async fn destroy(coordinator_events_tx: &Sender<Event>) -> eyre::Result<()> {

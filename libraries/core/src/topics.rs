@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fmt::Display,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
@@ -38,6 +39,7 @@ pub enum ControlRequest {
     Destroy,
     List,
     DaemonConnected,
+    ConnectedMachines,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -50,6 +52,7 @@ pub enum ControlRequestReply {
     DataflowList { dataflows: Vec<DataflowId> },
     DestroyOk,
     DaemonConnected(bool),
+    ConnectedMachines(BTreeSet<String>),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

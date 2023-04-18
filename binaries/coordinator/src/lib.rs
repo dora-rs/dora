@@ -412,6 +412,11 @@ async fn start_inner(
                             let running = !daemon_connections.is_empty();
                             Ok(ControlRequestReply::DaemonConnected(running))
                         }
+                        ControlRequest::ConnectedMachines => {
+                            Ok(ControlRequestReply::ConnectedMachines(
+                                daemon_connections.keys().cloned().collect(),
+                            ))
+                        }
                     };
                     let _ = reply_sender.send(reply);
                 }
