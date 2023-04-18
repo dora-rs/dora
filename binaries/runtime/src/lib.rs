@@ -136,12 +136,16 @@ async fn run(
         .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
-    let (mut node, daemon_events) = DoraNode::init(config)?;
-    let daemon_events = Box::pin(futures::stream::unfold(daemon_events, |mut stream| async {
-        let event = stream.recv_async().await.map(RuntimeEvent::Event);
-        event.map(|event| (event, stream))
-    }));
-    let mut events = (operator_events, daemon_events).merge();
+    let (mut node, mut daemon_events) = DoraNode::init(config)?;
+    let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
+    tokio::task::spawn_blocking(move || {
+        while let Some(event) = daemon_events.recv() {
+            if daemon_events_tx.send(RuntimeEvent::Event(event)).is_err() {
+                break;
+            }
+        }
+    });
+    let mut events = (operator_events, daemon_event_stream.into_stream()).merge();
 
     let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
         .iter()
@@ -203,6 +207,12 @@ async fn run(
                             break;
                         }
                     }
+                    OperatorEvent::AllocateOutputSample { len, sample: tx } => {
+                        let sample = node.allocate_data_sample(len);
+                        if tx.send(sample).is_err() {
+                            tracing::warn!("output sample requested, but operator {operator_id} exited already");
+                        }
+                    }
                     OperatorEvent::Output {
                         output_id,
                         metadata,
@@ -211,9 +221,7 @@ async fn run(
                         let output_id = operator_output_id(&operator_id, &output_id);
                         let result;
                         (node, result) = tokio::task::spawn_blocking(move || {
-                            let result = node.send_output(output_id, metadata, data.len(), |buf| {
-                                buf.copy_from_slice(&data);
-                            });
+                            let result = node.send_output_sample(output_id, metadata, data);
                             (node, result)
                         })
                         .await
