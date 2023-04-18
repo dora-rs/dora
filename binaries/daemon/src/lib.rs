@@ -64,14 +64,16 @@ impl Daemon {
         coordinator_addr: SocketAddr,
         machine_id: String,
         dora_runtime_path: Option<PathBuf>,
+        external_events: impl Stream<Item = Event> + Unpin,
     ) -> eyre::Result<()> {
         // connect to the coordinator
         let coordinator_events = coordinator::register(coordinator_addr, machine_id.clone())
             .await
             .wrap_err("failed to connect to dora-coordinator")?
             .map(Event::Coordinator);
+
         Self::run_general(
-            coordinator_events,
+            (coordinator_events, external_events).merge(),
             Some(coordinator_addr),
             machine_id,
             None,
@@ -153,23 +155,6 @@ impl Daemon {
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         dora_runtime_path: Option<PathBuf>,
     ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
-        let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
-        let ctrlc_tx = dora_events_tx.clone();
-        let mut ctrlc_sent = false;
-        ctrlc::set_handler(move || {
-            if ctrlc_sent {
-                tracing::warn!("received second ctrlc signal -> aborting immediately");
-                std::process::abort();
-            } else {
-                tracing::info!("received ctrlc signal");
-                if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                    tracing::error!("failed to report ctrl-c event to dora-daemon");
-                }
-                ctrlc_sent = true;
-            }
-        })
-        .wrap_err("failed to set ctrl-c handler")?;
-
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
@@ -183,6 +168,7 @@ impl Daemon {
             None => None,
         };
 
+        let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             running: HashMap::new(),
             events_tx: dora_events_tx,

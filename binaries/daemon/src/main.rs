@@ -1,9 +1,11 @@
 use dora_core::topics::DORA_COORDINATOR_PORT_DEFAULT;
-use dora_daemon::Daemon;
+use dora_daemon::{Daemon, Event};
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 #[cfg(feature = "tracing")]
 use eyre::Context;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use std::{net::Ipv4Addr, path::PathBuf};
 
@@ -33,6 +35,25 @@ async fn run() -> eyre::Result<()> {
         dora_runtime_path,
     } = clap::Parser::parse();
 
+    let ctrl_c_events = {
+        let (ctrl_c_tx, ctrl_c_rx) = mpsc::channel(1);
+        let mut ctrlc_sent = false;
+        ctrlc::set_handler(move || {
+            if ctrlc_sent {
+                tracing::warn!("received second ctrlc signal -> aborting immediately");
+                std::process::abort();
+            } else {
+                tracing::info!("received ctrlc signal");
+                if ctrl_c_tx.blocking_send(Event::CtrlC).is_err() {
+                    tracing::error!("failed to report ctrl-c event to dora-daemon");
+                }
+                ctrlc_sent = true;
+            }
+        })
+        .wrap_err("failed to set ctrl-c handler")?;
+        ReceiverStream::new(ctrl_c_rx)
+    };
+
     match run_dataflow {
         Some(dataflow_path) => {
             tracing::info!("Starting dataflow `{}`", dataflow_path.display());
@@ -46,7 +67,13 @@ async fn run() -> eyre::Result<()> {
 
             let machine_id = String::new(); // TODO
 
-            Daemon::run(coordinator_socket.into(), machine_id, dora_runtime_path).await
+            Daemon::run(
+                coordinator_socket.into(),
+                machine_id,
+                dora_runtime_path,
+                ctrl_c_events,
+            )
+            .await
         }
     }
 }
