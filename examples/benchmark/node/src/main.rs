@@ -22,7 +22,6 @@ fn main() -> eyre::Result<()> {
         10 * 4096,
         100 * 4096,
         1000 * 4096,
-        10000 * 4096,
     ];
 
     // test latency first

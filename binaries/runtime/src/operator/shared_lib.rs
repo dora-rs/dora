@@ -1,11 +1,11 @@
-use super::{IncomingEvent, OperatorEvent, StopReason};
+use super::{OperatorEvent, StopReason};
 use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
     descriptor::source_is_url,
 };
 use dora_download::download_file;
-use dora_node_api::MetadataParameters;
+use dora_node_api::{Event, MetadataParameters};
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent,
     DoraResult, DoraStatus, Metadata, OnEventResult, Output, SendOutput,
@@ -27,7 +27,7 @@ pub fn run(
     operator_id: &OperatorId,
     source: &str,
     events_tx: Sender<OperatorEvent>,
-    incoming_events: flume::Receiver<IncomingEvent>,
+    incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
@@ -79,7 +79,7 @@ pub fn run(
 }
 
 struct SharedLibraryOperator<'lib> {
-    incoming_events: flume::Receiver<IncomingEvent>,
+    incoming_events: flume::Receiver<Event>,
     events_tx: Sender<OperatorEvent>,
 
     bindings: Bindings<'lib>,
@@ -123,7 +123,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let event = OperatorEvent::Output {
                 output_id: DataId::from(String::from(output_id)),
                 metadata,
-                data: data.to_owned(),
+                data: Some(data.to_owned().into()),
             };
 
             let result = self
@@ -150,8 +150,10 @@ impl<'lib> SharedLibraryOperator<'lib> {
             // Add metadata context if we have a tracer and
             // incoming input has some metadata.
             #[cfg(feature = "telemetry")]
-            if let IncomingEvent::Input {
-                input_id, metadata, ..
+            if let Event::Input {
+                id: input_id,
+                metadata,
+                ..
             } = &mut event
             {
                 use dora_tracing::telemetry::{deserialize_context, serialize_context};
@@ -166,19 +168,20 @@ impl<'lib> SharedLibraryOperator<'lib> {
             }
 
             let operator_event = match event {
-                IncomingEvent::Stop => dora_operator_api_types::RawEvent {
+                Event::Stop => dora_operator_api_types::RawEvent {
                     input: None,
                     input_closed: None,
                     stop: true,
+                    error: None,
                 },
-                IncomingEvent::Input {
-                    input_id,
+                Event::Input {
+                    id: input_id,
                     metadata,
                     data,
                 } => {
                     let operator_input = dora_operator_api_types::Input {
                         id: String::from(input_id).into(),
-                        data: data.unwrap_or_default().into(),
+                        data: data.map(|d| d.to_vec()).unwrap_or_default().into(),
                         metadata: Metadata {
                             open_telemetry_context: metadata
                                 .parameters
@@ -191,15 +194,27 @@ impl<'lib> SharedLibraryOperator<'lib> {
                         input: Some(Box::new(operator_input).into()),
                         input_closed: None,
                         stop: false,
+                        error: None,
                     }
                 }
-                IncomingEvent::InputClosed { input_id } => dora_operator_api_types::RawEvent {
+                Event::InputClosed { id: input_id } => dora_operator_api_types::RawEvent {
                     input_closed: Some(input_id.to_string().into()),
                     input: None,
                     stop: false,
+                    error: None,
                 },
-                IncomingEvent::Reload => {
+                Event::Reload { .. } => {
                     // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+                    continue;
+                }
+                Event::Error(err) => dora_operator_api_types::RawEvent {
+                    error: Some(err.into()),
+                    input_closed: None,
+                    input: None,
+                    stop: false,
+                },
+                other => {
+                    tracing::warn!("unexpected event: {other:?}");
                     continue;
                 }
             };

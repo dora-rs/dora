@@ -30,11 +30,11 @@ mod ffi {
     extern "Rust" {
         type Events;
         type OutputSender;
-        type DoraEvent<'a>;
+        type DoraEvent;
 
         fn init_dora_node() -> Result<DoraNode>;
 
-        fn next_event(inputs: &mut Box<Events>) -> Box<DoraEvent<'_>>;
+        fn next_event(inputs: &mut Box<Events>) -> Box<DoraEvent>;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
         fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
         fn send_output(
@@ -62,7 +62,7 @@ fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
     Box::new(DoraEvent(events.0.recv()))
 }
 
-pub struct DoraEvent<'a>(Option<Event<'a>>);
+pub struct DoraEvent(Option<Event>);
 
 fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
     match &event.0 {

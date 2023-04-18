@@ -19,7 +19,9 @@ pub struct NodeConfig {
 pub enum DaemonCommunication {
     Shmem {
         daemon_control_region_id: SharedMemoryId,
+        daemon_drop_region_id: SharedMemoryId,
         daemon_events_region_id: SharedMemoryId,
+        daemon_events_close_region_id: SharedMemoryId,
     },
     Tcp {
         socket_addr: SocketAddr,
@@ -46,18 +48,33 @@ pub enum DaemonRequest {
         data: Option<Data>,
     },
     CloseOutputs(Vec<DataId>),
-    Stopped,
+    /// Signals that the node is finished sending outputs and that it received all
+    /// required drop tokens.
+    OutputsDone,
     NextEvent {
         drop_tokens: Vec<DropToken>,
     },
+    ReportDropTokens {
+        drop_tokens: Vec<DropToken>,
+    },
+    SubscribeDrop,
+    NextFinishedDropTokens,
+    EventStreamDropped,
 }
 
 impl DaemonRequest {
     pub fn expects_tcp_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::SendMessage { .. } => false,
-            _ => true,
+            DaemonRequest::SendMessage { .. } | DaemonRequest::ReportDropTokens { .. } => false,
+            DaemonRequest::Register { .. }
+            | DaemonRequest::Subscribe
+            | DaemonRequest::CloseOutputs(_)
+            | DaemonRequest::OutputsDone
+            | DaemonRequest::NextEvent { .. }
+            | DaemonRequest::SubscribeDrop
+            | DaemonRequest::NextFinishedDropTokens
+            | DaemonRequest::EventStreamDropped => true,
         }
     }
 }
@@ -104,15 +121,16 @@ impl fmt::Debug for Data {
 
 type SharedMemoryId = String;
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
     NextEvents(Vec<NodeEvent>),
+    NextDropEvents(Vec<NodeDropEvent>),
     Empty,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum NodeEvent {
     Stop,
     Reload {
@@ -127,9 +145,11 @@ pub enum NodeEvent {
         id: DataId,
     },
     AllInputsClosed,
-    OutputDropped {
-        drop_token: DropToken,
-    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum NodeDropEvent {
+    OutputDropped { drop_token: DropToken },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

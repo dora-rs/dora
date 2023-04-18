@@ -21,6 +21,7 @@ eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
 dora-runtime = { workspace = true, features = ["tracing"] }
+arrow = { version = "35.0.0", features = ["pyarrow"] }
 
 [lib]
 name = "dora"

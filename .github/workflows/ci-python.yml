@@ -11,6 +11,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  RUST_LOG: trace
+
 jobs:
   examples:
     name: "Python Examples"

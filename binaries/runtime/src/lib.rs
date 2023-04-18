@@ -5,7 +5,7 @@ use dora_core::{
     daemon_messages::{NodeConfig, RuntimeConfig},
     descriptor::OperatorConfig,
 };
-use dora_node_api::DoraNode;
+use dora_node_api::{DoraNode, Event};
 use eyre::{bail, Context, Result};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
@@ -49,7 +49,7 @@ pub fn main() -> eyre::Result<()> {
 
     let (operator_events_tx, events) = mpsc::channel(1);
     let operator_id = operator_definition.id.clone();
-    let operator_events = ReceiverStream::new(events).map(move |event| Event::Operator {
+    let operator_events = ReceiverStream::new(events).map(move |event| RuntimeEvent::Operator {
         id: operator_id.clone(),
         event,
     });
@@ -110,12 +110,12 @@ fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, us
     sizes
 }
 
-#[tracing::instrument(skip(operator_events, operator_channels), fields(node.id), level = "trace" )]
+#[tracing::instrument(skip(operator_events, operator_channels), level = "trace")]
 async fn run(
     operators: HashMap<OperatorId, OperatorConfig>,
     config: NodeConfig,
-    operator_events: impl Stream<Item = Event> + Unpin,
-    mut operator_channels: HashMap<OperatorId, flume::Sender<operator::IncomingEvent>>,
+    operator_events: impl Stream<Item = RuntimeEvent> + Unpin,
+    mut operator_channels: HashMap<OperatorId, flume::Sender<Event>>,
     init_done: oneshot::Receiver<Result<()>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
@@ -136,28 +136,16 @@ async fn run(
         .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
-    let (mut node, daemon_events) = DoraNode::init(config)?;
-    let daemon_events = Box::pin(futures::stream::unfold(daemon_events, |mut stream| async {
-        let event = stream.recv_async().await.map(|event| match event {
-            dora_node_api::Event::Stop => Event::Stop,
-            dora_node_api::Event::Reload {
-                operator_id: Some(operator_id),
-            } => Event::Reload { operator_id },
-            dora_node_api::Event::Reload { operator_id: None } => Event::Error(
-                "Dora runtime node received reload event without operator id".to_string(),
-            ),
-            dora_node_api::Event::Input { id, metadata, data } => Event::Input {
-                id,
-                metadata,
-                data: data.map(|data| data.to_owned()),
-            },
-            dora_node_api::Event::InputClosed { id } => Event::InputClosed(id),
-            dora_node_api::Event::Error(err) => Event::Error(err),
-            _ => todo!(),
-        });
-        event.map(|event| (event, stream))
-    }));
-    let mut events = (operator_events, daemon_events).merge();
+    let (mut node, mut daemon_events) = DoraNode::init(config)?;
+    let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
+    tokio::task::spawn_blocking(move || {
+        while let Some(event) = daemon_events.recv() {
+            if daemon_events_tx.send(RuntimeEvent::Event(event)).is_err() {
+                break;
+            }
+        }
+    });
+    let mut events = (operator_events, daemon_event_stream.into_stream()).merge();
 
     let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
         .iter()
@@ -166,7 +154,7 @@ async fn run(
 
     while let Some(event) = events.next().await {
         match event {
-            Event::Operator {
+            RuntimeEvent::Operator {
                 id: operator_id,
                 event,
             } => {
@@ -219,6 +207,12 @@ async fn run(
                             break;
                         }
                     }
+                    OperatorEvent::AllocateOutputSample { len, sample: tx } => {
+                        let sample = node.allocate_data_sample(len);
+                        if tx.send(sample).is_err() {
+                            tracing::warn!("output sample requested, but operator {operator_id} exited already");
+                        }
+                    }
                     OperatorEvent::Output {
                         output_id,
                         metadata,
@@ -227,9 +221,7 @@ async fn run(
                         let output_id = operator_output_id(&operator_id, &output_id);
                         let result;
                         (node, result) = tokio::task::spawn_blocking(move || {
-                            let result = node.send_output(output_id, metadata, data.len(), |buf| {
-                                buf.copy_from_slice(&data);
-                            });
+                            let result = node.send_output_sample(output_id, metadata, data);
                             (node, result)
                         })
                         .await
@@ -238,20 +230,27 @@ async fn run(
                     }
                 }
             }
-            Event::Stop => {
+            RuntimeEvent::Event(Event::Stop) => {
                 // forward stop event to all operators and close the event channels
                 for (_, channel) in operator_channels.drain() {
-                    let _ = channel.send_async(operator::IncomingEvent::Stop).await;
+                    let _ = channel.send_async(Event::Stop).await;
                 }
             }
-            Event::Reload { operator_id } => {
+            RuntimeEvent::Event(Event::Reload {
+                operator_id: Some(operator_id),
+            }) => {
                 let _ = operator_channels
                     .get(&operator_id)
                     .unwrap()
-                    .send_async(operator::IncomingEvent::Reload)
+                    .send_async(Event::Reload {
+                        operator_id: Some(operator_id),
+                    })
                     .await;
             }
-            Event::Input { id, metadata, data } => {
+            RuntimeEvent::Event(Event::Reload { operator_id: None }) => {
+                tracing::warn!("Reloading runtime nodes is not supported");
+            }
+            RuntimeEvent::Event(Event::Input { id, metadata, data }) => {
                 let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
                     tracing::warn!("received non-operator input {id}");
                     continue;
@@ -264,8 +263,8 @@ async fn run(
                 };
 
                 if let Err(err) = operator_channel
-                    .send_async(operator::IncomingEvent::Input {
-                        input_id: input_id.clone(),
+                    .send_async(Event::Input {
+                        id: input_id.clone(),
                         metadata,
                         data,
                     })
@@ -277,7 +276,7 @@ async fn run(
                     tracing::warn!("{err}");
                 }
             }
-            Event::InputClosed(id) => {
+            RuntimeEvent::Event(Event::InputClosed { id }) => {
                 let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
                     tracing::warn!("received InputClosed event for non-operator input {id}");
                     continue;
@@ -290,8 +289,8 @@ async fn run(
                     continue;
                 };
                 if let Err(err) = operator_channel
-                    .send_async(operator::IncomingEvent::InputClosed {
-                        input_id: input_id.clone(),
+                    .send_async(Event::InputClosed {
+                        id: input_id.clone(),
                     })
                     .await
                     .wrap_err_with(|| {
@@ -307,13 +306,16 @@ async fn run(
                     open_inputs.remove(&input_id);
                     if open_inputs.is_empty() {
                         // all inputs of the node were closed -> close its event channel
-                        tracing::info!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
+                        tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
                         open_operator_inputs.remove(&operator_id);
                         operator_channels.remove(&operator_id);
                     }
                 }
             }
-            Event::Error(err) => eyre::bail!("received error event: {err}"),
+            RuntimeEvent::Event(Event::Error(err)) => eyre::bail!("received error event: {err}"),
+            RuntimeEvent::Event(other) => {
+                tracing::warn!("received unknown event `{other:?}`");
+            }
         }
     }
 
@@ -327,20 +329,10 @@ fn operator_output_id(operator_id: &OperatorId, output_id: &DataId) -> DataId {
 }
 
 #[derive(Debug)]
-enum Event {
+enum RuntimeEvent {
     Operator {
         id: OperatorId,
         event: OperatorEvent,
     },
-    Stop,
-    Input {
-        id: dora_core::config::DataId,
-        metadata: dora_core::message::Metadata<'static>,
-        data: Option<Vec<u8>>,
-    },
-    InputClosed(dora_core::config::DataId),
-    Error(String),
-    Reload {
-        operator_id: OperatorId,
-    },
+    Event(Event),
 }
