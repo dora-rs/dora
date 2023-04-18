@@ -236,7 +236,7 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true, features = [&quot;tracing&quot;] }
 eyre = &quot;0.6.8&quot;
 futures = &quot;0.3.21&quot;
 rand = &quot;0.8.5&quot;
@@ -387,7 +387,7 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true, features = [&quot;tracing&quot;] }
 eyre = &quot;0.6.8&quot;
 </code></pre>
 <p>with <code>src/main.rs</code>:</p>
@@ -815,7 +815,7 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true, features = [&quot;tracing&quot;] }
 eyre = &quot;0.6.8&quot;
 futures = &quot;0.3.21&quot;
 rand = &quot;0.8.5&quot;
@@ -1206,7 +1206,7 @@ for event in node:
         case &quot;INPUT&quot;:
             match event[&quot;id&quot;]:
                 case &quot;image&quot;:
-                    print(&quot;received image input&quot;)
+                    print(&quot;[object detection] received image input&quot;)
                     frame = np.frombuffer(event[&quot;data&quot;], dtype=&quot;uint8&quot;)
                     frame = cv2.imdecode(frame, -1)
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
@@ -1215,11 +1215,13 @@ for event in node:
 
                     node.send_output(&quot;bbox&quot;, arrays, event[&quot;metadata&quot;])
                 case other:
-                    print(&quot;ignoring unexpected input:&quot;, other)
+                    print(&quot;[object detection] ignoring unexpected input:&quot;, other)
         case &quot;STOP&quot;:
-            print(&quot;received stop&quot;)
+            print(&quot;[object detection] received stop&quot;)
+        case &quot;ERROR&quot;:
+            print(&quot;[object detection] error: &quot;, event[&quot;error&quot;])
         case other:
-            print(&quot;received unexpected event:&quot;, other)
+            print(&quot;[object detection] received unexpected event:&quot;, other)
 </code></pre>
 <ul>
 <li>Link it in your graph as:</li>

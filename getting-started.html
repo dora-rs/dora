@@ -176,7 +176,7 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true, features = [&quot;tracing&quot;] }
 eyre = &quot;0.6.8&quot;
 futures = &quot;0.3.21&quot;
 rand = &quot;0.8.5&quot;
@@ -327,7 +327,7 @@ edition = &quot;2021&quot;
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true, features = [&quot;tracing&quot;] }
 eyre = &quot;0.6.8&quot;
 </code></pre>
 <p>with <code>src/main.rs</code>:</p>
