@@ -7,11 +7,20 @@ use eyre::Context;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use std::{net::Ipv4Addr, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 #[derive(Debug, Clone, clap::Parser)]
 #[clap(about = "Dora daemon")]
 pub struct Args {
+    #[clap(long)]
+    pub machine_id: Option<String>,
+
+    #[clap(long)]
+    pub coordinator_addr: Option<SocketAddr>,
+
     #[clap(long)]
     pub run_dataflow: Option<PathBuf>,
 
@@ -33,6 +42,8 @@ async fn run() -> eyre::Result<()> {
     let Args {
         run_dataflow,
         dora_runtime_path,
+        machine_id,
+        coordinator_addr,
     } = clap::Parser::parse();
 
     let ctrl_c_events = {
@@ -61,15 +72,13 @@ async fn run() -> eyre::Result<()> {
             Daemon::run_dataflow(&dataflow_path, dora_runtime_path).await
         }
         None => {
-            tracing::info!("Starting in local mode");
-            let localhost = Ipv4Addr::new(127, 0, 0, 1);
-            let coordinator_socket = (localhost, DORA_COORDINATOR_PORT_DEFAULT);
-
-            let machine_id = String::new(); // TODO
-
             Daemon::run(
-                coordinator_socket.into(),
-                machine_id,
+                coordinator_addr.unwrap_or_else(|| {
+                    tracing::info!("Starting in local mode");
+                    let localhost = Ipv4Addr::new(127, 0, 0, 1);
+                    (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
+                }),
+                machine_id.unwrap_or_default(),
                 dora_runtime_path,
                 ctrl_c_events,
             )
