@@ -103,6 +103,7 @@ impl Daemon {
             working_dir,
             nodes,
             daemon_communication: descriptor.daemon_config,
+            runtime_path: dora_runtime_path.clone(),
         };
 
         let exit_when_done = spawn_command
@@ -254,9 +255,16 @@ impl Daemon {
                 working_dir,
                 nodes,
                 daemon_communication,
+                runtime_path,
             }) => {
                 let result = self
-                    .spawn_dataflow(dataflow_id, working_dir, nodes, daemon_communication)
+                    .spawn_dataflow(
+                        dataflow_id,
+                        working_dir,
+                        nodes,
+                        runtime_path.as_deref(),
+                        daemon_communication,
+                    )
                     .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
@@ -350,6 +358,7 @@ impl Daemon {
         dataflow_id: uuid::Uuid,
         working_dir: PathBuf,
         nodes: Vec<ResolvedNode>,
+        runtime_path: Option<&Path>,
         daemon_communication_config: DaemonCommunicationConfig,
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id);
@@ -405,7 +414,7 @@ impl Daemon {
                     node,
                     self.events_tx.clone(),
                     daemon_communication_config,
-                    self.dora_runtime_path.as_deref(),
+                    runtime_path.or(self.dora_runtime_path.as_deref()),
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
