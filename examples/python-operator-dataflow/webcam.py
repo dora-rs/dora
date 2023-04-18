@@ -5,8 +5,12 @@ import time
 from typing import Callable
 
 import cv2
+import pyarrow as pa
 
 from dora import DoraStatus
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
 
 
 class Operator:
@@ -17,19 +21,22 @@ class Operator:
     def __init__(self):
         self.video_capture = cv2.VideoCapture(0)
         self.start_time = time.time()
+        self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+        self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
 
     def on_event(
         self,
-        dora_event: dict,
+        dora_event: str,
         send_output: Callable[[str, bytes], None],
     ) -> DoraStatus:
         match dora_event["type"]:
             case "INPUT":
                 ret, frame = self.video_capture.read()
+                frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
                 if ret:
                     send_output(
                         "image",
-                        cv2.imencode(".jpg", frame)[1].tobytes(),
+                        pa.array(frame.ravel()),
                         dora_event["metadata"],
                     )
             case "STOP":
