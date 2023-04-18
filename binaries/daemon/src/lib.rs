@@ -189,6 +189,7 @@ impl Daemon {
         daemon.run_inner(events).await
     }
 
+    #[tracing::instrument(skip(incoming_events, self), fields(%self.machine_id))]
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Event> + Unpin,
