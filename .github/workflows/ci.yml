@@ -49,6 +49,10 @@ jobs:
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
 
+      - name: "Multiple Daemons example"
+        timeout-minutes: 30
+        run: cargo run --example multiple-daemons
+
       - name: "Benchmark example"
         timeout-minutes: 30
         run: cargo run --example benchmark --release
