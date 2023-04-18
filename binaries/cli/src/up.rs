@@ -1,8 +1,4 @@
-use crate::{
-    check::{coordinator_running, daemon_running},
-    control_connection,
-};
-use communication_layer_request_reply::TcpRequestReplyConnection;
+use crate::{check::daemon_running, connect_to_coordinator};
 use dora_core::topics::ControlRequest;
 use eyre::Context;
 use std::{fs, path::Path, process::Command, time::Duration};
@@ -17,34 +13,44 @@ pub(crate) fn up(
 ) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
 
-    if !coordinator_running()? {
-        start_coordinator(coordinator).wrap_err("failed to start dora-coordinator")?;
-        // sleep a bit until the coordinator accepts connections
-        while !coordinator_running()? {
-            std::thread::sleep(Duration::from_millis(50));
+    let mut session = match connect_to_coordinator() {
+        Ok(session) => session,
+        Err(_) => {
+            start_coordinator(coordinator).wrap_err("failed to start dora-coordinator")?;
+
+            loop {
+                match connect_to_coordinator() {
+                    Ok(session) => break session,
+                    Err(_) => {
+                        // sleep a bit until the coordinator accepts connections
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
         }
-    }
-    if !daemon_running()? {
+    };
+
+    if !daemon_running(&mut *session)? {
         start_daemon(daemon).wrap_err("failed to start dora-daemon")?;
     }
 
     Ok(())
 }
 
-pub(crate) fn destroy(
-    config_path: Option<&Path>,
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
-) -> Result<(), eyre::ErrReport> {
+pub(crate) fn destroy(config_path: Option<&Path>) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
 
-    if coordinator_running()? {
-        // send destroy command to dora-coordinator
-        control_connection(session)?
-            .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
-            .wrap_err("failed to send destroy message")?;
-        println!("Send destroy command to dora-coordinator");
-    } else {
-        eprintln!("The dora-coordinator is not running");
+    match connect_to_coordinator() {
+        Ok(mut session) => {
+            // send destroy command to dora-coordinator
+            session
+                .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
+                .wrap_err("failed to send destroy message")?;
+            println!("Send destroy command to dora-coordinator");
+        }
+        Err(_) => {
+            eprintln!("The dora-coordinator does not seem to be running");
+        }
     }
 
     Ok(())
