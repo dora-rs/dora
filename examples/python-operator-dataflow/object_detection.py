@@ -5,9 +5,15 @@ from typing import Callable
 
 import cv2
 import numpy as np
+import pyarrow as pa
 import torch
 
 from dora import DoraStatus
+
+pa.array([])
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
 
 
 class Operator:
@@ -38,10 +44,15 @@ class Operator:
             send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
         """
 
-        frame = np.frombuffer(dora_input["data"], dtype="uint8")
-        frame = cv2.imdecode(frame, -1)
+        frame = (
+            dora_input["value"]
+            .to_numpy()
+            .reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))
+        )
         frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
         results = self.model(frame)  # includes NMS
-        arrays = np.array(results.xyxy[0].cpu()).tobytes()
+        arrays = pa.array(
+            np.array(results.xyxy[0].cpu()).ravel().view(np.uint8)
+        )
         send_output("bbox", arrays, dora_input["metadata"])
         return DoraStatus.CONTINUE
