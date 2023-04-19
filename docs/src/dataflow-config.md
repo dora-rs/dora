@@ -7,10 +7,6 @@ Dataflows are specified through a YAML file. This section presents our current d
 Dataflows are specified through the following format:
 
 ```yaml
-communication:
-  zenoh:
-    prefix: /example-python-no-webcam-dataflow
-
 nodes:
     - id: foo
       # ... (see below)
@@ -103,24 +99,7 @@ Each operator must specify exactly one implementation. The implementation must f
 ```yaml
 {{#include ../../examples/rust-dataflow/dataflow.yml}}
 ```
-## Communication
 
-The mandatory `communication` key specifies how dora nodes and operators should communicate with each other. Dora supports the following backends:
-
-- **[Zenoh](https://zenoh.io/):** The zenoh project implements a distributed publisher/subscriber system with automated routing. To communicate over zenoh, add the following key to your dataflow configuration:
-
-  ```yaml
-  communication:
-    zenoh:
-      prefix: some-unique-prefix
-  ```
-
-  The specified `prefix` is added to all pub/sub topics. It is useful for filtering messages (e.g. in a logger) when other applications use `zenoh` in parallel. Dora will extend the given prefix with a newly generated UUID on each run, to ensure that multiple instances of the same dataflow run concurrently without interfering with each other.
-
-  Zenoh is quite flexible and can be easily scaled to distributed deployment. It does not require any extra setup since it supports peer-to-peer communication without an external broker. The drawback of zenoh is that it is still in an early stage of development, so it might still have reliability and performance issues.
-
-  _Note:_ Dora currently only supports local deployments, so interacting with remote nodes/operators is not possible yet.
-  
 ## TODO: Integration with ROS 1/2
 
 To integrate dora-rs operators with ROS1 or ROS2 operators, we plan to provide special _bridge operators_. These operators act as a sink in one dataflow framework and push all messages to a different dataflow framework, where they act as source.
