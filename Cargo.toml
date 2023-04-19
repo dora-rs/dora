@@ -69,6 +69,7 @@ tracing = "0.1.36"
 tracing-subscriber = "0.3.15"
 futures = "0.3.25"
 tokio-stream = "0.1.11"
+clap = { version = "4.0.3", features = ["derive"] }
 
 [[example]]
 name = "c-dataflow"

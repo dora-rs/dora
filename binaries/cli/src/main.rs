@@ -33,8 +33,6 @@ enum Command {
     Check {
         #[clap(long)]
         dataflow: Option<PathBuf>,
-        #[clap(long)]
-        runtime_path: Option<PathBuf>,
     },
     /// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
     Graph {
@@ -127,12 +125,9 @@ fn main() -> eyre::Result<()> {
     let mut session = None;
 
     match args.command {
-        Command::Check {
-            dataflow,
-            runtime_path,
-        } => match dataflow {
+        Command::Check { dataflow } => match dataflow {
             Some(dataflow) => {
-                Descriptor::blocking_read(&dataflow)?.check(&dataflow, runtime_path)?;
+                Descriptor::blocking_read(&dataflow)?.check(&dataflow)?;
                 check::check_environment()?
             }
             None => check::check_environment()?,
@@ -169,7 +164,7 @@ fn main() -> eyre::Result<()> {
             let dataflow_description =
                 Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
             dataflow_description
-                .check(&dataflow, None)
+                .check(&dataflow)
                 .wrap_err("Could not validate yaml")?;
             let dataflow_id = start_dataflow(dataflow.clone(), name, &mut session)?;
 
