@@ -186,7 +186,7 @@ fn main() -> eyre::Result<()> {
         Command::List => match connect_to_coordinator() {
             Ok(mut session) => list(&mut *session)?,
             Err(_) => {
-                eprintln!("No dora coordinator seems to be running.");
+                bail!("No dora coordinator seems to be running.");
             }
         },
         Command::Stop { uuid, name } => {
