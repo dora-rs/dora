@@ -10,7 +10,12 @@ use dora_core::{
 use dora_download::download_file;
 use eyre::WrapErr;
 use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
-use tokio::sync::mpsc;
+use tokio::{
+    fs::File,
+    io::{AsyncBufReadExt, AsyncWriteExt},
+    sync::mpsc,
+};
+use tracing::info;
 
 pub async fn spawn_node(
     dataflow_id: DataflowId,
@@ -152,20 +157,59 @@ pub async fn spawn_node(
                 }
             }
 
-            command.spawn().wrap_err(format!(
-                "failed to run runtime {}/{}",
-                runtime_config.node.dataflow_id, runtime_config.node.node_id
-            ))?
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .wrap_err(format!(
+                    "failed to run runtime {}/{}",
+                    runtime_config.node.dataflow_id, runtime_config.node.node_id
+                ))?
         }
     };
 
     tokio::spawn(async move {
+        // let hlc = HLC::default();
+        // let timestamp = hlc.new_timestamp().to_string();
+        // let time = timestamp
+        // .split('.')
+        // .next()
+        // .expect("Could not extract date from timestamp."); // TODO: Add time within log file name
+
+        let mut file = File::create(format!("logs/{node_id}.txt"))
+            .await
+            .expect("Failed to create log file");
+
+        let mut stdout_lines =
+            (tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout")))
+                .lines();
+
+        while let Ok(Some(line)) = stdout_lines.next_line().await {
+            file.write(line.as_bytes()).await.unwrap();
+            file.write(b"\n").await.unwrap();
+            info!(line);
+        }
+
+        let mut stderr_lines =
+            (tokio::io::BufReader::new(child.stderr.take().expect("failed to take stderr")))
+                .lines();
+
+        while let Ok(Some(line)) = stderr_lines.next_line().await {
+            file.write(line.as_bytes()).await.unwrap();
+            file.write(b"\n").await.unwrap();
+            info!(line);
+        }
+
+        file.sync_all().await.unwrap();
+
         let exit_status = NodeExitStatus::from(child.wait().await);
         let event = DoraEvent::SpawnedNodeResult {
             dataflow_id,
             node_id,
             exit_status,
         };
+
         let _ = daemon_tx.send(event.into()).await;
     });
     Ok(())

@@ -28,6 +28,8 @@ use std::{
     time::Duration,
 };
 use tcp_utils::{tcp_receive, tcp_send};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, oneshot};
@@ -302,6 +304,27 @@ impl Daemon {
                     }
                 }
                 (None, RunStatus::Continue)
+            }
+            DaemonCoordinatorEvent::Logs {
+                dataflow_id,
+                node_id,
+            } => {
+                // read file
+                let logs = async {
+                    println!("logs/{node_id}.txt");
+                    let mut file = File::open(format!("logs/{node_id}.txt"))
+                        .await
+                        .wrap_err("Could not open log file")?;
+
+                    let mut contents = vec![];
+                    file.read_to_end(&mut contents)
+                        .await
+                        .wrap_err("Could not read content of log file")?;
+                    Result::<Vec<u8>, eyre::Report>::Ok(contents)
+                }
+                .await
+                .expect("Could not retrieve logs");
+                (DaemonCoordinatorReply::Logs { logs }, RunStatus::Continue)
             }
             DaemonCoordinatorEvent::ReloadDataflow {
                 dataflow_id,

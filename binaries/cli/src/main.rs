@@ -16,6 +16,7 @@ mod attach;
 mod build;
 mod check;
 mod graph;
+mod logs;
 mod template;
 mod up;
 
@@ -85,7 +86,12 @@ enum Command {
     List,
     // Planned for future releases:
     // Dashboard,
-    // Logs,
+    Logs {
+        uuid: Option<Uuid>,
+        #[clap(long)]
+        name: Option<String>,
+        node: String,
+    },
     // Metrics,
     // Stats,
     // Get,
@@ -166,6 +172,7 @@ fn run() -> eyre::Result<()> {
             coordinator_path.as_deref(),
             daemon_path.as_deref(),
         )?,
+        Command::Logs { uuid, name, node } => logs::logs(uuid, name, node)?,
         Command::Start {
             dataflow,
             name,

@@ -42,6 +42,11 @@ pub enum ControlRequest {
     StopByName {
         name: String,
     },
+    Logs {
+        uuid: Option<Uuid>,
+        name: Option<String>,
+        node: String,
+    },
     Destroy,
     List,
     DaemonConnected,
@@ -59,6 +64,7 @@ pub enum ControlRequestReply {
     DestroyOk,
     DaemonConnected(bool),
     ConnectedMachines(BTreeSet<String>),
+    Logs { logs: Vec<u8> },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
