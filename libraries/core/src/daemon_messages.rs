@@ -236,5 +236,4 @@ pub struct SpawnDataflowNodes {
     pub working_dir: PathBuf,
     pub nodes: Vec<ResolvedNode>,
     pub communication: CommunicationConfig,
-    pub runtime_path: Option<PathBuf>,
 }

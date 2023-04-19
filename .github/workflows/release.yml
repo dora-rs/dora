@@ -26,9 +26,8 @@ jobs:
 
       - name: "Build binaries"
         timeout-minutes: 60
-        run: "cargo build --release -p dora-runtime 
-         -p dora-coordinator -p dora-cli -p dora-daemon"
-      
+        run: "cargo build --release -p dora-coordinator -p dora-cli -p dora-daemon"
+
       - name: "Publish packages on `crates.io`"
         if: runner.os == 'Linux'
         run: |
@@ -65,14 +64,11 @@ jobs:
             cargo publish -p dora-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
             cargo publish -p dora-coordinator --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
             cargo publish -p dora-daemon --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-            cargo publish -p dora-runtime --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-            
 
       - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: |
           mkdir archive
-          cp target/release/dora-runtime archive
           cp target/release/dora-coordinator archive
           cp target/release/dora-daemon archive
           cp target/release/dora-cli archive/dora
@@ -85,7 +81,6 @@ jobs:
         shell: powershell
         run: |
           New-Item -Path archive -ItemType Directory
-          Copy-Item target/release/dora-runtime.exe -Destination archive
           Copy-Item target/release/dora-coordinator.exe -Destination archive
           Copy-Item target/release/dora-daemon.exe -Destination archive
           Copy-Item target/release/dora-cli.exe -Destination archive/dora.exe

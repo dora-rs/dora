@@ -18,7 +18,6 @@ pub async fn spawn_node(
     node: ResolvedNode,
     daemon_tx: mpsc::Sender<Event>,
     config: LocalCommunicationConfig,
-    dora_runtime_path: Option<&Path>,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -114,9 +113,11 @@ pub async fn spawn_node(
                 command.args(["-c", "import dora; dora.start_runtime()"]);
                 command
             } else if !has_python_operator && has_other_operator {
-                tokio::process::Command::new(
-                    dora_runtime_path.unwrap_or_else(|| Path::new("dora-runtime")),
-                )
+                let mut cmd = tokio::process::Command::new(
+                    std::env::current_exe().wrap_err("failed to get current executable path")?,
+                );
+                cmd.arg("--run-dora-runtime");
+                cmd
             } else {
                 eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
             };

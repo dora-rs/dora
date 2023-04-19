@@ -3,8 +3,20 @@ use std::path::Path;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::Layer;
 
+#[derive(Debug, Clone, clap::Parser)]
+pub struct Args {
+    #[clap(long)]
+    pub run_dora_runtime: bool,
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    let Args { run_dora_runtime } = clap::Parser::parse();
+
+    if run_dora_runtime {
+        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
+    }
+
     set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -14,10 +26,7 @@ async fn main() -> eyre::Result<()> {
     let dataflow = Path::new("dataflow.yml");
     build_dataflow(dataflow).await?;
 
-    build_package("dora-runtime").await?;
-    let dora_runtime_path = Some(root.join("target").join("debug").join("dora-runtime"));
-
-    dora_daemon::Daemon::run_dataflow(dataflow, dora_runtime_path).await?;
+    dora_daemon::Daemon::run_dataflow(dataflow).await?;
 
     Ok(())
 }
@@ -30,17 +39,6 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     cmd.arg("--").arg("build").arg(dataflow);
     if !cmd.status().await?.success() {
         bail!("failed to build dataflow");
-    };
-    Ok(())
-}
-
-async fn build_package(package: &str) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("build");
-    cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
-        bail!("failed to build {package}");
     };
     Ok(())
 }

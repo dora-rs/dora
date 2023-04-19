@@ -55,15 +55,12 @@ pub struct Daemon {
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     /// used to record dataflow results when `exit_when_done` is used
     dataflow_errors: Vec<(Uuid, NodeId, eyre::Report)>,
-
-    dora_runtime_path: Option<PathBuf>,
 }
 
 impl Daemon {
     pub async fn run(
         coordinator_addr: SocketAddr,
         machine_id: String,
-        dora_runtime_path: Option<PathBuf>,
         external_events: impl Stream<Item = Event> + Unpin,
     ) -> eyre::Result<()> {
         // connect to the coordinator
@@ -77,16 +74,12 @@ impl Daemon {
             Some(coordinator_addr),
             machine_id,
             None,
-            dora_runtime_path,
         )
         .await
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(
-        dataflow_path: &Path,
-        dora_runtime_path: Option<PathBuf>,
-    ) -> eyre::Result<()> {
+    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canoncialize dataflow path")?
@@ -95,7 +88,7 @@ impl Daemon {
             .to_owned();
 
         let descriptor = Descriptor::read(dataflow_path).await?;
-        descriptor.check(dataflow_path, dora_runtime_path.clone())?;
+        descriptor.check(dataflow_path)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults();
 
         let spawn_command = SpawnDataflowNodes {
@@ -103,7 +96,6 @@ impl Daemon {
             working_dir,
             nodes,
             communication: descriptor.communication,
-            runtime_path: dora_runtime_path.clone(),
         };
 
         let exit_when_done = spawn_command
@@ -123,7 +115,6 @@ impl Daemon {
             None,
             "".into(),
             Some(exit_when_done),
-            dora_runtime_path,
         );
 
         let spawn_result = reply_rx
@@ -156,7 +147,6 @@ impl Daemon {
         coordinator_addr: Option<SocketAddr>,
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
-        dora_runtime_path: Option<PathBuf>,
     ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -178,7 +168,6 @@ impl Daemon {
             coordinator_connection,
             machine_id,
             exit_when_done,
-            dora_runtime_path,
             dataflow_errors: Vec::new(),
         };
 
@@ -257,20 +246,13 @@ impl Daemon {
                 working_dir,
                 nodes,
                 communication,
-                runtime_path,
             }) => {
                 match communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
 
                 let result = self
-                    .spawn_dataflow(
-                        dataflow_id,
-                        working_dir,
-                        nodes,
-                        runtime_path.as_deref(),
-                        communication.local,
-                    )
+                    .spawn_dataflow(dataflow_id, working_dir, nodes, communication.local)
                     .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
@@ -386,7 +368,6 @@ impl Daemon {
         dataflow_id: uuid::Uuid,
         working_dir: PathBuf,
         nodes: Vec<ResolvedNode>,
-        runtime_path: Option<&Path>,
         daemon_communication_config: LocalCommunicationConfig,
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id);
@@ -444,7 +425,6 @@ impl Daemon {
                     node,
                     self.events_tx.clone(),
                     daemon_communication_config,
-                    runtime_path.or(self.dora_runtime_path.as_deref()),
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
@@ -867,6 +847,10 @@ impl Daemon {
         }
         Ok(RunStatus::Continue)
     }
+}
+
+pub fn run_dora_runtime() -> eyre::Result<()> {
+    dora_runtime::main()
 }
 
 async fn send_output_to_local_receivers(

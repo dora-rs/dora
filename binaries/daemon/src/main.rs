@@ -25,7 +25,7 @@ pub struct Args {
     pub run_dataflow: Option<PathBuf>,
 
     #[clap(long)]
-    pub dora_runtime_path: Option<PathBuf>,
+    pub run_dora_runtime: bool,
 }
 
 #[tokio::main]
@@ -41,10 +41,14 @@ async fn run() -> eyre::Result<()> {
 
     let Args {
         run_dataflow,
-        dora_runtime_path,
         machine_id,
         coordinator_addr,
+        run_dora_runtime,
     } = clap::Parser::parse();
+
+    if run_dora_runtime {
+        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
+    }
 
     let ctrl_c_events = {
         let (ctrl_c_tx, ctrl_c_rx) = mpsc::channel(1);
@@ -69,7 +73,7 @@ async fn run() -> eyre::Result<()> {
         Some(dataflow_path) => {
             tracing::info!("Starting dataflow `{}`", dataflow_path.display());
 
-            Daemon::run_dataflow(&dataflow_path, dora_runtime_path).await
+            Daemon::run_dataflow(&dataflow_path).await
         }
         None => {
             Daemon::run(
@@ -79,7 +83,6 @@ async fn run() -> eyre::Result<()> {
                     (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
                 }),
                 machine_id.unwrap_or_default(),
-                dora_runtime_path,
                 ctrl_c_events,
             )
             .await
