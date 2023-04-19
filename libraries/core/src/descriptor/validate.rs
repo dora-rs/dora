@@ -5,21 +5,13 @@ use crate::{
 };
 
 use eyre::{bail, eyre, Context};
-use std::{
-    env::consts::EXE_EXTENSION,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{env::consts::EXE_EXTENSION, path::Path, process::Command};
 use tracing::info;
 
 use super::{Descriptor, SHELL_SOURCE};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn check_dataflow(
-    dataflow: &Descriptor,
-    path: &Path,
-    runtime_path: Option<PathBuf>,
-) -> eyre::Result<()> {
+pub fn check_dataflow(dataflow: &Descriptor, path: &Path) -> eyre::Result<()> {
     if dataflow.daemon_config.is_some() {
         tracing::warn!("ignoring deprecated `daemon_config` key in dataflow config");
     }
@@ -30,7 +22,6 @@ pub fn check_dataflow(
     let nodes = dataflow.resolve_aliases_and_set_defaults();
     let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
     let mut has_python_operator = false;
-    let mut has_shared_lib_operator = false;
 
     // check that nodes and operators exist
     for node in &nodes {
@@ -57,7 +48,6 @@ pub fn check_dataflow(
                 for operator_definition in &node.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
-                            has_shared_lib_operator = true;
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
                             } else {
@@ -114,10 +104,6 @@ pub fn check_dataflow(
         check_python_runtime()?;
     }
 
-    if has_shared_lib_operator {
-        check_shared_lib_runtime(runtime_path)?;
-    }
-
     Ok(())
 }
 
@@ -167,52 +153,6 @@ fn check_input(
             }
         }
     };
-    Ok(())
-}
-
-fn check_shared_lib_runtime(runtime_path: Option<PathBuf>) -> eyre::Result<()> {
-    // Check if runtime path exists
-    let runtime_bin = if let Some(runtime_bin) = runtime_path {
-        if !runtime_bin.with_extension(EXE_EXTENSION).is_file() {
-            bail!(
-                "Provided Dora Runtime could not be found: {}",
-                runtime_bin.display()
-            )
-        } else {
-            runtime_bin
-        }
-    } else {
-        match which::which("dora-runtime") {
-            Err(err) => {
-                bail!("Dora Runtime binary could not be found: {}", err);
-            }
-            Ok(runtime_bin) => runtime_bin,
-        }
-    };
-
-    // Get runtime version
-    let mut command = Command::new(runtime_bin);
-    command.arg("--version");
-    let result = command
-        .spawn()
-        .wrap_err("Could not find version of the dora-runtime. Please reinstall dora-runtime")?;
-    let stdout = result
-        .wait_with_output()
-        .wrap_err(
-            "Could not retrieve dora version from dora-runtime. Please reinstall dora-runtime`",
-        )?
-        .stdout;
-    let rust_version = String::from_utf8(stdout).wrap_err("Could not read python version")?;
-
-    // Check runtime version
-    if rust_version == format!("dora-runtime {VERSION}") {
-        bail!(
-            "Dora Runtime version {:#?} should be {}",
-            rust_version,
-            VERSION
-        )
-    };
-
     Ok(())
 }
 
