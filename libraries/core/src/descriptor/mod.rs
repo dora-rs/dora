@@ -1,6 +1,5 @@
-use crate::{
-    config::{CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
-    daemon_messages::DaemonCommunicationConfig,
+use crate::config::{
+    CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
 use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -20,16 +19,15 @@ pub const SHELL_SOURCE: &str = "shell";
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
-    // see https://github.com/dtolnay/serde-yaml/issues/298
     #[serde(default)]
-    #[serde(with = "serde_yaml::with::singleton_map")]
-    pub communication: Option<CommunicationConfig>,
+    pub communication: CommunicationConfig,
+    // deprecated
+    pub daemon_config: Option<serde_yaml::Value>,
     #[serde(default)]
     pub deploy: Deploy,
     pub nodes: Vec<Node>,
-    #[serde(default)]
-    pub daemon_config: DaemonCommunicationConfig,
 }
+
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl Descriptor {

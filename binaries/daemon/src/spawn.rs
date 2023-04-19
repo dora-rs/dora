@@ -3,8 +3,8 @@ use crate::{
     DoraEvent, Event, NodeExitStatus,
 };
 use dora_core::{
-    config::NodeRunConfig,
-    daemon_messages::{DaemonCommunicationConfig, DataflowId, NodeConfig, RuntimeConfig},
+    config::{LocalCommunicationConfig, NodeRunConfig},
+    daemon_messages::{DataflowId, NodeConfig, RuntimeConfig},
     descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode, SHELL_SOURCE},
 };
 use dora_download::download_file;
@@ -17,7 +17,7 @@ pub async fn spawn_node(
     working_dir: &Path,
     node: ResolvedNode,
     daemon_tx: mpsc::Sender<Event>,
-    config: DaemonCommunicationConfig,
+    config: LocalCommunicationConfig,
     dora_runtime_path: Option<&Path>,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();

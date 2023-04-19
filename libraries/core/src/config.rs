@@ -4,7 +4,7 @@ use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     convert::Infallible,
-    fmt::{self, Write as _},
+    fmt,
     str::FromStr,
     time::Duration,
 };
@@ -295,24 +295,44 @@ impl From<InputDef> for Input {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
-pub enum CommunicationConfig {
-    Zenoh {
-        config: Option<serde_yaml::Value>,
-        prefix: String,
-    },
+pub struct CommunicationConfig {
+    // see https://github.com/dtolnay/serde-yaml/issues/298
+    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    pub local: LocalCommunicationConfig,
+    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    pub remote: RemoteCommunicationConfig,
+
+    // deprecated
+    pub zenoh: Option<serde_yaml::Value>,
 }
 
-impl CommunicationConfig {
-    pub fn add_topic_prefix(&mut self, prefix: &str) {
-        match self {
-            CommunicationConfig::Zenoh {
-                prefix: zenoh_prefix,
-                ..
-            } => {
-                write!(zenoh_prefix, "/{}", prefix).unwrap();
-            }
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LocalCommunicationConfig {
+    Tcp,
+    Shmem,
+}
+
+impl Default for LocalCommunicationConfig {
+    fn default() -> Self {
+        Self::Tcp
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields, rename_all = "lowercase")]
+pub enum RemoteCommunicationConfig {
+    Tcp,
+    // TODO:a
+    // Zenoh {
+    //     config: Option<serde_yaml::Value>,
+    //     prefix: String,
+    // },
+}
+
+impl Default for RemoteCommunicationConfig {
+    fn default() -> Self {
+        Self::Tcp
     }
 }

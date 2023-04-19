@@ -1,7 +1,6 @@
 use crate::tcp_utils::{tcp_receive, tcp_send};
 
 use dora_core::{
-    config::CommunicationConfig,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
     descriptor::Descriptor,
 };
@@ -34,13 +33,6 @@ pub async fn spawn_dataflow(
         .to_owned();
     let nodes = descriptor.resolve_aliases_and_set_defaults();
     let uuid = Uuid::new_v4();
-    let communication_config = {
-        let config = descriptor.communication;
-        config.map(|mut config| {
-            config.add_topic_prefix(&uuid.to_string());
-            config
-        })
-    };
 
     let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
 
@@ -48,7 +40,7 @@ pub async fn spawn_dataflow(
         dataflow_id: uuid,
         working_dir,
         nodes,
-        daemon_communication: descriptor.daemon_config,
+        communication: descriptor.communication,
         runtime_path,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
@@ -62,11 +54,7 @@ pub async fn spawn_dataflow(
 
     tracing::info!("successfully spawned dataflow `{uuid}`");
 
-    Ok(SpawnedDataflow {
-        communication_config,
-        uuid,
-        machines,
-    })
+    Ok(SpawnedDataflow { uuid, machines })
 }
 
 async fn spawn_dataflow_on_machine(
@@ -96,6 +84,5 @@ async fn spawn_dataflow_on_machine(
 
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
-    pub communication_config: Option<CommunicationConfig>,
     pub machines: BTreeSet<String>,
 }

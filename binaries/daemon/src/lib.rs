@@ -1,5 +1,5 @@
 use coordinator::CoordinatorEvent;
-use dora_core::config::{Input, OperatorId};
+use dora_core::config::{Input, LocalCommunicationConfig, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::Data;
 use dora_core::message::uhlc::HLC;
@@ -8,8 +8,8 @@ use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
     daemon_messages::{
-        self, DaemonCommunicationConfig, DaemonCoordinatorEvent, DaemonCoordinatorReply,
-        DaemonReply, DataflowId, DropToken, SpawnDataflowNodes,
+        self, DaemonCoordinatorEvent, DaemonCoordinatorReply, DaemonReply, DataflowId, DropToken,
+        SpawnDataflowNodes,
     },
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
@@ -102,7 +102,7 @@ impl Daemon {
             dataflow_id: Uuid::new_v4(),
             working_dir,
             nodes,
-            daemon_communication: descriptor.daemon_config,
+            communication: descriptor.communication,
             runtime_path: dora_runtime_path.clone(),
         };
 
@@ -256,16 +256,20 @@ impl Daemon {
                 dataflow_id,
                 working_dir,
                 nodes,
-                daemon_communication,
+                communication,
                 runtime_path,
             }) => {
+                match communication.remote {
+                    dora_core::config::RemoteCommunicationConfig::Tcp => {}
+                }
+
                 let result = self
                     .spawn_dataflow(
                         dataflow_id,
                         working_dir,
                         nodes,
                         runtime_path.as_deref(),
-                        daemon_communication,
+                        communication.local,
                     )
                     .await;
                 if let Err(err) = &result {
@@ -383,7 +387,7 @@ impl Daemon {
         working_dir: PathBuf,
         nodes: Vec<ResolvedNode>,
         runtime_path: Option<&Path>,
-        daemon_communication_config: DaemonCommunicationConfig,
+        daemon_communication_config: LocalCommunicationConfig,
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id);
         let dataflow = match self.running.entry(dataflow_id) {
