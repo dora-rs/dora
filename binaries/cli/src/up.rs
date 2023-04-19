@@ -49,7 +49,7 @@ pub(crate) fn destroy(config_path: Option<&Path>) -> Result<(), eyre::ErrReport>
             println!("Send destroy command to dora-coordinator");
         }
         Err(_) => {
-            eprintln!("The dora-coordinator does not seem to be running");
+            eprintln!("Could not connect to dora-coordinator");
         }
     }
 
