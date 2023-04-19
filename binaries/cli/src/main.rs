@@ -119,7 +119,14 @@ enum Lang {
     Cxx,
 }
 
-fn main() -> eyre::Result<()> {
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("{err:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
     let args = Args::parse();
