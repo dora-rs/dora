@@ -20,6 +20,13 @@ pub fn check_dataflow(
     path: &Path,
     runtime_path: Option<PathBuf>,
 ) -> eyre::Result<()> {
+    if dataflow.daemon_config.is_some() {
+        tracing::warn!("ignoring deprecated `daemon_config` key in dataflow config");
+    }
+    if dataflow.communication.zenoh.is_some() {
+        tracing::warn!("ignoring deprecated `communication.zenoh` key in dataflow config");
+    }
+
     let nodes = dataflow.resolve_aliases_and_set_defaults();
     let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
     let mut has_python_operator = false;

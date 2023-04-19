@@ -1,9 +1,8 @@
 use crate::{DaemonNodeEvent, Event};
 use dora_core::{
-    config::{DataId, NodeId},
+    config::{DataId, LocalCommunicationConfig, NodeId},
     daemon_messages::{
-        DaemonCommunication, DaemonCommunicationConfig, DaemonReply, DaemonRequest, DataflowId,
-        NodeDropEvent, NodeEvent,
+        DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, NodeDropEvent, NodeEvent,
     },
 };
 use eyre::{eyre, Context};
@@ -31,11 +30,11 @@ pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
     daemon_tx: &mpsc::Sender<Event>,
-    config: DaemonCommunicationConfig,
+    config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
-        DaemonCommunicationConfig::Tcp => {
+        LocalCommunicationConfig::Tcp => {
             let localhost = Ipv4Addr::new(127, 0, 0, 1);
             let socket = match TcpListener::bind((localhost, 0)).await {
                 Ok(socket) => socket,
@@ -58,7 +57,7 @@ pub async fn spawn_listener_loop(
 
             Ok(DaemonCommunication::Tcp { socket_addr })
         }
-        DaemonCommunicationConfig::Shmem => {
+        LocalCommunicationConfig::Shmem => {
             let daemon_control_region = ShmemConf::new()
                 .size(4096)
                 .create()

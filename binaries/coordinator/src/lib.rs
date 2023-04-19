@@ -4,7 +4,7 @@ use crate::{
 };
 pub use control::ControlEvent;
 use dora_core::{
-    config::{CommunicationConfig, DataId, NodeId, OperatorId},
+    config::{DataId, NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
     message::Metadata,
@@ -563,7 +563,6 @@ async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
 struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
-    communication_config: Option<CommunicationConfig>,
     /// The IDs of the machines that the dataflow is running on.
     machines: BTreeSet<String>,
     /// IDs of machines that are waiting until all nodes are started.
@@ -662,15 +661,11 @@ async fn start_dataflow(
     runtime_path: Option<PathBuf>,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<RunningDataflow> {
-    let SpawnedDataflow {
-        uuid,
-        communication_config,
-        machines,
-    } = spawn_dataflow(path, runtime_path, daemon_connections).await?;
+    let SpawnedDataflow { uuid, machines } =
+        spawn_dataflow(path, runtime_path, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
-        communication_config,
         pending_machines: if machines.len() > 1 {
             machines.clone()
         } else {
