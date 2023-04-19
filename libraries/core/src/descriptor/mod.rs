@@ -115,9 +115,8 @@ impl Descriptor {
         serde_yaml::from_slice(&buf).context("failed to parse given descriptor")
     }
 
-    pub fn check(&self, path: &Path, runtime_path: Option<PathBuf>) -> eyre::Result<()> {
-        validate::check_dataflow(self, path, runtime_path)
-            .wrap_err("Dataflow could not be validated.")
+    pub fn check(&self, path: &Path) -> eyre::Result<()> {
+        validate::check_dataflow(self, path).wrap_err("Dataflow could not be validated.")
     }
 }
 

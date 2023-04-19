@@ -86,7 +86,6 @@ jobs:
         run: |
           cargo install --path binaries/coordinator
           cargo install --path binaries/daemon
-          cargo install --path binaries/runtime
           cargo install --path binaries/cli
 
       - name: "Test CLI"

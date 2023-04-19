@@ -1182,6 +1182,7 @@ dependencies = [
  "ctrlc",
  "dora-core",
  "dora-download",
+ "dora-runtime",
  "dora-tracing",
  "eyre",
  "flume",
@@ -1212,6 +1213,7 @@ dependencies = [
 name = "dora-examples"
 version = "0.0.0"
 dependencies = [
+ "clap 4.0.3",
  "dora-coordinator",
  "dora-core",
  "dora-daemon",
