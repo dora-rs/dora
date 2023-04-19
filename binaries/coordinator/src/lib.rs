@@ -79,6 +79,25 @@ pub async fn start(
     Ok((port, future))
 }
 
+fn resolve_name(
+    name: String,
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+) -> eyre::Result<Uuid> {
+    let uuids: Vec<_> = running_dataflows
+        .iter()
+        .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+        .map(|(k, _)| k)
+        .copied()
+        .collect();
+    if uuids.is_empty() {
+        bail!("no running dataflow with name `{name}`");
+    } else if let [uuid] = uuids.as_slice() {
+        Ok(*uuid)
+    } else {
+        bail!("multiple dataflows found with name `{name}`");
+    }
+}
+
 async fn start_inner(
     listener: TcpListener,
     tasks: &FuturesUnordered<JoinHandle<()>>,
@@ -325,20 +344,7 @@ async fn start_inner(
                         }
                         ControlRequest::StopByName { name } => {
                             let stop = async {
-                                let uuids: Vec<_> = running_dataflows
-                                    .iter()
-                                    .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
-                                    .map(|(k, _)| k)
-                                    .copied()
-                                    .collect();
-                                let dataflow_uuid = if uuids.is_empty() {
-                                    bail!("no running dataflow with name `{name}`");
-                                } else if let [uuid] = uuids.as_slice() {
-                                    *uuid
-                                } else {
-                                    bail!("multiple dataflows found with name `{name}`");
-                                };
-
+                                let dataflow_uuid = resolve_name(name, &running_dataflows)?;
                                 stop_dataflow(
                                     &running_dataflows,
                                     dataflow_uuid,
@@ -349,6 +355,24 @@ async fn start_inner(
                             };
                             stop.await
                                 .map(|uuid| ControlRequestReply::DataflowStopped { uuid })
+                        }
+                        ControlRequest::Logs { uuid, name, node } => {
+                            let dataflow_uuid = if let Some(uuid) = uuid {
+                                uuid
+                            } else if let Some(name) = name {
+                                resolve_name(name, &running_dataflows)?
+                            } else {
+                                bail!("No uuid")
+                            };
+
+                            retrieve_logs(
+                                &running_dataflows,
+                                dataflow_uuid,
+                                node.into(),
+                                &mut daemon_connections,
+                            )
+                            .await
+                            .map(|logs| ControlRequestReply::Logs { logs })
                         }
                         ControlRequest::Destroy => {
                             tracing::info!("Received destroy command");
@@ -584,6 +608,44 @@ async fn reload_dataflow(
     tracing::info!("successfully reloaded dataflow `{dataflow_id}`");
 
     Ok(())
+}
+
+async fn retrieve_logs(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    daemon_connections: &mut HashMap<String, TcpStream>,
+) -> eyre::Result<Vec<u8>> {
+    let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
+        bail!("No running dataflow found with UUID `{dataflow_id}`")
+    };
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Logs {
+        dataflow_id,
+        node_id,
+    })?;
+    let mut reply_logs = Vec::new();
+    for machine_id in &dataflow.machines {
+        let daemon_connection = daemon_connections
+            .get_mut(machine_id)
+            .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
+        tcp_send(daemon_connection, &message)
+            .await
+            .wrap_err("failed to send reload message to daemon")?;
+
+        // wait for reply
+        let reply_raw = tcp_receive(daemon_connection)
+            .await
+            .wrap_err("failed to receive reload reply from daemon")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize reload reply from daemon")?
+        {
+            DaemonCoordinatorReply::Logs { logs } => reply_logs = logs,
+            other => bail!("unexpected reply after sending reload: {other:?}"),
+        }
+    }
+    tracing::info!("successfully reloaded dataflow `{dataflow_id}`");
+
+    Ok(reply_logs)
 }
 
 async fn start_dataflow(

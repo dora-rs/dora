@@ -226,6 +226,10 @@ pub enum InterDaemonEvent {
         dataflow_id: DataflowId,
         inputs: BTreeSet<(NodeId, DataId)>,
     },
+    Logs {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -235,6 +239,7 @@ pub enum DaemonCoordinatorReply {
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
     WatchdogAck,
+    Logs { logs: Vec<u8> },
 }
 
 pub type DataflowId = Uuid;
