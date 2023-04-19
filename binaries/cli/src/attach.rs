@@ -11,13 +11,11 @@ use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::control_connection;
-
 pub fn attach_dataflow(
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
+    session: &mut TcpRequestReplyConnection,
     hot_reload: bool,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, rx) = mpsc::sync_channel(2);
@@ -70,7 +68,7 @@ pub fn attach_dataflow(
                     if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
                         watcher_tx
                             .send(ControlRequest::Reload {
-                                dataflow_id: dataflow_id.clone(),
+                                dataflow_id: *dataflow_id,
                                 node_id: node_id.clone(),
                                 operator_id: operator_id.clone(),
                             })
@@ -123,7 +121,7 @@ pub fn attach_dataflow(
             Ok(reload_event) => reload_event,
         };
 
-        let reply_raw = control_connection(session)?
+        let reply_raw = session
             .request(&serde_json::to_vec(&control_request)?)
             .wrap_err("failed to send request message to coordinator")?;
         let result: ControlRequestReply =

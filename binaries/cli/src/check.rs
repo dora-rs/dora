@@ -1,4 +1,5 @@
-use crate::control_connection;
+use crate::connect_to_coordinator;
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{ControlRequest, ControlRequestReply};
 use eyre::{bail, Context};
 use std::io::Write;
@@ -16,19 +17,30 @@ pub fn check_environment() -> eyre::Result<()> {
 
     // check whether coordinator is running
     write!(stdout, "Dora Coordinator: ")?;
-    if coordinator_running()? {
-        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
-        writeln!(stdout, "ok")?;
-    } else {
-        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
-        writeln!(stdout, "not running")?;
-        error_occured = true;
-    }
+    let mut session = match connect_to_coordinator() {
+        Ok(session) => {
+            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
+            writeln!(stdout, "ok")?;
+            Some(session)
+        }
+        Err(_) => {
+            let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+            writeln!(stdout, "not running")?;
+            error_occured = true;
+            None
+        }
+    };
+
     let _ = stdout.reset();
 
     // check whether daemon is running
     write!(stdout, "Dora Daemon: ")?;
-    if daemon_running()? {
+    if session
+        .as_deref_mut()
+        .map(daemon_running)
+        .transpose()?
+        .unwrap_or(false)
+    {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
         writeln!(stdout, "ok")?;
     } else {
@@ -47,30 +59,16 @@ pub fn check_environment() -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn coordinator_running() -> Result<bool, eyre::ErrReport> {
-    let mut control_session = None;
-    let connected = control_connection(&mut control_session).is_ok();
-    Ok(connected)
-}
+pub fn daemon_running(session: &mut TcpRequestReplyConnection) -> Result<bool, eyre::ErrReport> {
+    let reply_raw = session
+        .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
+        .wrap_err("failed to send DaemonConnected message")?;
 
-pub fn daemon_running() -> Result<bool, eyre::ErrReport> {
-    let mut control_session = None;
-    let running = match control_connection(&mut control_session) {
-        Ok(connection) => {
-            let reply_raw = connection
-                .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
-                .wrap_err("failed to send DaemonConnected message")?;
-
-            let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-            match reply {
-                ControlRequestReply::DaemonConnected(running) => running,
-                other => bail!("unexpected reply to daemon connection check: {other:?}"),
-            }
-        }
-        Err(_) => {
-            // coordinator is not running
-            false
-        }
+    let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    let running = match reply {
+        ControlRequestReply::DaemonConnected(running) => running,
+        other => bail!("unexpected reply to daemon connection check: {other:?}"),
     };
+
     Ok(running)
 }
