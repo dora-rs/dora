@@ -1,9 +1,3 @@
-communication:
-  zenoh:
-    prefix: example-multiple-daemons
-
-daemon_config: Tcp # or Shmem
-
 nodes:
   - id: rust-node
     deploy:

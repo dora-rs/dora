@@ -1,7 +1,3 @@
-communication:
-  zenoh:
-    prefix: ___name___
-
 nodes:
   - id: op_1
     operator:

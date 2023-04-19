@@ -1,7 +1,3 @@
-communication:
-  zenoh:
-    prefix: benchmark-example
-
 nodes:
   - id: rust-node
     custom:
