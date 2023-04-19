@@ -111,7 +111,10 @@ pub async fn spawn_node(
             let mut command = if has_python_operator && !has_other_operator {
                 // Use python to spawn runtime if there is a python operator
                 let mut command = tokio::process::Command::new("python3");
-                command.args(["-c", "import dora; dora.start_runtime()"]);
+                command.args([
+                    "-c",
+                    format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                ]);
                 command
             } else if !has_python_operator && has_other_operator {
                 tokio::process::Command::new(
