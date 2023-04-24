@@ -119,21 +119,52 @@ nodes:
 
 Composability as:
 - [x] `YAML` declarative programming
-- [x] polyglot:
-  - [x] Rust
-  - [x] C
-  - [x] C++
-  - [x] Python
 - [x] Isolated operators and custom nodes that can be reused.
 
 Low latency as:
 - [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
 - [x] PubSub communication with shared memory!
-- [ ] Zero-copy on read! 
+- [x] Zero-copy!
 
 Distributed as:
 - [ ] PubSub communication between machines with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
 - [x] Distributed telemetry with [`opentelemetry`](https://github.com/open-telemetry/opentelemetry-rust)
+
+## Support matrix
+
+### Programming Language API:
+
+- [x] Rust
+- [x] Python
+- [x] C
+- [x] C++
+- [ ] WebAssembly (Wished for)
+
+### OS:
+- [x] Linux Ubuntu (tested)
+- [x] MacOS (tested)
+- [x] Windows (tested)
+
+> Although, MacOS and Windows has a low priority for us now.
+
+### Platform:
+- [x] x86 (tested)
+
+> Other platforms should also work althougth we haven't tested them yet.
+
+### Data Format
+- [x] Bytes
+- [x] Arrow Array (Uint8)
+- [ ] Arrow Array (Uint16, Int32, ...) (Planned feature)
+- [ ] Arrow Map (Wished feature)
+
+### Local Communication
+- [x] TCP
+- [x] Shared Memory
+
+### Remote Communication
+- [x] TCP
+- [ ] Zenoh
 
 ---
 
