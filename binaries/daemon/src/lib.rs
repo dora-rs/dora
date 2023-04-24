@@ -326,7 +326,10 @@ impl Daemon {
                 }
                 .await
                 .expect("Could not retrieve logs");
-                (DaemonCoordinatorReply::Logs { logs }, RunStatus::Continue)
+                (
+                    Some(DaemonCoordinatorReply::Logs { logs }),
+                    RunStatus::Continue,
+                )
             }
             DaemonCoordinatorEvent::ReloadDataflow {
                 dataflow_id,
