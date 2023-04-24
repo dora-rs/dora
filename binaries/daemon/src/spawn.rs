@@ -213,8 +213,8 @@ pub async fn spawn_node(
         // Log to file stream.
         tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
-                file.write(line.as_bytes()).await.unwrap();
-                file.write(b"\n").await.unwrap();
+                file.write_all(line.as_bytes()).await.unwrap();
+                file.write_all(b"\n").await.unwrap();
                 info!(line);
             }
             file.sync_all().await.unwrap();
