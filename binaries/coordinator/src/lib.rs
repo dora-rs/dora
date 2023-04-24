@@ -7,7 +7,7 @@ use dora_core::{
     config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
-    descriptor::{self, Descriptor, ResolvedNode},
+    descriptor::ResolvedNode,
     message::Metadata,
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
@@ -625,7 +625,6 @@ async fn retrieve_logs(
         dataflow_id,
         node_id: node_id.clone(),
     })?;
-    let mut reply_logs = Vec::new();
 
     let nodes = &dataflow.nodes;
     let machine_ids: Vec<String> = nodes
@@ -649,12 +648,12 @@ async fn retrieve_logs(
     let reply_raw = tcp_receive(daemon_connection)
         .await
         .wrap_err("failed to retrieve logs reply from daemon")?;
-    match serde_json::from_slice(&reply_raw)
+    let reply_logs = match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize logs reply from daemon")?
     {
-        DaemonCoordinatorReply::Logs { logs } => reply_logs = logs,
+        DaemonCoordinatorReply::Logs { logs } => logs,
         other => bail!("unexpected reply after sending reload: {other:?}"),
-    }
+    };
     tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 
     Ok(reply_logs)

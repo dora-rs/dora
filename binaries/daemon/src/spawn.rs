@@ -176,7 +176,7 @@ pub async fn spawn_node(
     tokio::spawn(async move {
         let log_dir = temp_dir();
 
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel(10);
         let mut file = File::create(
             &log_dir
                 .join(PathBuf::from(format!("{dataflow_id}-{node_id}.txt")).with_extension("txt")),
@@ -193,7 +193,10 @@ pub async fn spawn_node(
         // Stdout listener stream
         tokio::spawn(async move {
             while let Ok(Some(line)) = stdout_lines.next_line().await {
-                stdout_tx.send(line).await.unwrap();
+                let sent = stdout_tx.send(Some(line)).await;
+                if sent.is_err() {
+                    break;
+                }
             }
         });
 
@@ -201,33 +204,47 @@ pub async fn spawn_node(
             (tokio::io::BufReader::new(child.stderr.take().expect("failed to take stderr")))
                 .lines();
 
-        let stderr_tx = tx.clone();
-
         // Stderr listener stream
+        let stderr_tx = tx.clone();
         tokio::spawn(async move {
             while let Ok(Some(line)) = stderr_lines.next_line().await {
-                stderr_tx.send(line).await.unwrap();
+                let sent = stderr_tx.send(Some(line)).await;
+                if sent.is_err() {
+                    break;
+                }
             }
+        });
+
+        let exit_status_tx = tx.clone();
+        tokio::spawn(async move {
+            let exit_status = NodeExitStatus::from(child.wait().await);
+            let event = DoraEvent::SpawnedNodeResult {
+                dataflow_id,
+                node_id,
+                exit_status,
+            };
+
+            let _ = daemon_tx.send(event.into()).await;
+            exit_status_tx.send(None).await.unwrap();
         });
 
         // Log to file stream.
         tokio::spawn(async move {
-            while let Some(line) = rx.recv().await {
-                file.write_all(line.as_bytes()).await.unwrap();
-                file.write_all(b"\n").await.unwrap();
+            while let Some(Some(line)) = rx.recv().await {
+                file.write_all(line.as_bytes())
+                    .await
+                    .expect("Could not log stdout/stderr to file");
+                file.write_all(b"\n")
+                    .await
+                    .expect("Could not add newline to log file.");
                 info!(line);
+
+                // Make sure that all data has been synced to disk.
+                file.sync_all().await.unwrap();
             }
-            file.sync_all().await.unwrap();
-        });
-
-        let exit_status = NodeExitStatus::from(child.wait().await);
-        let event = DoraEvent::SpawnedNodeResult {
-            dataflow_id,
-            node_id,
-            exit_status,
-        };
-
-        let _ = daemon_tx.send(event.into()).await;
+        })
+        .await
+        .expect("Could not write logs to file");
     });
     Ok(())
 }
