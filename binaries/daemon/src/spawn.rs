@@ -9,7 +9,11 @@ use dora_core::{
 };
 use dora_download::download_file;
 use eyre::WrapErr;
-use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
+use std::{
+    env::{consts::EXE_EXTENSION, temp_dir},
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt},
@@ -170,38 +174,51 @@ pub async fn spawn_node(
     };
 
     tokio::spawn(async move {
-        // let hlc = HLC::default();
-        // let timestamp = hlc.new_timestamp().to_string();
-        // let time = timestamp
-        // .split('.')
-        // .next()
-        // .expect("Could not extract date from timestamp."); // TODO: Add time within log file name
+        let log_dir = temp_dir();
 
-        let mut file = File::create(format!("logs/{node_id}.txt"))
-            .await
-            .expect("Failed to create log file");
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut file = File::create(
+            &log_dir
+                .join(PathBuf::from(format!("{dataflow_id}-{node_id}.txt")).with_extension("txt")),
+        )
+        .await
+        .expect("Failed to create log file");
 
         let mut stdout_lines =
             (tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout")))
                 .lines();
 
-        while let Ok(Some(line)) = stdout_lines.next_line().await {
-            file.write(line.as_bytes()).await.unwrap();
-            file.write(b"\n").await.unwrap();
-            info!(line);
-        }
+        let stdout_tx = tx.clone();
+
+        // Stdout listener stream
+        tokio::spawn(async move {
+            while let Ok(Some(line)) = stdout_lines.next_line().await {
+                stdout_tx.send(line).await.unwrap();
+            }
+        });
 
         let mut stderr_lines =
             (tokio::io::BufReader::new(child.stderr.take().expect("failed to take stderr")))
                 .lines();
 
-        while let Ok(Some(line)) = stderr_lines.next_line().await {
-            file.write(line.as_bytes()).await.unwrap();
-            file.write(b"\n").await.unwrap();
-            info!(line);
-        }
+        let stderr_tx = tx.clone();
 
-        file.sync_all().await.unwrap();
+        // Stderr listener stream
+        tokio::spawn(async move {
+            while let Ok(Some(line)) = stderr_lines.next_line().await {
+                stderr_tx.send(line).await.unwrap();
+            }
+        });
+
+        // Log to file stream.
+        tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                file.write(line.as_bytes()).await.unwrap();
+                file.write(b"\n").await.unwrap();
+                info!(line);
+            }
+            file.sync_all().await.unwrap();
+        });
 
         let exit_status = NodeExitStatus::from(child.wait().await);
         let event = DoraEvent::SpawnedNodeResult {
