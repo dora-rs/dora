@@ -5,7 +5,7 @@ use crate::{
 
 use dora_core::{
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
-    descriptor::Descriptor,
+    descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{
@@ -39,7 +39,7 @@ pub(super) async fn spawn_dataflow(
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
         working_dir,
-        nodes,
+        nodes: nodes.clone(),
         communication: dataflow.communication,
         machine_listen_ports,
     };
@@ -54,7 +54,11 @@ pub(super) async fn spawn_dataflow(
 
     tracing::info!("successfully spawned dataflow `{uuid}`");
 
-    Ok(SpawnedDataflow { uuid, machines })
+    Ok(SpawnedDataflow {
+        uuid,
+        machines,
+        nodes,
+    })
 }
 
 async fn spawn_dataflow_on_machine(
@@ -85,4 +89,5 @@ async fn spawn_dataflow_on_machine(
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
     pub machines: BTreeSet<String>,
+    pub nodes: Vec<ResolvedNode>,
 }
