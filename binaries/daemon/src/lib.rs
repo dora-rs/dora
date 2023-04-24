@@ -19,6 +19,7 @@ use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
 use shared_memory_server::ShmemConf;
 use std::collections::HashSet;
+use std::env::temp_dir;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -311,8 +312,9 @@ impl Daemon {
             } => {
                 // read file
                 let logs = async {
-                    println!("logs/{node_id}.txt");
-                    let mut file = File::open(format!("logs/{node_id}.txt"))
+                    let log_dir = temp_dir();
+
+                    let mut file = File::open(log_dir.join(format!("{dataflow_id}-{node_id}.txt")))
                         .await
                         .wrap_err("Could not open log file")?;
 
