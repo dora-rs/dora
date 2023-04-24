@@ -1770,7 +1770,7 @@ checksum = "8a3de6e8d11b22ff9edc6d916f890800597d60f8b2da1caf2955c274638d6412"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.2.12",
  "windows-sys 0.45.0",
 ]
 
@@ -3303,7 +3303,7 @@ checksum = "28141e0cc4143da2443301914478dc976a61ffdb3f043058310c70df2fed8954"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall",
+ "redox_syscall 0.2.12",
  "smallvec",
  "windows-sys 0.32.0",
 ]
@@ -3897,13 +3897,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_syscall"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "567664f262709473930a4bf9e51bf2ebf3348f2e748ccc50dea20646858f8f29"
+dependencies = [
+ "bitflags 1.3.2",
+]
+
+[[package]]
 name = "redox_users"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7776223e2696f1aa4c6b0170e83212f47296a00424305117d013dfe86fb0fe55"
 dependencies = [
  "getrandom",
- "redox_syscall",
+ "redox_syscall 0.2.12",
  "thiserror",
 ]
 
@@ -4597,15 +4606,15 @@ checksum = "c02424087780c9b71cc96799eaeddff35af2bc513278cda5c99fc1f5d026d3c1"
 
 [[package]]
 name = "tempfile"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af18f7ae1acd354b992402e9ec5864359d693cd8a79dcbef59f76891701c1e95"
+checksum = "b9fbec84f381d5795b08656e4912bec604d162bff9291d6189a78f4c8ab87998"
 dependencies = [
  "cfg-if",
  "fastrand",
- "redox_syscall",
- "rustix 0.36.9",
- "windows-sys 0.42.0",
+ "redox_syscall 0.3.5",
+ "rustix 0.37.3",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
