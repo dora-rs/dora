@@ -7,7 +7,8 @@ use dora_core::{
     config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
-    descriptor::Descriptor,
+    descriptor::{self, Descriptor, ResolvedNode},
+    message::Metadata,
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -522,6 +523,7 @@ struct RunningDataflow {
     machines: BTreeSet<String>,
     /// IDs of machines that are waiting until all nodes are started.
     pending_machines: BTreeSet<String>,
+    nodes: Vec<ResolvedNode>,
 }
 
 impl PartialEq for RunningDataflow {
@@ -625,24 +627,33 @@ async fn retrieve_logs(
     })?;
     let mut reply_logs = Vec::new();
 
-    for machine_id in &dataflow.machines {
-        let daemon_connection = daemon_connections
-            .get_mut(machine_id)
-            .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(daemon_connection, &message)
-            .await
-            .wrap_err("failed to send logs message to daemon")?;
+    let nodes = &dataflow.nodes;
+    let machine_ids: Vec<String> = nodes
+        .iter()
+        .filter(|node| node.id == node_id)
+        .map(|node| node.deploy.machine.clone())
+        .collect();
 
-        // wait for reply
-        let reply_raw = tcp_receive(daemon_connection)
-            .await
-            .wrap_err("failed to retrieve logs reply from daemon")?;
-        match serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize logs reply from daemon")?
-        {
-            DaemonCoordinatorReply::Logs { logs } => reply_logs = logs,
-            other => bail!("unexpected reply after sending reload: {other:?}"),
-        }
+    let machine_id = machine_ids
+        .first()
+        .wrap_err("Did not find node in dataflow")?;
+
+    let daemon_connection = daemon_connections
+        .get_mut(machine_id.as_str())
+        .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
+    tcp_send(daemon_connection, &message)
+        .await
+        .wrap_err("failed to send logs message to daemon")?;
+
+    // wait for reply
+    let reply_raw = tcp_receive(daemon_connection)
+        .await
+        .wrap_err("failed to retrieve logs reply from daemon")?;
+    match serde_json::from_slice(&reply_raw)
+        .wrap_err("failed to deserialize logs reply from daemon")?
+    {
+        DaemonCoordinatorReply::Logs { logs } => reply_logs = logs,
+        other => bail!("unexpected reply after sending reload: {other:?}"),
     }
     tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 
@@ -655,8 +666,11 @@ async fn start_dataflow(
     name: Option<String>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<RunningDataflow> {
-    let SpawnedDataflow { uuid, machines } =
-        spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
+    let SpawnedDataflow {
+        uuid,
+        machines,
+        nodes,
+    } = spawn_dataflow(path, working_dir, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
@@ -666,6 +680,7 @@ async fn start_dataflow(
             BTreeSet::new()
         },
         machines,
+        nodes,
     })
 }
 
