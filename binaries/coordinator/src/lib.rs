@@ -621,29 +621,30 @@ async fn retrieve_logs(
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Logs {
         dataflow_id,
-        node_id,
+        node_id: node_id.clone(),
     })?;
     let mut reply_logs = Vec::new();
+
     for machine_id in &dataflow.machines {
         let daemon_connection = daemon_connections
             .get_mut(machine_id)
             .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
         tcp_send(daemon_connection, &message)
             .await
-            .wrap_err("failed to send reload message to daemon")?;
+            .wrap_err("failed to send logs message to daemon")?;
 
         // wait for reply
         let reply_raw = tcp_receive(daemon_connection)
             .await
-            .wrap_err("failed to receive reload reply from daemon")?;
+            .wrap_err("failed to retrieve logs reply from daemon")?;
         match serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize reload reply from daemon")?
+            .wrap_err("failed to deserialize logs reply from daemon")?
         {
             DaemonCoordinatorReply::Logs { logs } => reply_logs = logs,
             other => bail!("unexpected reply after sending reload: {other:?}"),
         }
     }
-    tracing::info!("successfully reloaded dataflow `{dataflow_id}`");
+    tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 
     Ok(reply_logs)
 }
