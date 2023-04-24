@@ -44,7 +44,9 @@ enum Command {
         open: bool,
     },
     /// Run build commands provided in the given dataflow.
-    Build { dataflow: PathBuf },
+    Build {
+        dataflow: PathBuf,
+    },
     /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
@@ -87,9 +89,7 @@ enum Command {
     // Planned for future releases:
     // Dashboard,
     Logs {
-        uuid: Option<Uuid>,
-        #[clap(long)]
-        name: Option<String>,
+        dataflow: String,
         node: String,
     },
     // Metrics,
@@ -172,7 +172,11 @@ fn run() -> eyre::Result<()> {
             coordinator_path.as_deref(),
             daemon_path.as_deref(),
         )?,
-        Command::Logs { uuid, name, node } => logs::logs(uuid, name, node)?,
+        Command::Logs { dataflow, node } => {
+            let uuid = Uuid::parse_str(&dataflow).ok();
+            let name = if uuid.is_some() { None } else { Some(dataflow) };
+            logs::logs(uuid, name, node)?
+        }
         Command::Start {
             dataflow,
             name,
