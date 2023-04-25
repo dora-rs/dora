@@ -120,6 +120,7 @@ nodes:
 Composability as:
 - [x] `YAML` declarative programming
 - [x] Isolated operators and custom nodes that can be reused.
+- [x] Hot Reloading for Python Operators
 
 Low latency as:
 - [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
@@ -154,7 +155,7 @@ Distributed as:
 
 ### Data Format
 - [x] Bytes
-- [x] Arrow Array (Uint8)
+- [x] Arrow Array (Uint8) for Python
 - [ ] Arrow Array (Uint16, Int32, ...) (Planned feature)
 - [ ] Arrow Map (Wished feature)
 
