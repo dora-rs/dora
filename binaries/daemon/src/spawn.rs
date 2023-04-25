@@ -97,13 +97,18 @@ pub async fn spawn_node(
                     command.env(key, value.to_string());
                 }
             }
-            command.spawn().wrap_err_with(move || {
-                format!(
-                    "failed to run `{}` with args `{}`",
-                    n.source,
-                    n.args.as_deref().unwrap_or_default()
-                )
-            })?
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .wrap_err_with(move || {
+                    format!(
+                        "failed to run `{}` with args `{}`",
+                        n.source,
+                        n.args.as_deref().unwrap_or_default()
+                    )
+                })?
         }
         dora_core::descriptor::CoreNodeKind::Runtime(n) => {
             let has_python_operator = n
@@ -134,7 +139,6 @@ pub async fn spawn_node(
                 eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
             };
             command.current_dir(working_dir);
-            command.stdin(Stdio::null());
 
             let runtime_config = RuntimeConfig {
                 node: NodeConfig {
@@ -181,7 +185,6 @@ pub async fn spawn_node(
     )
     .await
     .expect("Failed to create log file");
-
     let mut stdout_lines =
         (tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"))).lines();
 
@@ -233,7 +236,7 @@ pub async fn spawn_node(
             file.write_all(b"\n")
                 .await
                 .expect("Could not add newline to log file.");
-            debug!("{dataflow_id}/{node_id} logged {line}");
+            debug!("{dataflow_id}/{} logged {line}", node.id.clone());
 
             // Make sure that all data has been synced to disk.
             file.sync_all().await.unwrap();
