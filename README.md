@@ -150,6 +150,7 @@ Distributed as:
 
 ### Platform:
 - [x] x86 (tested)
+- [ ] aarch64
 
 > Other platforms should also work althougth we haven't tested them yet.
 
