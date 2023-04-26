@@ -95,3 +95,32 @@ jobs:
           asset_path: archive.zip
           asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
           asset_content_type: application/zip
+
+      - name: "Build Linux ARM64"
+        if: runner.os == 'Linux'
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --release --target aarch64-unknown-linux-gnu -p dora-coordinator -p dora-cli -p dora-daemon
+
+      - name: "Archive Linux ARM64"
+        if: runner.os == 'Linux'
+        run: |
+          mkdir archive_aarch64
+          cp target/aarch64-unknown-linux-gnu/release/dora-coordinator archive_aarch64
+          cp target/aarch64-unknown-linux-gnu/release/dora-daemon archive_aarch64
+          cp target/aarch64-unknown-linux-gnu/release/dora-cli archive_aarch64/dora
+          cd archive_aarch64
+          zip -r ../archive_aarch64.zip .
+          cd ..
+
+      - name: "Upload Linux ARM64 asset"
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: archive_aarch64.zip
+          asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
+          asset_content_type: application/zip
