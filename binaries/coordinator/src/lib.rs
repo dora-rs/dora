@@ -7,6 +7,7 @@ use dora_core::{
     config::{DataId, NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
+    descriptor::Descriptor,
     message::Metadata,
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
@@ -19,7 +20,7 @@ use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    path::Path,
+    path::PathBuf,
     time::Duration,
 };
 use tokio::{
@@ -276,8 +277,9 @@ async fn start_inner(
                 } => {
                     let reply = match request {
                         ControlRequest::Start {
-                            dataflow_path,
+                            dataflow,
                             name,
+                            local_working_dir,
                         } => {
                             let inner = async {
                                 if let Some(name) = name.as_deref() {
@@ -289,9 +291,13 @@ async fn start_inner(
                                         bail!("there is already a running dataflow with name `{name}`");
                                     }
                                 }
-                                let dataflow =
-                                    start_dataflow(&dataflow_path, name, &mut daemon_connections)
-                                        .await?;
+                                let dataflow = start_dataflow(
+                                    dataflow,
+                                    local_working_dir,
+                                    name,
+                                    &mut daemon_connections,
+                                )
+                                .await?;
                                 Ok(dataflow)
                             };
                             inner.await.map(|dataflow| {
@@ -648,11 +654,13 @@ async fn reload_dataflow(
 }
 
 async fn start_dataflow(
-    path: &Path,
+    dataflow: Descriptor,
+    working_dir: PathBuf,
     name: Option<String>,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<RunningDataflow> {
-    let SpawnedDataflow { uuid, machines } = spawn_dataflow(path, daemon_connections).await?;
+    let SpawnedDataflow { uuid, machines } =
+        spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,

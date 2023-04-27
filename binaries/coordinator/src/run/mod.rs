@@ -7,30 +7,20 @@ use dora_core::{
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{
     collections::{BTreeSet, HashMap},
-    path::Path,
+    path::PathBuf,
 };
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
 #[tracing::instrument(skip(daemon_connections))]
 pub async fn spawn_dataflow(
-    dataflow_path: &Path,
+    dataflow: Descriptor,
+    working_dir: PathBuf,
     daemon_connections: &mut HashMap<String, TcpStream>,
 ) -> eyre::Result<SpawnedDataflow> {
-    let descriptor = Descriptor::read(dataflow_path).await.wrap_err_with(|| {
-        format!(
-            "failed to read dataflow descriptor at {}",
-            dataflow_path.display()
-        )
-    })?;
-    descriptor.check(dataflow_path)?;
-    let working_dir = dataflow_path
-        .canonicalize()
-        .context("failed to canoncialize dataflow path")?
-        .parent()
-        .ok_or_else(|| eyre!("canonicalized dataflow path has no parent"))?
-        .to_owned();
-    let nodes = descriptor.resolve_aliases_and_set_defaults();
+    dataflow.check(&working_dir)?;
+
+    let nodes = dataflow.resolve_aliases_and_set_defaults();
     let uuid = Uuid::new_v4();
 
     let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
@@ -39,7 +29,7 @@ pub async fn spawn_dataflow(
         dataflow_id: uuid,
         working_dir,
         nodes,
-        communication: descriptor.communication,
+        communication: dataflow.communication,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 
