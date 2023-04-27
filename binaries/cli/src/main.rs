@@ -117,12 +117,17 @@ enum Lang {
     Cxx,
 }
 
-fn main() -> eyre::Result<()> {
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("{err:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
     let args = Args::parse();
-
-    let mut session = None;
 
     match args.command {
         Command::Check { dataflow } => match dataflow {
@@ -178,26 +183,41 @@ fn main() -> eyre::Result<()> {
             dataflow_descriptor
                 .check(&working_dir)
                 .wrap_err("Could not validate yaml")?;
-            let dataflow_id =
-                start_dataflow(dataflow_descriptor.clone(), name, working_dir, &mut session)?;
+            let mut session =
+                connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
+            let dataflow_id = start_dataflow(
+                dataflow_descriptor.clone(),
+                name,
+                working_dir,
+                &mut *session,
+            )?;
 
             if attach {
                 attach_dataflow(
                     dataflow_descriptor,
                     dataflow,
                     dataflow_id,
-                    &mut session,
+                    &mut *session,
                     hot_reload,
                 )?
             }
         }
-        Command::List => list(&mut session)?,
-        Command::Stop { uuid, name } => match (uuid, name) {
-            (Some(uuid), _) => stop_dataflow(uuid, &mut session)?,
-            (None, Some(name)) => stop_dataflow_by_name(name, &mut session)?,
-            (None, None) => stop_dataflow_interactive(&mut session)?,
+        Command::List => match connect_to_coordinator() {
+            Ok(mut session) => list(&mut *session)?,
+            Err(_) => {
+                bail!("No dora coordinator seems to be running.");
+            }
         },
-        Command::Destroy { config } => up::destroy(config.as_deref(), &mut session)?,
+        Command::Stop { uuid, name } => {
+            let mut session =
+                connect_to_coordinator().wrap_err("could not connect to dora coordinator")?;
+            match (uuid, name) {
+                (Some(uuid), _) => stop_dataflow(uuid, &mut *session)?,
+                (None, Some(name)) => stop_dataflow_by_name(name, &mut *session)?,
+                (None, None) => stop_dataflow_interactive(&mut *session)?,
+            }
+        }
+        Command::Destroy { config } => up::destroy(config.as_deref())?,
     }
 
     Ok(())
@@ -207,9 +227,9 @@ fn start_dataflow(
     dataflow: Descriptor,
     name: Option<String>,
     local_working_dir: PathBuf,
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
+    session: &mut TcpRequestReplyConnection,
 ) -> Result<Uuid, eyre::ErrReport> {
-    let reply_raw = control_connection(session)?
+    let reply_raw = session
         .request(
             &serde_json::to_vec(&ControlRequest::Start {
                 dataflow,
@@ -232,9 +252,7 @@ fn start_dataflow(
     }
 }
 
-fn stop_dataflow_interactive(
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
-) -> eyre::Result<()> {
+fn stop_dataflow_interactive(session: &mut TcpRequestReplyConnection) -> eyre::Result<()> {
     let uuids = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     if uuids.is_empty() {
         eprintln!("No dataflows are running");
@@ -248,9 +266,9 @@ fn stop_dataflow_interactive(
 
 fn stop_dataflow(
     uuid: Uuid,
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
+    session: &mut TcpRequestReplyConnection,
 ) -> Result<(), eyre::ErrReport> {
-    let reply_raw = control_connection(session)?
+    let reply_raw = session
         .request(
             &serde_json::to_vec(&ControlRequest::Stop {
                 dataflow_uuid: uuid,
@@ -269,9 +287,9 @@ fn stop_dataflow(
 
 fn stop_dataflow_by_name(
     name: String,
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
+    session: &mut TcpRequestReplyConnection,
 ) -> Result<(), eyre::ErrReport> {
-    let reply_raw = control_connection(session)?
+    let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::StopByName { name }).unwrap())
         .wrap_err("failed to send dataflow stop_by_name message")?;
     let result: ControlRequestReply =
@@ -283,7 +301,7 @@ fn stop_dataflow_by_name(
     }
 }
 
-fn list(session: &mut Option<Box<TcpRequestReplyConnection>>) -> Result<(), eyre::ErrReport> {
+fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> {
     let ids = query_running_dataflows(session)?;
 
     if ids.is_empty() {
@@ -299,9 +317,9 @@ fn list(session: &mut Option<Box<TcpRequestReplyConnection>>) -> Result<(), eyre
 }
 
 fn query_running_dataflows(
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
+    session: &mut TcpRequestReplyConnection,
 ) -> Result<Vec<DataflowId>, eyre::ErrReport> {
-    let reply_raw = control_connection(session)?
+    let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send list message")?;
     let reply: ControlRequestReply =
@@ -315,11 +333,6 @@ fn query_running_dataflows(
     Ok(ids)
 }
 
-fn control_connection(
-    session: &mut Option<Box<TcpRequestReplyConnection>>,
-) -> eyre::Result<&mut Box<TcpRequestReplyConnection>> {
-    Ok(match session {
-        Some(session) => session,
-        None => session.insert(TcpLayer::new().connect(control_socket_addr())?),
-    })
+fn connect_to_coordinator() -> std::io::Result<Box<TcpRequestReplyConnection>> {
+    TcpLayer::new().connect(control_socket_addr())
 }

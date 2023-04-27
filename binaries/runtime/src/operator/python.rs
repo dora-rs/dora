@@ -25,7 +25,7 @@ use tracing::{error, field, span, warn};
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
     let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
     if let Some(traceback) = traceback {
-        eyre::eyre!("{err}{traceback}")
+        eyre::eyre!("{traceback}\n{err}")
     } else {
         eyre::eyre!("{err}")
     }
