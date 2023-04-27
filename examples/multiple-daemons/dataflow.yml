@@ -1,6 +1,6 @@
 nodes:
   - id: rust-node
-    deploy:
+    _unstable_deploy:
       machine: A
     custom:
       build: cargo build -p multiple-daemons-example-node
@@ -10,7 +10,7 @@ nodes:
       outputs:
         - random
   - id: runtime-node
-    deploy:
+    _unstable_deploy:
       machine: A
     operators:
       - id: rust-operator
@@ -22,7 +22,7 @@ nodes:
         outputs:
           - status
   - id: rust-sink
-    deploy:
+    _unstable_deploy:
       machine: B
     custom:
       build: cargo build -p multiple-daemons-example-sink
