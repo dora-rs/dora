@@ -5,7 +5,9 @@
 
 use eyre::Context as EyreContext;
 use tracing::metadata::LevelFilter;
-use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    filter::FilterExt, prelude::__tracing_subscriber_SubscriberExt, EnvFilter, Layer,
+};
 
 use eyre::ContextCompat;
 use tracing_subscriber::Registry;
@@ -13,7 +15,7 @@ pub mod telemetry;
 
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     // Filter log using `RUST_LOG`. More useful for CLI.
-    let filter = EnvFilter::from_default_env().add_directive(LevelFilter::WARN.into());
+    let filter = EnvFilter::from_default_env().or(LevelFilter::WARN);
     let stdout_log = tracing_subscriber::fmt::layer()
         .pretty()
         .with_filter(filter);
