@@ -22,6 +22,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_stream::wrappers::ReceiverStream;
+
 mod operator;
 
 pub fn main() -> eyre::Result<()> {
@@ -130,14 +131,19 @@ async fn run(
         _started
     };
 
-    init_done
+    let init_result = init_done
         .await
-        .wrap_err("the `init_done` channel was closed unexpectedly")?
-        .wrap_err("failed to init an operator")?;
-    tracing::info!("All operators are ready, starting runtime");
+        .wrap_err("the `init_done` channel was closed unexpectedly")?;
 
     let (mut node, mut daemon_events) = DoraNode::init(config)?;
+
+    // If initialisation failed. Close all channels and report the error.
+    init_result.wrap_err("Could not initialize operator")?;
+
+    tracing::info!("All operators are ready, starting runtime");
+
     let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
+
     tokio::task::spawn_blocking(move || {
         while let Some(event) = daemon_events.recv() {
             if daemon_events_tx.send(RuntimeEvent::Event(event)).is_err() {
@@ -145,6 +151,7 @@ async fn run(
             }
         }
     });
+
     let mut events = (operator_events, daemon_event_stream.into_stream()).merge();
 
     let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
