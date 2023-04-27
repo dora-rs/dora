@@ -127,7 +127,6 @@ pub struct Deploy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Node {
     pub id: NodeId,
     pub name: Option<String>,
@@ -196,7 +195,6 @@ pub struct RuntimeNode {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
 pub struct OperatorDefinition {
     pub id: OperatorId,
     #[serde(flatten)]
@@ -204,7 +202,6 @@ pub struct OperatorDefinition {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
 pub struct SingleOperatorDefinition {
     /// ID is optional if there is only a single operator.
     pub id: Option<OperatorId>,
@@ -213,7 +210,6 @@ pub struct SingleOperatorDefinition {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
 pub struct OperatorConfig {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -272,7 +268,6 @@ pub struct PythonOperatorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CustomNode {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
