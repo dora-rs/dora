@@ -237,7 +237,6 @@ pub fn format_duration(interval: Duration) -> FormattedDuration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct NodeRunConfig {
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
