@@ -121,11 +121,13 @@ impl Descriptor {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Node {
     pub id: NodeId,
     pub name: Option<String>,
@@ -194,6 +196,7 @@ pub struct RuntimeNode {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct OperatorDefinition {
     pub id: OperatorId,
     #[serde(flatten)]
@@ -201,6 +204,7 @@ pub struct OperatorDefinition {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SingleOperatorDefinition {
     /// ID is optional if there is only a single operator.
     pub id: Option<OperatorId>,
