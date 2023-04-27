@@ -1,5 +1,8 @@
 use dora_coordinator::{ControlEvent, Event};
-use dora_core::topics::{ControlRequest, ControlRequestReply, DataflowId};
+use dora_core::{
+    descriptor::Descriptor,
+    topics::{ControlRequest, ControlRequestReply, DataflowId},
+};
 use eyre::{bail, Context};
 use futures::stream;
 use std::{
@@ -112,11 +115,25 @@ async fn start_dataflow(
     dataflow: &Path,
     coordinator_events_tx: &Sender<Event>,
 ) -> eyre::Result<Uuid> {
+    let dataflow_descriptor = Descriptor::read(dataflow)
+        .await
+        .wrap_err("failed to read yaml dataflow")?;
+    let working_dir = dataflow
+        .canonicalize()
+        .context("failed to canonicalize dataflow path")?
+        .parent()
+        .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
+        .to_owned();
+    dataflow_descriptor
+        .check(&working_dir)
+        .wrap_err("could not validate yaml")?;
+
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
             request: ControlRequest::Start {
-                dataflow_path: dataflow.to_owned(),
+                dataflow: dataflow_descriptor,
+                local_working_dir: working_dir,
                 name: None,
             },
             reply_sender,

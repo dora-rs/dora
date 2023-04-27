@@ -128,9 +128,12 @@ fn main() -> eyre::Result<()> {
         Command::Check { dataflow } => match dataflow {
             Some(dataflow) => {
                 let working_dir = dataflow
+                    .canonicalize()
+                    .context("failed to canonicalize dataflow path")?
                     .parent()
-                    .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?;
-                Descriptor::blocking_read(&dataflow)?.check(working_dir)?;
+                    .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
+                    .to_owned();
+                Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
                 check::check_environment()?
             }
             None => check::check_environment()?,
@@ -167,17 +170,16 @@ fn main() -> eyre::Result<()> {
             let dataflow_descriptor =
                 Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
             let working_dir = dataflow
+                .canonicalize()
+                .context("failed to canonicalize dataflow path")?
                 .parent()
-                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?;
+                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
+                .to_owned();
             dataflow_descriptor
-                .check(working_dir)
+                .check(&working_dir)
                 .wrap_err("Could not validate yaml")?;
-            let dataflow_id = start_dataflow(
-                dataflow_descriptor.clone(),
-                name,
-                working_dir.to_owned(),
-                &mut session,
-            )?;
+            let dataflow_id =
+                start_dataflow(dataflow_descriptor.clone(), name, working_dir, &mut session)?;
 
             if attach {
                 attach_dataflow(
