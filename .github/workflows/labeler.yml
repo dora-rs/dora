@@ -6,6 +6,8 @@ on:
 jobs:
   triage:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
     - uses: github/issue-labeler@v3.1 #May not be the latest version
       with:
