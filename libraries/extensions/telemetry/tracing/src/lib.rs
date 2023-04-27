@@ -4,6 +4,7 @@
 //! able to serialize and deserialize context that has been sent via the middleware.
 
 use eyre::Context as EyreContext;
+use tracing::metadata::LevelFilter;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter, Layer};
 
 use eyre::ContextCompat;
@@ -12,7 +13,7 @@ pub mod telemetry;
 
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     // Filter log using `RUST_LOG`. More useful for CLI.
-    let filter = EnvFilter::from_default_env();
+    let filter = EnvFilter::from_default_env().add_directive(LevelFilter::WARN.into());
     let stdout_log = tracing_subscriber::fmt::layer()
         .pretty()
         .with_filter(filter);
