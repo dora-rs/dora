@@ -9,7 +9,7 @@ jobs:
     steps:
     - uses: github/issue-labeler@v3.1 #May not be the latest version
       with:
-        repo-token: "${{ secrets.GITHUB_TOKEN }}"
+        repo-token: "${{ github.token }}"
         configuration-path: .github/labeler.yml
         enable-versioned-regex: 0
         include-title: 1
