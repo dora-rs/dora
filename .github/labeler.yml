@@ -1,43 +1,42 @@
 # Add/remove 'critical' label if issue contains the words 'urgent' or 'critical'
 critical:
-    - '(critical|urgent)'
+  - "(critical|urgent)"
 
 cli:
-    - 'cli'
+  - "/(cli|command)/i"
 
 daemon:
-    - 'daemon'
+  - "daemon"
 
 coordinator:
-    - 'coordinator'
+  - "coordinator"
 
 runtime:
-    - 'runtime'
+  - "runtime"
 
 python:
-    - 'python'
+  - "python"
 
 c:
-    - 'c'
+  - "/\bc\b/i"
 
 c++:
-    - '(c++/cxx)'
+  - "/(c++/cxx)/i"
 
 rust:
-    - 'rust'
+  - "rust"
 
 windows:
-    - 'windows'
+  - "windows"
 
 macos:
-    - 'macos' 
+  - "macos"
 
 linux:
-    - '(linux|ubuntu)' 
+  - "(linux|ubuntu)"
 
 bug:
-    - 'bug' 
+  - "bug"
 
 documentation:
-    - '(doc|documentation)'
-    
+  - "(doc|documentation)"
