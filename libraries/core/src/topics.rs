@@ -6,7 +6,10 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::config::{NodeId, OperatorId};
+use crate::{
+    config::{NodeId, OperatorId},
+    descriptor::Descriptor,
+};
 
 pub const DORA_COORDINATOR_PORT_DEFAULT: u16 = 0xD02A;
 
@@ -19,8 +22,11 @@ pub fn control_socket_addr() -> SocketAddr {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
     Start {
-        dataflow_path: PathBuf,
+        dataflow: Descriptor,
         name: Option<String>,
+        // TODO: remove this once we figure out deploying of node/operator
+        // binaries from CLI to coordinator/daemon
+        local_working_dir: PathBuf,
     },
     Reload {
         dataflow_id: Uuid,

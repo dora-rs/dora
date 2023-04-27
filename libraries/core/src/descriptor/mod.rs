@@ -16,7 +16,7 @@ mod validate;
 mod visualize;
 pub const SHELL_SOURCE: &str = "shell";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
     #[serde(default)]
@@ -115,8 +115,8 @@ impl Descriptor {
         serde_yaml::from_slice(&buf).context("failed to parse given descriptor")
     }
 
-    pub fn check(&self, path: &Path) -> eyre::Result<()> {
-        validate::check_dataflow(self, path).wrap_err("Dataflow could not be validated.")
+    pub fn check(&self, working_dir: &Path) -> eyre::Result<()> {
+        validate::check_dataflow(self, working_dir).wrap_err("Dataflow could not be validated.")
     }
 }
 

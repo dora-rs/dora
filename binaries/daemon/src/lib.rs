@@ -88,7 +88,7 @@ impl Daemon {
             .to_owned();
 
         let descriptor = Descriptor::read(dataflow_path).await?;
-        descriptor.check(dataflow_path)?;
+        descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults();
 
         let spawn_command = SpawnDataflowNodes {

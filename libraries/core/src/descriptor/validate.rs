@@ -11,7 +11,7 @@ use tracing::info;
 use super::{Descriptor, SHELL_SOURCE};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn check_dataflow(dataflow: &Descriptor, path: &Path) -> eyre::Result<()> {
+pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
     if dataflow.daemon_config.is_some() {
         tracing::warn!("ignoring deprecated `daemon_config` key in dataflow config");
     }
@@ -20,7 +20,6 @@ pub fn check_dataflow(dataflow: &Descriptor, path: &Path) -> eyre::Result<()> {
     }
 
     let nodes = dataflow.resolve_aliases_and_set_defaults();
-    let base = path.canonicalize().unwrap().parent().unwrap().to_owned();
     let mut has_python_operator = false;
 
     // check that nodes and operators exist
@@ -38,7 +37,8 @@ pub fn check_dataflow(dataflow: &Descriptor, path: &Path) -> eyre::Result<()> {
                         } else {
                             raw.to_owned()
                         };
-                        base.join(&path)
+                        working_dir
+                            .join(&path)
                             .canonicalize()
                             .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?;
                     };
@@ -52,7 +52,7 @@ pub fn check_dataflow(dataflow: &Descriptor, path: &Path) -> eyre::Result<()> {
                                 info!("{path} is a URL."); // TODO: Implement url check.
                             } else {
                                 let path = adjust_shared_library_path(Path::new(&path))?;
-                                if !base.join(&path).exists() {
+                                if !working_dir.join(&path).exists() {
                                     bail!("no shared library at `{}`", path.display());
                                 }
                             }
@@ -61,14 +61,14 @@ pub fn check_dataflow(dataflow: &Descriptor, path: &Path) -> eyre::Result<()> {
                             has_python_operator = true;
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !base.join(path).exists() {
+                            } else if !working_dir.join(path).exists() {
                                 bail!("no Python library at `{path}`");
                             }
                         }
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !base.join(path).exists() {
+                            } else if !working_dir.join(path).exists() {
                                 bail!("no WASM library at `{path}`");
                             }
                         }

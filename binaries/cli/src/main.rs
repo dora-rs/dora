@@ -127,7 +127,10 @@ fn main() -> eyre::Result<()> {
     match args.command {
         Command::Check { dataflow } => match dataflow {
             Some(dataflow) => {
-                Descriptor::blocking_read(&dataflow)?.check(&dataflow)?;
+                let working_dir = dataflow
+                    .parent()
+                    .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?;
+                Descriptor::blocking_read(&dataflow)?.check(working_dir)?;
                 check::check_environment()?
             }
             None => check::check_environment()?,
@@ -161,16 +164,24 @@ fn main() -> eyre::Result<()> {
             attach,
             hot_reload,
         } => {
-            let dataflow_description =
+            let dataflow_descriptor =
                 Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
-            dataflow_description
-                .check(&dataflow)
+            let working_dir = dataflow
+                .parent()
+                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?;
+            dataflow_descriptor
+                .check(working_dir)
                 .wrap_err("Could not validate yaml")?;
-            let dataflow_id = start_dataflow(dataflow.clone(), name, &mut session)?;
+            let dataflow_id = start_dataflow(
+                dataflow_descriptor.clone(),
+                name,
+                working_dir.to_owned(),
+                &mut session,
+            )?;
 
             if attach {
                 attach_dataflow(
-                    dataflow_description,
+                    dataflow_descriptor,
                     dataflow,
                     dataflow_id,
                     &mut session,
@@ -191,18 +202,17 @@ fn main() -> eyre::Result<()> {
 }
 
 fn start_dataflow(
-    dataflow: PathBuf,
+    dataflow: Descriptor,
     name: Option<String>,
+    local_working_dir: PathBuf,
     session: &mut Option<Box<TcpRequestReplyConnection>>,
 ) -> Result<Uuid, eyre::ErrReport> {
-    let canonicalized = dataflow
-        .canonicalize()
-        .wrap_err("given dataflow file does not exist")?;
     let reply_raw = control_connection(session)?
         .request(
             &serde_json::to_vec(&ControlRequest::Start {
-                dataflow_path: canonicalized,
+                dataflow,
                 name,
+                local_working_dir,
             })
             .unwrap(),
         )
