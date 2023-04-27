@@ -23,7 +23,7 @@ pub struct Descriptor {
     pub communication: CommunicationConfig,
     // deprecated
     pub daemon_config: Option<serde_yaml::Value>,
-    #[serde(default)]
+    #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
     pub nodes: Vec<Node>,
 }
@@ -132,7 +132,7 @@ pub struct Node {
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
 
-    #[serde(default)]
+    #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
 
     #[serde(flatten)]

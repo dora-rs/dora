@@ -299,9 +299,17 @@ impl From<InputDef> for Input {
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
 pub struct CommunicationConfig {
     // see https://github.com/dtolnay/serde-yaml/issues/298
-    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    #[serde(
+        default,
+        with = "serde_yaml::with::singleton_map",
+        rename = "_unstable_local"
+    )]
     pub local: LocalCommunicationConfig,
-    #[serde(default, with = "serde_yaml::with::singleton_map")]
+    #[serde(
+        default,
+        with = "serde_yaml::with::singleton_map",
+        rename = "_unstable_remote"
+    )]
     pub remote: RemoteCommunicationConfig,
 
     // deprecated
