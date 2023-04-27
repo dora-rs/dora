@@ -1,6 +1,6 @@
 use crate::{
-    listener::spawn_listener_loop, node_inputs, runtime_node_inputs, runtime_node_outputs,
-    DoraEvent, Event, NodeExitStatus,
+    node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
+    runtime_node_outputs, DoraEvent, Event, NodeExitStatus,
 };
 use dora_core::{
     config::{LocalCommunicationConfig, NodeRunConfig},

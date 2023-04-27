@@ -23,6 +23,7 @@ pub struct CoordinatorEvent {
 pub async fn register(
     addr: SocketAddr,
     machine_id: String,
+    listen_socket: SocketAddr,
 ) -> eyre::Result<impl Stream<Item = CoordinatorEvent>> {
     let mut stream = TcpStream::connect(addr)
         .await
@@ -31,8 +32,9 @@ pub async fn register(
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
     let register = serde_json::to_vec(&CoordinatorRequest::Register {
-        machine_id,
         dora_version: env!("CARGO_PKG_VERSION").to_owned(),
+        machine_id,
+        listen_socket,
     })?;
     tcp_send(&mut stream, &register)
         .await

@@ -217,7 +217,7 @@ fn set_up_tracing() -> eyre::Result<()> {
 
     let stdout_log = tracing_subscriber::fmt::layer()
         .pretty()
-        .with_filter(LevelFilter::DEBUG);
+        .with_filter(LevelFilter::TRACE);
     let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to set tracing global subscriber")

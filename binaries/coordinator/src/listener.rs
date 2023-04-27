@@ -48,11 +48,13 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
             coordinator_messages::CoordinatorRequest::Register {
                 machine_id,
                 dora_version,
+                listen_socket,
             } => {
                 let event = DaemonEvent::Register {
+                    dora_version,
                     machine_id,
                     connection,
-                    dora_version,
+                    listen_socket,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
@@ -62,44 +64,6 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
                         event: DataflowEvent::ReadyOnMachine { machine_id },
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                coordinator_messages::DaemonEvent::Output {
-                    dataflow_id,
-                    source_node,
-                    output_id,
-                    metadata,
-                    data,
-                    target_machines,
-                } => {
-                    let event = Event::Dataflow {
-                        uuid: dataflow_id,
-                        event: DataflowEvent::Output {
-                            machine_id,
-                            source_node,
-                            output_id,
-                            metadata,
-                            data,
-                            target_machines,
-                        },
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                coordinator_messages::DaemonEvent::InputsClosed {
-                    dataflow_id,
-                    inputs,
-                } => {
-                    let event = Event::Dataflow {
-                        uuid: dataflow_id,
-                        event: DataflowEvent::InputsClosed {
-                            source_machine: machine_id,
-                            inputs,
-                        },
                     };
                     if events_tx.send(event).await.is_err() {
                         break;

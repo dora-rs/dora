@@ -1,18 +1,13 @@
-use std::collections::{BTreeMap, BTreeSet};
-
-use dora_message::Metadata;
+use crate::daemon_messages::DataflowId;
 use eyre::eyre;
-
-use crate::{
-    config::{DataId, NodeId},
-    daemon_messages::DataflowId,
-};
+use std::net::SocketAddr;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register {
-        machine_id: String,
         dora_version: String,
+        machine_id: String,
+        listen_socket: SocketAddr,
     },
     Event {
         machine_id: String,
@@ -24,20 +19,6 @@ pub enum CoordinatorRequest {
 pub enum DaemonEvent {
     AllNodesReady {
         dataflow_id: DataflowId,
-    },
-    Output {
-        dataflow_id: DataflowId,
-        source_node: NodeId,
-        output_id: DataId,
-
-        metadata: Metadata<'static>,
-        data: Option<Vec<u8>>,
-
-        target_machines: BTreeSet<String>,
-    },
-    InputsClosed {
-        dataflow_id: DataflowId,
-        inputs: BTreeMap<String, BTreeSet<(NodeId, DataId)>>,
     },
     AllNodesFinished {
         dataflow_id: DataflowId,

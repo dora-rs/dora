@@ -1,4 +1,7 @@
-use crate::tcp_utils::{tcp_receive, tcp_send};
+use crate::{
+    tcp_utils::{tcp_receive, tcp_send},
+    DaemonConnection,
+};
 
 use dora_core::{
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
@@ -6,17 +9,16 @@ use dora_core::{
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
 };
-use tokio::net::TcpStream;
 use uuid::Uuid;
 
 #[tracing::instrument(skip(daemon_connections))]
-pub async fn spawn_dataflow(
+pub(super) async fn spawn_dataflow(
     dataflow: Descriptor,
     working_dir: PathBuf,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<SpawnedDataflow> {
     dataflow.check(&working_dir)?;
 
@@ -24,12 +26,22 @@ pub async fn spawn_dataflow(
     let uuid = Uuid::new_v4();
 
     let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
+    let machine_listen_ports = machines
+        .iter()
+        .map(|m| {
+            daemon_connections
+                .get(m)
+                .ok_or_else(|| eyre!("no daemon listen port for machine `{m}`"))
+                .map(|c| (m.clone(), c.listen_socket))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
 
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
         working_dir,
         nodes,
         communication: dataflow.communication,
+        machine_listen_ports,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 
@@ -46,17 +58,17 @@ pub async fn spawn_dataflow(
 }
 
 async fn spawn_dataflow_on_machine(
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
     machine: &str,
     message: &[u8],
 ) -> Result<(), eyre::ErrReport> {
     let daemon_connection = daemon_connections
         .get_mut(machine)
         .wrap_err_with(|| format!("no daemon connection for machine `{machine}`"))?;
-    tcp_send(daemon_connection, message)
+    tcp_send(&mut daemon_connection.stream, message)
         .await
         .wrap_err("failed to send spawn message to daemon")?;
-    let reply_raw = tcp_receive(daemon_connection)
+    let reply_raw = tcp_receive(&mut daemon_connection.stream)
         .await
         .wrap_err("failed to receive spawn reply from daemon")?;
     match serde_json::from_slice(&reply_raw)
