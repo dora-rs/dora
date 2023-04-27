@@ -21,7 +21,7 @@ c:
   - "/\bc\b/i"
 
 c++:
-  - "/(c++|cxx)/i"
+  - "/(c\+\+|cxx)/i"
 
 rust:
   - "rust"
