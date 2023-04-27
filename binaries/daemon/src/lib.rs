@@ -1,7 +1,7 @@
 use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, LocalCommunicationConfig, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
-use dora_core::daemon_messages::Data;
+use dora_core::daemon_messages::{Data, InterDaemonEvent};
 use dora_core::message::uhlc::HLC;
 use dora_core::message::MetadataParameters;
 use dora_core::{
@@ -16,6 +16,7 @@ use dora_core::{
 use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
+use inter_daemon::InterDaemonConnection;
 use shared_memory_server::ShmemConf;
 use std::collections::HashSet;
 use std::{
@@ -34,7 +35,8 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use uuid::Uuid;
 
 mod coordinator;
-mod listener;
+mod inter_daemon;
+mod node_communication;
 mod spawn;
 mod tcp_utils;
 
@@ -49,6 +51,7 @@ pub struct Daemon {
     events_tx: mpsc::Sender<Event>,
 
     coordinator_connection: Option<TcpStream>,
+    inter_daemon_connections: BTreeMap<String, InterDaemonConnection>,
     machine_id: String,
 
     /// used for testing and examples
@@ -63,14 +66,21 @@ impl Daemon {
         machine_id: String,
         external_events: impl Stream<Item = Event> + Unpin,
     ) -> eyre::Result<()> {
+        // spawn listen loop
+        let (events_tx, events_rx) = flume::bounded(10);
+        let listen_socket =
+            inter_daemon::spawn_listener_loop(machine_id.clone(), events_tx).await?;
+        let daemon_events = events_rx.into_stream().map(Event::Daemon);
+
         // connect to the coordinator
-        let coordinator_events = coordinator::register(coordinator_addr, machine_id.clone())
-            .await
-            .wrap_err("failed to connect to dora-coordinator")?
-            .map(Event::Coordinator);
+        let coordinator_events =
+            coordinator::register(coordinator_addr, machine_id.clone(), listen_socket)
+                .await
+                .wrap_err("failed to connect to dora-coordinator")?
+                .map(Event::Coordinator);
 
         Self::run_general(
-            (coordinator_events, external_events).merge(),
+            (coordinator_events, external_events, daemon_events).merge(),
             Some(coordinator_addr),
             machine_id,
             None,
@@ -96,6 +106,7 @@ impl Daemon {
             working_dir,
             nodes,
             communication: descriptor.communication,
+            machine_listen_ports: BTreeMap::new(),
         };
 
         let exit_when_done = spawn_command
@@ -166,6 +177,7 @@ impl Daemon {
             running: HashMap::new(),
             events_tx: dora_events_tx,
             coordinator_connection,
+            inter_daemon_connections: BTreeMap::new(),
             machine_id,
             exit_when_done,
             dataflow_errors: Vec::new(),
@@ -197,6 +209,9 @@ impl Daemon {
                         RunStatus::Continue => {}
                         RunStatus::Exit => break,
                     }
+                }
+                Event::Daemon(event) => {
+                    self.handle_inter_daemon_event(event).await?;
                 }
                 Event::Node {
                     dataflow_id: dataflow,
@@ -246,9 +261,22 @@ impl Daemon {
                 working_dir,
                 nodes,
                 communication,
+                machine_listen_ports,
             }) => {
                 match communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
+                }
+                for (machine_id, socket) in machine_listen_ports {
+                    match self.inter_daemon_connections.entry(machine_id) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            entry.insert(InterDaemonConnection::new(socket));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut entry) => {
+                            if entry.get().socket() != socket {
+                                entry.insert(InterDaemonConnection::new(socket));
+                            }
+                        }
+                    }
                 }
 
                 let result = self
@@ -308,7 +336,13 @@ impl Daemon {
                 Some(DaemonCoordinatorReply::WatchdogAck),
                 RunStatus::Continue,
             ),
-            DaemonCoordinatorEvent::Output {
+        };
+        Ok((reply, status))
+    }
+
+    async fn handle_inter_daemon_event(&mut self, event: InterDaemonEvent) -> eyre::Result<()> {
+        match event {
+            InterDaemonEvent::Output {
                 dataflow_id,
                 node_id,
                 output_id,
@@ -335,9 +369,9 @@ impl Daemon {
                 {
                     tracing::warn!("{err:?}")
                 }
-                (None, RunStatus::Continue)
+                Ok(())
             }
-            DaemonCoordinatorEvent::InputsClosed {
+            InterDaemonEvent::InputsClosed {
                 dataflow_id,
                 inputs,
             } => {
@@ -357,10 +391,9 @@ impl Daemon {
                 {
                     tracing::warn!("{err:?}")
                 }
-                (None, RunStatus::Continue)
+                Ok(())
             }
-        };
-        Ok((reply, status))
+        }
     }
 
     async fn spawn_dataflow(
@@ -504,11 +537,9 @@ impl Daemon {
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
-                    let coordinator_connection = self.coordinator_connection.as_mut();
                     send_input_closed_events(
                         dataflow,
-                        coordinator_connection,
-                        &self.machine_id,
+                        &mut self.inter_daemon_connections,
                         |OutputId(source_id, output_id)| {
                             source_id == &node_id && outputs.contains(output_id)
                         },
@@ -613,29 +644,26 @@ impl Daemon {
         .await?;
 
         let output_id = OutputId(node_id, output_id);
-        let remote_receivers: BTreeSet<_> = dataflow
+        let remote_receivers: Vec<_> = dataflow
             .open_external_mappings
             .get(&output_id)
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
         if !remote_receivers.is_empty() {
-            let Some(connection) = &mut self.coordinator_connection else {
-                bail!("no coordinator connection to forward output to remote receivers");
+            let event = InterDaemonEvent::Output {
+                dataflow_id,
+                node_id: output_id.0,
+                output_id: output_id.1,
+                metadata,
+                data: data_bytes,
             };
-            let msg = serde_json::to_vec(&CoordinatorRequest::Event {
-                machine_id: self.machine_id.clone(),
-                event: DaemonEvent::Output {
-                    dataflow_id,
-                    source_node: output_id.0,
-                    output_id: output_id.1,
-                    metadata,
-                    data: data_bytes,
-                    target_machines: remote_receivers,
-                },
-            })?;
-            tcp_send(connection, &msg)
-                .await
-                .wrap_err("failed to send output message to dora-coordinator")?;
+            inter_daemon::send_inter_daemon_event(
+                &remote_receivers,
+                &mut self.inter_daemon_connections,
+                &event,
+            )
+            .await
+            .wrap_err("failed to forward output to remote receivers")?;
         }
 
         Ok(())
@@ -696,8 +724,7 @@ impl Daemon {
         })?;
         send_input_closed_events(
             dataflow,
-            self.coordinator_connection.as_mut(),
-            &self.machine_id,
+            &mut self.inter_daemon_connections,
             |OutputId(source_id, _)| source_id == node_id,
         )
         .await?;
@@ -962,8 +989,7 @@ fn runtime_node_outputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeSet<Data
 
 async fn send_input_closed_events<F>(
     dataflow: &mut RunningDataflow,
-    coordinator_connection: Option<&mut TcpStream>,
-    machine_id: &str,
+    inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
     mut filter: F,
 ) -> eyre::Result<()>
 where
@@ -987,21 +1013,19 @@ where
         }
     }
     if !external_node_inputs.is_empty() {
-        let Some(connection) = coordinator_connection else {
-            bail!("no coordinator connection");
-        };
-
-        tracing::debug!(?dataflow.id, ?external_node_inputs, "sending InputsClosed event");
-        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
-            machine_id: machine_id.to_owned(),
-            event: DaemonEvent::InputsClosed {
+        for (target_machine, inputs) in external_node_inputs {
+            let event = InterDaemonEvent::InputsClosed {
                 dataflow_id: dataflow.id,
-                inputs: external_node_inputs,
-            },
-        })?;
-        tcp_send(connection, &msg)
+                inputs,
+            };
+            inter_daemon::send_inter_daemon_event(
+                &[target_machine],
+                inter_daemon_connections,
+                &event,
+            )
             .await
-            .wrap_err("failed to send InputsClosed event to dora-coordinator")?;
+            .wrap_err("failed to sent InputClosed event to remote receiver")?;
+        }
     }
     Ok(())
 }
@@ -1185,6 +1209,7 @@ pub enum Event {
         event: DaemonNodeEvent,
     },
     Coordinator(CoordinatorEvent),
+    Daemon(InterDaemonEvent),
     Dora(DoraEvent),
     WatchdogInterval,
     CtrlC,

@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, fmt, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    net::SocketAddr,
+    path::PathBuf,
+};
 
 use crate::{
     config::{CommunicationConfig, DataId, NodeId, NodeRunConfig, OperatorId},
@@ -206,6 +211,10 @@ pub enum DaemonCoordinatorEvent {
     },
     Destroy,
     Watchdog,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum InterDaemonEvent {
     Output {
         dataflow_id: DataflowId,
         node_id: NodeId,
@@ -236,4 +245,5 @@ pub struct SpawnDataflowNodes {
     pub working_dir: PathBuf,
     pub nodes: Vec<ResolvedNode>,
     pub communication: CommunicationConfig,
+    pub machine_listen_ports: BTreeMap<String, SocketAddr>,
 }

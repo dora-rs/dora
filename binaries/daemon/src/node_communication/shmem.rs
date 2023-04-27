@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::Listener;
+use super::{Connection, Listener};
 use crate::Event;
 use dora_core::{
     config::DataId,
@@ -52,7 +52,7 @@ enum Operation {
 struct ShmemConnection(flume::Sender<Operation>);
 
 #[async_trait::async_trait]
-impl super::Connection for ShmemConnection {
+impl Connection for ShmemConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<DaemonRequest>> {
         let (tx, rx) = oneshot::channel();
         self.0

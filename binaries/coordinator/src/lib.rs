@@ -4,11 +4,10 @@ use crate::{
 };
 pub use control::ControlEvent;
 use dora_core::{
-    config::{DataId, NodeId, OperatorId},
+    config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
     descriptor::Descriptor,
-    message::Metadata,
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -19,7 +18,8 @@ use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
+    net::SocketAddr,
     path::PathBuf,
     time::Duration,
 };
@@ -116,7 +116,7 @@ async fn start_inner(
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
-    let mut daemon_connections: HashMap<_, TcpStream> = HashMap::new();
+    let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
 
     while let Some(event) = events.next().await {
         if event.log() {
@@ -143,6 +143,7 @@ async fn start_inner(
                     machine_id,
                     mut connection,
                     dora_version: daemon_version,
+                    listen_socket,
                 } => {
                     let coordinator_version = &env!("CARGO_PKG_VERSION");
                     let reply = if &daemon_version == coordinator_version {
@@ -156,8 +157,13 @@ async fn start_inner(
                     let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await;
                     match (reply, send_result) {
                         (RegisterResult::Ok, Ok(())) => {
-                            let previous =
-                                daemon_connections.insert(machine_id.clone(), connection);
+                            let previous = daemon_connections.insert(
+                                machine_id.clone(),
+                                DaemonConnection {
+                                    stream: connection,
+                                    listen_socket,
+                                },
+                            );
                             if let Some(_previous) = previous {
                                 tracing::info!(
                                     "closing previous connection `{machine_id}` on new register"
@@ -192,12 +198,14 @@ async fn start_inner(
                                         tracing::warn!("no daemon connection found for machine `{machine_id}`");
                                         continue;
                                     };
-                                    tcp_send(connection, &message).await.wrap_err_with(|| {
-                                        format!(
-                                            "failed to send AllNodesReady({uuid}) message \
+                                    tcp_send(&mut connection.stream, &message)
+                                        .await
+                                        .wrap_err_with(|| {
+                                            format!(
+                                                "failed to send AllNodesReady({uuid}) message \
                                             to machine {machine_id}"
-                                        )
-                                    })?;
+                                            )
+                                        })?;
                                 }
                             }
                         }
@@ -227,44 +235,6 @@ async fn start_inner(
                         }
                         std::collections::hash_map::Entry::Vacant(_) => {
                             tracing::warn!("dataflow not running on DataflowFinishedOnMachine");
-                        }
-                    }
-                }
-                DataflowEvent::Output {
-                    machine_id,
-                    source_node,
-                    output_id,
-                    metadata,
-                    data,
-                    target_machines,
-                } => {
-                    for target_machine in target_machines {
-                        match daemon_connections.get_mut(&target_machine) {
-                            Some(connection) => {
-                                tracing::trace!(
-                                    "forwarding output `{uuid}/{source_node}/{output_id}` \
-                                    from machine `{machine_id}` to machine `{target_machine}`"
-                                );
-                                forward_output(connection, uuid, source_node.clone(), output_id.clone(), metadata.clone(), data.clone()).await?;
-                            },
-                            None => tracing::warn!("received output event for unknown target machine `{target_machine}`"),
-                        }
-                    }
-                }
-                DataflowEvent::InputsClosed {
-                    source_machine,
-                    inputs,
-                } => {
-                    for (target_machine, inputs) in inputs {
-                        match daemon_connections.get_mut(&target_machine) {
-                            Some(connection) => {
-                                tracing::trace!(
-                                    "forwarding InputsClosed event for dataflow `{uuid}` \
-                                    from machine `{source_machine}` to machine `{target_machine}`"
-                                );
-                                forward_inputs_closed(connection, uuid, inputs).await?;
-                            },
-                            None => tracing::warn!("received InputsClosed event for unknown target machine `{target_machine}`"),
                         }
                     }
                 }
@@ -424,7 +394,7 @@ async fn start_inner(
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
                     let result: eyre::Result<()> =
-                        tokio::time::timeout(Duration::from_millis(100), send_watchdog_message(connection))
+                        tokio::time::timeout(Duration::from_millis(100), send_watchdog_message(&mut connection.stream))
                             .await
                             .wrap_err("timeout")
                             .and_then(|r| r).wrap_err_with(||
@@ -460,46 +430,9 @@ async fn start_inner(
     Ok(())
 }
 
-async fn forward_output(
-    connection: &mut TcpStream,
-    uuid: Uuid,
-    source_node: NodeId,
-    output_id: DataId,
-    metadata: Metadata<'static>,
-    data: Option<Vec<u8>>,
-) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Output {
-        dataflow_id: uuid,
-        node_id: source_node,
-        output_id,
-        metadata,
-        data,
-    })
-    .wrap_err("failed to serialize output message")?;
-
-    tcp_send(connection, &message)
-        .await
-        .wrap_err("failed to send output message to daemon")?;
-
-    Ok(())
-}
-
-async fn forward_inputs_closed(
-    connection: &mut TcpStream,
-    uuid: Uuid,
-    inputs: BTreeSet<(NodeId, DataId)>,
-) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::InputsClosed {
-        dataflow_id: uuid,
-        inputs,
-    })
-    .wrap_err("failed to serialize InputsClosed message")?;
-
-    tcp_send(connection, &message)
-        .await
-        .wrap_err("failed to send InputsClosed message to daemon")?;
-
-    Ok(())
+struct DaemonConnection {
+    stream: TcpStream,
+    listen_socket: SocketAddr,
 }
 
 fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
@@ -526,7 +459,7 @@ fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> 
 
 async fn handle_destroy(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
     abortable_events: &futures::stream::AbortHandle,
     daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
 ) -> Result<(), eyre::ErrReport> {
@@ -578,7 +511,7 @@ impl Eq for RunningDataflow {}
 async fn stop_dataflow(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     uuid: Uuid,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&uuid) else {
         bail!("No running dataflow found with UUID `{uuid}`")
@@ -589,12 +522,12 @@ async fn stop_dataflow(
         let daemon_connection = daemon_connections
             .get_mut(machine_id)
             .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(daemon_connection, &message)
+        tcp_send(&mut daemon_connection.stream, &message)
             .await
             .wrap_err("failed to send stop message to daemon")?;
 
         // wait for reply
-        let reply_raw = tcp_receive(daemon_connection)
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
             .await
             .wrap_err("failed to receive stop reply from daemon")?;
         match serde_json::from_slice(&reply_raw)
@@ -616,7 +549,7 @@ async fn reload_dataflow(
     dataflow_id: Uuid,
     node_id: NodeId,
     operator_id: Option<OperatorId>,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
         bail!("No running dataflow found with UUID `{dataflow_id}`")
@@ -631,12 +564,12 @@ async fn reload_dataflow(
         let daemon_connection = daemon_connections
             .get_mut(machine_id)
             .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(daemon_connection, &message)
+        tcp_send(&mut daemon_connection.stream, &message)
             .await
             .wrap_err("failed to send reload message to daemon")?;
 
         // wait for reply
-        let reply_raw = tcp_receive(daemon_connection)
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
             .await
             .wrap_err("failed to receive reload reply from daemon")?;
         match serde_json::from_slice(&reply_raw)
@@ -657,7 +590,7 @@ async fn start_dataflow(
     dataflow: Descriptor,
     working_dir: PathBuf,
     name: Option<String>,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow { uuid, machines } =
         spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
@@ -673,16 +606,18 @@ async fn start_dataflow(
     })
 }
 
-async fn destroy_daemons(daemon_connections: &mut HashMap<String, TcpStream>) -> eyre::Result<()> {
+async fn destroy_daemons(
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
+) -> eyre::Result<()> {
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Destroy)?;
 
     for (machine_id, mut daemon_connection) in daemon_connections.drain() {
-        tcp_send(&mut daemon_connection, &message)
+        tcp_send(&mut daemon_connection.stream, &message)
             .await
             .wrap_err("failed to send destroy message to daemon")?;
 
         // wait for reply
-        let reply_raw = tcp_receive(&mut daemon_connection)
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
             .await
             .wrap_err("failed to receive destroy reply from daemon")?;
         match serde_json::from_slice(&reply_raw)
@@ -728,20 +663,6 @@ pub enum DataflowEvent {
         machine_id: String,
         result: eyre::Result<()>,
     },
-    Output {
-        machine_id: String,
-        source_node: NodeId,
-        output_id: DataId,
-
-        metadata: Metadata<'static>,
-        data: Option<Vec<u8>>,
-
-        target_machines: BTreeSet<String>,
-    },
-    InputsClosed {
-        source_machine: String,
-        inputs: BTreeMap<String, BTreeSet<(NodeId, DataId)>>,
-    },
     ReadyOnMachine {
         machine_id: String,
     },
@@ -750,8 +671,9 @@ pub enum DataflowEvent {
 #[derive(Debug)]
 pub enum DaemonEvent {
     Register {
+        dora_version: String,
         machine_id: String,
         connection: TcpStream,
-        dora_version: String,
+        listen_socket: SocketAddr,
     },
 }
