@@ -7,8 +7,7 @@ use dora_core::{
     config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
-    descriptor::ResolvedNode,
-    message::Metadata,
+    descriptor::{Descriptor, ResolvedNode},
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -548,7 +547,6 @@ struct RunningDataflow {
     nodes: Vec<ResolvedNode>,
 }
 
-#[allow(dead_code)] // Keeping the communication layer for later use.
 struct ArchivedDataflow {
     name: Option<String>,
     uuid: Uuid,
@@ -659,7 +657,7 @@ async fn retrieve_logs(
     archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
     dataflow_id: Uuid,
     node_id: NodeId,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<Vec<u8>> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
         dataflow.nodes.clone()
@@ -680,19 +678,27 @@ async fn retrieve_logs(
         .map(|node| node.deploy.machine.clone())
         .collect();
 
-    let machine_id = machine_ids
-        .first()
-        .wrap_err("Did not find node in dataflow")?;
+    let machine_id = if let [machine_id] = &machine_ids[..] {
+        machine_id
+    } else if machine_ids.is_empty() {
+        bail!("No machine contains {}/{}", dataflow_id, node_id)
+    } else {
+        bail!(
+            "More than one machine contains {}/{}. However, it should only be present on one.",
+            dataflow_id,
+            node_id
+        )
+    };
 
     let daemon_connection = daemon_connections
         .get_mut(machine_id.as_str())
         .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-    tcp_send(daemon_connection, &message)
+    tcp_send(&mut daemon_connection.stream, &message)
         .await
         .wrap_err("failed to send logs message to daemon")?;
 
     // wait for reply
-    let reply_raw = tcp_receive(daemon_connection)
+    let reply_raw = tcp_receive(&mut daemon_connection.stream)
         .await
         .wrap_err("failed to retrieve logs reply from daemon")?;
     let reply_logs = match serde_json::from_slice(&reply_raw)
@@ -716,7 +722,7 @@ async fn start_dataflow(
         uuid,
         machines,
         nodes,
-    } = spawn_dataflow(path, working_dir, daemon_connections).await?;
+    } = spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
