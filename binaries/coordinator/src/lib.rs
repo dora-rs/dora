@@ -159,6 +159,8 @@ async fn start_inner(
     let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
 
+    let mut name_generator = names::Generator::default();
+
     while let Some(event) = events.next().await {
         if event.log() {
             tracing::trace!("Handling event {event:?}");
@@ -303,6 +305,8 @@ async fn start_inner(
                             name,
                             local_working_dir,
                         } => {
+                            let name = name.or_else(|| name_generator.next());
+
                             let inner = async {
                                 if let Some(name) = name.as_deref() {
                                     // check that name is unique
