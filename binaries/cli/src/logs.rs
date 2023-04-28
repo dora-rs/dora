@@ -1,15 +1,18 @@
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{ControlRequest, ControlRequestReply};
 use eyre::{bail, Context, Result};
 use uuid::Uuid;
 
-use crate::control_connection;
 use bat::{Input, PrettyPrinter};
 
-pub fn logs(uuid: Option<Uuid>, name: Option<String>, node: String) -> Result<()> {
-    let mut control_session = None;
-    let connection = control_connection(&mut control_session)?;
+pub fn logs(
+    session: &mut TcpRequestReplyConnection,
+    uuid: Option<Uuid>,
+    name: Option<String>,
+    node: String,
+) -> Result<()> {
     let logs = {
-        let reply_raw = connection
+        let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Logs {
                     uuid,

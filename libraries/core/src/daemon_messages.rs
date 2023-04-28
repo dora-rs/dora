@@ -209,6 +209,10 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
         operator_id: Option<OperatorId>,
     },
+    Logs {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
     Destroy,
     Watchdog,
 }
@@ -225,10 +229,6 @@ pub enum InterDaemonEvent {
     InputsClosed {
         dataflow_id: DataflowId,
         inputs: BTreeSet<(NodeId, DataId)>,
-    },
-    Logs {
-        dataflow_id: Uuid,
-        node_id: NodeId,
     },
 }
 

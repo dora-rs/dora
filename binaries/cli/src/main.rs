@@ -175,7 +175,9 @@ fn run() -> eyre::Result<()> {
         Command::Logs { dataflow, node } => {
             let uuid = Uuid::parse_str(&dataflow).ok();
             let name = if uuid.is_some() { None } else { Some(dataflow) };
-            logs::logs(uuid, name, node)?
+            let mut session =
+                connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
+            logs::logs(&mut *session, uuid, name, node)?
         }
         Command::Start {
             dataflow,
