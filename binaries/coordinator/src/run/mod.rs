@@ -1,66 +1,74 @@
-use crate::tcp_utils::{tcp_receive, tcp_send};
+use crate::{
+    tcp_utils::{tcp_receive, tcp_send},
+    DaemonConnection,
+};
 
 use dora_core::{
-    config::CommunicationConfig,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
     descriptor::Descriptor,
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{
-    collections::{BTreeSet, HashMap},
-    path::Path,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    path::PathBuf,
 };
-use tokio::net::TcpStream;
 use uuid::Uuid;
 
-pub async fn spawn_dataflow(
-    dataflow_path: &Path,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+#[tracing::instrument(skip(daemon_connections))]
+pub(super) async fn spawn_dataflow(
+    dataflow: Descriptor,
+    working_dir: PathBuf,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<SpawnedDataflow> {
-    let descriptor = Descriptor::read(dataflow_path).await.wrap_err_with(|| {
-        format!(
-            "failed to read dataflow descriptor at {}",
-            dataflow_path.display()
-        )
-    })?;
-    descriptor.check(dataflow_path, None)?;
-    let working_dir = dataflow_path
-        .canonicalize()
-        .context("failed to canoncialize dataflow path")?
-        .parent()
-        .ok_or_else(|| eyre!("canonicalized dataflow path has no parent"))?
-        .to_owned();
-    let nodes = descriptor.resolve_aliases();
+    dataflow.check(&working_dir)?;
+
+    let nodes = dataflow.resolve_aliases_and_set_defaults();
     let uuid = Uuid::new_v4();
-    let communication_config = {
-        let config = descriptor.communication;
-        config.map(|mut config| {
-            config.add_topic_prefix(&uuid.to_string());
-            config
+
+    let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
+    let machine_listen_ports = machines
+        .iter()
+        .map(|m| {
+            daemon_connections
+                .get(m)
+                .ok_or_else(|| eyre!("no daemon listen port for machine `{m}`"))
+                .map(|c| (m.clone(), c.listen_socket))
         })
-    };
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
 
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
         working_dir,
         nodes,
-        daemon_communication: descriptor.daemon_config,
+        communication: dataflow.communication,
+        machine_listen_ports,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 
-    // TODO allow partitioning a dataflow across multiple machines
-    let machine_id = "";
-    let machines = [machine_id.to_owned()].into();
+    for machine in &machines {
+        tracing::trace!("Spawning dataflow `{uuid}` on machine `{machine}`");
+        spawn_dataflow_on_machine(daemon_connections, machine, &message)
+            .await
+            .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine}`"))?;
+    }
 
+    tracing::info!("successfully spawned dataflow `{uuid}`");
+
+    Ok(SpawnedDataflow { uuid, machines })
+}
+
+async fn spawn_dataflow_on_machine(
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
+    machine: &str,
+    message: &[u8],
+) -> Result<(), eyre::ErrReport> {
     let daemon_connection = daemon_connections
-        .get_mut(machine_id)
-        .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-    tcp_send(daemon_connection, &message)
+        .get_mut(machine)
+        .wrap_err_with(|| format!("no daemon connection for machine `{machine}`"))?;
+    tcp_send(&mut daemon_connection.stream, message)
         .await
         .wrap_err("failed to send spawn message to daemon")?;
-
-    // wait for reply
-    let reply_raw = tcp_receive(daemon_connection)
+    let reply_raw = tcp_receive(&mut daemon_connection.stream)
         .await
         .wrap_err("failed to receive spawn reply from daemon")?;
     match serde_json::from_slice(&reply_raw)
@@ -68,20 +76,13 @@ pub async fn spawn_dataflow(
     {
         DaemonCoordinatorReply::SpawnResult(result) => result
             .map_err(|e| eyre!(e))
-            .wrap_err("failed to spawn dataflow")?,
+            .wrap_err("daemon returned an error")?,
         _ => bail!("unexpected reply"),
     }
-    tracing::info!("successfully spawned dataflow `{uuid}`");
-
-    Ok(SpawnedDataflow {
-        communication_config,
-        uuid,
-        machines,
-    })
+    Ok(())
 }
 
 pub struct SpawnedDataflow {
     pub uuid: Uuid,
-    pub communication_config: Option<CommunicationConfig>,
     pub machines: BTreeSet<String>,
 }

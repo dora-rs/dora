@@ -2,26 +2,32 @@ use crate::{
     run::spawn_dataflow,
     tcp_utils::{tcp_receive, tcp_send},
 };
-use control::ControlEvent;
+pub use control::ControlEvent;
 use dora_core::{
-    config::{CommunicationConfig, NodeId, OperatorId},
+    config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
+    descriptor::Descriptor,
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
     },
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
-use futures::{stream::FuturesUnordered, Stream, StreamExt};
+use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeSet, HashMap},
-    path::Path,
+    net::SocketAddr,
+    path::PathBuf,
     time::Duration,
 };
-use tokio::{net::TcpStream, sync::mpsc, task::JoinHandle};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::mpsc,
+    task::JoinHandle,
+};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use uuid::Uuid;
 
@@ -30,27 +36,54 @@ mod listener;
 mod run;
 mod tcp_utils;
 
-pub async fn run() -> eyre::Result<()> {
-    let mut tasks = FuturesUnordered::new();
+#[derive(Debug, Clone, clap::Parser)]
+#[clap(about = "Dora coordinator")]
+pub struct Args {
+    #[clap(long)]
+    pub port: Option<u16>,
+}
 
-    // start in daemon mode
-    start(&tasks).await?;
+pub async fn run(args: Args) -> eyre::Result<()> {
+    let ctrlc_events = set_up_ctrlc_handler()?;
 
-    tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
-    while let Some(join_result) = tasks.next().await {
-        if let Err(err) = join_result {
-            tracing::error!("task panicked: {err}");
-        }
-    }
-    tracing::debug!("all spawned tasks finished, exiting..");
+    let (_, task) = start(args, ctrlc_events).await?;
+
+    task.await?;
 
     Ok(())
 }
 
-async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
-    let ctrlc_events = set_up_ctrlc_handler()?;
+pub async fn start(
+    args: Args,
+    external_events: impl Stream<Item = Event> + Unpin,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    let port = args.port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
+    let listener = listener::create_listener(port).await?;
+    let port = listener
+        .local_addr()
+        .wrap_err("failed to get local addr of listener")?
+        .port();
+    let mut tasks = FuturesUnordered::new();
+    let future = async move {
+        start_inner(listener, &tasks, external_events).await?;
 
-    let listener = listener::create_listener(DORA_COORDINATOR_PORT_DEFAULT).await?;
+        tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
+        while let Some(join_result) = tasks.next().await {
+            if let Err(err) = join_result {
+                tracing::error!("task panicked: {err}");
+            }
+        }
+        tracing::debug!("all spawned tasks finished, exiting..");
+        Ok(())
+    };
+    Ok((port, future))
+}
+
+async fn start_inner(
+    listener: TcpListener,
+    tasks: &FuturesUnordered<JoinHandle<()>>,
+    external_events: impl Stream<Item = Event> + Unpin,
+) -> eyre::Result<()> {
     let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
         c.map(Event::NewDaemonConnection)
             .wrap_err("failed to open connection")
@@ -74,7 +107,7 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
         (
             control_events,
             new_daemon_connections,
-            ctrlc_events,
+            external_events,
             daemon_watchdog_interval,
         )
             .merge(),
@@ -83,7 +116,7 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
-    let mut daemon_connections: HashMap<_, TcpStream> = HashMap::new();
+    let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
 
     while let Some(event) = events.next().await {
         if event.log() {
@@ -110,6 +143,7 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                     machine_id,
                     mut connection,
                     dora_version: daemon_version,
+                    listen_socket,
                 } => {
                     let coordinator_version = &env!("CARGO_PKG_VERSION");
                     let reply = if &daemon_version == coordinator_version {
@@ -123,8 +157,13 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                     let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await;
                     match (reply, send_result) {
                         (RegisterResult::Ok, Ok(())) => {
-                            let previous =
-                                daemon_connections.insert(machine_id.clone(), connection);
+                            let previous = daemon_connections.insert(
+                                machine_id.clone(),
+                                DaemonConnection {
+                                    stream: connection,
+                                    listen_socket,
+                                },
+                            );
                             if let Some(_previous) = previous {
                                 tracing::info!(
                                     "closing previous connection `{machine_id}` on new register"
@@ -141,6 +180,40 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                 }
             },
             Event::Dataflow { uuid, event } => match event {
+                DataflowEvent::ReadyOnMachine { machine_id } => {
+                    match running_dataflows.entry(uuid) {
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            let dataflow = entry.get_mut();
+                            dataflow.pending_machines.remove(&machine_id);
+                            if dataflow.pending_machines.is_empty() {
+                                let message =
+                                    serde_json::to_vec(&DaemonCoordinatorEvent::AllNodesReady {
+                                        dataflow_id: uuid,
+                                    })
+                                    .wrap_err("failed to serialize AllNodesReady message")?;
+
+                                // notify all machines that run parts of the dataflow
+                                for machine_id in &dataflow.machines {
+                                    let Some(connection) = daemon_connections.get_mut(machine_id) else {
+                                        tracing::warn!("no daemon connection found for machine `{machine_id}`");
+                                        continue;
+                                    };
+                                    tcp_send(&mut connection.stream, &message)
+                                        .await
+                                        .wrap_err_with(|| {
+                                            format!(
+                                                "failed to send AllNodesReady({uuid}) message \
+                                            to machine {machine_id}"
+                                            )
+                                        })?;
+                                }
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(_) => {
+                            tracing::warn!("dataflow not running on ReadyOnMachine");
+                        }
+                    }
+                }
                 DataflowEvent::DataflowFinishedOnMachine { machine_id, result } => {
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -174,8 +247,9 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                 } => {
                     let reply = match request {
                         ControlRequest::Start {
-                            dataflow_path,
+                            dataflow,
                             name,
+                            local_working_dir,
                         } => {
                             let inner = async {
                                 if let Some(name) = name.as_deref() {
@@ -187,9 +261,13 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                                         bail!("there is already a running dataflow with name `{name}`");
                                     }
                                 }
-                                let dataflow =
-                                    start_dataflow(&dataflow_path, name, &mut daemon_connections)
-                                        .await?;
+                                let dataflow = start_dataflow(
+                                    dataflow,
+                                    local_working_dir,
+                                    name,
+                                    &mut daemon_connections,
+                                )
+                                .await?;
                                 Ok(dataflow)
                             };
                             inner.await.map(|dataflow| {
@@ -302,6 +380,11 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                             let running = !daemon_connections.is_empty();
                             Ok(ControlRequestReply::DaemonConnected(running))
                         }
+                        ControlRequest::ConnectedMachines => {
+                            Ok(ControlRequestReply::ConnectedMachines(
+                                daemon_connections.keys().cloned().collect(),
+                            ))
+                        }
                     };
                     let _ = reply_sender.send(reply);
                 }
@@ -311,7 +394,7 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
                     let result: eyre::Result<()> =
-                        tokio::time::timeout(Duration::from_millis(100), send_watchdog_message(connection))
+                        tokio::time::timeout(Duration::from_millis(100), send_watchdog_message(&mut connection.stream))
                             .await
                             .wrap_err("timeout")
                             .and_then(|r| r).wrap_err_with(||
@@ -347,6 +430,11 @@ async fn start(tasks: &FuturesUnordered<JoinHandle<()>>) -> eyre::Result<()> {
     Ok(())
 }
 
+struct DaemonConnection {
+    stream: TcpStream,
+    listen_socket: SocketAddr,
+}
+
 fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
     let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
 
@@ -371,7 +459,7 @@ fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> 
 
 async fn handle_destroy(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
     abortable_events: &futures::stream::AbortHandle,
     daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
 ) -> Result<(), eyre::ErrReport> {
@@ -406,9 +494,10 @@ async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
 struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
-    communication_config: Option<CommunicationConfig>,
     /// The IDs of the machines that the dataflow is running on.
     machines: BTreeSet<String>,
+    /// IDs of machines that are waiting until all nodes are started.
+    pending_machines: BTreeSet<String>,
 }
 
 impl PartialEq for RunningDataflow {
@@ -422,7 +511,7 @@ impl Eq for RunningDataflow {}
 async fn stop_dataflow(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     uuid: Uuid,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&uuid) else {
         bail!("No running dataflow found with UUID `{uuid}`")
@@ -433,12 +522,12 @@ async fn stop_dataflow(
         let daemon_connection = daemon_connections
             .get_mut(machine_id)
             .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(daemon_connection, &message)
+        tcp_send(&mut daemon_connection.stream, &message)
             .await
             .wrap_err("failed to send stop message to daemon")?;
 
         // wait for reply
-        let reply_raw = tcp_receive(daemon_connection)
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
             .await
             .wrap_err("failed to receive stop reply from daemon")?;
         match serde_json::from_slice(&reply_raw)
@@ -460,7 +549,7 @@ async fn reload_dataflow(
     dataflow_id: Uuid,
     node_id: NodeId,
     operator_id: Option<OperatorId>,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
         bail!("No running dataflow found with UUID `{dataflow_id}`")
@@ -475,12 +564,12 @@ async fn reload_dataflow(
         let daemon_connection = daemon_connections
             .get_mut(machine_id)
             .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(daemon_connection, &message)
+        tcp_send(&mut daemon_connection.stream, &message)
             .await
             .wrap_err("failed to send reload message to daemon")?;
 
         // wait for reply
-        let reply_raw = tcp_receive(daemon_connection)
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
             .await
             .wrap_err("failed to receive reload reply from daemon")?;
         match serde_json::from_slice(&reply_raw)
@@ -498,33 +587,37 @@ async fn reload_dataflow(
 }
 
 async fn start_dataflow(
-    path: &Path,
+    dataflow: Descriptor,
+    working_dir: PathBuf,
     name: Option<String>,
-    daemon_connections: &mut HashMap<String, TcpStream>,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<RunningDataflow> {
-    let SpawnedDataflow {
-        uuid,
-        communication_config,
-        machines,
-    } = spawn_dataflow(path, daemon_connections).await?;
+    let SpawnedDataflow { uuid, machines } =
+        spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
-        communication_config,
+        pending_machines: if machines.len() > 1 {
+            machines.clone()
+        } else {
+            BTreeSet::new()
+        },
         machines,
     })
 }
 
-async fn destroy_daemons(daemon_connections: &mut HashMap<String, TcpStream>) -> eyre::Result<()> {
+async fn destroy_daemons(
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
+) -> eyre::Result<()> {
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Destroy)?;
 
     for (machine_id, mut daemon_connection) in daemon_connections.drain() {
-        tcp_send(&mut daemon_connection, &message)
+        tcp_send(&mut daemon_connection.stream, &message)
             .await
             .wrap_err("failed to send destroy message to daemon")?;
 
         // wait for reply
-        let reply_raw = tcp_receive(&mut daemon_connection)
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
             .await
             .wrap_err("failed to receive destroy reply from daemon")?;
         match serde_json::from_slice(&reply_raw)
@@ -570,13 +663,17 @@ pub enum DataflowEvent {
         machine_id: String,
         result: eyre::Result<()>,
     },
+    ReadyOnMachine {
+        machine_id: String,
+    },
 }
 
 #[derive(Debug)]
 pub enum DaemonEvent {
     Register {
+        dora_version: String,
         machine_id: String,
         connection: TcpStream,
-        dora_version: String,
+        listen_socket: SocketAddr,
     },
 }

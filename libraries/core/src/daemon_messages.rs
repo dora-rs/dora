@@ -1,7 +1,12 @@
-use std::{fmt, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    net::SocketAddr,
+    path::PathBuf,
+};
 
 use crate::{
-    config::{DataId, NodeId, NodeRunConfig, OperatorId},
+    config::{CommunicationConfig, DataId, NodeId, NodeRunConfig, OperatorId},
     descriptor::{OperatorDefinition, ResolvedNode},
 };
 use dora_message::Metadata;
@@ -193,6 +198,9 @@ pub struct SharedMemoryInput {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
+    AllNodesReady {
+        dataflow_id: DataflowId,
+    },
     StopDataflow {
         dataflow_id: DataflowId,
     },
@@ -203,6 +211,21 @@ pub enum DaemonCoordinatorEvent {
     },
     Destroy,
     Watchdog,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum InterDaemonEvent {
+    Output {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        output_id: DataId,
+        metadata: Metadata<'static>,
+        data: Option<Vec<u8>>,
+    },
+    InputsClosed {
+        dataflow_id: DataflowId,
+        inputs: BTreeSet<(NodeId, DataId)>,
+    },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -221,17 +244,6 @@ pub struct SpawnDataflowNodes {
     pub dataflow_id: DataflowId,
     pub working_dir: PathBuf,
     pub nodes: Vec<ResolvedNode>,
-    pub daemon_communication: DaemonCommunicationConfig,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum DaemonCommunicationConfig {
-    Tcp,
-    Shmem,
-}
-
-impl Default for DaemonCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
-    }
+    pub communication: CommunicationConfig,
+    pub machine_listen_ports: BTreeMap<String, SocketAddr>,
 }

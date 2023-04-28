@@ -8,5 +8,5 @@ async fn main() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     set_up_tracing("dora-coordinator").context("failed to set up tracing subscriber")?;
 
-    dora_coordinator::run().await
+    dora_coordinator::run(clap::Parser::parse()).await
 }
