@@ -99,7 +99,7 @@ async fn start_inner(
         .wrap_err("failed to create control events")?;
 
     let daemon_watchdog_interval =
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(1)))
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonWatchdogInterval);
 
     // events that should be aborted on `dora destroy`
@@ -399,7 +399,7 @@ async fn start_inner(
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
                     let result: eyre::Result<()> =
-                        tokio::time::timeout(Duration::from_millis(100), send_watchdog_message(&mut connection.stream))
+                        tokio::time::timeout(Duration::from_millis(500), send_watchdog_message(&mut connection.stream))
                             .await
                             .wrap_err("timeout")
                             .and_then(|r| r).wrap_err_with(||
