@@ -60,10 +60,16 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                 break;
             }
             coordinator_messages::CoordinatorRequest::Event { machine_id, event } => match event {
-                coordinator_messages::DaemonEvent::AllNodesReady { dataflow_id } => {
+                coordinator_messages::DaemonEvent::AllNodesReady {
+                    dataflow_id,
+                    success,
+                } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
-                        event: DataflowEvent::ReadyOnMachine { machine_id },
+                        event: DataflowEvent::ReadyOnMachine {
+                            machine_id,
+                            success,
+                        },
                     };
                     if events_tx.send(event).await.is_err() {
                         break;

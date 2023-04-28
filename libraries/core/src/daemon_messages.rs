@@ -201,6 +201,7 @@ pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
     AllNodesReady {
         dataflow_id: DataflowId,
+        success: bool,
     },
     StopDataflow {
         dataflow_id: DataflowId,
