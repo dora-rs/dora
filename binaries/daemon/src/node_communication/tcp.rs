@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io::ErrorKind};
 
-use super::Listener;
+use super::{Connection, Listener};
 use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     Event,
@@ -57,7 +57,7 @@ async fn handle_connection_loop(
 struct TcpConnection(TcpStream);
 
 #[async_trait::async_trait]
-impl super::Connection for TcpConnection {
+impl Connection for TcpConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<DaemonRequest>> {
         let raw = match tcp_receive(&mut self.0).await {
             Ok(raw) => raw,

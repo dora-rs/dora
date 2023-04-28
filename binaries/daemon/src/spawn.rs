@@ -1,10 +1,10 @@
 use crate::{
-    listener::spawn_listener_loop, node_inputs, runtime_node_inputs, runtime_node_outputs,
-    DoraEvent, Event, NodeExitStatus,
+    node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
+    runtime_node_outputs, DoraEvent, Event, NodeExitStatus,
 };
 use dora_core::{
-    config::NodeRunConfig,
-    daemon_messages::{DaemonCommunicationConfig, DataflowId, NodeConfig, RuntimeConfig},
+    config::{LocalCommunicationConfig, NodeRunConfig},
+    daemon_messages::{DataflowId, NodeConfig, RuntimeConfig},
     descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode, SHELL_SOURCE},
 };
 use dora_download::download_file;
@@ -17,8 +17,7 @@ pub async fn spawn_node(
     working_dir: &Path,
     node: ResolvedNode,
     daemon_tx: mpsc::Sender<Event>,
-    config: DaemonCommunicationConfig,
-    dora_runtime_path: Option<&Path>,
+    config: LocalCommunicationConfig,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -117,9 +116,11 @@ pub async fn spawn_node(
                 ]);
                 command
             } else if !has_python_operator && has_other_operator {
-                tokio::process::Command::new(
-                    dora_runtime_path.unwrap_or_else(|| Path::new("dora-runtime")),
-                )
+                let mut cmd = tokio::process::Command::new(
+                    std::env::current_exe().wrap_err("failed to get current executable path")?,
+                );
+                cmd.arg("--run-dora-runtime");
+                cmd
             } else {
                 eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
             };

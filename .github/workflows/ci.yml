@@ -52,6 +52,10 @@ jobs:
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
 
+      - name: "Multiple Daemons example"
+        timeout-minutes: 30
+        run: cargo run --example multiple-daemons
+
       - name: "Benchmark example"
         timeout-minutes: 30
         run: cargo run --example benchmark --release
@@ -82,7 +86,6 @@ jobs:
         run: |
           cargo install --path binaries/coordinator
           cargo install --path binaries/daemon
-          cargo install --path binaries/runtime
           cargo install --path binaries/cli
 
       - name: "Test CLI"

@@ -94,10 +94,6 @@ You need to add the created operators/nodes to your dataflow YAML file.
 8. You can also download already implemented operators by putting links in the dataflow. This example will launch a webcam plot stream. 
 
 ```yaml
-communication:
-  zenoh:
-    prefix: abc_project
-
 nodes:
   - id: op_1
     operator:

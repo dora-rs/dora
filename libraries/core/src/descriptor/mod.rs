@@ -1,6 +1,5 @@
-use crate::{
-    config::{CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
-    daemon_messages::DaemonCommunicationConfig,
+use crate::config::{
+    CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
 use eyre::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -17,21 +16,22 @@ mod validate;
 mod visualize;
 pub const SHELL_SOURCE: &str = "shell";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
-    // see https://github.com/dtolnay/serde-yaml/issues/298
     #[serde(default)]
-    #[serde(with = "serde_yaml::with::singleton_map")]
-    pub communication: Option<CommunicationConfig>,
+    pub communication: CommunicationConfig,
+    // deprecated
+    pub daemon_config: Option<serde_yaml::Value>,
+    #[serde(default, rename = "_unstable_deploy")]
+    pub deploy: Deploy,
     pub nodes: Vec<Node>,
-    #[serde(default)]
-    pub daemon_config: DaemonCommunicationConfig,
 }
+
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl Descriptor {
-    pub fn resolve_aliases(&self) -> Vec<ResolvedNode> {
+    pub fn resolve_aliases_and_set_defaults(&self) -> Vec<ResolvedNode> {
         let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
 
         let single_operator_nodes: HashMap<_, _> = self
@@ -84,14 +84,16 @@ impl Descriptor {
                 name: node.name,
                 description: node.description,
                 env: node.env,
+                deploy: ResolvedDeploy::new(node.deploy, self),
                 kind,
             });
         }
+
         resolved
     }
 
     pub fn visualize_as_mermaid(&self) -> eyre::Result<String> {
-        let resolved = self.resolve_aliases();
+        let resolved = self.resolve_aliases_and_set_defaults();
         let flowchart = visualize::visualize_nodes(&resolved);
 
         Ok(flowchart)
@@ -113,10 +115,15 @@ impl Descriptor {
         serde_yaml::from_slice(&buf).context("failed to parse given descriptor")
     }
 
-    pub fn check(&self, path: &Path, runtime_path: Option<PathBuf>) -> eyre::Result<()> {
-        validate::check_dataflow(self, path, runtime_path)
-            .wrap_err("Dataflow could not be validated.")
+    pub fn check(&self, working_dir: &Path) -> eyre::Result<()> {
+        validate::check_dataflow(self, working_dir).wrap_err("Dataflow could not be validated.")
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Deploy {
+    pub machine: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +132,9 @@ pub struct Node {
     pub name: Option<String>,
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
+
+    #[serde(default, rename = "_unstable_deploy")]
+    pub deploy: Deploy,
 
     #[serde(flatten)]
     pub kind: NodeKind,
@@ -147,8 +157,26 @@ pub struct ResolvedNode {
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
 
+    #[serde(default)]
+    pub deploy: ResolvedDeploy,
+
     #[serde(flatten)]
     pub kind: CoreNodeKind,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResolvedDeploy {
+    pub machine: String,
+}
+impl ResolvedDeploy {
+    fn new(deploy: Deploy, descriptor: &Descriptor) -> Self {
+        let default_machine = descriptor.deploy.machine.as_deref().unwrap_or_default();
+        let machine = match deploy.machine {
+            Some(m) => m,
+            None => default_machine.to_owned(),
+        };
+        Self { machine }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,7 +210,6 @@ pub struct SingleOperatorDefinition {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
 pub struct OperatorConfig {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -241,7 +268,6 @@ pub struct PythonOperatorConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CustomNode {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

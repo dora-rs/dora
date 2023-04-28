@@ -1,7 +1,3 @@
-communication:
-  zenoh:
-    prefix: example-cxx-dataflow
-
 nodes:
   - id: cxx-node-rust-api
     custom:

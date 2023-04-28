@@ -6,8 +6,20 @@ use std::{
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::Layer;
 
+#[derive(Debug, Clone, clap::Parser)]
+pub struct Args {
+    #[clap(long)]
+    pub run_dora_runtime: bool,
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    let Args { run_dora_runtime } = clap::Parser::parse();
+
+    if run_dora_runtime {
+        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
+    }
+
     set_up_tracing().wrap_err("failed to set up tracing")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -24,9 +36,7 @@ async fn main() -> eyre::Result<()> {
     build_c_operator().await?;
 
     let dataflow = Path::new("dataflow.yml").to_owned();
-    build_package("dora-runtime").await?;
-    let dora_runtime_path = Some(root.join("target").join("debug").join("dora-runtime"));
-    dora_daemon::Daemon::run_dataflow(&dataflow, dora_runtime_path).await?;
+    dora_daemon::Daemon::run_dataflow(&dataflow).await?;
 
     Ok(())
 }

@@ -33,8 +33,6 @@ enum Command {
     Check {
         #[clap(long)]
         dataflow: Option<PathBuf>,
-        #[clap(long)]
-        runtime_path: Option<PathBuf>,
     },
     /// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
     Graph {
@@ -132,12 +130,15 @@ fn run() -> eyre::Result<()> {
     let args = Args::parse();
 
     match args.command {
-        Command::Check {
-            dataflow,
-            runtime_path,
-        } => match dataflow {
+        Command::Check { dataflow } => match dataflow {
             Some(dataflow) => {
-                Descriptor::blocking_read(&dataflow)?.check(&dataflow, runtime_path)?;
+                let working_dir = dataflow
+                    .canonicalize()
+                    .context("failed to canonicalize dataflow path")?
+                    .parent()
+                    .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
+                    .to_owned();
+                Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
                 check::check_environment()?
             }
             None => check::check_environment()?,
@@ -171,18 +172,29 @@ fn run() -> eyre::Result<()> {
             attach,
             hot_reload,
         } => {
-            let dataflow_description =
+            let dataflow_descriptor =
                 Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
-            dataflow_description
-                .check(&dataflow, None)
+            let working_dir = dataflow
+                .canonicalize()
+                .context("failed to canonicalize dataflow path")?
+                .parent()
+                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
+                .to_owned();
+            dataflow_descriptor
+                .check(&working_dir)
                 .wrap_err("Could not validate yaml")?;
             let mut session =
                 connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
-            let dataflow_id = start_dataflow(dataflow.clone(), name, &mut *session)?;
+            let dataflow_id = start_dataflow(
+                dataflow_descriptor.clone(),
+                name,
+                working_dir,
+                &mut *session,
+            )?;
 
             if attach {
                 attach_dataflow(
-                    dataflow_description,
+                    dataflow_descriptor,
                     dataflow,
                     dataflow_id,
                     &mut *session,
@@ -212,18 +224,17 @@ fn run() -> eyre::Result<()> {
 }
 
 fn start_dataflow(
-    dataflow: PathBuf,
+    dataflow: Descriptor,
     name: Option<String>,
+    local_working_dir: PathBuf,
     session: &mut TcpRequestReplyConnection,
 ) -> Result<Uuid, eyre::ErrReport> {
-    let canonicalized = dataflow
-        .canonicalize()
-        .wrap_err("given dataflow file does not exist")?;
     let reply_raw = session
         .request(
             &serde_json::to_vec(&ControlRequest::Start {
-                dataflow_path: canonicalized,
+                dataflow,
                 name,
+                local_working_dir,
             })
             .unwrap(),
         )
