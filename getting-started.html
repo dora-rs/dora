@@ -388,13 +388,7 @@ members = [
 <h3 id="write-a-graph-definition"><a class="header" href="#write-a-graph-definition">Write a graph definition</a></h3>
 <p>Let's write the graph definition so that the nodes know who to communicate with.</p>
 <p><code>dataflow.yml</code></p>
-<pre><code class="language-yaml">communication:
-  zenoh:
-    prefix: example-rust-dataflow
-
-daemon_config: Tcp # or Shmem
-
-nodes:
+<pre><code class="language-yaml">nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node

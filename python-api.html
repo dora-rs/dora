@@ -219,13 +219,13 @@ for event in node:
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">        - image
-
-  - id: object_detection
-    custom:
-      source: ./object_detection.py
+<pre><code class="language-yaml">      source: ./object_detection.py
       inputs:
         image: webcam/image
+      outputs:
+        - bbox
+
+  - id: plot
 </code></pre>
 <h2 id="custom-node"><a class="header" href="#custom-node">Custom Node</a></h2>
 <p>The custom node API allow you to integrate <code>dora</code> into your application. It allows you to retrieve input and send output in any fashion you want.</p>
@@ -296,13 +296,13 @@ video_capture.release()
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">  - id: webcam
-    custom:
-      source: ./webcam.py
-      inputs:
-        tick:
+<pre><code class="language-yaml">        tick:
           source: dora/timer/millis/100
           queue_size: 1000
+      outputs:
+        - image
+
+  - id: object_detection
 </code></pre>
 
                     </main>

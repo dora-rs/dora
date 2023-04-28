@@ -448,13 +448,7 @@ members = [
 <h3 id="write-a-graph-definition"><a class="header" href="#write-a-graph-definition">Write a graph definition</a></h3>
 <p>Let's write the graph definition so that the nodes know who to communicate with.</p>
 <p><code>dataflow.yml</code></p>
-<pre><code class="language-yaml">communication:
-  zenoh:
-    prefix: example-rust-dataflow
-
-daemon_config: Tcp # or Shmem
-
-nodes:
+<pre><code class="language-yaml">nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
@@ -521,11 +515,7 @@ nodes:
 <p>Dataflows are specified through a YAML file. This section presents our current draft for the file format. It only includes basic functionality for now, we will extend it later when we introduce more advanced features.</p>
 <h2 id="dataflow"><a class="header" href="#dataflow">Dataflow</a></h2>
 <p>Dataflows are specified through the following format:</p>
-<pre><code class="language-yaml">communication:
-  zenoh:
-    prefix: /example-python-no-webcam-dataflow
-
-nodes:
+<pre><code class="language-yaml">nodes:
     - id: foo
       # ... (see below)
     - id: bar
@@ -595,13 +585,7 @@ nodes:
 </ul>
 <p>Each operator must specify exactly one implementation. The implementation must follow a specific format that is specified by dora.</p>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
-<pre><code class="language-yaml">communication:
-  zenoh:
-    prefix: example-rust-dataflow
-
-daemon_config: Tcp # or Shmem
-
-nodes:
+<pre><code class="language-yaml">nodes:
   - id: rust-node
     custom:
       build: cargo build -p rust-dataflow-example-node
@@ -627,20 +611,6 @@ nodes:
       inputs:
         message: runtime-node/rust-operator/status
 </code></pre>
-<h2 id="communication"><a class="header" href="#communication">Communication</a></h2>
-<p>The mandatory <code>communication</code> key specifies how dora nodes and operators should communicate with each other. Dora supports the following backends:</p>
-<ul>
-<li>
-<p><strong><a href="https://zenoh.io/">Zenoh</a>:</strong> The zenoh project implements a distributed publisher/subscriber system with automated routing. To communicate over zenoh, add the following key to your dataflow configuration:</p>
-<pre><code class="language-yaml">communication:
-  zenoh:
-    prefix: some-unique-prefix
-</code></pre>
-<p>The specified <code>prefix</code> is added to all pub/sub topics. It is useful for filtering messages (e.g. in a logger) when other applications use <code>zenoh</code> in parallel. Dora will extend the given prefix with a newly generated UUID on each run, to ensure that multiple instances of the same dataflow run concurrently without interfering with each other.</p>
-<p>Zenoh is quite flexible and can be easily scaled to distributed deployment. It does not require any extra setup since it supports peer-to-peer communication without an external broker. The drawback of zenoh is that it is still in an early stage of development, so it might still have reliability and performance issues.</p>
-<p><em>Note:</em> Dora currently only supports local deployments, so interacting with remote nodes/operators is not possible yet.</p>
-</li>
-</ul>
 <h2 id="todo-integration-with-ros-12"><a class="header" href="#todo-integration-with-ros-12">TODO: Integration with ROS 1/2</a></h2>
 <p>To integrate dora-rs operators with ROS1 or ROS2 operators, we plan to provide special <em>bridge operators</em>. These operators act as a sink in one dataflow framework and push all messages to a different dataflow framework, where they act as source.</p>
 <p>For example, we plan to provide a <code>to_ros_2</code> operator, which takes a single <code>data</code> input, which is then published to a specified ROS 2 dataflow.</p>
@@ -757,15 +727,15 @@ impl DoraOperator for ExampleOperator {
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">        tick: dora/timer/millis/10
-      outputs:
-        - random
-  - id: runtime-node
-    operators:
-      - id: rust-operator
-        build: cargo build -p rust-dataflow-example-operator
+<pre><code class="language-yaml">        build: cargo build -p rust-dataflow-example-operator
         shared-library: ../../target/debug/rust_dataflow_example_operator
         inputs:
+          tick: dora/timer/millis/100
+          random: rust-node/random
+        outputs:
+          - status
+  - id: rust-sink
+    custom:
 </code></pre>
 <p>This example can be found in <code>examples</code>.</p>
 <h2 id="custom-node"><a class="header" href="#custom-node">Custom Node</a></h2>
@@ -864,13 +834,13 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">
-nodes:
-  - id: rust-node
-    custom:
-      build: cargo build -p rust-dataflow-example-node
-      source: ../../target/debug/rust-dataflow-example-node
-      inputs:
+<pre><code class="language-yaml">      inputs:
+        tick: dora/timer/millis/10
+      outputs:
+        - random
+  - id: runtime-node
+    operators:
+      - id: rust-operator
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="c-api"><a class="header" href="#c-api">C API</a></h1>
 <h2 id="operator-1"><a class="header" href="#operator-1">Operator</a></h2>
@@ -1007,14 +977,14 @@ OnEventResult_t dora_on_event(
 <p>Link it in your graph as:</p>
 </li>
 </ul>
-<pre><code class="language-yaml">  - id: runtime-node
-    operators:
-      - id: c_operator
-        shared-library: build/operator
-        inputs:
+<pre><code class="language-yaml">        inputs:
           message: c_node/message
         outputs:
           - counter
+  - id: c_sink
+    custom:
+      source: build/c_sink
+      inputs:
 </code></pre>
 <h2 id="custom-node-1"><a class="header" href="#custom-node-1">Custom Node</a></h2>
 <p>The custom node API allow you to integrate <code>dora</code> into your application. It allows you to retrieve input and send output in any fashion you want. </p>
@@ -1142,13 +1112,13 @@ int main()
 <p>Link it in your graph as:</p>
 </li>
 </ul>
-<pre><code class="language-yaml">  - id: c_node
-    custom:
-      source: build/c_node
-      inputs:
-        timer: dora/timer/millis/50
+<pre><code class="language-yaml">        timer: dora/timer/millis/50
       outputs:
         - message
+  - id: runtime-node
+    operators:
+      - id: c_operator
+        shared-library: build/operator
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="python-api"><a class="header" href="#python-api">Python API</a></h1>
 <h2 id="operator-2"><a class="header" href="#operator-2">Operator</a></h2>
@@ -1226,13 +1196,13 @@ for event in node:
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">        - image
-
-  - id: object_detection
-    custom:
-      source: ./object_detection.py
+<pre><code class="language-yaml">      source: ./object_detection.py
       inputs:
         image: webcam/image
+      outputs:
+        - bbox
+
+  - id: plot
 </code></pre>
 <h2 id="custom-node-2"><a class="header" href="#custom-node-2">Custom Node</a></h2>
 <p>The custom node API allow you to integrate <code>dora</code> into your application. It allows you to retrieve input and send output in any fashion you want.</p>
@@ -1303,13 +1273,13 @@ video_capture.release()
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">  - id: webcam
-    custom:
-      source: ./webcam.py
-      inputs:
-        tick:
+<pre><code class="language-yaml">        tick:
           source: dora/timer/millis/100
           queue_size: 1000
+      outputs:
+        - image
+
+  - id: object_detection
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="state-management"><a class="header" href="#state-management">State Management</a></h1>
 <p>Most operations require to keep some sort of state between calls. This document describes the different ways to handle state in dora.</p>

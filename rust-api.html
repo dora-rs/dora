@@ -256,15 +256,15 @@ impl DoraOperator for ExampleOperator {
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">        tick: dora/timer/millis/10
-      outputs:
-        - random
-  - id: runtime-node
-    operators:
-      - id: rust-operator
-        build: cargo build -p rust-dataflow-example-operator
+<pre><code class="language-yaml">        build: cargo build -p rust-dataflow-example-operator
         shared-library: ../../target/debug/rust_dataflow_example_operator
         inputs:
+          tick: dora/timer/millis/100
+          random: rust-node/random
+        outputs:
+          - status
+  - id: rust-sink
+    custom:
 </code></pre>
 <p>This example can be found in <code>examples</code>.</p>
 <h2 id="custom-node"><a class="header" href="#custom-node">Custom Node</a></h2>
@@ -363,13 +363,13 @@ fn main() -&gt; eyre::Result&lt;()&gt; {
 <ul>
 <li>Link it in your graph as:</li>
 </ul>
-<pre><code class="language-yaml">
-nodes:
-  - id: rust-node
-    custom:
-      build: cargo build -p rust-dataflow-example-node
-      source: ../../target/debug/rust-dataflow-example-node
-      inputs:
+<pre><code class="language-yaml">      inputs:
+        tick: dora/timer/millis/10
+      outputs:
+        - random
+  - id: runtime-node
+    operators:
+      - id: rust-operator
 </code></pre>
 
                     </main>

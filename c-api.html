@@ -278,14 +278,14 @@ OnEventResult_t dora_on_event(
 <p>Link it in your graph as:</p>
 </li>
 </ul>
-<pre><code class="language-yaml">  - id: runtime-node
-    operators:
-      - id: c_operator
-        shared-library: build/operator
-        inputs:
+<pre><code class="language-yaml">        inputs:
           message: c_node/message
         outputs:
           - counter
+  - id: c_sink
+    custom:
+      source: build/c_sink
+      inputs:
 </code></pre>
 <h2 id="custom-node"><a class="header" href="#custom-node">Custom Node</a></h2>
 <p>The custom node API allow you to integrate <code>dora</code> into your application. It allows you to retrieve input and send output in any fashion you want. </p>
@@ -413,13 +413,13 @@ int main()
 <p>Link it in your graph as:</p>
 </li>
 </ul>
-<pre><code class="language-yaml">  - id: c_node
-    custom:
-      source: build/c_node
-      inputs:
-        timer: dora/timer/millis/50
+<pre><code class="language-yaml">        timer: dora/timer/millis/50
       outputs:
         - message
+  - id: runtime-node
+    operators:
+      - id: c_operator
+        shared-library: build/operator
 </code></pre>
 
                     </main>
