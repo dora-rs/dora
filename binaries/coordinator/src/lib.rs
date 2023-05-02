@@ -79,10 +79,12 @@ pub async fn start(
     Ok((port, future))
 }
 
+// Resolve the dataflow name.
+// Search for archived dataflows if they are provided.
 fn resolve_name(
     name: String,
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    archived_dataflows: Option<&HashMap<Uuid, ArchivedDataflow>>,
 ) -> eyre::Result<Uuid> {
     let uuids: Vec<_> = running_dataflows
         .iter()
@@ -90,12 +92,16 @@ fn resolve_name(
         .map(|(k, _)| k)
         .copied()
         .collect();
-    let archived_uuids: Vec<_> = archived_dataflows
-        .iter()
-        .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
-        .map(|(k, _)| k)
-        .copied()
-        .collect();
+    let archived_uuids: Vec<_> = if let Some(archived_dataflows) = archived_dataflows {
+        archived_dataflows
+            .iter()
+            .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+            .map(|(k, _)| k)
+            .copied()
+            .collect()
+    } else {
+        vec![]
+    };
 
     if uuids.is_empty() {
         if archived_uuids.is_empty() {
@@ -364,8 +370,7 @@ async fn start_inner(
                         }
                         ControlRequest::StopByName { name } => {
                             let stop = async {
-                                let dataflow_uuid =
-                                    resolve_name(name, &running_dataflows, &archived_dataflows)?;
+                                let dataflow_uuid = resolve_name(name, &running_dataflows, None)?;
                                 stop_dataflow(
                                     &running_dataflows,
                                     dataflow_uuid,
@@ -381,7 +386,7 @@ async fn start_inner(
                             let dataflow_uuid = if let Some(uuid) = uuid {
                                 uuid
                             } else if let Some(name) = name {
-                                resolve_name(name, &running_dataflows, &archived_dataflows)?
+                                resolve_name(name, &running_dataflows, Some(&archived_dataflows))?
                             } else {
                                 bail!("No uuid")
                             };
@@ -549,9 +554,6 @@ struct RunningDataflow {
 
 struct ArchivedDataflow {
     name: Option<String>,
-    uuid: Uuid,
-    /// The IDs of the machines that the dataflow is running on.
-    machines: BTreeSet<String>,
     nodes: Vec<ResolvedNode>,
 }
 
@@ -559,8 +561,6 @@ impl From<&RunningDataflow> for ArchivedDataflow {
     fn from(dataflow: &RunningDataflow) -> ArchivedDataflow {
         ArchivedDataflow {
             name: dataflow.name.clone(),
-            uuid: dataflow.uuid,
-            machines: dataflow.machines.clone(),
             nodes: dataflow.nodes.clone(),
         }
     }
