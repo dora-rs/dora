@@ -11,7 +11,7 @@ use dora_download::download_file;
 use eyre::WrapErr;
 use std::{
     env::{consts::EXE_EXTENSION, temp_dir},
-    path::{Path, PathBuf},
+    path::Path,
     process::Stdio,
 };
 use tokio::{
@@ -180,11 +180,10 @@ pub async fn spawn_node(
     let log_dir = temp_dir();
 
     let (tx, mut rx) = mpsc::channel(10);
-    let mut file = File::create(
-        &log_dir.join(PathBuf::from(log::log_path(&dataflow_id, &node_id)).with_extension("txt")),
-    )
-    .await
-    .expect("Failed to create log file");
+    let mut file =
+        File::create(&log_dir.join(log::log_path(&dataflow_id, &node_id).with_extension("txt")))
+            .await
+            .expect("Failed to create log file");
     let mut stdout_lines =
         (tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"))).lines();
 

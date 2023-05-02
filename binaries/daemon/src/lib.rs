@@ -383,7 +383,11 @@ impl Daemon {
                 RunStatus::Exit
             }
             DaemonCoordinatorEvent::Watchdog => {
-                let _ = reply_tx.send(Some(DaemonCoordinatorReply::WatchdogAck));
+                let _ = reply_tx
+                    .send(Some(DaemonCoordinatorReply::WatchdogAck))
+                    .map_err(|_| {
+                        error!("could not send WatchdogAck reply from daemon to coordinator")
+                    });
                 RunStatus::Continue
             }
         };

@@ -399,7 +399,7 @@ async fn start_inner(
                                 &mut daemon_connections,
                             )
                             .await
-                            .map(|logs| ControlRequestReply::Logs { logs })
+                            .map(|logs| ControlRequestReply::Logs(logs))
                         }
                         ControlRequest::Destroy => {
                             tracing::info!("Received destroy command");
@@ -692,7 +692,7 @@ async fn retrieve_logs(
 
     let daemon_connection = daemon_connections
         .get_mut(machine_id.as_str())
-        .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
+        .wrap_err("no daemon connection")?;
     tcp_send(&mut daemon_connection.stream, &message)
         .await
         .wrap_err("failed to send logs message to daemon")?;
@@ -705,7 +705,7 @@ async fn retrieve_logs(
         .wrap_err("failed to deserialize logs reply from daemon")?
     {
         DaemonCoordinatorReply::Logs(logs) => logs,
-        other => bail!("unexpected reply after sending reload: {other:?}"),
+        other => bail!("unexpected reply after sending logs: {other:?}"),
     };
     tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 

@@ -64,7 +64,7 @@ pub enum ControlRequestReply {
     DestroyOk,
     DaemonConnected(bool),
     ConnectedMachines(BTreeSet<String>),
-    Logs { logs: Vec<u8> },
+    Logs(Vec<u8>),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

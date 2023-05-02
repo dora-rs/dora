@@ -25,7 +25,7 @@ pub fn logs(
 
         let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match reply {
-            ControlRequestReply::Logs { logs } => logs,
+            ControlRequestReply::Logs(logs) => logs,
             other => bail!("unexpected reply to daemon logs: {other:?}"),
         }
     };
