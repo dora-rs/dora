@@ -326,9 +326,9 @@ impl Daemon {
                     Result::<Vec<u8>, eyre::Report>::Ok(contents)
                 }
                 .await
-                .expect("Could not retrieve logs");
+                .map_err(|err| format!("{err:?}"));
                 (
-                    Some(DaemonCoordinatorReply::Logs { logs }),
+                    Some(DaemonCoordinatorReply::Logs(logs)),
                     RunStatus::Continue,
                 )
             }

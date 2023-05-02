@@ -239,7 +239,7 @@ pub enum DaemonCoordinatorReply {
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
     WatchdogAck,
-    Logs { logs: Vec<u8> },
+    Logs(Result<Vec<u8>, String>),
 }
 
 pub type DataflowId = Uuid;
