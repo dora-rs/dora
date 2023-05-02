@@ -1,5 +1,5 @@
 use crate::{
-    node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
+    log, node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
     runtime_node_outputs, DoraEvent, Event, NodeExitStatus,
 };
 use dora_core::{
@@ -181,7 +181,7 @@ pub async fn spawn_node(
 
     let (tx, mut rx) = mpsc::channel(10);
     let mut file = File::create(
-        &log_dir.join(PathBuf::from(format!("{dataflow_id}-{node_id}.txt")).with_extension("txt")),
+        &log_dir.join(PathBuf::from(log::log_path(&dataflow_id, &node_id)).with_extension("txt")),
     )
     .await
     .expect("Failed to create log file");
