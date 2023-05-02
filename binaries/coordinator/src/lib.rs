@@ -704,12 +704,12 @@ async fn retrieve_logs(
     let reply_logs = match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize logs reply from daemon")?
     {
-        DaemonCoordinatorReply::Logs { logs } => logs,
+        DaemonCoordinatorReply::Logs(logs) => logs,
         other => bail!("unexpected reply after sending reload: {other:?}"),
     };
     tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 
-    Ok(reply_logs)
+    reply_logs.map_err(|err| eyre!(err))
 }
 
 async fn start_dataflow(
