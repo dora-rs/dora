@@ -195,7 +195,7 @@ pub async fn spawn_node(
         while let Ok(Some(line)) = stdout_lines.next_line().await {
             let sent = stdout_tx.send(Some(line)).await;
             if sent.is_err() {
-                break;
+                println!("Could not log: {line}");
             }
         }
     });
@@ -209,7 +209,7 @@ pub async fn spawn_node(
         while let Ok(Some(line)) = stderr_lines.next_line().await {
             let sent = stderr_tx.send(Some(line)).await;
             if sent.is_err() {
-                break;
+                eprintln!("Could not log: {line}");
             }
         }
     });
