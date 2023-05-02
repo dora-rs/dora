@@ -19,7 +19,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::mpsc,
 };
-use tracing::debug;
+use tracing::{debug, error};
 
 pub async fn spawn_node(
     dataflow_id: DataflowId,
@@ -193,7 +193,7 @@ pub async fn spawn_node(
     // Stdout listener stream
     tokio::spawn(async move {
         while let Ok(Some(line)) = stdout_lines.next_line().await {
-            let sent = stdout_tx.send(Some(line)).await;
+            let sent = stdout_tx.send(line.clone()).await;
             if sent.is_err() {
                 println!("Could not log: {line}");
             }
@@ -207,14 +207,13 @@ pub async fn spawn_node(
     let stderr_tx = tx.clone();
     tokio::spawn(async move {
         while let Ok(Some(line)) = stderr_lines.next_line().await {
-            let sent = stderr_tx.send(Some(line)).await;
+            let sent = stderr_tx.send(line.clone()).await;
             if sent.is_err() {
                 eprintln!("Could not log: {line}");
             }
         }
     });
 
-    let exit_status_tx = tx.clone();
     tokio::spawn(async move {
         let exit_status = NodeExitStatus::from(child.wait().await);
         let event = DoraEvent::SpawnedNodeResult {
@@ -223,23 +222,26 @@ pub async fn spawn_node(
             exit_status,
         };
 
-        exit_status_tx.send(None).await.unwrap();
         let _ = daemon_tx.send(event.into()).await;
     });
 
     // Log to file stream.
     tokio::spawn(async move {
-        while let Some(Some(line)) = rx.recv().await {
-            file.write_all(line.as_bytes())
+        while let Some(line) = rx.recv().await {
+            let _ = file
+                .write_all(line.as_bytes())
                 .await
-                .expect("Could not log stdout/stderr to file");
-            file.write_all(b"\n")
+                .map_err(|err| error!("Could not log {line} to file due to {err}"));
+            let _ = file
+                .write(b"\n")
                 .await
-                .expect("Could not add newline to log file.");
+                .map_err(|err| error!("Could not add newline to log file due to {err}"));
             debug!("{dataflow_id}/{} logged {line}", node.id.clone());
-
             // Make sure that all data has been synced to disk.
-            file.sync_all().await.unwrap();
+            let _ = file
+                .sync_all()
+                .await
+                .map_err(|err| error!("Could not sync logs to file due to {err}"));
         }
     });
     Ok(())
