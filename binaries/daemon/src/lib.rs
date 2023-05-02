@@ -36,7 +36,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
-use tracing::log::error;
+use tracing::error;
 use uuid::Uuid;
 
 mod coordinator;
