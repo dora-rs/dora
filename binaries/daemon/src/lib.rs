@@ -39,6 +39,7 @@ use uuid::Uuid;
 
 mod coordinator;
 mod inter_daemon;
+mod log;
 mod node_communication;
 mod spawn;
 mod tcp_utils;
@@ -314,7 +315,7 @@ impl Daemon {
                 let logs = async {
                     let log_dir = temp_dir();
 
-                    let mut file = File::open(log_dir.join(format!("{dataflow_id}-{node_id}.txt")))
+                    let mut file = File::open(log_dir.join(log::log_path(&dataflow_id, &node_id)))
                         .await
                         .wrap_err("Could not open log file")?;
 
