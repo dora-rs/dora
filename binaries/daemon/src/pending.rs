@@ -1,10 +1,19 @@
 use std::collections::{HashMap, HashSet};
 
-use dora_core::{config::NodeId, daemon_messages::DaemonReply};
-use tokio::sync::oneshot;
+use dora_core::{
+    config::NodeId,
+    coordinator_messages::{CoordinatorRequest, DaemonEvent},
+    daemon_messages::{DaemonReply, DataflowId},
+};
+use eyre::{bail, Context};
+use tokio::{net::TcpStream, sync::oneshot};
 
-#[derive(Default)]
+use crate::tcp_utils::tcp_send;
+
 pub struct PendingNodes {
+    dataflow_id: DataflowId,
+    machine_id: String,
+
     /// The local nodes that are still waiting to start.
     local_nodes: HashSet<NodeId>,
     /// Whether there are external nodes for this dataflow.
@@ -22,6 +31,17 @@ pub struct PendingNodes {
 }
 
 impl PendingNodes {
+    pub fn new(dataflow_id: DataflowId, machine_id: String) -> Self {
+        Self {
+            dataflow_id,
+            machine_id,
+            local_nodes: HashSet::new(),
+            external_nodes: false,
+            waiting_subscribers: HashMap::new(),
+            exited_before_subscribe: HashSet::new(),
+        }
+    }
+
     pub fn insert(&mut self, node_id: NodeId) {
         self.local_nodes.insert(node_id);
     }
@@ -34,47 +54,55 @@ impl PendingNodes {
         &mut self,
         node_id: NodeId,
         reply_sender: oneshot::Sender<DaemonReply>,
+        coordinator_connection: &mut Option<TcpStream>,
     ) -> eyre::Result<DataflowStatus> {
         self.waiting_subscribers
             .insert(node_id.clone(), reply_sender);
-
         self.local_nodes.remove(&node_id);
-        if self.local_nodes.is_empty() {
-            if self.external_nodes {
-                Ok(DataflowStatus::LocalNodesReady { success: true })
-            } else {
-                self.answer_subscribe_requests(None).await;
-                Ok(DataflowStatus::AllNodesReady)
-            }
-        } else {
-            Ok(DataflowStatus::LocalNodesPending)
-        }
+
+        self.update_dataflow_status(coordinator_connection).await
     }
 
-    pub async fn handle_node_stop(&mut self, node_id: &NodeId) -> DataflowStatus {
+    pub async fn handle_node_stop(
+        &mut self,
+        node_id: &NodeId,
+        coordinator_connection: &mut Option<TcpStream>,
+    ) -> eyre::Result<DataflowStatus> {
         self.exited_before_subscribe.insert(node_id.clone());
-
         self.local_nodes.remove(node_id);
-        if self.local_nodes.is_empty() {
-            if self.external_nodes {
-                DataflowStatus::LocalNodesReady { success: false }
-            } else {
-                self.answer_subscribe_requests(None).await;
-                DataflowStatus::AllNodesReady
-            }
-        } else {
-            // continue waiting for other nodes
-            DataflowStatus::LocalNodesPending
-        }
+
+        self.update_dataflow_status(coordinator_connection).await
     }
 
-    pub async fn handle_external_all_nodes_ready(&mut self, success: bool) {
+    pub async fn handle_external_all_nodes_ready(&mut self, success: bool) -> eyre::Result<()> {
+        if !self.local_nodes.is_empty() {
+            bail!("received external `all_nodes_ready` event before local nodes were ready");
+        }
         let external_error = if success {
             None
         } else {
             Some("some nodes failed to initalize on remote machines".to_string())
         };
-        self.answer_subscribe_requests(external_error).await
+        self.answer_subscribe_requests(external_error).await;
+
+        Ok(())
+    }
+
+    async fn update_dataflow_status(
+        &mut self,
+        coordinator_connection: &mut Option<TcpStream>,
+    ) -> eyre::Result<DataflowStatus> {
+        if self.local_nodes.is_empty() {
+            if self.external_nodes {
+                self.report_nodes_ready(coordinator_connection).await?;
+                Ok(DataflowStatus::Pending)
+            } else {
+                self.answer_subscribe_requests(None).await;
+                Ok(DataflowStatus::AllNodesReady)
+            }
+        } else {
+            Ok(DataflowStatus::Pending)
+        }
     }
 
     async fn answer_subscribe_requests(&mut self, external_error: Option<String>) {
@@ -95,10 +123,33 @@ impl PendingNodes {
             let _ = reply_sender.send(DaemonReply::Result(result.clone()));
         }
     }
+
+    async fn report_nodes_ready(
+        &self,
+        coordinator_connection: &mut Option<TcpStream>,
+    ) -> eyre::Result<()> {
+        let Some(connection) = coordinator_connection else {
+            bail!("no coordinator connection to send AllNodesReady");
+        };
+
+        let success = self.exited_before_subscribe.is_empty();
+        tracing::info!("all local nodes are ready (success = {success}), waiting for remote nodes");
+
+        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
+            machine_id: self.machine_id.clone(),
+            event: DaemonEvent::AllNodesReady {
+                dataflow_id: self.dataflow_id,
+                success,
+            },
+        })?;
+        tcp_send(connection, &msg)
+            .await
+            .wrap_err("failed to send AllNodesReady message to dora-coordinator")?;
+        Ok(())
+    }
 }
 
 pub enum DataflowStatus {
     AllNodesReady,
-    LocalNodesPending,
-    LocalNodesReady { success: bool },
+    Pending,
 }
