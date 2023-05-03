@@ -7,7 +7,7 @@ use dora_core::{
     config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
-    descriptor::Descriptor,
+    descriptor::{Descriptor, ResolvedNode},
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -79,6 +79,46 @@ pub async fn start(
     Ok((port, future))
 }
 
+// Resolve the dataflow name.
+// Search for archived dataflows if they are provided.
+fn resolve_name(
+    name: String,
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    archived_dataflows: Option<&HashMap<Uuid, ArchivedDataflow>>,
+) -> eyre::Result<Uuid> {
+    let uuids: Vec<_> = running_dataflows
+        .iter()
+        .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+        .map(|(k, _)| k)
+        .copied()
+        .collect();
+    let archived_uuids: Vec<_> = if let Some(archived_dataflows) = archived_dataflows {
+        archived_dataflows
+            .iter()
+            .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+            .map(|(k, _)| k)
+            .copied()
+            .collect()
+    } else {
+        vec![]
+    };
+
+    if uuids.is_empty() {
+        if archived_uuids.is_empty() {
+            bail!("no dataflow with name `{name}`");
+        } else if let [uuid] = archived_uuids.as_slice() {
+            Ok(*uuid)
+        } else {
+            // TOOD: Index the archived dataflows in order to return logs based on the index.
+            bail!("multiple archived dataflows found with name `{name}`, Please provide the UUID instead.");
+        }
+    } else if let [uuid] = uuids.as_slice() {
+        Ok(*uuid)
+    } else {
+        bail!("multiple dataflows found with name `{name}`");
+    }
+}
+
 async fn start_inner(
     listener: TcpListener,
     tasks: &FuturesUnordered<JoinHandle<()>>,
@@ -116,6 +156,7 @@ async fn start_inner(
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
+    let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
 
     while let Some(event) = events.next().await {
@@ -217,6 +258,11 @@ async fn start_inner(
                 DataflowEvent::DataflowFinishedOnMachine { machine_id, result } => {
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            // Archive finished dataflow
+                            if archived_dataflows.get(&uuid).is_none() {
+                                archived_dataflows
+                                    .insert(uuid, ArchivedDataflow::from(entry.get()));
+                            }
                             entry.get_mut().machines.remove(&machine_id);
                             match result {
                                 Ok(()) => {
@@ -325,20 +371,7 @@ async fn start_inner(
                         }
                         ControlRequest::StopByName { name } => {
                             let stop = async {
-                                let uuids: Vec<_> = running_dataflows
-                                    .iter()
-                                    .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
-                                    .map(|(k, _)| k)
-                                    .copied()
-                                    .collect();
-                                let dataflow_uuid = if uuids.is_empty() {
-                                    bail!("no running dataflow with name `{name}`");
-                                } else if let [uuid] = uuids.as_slice() {
-                                    *uuid
-                                } else {
-                                    bail!("multiple dataflows found with name `{name}`");
-                                };
-
+                                let dataflow_uuid = resolve_name(name, &running_dataflows, None)?;
                                 stop_dataflow(
                                     &running_dataflows,
                                     dataflow_uuid,
@@ -349,6 +382,25 @@ async fn start_inner(
                             };
                             stop.await
                                 .map(|uuid| ControlRequestReply::DataflowStopped { uuid })
+                        }
+                        ControlRequest::Logs { uuid, name, node } => {
+                            let dataflow_uuid = if let Some(uuid) = uuid {
+                                uuid
+                            } else if let Some(name) = name {
+                                resolve_name(name, &running_dataflows, Some(&archived_dataflows))?
+                            } else {
+                                bail!("No uuid")
+                            };
+
+                            retrieve_logs(
+                                &running_dataflows,
+                                &archived_dataflows,
+                                dataflow_uuid,
+                                node.into(),
+                                &mut daemon_connections,
+                            )
+                            .await
+                            .map(|logs| ControlRequestReply::Logs(logs))
                         }
                         ControlRequest::Destroy => {
                             tracing::info!("Received destroy command");
@@ -498,6 +550,21 @@ struct RunningDataflow {
     machines: BTreeSet<String>,
     /// IDs of machines that are waiting until all nodes are started.
     pending_machines: BTreeSet<String>,
+    nodes: Vec<ResolvedNode>,
+}
+
+struct ArchivedDataflow {
+    name: Option<String>,
+    nodes: Vec<ResolvedNode>,
+}
+
+impl From<&RunningDataflow> for ArchivedDataflow {
+    fn from(dataflow: &RunningDataflow) -> ArchivedDataflow {
+        ArchivedDataflow {
+            name: dataflow.name.clone(),
+            nodes: dataflow.nodes.clone(),
+        }
+    }
 }
 
 impl PartialEq for RunningDataflow {
@@ -586,14 +653,77 @@ async fn reload_dataflow(
     Ok(())
 }
 
+async fn retrieve_logs(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
+) -> eyre::Result<Vec<u8>> {
+    let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
+        dataflow.nodes.clone()
+    } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
+        dataflow.nodes.clone()
+    } else {
+        bail!("No dataflow found with UUID `{dataflow_id}`")
+    };
+
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Logs {
+        dataflow_id,
+        node_id: node_id.clone(),
+    })?;
+
+    let machine_ids: Vec<String> = nodes
+        .iter()
+        .filter(|node| node.id == node_id)
+        .map(|node| node.deploy.machine.clone())
+        .collect();
+
+    let machine_id = if let [machine_id] = &machine_ids[..] {
+        machine_id
+    } else if machine_ids.is_empty() {
+        bail!("No machine contains {}/{}", dataflow_id, node_id)
+    } else {
+        bail!(
+            "More than one machine contains {}/{}. However, it should only be present on one.",
+            dataflow_id,
+            node_id
+        )
+    };
+
+    let daemon_connection = daemon_connections
+        .get_mut(machine_id.as_str())
+        .wrap_err("no daemon connection")?;
+    tcp_send(&mut daemon_connection.stream, &message)
+        .await
+        .wrap_err("failed to send logs message to daemon")?;
+
+    // wait for reply
+    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+        .await
+        .wrap_err("failed to retrieve logs reply from daemon")?;
+    let reply_logs = match serde_json::from_slice(&reply_raw)
+        .wrap_err("failed to deserialize logs reply from daemon")?
+    {
+        DaemonCoordinatorReply::Logs(logs) => logs,
+        other => bail!("unexpected reply after sending logs: {other:?}"),
+    };
+    tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
+
+    reply_logs.map_err(|err| eyre!(err))
+}
+
 async fn start_dataflow(
     dataflow: Descriptor,
     working_dir: PathBuf,
     name: Option<String>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<RunningDataflow> {
-    let SpawnedDataflow { uuid, machines } =
-        spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
+    let SpawnedDataflow {
+        uuid,
+        machines,
+        nodes,
+    } = spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
     Ok(RunningDataflow {
         uuid,
         name,
@@ -603,6 +733,7 @@ async fn start_dataflow(
             BTreeSet::new()
         },
         machines,
+        nodes,
     })
 }
 

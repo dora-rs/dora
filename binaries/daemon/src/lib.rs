@@ -19,6 +19,7 @@ use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
 use shared_memory_server::ShmemConf;
 use std::collections::HashSet;
+use std::env::temp_dir;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -28,14 +29,19 @@ use std::{
     time::Duration,
 };
 use tcp_utils::{tcp_receive, tcp_send};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tracing::error;
 use uuid::Uuid;
 
 mod coordinator;
 mod inter_daemon;
+mod log;
 mod node_communication;
 mod spawn;
 mod tcp_utils;
@@ -202,8 +208,7 @@ impl Daemon {
         while let Some(event) = events.next().await {
             match event {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
-                    let (reply, status) = self.handle_coordinator_event(event).await?;
-                    let _ = reply_tx.send(reply);
+                    let status = self.handle_coordinator_event(event, reply_tx).await?;
 
                     match status {
                         RunStatus::Continue => {}
@@ -254,8 +259,9 @@ impl Daemon {
     async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
-    ) -> eyre::Result<(Option<DaemonCoordinatorReply>, RunStatus)> {
-        let (reply, status) = match event {
+        reply_tx: Sender<Option<DaemonCoordinatorReply>>,
+    ) -> eyre::Result<RunStatus> {
+        let status = match event {
             DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes {
                 dataflow_id,
                 working_dir,
@@ -287,7 +293,10 @@ impl Daemon {
                 }
                 let reply =
                     DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
-                (Some(reply), RunStatus::Continue)
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send `SpawnResult` reply from daemon to coordinator")
+                });
+                RunStatus::Continue
             }
             DaemonCoordinatorEvent::AllNodesReady { dataflow_id } => {
                 match self.running.get_mut(&dataflow_id) {
@@ -301,7 +310,39 @@ impl Daemon {
                         );
                     }
                 }
-                (None, RunStatus::Continue)
+                let _ = reply_tx.send(None).map_err(|_| {
+                    error!("could not send `AllNodesReady` reply from daemon to coordinator")
+                });
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::Logs {
+                dataflow_id,
+                node_id,
+            } => {
+                tokio::spawn(async move {
+                    let logs = async {
+                        let log_dir = temp_dir();
+
+                        let mut file =
+                            File::open(log_dir.join(log::log_path(&dataflow_id, &node_id)))
+                                .await
+                                .wrap_err("Could not open log file")?;
+
+                        let mut contents = vec![];
+                        file.read_to_end(&mut contents)
+                            .await
+                            .wrap_err("Could not read content of log file")?;
+                        Result::<Vec<u8>, eyre::Report>::Ok(contents)
+                    }
+                    .await
+                    .map_err(|err| format!("{err:?}"));
+                    let _ = reply_tx
+                        .send(Some(DaemonCoordinatorReply::Logs(logs)))
+                        .map_err(|_| {
+                            error!("could not send logs reply from daemon to coordinator")
+                        });
+                });
+                RunStatus::Continue
             }
             DaemonCoordinatorEvent::ReloadDataflow {
                 dataflow_id,
@@ -311,7 +352,10 @@ impl Daemon {
                 let result = self.send_reload(dataflow_id, node_id, operator_id).await;
                 let reply =
                     DaemonCoordinatorReply::ReloadResult(result.map_err(|err| format!("{err:?}")));
-                (Some(reply), RunStatus::Continue)
+                let _ = reply_tx
+                    .send(Some(reply))
+                    .map_err(|_| error!("could not send reload reply from daemon to coordinator"));
+                RunStatus::Continue
             }
             DaemonCoordinatorEvent::StopDataflow { dataflow_id } => {
                 let stop = async {
@@ -325,19 +369,29 @@ impl Daemon {
                 let reply = DaemonCoordinatorReply::StopResult(
                     stop.await.map_err(|err| format!("{err:?}")),
                 );
-                (Some(reply), RunStatus::Continue)
+                let _ = reply_tx
+                    .send(Some(reply))
+                    .map_err(|_| error!("could not send stop reply from daemon to coordinator"));
+                RunStatus::Continue
             }
             DaemonCoordinatorEvent::Destroy => {
                 tracing::info!("received destroy command -> exiting");
                 let reply = DaemonCoordinatorReply::DestroyResult(Ok(()));
-                (Some(reply), RunStatus::Exit)
+                let _ = reply_tx
+                    .send(Some(reply))
+                    .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
+                RunStatus::Exit
             }
-            DaemonCoordinatorEvent::Watchdog => (
-                Some(DaemonCoordinatorReply::WatchdogAck),
-                RunStatus::Continue,
-            ),
+            DaemonCoordinatorEvent::Watchdog => {
+                let _ = reply_tx
+                    .send(Some(DaemonCoordinatorReply::WatchdogAck))
+                    .map_err(|_| {
+                        error!("could not send WatchdogAck reply from daemon to coordinator")
+                    });
+                RunStatus::Continue
+            }
         };
-        Ok((reply, status))
+        Ok(status)
     }
 
     async fn handle_inter_daemon_event(&mut self, event: InterDaemonEvent) -> eyre::Result<()> {
@@ -812,15 +866,24 @@ impl Daemon {
                     }
                     NodeExitStatus::IoError(err) => {
                         let err = eyre!(err).wrap_err(format!(
-                            "I/O error while waiting for node `{dataflow_id}/{node_id}`"
+                            "
+    I/O error while waiting for node `{dataflow_id}/{node_id}. 
+
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
                         ));
                         tracing::error!("{err:?}");
                         Some(err)
                     }
                     NodeExitStatus::ExitCode(code) => {
-                        let err =
-                            eyre!("node {dataflow_id}/{node_id} finished with exit code {code}");
-                        tracing::warn!("{err}");
+                        let err = eyre!(
+                            "
+    {dataflow_id}/{node_id} failed with exit code {code}.
+
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
+                        );
+                        tracing::error!("{err}");
                         Some(err)
                     }
                     NodeExitStatus::Signal(signal) => {
@@ -842,15 +905,24 @@ impl Daemon {
                             other => other.to_string().into(),
                         };
                         let err = eyre!(
-                            "node {dataflow_id}/{node_id} finished because of signal `{signal}`"
+                            "
+    {dataflow_id}/{node_id} failed with signal `{signal}`
+
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
                         );
-                        tracing::warn!("{err}");
+                        tracing::error!("{err}");
                         Some(err)
                     }
                     NodeExitStatus::Unknown => {
-                        let err =
-                            eyre!("node {dataflow_id}/{node_id} finished with unknown exit code");
-                        tracing::warn!("{err}");
+                        let err = eyre!(
+                            "
+    {dataflow_id}/{node_id} failed with unknown exit code
+    
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
+                        );
+                        tracing::error!("{err}");
                         Some(err)
                     }
                 };
