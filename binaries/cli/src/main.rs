@@ -16,6 +16,7 @@ mod attach;
 mod build;
 mod check;
 mod graph;
+mod logs;
 mod template;
 mod up;
 
@@ -43,7 +44,9 @@ enum Command {
         open: bool,
     },
     /// Run build commands provided in the given dataflow.
-    Build { dataflow: PathBuf },
+    Build {
+        dataflow: PathBuf,
+    },
     /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
@@ -85,7 +88,10 @@ enum Command {
     List,
     // Planned for future releases:
     // Dashboard,
-    // Logs,
+    Logs {
+        dataflow: String,
+        node: String,
+    },
     // Metrics,
     // Stats,
     // Get,
@@ -166,6 +172,13 @@ fn run() -> eyre::Result<()> {
             coordinator_path.as_deref(),
             daemon_path.as_deref(),
         )?,
+        Command::Logs { dataflow, node } => {
+            let uuid = Uuid::parse_str(&dataflow).ok();
+            let name = if uuid.is_some() { None } else { Some(dataflow) };
+            let mut session =
+                connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
+            logs::logs(&mut *session, uuid, name, node)?
+        }
         Command::Start {
             dataflow,
             name,

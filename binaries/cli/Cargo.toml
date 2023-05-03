@@ -35,3 +35,4 @@ notify = "5.1.0"
 ctrlc = "3.2.5"
 tracing = "0.1.36"
 dora-tracing = { workspace = true, optional = true }
+bat = "0.23.0"

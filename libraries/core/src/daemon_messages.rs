@@ -211,6 +211,10 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
         operator_id: Option<OperatorId>,
     },
+    Logs {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
     Destroy,
     Watchdog,
 }
@@ -237,6 +241,7 @@ pub enum DaemonCoordinatorReply {
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
     WatchdogAck,
+    Logs(Result<Vec<u8>, String>),
 }
 
 pub type DataflowId = Uuid;
