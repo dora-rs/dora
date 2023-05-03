@@ -744,7 +744,6 @@ impl Daemon {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        tracing::warn!("node `{node_id}` exited before initializing dora connection");
         dataflow
             .pending_nodes
             .handle_node_stop(node_id, &mut self.coordinator_connection)

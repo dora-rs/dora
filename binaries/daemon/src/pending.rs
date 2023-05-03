@@ -71,11 +71,13 @@ impl PendingNodes {
         &mut self,
         node_id: &NodeId,
         coordinator_connection: &mut Option<TcpStream>,
-    ) -> eyre::Result<DataflowStatus> {
-        self.exited_before_subscribe.insert(node_id.clone());
-        self.local_nodes.remove(node_id);
-
-        self.update_dataflow_status(coordinator_connection).await
+    ) -> eyre::Result<()> {
+        if self.local_nodes.remove(node_id) {
+            tracing::warn!("node `{node_id}` exited before initializing dora connection");
+            self.exited_before_subscribe.insert(node_id.clone());
+            self.update_dataflow_status(coordinator_connection).await?;
+        }
+        Ok(())
     }
 
     pub async fn handle_external_all_nodes_ready(&mut self, success: bool) -> eyre::Result<()> {
