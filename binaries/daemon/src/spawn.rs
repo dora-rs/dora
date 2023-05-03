@@ -1,5 +1,5 @@
 use crate::{
-    node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
+    log, node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
     runtime_node_outputs, DoraEvent, Event, NodeExitStatus,
 };
 use dora_core::{
@@ -9,8 +9,17 @@ use dora_core::{
 };
 use dora_download::download_file;
 use eyre::WrapErr;
-use std::{env::consts::EXE_EXTENSION, path::Path, process::Stdio};
-use tokio::sync::mpsc;
+use std::{
+    env::{consts::EXE_EXTENSION, temp_dir},
+    path::Path,
+    process::Stdio,
+};
+use tokio::{
+    fs::File,
+    io::{AsyncBufReadExt, AsyncWriteExt},
+    sync::{mpsc, oneshot},
+};
+use tracing::{debug, error};
 
 pub async fn spawn_node(
     dataflow_id: DataflowId,
@@ -88,13 +97,18 @@ pub async fn spawn_node(
                     command.env(key, value.to_string());
                 }
             }
-            command.spawn().wrap_err_with(move || {
-                format!(
-                    "failed to run `{}` with args `{}`",
-                    n.source,
-                    n.args.as_deref().unwrap_or_default()
-                )
-            })?
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .wrap_err_with(move || {
+                    format!(
+                        "failed to run `{}` with args `{}`",
+                        n.source,
+                        n.args.as_deref().unwrap_or_default()
+                    )
+                })?
         }
         dora_core::descriptor::CoreNodeKind::Runtime(n) => {
             let has_python_operator = n
@@ -125,7 +139,6 @@ pub async fn spawn_node(
                 eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
             };
             command.current_dir(working_dir);
-            command.stdin(Stdio::null());
 
             let runtime_config = RuntimeConfig {
                 node: NodeConfig {
@@ -152,21 +165,87 @@ pub async fn spawn_node(
                 }
             }
 
-            command.spawn().wrap_err(format!(
-                "failed to run runtime {}/{}",
-                runtime_config.node.dataflow_id, runtime_config.node.node_id
-            ))?
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .wrap_err(format!(
+                    "failed to run runtime {}/{}",
+                    runtime_config.node.dataflow_id, runtime_config.node.node_id
+                ))?
         }
     };
 
+    let log_dir = temp_dir();
+
+    let (tx, mut rx) = mpsc::channel(10);
+    let mut file =
+        File::create(&log_dir.join(log::log_path(&dataflow_id, &node_id).with_extension("txt")))
+            .await
+            .expect("Failed to create log file");
+    let mut stdout_lines =
+        (tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"))).lines();
+
+    let stdout_tx = tx.clone();
+
+    // Stdout listener stream
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = stdout_lines.next_line().await {
+            let sent = stdout_tx.send(line.clone()).await;
+            if sent.is_err() {
+                println!("Could not log: {line}");
+            }
+        }
+    });
+
+    let mut stderr_lines =
+        (tokio::io::BufReader::new(child.stderr.take().expect("failed to take stderr"))).lines();
+
+    // Stderr listener stream
+    let stderr_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = stderr_lines.next_line().await {
+            let sent = stderr_tx.send(line.clone()).await;
+            if sent.is_err() {
+                eprintln!("Could not log: {line}");
+            }
+        }
+    });
+
+    let (log_finish_tx, log_finish_rx) = oneshot::channel();
     tokio::spawn(async move {
         let exit_status = NodeExitStatus::from(child.wait().await);
+        let _ = log_finish_rx.await;
         let event = DoraEvent::SpawnedNodeResult {
             dataflow_id,
             node_id,
             exit_status,
         };
         let _ = daemon_tx.send(event.into()).await;
+    });
+
+    // Log to file stream.
+    tokio::spawn(async move {
+        while let Some(line) = rx.recv().await {
+            let _ = file
+                .write_all(line.as_bytes())
+                .await
+                .map_err(|err| error!("Could not log {line} to file due to {err}"));
+            let _ = file
+                .write(b"\n")
+                .await
+                .map_err(|err| error!("Could not add newline to log file due to {err}"));
+            debug!("{dataflow_id}/{} logged {line}", node.id.clone());
+            // Make sure that all data has been synced to disk.
+            let _ = file
+                .sync_all()
+                .await
+                .map_err(|err| error!("Could not sync logs to file due to {err}"));
+        }
+        let _ = log_finish_tx
+            .send(())
+            .map_err(|_| error!("Could not inform that log file thread finished"));
     });
     Ok(())
 }
