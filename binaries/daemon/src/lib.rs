@@ -866,15 +866,24 @@ impl Daemon {
                     }
                     NodeExitStatus::IoError(err) => {
                         let err = eyre!(err).wrap_err(format!(
-                            "I/O error while waiting for node `{dataflow_id}/{node_id}`"
+                            "
+    I/O error while waiting for node `{dataflow_id}/{node_id}. 
+
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
                         ));
                         tracing::error!("{err:?}");
                         Some(err)
                     }
                     NodeExitStatus::ExitCode(code) => {
-                        let err =
-                            eyre!("node {dataflow_id}/{node_id} finished with exit code {code}");
-                        tracing::warn!("{err}");
+                        let err = eyre!(
+                            "
+    {dataflow_id}/{node_id} failed with exit code {code}.
+
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
+                        );
+                        tracing::error!("{err}");
                         Some(err)
                     }
                     NodeExitStatus::Signal(signal) => {
@@ -896,15 +905,24 @@ impl Daemon {
                             other => other.to_string().into(),
                         };
                         let err = eyre!(
-                            "node {dataflow_id}/{node_id} finished because of signal `{signal}`"
+                            "
+    {dataflow_id}/{node_id} failed with signal `{signal}`
+
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
                         );
-                        tracing::warn!("{err}");
+                        tracing::error!("{err}");
                         Some(err)
                     }
                     NodeExitStatus::Unknown => {
-                        let err =
-                            eyre!("node {dataflow_id}/{node_id} finished with unknown exit code");
-                        tracing::warn!("{err}");
+                        let err = eyre!(
+                            "
+    {dataflow_id}/{node_id} failed with unknown exit code
+    
+    Check logs using: dora logs {dataflow_id} {node_id}
+                            "
+                        );
+                        tracing::error!("{err}");
                         Some(err)
                     }
                 };
