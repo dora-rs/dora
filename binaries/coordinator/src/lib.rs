@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     net::SocketAddr,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -138,9 +138,9 @@ async fn start_inner(
         .await
         .wrap_err("failed to create control events")?;
 
-    let daemon_watchdog_interval =
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(1)))
-            .map(|_| Event::DaemonWatchdogInterval);
+    let daemon_heartbeat_interval =
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
+            .map(|_| Event::DaemonHeartbeatInterval);
 
     // events that should be aborted on `dora destroy`
     let (abortable_events, abort_handle) = futures::stream::abortable(
@@ -148,7 +148,7 @@ async fn start_inner(
             control_events,
             new_daemon_connections,
             external_events,
-            daemon_watchdog_interval,
+            daemon_heartbeat_interval,
         )
             .merge(),
     );
@@ -203,6 +203,7 @@ async fn start_inner(
                                 DaemonConnection {
                                     stream: connection,
                                     listen_socket,
+                                    last_heartbeat: SystemTime::now(),
                                 },
                             );
                             if let Some(_previous) = previous {
@@ -442,9 +443,15 @@ async fn start_inner(
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
             },
-            Event::DaemonWatchdogInterval => {
+            Event::DaemonHeartbeatInterval => {
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
+                    if connection.last_heartbeat.elapsed().unwrap_or_default()
+                        > Duration::from_secs(15)
+                    {
+                        disconnected.insert(machine_id.clone());
+                        continue;
+                    }
                     let result: eyre::Result<()> =
                         tokio::time::timeout(Duration::from_millis(100), send_watchdog_message(&mut connection.stream))
                             .await
@@ -474,6 +481,11 @@ async fn start_inner(
                 )
                 .await?;
             }
+            Event::DaemonHeartbeat { machine_id } => {
+                if let Some(connection) = daemon_connections.get_mut(&machine_id) {
+                    connection.last_heartbeat = SystemTime::now();
+                }
+            }
         }
     }
 
@@ -485,6 +497,7 @@ async fn start_inner(
 struct DaemonConnection {
     stream: TcpStream,
     listen_socket: SocketAddr,
+    last_heartbeat: SystemTime,
 }
 
 fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
@@ -525,21 +538,11 @@ async fn handle_destroy(
 }
 
 async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Watchdog).unwrap();
+    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Heartbeat).unwrap();
 
     tcp_send(connection, &message)
         .await
-        .wrap_err("failed to send watchdog message to daemon")?;
-    let reply_raw = tcp_receive(connection)
-        .await
-        .wrap_err("failed to receive stop reply from daemon")?;
-
-    match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize stop reply from daemon")?
-    {
-        DaemonCoordinatorReply::WatchdogAck => Ok(()),
-        other => bail!("unexpected reply after sending `watchdog`: {other:?}"),
-    }
+        .wrap_err("failed to send watchdog message to daemon")
 }
 
 #[allow(dead_code)] // Keeping the communication layer for later use.
@@ -770,10 +773,11 @@ async fn destroy_daemons(
 pub enum Event {
     NewDaemonConnection(TcpStream),
     DaemonConnectError(eyre::Report),
+    DaemonHeartbeat { machine_id: String },
     Dataflow { uuid: Uuid, event: DataflowEvent },
     Control(ControlEvent),
     Daemon(DaemonEvent),
-    DaemonWatchdogInterval,
+    DaemonHeartbeatInterval,
     CtrlC,
 }
 
@@ -782,7 +786,7 @@ impl Event {
     #[allow(clippy::match_like_matches_macro)]
     pub fn log(&self) -> bool {
         match self {
-            Event::DaemonWatchdogInterval => false,
+            Event::DaemonHeartbeatInterval => false,
             _ => true,
         }
     }
