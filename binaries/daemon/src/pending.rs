@@ -28,6 +28,9 @@ pub struct PendingNodes {
     /// If this list is non-empty, we should not start the dataflow at all. Instead,
     /// we report an error to the other nodes.
     exited_before_subscribe: HashSet<NodeId>,
+
+    /// Whether the local init result was already reported to the coordinator.
+    reported_init_to_coordinator: bool,
 }
 
 impl PendingNodes {
@@ -39,6 +42,7 @@ impl PendingNodes {
             external_nodes: false,
             waiting_subscribers: HashMap::new(),
             exited_before_subscribe: HashSet::new(),
+            reported_init_to_coordinator: false,
         }
     }
 
@@ -94,7 +98,10 @@ impl PendingNodes {
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
-                self.report_nodes_ready(coordinator_connection).await?;
+                if !self.reported_init_to_coordinator {
+                    self.report_nodes_ready(coordinator_connection).await?;
+                    self.reported_init_to_coordinator = true;
+                }
                 Ok(DataflowStatus::Pending)
             } else {
                 self.answer_subscribe_requests(None).await;
