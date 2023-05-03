@@ -301,7 +301,7 @@ impl Daemon {
                         dataflow
                             .pending_nodes
                             .handle_external_all_nodes_ready(success)
-                            .await;
+                            .await?;
                         if success {
                             tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
                             dataflow.start(&self.events_tx).await?;
@@ -415,7 +415,7 @@ impl Daemon {
         nodes: Vec<ResolvedNode>,
         daemon_communication_config: LocalCommunicationConfig,
     ) -> eyre::Result<()> {
-        let dataflow = RunningDataflow::new(dataflow_id);
+        let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(dataflow),
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -507,7 +507,11 @@ impl Daemon {
 
                         let status = dataflow
                             .pending_nodes
-                            .handle_node_subscription(node_id.clone(), reply_sender)
+                            .handle_node_subscription(
+                                node_id.clone(),
+                                reply_sender,
+                                &mut self.coordinator_connection,
+                            )
                             .await?;
                         match status {
                             DataflowStatus::AllNodesReady => {
@@ -516,20 +520,7 @@ impl Daemon {
                                 );
                                 dataflow.start(&self.events_tx).await?;
                             }
-                            DataflowStatus::LocalNodesPending => {}
-                            DataflowStatus::LocalNodesReady { success } => {
-                                tracing::info!(
-                                    "all local nodes are ready, waiting for remote nodes"
-                                );
-
-                                Self::report_nodes_ready(
-                                    &mut self.coordinator_connection,
-                                    self.machine_id.clone(),
-                                    dataflow_id,
-                                    success,
-                                )
-                                .await?;
-                            }
+                            DataflowStatus::Pending => {}
                         }
                     }
                 }
@@ -625,28 +616,6 @@ impl Daemon {
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
         }
-        Ok(())
-    }
-
-    async fn report_nodes_ready(
-        coordinator_connection: &mut Option<TcpStream>,
-        machine_id: String,
-        dataflow_id: Uuid,
-        success: bool,
-    ) -> Result<(), eyre::ErrReport> {
-        let Some(connection) = coordinator_connection else {
-            bail!("no coordinator connection to send AllNodesReady");
-        };
-        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
-            machine_id: machine_id.clone(),
-            event: DaemonEvent::AllNodesReady {
-                dataflow_id,
-                success,
-            },
-        })?;
-        tcp_send(connection, &msg)
-            .await
-            .wrap_err("failed to send AllNodesReady message to dora-coordinator")?;
         Ok(())
     }
 
@@ -776,19 +745,10 @@ impl Daemon {
         })?;
 
         tracing::warn!("node `{node_id}` exited before initializing dora connection");
-        match dataflow.pending_nodes.handle_node_stop(node_id).await {
-            DataflowStatus::AllNodesReady => {}
-            DataflowStatus::LocalNodesPending => {}
-            DataflowStatus::LocalNodesReady { success } => {
-                Self::report_nodes_ready(
-                    &mut self.coordinator_connection,
-                    self.machine_id.clone(),
-                    dataflow_id,
-                    success,
-                )
-                .await?;
-            }
-        }
+        dataflow
+            .pending_nodes
+            .handle_node_stop(node_id, &mut self.coordinator_connection)
+            .await?;
 
         Self::handle_outputs_done(dataflow, &mut self.inter_daemon_connections, node_id).await?;
 
@@ -1127,10 +1087,10 @@ pub struct RunningDataflow {
 }
 
 impl RunningDataflow {
-    fn new(id: Uuid) -> RunningDataflow {
+    fn new(dataflow_id: Uuid, machine_id: String) -> RunningDataflow {
         Self {
-            id,
-            pending_nodes: PendingNodes::default(),
+            id: dataflow_id,
+            pending_nodes: PendingNodes::new(dataflow_id, machine_id),
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
