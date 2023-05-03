@@ -109,7 +109,8 @@ fn resolve_name(
         } else if let [uuid] = archived_uuids.as_slice() {
             Ok(*uuid)
         } else {
-            bail!("multiple archived dataflows found with name `{name}`");
+            // TOOD: Index the archived dataflows in order to return logs based on the index.
+            bail!("multiple archived dataflows found with name `{name}`, Please provide the UUID instead.");
         }
     } else if let [uuid] = uuids.as_slice() {
         Ok(*uuid)

@@ -17,7 +17,7 @@ use std::{
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
 };
 use tracing::{debug, error};
 
@@ -213,14 +213,15 @@ pub async fn spawn_node(
         }
     });
 
+    let (log_finish_tx, log_finish_rx) = oneshot::channel();
     tokio::spawn(async move {
         let exit_status = NodeExitStatus::from(child.wait().await);
+        let _ = log_finish_rx.await;
         let event = DoraEvent::SpawnedNodeResult {
             dataflow_id,
             node_id,
             exit_status,
         };
-
         let _ = daemon_tx.send(event.into()).await;
     });
 
@@ -242,6 +243,9 @@ pub async fn spawn_node(
                 .await
                 .map_err(|err| error!("Could not sync logs to file due to {err}"));
         }
+        let _ = log_finish_tx
+            .send(())
+            .map_err(|_| error!("Could not inform that log file thread finished"));
     });
     Ok(())
 }
