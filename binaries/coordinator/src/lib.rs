@@ -139,7 +139,7 @@ async fn start_inner(
         .wrap_err("failed to create control events")?;
 
     let daemon_watchdog_interval =
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(1)))
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonWatchdogInterval);
 
     // events that should be aborted on `dora destroy`
@@ -221,15 +221,20 @@ async fn start_inner(
                 }
             },
             Event::Dataflow { uuid, event } => match event {
-                DataflowEvent::ReadyOnMachine { machine_id } => {
+                DataflowEvent::ReadyOnMachine {
+                    machine_id,
+                    success,
+                } => {
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
                             dataflow.pending_machines.remove(&machine_id);
+                            dataflow.init_success &= success;
                             if dataflow.pending_machines.is_empty() {
                                 let message =
                                     serde_json::to_vec(&DaemonCoordinatorEvent::AllNodesReady {
                                         dataflow_id: uuid,
+                                        success: dataflow.init_success,
                                     })
                                     .wrap_err("failed to serialize AllNodesReady message")?;
 
@@ -446,7 +451,7 @@ async fn start_inner(
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
                     let result: eyre::Result<()> =
-                        tokio::time::timeout(Duration::from_millis(100), send_watchdog_message(&mut connection.stream))
+                        tokio::time::timeout(Duration::from_millis(500), send_watchdog_message(&mut connection.stream))
                             .await
                             .wrap_err("timeout")
                             .and_then(|r| r).wrap_err_with(||
@@ -550,6 +555,7 @@ struct RunningDataflow {
     machines: BTreeSet<String>,
     /// IDs of machines that are waiting until all nodes are started.
     pending_machines: BTreeSet<String>,
+    init_success: bool,
     nodes: Vec<ResolvedNode>,
 }
 
@@ -732,6 +738,7 @@ async fn start_dataflow(
         } else {
             BTreeSet::new()
         },
+        init_success: true,
         machines,
         nodes,
     })
@@ -796,6 +803,7 @@ pub enum DataflowEvent {
     },
     ReadyOnMachine {
         machine_id: String,
+        success: bool,
     },
 }
 
