@@ -17,8 +17,8 @@ use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
+use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
-use std::collections::HashSet;
 use std::env::temp_dir;
 use std::{
     borrow::Cow,
@@ -43,6 +43,7 @@ mod coordinator;
 mod inter_daemon;
 mod log;
 mod node_communication;
+mod pending;
 mod spawn;
 mod tcp_utils;
 
@@ -50,6 +51,8 @@ mod tcp_utils;
 use dora_tracing::telemetry::serialize_context;
 #[cfg(feature = "telemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use crate::pending::DataflowStatus;
 
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
@@ -298,11 +301,20 @@ impl Daemon {
                 });
                 RunStatus::Continue
             }
-            DaemonCoordinatorEvent::AllNodesReady { dataflow_id } => {
+            DaemonCoordinatorEvent::AllNodesReady {
+                dataflow_id,
+                success,
+            } => {
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
-                        tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
-                        dataflow.start(&self.events_tx).await?;
+                        dataflow
+                            .pending_nodes
+                            .handle_external_all_nodes_ready(success)
+                            .await?;
+                        if success {
+                            tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
+                            dataflow.start(&self.events_tx).await?;
+                        }
                     }
                     None => {
                         tracing::warn!(
@@ -457,7 +469,7 @@ impl Daemon {
         nodes: Vec<ResolvedNode>,
         daemon_communication_config: LocalCommunicationConfig,
     ) -> eyre::Result<()> {
-        let dataflow = RunningDataflow::new(dataflow_id);
+        let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(dataflow),
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -506,7 +518,7 @@ impl Daemon {
                 dataflow.pending_nodes.insert(node.id.clone());
 
                 let node_id = node.id.clone();
-                spawn::spawn_node(
+                match spawn::spawn_node(
                     dataflow_id,
                     &working_dir,
                     node,
@@ -514,10 +526,21 @@ impl Daemon {
                     daemon_communication_config,
                 )
                 .await
-                .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
-                dataflow.running_nodes.insert(node_id);
+                .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
+                {
+                    Ok(()) => {
+                        dataflow.running_nodes.insert(node_id);
+                    }
+                    Err(err) => {
+                        tracing::error!("{err:?}");
+                        dataflow
+                            .pending_nodes
+                            .handle_node_stop(&node_id, &mut self.coordinator_connection)
+                            .await?;
+                    }
+                }
             } else {
-                dataflow.external_nodes.insert(node.id.clone(), node);
+                dataflow.pending_nodes.set_external_nodes(true);
             }
         }
 
@@ -535,39 +558,35 @@ impl Daemon {
                 event_sender,
                 reply_sender,
             } => {
-                let result = self
-                    .subscribe(dataflow_id, node_id.clone(), event_sender)
-                    .await;
-                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                    format!("failed to subscribe: no running dataflow with ID `{dataflow_id}`")
-                })?;
-                tracing::debug!("node `{node_id}` is ready");
+                let dataflow = self.running.get_mut(&dataflow_id).ok_or_else(|| {
+                    format!("subscribe failed: no running dataflow with ID `{dataflow_id}`")
+                });
 
-                dataflow
-                    .subscribe_replies
-                    .insert(node_id.clone(), (reply_sender, result));
-                dataflow.pending_nodes.remove(&node_id);
-                if dataflow.pending_nodes.is_empty() {
-                    if dataflow.external_nodes.is_empty() {
-                        tracing::info!("all nodes are ready, starting dataflow `{dataflow_id}`");
-                        dataflow.start(&self.events_tx).await?;
-                    } else {
-                        tracing::info!(
-                            "all local nodes are ready, waiting for remote nodes \
-                            for dataflow `{dataflow_id}`"
-                        );
+                match dataflow {
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    }
+                    Ok(dataflow) => {
+                        tracing::debug!("node `{node_id}` is ready");
+                        Self::subscribe(dataflow, node_id.clone(), event_sender).await;
 
-                        // dataflow is split across multiple daemons -> synchronize with dora-coordinator
-                        let Some(connection) = &mut self.coordinator_connection else {
-                            bail!("no coordinator connection to send AllNodesReady");
-                        };
-                        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
-                            machine_id: self.machine_id.clone(),
-                            event: DaemonEvent::AllNodesReady { dataflow_id },
-                        })?;
-                        tcp_send(connection, &msg)
-                            .await
-                            .wrap_err("failed to send AllNodesReady message to dora-coordinator")?;
+                        let status = dataflow
+                            .pending_nodes
+                            .handle_node_subscription(
+                                node_id.clone(),
+                                reply_sender,
+                                &mut self.coordinator_connection,
+                            )
+                            .await?;
+                        match status {
+                            DataflowStatus::AllNodesReady => {
+                                tracing::info!(
+                                    "all nodes are ready, starting dataflow `{dataflow_id}`"
+                                );
+                                dataflow.start(&self.events_tx).await?;
+                            }
+                            DataflowStatus::Pending => {}
+                        }
                     }
                 }
             }
@@ -605,8 +624,17 @@ impl Daemon {
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
             DaemonNodeEvent::OutputsDone { reply_sender } => {
-                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
-                self.handle_outputs_done(dataflow_id, &node_id).await?;
+                let result = match self.running.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        Self::handle_outputs_done(dataflow, &mut self.inter_daemon_connections, &node_id)
+                    .await
+                    },
+                    None => Err(eyre!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")),
+                };
+
+                let _ = reply_sender.send(DaemonReply::Result(
+                    result.map_err(|err| format!("{err:?}")),
+                ));
             }
             DaemonNodeEvent::SendOut {
                 output_id,
@@ -724,15 +752,10 @@ impl Daemon {
     }
 
     async fn subscribe(
-        &mut self,
-        dataflow_id: Uuid,
+        dataflow: &mut RunningDataflow,
         node_id: NodeId,
         event_sender: UnboundedSender<daemon_messages::NodeEvent>,
-    ) -> Result<(), String> {
-        let dataflow = self.running.get_mut(&dataflow_id).ok_or_else(|| {
-            format!("subscribe failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
-
+    ) {
         // some inputs might have been closed already -> report those events
         let closed_inputs = dataflow
             .mappings
@@ -763,22 +786,17 @@ impl Daemon {
         }
 
         dataflow.subscribe_channels.insert(node_id, event_sender);
-
-        Ok(())
     }
 
-    #[tracing::instrument(skip(self), level = "trace")]
+    #[tracing::instrument(skip(dataflow, inter_daemon_connections), fields(uuid = %dataflow.id), level = "trace")]
     async fn handle_outputs_done(
-        &mut self,
-        dataflow_id: Uuid,
+        dataflow: &mut RunningDataflow,
+        inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
         node_id: &NodeId,
     ) -> eyre::Result<()> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
-        })?;
         send_input_closed_events(
             dataflow,
-            &mut self.inter_daemon_connections,
+            inter_daemon_connections,
             |OutputId(source_id, _)| source_id == node_id,
         )
         .await?;
@@ -786,13 +804,18 @@ impl Daemon {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), level = "trace")]
     async fn handle_node_stop(&mut self, dataflow_id: Uuid, node_id: &NodeId) -> eyre::Result<()> {
-        self.handle_outputs_done(dataflow_id, node_id).await?;
-
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
+
+        dataflow
+            .pending_nodes
+            .handle_node_stop(node_id, &mut self.coordinator_connection)
+            .await?;
+
+        Self::handle_outputs_done(dataflow, &mut self.inter_daemon_connections, node_id).await?;
+
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
             tracing::info!(
@@ -1122,11 +1145,7 @@ fn close_input(dataflow: &mut RunningDataflow, receiver_id: &NodeId, input_id: &
 pub struct RunningDataflow {
     id: Uuid,
     /// Local nodes that are not started yet
-    pending_nodes: HashSet<NodeId>,
-    /// Used to synchronize node starts.
-    ///
-    /// Subscribe requests block the node until all other nodes are ready too.
-    subscribe_replies: HashMap<NodeId, (oneshot::Sender<DaemonReply>, Result<(), String>)>,
+    pending_nodes: PendingNodes,
 
     subscribe_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeEvent>>,
     drop_channels: HashMap<NodeId, UnboundedSender<daemon_messages::NodeDropEvent>>,
@@ -1135,7 +1154,6 @@ pub struct RunningDataflow {
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     running_nodes: BTreeSet<NodeId>,
 
-    external_nodes: BTreeMap<NodeId, ResolvedNode>,
     open_external_mappings: HashMap<OutputId, BTreeMap<String, BTreeSet<InputId>>>,
 
     pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
@@ -1151,18 +1169,16 @@ pub struct RunningDataflow {
 }
 
 impl RunningDataflow {
-    fn new(id: Uuid) -> RunningDataflow {
+    fn new(dataflow_id: Uuid, machine_id: String) -> RunningDataflow {
         Self {
-            id,
-            pending_nodes: HashSet::new(),
-            subscribe_replies: HashMap::new(),
+            id: dataflow_id,
+            pending_nodes: PendingNodes::new(dataflow_id, machine_id),
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeSet::new(),
-            external_nodes: BTreeMap::new(),
             open_external_mappings: HashMap::new(),
             pending_drop_tokens: HashMap::new(),
             _timer_handles: Vec::new(),
@@ -1172,12 +1188,6 @@ impl RunningDataflow {
     }
 
     async fn start(&mut self, events_tx: &mpsc::Sender<Event>) -> eyre::Result<()> {
-        // answer all subscribe requests
-        let subscribe_replies = std::mem::take(&mut self.subscribe_replies);
-        for (reply_sender, subscribe_result) in subscribe_replies.into_values() {
-            let _ = reply_sender.send(DaemonReply::Result(subscribe_result));
-        }
-
         for interval in self.timers.keys().copied() {
             let events_tx = events_tx.clone();
             let dataflow_id = self.id;

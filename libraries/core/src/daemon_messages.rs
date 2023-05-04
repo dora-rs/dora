@@ -127,6 +127,7 @@ impl fmt::Debug for Data {
 type SharedMemoryId = String;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[must_use]
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
@@ -200,6 +201,7 @@ pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
     AllNodesReady {
         dataflow_id: DataflowId,
+        success: bool,
     },
     StopDataflow {
         dataflow_id: DataflowId,

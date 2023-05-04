@@ -4,7 +4,7 @@ use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
     daemon_messages::{
-        DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeDropEvent,
+        self, DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeDropEvent,
     },
 };
 use eyre::{eyre, Context};
@@ -45,10 +45,18 @@ impl DropStream {
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone())?;
 
-        channel
+        let reply = channel
             .request(&DaemonRequest::SubscribeDrop)
             .map_err(|e| eyre!(e))
             .wrap_err("failed to create subscription with dora-daemon")?;
+
+        match reply {
+            daemon_messages::DaemonReply::Result(Ok(())) => {}
+            daemon_messages::DaemonReply::Result(Err(err)) => {
+                eyre::bail!("drop subscribe failed: {err}")
+            }
+            other => eyre::bail!("unexpected drop subscribe reply: {other:?}"),
+        }
 
         let (tx, rx) = flume::bounded(0);
         let node_id_cloned = node_id.clone();
