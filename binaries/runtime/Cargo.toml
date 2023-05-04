@@ -10,7 +10,7 @@ license.workspace = true
 
 [dependencies]
 dora-node-api = { workspace = true, default-features = false }
-dora-operator-api-python = { workspace = true }
+dora-operator-api-python = { workspace = true, optional = true }
 dora-operator-api-types = { workspace = true }
 dora-core = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
@@ -41,4 +41,4 @@ default = ["tracing"]
 tracing = ["dora-tracing"]
 telemetry = ["tracing", "opentelemetry", "tracing-opentelemetry"]
 metrics = ["opentelemetry", "opentelemetry-system-metrics", "dora-metrics"]
-python = ["pyo3"]
+python = ["pyo3", "dora-operator-api-python"]
