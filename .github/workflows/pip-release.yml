@@ -3,17 +3,12 @@
 #
 #    maturin generate-ci github --zig
 #
-name: CI
+name: pip-release
 
 on:
-  push:
-    branches:
-      - main
-      - master
-    tags:
-      - "*"
-  pull_request:
-  workflow_dispatch:
+  release:
+    types:
+      - "published"
 
 permissions:
   contents: read
@@ -32,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install patchelf --upgrade
+      - name: Change Directory
+        run: |
+          cd apis/python/node
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -56,6 +54,9 @@ jobs:
         with:
           python-version: "3.7"
           architecture: ${{ matrix.target }}
+      - name: Change Directory
+        run: |
+          cd apis\python\node
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -81,6 +82,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install patchelf --upgrade
+      - name: Change Directory
+        run: |
+          cd apis/python/node
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
