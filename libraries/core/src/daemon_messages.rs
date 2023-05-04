@@ -216,7 +216,7 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
     },
     Destroy,
-    Watchdog,
+    Heartbeat,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -240,7 +240,6 @@ pub enum DaemonCoordinatorReply {
     ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
-    WatchdogAck,
     Logs(Result<Vec<u8>, String>),
 }
 

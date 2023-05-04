@@ -20,6 +20,7 @@ use inter_daemon::InterDaemonConnection;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
 use std::env::temp_dir;
+use std::time::Instant;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -28,7 +29,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tcp_utils::{tcp_receive, tcp_send};
+use tcp_utils::tcp_send;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -60,6 +61,7 @@ pub struct Daemon {
     events_tx: mpsc::Sender<Event>,
 
     coordinator_connection: Option<TcpStream>,
+    last_coordinator_heartbeat: Instant,
     inter_daemon_connections: BTreeMap<String, InterDaemonConnection>,
     machine_id: String,
 
@@ -186,6 +188,7 @@ impl Daemon {
             running: HashMap::new(),
             events_tx: dora_events_tx,
             coordinator_connection,
+            last_coordinator_heartbeat: Instant::now(),
             inter_daemon_connections: BTreeMap::new(),
             machine_id,
             exit_when_done,
@@ -196,7 +199,7 @@ impl Daemon {
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
         ))
-        .map(|_| Event::WatchdogInterval);
+        .map(|_| Event::HeartbeatInterval);
         let events = (external_events, dora_events, watchdog_interval).merge();
         daemon.run_inner(events).await
     }
@@ -230,22 +233,19 @@ impl Daemon {
                     RunStatus::Continue => {}
                     RunStatus::Exit => break,
                 },
-                Event::WatchdogInterval => {
+                Event::HeartbeatInterval => {
                     if let Some(connection) = &mut self.coordinator_connection {
                         let msg = serde_json::to_vec(&CoordinatorRequest::Event {
                             machine_id: self.machine_id.clone(),
-                            event: DaemonEvent::Watchdog,
+                            event: DaemonEvent::Heartbeat,
                         })?;
                         tcp_send(connection, &msg)
                             .await
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
-                        let reply_raw = tcp_receive(connection)
-                            .await
-                            .wrap_err("lost connection to coordinator")?;
-                        let _: dora_core::coordinator_messages::WatchdogAck =
-                            serde_json::from_slice(&reply_raw)
-                                .wrap_err("received unexpected watchdog reply from coordinator")?;
+                        if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
+                            bail!("lost connection to coordinator")
+                        }
                     }
                 }
                 Event::CtrlC => {
@@ -394,12 +394,9 @@ impl Daemon {
                     .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
                 RunStatus::Exit
             }
-            DaemonCoordinatorEvent::Watchdog => {
-                let _ = reply_tx
-                    .send(Some(DaemonCoordinatorReply::WatchdogAck))
-                    .map_err(|_| {
-                        error!("could not send WatchdogAck reply from daemon to coordinator")
-                    });
+            DaemonCoordinatorEvent::Heartbeat => {
+                self.last_coordinator_heartbeat = Instant::now();
+                let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
         };
@@ -1293,7 +1290,7 @@ pub enum Event {
     Coordinator(CoordinatorEvent),
     Daemon(InterDaemonEvent),
     Dora(DoraEvent),
-    WatchdogInterval,
+    HeartbeatInterval,
     CtrlC,
 }
 
