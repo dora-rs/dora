@@ -19,6 +19,7 @@ pub enum CoordinatorRequest {
 pub enum DaemonEvent {
     AllNodesReady {
         dataflow_id: DataflowId,
+        success: bool,
     },
     AllNodesFinished {
         dataflow_id: DataflowId,
