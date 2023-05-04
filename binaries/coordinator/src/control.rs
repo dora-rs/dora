@@ -44,7 +44,7 @@ async fn listen(
     let incoming = match result {
         Ok(incoming) => incoming,
         Err(err) => {
-            let _ = tx.blocking_send(err.into());
+            let _ = tx.send(err.into()).await;
             return;
         }
     };

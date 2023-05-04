@@ -59,10 +59,18 @@ impl EventStream {
         mut close_channel: DaemonChannel,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone())?;
-        channel
+        let reply = channel
             .request(&DaemonRequest::Subscribe)
             .map_err(|e| eyre!(e))
             .wrap_err("failed to create subscription with dora-daemon")?;
+
+        match reply {
+            daemon_messages::DaemonReply::Result(Ok(())) => {}
+            daemon_messages::DaemonReply::Result(Err(err)) => {
+                eyre::bail!("subscribe failed: {err}")
+            }
+            other => eyre::bail!("unexpected subscribe reply: {other:?}"),
+        }
 
         close_channel.register(dataflow_id, node_id.clone())?;
 
