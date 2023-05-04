@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     net::SocketAddr,
     path::PathBuf,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant},
 };
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -203,7 +203,7 @@ async fn start_inner(
                                 DaemonConnection {
                                     stream: connection,
                                     listen_socket,
-                                    last_heartbeat: SystemTime::now(),
+                                    last_heartbeat: Instant::now(),
                                 },
                             );
                             if let Some(_previous) = previous {
@@ -446,9 +446,7 @@ async fn start_inner(
             Event::DaemonHeartbeatInterval => {
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
-                    if connection.last_heartbeat.elapsed().unwrap_or_default()
-                        > Duration::from_secs(15)
-                    {
+                    if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
                         disconnected.insert(machine_id.clone());
                         continue;
                     }
@@ -483,7 +481,7 @@ async fn start_inner(
             }
             Event::DaemonHeartbeat { machine_id } => {
                 if let Some(connection) = daemon_connections.get_mut(&machine_id) {
-                    connection.last_heartbeat = SystemTime::now();
+                    connection.last_heartbeat = Instant::now();
                 }
             }
         }
@@ -497,7 +495,7 @@ async fn start_inner(
 struct DaemonConnection {
     stream: TcpStream,
     listen_socket: SocketAddr,
-    last_heartbeat: SystemTime,
+    last_heartbeat: Instant,
 }
 
 fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {

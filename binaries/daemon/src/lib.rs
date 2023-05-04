@@ -20,7 +20,7 @@ use inter_daemon::InterDaemonConnection;
 use shared_memory_server::ShmemConf;
 use std::collections::HashSet;
 use std::env::temp_dir;
-use std::time::SystemTime;
+use std::time::Instant;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -58,7 +58,7 @@ pub struct Daemon {
     events_tx: mpsc::Sender<Event>,
 
     coordinator_connection: Option<TcpStream>,
-    last_coordinator_heartbeat: SystemTime,
+    last_coordinator_heartbeat: Instant,
     inter_daemon_connections: BTreeMap<String, InterDaemonConnection>,
     machine_id: String,
 
@@ -185,7 +185,7 @@ impl Daemon {
             running: HashMap::new(),
             events_tx: dora_events_tx,
             coordinator_connection,
-            last_coordinator_heartbeat: SystemTime::now(),
+            last_coordinator_heartbeat: Instant::now(),
             inter_daemon_connections: BTreeMap::new(),
             machine_id,
             exit_when_done,
@@ -240,12 +240,7 @@ impl Daemon {
                             .await
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
-                        if self
-                            .last_coordinator_heartbeat
-                            .elapsed()
-                            .unwrap_or_default()
-                            > Duration::from_secs(20)
-                        {
+                        if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
                             bail!("lost connection to coordinator")
                         }
                     }
@@ -388,7 +383,7 @@ impl Daemon {
                 RunStatus::Exit
             }
             DaemonCoordinatorEvent::Heartbeat => {
-                self.last_coordinator_heartbeat = SystemTime::now();
+                self.last_coordinator_heartbeat = Instant::now();
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
