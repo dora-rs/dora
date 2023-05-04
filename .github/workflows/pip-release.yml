@@ -27,11 +27,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install patchelf --upgrade
-      - name: Change Directory
-        run: |
-          cd apis/python/node
       - name: Build wheels
         uses: PyO3/maturin-action@v1
+        working-directory: apis/python/node
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --zig
@@ -54,10 +52,8 @@ jobs:
         with:
           python-version: "3.7"
           architecture: ${{ matrix.target }}
-      - name: Change Directory
-        run: |
-          cd apis\python\node
       - name: Build wheels
+        working-directory: apis/python/node
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -82,10 +78,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install patchelf --upgrade
-      - name: Change Directory
-        run: |
-          cd apis/python/node
       - name: Build wheels
+        working-directory: apis/python/node
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -102,6 +96,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Build sdist
+        working-directory: apis/python/node
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
@@ -124,7 +119,7 @@ jobs:
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_PASS }}
         with:
           command: upload
           args: --skip-existing *
