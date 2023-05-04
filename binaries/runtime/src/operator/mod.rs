@@ -9,6 +9,7 @@ use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
 
 pub mod channel;
+#[cfg(feature = "python")]
 mod python;
 mod shared_lib;
 
@@ -36,7 +37,9 @@ pub fn run_operator(
                 )
             })?;
         }
+        #[allow(unused_variables)]
         OperatorSource::Python(source) => {
+            #[cfg(feature = "python")]
             python::run(
                 node_id,
                 &operator_definition.id,
@@ -51,6 +54,10 @@ pub fn run_operator(
                     operator_definition.id
                 )
             })?;
+            #[cfg(not(feature = "python"))]
+            tracing::error!(
+                "Dora runtime tried spawning Python Operator outside of python environment."
+            );
         }
         OperatorSource::Wasm(_) => {
             tracing::error!("WASM operators are not supported yet");
