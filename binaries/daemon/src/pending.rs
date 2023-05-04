@@ -122,8 +122,11 @@ impl PendingNodes {
             }
         } else {
             Err(format!(
-                "Nodes failed before subscribing: {:?}",
-                self.exited_before_subscribe
+                "Some nodes exited before subscribing to dora: {:?}\n\n\
+                This is typically happens when an initialization error occurs
+                in the node or operator. To check the output of the failed
+                nodes, run `dora logs {} <node_id>`.",
+                self.exited_before_subscribe, self.dataflow_id
             ))
         };
         // answer all subscribe requests
