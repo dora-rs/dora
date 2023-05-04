@@ -36,9 +36,6 @@ async fn main() -> eyre::Result<()> {
 }
 
 async fn run() -> eyre::Result<()> {
-    #[cfg(feature = "tracing")]
-    set_up_tracing("dora-daemon").wrap_err("failed to set up tracing subscriber")?;
-
     let Args {
         run_dataflow,
         machine_id,
@@ -49,6 +46,9 @@ async fn run() -> eyre::Result<()> {
     if run_dora_runtime {
         return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
     }
+
+    #[cfg(feature = "tracing")]
+    set_up_tracing("dora-daemon").wrap_err("failed to set up tracing subscriber")?;
 
     let ctrl_c_events = {
         let (ctrl_c_tx, ctrl_c_rx) = mpsc::channel(1);
