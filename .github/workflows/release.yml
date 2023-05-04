@@ -63,6 +63,7 @@ jobs:
           # Publish binaries crates
           cargo publish -p dora-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-coordinator --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo publish -p dora-runtime --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-daemon --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: "Create Archive (Unix)"
@@ -116,6 +117,7 @@ jobs:
           cd ..
 
       - name: "Upload Linux ARM64 asset"
+        if: runner.os == 'Linux'
         uses: actions/upload-release-asset@v1.0.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
