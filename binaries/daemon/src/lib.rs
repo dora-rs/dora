@@ -518,7 +518,7 @@ impl Daemon {
                 dataflow.pending_nodes.insert(node.id.clone());
 
                 let node_id = node.id.clone();
-                spawn::spawn_node(
+                match spawn::spawn_node(
                     dataflow_id,
                     &working_dir,
                     node,
@@ -526,8 +526,19 @@ impl Daemon {
                     daemon_communication_config,
                 )
                 .await
-                .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))?;
-                dataflow.running_nodes.insert(node_id);
+                .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
+                {
+                    Ok(()) => {
+                        dataflow.running_nodes.insert(node_id);
+                    }
+                    Err(err) => {
+                        tracing::error!("{err:?}");
+                        dataflow
+                            .pending_nodes
+                            .handle_node_stop(&node_id, &mut self.coordinator_connection)
+                            .await?;
+                    }
+                }
             } else {
                 dataflow.pending_nodes.set_external_nodes(true);
             }
