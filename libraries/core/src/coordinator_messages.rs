@@ -19,12 +19,13 @@ pub enum CoordinatorRequest {
 pub enum DaemonEvent {
     AllNodesReady {
         dataflow_id: DataflowId,
+        success: bool,
     },
     AllNodesFinished {
         dataflow_id: DataflowId,
         result: Result<(), String>,
     },
-    Watchdog,
+    Heartbeat,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -41,6 +42,3 @@ impl RegisterResult {
         }
     }
 }
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct WatchdogAck;

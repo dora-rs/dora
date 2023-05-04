@@ -127,6 +127,7 @@ impl fmt::Debug for Data {
 type SharedMemoryId = String;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[must_use]
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
@@ -200,6 +201,7 @@ pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
     AllNodesReady {
         dataflow_id: DataflowId,
+        success: bool,
     },
     StopDataflow {
         dataflow_id: DataflowId,
@@ -214,7 +216,7 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
     },
     Destroy,
-    Watchdog,
+    Heartbeat,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -238,7 +240,6 @@ pub enum DaemonCoordinatorReply {
     ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),
     DestroyResult(Result<(), String>),
-    WatchdogAck,
     Logs(Result<Vec<u8>, String>),
 }
 
