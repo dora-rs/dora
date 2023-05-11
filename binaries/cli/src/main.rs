@@ -44,9 +44,7 @@ enum Command {
         open: bool,
     },
     /// Run build commands provided in the given dataflow.
-    Build {
-        dataflow: PathBuf,
-    },
+    Build { dataflow: PathBuf },
     /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
@@ -88,10 +86,8 @@ enum Command {
     List,
     // Planned for future releases:
     // Dashboard,
-    Logs {
-        dataflow: String,
-        node: String,
-    },
+    /// Show logs of a given dataflow and node.
+    Logs { dataflow: String, node: String },
     // Metrics,
     // Stats,
     // Get,
