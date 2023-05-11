@@ -6,6 +6,17 @@ use eyre::Context;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+/// The custom node API lets you integrate `dora` into your application.
+/// It allows you to retrieve input and send output in any fashion you want.
+///
+/// Use with:
+///
+/// ```python
+/// from dora import Node
+///
+/// node = Node()
+/// ```
+///
 #[pyclass]
 pub struct Node {
     events: EventStream,
@@ -21,6 +32,19 @@ impl Node {
         Ok(Node { events, node })
     }
 
+    /// `.next()` gives you the next input that the node has received.
+    /// It blocks until the next input becomes available.
+    /// It will return `None` when all senders has been dropped.
+    ///
+    /// ```python
+    /// input_id, value, metadata = node.next()
+    /// ```
+    ///
+    /// You can also iterate over the node in a loop
+    ///
+    /// ```python
+    /// for input_id, value, metadata in node:
+    /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
         self.__next__(py)
@@ -35,6 +59,19 @@ impl Node {
         slf
     }
 
+    /// `send_output` send data from the node.
+    ///
+    /// ```python
+    /// Args:
+    ///    output_id: str,
+    ///    data: Bytes|Arrow,
+    ///    metadata: Option[Dict],
+    /// ```
+    ///
+    /// ```python
+    /// node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
+    /// ```
+    ///
     pub fn send_output(
         &mut self,
         output_id: String,
@@ -69,6 +106,7 @@ impl Node {
     }
 }
 
+/// Start a runtime for Operators
 #[pyfunction]
 fn start_runtime() -> eyre::Result<()> {
     dora_runtime::main().wrap_err("Dora Runtime raised an error.")
