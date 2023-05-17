@@ -36,8 +36,10 @@ pub struct DoraNode {
 impl DoraNode {
     /// Initiate a node from environment variables set by `dora-coordinator`
     ///
-    /// ```rust
-    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
     /// ```
     ///
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
@@ -83,14 +85,24 @@ impl DoraNode {
     /// Send data from the node to the other nodes.
     /// We take a closure as an input to enable zero copy on send.
     ///
-    /// ```rust
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, MetadataParameters};
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
+    ///
+    /// let output = DataId::from("output_id".to_owned());
+    ///
+    /// let data: &[u8] = &[0, 1, 2, 3];
+    /// let parameters = MetadataParameters::default();
+    ///
     /// node.send_output(
-    ///    &data_id,
-    ///    metadata.parameters,
+    ///    output,
+    ///    parameters,
     ///    data.len(),
     ///    |out| {
     ///         out.copy_from_slice(data);
-    ///     })?;
+    ///     }).expect("Could not send output");
     /// ```
     ///
     pub fn send_output<F>(
