@@ -1,3 +1,20 @@
+//! The operator API is a framework to implement dora operators.
+//! The implemented operator will be managed by `dora`.
+//!
+//! This framework enable us to make optimisation and provide advanced features.
+//! It is the recommended way of using `dora`.
+//!
+//! An operator requires to be registered and implement the `DoraOperator` trait.
+//! It is composed of an `on_event` method that defines the behaviour
+//! of the operator when there is an event such as receiving an input for example.
+//!
+//! Try it out with:
+//!
+//! ```bash
+//! dora new op --kind operator
+//! ```
+//!
+
 #![warn(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
 
