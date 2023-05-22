@@ -1370,7 +1370,7 @@ dependencies = [
 
 [[package]]
 name = "dora-examples"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "clap 4.3.0",
  "dora-coordinator",
@@ -1379,10 +1379,7 @@ dependencies = [
  "dunce",
  "eyre",
  "futures",
- "ntapi",
- "proc-macro-error-attr",
  "serde_yaml 0.8.26",
- "sysinfo 0.28.4",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -3148,7 +3145,7 @@ checksum = "d425a3381784debcefe6c609c031b8f99ff1e56cb11ee783016970999f30c565"
 dependencies = [
  "indexmap",
  "opentelemetry 0.17.0",
- "sysinfo 0.26.9",
+ "sysinfo",
 ]
 
 [[package]]
@@ -4552,21 +4549,6 @@ name = "sysinfo"
 version = "0.26.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c18a6156d1f27a9592ee18c1a846ca8dd5c258b7179fc193ae87c74ebb666f5"
-dependencies = [
- "cfg-if",
- "core-foundation-sys",
- "libc",
- "ntapi",
- "once_cell",
- "rayon",
- "winapi",
-]
-
-[[package]]
-name = "sysinfo"
-version = "0.28.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4c2f3ca6693feb29a89724516f016488e9aafc7f37264f898593ee4b942f31b"
 dependencies = [
  "cfg-if",
  "core-foundation-sys",

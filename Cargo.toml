@@ -51,7 +51,7 @@ dora-coordinator = { version = "0.2.2", path = "binaries/coordinator" }
 
 [package]
 name = "dora-examples"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
