@@ -26,7 +26,6 @@ If applicable, add screenshots to help explain your problem.
 **Environments (please complete the following information):**
  - System info: [use `uname --all` on Linux]
  - Dora version: [use `dora --version` and `pip show dora-rs`]
- - Dora branch: [use `git branch -vv`]
 
 **Additional context**
 Add any other context about the problem here.
