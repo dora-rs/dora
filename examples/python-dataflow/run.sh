@@ -12,5 +12,4 @@ cd ../../../examples/python-dataflow
 # Dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
-cargo run -p dora-cli up
 cargo run -p dora-daemon -- --run-dataflow dataflow_without_webcam.yml
