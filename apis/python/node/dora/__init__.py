@@ -1,9 +1,21 @@
+""" 
+# dora-rs
+
+This is the dora python client for interacting with dora dataflow.
+
+You can install it via:
+
+```bash
+pip install dora-rs
+```
+"""
+
 from enum import Enum
 
 from .dora import *
 
 __author__ = "Dora-rs Authors"
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 
 class DoraStatus(Enum):

@@ -166,7 +166,7 @@ fn check_python_runtime() -> eyre::Result<()> {
         &format!(
             "
 import dora;
-assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}. {reinstall_command}'
+assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}, but current version is %s. {reinstall_command}' % (dora.__version__)
         "
         ),
     ]);

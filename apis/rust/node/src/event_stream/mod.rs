@@ -85,6 +85,7 @@ impl EventStream {
         })
     }
 
+    /// wait for the next event on the events stream.
     pub fn recv(&mut self) -> Option<Event> {
         let event = self.receiver.recv();
         self.recv_common(event)
