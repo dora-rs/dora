@@ -303,6 +303,8 @@ async fn start_inner(
                             name,
                             local_working_dir,
                         } => {
+                            let name = name.or_else(|| names::Generator::default().next());
+
                             let inner = async {
                                 if let Some(name) = name.as_deref() {
                                     // check that name is unique
