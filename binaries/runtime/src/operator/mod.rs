@@ -67,6 +67,7 @@ pub fn run_operator(
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum OperatorEvent {
     AllocateOutputSample {
         len: usize,
