@@ -24,8 +24,8 @@ A clear and concise description of what you expected to happen.
 If applicable, add screenshots to help explain your problem.
 
 **Environments (please complete the following information):**
- - System info: [use `uname --all` on LInux]
- - Dora version [use `dora --version` and `pip show dora-rs`]
+ - System info: [use `uname --all` on Linux]
+ - Dora version: [use `dora --version` and `pip show dora-rs`]
 
 **Additional context**
 Add any other context about the problem here.
