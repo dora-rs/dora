@@ -57,10 +57,19 @@ pub enum ControlRequest {
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
-    DataflowStarted { uuid: Uuid },
-    DataflowReloaded { uuid: Uuid },
-    DataflowStopped { uuid: Uuid },
-    DataflowList { dataflows: Vec<DataflowId> },
+    DataflowStarted {
+        uuid: Uuid,
+    },
+    DataflowReloaded {
+        uuid: Uuid,
+    },
+    DataflowStopped {
+        uuid: Uuid,
+        result: Result<(), String>,
+    },
+    DataflowList {
+        dataflows: Vec<DataflowId>,
+    },
     DestroyOk,
     DaemonConnected(bool),
     ConnectedMachines(BTreeSet<String>),
