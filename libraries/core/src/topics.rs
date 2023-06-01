@@ -53,7 +53,7 @@ pub enum ControlRequest {
     ConnectedMachines,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
@@ -67,6 +67,7 @@ pub enum ControlRequestReply {
         uuid: Uuid,
         result: Result<(), String>,
     },
+
     DataflowList {
         dataflows: Vec<DataflowId>,
     },
