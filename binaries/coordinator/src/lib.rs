@@ -80,11 +80,10 @@ pub async fn start(
 }
 
 // Resolve the dataflow name.
-// Search for archived dataflows if they are provided.
 fn resolve_name(
     name: String,
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: Option<&HashMap<Uuid, ArchivedDataflow>>,
+    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
 ) -> eyre::Result<Uuid> {
     let uuids: Vec<_> = running_dataflows
         .iter()
@@ -92,16 +91,12 @@ fn resolve_name(
         .map(|(k, _)| k)
         .copied()
         .collect();
-    let archived_uuids: Vec<_> = if let Some(archived_dataflows) = archived_dataflows {
-        archived_dataflows
-            .iter()
-            .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
-            .map(|(k, _)| k)
-            .copied()
-            .collect()
-    } else {
-        vec![]
-    };
+    let archived_uuids: Vec<_> = archived_dataflows
+        .iter()
+        .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+        .map(|(k, _)| k)
+        .copied()
+        .collect();
 
     if uuids.is_empty() {
         if archived_uuids.is_empty() {
@@ -287,7 +282,10 @@ async fn start_inner(
                                 let finished_dataflow = entry.remove();
                                 let reply = ControlRequestReply::DataflowStopped {
                                     uuid,
-                                    result: dataflow_result(&dataflow_results, uuid),
+                                    result: dataflow_results
+                                        .get(&uuid)
+                                        .map(|r| dataflow_result(r, uuid))
+                                        .unwrap_or(Ok(())),
                                 };
                                 for sender in finished_dataflow.reply_senders {
                                     let _ = sender.send(Ok(reply.clone()));
@@ -347,7 +345,10 @@ async fn start_inner(
                                 },
                                 None => ControlRequestReply::DataflowStopped {
                                     uuid: dataflow_uuid,
-                                    result: dataflow_result(&dataflow_results, dataflow_uuid),
+                                    result: dataflow_results
+                                        .get(&dataflow_uuid)
+                                        .map(|r| dataflow_result(r, dataflow_uuid))
+                                        .unwrap_or(Ok(())),
                                 },
                             };
                             let _ = reply_sender.send(Ok(status));
@@ -379,6 +380,7 @@ async fn start_inner(
                         ControlRequest::Stop { dataflow_uuid } => {
                             stop_dataflow_by_uuid(
                                 &mut running_dataflows,
+                                &dataflow_results,
                                 dataflow_uuid,
                                 &mut daemon_connections,
                                 reply_sender,
@@ -386,10 +388,11 @@ async fn start_inner(
                             .await?;
                         }
                         ControlRequest::StopByName { name } => {
-                            match resolve_name(name, &running_dataflows, None) {
+                            match resolve_name(name, &running_dataflows, &archived_dataflows) {
                                 Ok(uuid) => {
                                     stop_dataflow_by_uuid(
                                         &mut running_dataflows,
+                                        &dataflow_results,
                                         uuid,
                                         &mut daemon_connections,
                                         reply_sender,
@@ -405,7 +408,7 @@ async fn start_inner(
                             let dataflow_uuid = if let Some(uuid) = uuid {
                                 uuid
                             } else if let Some(name) = name {
-                                resolve_name(name, &running_dataflows, Some(&archived_dataflows))?
+                                resolve_name(name, &running_dataflows, &archived_dataflows)?
                             } else {
                                 bail!("No uuid")
                             };
@@ -515,12 +518,21 @@ async fn start_inner(
 
 async fn stop_dataflow_by_uuid(
     running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
+    dataflow_results: &HashMap<Uuid, BTreeMap<String, Result<(), String>>>,
     dataflow_uuid: Uuid,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     reply_sender: tokio::sync::oneshot::Sender<Result<ControlRequestReply, eyre::ErrReport>>,
 ) -> Result<(), eyre::ErrReport> {
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
-        bail!("No running dataflow found with UUID `{dataflow_uuid}`")
+        if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+            let reply = ControlRequestReply::DataflowStopped {
+                uuid: dataflow_uuid,
+                result: dataflow_result(result, dataflow_uuid),
+            };
+            let _ = reply_sender.send(Ok(reply));
+            return Ok(());
+        }
+        bail!("no known dataflow found with UUID `{dataflow_uuid}`")
     };
     let stop = async {
         stop_dataflow(dataflow, dataflow_uuid, daemon_connections).await?;
@@ -538,11 +550,9 @@ async fn stop_dataflow_by_uuid(
 }
 
 fn dataflow_result(
-    dataflow_results: &HashMap<Uuid, BTreeMap<String, Result<(), String>>>,
+    results: &BTreeMap<String, Result<(), String>>,
     dataflow_uuid: Uuid,
 ) -> Result<(), String> {
-    let Some(results) = dataflow_results.get(&dataflow_uuid) else { return Ok(()) };
-
     let mut errors = Vec::new();
     for (machine, result) in results {
         if let Err(err) = result {
