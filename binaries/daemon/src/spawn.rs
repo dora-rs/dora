@@ -262,7 +262,7 @@ pub async fn spawn_node(
                 .write_all(message.as_bytes())
                 .await
                 .map_err(|err| error!("Could not log {message} to file due to {err}"));
-            let formatted: String = message.lines().map(|l| format!("  {l}")).collect();
+            let formatted: String = message.lines().map(|l| format!("      {l}\n")).collect();
             debug!("{dataflow_id}/{} logged:\n{formatted}", node.id.clone());
             // Make sure that all data has been synced to disk.
             let _ = file
