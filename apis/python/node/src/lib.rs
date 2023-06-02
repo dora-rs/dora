@@ -83,6 +83,10 @@ impl Node {
             self.send_output_slice(output_id, data.len(), data, metadata)
         })
     }
+
+    pub fn dataflow_descriptor(&self, py: Python) -> pythonize::Result<PyObject> {
+        pythonize::pythonize(py, self.node.dataflow_descriptor())
+    }
 }
 
 impl Node {
