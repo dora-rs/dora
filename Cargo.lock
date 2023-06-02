@@ -1539,6 +1539,7 @@ dependencies = [
  "opentelemetry 0.18.0",
  "opentelemetry-system-metrics",
  "pyo3",
+ "pythonize",
  "serde_yaml 0.8.26",
  "tokio",
  "tokio-stream",
