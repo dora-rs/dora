@@ -1,6 +1,6 @@
 use dora_core::{
     config::{DataId, NodeId},
-    descriptor::{OperatorDefinition, OperatorSource},
+    descriptor::{Descriptor, OperatorDefinition, OperatorSource},
     message::MetadataParameters,
 };
 use dora_node_api::{DataSample, Event};
@@ -19,6 +19,7 @@ pub fn run_operator(
     incoming_events: flume::Receiver<Event>,
     events_tx: Sender<OperatorEvent>,
     init_done: oneshot::Sender<Result<()>>,
+    dataflow_descriptor: &Descriptor,
 ) -> eyre::Result<()> {
     match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
@@ -47,6 +48,7 @@ pub fn run_operator(
                 events_tx,
                 incoming_events,
                 init_done,
+                dataflow_descriptor,
             )
             .wrap_err_with(|| {
                 format!(

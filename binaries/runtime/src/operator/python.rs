@@ -3,7 +3,7 @@
 use super::{OperatorEvent, StopReason};
 use dora_core::{
     config::{NodeId, OperatorId},
-    descriptor::source_is_url,
+    descriptor::{source_is_url, Descriptor},
 };
 use dora_download::download_file;
 use dora_node_api::Event;
@@ -39,6 +39,7 @@ pub fn run(
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
+    dataflow_descriptor: &Descriptor,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
         let target_path = Path::new("build")
@@ -98,6 +99,11 @@ pub fn run(
         let operator = py
             .eval("Operator()", None, Some(locals))
             .map_err(traceback)?;
+        operator.setattr(
+            "dataflow_descriptor",
+            pythonize::pythonize(py, dataflow_descriptor)?,
+        )?;
+
         Result::<_, eyre::Report>::Ok(Py::from(operator))
     };
 
