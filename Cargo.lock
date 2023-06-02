@@ -1463,6 +1463,7 @@ dependencies = [
  "eyre",
  "flume",
  "pyo3",
+ "pythonize",
  "serde_yaml 0.8.26",
 ]
 
@@ -3692,6 +3693,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "pythonize"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a0e1bbcd2a3856284bf4f4ef09ccb1157e9467847792754556f153ea3fe6b42"
+dependencies = [
+ "pyo3",
+ "serde",
 ]
 
 [[package]]
