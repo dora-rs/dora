@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
@@ -6,6 +6,7 @@ use dora_core::{
     daemon_messages::{
         self, DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeDropEvent,
     },
+    message::uhlc,
 };
 use eyre::{eyre, Context};
 use flume::RecvTimeoutError;
@@ -16,11 +17,12 @@ pub struct DropStream {
 }
 
 impl DropStream {
-    #[tracing::instrument(level = "trace")]
+    #[tracing::instrument(level = "trace", skip(hlc))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
+        hlc: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -35,13 +37,14 @@ impl DropStream {
                 .wrap_err_with(|| format!("failed to connect drop stream for node `{node_id}`"))?,
         };
 
-        Self::init_on_channel(dataflow_id, node_id, channel)
+        Self::init_on_channel(dataflow_id, node_id, channel, hlc)
     }
 
     pub fn init_on_channel(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         mut channel: DaemonChannel,
+        hlc: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone())?;
 
@@ -61,7 +64,7 @@ impl DropStream {
         let (tx, rx) = flume::bounded(0);
         let node_id_cloned = node_id.clone();
 
-        let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel));
+        let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel, hlc));
 
         Ok(Self {
             receiver: rx,
@@ -78,16 +81,27 @@ impl std::ops::Deref for DropStream {
     }
 }
 
-#[tracing::instrument(skip(tx, channel))]
-fn drop_stream_loop(node_id: NodeId, tx: flume::Sender<DropToken>, mut channel: DaemonChannel) {
+#[tracing::instrument(skip(tx, channel, hlc))]
+fn drop_stream_loop(
+    node_id: NodeId,
+    tx: flume::Sender<DropToken>,
+    mut channel: DaemonChannel,
+    hlc: Arc<uhlc::HLC>,
+) {
     'outer: loop {
         let daemon_request = DaemonRequest::NextFinishedDropTokens;
         let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextDropEvents(events)) if events.is_empty() => {
-                tracing::trace!("drop stream closed for node `{node_id}`");
-                break;
+            Ok(DaemonReply::NextDropEvents(events, timestamp)) => {
+                if let Err(err) = hlc.update_with_timestamp(&timestamp) {
+                    tracing::warn!("failed to update HLC: {err}");
+                }
+                if events.is_empty() {
+                    tracing::trace!("drop stream closed for node `{node_id}`");
+                    break;
+                } else {
+                    events
+                }
             }
-            Ok(DaemonReply::NextDropEvents(events)) => events,
             Ok(other) => {
                 let err = eyre!("unexpected drop reply: {other:?}");
                 tracing::warn!("{err:?}");

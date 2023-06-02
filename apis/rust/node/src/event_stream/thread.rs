@@ -1,10 +1,14 @@
 use dora_core::{
     config::NodeId,
     daemon_messages::{DaemonReply, DaemonRequest, DropToken, NodeEvent},
+    message::uhlc,
 };
 use eyre::{eyre, Context};
 use flume::RecvTimeoutError;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::daemon_connection::DaemonChannel;
 
@@ -12,9 +16,10 @@ pub fn init(
     node_id: NodeId,
     tx: flume::Sender<EventItem>,
     channel: DaemonChannel,
+    hlc: Arc<uhlc::HLC>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel));
+    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, hlc));
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -68,8 +73,13 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel))]
-fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel: DaemonChannel) {
+#[tracing::instrument(skip(tx, channel, hlc))]
+fn event_stream_loop(
+    node_id: NodeId,
+    tx: flume::Sender<EventItem>,
+    mut channel: DaemonChannel,
+    hlc: Arc<uhlc::HLC>,
+) {
     let mut tx = Some(tx);
     let mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)> = Vec::new();
     let mut drop_tokens = Vec::new();
@@ -83,11 +93,17 @@ fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel:
             drop_tokens: std::mem::take(&mut drop_tokens),
         };
         let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextEvents(events)) if events.is_empty() => {
-                tracing::trace!("event stream closed for node `{node_id}`");
-                break Ok(());
+            Ok(DaemonReply::NextEvents(events, timestamp)) => {
+                if let Err(err) = hlc.update_with_timestamp(&timestamp) {
+                    tracing::warn!("failed to update HLC: {err}");
+                }
+                if events.is_empty() {
+                    tracing::trace!("event stream closed for node `{node_id}`");
+                    break Ok(());
+                } else {
+                    events
+                }
             }
-            Ok(DaemonReply::NextEvents(events)) => events,
             Ok(other) => {
                 let err = eyre!("unexpected control reply: {other:?}");
                 tracing::warn!("{err:?}");

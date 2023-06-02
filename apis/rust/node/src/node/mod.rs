@@ -12,6 +12,7 @@ use shared_memory::{Shmem, ShmemConf};
 use std::{
     collections::{HashMap, VecDeque},
     ops::{Deref, DerefMut},
+    sync::Arc,
     time::Duration,
 };
 
@@ -27,7 +28,7 @@ pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
     control_channel: ControlChannel,
-    hlc: uhlc::HLC,
+    hlc: Arc<uhlc::HLC>,
 
     sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
     drop_stream: DropStream,
@@ -67,10 +68,14 @@ impl DoraNode {
             dataflow_descriptor,
         } = node_config;
 
-        let event_stream = EventStream::init(dataflow_id, &node_id, &daemon_communication)
-            .wrap_err("failed to init event stream")?;
-        let drop_stream = DropStream::init(dataflow_id, &node_id, &daemon_communication)
-            .wrap_err("failed to init drop stream")?;
+        let hlc = Arc::new(uhlc::HLC::default());
+
+        let event_stream =
+            EventStream::init(dataflow_id, &node_id, &daemon_communication, hlc.clone())
+                .wrap_err("failed to init event stream")?;
+        let drop_stream =
+            DropStream::init(dataflow_id, &node_id, &daemon_communication, hlc.clone())
+                .wrap_err("failed to init drop stream")?;
         let control_channel = ControlChannel::init(dataflow_id, &node_id, &daemon_communication)
             .wrap_err("failed to init control channel")?;
 
@@ -78,7 +83,7 @@ impl DoraNode {
             id: node_id,
             node_config: run_config,
             control_channel,
-            hlc: uhlc::HLC::default(),
+            hlc,
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
