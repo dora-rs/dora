@@ -4,6 +4,7 @@ use self::{control_channel::ControlChannel, drop_stream::DropStream};
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     daemon_messages::{Data, DropToken, NodeConfig},
+    descriptor::Descriptor,
     message::{uhlc, Metadata, MetadataParameters},
 };
 use eyre::{bail, WrapErr};
@@ -31,6 +32,8 @@ pub struct DoraNode {
     sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
     drop_stream: DropStream,
     cache: VecDeque<ShmemHandle>,
+
+    dataflow_descriptor: Descriptor,
 }
 
 impl DoraNode {
@@ -61,6 +64,7 @@ impl DoraNode {
             node_id,
             run_config,
             daemon_communication,
+            dataflow_descriptor,
         } = node_config;
 
         let event_stream = EventStream::init(dataflow_id, &node_id, &daemon_communication)
@@ -78,6 +82,8 @@ impl DoraNode {
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
+
+            dataflow_descriptor,
         };
         Ok((node, event_stream))
     }
@@ -238,6 +244,10 @@ impl DoraNode {
         while self.cache.len() > MAX_CACHE_SIZE {
             self.cache.pop_front();
         }
+    }
+
+    pub fn dataflow_descriptor(&self) -> &Descriptor {
+        &self.dataflow_descriptor
     }
 }
 
