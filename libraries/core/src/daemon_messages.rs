@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::{
-    config::{CommunicationConfig, DataId, NodeId, NodeRunConfig, OperatorId},
-    descriptor::{OperatorDefinition, ResolvedNode},
+    config::{DataId, NodeId, NodeRunConfig, OperatorId},
+    descriptor::{Descriptor, OperatorDefinition, ResolvedNode},
 };
 use dora_message::Metadata;
 use uuid::Uuid;
@@ -18,6 +18,7 @@ pub struct NodeConfig {
     pub node_id: NodeId,
     pub run_config: NodeRunConfig,
     pub daemon_communication: DaemonCommunication,
+    pub dataflow_descriptor: Descriptor,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -250,6 +251,6 @@ pub struct SpawnDataflowNodes {
     pub dataflow_id: DataflowId,
     pub working_dir: PathBuf,
     pub nodes: Vec<ResolvedNode>,
-    pub communication: CommunicationConfig,
     pub machine_listen_ports: BTreeMap<String, SocketAddr>,
+    pub dataflow_descriptor: Descriptor,
 }
