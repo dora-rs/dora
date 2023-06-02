@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 pub use event::{Data, Event, MappedInputData};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
@@ -5,6 +7,7 @@ use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
     daemon_messages::{self, DaemonCommunication, DaemonRequest, DataflowId, NodeEvent},
+    message::uhlc,
 };
 use eyre::{eyre, Context};
 
@@ -19,11 +22,12 @@ pub struct EventStream {
 }
 
 impl EventStream {
-    #[tracing::instrument(level = "trace")]
+    #[tracing::instrument(level = "trace", skip(hlc))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
+        hlc: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -49,7 +53,7 @@ impl EventStream {
                 })?,
         };
 
-        Self::init_on_channel(dataflow_id, node_id, channel, close_channel)
+        Self::init_on_channel(dataflow_id, node_id, channel, close_channel, hlc)
     }
 
     pub(crate) fn init_on_channel(
@@ -57,6 +61,7 @@ impl EventStream {
         node_id: &NodeId,
         mut channel: DaemonChannel,
         mut close_channel: DaemonChannel,
+        hlc: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone())?;
         let reply = channel
@@ -75,7 +80,7 @@ impl EventStream {
         close_channel.register(dataflow_id, node_id.clone())?;
 
         let (tx, rx) = flume::bounded(0);
-        let thread_handle = thread::init(node_id.clone(), tx, channel)?;
+        let thread_handle = thread::init(node_id.clone(), tx, channel, hlc)?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -140,6 +145,7 @@ impl EventStream {
                     Event::Error(err.wrap_err("internal error").to_string())
                 }
             },
+
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
             }
