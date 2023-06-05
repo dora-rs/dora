@@ -1,5 +1,5 @@
 use coordinator::CoordinatorEvent;
-use dora_core::config::{Input, LocalCommunicationConfig, OperatorId};
+use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{Data, InterDaemonEvent};
 use dora_core::message::uhlc::HLC;
@@ -116,8 +116,8 @@ impl Daemon {
             dataflow_id: Uuid::new_v4(),
             working_dir,
             nodes,
-            communication: descriptor.communication,
             machine_listen_ports: BTreeMap::new(),
+            dataflow_descriptor: descriptor,
         };
 
         let exit_when_done = spawn_command
@@ -271,10 +271,10 @@ impl Daemon {
                 dataflow_id,
                 working_dir,
                 nodes,
-                communication,
                 machine_listen_ports,
+                dataflow_descriptor,
             }) => {
-                match communication.remote {
+                match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
                 for (machine_id, socket) in machine_listen_ports {
@@ -291,7 +291,7 @@ impl Daemon {
                 }
 
                 let result = self
-                    .spawn_dataflow(dataflow_id, working_dir, nodes, communication.local)
+                    .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor)
                     .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
@@ -466,7 +466,7 @@ impl Daemon {
         dataflow_id: uuid::Uuid,
         working_dir: PathBuf,
         nodes: Vec<ResolvedNode>,
-        daemon_communication_config: LocalCommunicationConfig,
+        dataflow_descriptor: Descriptor,
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
@@ -522,7 +522,7 @@ impl Daemon {
                     &working_dir,
                     node,
                     self.events_tx.clone(),
-                    daemon_communication_config,
+                    dataflow_descriptor.clone(),
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))

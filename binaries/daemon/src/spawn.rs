@@ -3,9 +3,11 @@ use crate::{
     runtime_node_outputs, DoraEvent, Event, NodeExitStatus,
 };
 use dora_core::{
-    config::{LocalCommunicationConfig, NodeRunConfig},
+    config::NodeRunConfig,
     daemon_messages::{DataflowId, NodeConfig, RuntimeConfig},
-    descriptor::{resolve_path, source_is_url, OperatorSource, ResolvedNode, SHELL_SOURCE},
+    descriptor::{
+        resolve_path, source_is_url, Descriptor, OperatorSource, ResolvedNode, SHELL_SOURCE,
+    },
 };
 use dora_download::download_file;
 use eyre::WrapErr;
@@ -26,7 +28,7 @@ pub async fn spawn_node(
     working_dir: &Path,
     node: ResolvedNode,
     daemon_tx: mpsc::Sender<Event>,
-    config: LocalCommunicationConfig,
+    dataflow_descriptor: Descriptor,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -35,8 +37,14 @@ pub async fn spawn_node(
         .into_iter()
         .map(|(k, v)| (k, v.queue_size.unwrap_or(10)))
         .collect();
-    let daemon_communication =
-        spawn_listener_loop(&dataflow_id, &node_id, &daemon_tx, config, queue_sizes).await?;
+    let daemon_communication = spawn_listener_loop(
+        &dataflow_id,
+        &node_id,
+        &daemon_tx,
+        dataflow_descriptor.communication.local,
+        queue_sizes,
+    )
+    .await?;
 
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
@@ -84,6 +92,7 @@ pub async fn spawn_node(
                 node_id: node_id.clone(),
                 run_config: n.run_config.clone(),
                 daemon_communication,
+                dataflow_descriptor,
             };
 
             command.env(
@@ -149,6 +158,7 @@ pub async fn spawn_node(
                         outputs: runtime_node_outputs(&n),
                     },
                     daemon_communication,
+                    dataflow_descriptor,
                 },
                 operators: n.operators,
             };

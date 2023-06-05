@@ -40,8 +40,8 @@ pub(super) async fn spawn_dataflow(
         dataflow_id: uuid,
         working_dir,
         nodes: nodes.clone(),
-        communication: dataflow.communication,
         machine_listen_ports,
+        dataflow_descriptor: dataflow,
     };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
 
