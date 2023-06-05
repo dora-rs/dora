@@ -128,9 +128,11 @@ pub fn attach_dataflow(
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
             ControlRequestReply::DataflowStarted { uuid: _ } => (),
-            ControlRequestReply::DataflowStopped { uuid } => {
+            ControlRequestReply::DataflowStopped { uuid, result } => {
                 info!("dataflow {uuid} stopped");
-                break;
+                break result
+                    .map_err(|err| eyre::eyre!(err))
+                    .wrap_err("dataflow failed");
             }
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
@@ -138,6 +140,4 @@ pub fn attach_dataflow(
             other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };
     }
-
-    Ok(())
 }

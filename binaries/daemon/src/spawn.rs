@@ -184,17 +184,47 @@ pub async fn spawn_node(
         File::create(&log_dir.join(log::log_path(&dataflow_id, &node_id).with_extension("txt")))
             .await
             .expect("Failed to create log file");
-    let mut stdout_lines =
-        (tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"))).lines();
+    let mut child_stdout =
+        tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"));
 
     let stdout_tx = tx.clone();
 
     // Stdout listener stream
     tokio::spawn(async move {
-        while let Ok(Some(line)) = stdout_lines.next_line().await {
-            let sent = stdout_tx.send(line.clone()).await;
+        let mut buffer = String::new();
+        let mut finished = false;
+        while !finished {
+            finished = match child_stdout
+                .read_line(&mut buffer)
+                .await
+                .wrap_err("failed to read stdout line from spawned node")
+            {
+                Ok(0) => true,
+                Ok(_) => false,
+                Err(err) => {
+                    tracing::warn!("{err:?}");
+                    true
+                }
+            };
+
+            if buffer.contains("TRACE")
+                || buffer.contains("INFO")
+                || buffer.contains("DEBUG")
+                || buffer.contains("WARN")
+                || buffer.contains("ERROR")
+            {
+                // tracing output, potentially multi-line -> keep reading following lines
+                // until double-newline
+                if !buffer.ends_with("\n\n") && !finished {
+                    continue;
+                }
+            }
+
+            // send the buffered lines
+            let lines = std::mem::take(&mut buffer);
+            let sent = stdout_tx.send(lines.clone()).await;
             if sent.is_err() {
-                println!("Could not log: {line}");
+                println!("Could not log: {lines}");
             }
         }
     });
@@ -227,16 +257,13 @@ pub async fn spawn_node(
 
     // Log to file stream.
     tokio::spawn(async move {
-        while let Some(line) = rx.recv().await {
+        while let Some(message) = rx.recv().await {
             let _ = file
-                .write_all(line.as_bytes())
+                .write_all(message.as_bytes())
                 .await
-                .map_err(|err| error!("Could not log {line} to file due to {err}"));
-            let _ = file
-                .write(b"\n")
-                .await
-                .map_err(|err| error!("Could not add newline to log file due to {err}"));
-            debug!("{dataflow_id}/{} logged {line}", node.id.clone());
+                .map_err(|err| error!("Could not log {message} to file due to {err}"));
+            let formatted: String = message.lines().map(|l| format!("      {l}\n")).collect();
+            debug!("{dataflow_id}/{} logged:\n{formatted}", node.id.clone());
             // Make sure that all data has been synced to disk.
             let _ = file
                 .sync_all()
