@@ -246,6 +246,9 @@ impl DoraNode {
         }
     }
 
+    /// Returns the full dataflow descriptor that this node is part of.
+    ///
+    /// This method returns the parsed dataflow YAML file.
     pub fn dataflow_descriptor(&self) -> &Descriptor {
         &self.dataflow_descriptor
     }
