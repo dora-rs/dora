@@ -18,7 +18,7 @@ use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use run::SpawnedDataflow;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
     path::PathBuf,
     time::{Duration, Instant},
@@ -80,11 +80,10 @@ pub async fn start(
 }
 
 // Resolve the dataflow name.
-// Search for archived dataflows if they are provided.
 fn resolve_name(
     name: String,
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: Option<&HashMap<Uuid, ArchivedDataflow>>,
+    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
 ) -> eyre::Result<Uuid> {
     let uuids: Vec<_> = running_dataflows
         .iter()
@@ -92,16 +91,12 @@ fn resolve_name(
         .map(|(k, _)| k)
         .copied()
         .collect();
-    let archived_uuids: Vec<_> = if let Some(archived_dataflows) = archived_dataflows {
-        archived_dataflows
-            .iter()
-            .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
-            .map(|(k, _)| k)
-            .copied()
-            .collect()
-    } else {
-        vec![]
-    };
+    let archived_uuids: Vec<_> = archived_dataflows
+        .iter()
+        .filter(|(_, v)| v.name.as_deref() == Some(name.as_str()))
+        .map(|(k, _)| k)
+        .copied()
+        .collect();
 
     if uuids.is_empty() {
         if archived_uuids.is_empty() {
@@ -156,6 +151,7 @@ async fn start_inner(
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
+    let mut dataflow_results: HashMap<Uuid, BTreeMap<String, Result<(), String>>> = HashMap::new();
     let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
 
@@ -270,19 +266,30 @@ async fn start_inner(
                                     .insert(uuid, ArchivedDataflow::from(entry.get()));
                             }
                             entry.get_mut().machines.remove(&machine_id);
-                            match result {
+                            match &result {
                                 Ok(()) => {
                                     tracing::info!("dataflow `{uuid}` finished successfully on machine `{machine_id}`");
                                 }
                                 Err(err) => {
-                                    let err =
-                                        err.wrap_err(format!("error occured in dataflow `{uuid}` on machine `{machine_id}`"));
                                     tracing::error!("{err:?}");
                                 }
                             }
+                            dataflow_results
+                                .entry(uuid)
+                                .or_default()
+                                .insert(machine_id, result.map_err(|err| format!("{err:?}")));
                             if entry.get_mut().machines.is_empty() {
-                                entry.remove();
-                                tracing::info!("dataflow `{uuid}` finished");
+                                let finished_dataflow = entry.remove();
+                                let reply = ControlRequestReply::DataflowStopped {
+                                    uuid,
+                                    result: dataflow_results
+                                        .get(&uuid)
+                                        .map(|r| dataflow_result(r, uuid))
+                                        .unwrap_or(Ok(())),
+                                };
+                                for sender in finished_dataflow.reply_senders {
+                                    let _ = sender.send(Ok(reply.clone()));
+                                }
                             }
                         }
                         std::collections::hash_map::Entry::Vacant(_) => {
@@ -297,7 +304,7 @@ async fn start_inner(
                     request,
                     reply_sender,
                 } => {
-                    let reply = match request {
+                    match request {
                         ControlRequest::Start {
                             dataflow,
                             name,
@@ -324,11 +331,12 @@ async fn start_inner(
                                 .await?;
                                 Ok(dataflow)
                             };
-                            inner.await.map(|dataflow| {
+                            let reply = inner.await.map(|dataflow| {
                                 let uuid = dataflow.uuid;
                                 running_dataflows.insert(uuid, dataflow);
                                 ControlRequestReply::DataflowStarted { uuid }
-                            })
+                            });
+                            let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Check { dataflow_uuid } => {
                             let status = match &running_dataflows.get(&dataflow_uuid) {
@@ -337,9 +345,13 @@ async fn start_inner(
                                 },
                                 None => ControlRequestReply::DataflowStopped {
                                     uuid: dataflow_uuid,
+                                    result: dataflow_results
+                                        .get(&dataflow_uuid)
+                                        .map(|r| dataflow_result(r, dataflow_uuid))
+                                        .unwrap_or(Ok(())),
                                 },
                             };
-                            Ok(status)
+                            let _ = reply_sender.send(Ok(status));
                         }
                         ControlRequest::Reload {
                             dataflow_id,
@@ -357,50 +369,51 @@ async fn start_inner(
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
-                            reload
-                                .await
-                                .map(|()| ControlRequestReply::DataflowReloaded {
-                                    uuid: dataflow_id,
-                                })
+                            let reply =
+                                reload
+                                    .await
+                                    .map(|()| ControlRequestReply::DataflowReloaded {
+                                        uuid: dataflow_id,
+                                    });
+                            let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Stop { dataflow_uuid } => {
-                            let stop = async {
-                                stop_dataflow(
-                                    &running_dataflows,
-                                    dataflow_uuid,
-                                    &mut daemon_connections,
-                                )
-                                .await?;
-                                Result::<_, eyre::Report>::Ok(())
-                            };
-                            stop.await.map(|()| ControlRequestReply::DataflowStopped {
-                                uuid: dataflow_uuid,
-                            })
+                            stop_dataflow_by_uuid(
+                                &mut running_dataflows,
+                                &dataflow_results,
+                                dataflow_uuid,
+                                &mut daemon_connections,
+                                reply_sender,
+                            )
+                            .await?;
                         }
                         ControlRequest::StopByName { name } => {
-                            let stop = async {
-                                let dataflow_uuid = resolve_name(name, &running_dataflows, None)?;
-                                stop_dataflow(
-                                    &running_dataflows,
-                                    dataflow_uuid,
-                                    &mut daemon_connections,
-                                )
-                                .await?;
-                                Result::<_, eyre::Report>::Ok(dataflow_uuid)
-                            };
-                            stop.await
-                                .map(|uuid| ControlRequestReply::DataflowStopped { uuid })
+                            match resolve_name(name, &running_dataflows, &archived_dataflows) {
+                                Ok(uuid) => {
+                                    stop_dataflow_by_uuid(
+                                        &mut running_dataflows,
+                                        &dataflow_results,
+                                        uuid,
+                                        &mut daemon_connections,
+                                        reply_sender,
+                                    )
+                                    .await?
+                                }
+                                Err(err) => {
+                                    let _ = reply_sender.send(Err(err));
+                                }
+                            }
                         }
                         ControlRequest::Logs { uuid, name, node } => {
                             let dataflow_uuid = if let Some(uuid) = uuid {
                                 uuid
                             } else if let Some(name) = name {
-                                resolve_name(name, &running_dataflows, Some(&archived_dataflows))?
+                                resolve_name(name, &running_dataflows, &archived_dataflows)?
                             } else {
                                 bail!("No uuid")
                             };
 
-                            retrieve_logs(
+                            let reply = retrieve_logs(
                                 &running_dataflows,
                                 &archived_dataflows,
                                 dataflow_uuid,
@@ -408,25 +421,27 @@ async fn start_inner(
                                 &mut daemon_connections,
                             )
                             .await
-                            .map(|logs| ControlRequestReply::Logs(logs))
+                            .map(|logs| ControlRequestReply::Logs(logs));
+                            let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Destroy => {
                             tracing::info!("Received destroy command");
 
-                            handle_destroy(
+                            let reply = handle_destroy(
                                 &running_dataflows,
                                 &mut daemon_connections,
                                 &abort_handle,
                                 &mut daemon_events_tx,
                             )
                             .await
-                            .map(|()| ControlRequestReply::DestroyOk)
+                            .map(|()| ControlRequestReply::DestroyOk);
+                            let _ = reply_sender.send(reply);
                         }
                         ControlRequest::List => {
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
-                            Ok(ControlRequestReply::DataflowList {
+                            let reply = Ok(ControlRequestReply::DataflowList {
                                 dataflows: dataflows
                                     .into_iter()
                                     .map(|d| DataflowId {
@@ -434,19 +449,21 @@ async fn start_inner(
                                         name: d.name.clone(),
                                     })
                                     .collect(),
-                            })
+                            });
+                            let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DaemonConnected => {
                             let running = !daemon_connections.is_empty();
-                            Ok(ControlRequestReply::DaemonConnected(running))
+                            let _ = reply_sender
+                                .send(Ok(ControlRequestReply::DaemonConnected(running)));
                         }
                         ControlRequest::ConnectedMachines => {
-                            Ok(ControlRequestReply::ConnectedMachines(
+                            let reply = Ok(ControlRequestReply::ConnectedMachines(
                                 daemon_connections.keys().cloned().collect(),
-                            ))
+                            ));
+                            let _ = reply_sender.send(reply);
                         }
-                    };
-                    let _ = reply_sender.send(reply);
+                    }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
             },
@@ -499,6 +516,60 @@ async fn start_inner(
     Ok(())
 }
 
+async fn stop_dataflow_by_uuid(
+    running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
+    dataflow_results: &HashMap<Uuid, BTreeMap<String, Result<(), String>>>,
+    dataflow_uuid: Uuid,
+    daemon_connections: &mut HashMap<String, DaemonConnection>,
+    reply_sender: tokio::sync::oneshot::Sender<Result<ControlRequestReply, eyre::ErrReport>>,
+) -> Result<(), eyre::ErrReport> {
+    let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
+        if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+            let reply = ControlRequestReply::DataflowStopped {
+                uuid: dataflow_uuid,
+                result: dataflow_result(result, dataflow_uuid),
+            };
+            let _ = reply_sender.send(Ok(reply));
+            return Ok(());
+        }
+        bail!("no known dataflow found with UUID `{dataflow_uuid}`")
+    };
+    let stop = async {
+        stop_dataflow(dataflow, dataflow_uuid, daemon_connections).await?;
+        Result::<_, eyre::Report>::Ok(())
+    };
+    match stop.await {
+        Ok(()) => {
+            dataflow.reply_senders.push(reply_sender);
+        }
+        Err(err) => {
+            let _ = reply_sender.send(Err(err));
+        }
+    };
+    Ok(())
+}
+
+fn dataflow_result(
+    results: &BTreeMap<String, Result<(), String>>,
+    dataflow_uuid: Uuid,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for (machine, result) in results {
+        if let Err(err) = result {
+            let err: String = err.lines().map(|line| format!("    {line}\n")).collect();
+            errors.push(format!("- machine `{machine}`:\n{err}\n"));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let mut formatted = format!("errors occurred in dataflow {dataflow_uuid}:\n");
+        formatted.push_str(&errors.join("\n"));
+        Err(formatted)
+    }
+}
+
 struct DaemonConnection {
     stream: TcpStream,
     listen_socket: SocketAddr,
@@ -534,8 +605,8 @@ async fn handle_destroy(
     daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
 ) -> Result<(), eyre::ErrReport> {
     abortable_events.abort();
-    for &uuid in running_dataflows.keys() {
-        stop_dataflow(running_dataflows, uuid, daemon_connections).await?;
+    for (&uuid, dataflow) in running_dataflows {
+        stop_dataflow(dataflow, uuid, daemon_connections).await?;
     }
     destroy_daemons(daemon_connections).await?;
     *daemon_events_tx = None;
@@ -550,7 +621,6 @@ async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
         .wrap_err("failed to send watchdog message to daemon")
 }
 
-#[allow(dead_code)] // Keeping the communication layer for later use.
 struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
@@ -560,6 +630,8 @@ struct RunningDataflow {
     pending_machines: BTreeSet<String>,
     init_success: bool,
     nodes: Vec<ResolvedNode>,
+
+    reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
 }
 
 struct ArchivedDataflow {
@@ -585,13 +657,10 @@ impl PartialEq for RunningDataflow {
 impl Eq for RunningDataflow {}
 
 async fn stop_dataflow(
-    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow: &RunningDataflow,
     uuid: Uuid,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
 ) -> eyre::Result<()> {
-    let Some(dataflow) = running_dataflows.get(&uuid) else {
-        bail!("No running dataflow found with UUID `{uuid}`")
-    };
     let message = serde_json::to_vec(&DaemonCoordinatorEvent::StopDataflow { dataflow_id: uuid })?;
 
     for machine_id in &dataflow.machines {
@@ -744,6 +813,7 @@ async fn start_dataflow(
         init_success: true,
         machines,
         nodes,
+        reply_senders: Vec::new(),
     })
 }
 
