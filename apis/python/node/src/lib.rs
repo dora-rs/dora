@@ -84,6 +84,9 @@ impl Node {
         })
     }
 
+    /// Returns the full dataflow descriptor that this node is part of.
+    ///
+    /// This method returns the parsed dataflow YAML file.
     pub fn dataflow_descriptor(&self, py: Python) -> pythonize::Result<PyObject> {
         pythonize::pythonize(py, self.node.dataflow_descriptor())
     }
