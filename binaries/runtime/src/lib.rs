@@ -38,6 +38,8 @@ pub fn main() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     set_up_tracing(&node_id.to_string()).context("failed to set up tracing subscriber")?;
 
+    let dataflow_descriptor = config.dataflow_descriptor.clone();
+
     let operator_definition = if operators.is_empty() {
         bail!("no operators");
     } else if operators.len() > 1 {
@@ -90,6 +92,7 @@ pub fn main() -> eyre::Result<()> {
         incoming_events,
         operator_events_tx,
         init_done_tx,
+        &dataflow_descriptor,
     )
     .wrap_err_with(|| format!("failed to run operator {operator_id}"))?;
 
