@@ -32,9 +32,10 @@ pub mod tcp;
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
-    daemon_tx: &mpsc::Sender<Event>,
+    daemon_tx: &mpsc::Sender<Timestamped<Event>>,
     config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
+    clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         LocalCommunicationConfig::Tcp => {
@@ -54,7 +55,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, queue_sizes).await;
+                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -87,7 +88,8 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create control server")?;
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes));
+                let clock = clock.clone();
+                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock));
             }
 
             {
@@ -96,8 +98,9 @@ pub async fn spawn_listener_loop(
                 let event_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
+                let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -108,8 +111,9 @@ pub async fn spawn_listener_loop(
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
+                let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
                     tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
                 });
             }
@@ -119,8 +123,9 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create events close server")?;
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
+                let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
                     tracing::debug!(
                         "events close listener loop finished for `{drop_loop_node_id}`"
                     );
@@ -140,18 +145,18 @@ pub async fn spawn_listener_loop(
 struct Listener {
     dataflow_id: DataflowId,
     node_id: NodeId,
-    daemon_tx: mpsc::Sender<Event>,
+    daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     queue_sizes: BTreeMap<DataId, usize>,
-    hlc: Arc<uhlc::HLC>,
+    clock: Arc<uhlc::HLC>,
 }
 
 impl Listener {
     pub(crate) async fn run<C: Connection>(
         mut connection: C,
-        daemon_tx: mpsc::Sender<Event>,
+        daemon_tx: mpsc::Sender<Timestamped<Event>>,
         queue_sizes: BTreeMap<DataId, usize>,
         hlc: Arc<uhlc::HLC>,
     ) {
@@ -205,7 +210,7 @@ impl Listener {
                             subscribed_drop_events: None,
                             queue_sizes,
                             queue: VecDeque::new(),
-                            hlc: hlc.clone(),
+                            clock: hlc.clone(),
                         };
                         match listener
                             .run_inner(connection)
@@ -277,9 +282,6 @@ impl Listener {
     async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
             while let Ok(event) = events.try_recv() {
-                if let Err(err) = self.hlc.update_with_timestamp(&event.timestamp) {
-                    tracing::warn!("failed to update HLC: {err}");
-                }
                 self.queue.push_back(Box::new(Some(event)));
             }
 
@@ -297,7 +299,7 @@ impl Listener {
 
         // iterate over queued events, newest first
         for event in self.queue.iter_mut().rev() {
-            let Some(NodeEvent::Input { id, data, .. }) = event.as_mut() else {
+            let Some(Timestamped { event: NodeEvent::Input { id, data, .. }, ..}) = event.as_mut() else {
                 continue;
             };
             match queue_size_remaining.get_mut(id) {
@@ -316,8 +318,7 @@ impl Listener {
                 }
             }
         }
-        self.report_drop_tokens(drop_tokens, self.hlc.new_timestamp())
-            .await?;
+        self.report_drop_tokens(drop_tokens).await?;
 
         if dropped > 0 {
             tracing::debug!("dropped {dropped} inputs because event queue was too full");
@@ -332,7 +333,7 @@ impl Listener {
         connection: &mut C,
     ) -> eyre::Result<()> {
         let timestamp = message.timestamp;
-        if let Err(err) = self.hlc.update_with_timestamp(&timestamp) {
+        if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
             tracing::warn!("failed to update HLC: {err}");
         }
         match message.event {
@@ -404,7 +405,7 @@ impl Listener {
                 self.subscribed_drop_events = Some(rx);
             }
             DaemonRequest::NextEvent { drop_tokens } => {
-                self.report_drop_tokens(drop_tokens, timestamp).await?;
+                self.report_drop_tokens(drop_tokens).await?;
 
                 // try to take the queued events first
                 let queued_events: Vec<_> = mem::take(&mut self.queue)
@@ -433,7 +434,7 @@ impl Listener {
                     .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
             }
             DaemonRequest::ReportDropTokens { drop_tokens } => {
-                self.report_drop_tokens(drop_tokens, timestamp).await?;
+                self.report_drop_tokens(drop_tokens).await?;
 
                 self.send_reply(DaemonReply::Empty, connection)
                     .await
@@ -473,7 +474,6 @@ impl Listener {
     async fn report_drop_tokens(
         &mut self,
         drop_tokens: Vec<dora_core::daemon_messages::DropToken>,
-        timestamp: uhlc::Timestamp,
     ) -> eyre::Result<()> {
         if !drop_tokens.is_empty() {
             let event = Event::Node {
@@ -482,7 +482,10 @@ impl Listener {
                 event: DaemonNodeEvent::ReportDrop {
                     tokens: drop_tokens,
                 },
-                timestamp,
+            };
+            let event = Timestamped {
+                event,
+                timestamp: self.clock.new_timestamp(),
             };
             self.daemon_tx
                 .send(event)
@@ -503,7 +506,10 @@ impl Listener {
             dataflow_id: self.dataflow_id,
             node_id: self.node_id.clone(),
             event,
-            timestamp: self.hlc.new_timestamp(),
+        };
+        let event = Timestamped {
+            event,
+            timestamp: self.clock.new_timestamp(),
         };
         self.daemon_tx
             .send(event)

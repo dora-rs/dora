@@ -2,7 +2,7 @@ use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{Data, InterDaemonEvent, Timestamped};
-use dora_core::message::uhlc::{self, HLC};
+use dora_core::message::uhlc::{self, Timestamp, HLC};
 use dora_core::message::MetadataParameters;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
@@ -59,7 +59,7 @@ use crate::pending::DataflowStatus;
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
 
-    events_tx: mpsc::Sender<Event>,
+    events_tx: mpsc::Sender<Timestamped<Event>>,
 
     coordinator_connection: Option<TcpStream>,
     last_coordinator_heartbeat: Instant,
@@ -71,33 +71,40 @@ pub struct Daemon {
     /// used to record dataflow results when `exit_when_done` is used
     dataflow_errors: Vec<(Uuid, NodeId, eyre::Report)>,
 
-    hlc: Arc<uhlc::HLC>,
+    clock: Arc<uhlc::HLC>,
 }
 
 impl Daemon {
     pub async fn run(
         coordinator_addr: SocketAddr,
         machine_id: String,
-        external_events: impl Stream<Item = Event> + Unpin,
+        external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
     ) -> eyre::Result<()> {
         // spawn listen loop
         let (events_tx, events_rx) = flume::bounded(10);
         let listen_socket =
             inter_daemon::spawn_listener_loop(machine_id.clone(), events_tx).await?;
-        let daemon_events = events_rx.into_stream().map(Event::Daemon);
+        let daemon_events = events_rx.into_stream().map(|e| Timestamped {
+            event: Event::Daemon(e.event),
+            timestamp: e.timestamp,
+        });
 
         // connect to the coordinator
         let coordinator_events =
             coordinator::register(coordinator_addr, machine_id.clone(), listen_socket)
                 .await
                 .wrap_err("failed to connect to dora-coordinator")?
-                .map(Event::Coordinator);
+                .map(|Timestamped { event, timestamp }| Timestamped {
+                    event: Event::Coordinator(event),
+                    timestamp,
+                });
 
         Self::run_general(
             (coordinator_events, external_events, daemon_events).merge(),
             Some(coordinator_addr),
             machine_id,
             None,
+            Default::default(),
         )
         .await
         .map(|_| ())
@@ -123,23 +130,30 @@ impl Daemon {
             dataflow_descriptor: descriptor,
         };
 
+        let clock = Arc::new(HLC::default());
+
         let exit_when_done = spawn_command
             .nodes
             .iter()
             .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
+        let timestamp = clock.new_timestamp();
         let coordinator_events = stream::once(async move {
-            Event::Coordinator(CoordinatorEvent {
-                event: DaemonCoordinatorEvent::Spawn(spawn_command),
-                reply_tx,
-            })
+            Timestamped {
+                event: Event::Coordinator(CoordinatorEvent {
+                    event: DaemonCoordinatorEvent::Spawn(spawn_command),
+                    reply_tx,
+                }),
+                timestamp,
+            }
         });
         let run_result = Self::run_general(
             Box::pin(coordinator_events),
             None,
             "".into(),
             Some(exit_when_done),
+            clock,
         );
 
         let spawn_result = reply_rx
@@ -168,10 +182,11 @@ impl Daemon {
     }
 
     async fn run_general(
-        external_events: impl Stream<Item = Event> + Unpin,
+        external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
         coordinator_addr: Option<SocketAddr>,
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
+        clock: Arc<HLC>,
     ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -196,13 +211,18 @@ impl Daemon {
             machine_id,
             exit_when_done,
             dataflow_errors: Vec::new(),
+            clock,
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
+        let watchdog_clock = daemon.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
         ))
-        .map(|_| Event::HeartbeatInterval);
+        .map(|_| Timestamped {
+            event: Event::HeartbeatInterval,
+            timestamp: watchdog_clock.new_timestamp(),
+        });
         let events = (external_events, dora_events, watchdog_interval).merge();
         daemon.run_inner(events).await
     }
@@ -210,14 +230,21 @@ impl Daemon {
     #[tracing::instrument(skip(incoming_events, self), fields(%self.machine_id))]
     async fn run_inner(
         mut self,
-        incoming_events: impl Stream<Item = Event> + Unpin,
+        incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
     ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
+            let Timestamped { event, timestamp } = event;
+            if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
+                tracing::warn!("failed to update HLC with incoming event timestamp");
+            }
+
             match event {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
-                    let status = self.handle_coordinator_event(event, reply_tx).await?;
+                    let status = self
+                        .handle_coordinator_event(event, timestamp, reply_tx)
+                        .await?;
 
                     match status {
                         RunStatus::Continue => {}
@@ -231,11 +258,7 @@ impl Daemon {
                     dataflow_id: dataflow,
                     node_id,
                     event,
-                    timestamp,
-                } => {
-                    self.handle_node_event(event, dataflow, node_id, timestamp)
-                        .await?
-                }
+                } => self.handle_node_event(event, dataflow, node_id).await?,
                 Event::Dora(event) => match self.handle_dora_event(event).await? {
                     RunStatus::Continue => {}
                     RunStatus::Exit => break,
@@ -257,7 +280,7 @@ impl Daemon {
                 }
                 Event::CtrlC => {
                     for dataflow in self.running.values_mut() {
-                        dataflow.stop_all().await;
+                        dataflow.stop_all(&self.clock).await;
                     }
                 }
             }
@@ -269,6 +292,7 @@ impl Daemon {
     async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
+        timestamp: Timestamp,
         reply_tx: Sender<Option<DaemonCoordinatorReply>>,
     ) -> eyre::Result<RunStatus> {
         let status = match event {
@@ -320,7 +344,7 @@ impl Daemon {
                             .await?;
                         if success {
                             tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
-                            dataflow.start(&self.events_tx).await?;
+                            dataflow.start(&self.events_tx, &self.clock).await?;
                         }
                     }
                     None => {
@@ -382,7 +406,7 @@ impl Daemon {
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-                    dataflow.stop_all().await;
+                    dataflow.stop_all(&self.clock).await;
                     Result::<(), eyre::Report>::Ok(())
                 };
                 let reply = DaemonCoordinatorReply::StopResult(
@@ -429,6 +453,7 @@ impl Daemon {
                         dataflow,
                         &metadata,
                         data.map(Data::Vec),
+                        &self.clock,
                     )
                     .await?;
                     Result::<_, eyre::Report>::Ok(())
@@ -451,7 +476,7 @@ impl Daemon {
                         format!("send out failed: no running dataflow with ID `{dataflow_id}`")
                     })?;
                     for (receiver_id, input_id) in &inputs {
-                        close_input(dataflow, receiver_id, input_id);
+                        close_input(dataflow, receiver_id, input_id, &self.clock);
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };
@@ -528,6 +553,7 @@ impl Daemon {
                     node,
                     self.events_tx.clone(),
                     dataflow_descriptor.clone(),
+                    self.clock.clone(),
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
@@ -556,7 +582,6 @@ impl Daemon {
         event: DaemonNodeEvent,
         dataflow_id: DataflowId,
         node_id: NodeId,
-        timestamp: uhlc::Timestamp,
     ) -> eyre::Result<()> {
         match event {
             DaemonNodeEvent::Subscribe {
@@ -573,13 +598,7 @@ impl Daemon {
                     }
                     Ok(dataflow) => {
                         tracing::debug!("node `{node_id}` is ready");
-                        Self::subscribe(
-                            dataflow,
-                            node_id.clone(),
-                            event_sender,
-                            self.hlc.new_timestamp(),
-                        )
-                        .await;
+                        Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow
                             .pending_nodes
@@ -594,7 +613,7 @@ impl Daemon {
                                 tracing::info!(
                                     "all nodes are ready, starting dataflow `{dataflow_id}`"
                                 );
-                                dataflow.start(&self.events_tx).await?;
+                                dataflow.start(&self.events_tx, &self.clock).await?;
                             }
                             DataflowStatus::Pending => {}
                         }
@@ -627,7 +646,7 @@ impl Daemon {
                         |OutputId(source_id, output_id)| {
                             source_id == &node_id && outputs.contains(output_id)
                         },
-                        timestamp,
+                        &self.clock,
                     )
                     .await
                 };
@@ -638,7 +657,7 @@ impl Daemon {
             DaemonNodeEvent::OutputsDone { reply_sender } => {
                 let result = match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
-                        Self::handle_outputs_done(dataflow, &mut self.inter_daemon_connections, &node_id)
+                        Self::handle_outputs_done(dataflow, &mut self.inter_daemon_connections, &node_id, &self.clock)
                     .await
                     },
                     None => Err(eyre!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")),
@@ -668,7 +687,7 @@ impl Daemon {
                     match dataflow.pending_drop_tokens.get_mut(&token) {
                         Some(info) => {
                             if info.pending_nodes.remove(&node_id) {
-                                dataflow.check_drop_token(token).await?;
+                                dataflow.check_drop_token(token, &self.clock).await?;
                             } else {
                                 tracing::warn!(
                                     "node `{node_id}` is not pending for drop token `{token:?}`"
@@ -706,11 +725,11 @@ impl Daemon {
             format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
         })?;
         if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-            let item = Timestamped {
-                event: daemon_messages::NodeEvent::Reload { operator_id },
-                timestamp,
-            };
-            match channel.send(item) {
+            match send_with_timestamp(
+                channel,
+                daemon_messages::NodeEvent::Reload { operator_id },
+                &self.clock,
+            ) {
                 Ok(()) => {}
                 Err(_) => {
                     dataflow.subscribe_channels.remove(&node_id);
@@ -737,6 +756,7 @@ impl Daemon {
             dataflow,
             &metadata,
             data,
+            &self.clock,
         )
         .await?;
 
@@ -770,7 +790,7 @@ impl Daemon {
         dataflow: &mut RunningDataflow,
         node_id: NodeId,
         event_sender: UnboundedSender<Timestamped<daemon_messages::NodeEvent>>,
-        timestamp: uhlc::Timestamp,
+        clock: &HLC,
     ) {
         // some inputs might have been closed already -> report those events
         let closed_inputs = dataflow
@@ -787,42 +807,51 @@ impl Daemon {
                     .unwrap_or(true)
             });
         for input_id in closed_inputs {
-            let _ = event_sender.send(Timestamped {
-                event: daemon_messages::NodeEvent::InputClosed {
+            let _ = send_with_timestamp(
+                &event_sender,
+                daemon_messages::NodeEvent::InputClosed {
                     id: input_id.clone(),
                 },
-                timestamp,
-            });
+                clock,
+            );
         }
         if dataflow.open_inputs(&node_id).is_empty() {
-            let _ = event_sender.send(Timestamped {
-                event: daemon_messages::NodeEvent::AllInputsClosed,
-                timestamp,
-            });
+            let _ = send_with_timestamp(
+                &event_sender,
+                daemon_messages::NodeEvent::AllInputsClosed,
+                clock,
+            );
         }
 
         // if a stop event was already sent for the dataflow, send it to
         // the newly connected node too
         if dataflow.stop_sent {
-            let _ = event_sender.send(Timestamped {
-                event: daemon_messages::NodeEvent::Stop,
-                timestamp,
-            });
+            let _ = send_with_timestamp(&event_sender, daemon_messages::NodeEvent::Stop, clock);
         }
 
         dataflow.subscribe_channels.insert(node_id, event_sender);
     }
 
-    #[tracing::instrument(skip(dataflow, inter_daemon_connections), fields(uuid = %dataflow.id), level = "trace")]
+    fn send_timestamped<T>(
+        &self,
+        sender: &UnboundedSender<Timestamped<T>>,
+        event: T,
+    ) -> Result<(), mpsc::error::SendError<Timestamped<T>>> {
+        send_with_timestamp(sender, event, &self.clock)
+    }
+
+    #[tracing::instrument(skip(dataflow, inter_daemon_connections, clock), fields(uuid = %dataflow.id), level = "trace")]
     async fn handle_outputs_done(
         dataflow: &mut RunningDataflow,
         inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
         node_id: &NodeId,
+        clock: &HLC,
     ) -> eyre::Result<()> {
         send_input_closed_events(
             dataflow,
             inter_daemon_connections,
             |OutputId(source_id, _)| source_id == node_id,
+            clock,
         )
         .await?;
         dataflow.drop_channels.remove(node_id);
@@ -839,7 +868,13 @@ impl Daemon {
             .handle_node_stop(node_id, &mut self.coordinator_connection)
             .await?;
 
-        Self::handle_outputs_done(dataflow, &mut self.inter_daemon_connections, node_id).await?;
+        Self::handle_outputs_done(
+            dataflow,
+            &mut self.inter_daemon_connections,
+            node_id,
+            &self.clock,
+        )
+        .await?;
 
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
@@ -888,14 +923,15 @@ impl Daemon {
                         continue;
                     };
 
-                    let send_result = channel.send(Timestamped {
-                        event: daemon_messages::NodeEvent::Input {
+                    let send_result = send_with_timestamp(
+                        &channel,
+                        daemon_messages::NodeEvent::Input {
                             id: input_id.clone(),
                             metadata: metadata.clone(),
                             data: None,
                         },
-                        timestamp,
-                    });
+                        &self.clock,
+                    );
                     match send_result {
                         Ok(()) => {}
                         Err(_) => {
@@ -1011,6 +1047,7 @@ async fn send_output_to_local_receivers(
     dataflow: &mut RunningDataflow,
     metadata: &dora_core::message::Metadata<'static>,
     data: Option<Data>,
+    clock: &HLC,
 ) -> Result<Option<Vec<u8>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
@@ -1077,7 +1114,7 @@ async fn send_output_to_local_receivers(
                 pending_nodes: Default::default(),
             });
         // check if all local subscribers are finished with the token
-        dataflow.check_drop_token(token).await?;
+        dataflow.check_drop_token(token, clock).await?;
     }
     Ok(data_bytes)
 }
@@ -1120,7 +1157,7 @@ async fn send_input_closed_events<F>(
     dataflow: &mut RunningDataflow,
     inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
     mut filter: F,
-    timestamp: uhlc::Timestamp,
+    clock: &HLC,
 ) -> eyre::Result<()>
 where
     F: FnMut(&OutputId) -> bool,
@@ -1133,7 +1170,7 @@ where
         .cloned()
         .collect();
     for (receiver_id, input_id) in &local_node_inputs {
-        close_input(dataflow, receiver_id, input_id, timestamp);
+        close_input(dataflow, receiver_id, input_id, clock);
     }
 
     let mut external_node_inputs = BTreeMap::new();
@@ -1164,7 +1201,7 @@ fn close_input(
     dataflow: &mut RunningDataflow,
     receiver_id: &NodeId,
     input_id: &DataId,
-    timestamp: uhlc::Timestamp,
+    clock: &HLC,
 ) {
     if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
         if !open_inputs.remove(input_id) {
@@ -1172,18 +1209,17 @@ fn close_input(
         }
     }
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        let _ = channel.send(Timestamped {
-            event: daemon_messages::NodeEvent::InputClosed {
+        let _ = send_with_timestamp(
+            channel,
+            daemon_messages::NodeEvent::InputClosed {
                 id: input_id.clone(),
             },
-            timestamp,
-        });
+            clock,
+        );
 
         if dataflow.open_inputs(receiver_id).is_empty() {
-            let _ = channel.send(Timestamped {
-                event: daemon_messages::NodeEvent::AllInputsClosed,
-                timestamp,
-            });
+            let _ =
+                send_with_timestamp(channel, daemon_messages::NodeEvent::AllInputsClosed, clock);
         }
     }
 }
@@ -1233,10 +1269,15 @@ impl RunningDataflow {
         }
     }
 
-    async fn start(&mut self, events_tx: &mpsc::Sender<Event>) -> eyre::Result<()> {
+    async fn start(
+        &mut self,
+        events_tx: &mpsc::Sender<Timestamped<Event>>,
+        clock: &Arc<HLC>,
+    ) -> eyre::Result<()> {
         for interval in self.timers.keys().copied() {
             let events_tx = events_tx.clone();
             let dataflow_id = self.id;
+            let clock = clock.clone();
             let task = async move {
                 let mut interval_stream = tokio::time::interval(interval);
                 let hlc = HLC::default();
@@ -1258,12 +1299,16 @@ impl RunningDataflow {
                         },
                     );
 
-                    let event = DoraEvent::Timer {
-                        dataflow_id,
-                        interval,
-                        metadata,
+                    let event = Timestamped {
+                        event: DoraEvent::Timer {
+                            dataflow_id,
+                            interval,
+                            metadata,
+                        }
+                        .into(),
+                        timestamp: clock.new_timestamp(),
                     };
-                    if events_tx.send(event.into()).await.is_err() {
+                    if events_tx.send(event).await.is_err() {
                         break;
                     }
                 }
@@ -1276,12 +1321,9 @@ impl RunningDataflow {
         Ok(())
     }
 
-    async fn stop_all(&mut self, timestamp: uhlc::Timestamp) {
+    async fn stop_all(&mut self, clock: &HLC) {
         for (_node_id, channel) in self.subscribe_channels.drain() {
-            let _ = channel.send(Timestamped {
-                event: daemon_messages::NodeEvent::Stop,
-                timestamp,
-            });
+            let _ = send_with_timestamp(&channel, daemon_messages::NodeEvent::Stop, clock);
         }
         self.stop_sent = true;
     }
@@ -1290,15 +1332,18 @@ impl RunningDataflow {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
 
-    async fn check_drop_token(&mut self, token: DropToken) -> eyre::Result<()> {
+    async fn check_drop_token(&mut self, token: DropToken, clock: &HLC) -> eyre::Result<()> {
         match self.pending_drop_tokens.entry(token) {
             std::collections::hash_map::Entry::Occupied(entry) => {
                 if entry.get().pending_nodes.is_empty() {
                     let (drop_token, info) = entry.remove_entry();
                     let result = match self.drop_channels.get_mut(&info.owner) {
-                        Some(channel) => channel
-                            .send(daemon_messages::NodeDropEvent::OutputDropped { drop_token })
-                            .wrap_err("send failed"),
+                        Some(channel) => send_with_timestamp(
+                            channel,
+                            daemon_messages::NodeDropEvent::OutputDropped { drop_token },
+                            clock,
+                        )
+                        .wrap_err("send failed"),
                         None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
                     };
                     if let Err(err) = result.wrap_err_with(|| {
@@ -1338,7 +1383,6 @@ pub enum Event {
         dataflow_id: DataflowId,
         node_id: NodeId,
         event: DaemonNodeEvent,
-        timestamp: uhlc::Timestamp,
     },
     Coordinator(CoordinatorEvent),
     Daemon(InterDaemonEvent),
@@ -1434,4 +1478,15 @@ impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
 enum RunStatus {
     Continue,
     Exit,
+}
+
+fn send_with_timestamp<T>(
+    sender: &UnboundedSender<Timestamped<T>>,
+    event: T,
+    clock: &HLC,
+) -> Result<(), mpsc::error::SendError<Timestamped<T>>> {
+    sender.send(Timestamped {
+        event,
+        timestamp: clock.new_timestamp(),
+    })
 }

@@ -1,4 +1,6 @@
-use dora_core::topics::DORA_COORDINATOR_PORT_DEFAULT;
+use dora_core::{
+    daemon_messages::Timestamped, message::uhlc::HLC, topics::DORA_COORDINATOR_PORT_DEFAULT,
+};
 use dora_daemon::{Daemon, Event};
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
@@ -54,12 +56,17 @@ async fn run() -> eyre::Result<()> {
         let (ctrl_c_tx, ctrl_c_rx) = mpsc::channel(1);
         let mut ctrlc_sent = false;
         ctrlc::set_handler(move || {
+            let clock = HLC::default();
             if ctrlc_sent {
                 tracing::warn!("received second ctrlc signal -> aborting immediately");
                 std::process::abort();
             } else {
                 tracing::info!("received ctrlc signal");
-                if ctrl_c_tx.blocking_send(Event::CtrlC).is_err() {
+                let event = Timestamped {
+                    event: Event::CtrlC,
+                    timestamp: clock.new_timestamp(),
+                };
+                if ctrl_c_tx.blocking_send(event).is_err() {
                     tracing::error!("failed to report ctrl-c event to dora-daemon");
                 }
                 ctrlc_sent = true;
