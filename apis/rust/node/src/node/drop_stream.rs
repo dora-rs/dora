@@ -4,7 +4,8 @@ use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
     daemon_messages::{
-        self, DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeDropEvent,
+        self, DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken,
+        NodeDropEvent, Timestamped,
     },
     message::uhlc,
 };
@@ -91,10 +92,7 @@ fn drop_stream_loop(
     'outer: loop {
         let daemon_request = DaemonRequest::NextFinishedDropTokens;
         let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextDropEvents(events, timestamp)) => {
-                if let Err(err) = hlc.update_with_timestamp(&timestamp) {
-                    tracing::warn!("failed to update HLC: {err}");
-                }
+            Ok(DaemonReply::NextDropEvents(events)) => {
                 if events.is_empty() {
                     tracing::trace!("drop stream closed for node `{node_id}`");
                     break;
@@ -113,7 +111,10 @@ fn drop_stream_loop(
                 continue;
             }
         };
-        for event in events {
+        for Timestamped { event, timestamp } in events {
+            if let Err(err) = hlc.update_with_timestamp(&timestamp) {
+                tracing::warn!("failed to update HLC: {err}");
+            }
             match event {
                 NodeDropEvent::OutputDropped { drop_token } => {
                     if tx.send(drop_token).is_err() {

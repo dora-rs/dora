@@ -4,7 +4,7 @@ use crate::{
 };
 use dora_core::{
     coordinator_messages::{CoordinatorRequest, RegisterResult},
-    daemon_messages::DaemonCoordinatorReply,
+    daemon_messages::{DaemonCoordinatorReply, Timestamped},
 };
 use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::SocketAddr};
@@ -24,7 +24,7 @@ pub async fn register(
     addr: SocketAddr,
     machine_id: String,
     listen_socket: SocketAddr,
-) -> eyre::Result<impl Stream<Item = CoordinatorEvent>> {
+) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
     let mut stream = TcpStream::connect(addr)
         .await
         .wrap_err("failed to connect to dora-coordinator")?;
@@ -67,8 +67,15 @@ pub async fn register(
                     continue;
                 }
             };
+            let Timestamped { event, timestamp } = event;
             let (reply_tx, reply_rx) = oneshot::channel();
-            match tx.send(CoordinatorEvent { event, reply_tx }).await {
+            match tx
+                .send(Timestamped {
+                    event: CoordinatorEvent { event, reply_tx },
+                    timestamp,
+                })
+                .await
+            {
                 Ok(()) => {}
                 Err(_) => {
                     // receiving end of channel was closed

@@ -1,5 +1,5 @@
 use crate::tcp_utils::{tcp_receive, tcp_send};
-use dora_core::daemon_messages::InterDaemonEvent;
+use dora_core::daemon_messages::{InterDaemonEvent, Timestamped};
 use eyre::{Context, ContextCompat};
 use std::{
     collections::BTreeMap,
@@ -66,7 +66,7 @@ pub async fn send_inter_daemon_event(
 
 pub async fn spawn_listener_loop(
     machine_id: String,
-    events_tx: flume::Sender<InterDaemonEvent>,
+    events_tx: flume::Sender<Timestamped<InterDaemonEvent>>,
 ) -> eyre::Result<SocketAddr> {
     let localhost = Ipv4Addr::new(127, 0, 0, 1);
     let socket = match TcpListener::bind((localhost, 0)).await {
@@ -87,7 +87,10 @@ pub async fn spawn_listener_loop(
     Ok(socket_addr)
 }
 
-async fn listener_loop(listener: TcpListener, events_tx: flume::Sender<InterDaemonEvent>) {
+async fn listener_loop(
+    listener: TcpListener,
+    events_tx: flume::Sender<Timestamped<InterDaemonEvent>>,
+) {
     loop {
         match listener
             .accept()
@@ -106,7 +109,7 @@ async fn listener_loop(listener: TcpListener, events_tx: flume::Sender<InterDaem
 
 async fn handle_connection_loop(
     mut connection: TcpStream,
-    events_tx: flume::Sender<InterDaemonEvent>,
+    events_tx: flume::Sender<Timestamped<InterDaemonEvent>>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
@@ -128,7 +131,9 @@ async fn handle_connection_loop(
     }
 }
 
-async fn receive_message(connection: &mut TcpStream) -> eyre::Result<Option<InterDaemonEvent>> {
+async fn receive_message(
+    connection: &mut TcpStream,
+) -> eyre::Result<Option<Timestamped<InterDaemonEvent>>> {
     let raw = match tcp_receive(connection).await {
         Ok(raw) => raw,
         Err(err) => match err.kind() {

@@ -4,10 +4,11 @@ use crate::{
 };
 use dora_core::{
     config::NodeRunConfig,
-    daemon_messages::{DataflowId, NodeConfig, RuntimeConfig},
+    daemon_messages::{DataflowId, NodeConfig, RuntimeConfig, Timestamped},
     descriptor::{
         resolve_path, source_is_url, Descriptor, OperatorSource, ResolvedNode, SHELL_SOURCE,
     },
+    message::uhlc::HLC,
 };
 use dora_download::download_file;
 use eyre::WrapErr;
@@ -15,6 +16,7 @@ use std::{
     env::{consts::EXE_EXTENSION, temp_dir},
     path::Path,
     process::Stdio,
+    sync::Arc,
 };
 use tokio::{
     fs::File,
@@ -23,12 +25,14 @@ use tokio::{
 };
 use tracing::{debug, error};
 
+/// clock is required for generating timestamps when dropping messages early because queue is full
 pub async fn spawn_node(
     dataflow_id: DataflowId,
     working_dir: &Path,
     node: ResolvedNode,
-    daemon_tx: mpsc::Sender<Event>,
+    daemon_tx: mpsc::Sender<Timestamped<Event>>,
     dataflow_descriptor: Descriptor,
+    clock: Arc<HLC>,
 ) -> eyre::Result<()> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -43,6 +47,7 @@ pub async fn spawn_node(
         &daemon_tx,
         dataflow_descriptor.communication.local,
         queue_sizes,
+        clock.clone(),
     )
     .await?;
 
@@ -231,8 +236,13 @@ pub async fn spawn_node(
             dataflow_id,
             node_id,
             exit_status,
+        }
+        .into();
+        let event = Timestamped {
+            event,
+            timestamp: clock.new_timestamp(),
         };
-        let _ = daemon_tx.send(event.into()).await;
+        let _ = daemon_tx.send(event).await;
     });
 
     // Log to file stream.

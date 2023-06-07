@@ -1,20 +1,22 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use super::{Connection, Listener};
 use crate::Event;
 use dora_core::{
     config::DataId,
-    daemon_messages::{DaemonReply, DaemonRequest},
+    daemon_messages::{DaemonReply, DaemonRequest, Timestamped},
+    message::uhlc::HLC,
 };
 use eyre::eyre;
 use shared_memory_server::ShmemServer;
 use tokio::sync::{mpsc, oneshot};
 
-#[tracing::instrument(skip(server, daemon_tx), level = "trace")]
+#[tracing::instrument(skip(server, daemon_tx, clock), level = "trace")]
 pub async fn listener_loop(
-    mut server: ShmemServer<DaemonRequest, DaemonReply>,
-    daemon_tx: mpsc::Sender<Event>,
+    mut server: ShmemServer<Timestamped<DaemonRequest>, DaemonReply>,
+    daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
+    clock: Arc<HLC>,
 ) {
     let (tx, rx) = flume::bounded(0);
     tokio::task::spawn_blocking(move || {
@@ -38,11 +40,11 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx, queue_sizes).await
+    Listener::run(connection, daemon_tx, queue_sizes, clock).await
 }
 
 enum Operation {
-    Receive(oneshot::Sender<eyre::Result<Option<DaemonRequest>>>),
+    Receive(oneshot::Sender<eyre::Result<Option<Timestamped<DaemonRequest>>>>),
     Send {
         message: DaemonReply,
         result_sender: oneshot::Sender<eyre::Result<()>>,
@@ -53,7 +55,7 @@ struct ShmemConnection(flume::Sender<Operation>);
 
 #[async_trait::async_trait]
 impl Connection for ShmemConnection {
-    async fn receive_message(&mut self) -> eyre::Result<Option<DaemonRequest>> {
+    async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
         let (tx, rx) = oneshot::channel();
         self.0
             .send_async(Operation::Receive(tx))

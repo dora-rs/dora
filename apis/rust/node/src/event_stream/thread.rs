@@ -1,6 +1,6 @@
 use dora_core::{
     config::NodeId,
-    daemon_messages::{DaemonReply, DaemonRequest, DropToken, NodeEvent},
+    daemon_messages::{DaemonReply, DaemonRequest, DropToken, NodeEvent, Timestamped},
     message::uhlc,
 };
 use eyre::{eyre, Context};
@@ -93,10 +93,7 @@ fn event_stream_loop(
             drop_tokens: std::mem::take(&mut drop_tokens),
         };
         let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextEvents(events, timestamp)) => {
-                if let Err(err) = hlc.update_with_timestamp(&timestamp) {
-                    tracing::warn!("failed to update HLC: {err}");
-                }
+            Ok(DaemonReply::NextEvents(events)) => {
                 if events.is_empty() {
                     tracing::trace!("event stream closed for node `{node_id}`");
                     break Ok(());
@@ -115,7 +112,10 @@ fn event_stream_loop(
                 continue;
             }
         };
-        for event in events {
+        for Timestamped { event, timestamp } in events {
+            if let Err(err) = hlc.update_with_timestamp(&timestamp) {
+                tracing::warn!("failed to update HLC: {err}");
+            }
             let drop_token = match &event {
                 NodeEvent::Input {
                     data: Some(data), ..
