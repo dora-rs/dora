@@ -80,6 +80,8 @@ impl Daemon {
         machine_id: String,
         external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
     ) -> eyre::Result<()> {
+        let clock = Arc::new(HLC::default());
+
         // spawn listen loop
         let (events_tx, events_rx) = flume::bounded(10);
         let listen_socket =
@@ -91,7 +93,7 @@ impl Daemon {
 
         // connect to the coordinator
         let coordinator_events =
-            coordinator::register(coordinator_addr, machine_id.clone(), listen_socket)
+            coordinator::register(coordinator_addr, machine_id.clone(), listen_socket, &clock)
                 .await
                 .wrap_err("failed to connect to dora-coordinator")?
                 .map(
@@ -109,7 +111,7 @@ impl Daemon {
             Some(coordinator_addr),
             machine_id,
             None,
-            Default::default(),
+            clock,
         )
         .await
         .map(|_| ())
@@ -268,9 +270,12 @@ impl Daemon {
                 },
                 Event::HeartbeatInterval => {
                     if let Some(connection) = &mut self.coordinator_connection {
-                        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
-                            machine_id: self.machine_id.clone(),
-                            event: DaemonEvent::Heartbeat,
+                        let msg = serde_json::to_vec(&Timestamped {
+                            inner: CoordinatorRequest::Event {
+                                machine_id: self.machine_id.clone(),
+                                event: DaemonEvent::Heartbeat,
+                            },
+                            timestamp: self.clock.new_timestamp(),
                         })?;
                         tcp_send(connection, &msg)
                             .await
@@ -567,7 +572,11 @@ impl Daemon {
                         tracing::error!("{err:?}");
                         dataflow
                             .pending_nodes
-                            .handle_node_stop(&node_id, &mut self.coordinator_connection)
+                            .handle_node_stop(
+                                &node_id,
+                                &mut self.coordinator_connection,
+                                &self.clock,
+                            )
                             .await?;
                     }
                 }
@@ -608,6 +617,7 @@ impl Daemon {
                                 node_id.clone(),
                                 reply_sender,
                                 &mut self.coordinator_connection,
+                                &self.clock,
                             )
                             .await?;
                         match status {
@@ -769,12 +779,15 @@ impl Daemon {
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
         if !remote_receivers.is_empty() {
-            let event = InterDaemonEvent::Output {
-                dataflow_id,
-                node_id: output_id.0,
-                output_id: output_id.1,
-                metadata,
-                data: data_bytes,
+            let event = Timestamped {
+                inner: InterDaemonEvent::Output {
+                    dataflow_id,
+                    node_id: output_id.0,
+                    output_id: output_id.1,
+                    metadata,
+                    data: data_bytes,
+                },
+                timestamp: self.clock.new_timestamp(),
             };
             inter_daemon::send_inter_daemon_event(
                 &remote_receivers,
@@ -859,7 +872,7 @@ impl Daemon {
 
         dataflow
             .pending_nodes
-            .handle_node_stop(node_id, &mut self.coordinator_connection)
+            .handle_node_stop(node_id, &mut self.coordinator_connection, &self.clock)
             .await?;
 
         Self::handle_outputs_done(
@@ -877,12 +890,15 @@ impl Daemon {
                 self.machine_id
             );
             if let Some(connection) = &mut self.coordinator_connection {
-                let msg = serde_json::to_vec(&CoordinatorRequest::Event {
-                    machine_id: self.machine_id.clone(),
-                    event: DaemonEvent::AllNodesFinished {
-                        dataflow_id,
-                        result: Ok(()),
+                let msg = serde_json::to_vec(&Timestamped {
+                    inner: CoordinatorRequest::Event {
+                        machine_id: self.machine_id.clone(),
+                        event: DaemonEvent::AllNodesFinished {
+                            dataflow_id,
+                            result: Ok(()),
+                        },
                     },
+                    timestamp: self.clock.new_timestamp(),
                 })?;
                 tcp_send(connection, &msg)
                     .await
@@ -1173,9 +1189,12 @@ where
     }
     if !external_node_inputs.is_empty() {
         for (target_machine, inputs) in external_node_inputs {
-            let event = InterDaemonEvent::InputsClosed {
-                dataflow_id: dataflow.id,
-                inputs,
+            let event = Timestamped {
+                inner: InterDaemonEvent::InputsClosed {
+                    dataflow_id: dataflow.id,
+                    inputs,
+                },
+                timestamp: clock.new_timestamp(),
             };
             inter_daemon::send_inter_daemon_event(
                 &[target_machine],

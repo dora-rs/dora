@@ -5,6 +5,7 @@ use crate::{
 use dora_core::{
     coordinator_messages::{CoordinatorRequest, RegisterResult},
     daemon_messages::{DaemonCoordinatorReply, Timestamped},
+    message::uhlc::HLC,
 };
 use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::SocketAddr};
@@ -24,6 +25,7 @@ pub async fn register(
     addr: SocketAddr,
     machine_id: String,
     listen_socket: SocketAddr,
+    clock: &HLC,
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
     let mut stream = TcpStream::connect(addr)
         .await
@@ -31,10 +33,13 @@ pub async fn register(
     stream
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
-    let register = serde_json::to_vec(&CoordinatorRequest::Register {
-        dora_version: env!("CARGO_PKG_VERSION").to_owned(),
-        machine_id,
-        listen_socket,
+    let register = serde_json::to_vec(&Timestamped {
+        inner: CoordinatorRequest::Register {
+            dora_version: env!("CARGO_PKG_VERSION").to_owned(),
+            machine_id,
+            listen_socket,
+        },
+        timestamp: clock.new_timestamp(),
     })?;
     tcp_send(&mut stream, &register)
         .await
@@ -42,9 +47,13 @@ pub async fn register(
     let reply_raw = tcp_receive(&mut stream)
         .await
         .wrap_err("failed to register reply from dora-coordinator")?;
-    let result: RegisterResult = serde_json::from_slice(&reply_raw)
+    let result: Timestamped<RegisterResult> = serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize dora-coordinator reply")?;
-    result.to_result()?;
+    result.inner.to_result()?;
+    if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
+        tracing::warn!("failed to update timestamp after register: {err}");
+    }
+
     tracing::info!("Connected to dora-coordinator at {:?}", addr);
 
     let (tx, rx) = mpsc::channel(1);
