@@ -1,7 +1,7 @@
 use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
-use dora_core::coordinator_messages;
+use dora_core::{coordinator_messages, daemon_messages::Timestamped, message::uhlc::HLC};
 use eyre::{eyre, Context};
-use std::{io::ErrorKind, net::Ipv4Addr};
+use std::{io::ErrorKind, net::Ipv4Addr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
@@ -18,7 +18,11 @@ pub async fn create_listener(port: u16) -> eyre::Result<TcpListener> {
     Ok(socket)
 }
 
-pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sender<Event>) {
+pub async fn handle_connection(
+    mut connection: TcpStream,
+    events_tx: mpsc::Sender<Event>,
+    clock: Arc<HLC>,
+) {
     loop {
         // receive the next message and parse it
         let raw = match tcp_receive(&mut connection).await {
@@ -31,7 +35,7 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                 continue;
             }
         };
-        let message: coordinator_messages::CoordinatorRequest =
+        let message: Timestamped<coordinator_messages::CoordinatorRequest> =
             match serde_json::from_slice(&raw).wrap_err("failed to deserialize node message") {
                 Ok(e) => e,
                 Err(err) => {
@@ -40,8 +44,12 @@ pub async fn handle_connection(mut connection: TcpStream, events_tx: mpsc::Sende
                 }
             };
 
+        if let Err(err) = clock.update_with_timestamp(&message.timestamp) {
+            tracing::warn!("failed to update coordinator clock: {err}");
+        }
+
         // handle the message and translate it to a DaemonEvent
-        match message {
+        match message.inner {
             coordinator_messages::CoordinatorRequest::Register {
                 machine_id,
                 dora_version,

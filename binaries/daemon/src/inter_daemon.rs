@@ -46,7 +46,7 @@ impl InterDaemonConnection {
 pub async fn send_inter_daemon_event(
     target_machines: &[String],
     inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
-    event: &InterDaemonEvent,
+    event: &Timestamped<InterDaemonEvent>,
 ) -> eyre::Result<()> {
     let message = bincode::serialize(event).wrap_err("failed to serialize InterDaemonEvent")?;
     for target_machine in target_machines {
