@@ -139,7 +139,7 @@ pub enum DaemonReply {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Timestamped<T> {
-    pub event: T,
+    pub inner: T,
     pub timestamp: uhlc::Timestamp,
 }
 

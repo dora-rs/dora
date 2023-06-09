@@ -63,7 +63,7 @@ async fn run() -> eyre::Result<()> {
             } else {
                 tracing::info!("received ctrlc signal");
                 let event = Timestamped {
-                    event: Event::CtrlC,
+                    inner: Event::CtrlC,
                     timestamp: clock.new_timestamp(),
                 };
                 if ctrl_c_tx.blocking_send(event).is_err() {

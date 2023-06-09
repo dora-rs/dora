@@ -239,7 +239,7 @@ pub async fn spawn_node(
         }
         .into();
         let event = Timestamped {
-            event,
+            inner: event,
             timestamp: clock.new_timestamp(),
         };
         let _ = daemon_tx.send(event).await;

@@ -181,7 +181,7 @@ impl Listener {
             tracing::warn!("failed to update HLC: {err}");
         }
 
-        match message.event {
+        match message.inner {
             DaemonRequest::Register {
                 dataflow_id,
                 node_id,
@@ -299,7 +299,7 @@ impl Listener {
 
         // iterate over queued events, newest first
         for event in self.queue.iter_mut().rev() {
-            let Some(Timestamped { event: NodeEvent::Input { id, data, .. }, ..}) = event.as_mut() else {
+            let Some(Timestamped { inner: NodeEvent::Input { id, data, .. }, ..}) = event.as_mut() else {
                 continue;
             };
             match queue_size_remaining.get_mut(id) {
@@ -336,7 +336,7 @@ impl Listener {
         if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
             tracing::warn!("failed to update HLC: {err}");
         }
-        match message.event {
+        match message.inner {
             DaemonRequest::Register { .. } => {
                 let reply = DaemonReply::Result(Err("unexpected register message".into()));
                 self.send_reply(reply, connection)
@@ -484,7 +484,7 @@ impl Listener {
                 },
             };
             let event = Timestamped {
-                event,
+                inner: event,
                 timestamp: self.clock.new_timestamp(),
             };
             self.daemon_tx
@@ -508,7 +508,7 @@ impl Listener {
             event,
         };
         let event = Timestamped {
-            event,
+            inner: event,
             timestamp: self.clock.new_timestamp(),
         };
         self.daemon_tx
