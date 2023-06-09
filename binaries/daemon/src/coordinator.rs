@@ -67,11 +67,14 @@ pub async fn register(
                     continue;
                 }
             };
-            let Timestamped { event, timestamp } = event;
+            let Timestamped {
+                inner: event,
+                timestamp,
+            } = event;
             let (reply_tx, reply_rx) = oneshot::channel();
             match tx
                 .send(Timestamped {
-                    event: CoordinatorEvent { event, reply_tx },
+                    inner: CoordinatorEvent { event, reply_tx },
                     timestamp,
                 })
                 .await

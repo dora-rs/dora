@@ -45,12 +45,15 @@ impl DropStream {
         dataflow_id: DataflowId,
         node_id: &NodeId,
         mut channel: DaemonChannel,
-        hlc: Arc<uhlc::HLC>,
+        clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
-        channel.register(dataflow_id, node_id.clone())?;
+        channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         let reply = channel
-            .request(&DaemonRequest::SubscribeDrop)
+            .request(&Timestamped {
+                inner: DaemonRequest::SubscribeDrop,
+                timestamp: clock.new_timestamp(),
+            })
             .map_err(|e| eyre!(e))
             .wrap_err("failed to create subscription with dora-daemon")?;
 
@@ -65,7 +68,7 @@ impl DropStream {
         let (tx, rx) = flume::bounded(0);
         let node_id_cloned = node_id.clone();
 
-        let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel, hlc));
+        let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel, clock));
 
         Ok(Self {
             receiver: rx,
@@ -82,15 +85,18 @@ impl std::ops::Deref for DropStream {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, hlc))]
+#[tracing::instrument(skip(tx, channel, clock))]
 fn drop_stream_loop(
     node_id: NodeId,
     tx: flume::Sender<DropToken>,
     mut channel: DaemonChannel,
-    hlc: Arc<uhlc::HLC>,
+    clock: Arc<uhlc::HLC>,
 ) {
     'outer: loop {
-        let daemon_request = DaemonRequest::NextFinishedDropTokens;
+        let daemon_request = Timestamped {
+            inner: DaemonRequest::NextFinishedDropTokens,
+            timestamp: clock.new_timestamp(),
+        };
         let events = match channel.request(&daemon_request) {
             Ok(DaemonReply::NextDropEvents(events)) => {
                 if events.is_empty() {
@@ -111,11 +117,11 @@ fn drop_stream_loop(
                 continue;
             }
         };
-        for Timestamped { event, timestamp } in events {
-            if let Err(err) = hlc.update_with_timestamp(&timestamp) {
+        for Timestamped { inner, timestamp } in events {
+            if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            match event {
+            match inner {
                 NodeDropEvent::OutputDropped { drop_token } => {
                     if tx.send(drop_token).is_err() {
                         tracing::warn!(

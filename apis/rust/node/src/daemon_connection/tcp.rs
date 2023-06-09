@@ -1,13 +1,16 @@
-use dora_core::daemon_messages::{DaemonReply, DaemonRequest};
+use dora_core::daemon_messages::{DaemonReply, DaemonRequest, Timestamped};
 use eyre::{eyre, Context};
 use std::{
     io::{Read, Write},
     net::TcpStream,
 };
 
-pub fn request(connection: &mut TcpStream, request: &DaemonRequest) -> eyre::Result<DaemonReply> {
+pub fn request(
+    connection: &mut TcpStream,
+    request: &Timestamped<DaemonRequest>,
+) -> eyre::Result<DaemonReply> {
     send_message(connection, request)?;
-    if request.expects_tcp_reply() {
+    if request.inner.expects_tcp_reply() {
         receive_reply(connection)
             .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
     } else {
@@ -15,7 +18,10 @@ pub fn request(connection: &mut TcpStream, request: &DaemonRequest) -> eyre::Res
     }
 }
 
-fn send_message(connection: &mut TcpStream, message: &DaemonRequest) -> eyre::Result<()> {
+fn send_message(
+    connection: &mut TcpStream,
+    message: &Timestamped<DaemonRequest>,
+) -> eyre::Result<()> {
     let serialized = bincode::serialize(&message).wrap_err("failed to serialize DaemonRequest")?;
     tcp_send(connection, &serialized).wrap_err("failed to send DaemonRequest")?;
     Ok(())

@@ -2,7 +2,7 @@ use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{Data, InterDaemonEvent, Timestamped};
-use dora_core::message::uhlc::{self, Timestamp, HLC};
+use dora_core::message::uhlc::{self, HLC};
 use dora_core::message::MetadataParameters;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
@@ -85,7 +85,7 @@ impl Daemon {
         let listen_socket =
             inter_daemon::spawn_listener_loop(machine_id.clone(), events_tx).await?;
         let daemon_events = events_rx.into_stream().map(|e| Timestamped {
-            event: Event::Daemon(e.event),
+            inner: Event::Daemon(e.inner),
             timestamp: e.timestamp,
         });
 
@@ -94,10 +94,15 @@ impl Daemon {
             coordinator::register(coordinator_addr, machine_id.clone(), listen_socket)
                 .await
                 .wrap_err("failed to connect to dora-coordinator")?
-                .map(|Timestamped { event, timestamp }| Timestamped {
-                    event: Event::Coordinator(event),
-                    timestamp,
-                });
+                .map(
+                    |Timestamped {
+                         inner: event,
+                         timestamp,
+                     }| Timestamped {
+                        inner: Event::Coordinator(event),
+                        timestamp,
+                    },
+                );
 
         Self::run_general(
             (coordinator_events, external_events, daemon_events).merge(),
@@ -141,7 +146,7 @@ impl Daemon {
         let timestamp = clock.new_timestamp();
         let coordinator_events = stream::once(async move {
             Timestamped {
-                event: Event::Coordinator(CoordinatorEvent {
+                inner: Event::Coordinator(CoordinatorEvent {
                     event: DaemonCoordinatorEvent::Spawn(spawn_command),
                     reply_tx,
                 }),
@@ -220,7 +225,7 @@ impl Daemon {
             Duration::from_secs(5),
         ))
         .map(|_| Timestamped {
-            event: Event::HeartbeatInterval,
+            inner: Event::HeartbeatInterval,
             timestamp: watchdog_clock.new_timestamp(),
         });
         let events = (external_events, dora_events, watchdog_interval).merge();
@@ -235,16 +240,14 @@ impl Daemon {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
-            let Timestamped { event, timestamp } = event;
+            let Timestamped { inner, timestamp } = event;
             if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
-                tracing::warn!("failed to update HLC with incoming event timestamp");
+                tracing::warn!("failed to update HLC with incoming event timestamp: {err}");
             }
 
-            match event {
+            match inner {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
-                    let status = self
-                        .handle_coordinator_event(event, timestamp, reply_tx)
-                        .await?;
+                    let status = self.handle_coordinator_event(event, reply_tx).await?;
 
                     match status {
                         RunStatus::Continue => {}
@@ -292,7 +295,6 @@ impl Daemon {
     async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
-        timestamp: Timestamp,
         reply_tx: Sender<Option<DaemonCoordinatorReply>>,
     ) -> eyre::Result<RunStatus> {
         let status = match event {
@@ -832,14 +834,6 @@ impl Daemon {
         dataflow.subscribe_channels.insert(node_id, event_sender);
     }
 
-    fn send_timestamped<T>(
-        &self,
-        sender: &UnboundedSender<Timestamped<T>>,
-        event: T,
-    ) -> Result<(), mpsc::error::SendError<Timestamped<T>>> {
-        send_with_timestamp(sender, event, &self.clock)
-    }
-
     #[tracing::instrument(skip(dataflow, inter_daemon_connections, clock), fields(uuid = %dataflow.id), level = "trace")]
     async fn handle_outputs_done(
         dataflow: &mut RunningDataflow,
@@ -906,8 +900,6 @@ impl Daemon {
                 interval,
                 metadata,
             } => {
-                let timestamp = metadata.timestamp();
-
                 let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
                     tracing::warn!("Timer event for unknown dataflow `{dataflow_id}`");
                     return Ok(RunStatus::Continue);
@@ -924,7 +916,7 @@ impl Daemon {
                     };
 
                     let send_result = send_with_timestamp(
-                        &channel,
+                        channel,
                         daemon_messages::NodeEvent::Input {
                             id: input_id.clone(),
                             metadata: metadata.clone(),
@@ -1063,7 +1055,7 @@ async fn send_output_to_local_receivers(
                 data: data.clone(),
             };
             match channel.send(Timestamped {
-                event: item,
+                inner: item,
                 timestamp,
             }) {
                 Ok(()) => {
@@ -1300,7 +1292,7 @@ impl RunningDataflow {
                     );
 
                     let event = Timestamped {
-                        event: DoraEvent::Timer {
+                        inner: DoraEvent::Timer {
                             dataflow_id,
                             interval,
                             metadata,
@@ -1486,7 +1478,7 @@ fn send_with_timestamp<T>(
     clock: &HLC,
 ) -> Result<(), mpsc::error::SendError<Timestamped<T>>> {
     sender.send(Timestamped {
-        event,
+        inner: event,
         timestamp: clock.new_timestamp(),
     })
 }

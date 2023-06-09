@@ -1,6 +1,7 @@
 use dora_core::{
     config::NodeId,
-    daemon_messages::{DaemonReply, DaemonRequest, DataflowId},
+    daemon_messages::{DaemonReply, DaemonRequest, DataflowId, Timestamped},
+    message::uhlc::Timestamp,
 };
 use eyre::{bail, eyre, Context};
 use shared_memory_server::{ShmemClient, ShmemConf};
@@ -12,7 +13,7 @@ use std::{
 mod tcp;
 
 pub enum DaemonChannel {
-    Shmem(ShmemClient<DaemonRequest, DaemonReply>),
+    Shmem(ShmemClient<Timestamped<DaemonRequest>, DaemonReply>),
     Tcp(TcpStream),
 }
 
@@ -37,11 +38,19 @@ impl DaemonChannel {
         Ok(channel)
     }
 
-    pub fn register(&mut self, dataflow_id: DataflowId, node_id: NodeId) -> eyre::Result<()> {
-        let msg = DaemonRequest::Register {
-            dataflow_id,
-            node_id,
-            dora_version: env!("CARGO_PKG_VERSION").to_owned(),
+    pub fn register(
+        &mut self,
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        timestamp: Timestamp,
+    ) -> eyre::Result<()> {
+        let msg = Timestamped {
+            inner: DaemonRequest::Register {
+                dataflow_id,
+                node_id,
+                dora_version: env!("CARGO_PKG_VERSION").to_owned(),
+            },
+            timestamp,
         };
         let reply = self
             .request(&msg)
@@ -56,7 +65,7 @@ impl DaemonChannel {
         Ok(())
     }
 
-    pub fn request(&mut self, request: &DaemonRequest) -> eyre::Result<DaemonReply> {
+    pub fn request(&mut self, request: &Timestamped<DaemonRequest>) -> eyre::Result<DaemonReply> {
         match self {
             DaemonChannel::Shmem(client) => client.request(request),
             DaemonChannel::Tcp(stream) => tcp::request(stream, request),

@@ -28,7 +28,7 @@ pub struct DoraNode {
     id: NodeId,
     node_config: NodeRunConfig,
     control_channel: ControlChannel,
-    hlc: Arc<uhlc::HLC>,
+    clock: Arc<uhlc::HLC>,
 
     sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
     drop_stream: DropStream,
@@ -68,22 +68,23 @@ impl DoraNode {
             dataflow_descriptor,
         } = node_config;
 
-        let hlc = Arc::new(uhlc::HLC::default());
+        let clock = Arc::new(uhlc::HLC::default());
 
         let event_stream =
-            EventStream::init(dataflow_id, &node_id, &daemon_communication, hlc.clone())
+            EventStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init event stream")?;
         let drop_stream =
-            DropStream::init(dataflow_id, &node_id, &daemon_communication, hlc.clone())
+            DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init drop stream")?;
-        let control_channel = ControlChannel::init(dataflow_id, &node_id, &daemon_communication)
-            .wrap_err("failed to init control channel")?;
+        let control_channel =
+            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
+                .wrap_err("failed to init control channel")?;
 
         let node = Self {
             id: node_id,
             node_config: run_config,
             control_channel,
-            hlc,
+            clock,
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
@@ -143,7 +144,8 @@ impl DoraNode {
         if !self.node_config.outputs.contains(&output_id) {
             eyre::bail!("unknown output");
         }
-        let metadata = Metadata::from_parameters(self.hlc.new_timestamp(), parameters.into_owned());
+        let metadata =
+            Metadata::from_parameters(self.clock.new_timestamp(), parameters.into_owned());
 
         let (data, shmem) = match sample {
             Some(sample) => sample.finalize(),
