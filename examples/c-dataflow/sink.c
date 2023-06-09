@@ -12,9 +12,8 @@ int main()
     {
         fprintf(stderr, "failed to init dora context\n");
         return -1;
-
-        printf("[c sink] dora context initialized\n");
     }
+    printf("[c sink] dora context initialized\n");
 
     while (1)
     {
@@ -39,7 +38,7 @@ int main()
 
             printf("[c sink] received input `");
             fwrite(id, id_len, 1, stdout);
-            printf("` with data: %s\n", data);
+            printf("` with data: %.*s\n", (int)data_len, data);
         }
         else if (ty == DoraEventType_InputClosed)
         {
