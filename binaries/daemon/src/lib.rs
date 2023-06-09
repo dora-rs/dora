@@ -69,7 +69,7 @@ pub struct Daemon {
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     /// used to record dataflow results when `exit_when_done` is used
-    dataflow_errors: Vec<(Uuid, NodeId, eyre::Report)>,
+    dataflow_errors: BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>,
 
     clock: Arc<uhlc::HLC>,
 }
@@ -180,9 +180,11 @@ impl Daemon {
             Ok(())
         } else {
             let mut output = "some nodes failed:".to_owned();
-            for (dataflow, node, error) in dataflow_errors {
-                use std::fmt::Write;
-                write!(&mut output, "\n  - {dataflow}/{node}: {error}").unwrap();
+            for (dataflow, node_errors) in dataflow_errors {
+                for (node, error) in node_errors {
+                    use std::fmt::Write;
+                    write!(&mut output, "\n  - {dataflow}/{node}: {error}").unwrap();
+                }
             }
             bail!("{output}");
         }
@@ -194,7 +196,7 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
-    ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
+    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
@@ -217,7 +219,7 @@ impl Daemon {
             inter_daemon_connections: BTreeMap::new(),
             machine_id,
             exit_when_done,
-            dataflow_errors: Vec::new(),
+            dataflow_errors: BTreeMap::new(),
             clock,
         };
 
@@ -238,7 +240,7 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<Vec<(Uuid, NodeId, eyre::Report)>> {
+    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
@@ -885,6 +887,17 @@ impl Daemon {
 
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
+            let result = match self.dataflow_errors.get(&dataflow.id) {
+                None => Ok(()),
+                Some(errors) => {
+                    let mut output = "some nodes failed:".to_owned();
+                    for (node, error) in errors {
+                        use std::fmt::Write;
+                        write!(&mut output, "\n  - {node}: {error}").unwrap();
+                    }
+                    Err(output)
+                }
+            };
             tracing::info!(
                 "Dataflow `{dataflow_id}` finished on machine `{}`",
                 self.machine_id
@@ -895,7 +908,7 @@ impl Daemon {
                         machine_id: self.machine_id.clone(),
                         event: DaemonEvent::AllNodesFinished {
                             dataflow_id,
-                            result: Ok(()),
+                            result,
                         },
                     },
                     timestamp: self.clock.new_timestamp(),
@@ -1024,13 +1037,16 @@ impl Daemon {
                     }
                 };
 
+                if let Some(err) = node_error {
+                    self.dataflow_errors
+                        .entry(dataflow_id)
+                        .or_default()
+                        .insert(node_id.clone(), err);
+                }
+
                 self.handle_node_stop(dataflow_id, &node_id).await?;
 
                 if let Some(exit_when_done) = &mut self.exit_when_done {
-                    if let Some(err) = node_error {
-                        self.dataflow_errors
-                            .push((dataflow_id, node_id.clone(), err));
-                    }
                     exit_when_done.remove(&(dataflow_id, node_id));
                     if exit_when_done.is_empty() {
                         tracing::info!(

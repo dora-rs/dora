@@ -288,7 +288,9 @@ fn stop_dataflow(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _ } => Ok(()),
+        ControlRequestReply::DataflowStopped { uuid: _, result } => result
+            .map_err(|err| eyre::eyre!(err))
+            .wrap_err("dataflow failed"),
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }
@@ -304,7 +306,9 @@ fn stop_dataflow_by_name(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _ } => Ok(()),
+        ControlRequestReply::DataflowStopped { uuid: _, result } => result
+            .map_err(|err| eyre::eyre!(err))
+            .wrap_err("dataflow failed"),
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }
