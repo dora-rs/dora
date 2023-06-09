@@ -83,6 +83,8 @@ jobs:
 
       - name: "Build cli and binaries"
         timeout-minutes: 45
+        # fail-fast by using bash shell explictly
+        shell: bash
         run: |
           cargo install --path binaries/coordinator
           cargo install --path binaries/daemon
@@ -90,6 +92,8 @@ jobs:
 
       - name: "Test CLI"
         timeout-minutes: 30
+        # fail-fast by using bash shell explictly
+        shell: bash
         run: |
           dora-cli up
           dora-cli list
