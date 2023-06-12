@@ -1,10 +1,14 @@
 use dora_core::{
     config::NodeId,
-    daemon_messages::{DaemonReply, DaemonRequest, DropToken, NodeEvent},
+    daemon_messages::{DaemonReply, DaemonRequest, DropToken, NodeEvent, Timestamped},
+    message::uhlc::{self, Timestamp},
 };
 use eyre::{eyre, Context};
 use flume::RecvTimeoutError;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::daemon_connection::DaemonChannel;
 
@@ -12,9 +16,10 @@ pub fn init(
     node_id: NodeId,
     tx: flume::Sender<EventItem>,
     channel: DaemonChannel,
+    clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel));
+    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -68,8 +73,13 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel))]
-fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel: DaemonChannel) {
+#[tracing::instrument(skip(tx, channel, clock))]
+fn event_stream_loop(
+    node_id: NodeId,
+    tx: flume::Sender<EventItem>,
+    mut channel: DaemonChannel,
+    clock: Arc<uhlc::HLC>,
+) {
     let mut tx = Some(tx);
     let mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)> = Vec::new();
     let mut drop_tokens = Vec::new();
@@ -79,15 +89,21 @@ fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel:
             break 'outer Err(err);
         }
 
-        let daemon_request = DaemonRequest::NextEvent {
-            drop_tokens: std::mem::take(&mut drop_tokens),
+        let daemon_request = Timestamped {
+            inner: DaemonRequest::NextEvent {
+                drop_tokens: std::mem::take(&mut drop_tokens),
+            },
+            timestamp: clock.new_timestamp(),
         };
         let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextEvents(events)) if events.is_empty() => {
-                tracing::trace!("event stream closed for node `{node_id}`");
-                break Ok(());
+            Ok(DaemonReply::NextEvents(events)) => {
+                if events.is_empty() {
+                    tracing::trace!("event stream closed for node `{node_id}`");
+                    break Ok(());
+                } else {
+                    events
+                }
             }
-            Ok(DaemonReply::NextEvents(events)) => events,
             Ok(other) => {
                 let err = eyre!("unexpected control reply: {other:?}");
                 tracing::warn!("{err:?}");
@@ -99,8 +115,11 @@ fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel:
                 continue;
             }
         };
-        for event in events {
-            let drop_token = match &event {
+        for Timestamped { inner, timestamp } in events {
+            if let Err(err) = clock.update_with_timestamp(&timestamp) {
+                tracing::warn!("failed to update HLC: {err}");
+            }
+            let drop_token = match &inner {
                 NodeEvent::Input {
                     data: Some(data), ..
                 } => data.drop_token(),
@@ -116,7 +135,7 @@ fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel:
             if let Some(tx) = tx.as_ref() {
                 let (drop_tx, drop_rx) = flume::bounded(0);
                 match tx.send(EventItem::NodeEvent {
-                    event,
+                    event: inner,
                     ack_channel: drop_tx,
                 }) {
                     Ok(()) => {}
@@ -134,7 +153,7 @@ fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel:
                     pending_drop_tokens.push((token, drop_rx, Instant::now(), 1));
                 }
             } else {
-                tracing::warn!("dropping event because event `tx` was already closed: `{event:?}`");
+                tracing::warn!("dropping event because event `tx` was already closed: `{inner:?}`");
             }
         }
     };
@@ -152,8 +171,13 @@ fn event_stream_loop(node_id: NodeId, tx: flume::Sender<EventItem>, mut channel:
         }
     }
 
-    if let Err(err) = report_remaining_drop_tokens(channel, drop_tokens, pending_drop_tokens)
-        .context("failed to report remaining drop tokens")
+    if let Err(err) = report_remaining_drop_tokens(
+        channel,
+        drop_tokens,
+        pending_drop_tokens,
+        clock.new_timestamp(),
+    )
+    .context("failed to report remaining drop tokens")
     {
         tracing::warn!("{err:?}");
     }
@@ -188,9 +212,10 @@ fn report_remaining_drop_tokens(
     mut channel: DaemonChannel,
     mut drop_tokens: Vec<DropToken>,
     mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)>,
+    timestamp: Timestamp,
 ) -> eyre::Result<()> {
     while !(pending_drop_tokens.is_empty() && drop_tokens.is_empty()) {
-        report_drop_tokens(&mut drop_tokens, &mut channel)?;
+        report_drop_tokens(&mut drop_tokens, &mut channel, timestamp)?;
 
         let mut still_pending = Vec::new();
         for (token, rx, since, _) in pending_drop_tokens.drain(..) {
@@ -225,12 +250,16 @@ fn report_remaining_drop_tokens(
 fn report_drop_tokens(
     drop_tokens: &mut Vec<DropToken>,
     channel: &mut DaemonChannel,
+    timestamp: Timestamp,
 ) -> Result<(), eyre::ErrReport> {
     if drop_tokens.is_empty() {
         return Ok(());
     }
-    let daemon_request = DaemonRequest::ReportDropTokens {
-        drop_tokens: std::mem::take(drop_tokens),
+    let daemon_request = Timestamped {
+        inner: DaemonRequest::ReportDropTokens {
+            drop_tokens: std::mem::take(drop_tokens),
+        },
+        timestamp,
     };
     match channel.request(&daemon_request)? {
         dora_core::daemon_messages::DaemonReply::Empty => Ok(()),

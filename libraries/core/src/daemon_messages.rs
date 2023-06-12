@@ -9,7 +9,7 @@ use crate::{
     config::{DataId, NodeId, NodeRunConfig, OperatorId},
     descriptor::{Descriptor, OperatorDefinition, ResolvedNode},
 };
-use dora_message::Metadata;
+use dora_message::{uhlc, Metadata};
 use uuid::Uuid;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -132,9 +132,15 @@ type SharedMemoryId = String;
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
-    NextEvents(Vec<NodeEvent>),
-    NextDropEvents(Vec<NodeDropEvent>),
+    NextEvents(Vec<Timestamped<NodeEvent>>),
+    NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     Empty,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Timestamped<T> {
+    pub inner: T,
+    pub timestamp: uhlc::Timestamp,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

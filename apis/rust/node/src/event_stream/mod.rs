@@ -1,10 +1,15 @@
+use std::sync::Arc;
+
 pub use event::{Data, Event, MappedInputData};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
-    daemon_messages::{self, DaemonCommunication, DaemonRequest, DataflowId, NodeEvent},
+    daemon_messages::{
+        self, DaemonCommunication, DaemonRequest, DataflowId, NodeEvent, Timestamped,
+    },
+    message::uhlc,
 };
 use eyre::{eyre, Context};
 
@@ -16,14 +21,16 @@ pub struct EventStream {
     receiver: flume::Receiver<EventItem>,
     _thread_handle: EventStreamThreadHandle,
     close_channel: DaemonChannel,
+    clock: Arc<uhlc::HLC>,
 }
 
 impl EventStream {
-    #[tracing::instrument(level = "trace")]
+    #[tracing::instrument(level = "trace", skip(clock))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
+        clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -49,7 +56,7 @@ impl EventStream {
                 })?,
         };
 
-        Self::init_on_channel(dataflow_id, node_id, channel, close_channel)
+        Self::init_on_channel(dataflow_id, node_id, channel, close_channel, clock)
     }
 
     pub(crate) fn init_on_channel(
@@ -57,10 +64,14 @@ impl EventStream {
         node_id: &NodeId,
         mut channel: DaemonChannel,
         mut close_channel: DaemonChannel,
+        clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
-        channel.register(dataflow_id, node_id.clone())?;
+        channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
-            .request(&DaemonRequest::Subscribe)
+            .request(&Timestamped {
+                inner: DaemonRequest::Subscribe,
+                timestamp: clock.new_timestamp(),
+            })
             .map_err(|e| eyre!(e))
             .wrap_err("failed to create subscription with dora-daemon")?;
 
@@ -72,16 +83,17 @@ impl EventStream {
             other => eyre::bail!("unexpected subscribe reply: {other:?}"),
         }
 
-        close_channel.register(dataflow_id, node_id.clone())?;
+        close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         let (tx, rx) = flume::bounded(0);
-        let thread_handle = thread::init(node_id.clone(), tx, channel)?;
+        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
             receiver: rx,
             _thread_handle: thread_handle,
             close_channel,
+            clock,
         })
     }
 
@@ -140,6 +152,7 @@ impl EventStream {
                     Event::Error(err.wrap_err("internal error").to_string())
                 }
             },
+
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
             }
@@ -152,9 +165,13 @@ impl EventStream {
 impl Drop for EventStream {
     #[tracing::instrument(skip(self), fields(%self.node_id))]
     fn drop(&mut self) {
+        let request = Timestamped {
+            inner: DaemonRequest::EventStreamDropped,
+            timestamp: self.clock.new_timestamp(),
+        };
         let result = self
             .close_channel
-            .request(&DaemonRequest::EventStreamDropped)
+            .request(&request)
             .map_err(|e| eyre!(e))
             .wrap_err("failed to signal event stream closure to dora-daemon")
             .and_then(|r| match r {

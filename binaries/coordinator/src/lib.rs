@@ -6,8 +6,9 @@ pub use control::ControlEvent;
 use dora_core::{
     config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
-    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply},
+    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
+    message::uhlc::{self, HLC},
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -21,6 +22,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::{
@@ -119,6 +121,8 @@ async fn start_inner(
     tasks: &FuturesUnordered<JoinHandle<()>>,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> eyre::Result<()> {
+    let clock = Arc::new(HLC::default());
+
     let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
         c.map(Event::NewDaemonConnection)
             .wrap_err("failed to open connection")
@@ -164,7 +168,11 @@ async fn start_inner(
                 connection.set_nodelay(true)?;
                 let events_tx = daemon_events_tx.clone();
                 if let Some(events_tx) = events_tx {
-                    let task = tokio::spawn(listener::handle_connection(connection, events_tx));
+                    let task = tokio::spawn(listener::handle_connection(
+                        connection,
+                        events_tx,
+                        clock.clone(),
+                    ));
                     tasks.push(task);
                 } else {
                     tracing::warn!(
@@ -191,8 +199,12 @@ async fn start_inner(
                             not compatible with coordinator v{coordinator_version}"
                         ))
                     };
+                    let reply = Timestamped {
+                        inner: reply,
+                        timestamp: clock.new_timestamp(),
+                    };
                     let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await;
-                    match (reply, send_result) {
+                    match (reply.inner, send_result) {
                         (RegisterResult::Ok, Ok(())) => {
                             let previous = daemon_connections.insert(
                                 machine_id.clone(),
@@ -228,12 +240,14 @@ async fn start_inner(
                             dataflow.pending_machines.remove(&machine_id);
                             dataflow.init_success &= success;
                             if dataflow.pending_machines.is_empty() {
-                                let message =
-                                    serde_json::to_vec(&DaemonCoordinatorEvent::AllNodesReady {
+                                let message = serde_json::to_vec(&Timestamped {
+                                    inner: DaemonCoordinatorEvent::AllNodesReady {
                                         dataflow_id: uuid,
                                         success: dataflow.init_success,
-                                    })
-                                    .wrap_err("failed to serialize AllNodesReady message")?;
+                                    },
+                                    timestamp: clock.new_timestamp(),
+                                })
+                                .wrap_err("failed to serialize AllNodesReady message")?;
 
                                 // notify all machines that run parts of the dataflow
                                 for machine_id in &dataflow.machines {
@@ -327,6 +341,7 @@ async fn start_inner(
                                     local_working_dir,
                                     name,
                                     &mut daemon_connections,
+                                    &clock,
                                 )
                                 .await?;
                                 Ok(dataflow)
@@ -365,6 +380,7 @@ async fn start_inner(
                                     node_id,
                                     operator_id,
                                     &mut daemon_connections,
+                                    clock.new_timestamp(),
                                 )
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
@@ -384,6 +400,7 @@ async fn start_inner(
                                 dataflow_uuid,
                                 &mut daemon_connections,
                                 reply_sender,
+                                clock.new_timestamp(),
                             )
                             .await?;
                         }
@@ -396,6 +413,7 @@ async fn start_inner(
                                         uuid,
                                         &mut daemon_connections,
                                         reply_sender,
+                                        clock.new_timestamp(),
                                     )
                                     .await?
                                 }
@@ -419,9 +437,10 @@ async fn start_inner(
                                 dataflow_uuid,
                                 node.into(),
                                 &mut daemon_connections,
+                                clock.new_timestamp(),
                             )
                             .await
-                            .map(|logs| ControlRequestReply::Logs(logs));
+                            .map(ControlRequestReply::Logs);
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Destroy => {
@@ -432,6 +451,7 @@ async fn start_inner(
                                 &mut daemon_connections,
                                 &abort_handle,
                                 &mut daemon_events_tx,
+                                &clock,
                             )
                             .await
                             .map(|()| ControlRequestReply::DestroyOk);
@@ -474,13 +494,16 @@ async fn start_inner(
                         disconnected.insert(machine_id.clone());
                         continue;
                     }
-                    let result: eyre::Result<()> =
-                        tokio::time::timeout(Duration::from_millis(500), send_watchdog_message(&mut connection.stream))
-                            .await
-                            .wrap_err("timeout")
-                            .and_then(|r| r).wrap_err_with(||
-                                format!("daemon at `{machine_id}` did not react as expected to watchdog message"),
-                            );
+                    let result: eyre::Result<()> = tokio::time::timeout(
+                        Duration::from_millis(500),
+                        send_heartbeat_message(&mut connection.stream, clock.new_timestamp()),
+                    )
+                    .await
+                    .wrap_err("timeout")
+                    .and_then(|r| r)
+                    .wrap_err_with(|| {
+                        format!("failed to send heartbeat message to daemon at `{machine_id}`")
+                    });
                     if let Err(err) = result {
                         tracing::warn!("{err:?}");
                         disconnected.insert(machine_id.clone());
@@ -500,6 +523,7 @@ async fn start_inner(
                     &mut daemon_connections,
                     &abort_handle,
                     &mut daemon_events_tx,
+                    &clock,
                 )
                 .await?;
             }
@@ -522,6 +546,7 @@ async fn stop_dataflow_by_uuid(
     dataflow_uuid: Uuid,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     reply_sender: tokio::sync::oneshot::Sender<Result<ControlRequestReply, eyre::ErrReport>>,
+    timestamp: uhlc::Timestamp,
 ) -> Result<(), eyre::ErrReport> {
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
         if let Some(result) = dataflow_results.get(&dataflow_uuid) {
@@ -535,7 +560,7 @@ async fn stop_dataflow_by_uuid(
         bail!("no known dataflow found with UUID `{dataflow_uuid}`")
     };
     let stop = async {
-        stop_dataflow(dataflow, dataflow_uuid, daemon_connections).await?;
+        stop_dataflow(dataflow, dataflow_uuid, daemon_connections, timestamp).await?;
         Result::<_, eyre::Report>::Ok(())
     };
     match stop.await {
@@ -603,22 +628,30 @@ async fn handle_destroy(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     abortable_events: &futures::stream::AbortHandle,
     daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
+    clock: &HLC,
 ) -> Result<(), eyre::ErrReport> {
     abortable_events.abort();
     for (&uuid, dataflow) in running_dataflows {
-        stop_dataflow(dataflow, uuid, daemon_connections).await?;
+        stop_dataflow(dataflow, uuid, daemon_connections, clock.new_timestamp()).await?;
     }
-    destroy_daemons(daemon_connections).await?;
+    destroy_daemons(daemon_connections, clock.new_timestamp()).await?;
     *daemon_events_tx = None;
     Ok(())
 }
 
-async fn send_watchdog_message(connection: &mut TcpStream) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Heartbeat).unwrap();
+async fn send_heartbeat_message(
+    connection: &mut TcpStream,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<()> {
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::Heartbeat,
+        timestamp,
+    })
+    .unwrap();
 
     tcp_send(connection, &message)
         .await
-        .wrap_err("failed to send watchdog message to daemon")
+        .wrap_err("failed to send heartbeat message to daemon")
 }
 
 struct RunningDataflow {
@@ -660,8 +693,12 @@ async fn stop_dataflow(
     dataflow: &RunningDataflow,
     uuid: Uuid,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
+    timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::StopDataflow { dataflow_id: uuid })?;
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::StopDataflow { dataflow_id: uuid },
+        timestamp,
+    })?;
 
     for machine_id in &dataflow.machines {
         let daemon_connection = daemon_connections
@@ -695,14 +732,18 @@ async fn reload_dataflow(
     node_id: NodeId,
     operator_id: Option<OperatorId>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
+    timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
         bail!("No running dataflow found with UUID `{dataflow_id}`")
     };
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::ReloadDataflow {
-        dataflow_id,
-        node_id,
-        operator_id,
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::ReloadDataflow {
+            dataflow_id,
+            node_id,
+            operator_id,
+        },
+        timestamp,
     })?;
 
     for machine_id in &dataflow.machines {
@@ -737,6 +778,7 @@ async fn retrieve_logs(
     dataflow_id: Uuid,
     node_id: NodeId,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
+    timestamp: uhlc::Timestamp,
 ) -> eyre::Result<Vec<u8>> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
         dataflow.nodes.clone()
@@ -746,9 +788,12 @@ async fn retrieve_logs(
         bail!("No dataflow found with UUID `{dataflow_id}`")
     };
 
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Logs {
-        dataflow_id,
-        node_id: node_id.clone(),
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::Logs {
+            dataflow_id,
+            node_id: node_id.clone(),
+        },
+        timestamp,
     })?;
 
     let machine_ids: Vec<String> = nodes
@@ -796,12 +841,13 @@ async fn start_dataflow(
     working_dir: PathBuf,
     name: Option<String>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
+    clock: &HLC,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
         machines,
         nodes,
-    } = spawn_dataflow(dataflow, working_dir, daemon_connections).await?;
+    } = spawn_dataflow(dataflow, working_dir, daemon_connections, clock).await?;
     Ok(RunningDataflow {
         uuid,
         name,
@@ -819,8 +865,12 @@ async fn start_dataflow(
 
 async fn destroy_daemons(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
+    timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Destroy)?;
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::Destroy,
+        timestamp,
+    })?;
 
     for (machine_id, mut daemon_connection) in daemon_connections.drain() {
         tcp_send(&mut daemon_connection.stream, &message)
