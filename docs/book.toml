@@ -1,6 +1,0 @@
-[book]
-authors = ["Haixuan Xavier Tao", "Philipp Oppermann"]
-language = "en"
-multilingual = false
-src = "src"
-title = "dora-rs"
