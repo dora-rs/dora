@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use dora_core::{
     config::NodeId,
     coordinator_messages::{CoordinatorRequest, DaemonEvent},
-    daemon_messages::{DaemonReply, DataflowId},
+    daemon_messages::{DaemonReply, DataflowId, Timestamped},
+    message::uhlc::{Timestamp, HLC},
 };
 use eyre::{bail, Context};
 use tokio::{net::TcpStream, sync::oneshot};
@@ -59,23 +60,27 @@ impl PendingNodes {
         node_id: NodeId,
         reply_sender: oneshot::Sender<DaemonReply>,
         coordinator_connection: &mut Option<TcpStream>,
+        clock: &HLC,
     ) -> eyre::Result<DataflowStatus> {
         self.waiting_subscribers
             .insert(node_id.clone(), reply_sender);
         self.local_nodes.remove(&node_id);
 
-        self.update_dataflow_status(coordinator_connection).await
+        self.update_dataflow_status(coordinator_connection, clock)
+            .await
     }
 
     pub async fn handle_node_stop(
         &mut self,
         node_id: &NodeId,
         coordinator_connection: &mut Option<TcpStream>,
+        clock: &HLC,
     ) -> eyre::Result<()> {
         if self.local_nodes.remove(node_id) {
             tracing::warn!("node `{node_id}` exited before initializing dora connection");
             self.exited_before_subscribe.insert(node_id.clone());
-            self.update_dataflow_status(coordinator_connection).await?;
+            self.update_dataflow_status(coordinator_connection, clock)
+                .await?;
         }
         Ok(())
     }
@@ -97,11 +102,13 @@ impl PendingNodes {
     async fn update_dataflow_status(
         &mut self,
         coordinator_connection: &mut Option<TcpStream>,
+        clock: &HLC,
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
                 if !self.reported_init_to_coordinator {
-                    self.report_nodes_ready(coordinator_connection).await?;
+                    self.report_nodes_ready(coordinator_connection, clock.new_timestamp())
+                        .await?;
                     self.reported_init_to_coordinator = true;
                 }
                 Ok(DataflowStatus::Pending)
@@ -139,6 +146,7 @@ impl PendingNodes {
     async fn report_nodes_ready(
         &self,
         coordinator_connection: &mut Option<TcpStream>,
+        timestamp: Timestamp,
     ) -> eyre::Result<()> {
         let Some(connection) = coordinator_connection else {
             bail!("no coordinator connection to send AllNodesReady");
@@ -147,12 +155,15 @@ impl PendingNodes {
         let success = self.exited_before_subscribe.is_empty();
         tracing::info!("all local nodes are ready (success = {success}), waiting for remote nodes");
 
-        let msg = serde_json::to_vec(&CoordinatorRequest::Event {
-            machine_id: self.machine_id.clone(),
-            event: DaemonEvent::AllNodesReady {
-                dataflow_id: self.dataflow_id,
-                success,
+        let msg = serde_json::to_vec(&Timestamped {
+            inner: CoordinatorRequest::Event {
+                machine_id: self.machine_id.clone(),
+                event: DaemonEvent::AllNodesReady {
+                    dataflow_id: self.dataflow_id,
+                    success,
+                },
             },
+            timestamp,
         })?;
         tcp_send(connection, &msg)
             .await

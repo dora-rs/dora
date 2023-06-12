@@ -4,8 +4,11 @@ use crate::{
 };
 
 use dora_core::{
-    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes},
+    daemon_messages::{
+        DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes, Timestamped,
+    },
     descriptor::{Descriptor, ResolvedNode},
+    message::uhlc::HLC,
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{
@@ -14,11 +17,12 @@ use std::{
 };
 use uuid::Uuid;
 
-#[tracing::instrument(skip(daemon_connections))]
+#[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
     dataflow: Descriptor,
     working_dir: PathBuf,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
+    clock: &HLC,
 ) -> eyre::Result<SpawnedDataflow> {
     dataflow.check(&working_dir)?;
 
@@ -43,7 +47,10 @@ pub(super) async fn spawn_dataflow(
         machine_listen_ports,
         dataflow_descriptor: dataflow,
     };
-    let message = serde_json::to_vec(&DaemonCoordinatorEvent::Spawn(spawn_command))?;
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::Spawn(spawn_command),
+        timestamp: clock.new_timestamp(),
+    })?;
 
     for machine in &machines {
         tracing::trace!("Spawning dataflow `{uuid}` on machine `{machine}`");

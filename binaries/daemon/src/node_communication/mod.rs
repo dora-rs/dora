@@ -3,7 +3,9 @@ use dora_core::{
     config::{DataId, LocalCommunicationConfig, NodeId},
     daemon_messages::{
         DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, NodeDropEvent, NodeEvent,
+        Timestamped,
     },
+    message::uhlc,
 };
 use eyre::{eyre, Context};
 use futures::{future, task, Future};
@@ -12,6 +14,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     mem,
     net::Ipv4Addr,
+    sync::Arc,
     task::Poll,
 };
 use tokio::{
@@ -29,9 +32,10 @@ pub mod tcp;
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
-    daemon_tx: &mpsc::Sender<Event>,
+    daemon_tx: &mpsc::Sender<Timestamped<Event>>,
     config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
+    clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         LocalCommunicationConfig::Tcp => {
@@ -51,7 +55,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, queue_sizes).await;
+                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -84,7 +88,8 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create control server")?;
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes));
+                let clock = clock.clone();
+                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock));
             }
 
             {
@@ -93,8 +98,9 @@ pub async fn spawn_listener_loop(
                 let event_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
+                let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -105,8 +111,9 @@ pub async fn spawn_listener_loop(
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
+                let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
                     tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
                 });
             }
@@ -116,8 +123,9 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create events close server")?;
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
+                let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
                     tracing::debug!(
                         "events close listener loop finished for `{drop_loop_node_id}`"
                     );
@@ -137,18 +145,20 @@ pub async fn spawn_listener_loop(
 struct Listener {
     dataflow_id: DataflowId,
     node_id: NodeId,
-    daemon_tx: mpsc::Sender<Event>,
-    subscribed_events: Option<UnboundedReceiver<NodeEvent>>,
-    subscribed_drop_events: Option<UnboundedReceiver<NodeDropEvent>>,
-    queue: VecDeque<Box<Option<NodeEvent>>>,
+    daemon_tx: mpsc::Sender<Timestamped<Event>>,
+    subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
+    subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
+    queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     queue_sizes: BTreeMap<DataId, usize>,
+    clock: Arc<uhlc::HLC>,
 }
 
 impl Listener {
     pub(crate) async fn run<C: Connection>(
         mut connection: C,
-        daemon_tx: mpsc::Sender<Event>,
+        daemon_tx: mpsc::Sender<Timestamped<Event>>,
         queue_sizes: BTreeMap<DataId, usize>,
+        hlc: Arc<uhlc::HLC>,
     ) {
         // receive the first message
         let message = match connection
@@ -167,7 +177,11 @@ impl Listener {
             }
         };
 
-        match message {
+        if let Err(err) = hlc.update_with_timestamp(&message.timestamp) {
+            tracing::warn!("failed to update HLC: {err}");
+        }
+
+        match message.inner {
             DaemonRequest::Register {
                 dataflow_id,
                 node_id,
@@ -196,6 +210,7 @@ impl Listener {
                             subscribed_drop_events: None,
                             queue_sizes,
                             queue: VecDeque::new(),
+                            clock: hlc.clone(),
                         };
                         match listener
                             .run_inner(connection)
@@ -284,7 +299,7 @@ impl Listener {
 
         // iterate over queued events, newest first
         for event in self.queue.iter_mut().rev() {
-            let Some(NodeEvent::Input { id, data, .. }) = event.as_mut() else {
+            let Some(Timestamped { inner: NodeEvent::Input { id, data, .. }, ..}) = event.as_mut() else {
                 continue;
             };
             match queue_size_remaining.get_mut(id) {
@@ -314,10 +329,14 @@ impl Listener {
     #[tracing::instrument(skip(self, connection), fields(%self.dataflow_id, %self.node_id), level = "trace")]
     async fn handle_message<C: Connection>(
         &mut self,
-        message: DaemonRequest,
+        message: Timestamped<DaemonRequest>,
         connection: &mut C,
     ) -> eyre::Result<()> {
-        match message {
+        let timestamp = message.timestamp;
+        if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
+            tracing::warn!("failed to update HLC: {err}");
+        }
+        match message.inner {
             DaemonRequest::Register { .. } => {
                 let reply = DaemonReply::Result(Err("unexpected register message".into()));
                 self.send_reply(reply, connection)
@@ -464,6 +483,10 @@ impl Listener {
                     tokens: drop_tokens,
                 },
             };
+            let event = Timestamped {
+                inner: event,
+                timestamp: self.clock.new_timestamp(),
+            };
             self.daemon_tx
                 .send(event)
                 .await
@@ -483,6 +506,10 @@ impl Listener {
             dataflow_id: self.dataflow_id,
             node_id: self.node_id.clone(),
             event,
+        };
+        let event = Timestamped {
+            inner: event,
+            timestamp: self.clock.new_timestamp(),
         };
         self.daemon_tx
             .send(event)
@@ -515,7 +542,7 @@ impl Listener {
     /// This is similar to `self.subscribed_events.recv()`. The difference is that the future
     /// does not return `None` when the channel is closed and instead stays pending forever.
     /// This behavior can be useful when waiting for multiple event sources at once.
-    fn next_event(&mut self) -> impl Future<Output = NodeEvent> + Unpin + '_ {
+    fn next_event(&mut self) -> impl Future<Output = Timestamped<NodeEvent>> + Unpin + '_ {
         let poll = |cx: &mut task::Context<'_>| {
             if let Some(events) = &mut self.subscribed_events {
                 match events.poll_recv(cx) {
@@ -532,6 +559,6 @@ impl Listener {
 
 #[async_trait::async_trait]
 trait Connection {
-    async fn receive_message(&mut self) -> eyre::Result<Option<DaemonRequest>>;
+    async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>>;
     async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()>;
 }

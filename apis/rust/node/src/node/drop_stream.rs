@@ -1,11 +1,13 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
     daemon_messages::{
-        self, DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken, NodeDropEvent,
+        self, DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken,
+        NodeDropEvent, Timestamped,
     },
+    message::uhlc,
 };
 use eyre::{eyre, Context};
 use flume::RecvTimeoutError;
@@ -16,11 +18,12 @@ pub struct DropStream {
 }
 
 impl DropStream {
-    #[tracing::instrument(level = "trace")]
+    #[tracing::instrument(level = "trace", skip(hlc))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
+        hlc: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -35,18 +38,22 @@ impl DropStream {
                 .wrap_err_with(|| format!("failed to connect drop stream for node `{node_id}`"))?,
         };
 
-        Self::init_on_channel(dataflow_id, node_id, channel)
+        Self::init_on_channel(dataflow_id, node_id, channel, hlc)
     }
 
     pub fn init_on_channel(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         mut channel: DaemonChannel,
+        clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
-        channel.register(dataflow_id, node_id.clone())?;
+        channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         let reply = channel
-            .request(&DaemonRequest::SubscribeDrop)
+            .request(&Timestamped {
+                inner: DaemonRequest::SubscribeDrop,
+                timestamp: clock.new_timestamp(),
+            })
             .map_err(|e| eyre!(e))
             .wrap_err("failed to create subscription with dora-daemon")?;
 
@@ -61,7 +68,7 @@ impl DropStream {
         let (tx, rx) = flume::bounded(0);
         let node_id_cloned = node_id.clone();
 
-        let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel));
+        let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel, clock));
 
         Ok(Self {
             receiver: rx,
@@ -78,16 +85,27 @@ impl std::ops::Deref for DropStream {
     }
 }
 
-#[tracing::instrument(skip(tx, channel))]
-fn drop_stream_loop(node_id: NodeId, tx: flume::Sender<DropToken>, mut channel: DaemonChannel) {
+#[tracing::instrument(skip(tx, channel, clock))]
+fn drop_stream_loop(
+    node_id: NodeId,
+    tx: flume::Sender<DropToken>,
+    mut channel: DaemonChannel,
+    clock: Arc<uhlc::HLC>,
+) {
     'outer: loop {
-        let daemon_request = DaemonRequest::NextFinishedDropTokens;
+        let daemon_request = Timestamped {
+            inner: DaemonRequest::NextFinishedDropTokens,
+            timestamp: clock.new_timestamp(),
+        };
         let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextDropEvents(events)) if events.is_empty() => {
-                tracing::trace!("drop stream closed for node `{node_id}`");
-                break;
+            Ok(DaemonReply::NextDropEvents(events)) => {
+                if events.is_empty() {
+                    tracing::trace!("drop stream closed for node `{node_id}`");
+                    break;
+                } else {
+                    events
+                }
             }
-            Ok(DaemonReply::NextDropEvents(events)) => events,
             Ok(other) => {
                 let err = eyre!("unexpected drop reply: {other:?}");
                 tracing::warn!("{err:?}");
@@ -99,8 +117,11 @@ fn drop_stream_loop(node_id: NodeId, tx: flume::Sender<DropToken>, mut channel: 
                 continue;
             }
         };
-        for event in events {
-            match event {
+        for Timestamped { inner, timestamp } in events {
+            if let Err(err) = clock.update_with_timestamp(&timestamp) {
+                tracing::warn!("failed to update HLC: {err}");
+            }
+            match inner {
                 NodeDropEvent::OutputDropped { drop_token } => {
                     if tx.send(drop_token).is_err() {
                         tracing::warn!(

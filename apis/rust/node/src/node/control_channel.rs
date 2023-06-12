@@ -1,21 +1,25 @@
+use std::sync::Arc;
+
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{DaemonCommunication, DaemonRequest, Data, DataflowId},
-    message::Metadata,
+    daemon_messages::{DaemonCommunication, DaemonRequest, Data, DataflowId, Timestamped},
+    message::{uhlc::HLC, Metadata},
 };
 use eyre::{bail, eyre, Context};
 
 pub(crate) struct ControlChannel {
     channel: DaemonChannel,
+    clock: Arc<HLC>,
 }
 
 impl ControlChannel {
-    #[tracing::instrument(level = "trace")]
+    #[tracing::instrument(level = "trace", skip(clock))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
+        clock: Arc<HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -27,24 +31,28 @@ impl ControlChannel {
                 .wrap_err("failed to connect control channel")?,
         };
 
-        Self::init_on_channel(dataflow_id, node_id, channel)
+        Self::init_on_channel(dataflow_id, node_id, channel, clock)
     }
 
-    #[tracing::instrument(skip(channel), level = "trace")]
+    #[tracing::instrument(skip(channel, clock), level = "trace")]
     pub fn init_on_channel(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         mut channel: DaemonChannel,
+        clock: Arc<HLC>,
     ) -> eyre::Result<Self> {
-        channel.register(dataflow_id, node_id.clone())?;
+        channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        Ok(Self { channel })
+        Ok(Self { channel, clock })
     }
 
     pub fn report_outputs_done(&mut self) -> eyre::Result<()> {
         let reply = self
             .channel
-            .request(&DaemonRequest::OutputsDone)
+            .request(&Timestamped {
+                inner: DaemonRequest::OutputsDone,
+                timestamp: self.clock.new_timestamp(),
+            })
             .wrap_err("failed to report outputs done to dora-daemon")?;
         match reply {
             dora_core::daemon_messages::DaemonReply::Result(result) => result
@@ -58,7 +66,10 @@ impl ControlChannel {
     pub fn report_closed_outputs(&mut self, outputs: Vec<DataId>) -> eyre::Result<()> {
         let reply = self
             .channel
-            .request(&DaemonRequest::CloseOutputs(outputs))
+            .request(&Timestamped {
+                inner: DaemonRequest::CloseOutputs(outputs),
+                timestamp: self.clock.new_timestamp(),
+            })
             .wrap_err("failed to report closed outputs to dora-daemon")?;
         match reply {
             dora_core::daemon_messages::DaemonReply::Result(result) => result
@@ -82,7 +93,10 @@ impl ControlChannel {
         };
         let reply = self
             .channel
-            .request(&request)
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
             .wrap_err("failed to send SendMessage request to dora-daemon")?;
         match reply {
             dora_core::daemon_messages::DaemonReply::Empty => Ok(()),
