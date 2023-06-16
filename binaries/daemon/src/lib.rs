@@ -355,7 +355,7 @@ impl Daemon {
                     record_folder.display()
                 )
             })?;
-        let record_file_path = record_folder.join("events.txt");
+        let record_file_path = record_folder.join(format!("events-{}.txt", self.machine_id));
         let mut record_file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
