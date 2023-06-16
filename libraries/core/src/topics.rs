@@ -27,6 +27,8 @@ pub enum ControlRequest {
         // TODO: remove this once we figure out deploying of node/operator
         // binaries from CLI to coordinator/daemon
         local_working_dir: PathBuf,
+        /// Whether the events of this dataflow should be recorded.
+        record_events: bool,
     },
     Reload {
         dataflow_id: Uuid,

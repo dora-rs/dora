@@ -259,4 +259,5 @@ pub struct SpawnDataflowNodes {
     pub nodes: Vec<ResolvedNode>,
     pub machine_listen_ports: BTreeMap<String, SocketAddr>,
     pub dataflow_descriptor: Descriptor,
+    pub record: bool,
 }

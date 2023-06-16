@@ -117,7 +117,7 @@ impl Daemon {
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
+    pub async fn run_dataflow(dataflow_path: &Path, record: bool) -> eyre::Result<()> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canoncialize dataflow path")?
@@ -135,6 +135,7 @@ impl Daemon {
             nodes,
             machine_listen_ports: BTreeMap::new(),
             dataflow_descriptor: descriptor,
+            record,
         };
 
         let clock = Arc::new(HLC::default());
@@ -311,6 +312,7 @@ impl Daemon {
                 nodes,
                 machine_listen_ports,
                 dataflow_descriptor,
+                record,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
@@ -329,7 +331,7 @@ impl Daemon {
                 }
 
                 let result = self
-                    .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor)
+                    .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor, record)
                     .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
@@ -506,6 +508,7 @@ impl Daemon {
         working_dir: PathBuf,
         nodes: Vec<ResolvedNode>,
         dataflow_descriptor: Descriptor,
+        record: bool,
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
@@ -514,6 +517,8 @@ impl Daemon {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
         };
+
+        dataflow.record = record;
 
         for node in nodes {
             let local = node.deploy.machine == self.machine_id;
@@ -1275,6 +1280,9 @@ pub struct RunningDataflow {
     ///
     /// TODO: replace this with a constant once `BTreeSet::new` is `const` on stable.
     empty_set: BTreeSet<DataId>,
+
+    /// Whether the events of this dataflow should be recorded and saved to disk.
+    record: bool,
 }
 
 impl RunningDataflow {
@@ -1293,6 +1301,7 @@ impl RunningDataflow {
             _timer_handles: Vec::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
+            record: false,
         }
     }
 

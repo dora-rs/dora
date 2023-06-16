@@ -36,7 +36,7 @@ async fn main() -> eyre::Result<()> {
     build_c_operator().await?;
 
     let dataflow = Path::new("dataflow.yml").to_owned();
-    dora_daemon::Daemon::run_dataflow(&dataflow).await?;
+    dora_daemon::Daemon::run_dataflow(&dataflow, false).await?;
 
     Ok(())
 }

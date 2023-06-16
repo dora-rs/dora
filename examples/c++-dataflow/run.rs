@@ -119,7 +119,7 @@ async fn main() -> eyre::Result<()> {
 
     let dataflow = Path::new("dataflow.yml").to_owned();
     build_package("dora-runtime").await?;
-    dora_daemon::Daemon::run_dataflow(&dataflow).await?;
+    dora_daemon::Daemon::run_dataflow(&dataflow, false).await?;
 
     Ok(())
 }

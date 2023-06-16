@@ -323,6 +323,7 @@ async fn start_inner(
                             dataflow,
                             name,
                             local_working_dir,
+                            record_events,
                         } => {
                             let name = name.or_else(|| names::Generator::default().next());
 
@@ -342,6 +343,7 @@ async fn start_inner(
                                     name,
                                     &mut daemon_connections,
                                     &clock,
+                                    record_events,
                                 )
                                 .await?;
                                 Ok(dataflow)
@@ -842,12 +844,20 @@ async fn start_dataflow(
     name: Option<String>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
+    record_events: bool,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
         machines,
         nodes,
-    } = spawn_dataflow(dataflow, working_dir, daemon_connections, clock).await?;
+    } = spawn_dataflow(
+        dataflow,
+        working_dir,
+        daemon_connections,
+        clock,
+        record_events,
+    )
+    .await?;
     Ok(RunningDataflow {
         uuid,
         name,

@@ -28,6 +28,9 @@ pub struct Args {
 
     #[clap(long)]
     pub run_dora_runtime: bool,
+
+    #[clap(long)]
+    pub record_events: bool,
 }
 
 #[tokio::main]
@@ -43,6 +46,7 @@ async fn run() -> eyre::Result<()> {
         machine_id,
         coordinator_addr,
         run_dora_runtime,
+        record_events,
     } = clap::Parser::parse();
 
     if run_dora_runtime {
@@ -80,7 +84,7 @@ async fn run() -> eyre::Result<()> {
         Some(dataflow_path) => {
             tracing::info!("Starting dataflow `{}`", dataflow_path.display());
 
-            Daemon::run_dataflow(&dataflow_path).await
+            Daemon::run_dataflow(&dataflow_path, record_events).await
         }
         None => {
             Daemon::run(

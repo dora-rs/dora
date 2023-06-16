@@ -23,6 +23,7 @@ pub(super) async fn spawn_dataflow(
     working_dir: PathBuf,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
+    record_events: bool,
 ) -> eyre::Result<SpawnedDataflow> {
     dataflow.check(&working_dir)?;
 
@@ -46,6 +47,7 @@ pub(super) async fn spawn_dataflow(
         nodes: nodes.clone(),
         machine_listen_ports,
         dataflow_descriptor: dataflow,
+        record: record_events,
     };
     let message = serde_json::to_vec(&Timestamped {
         inner: DaemonCoordinatorEvent::Spawn(spawn_command),

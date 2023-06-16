@@ -75,6 +75,9 @@ enum Command {
         attach: bool,
         #[clap(long, action)]
         hot_reload: bool,
+        /// Whether the events of this dataflow should be recorded.
+        #[clap(long, action)]
+        record_events: bool,
     },
     /// Stop the given dataflow UUID. If no id is provided, you will be able to choose between the running dataflows.
     Stop {
@@ -180,6 +183,7 @@ fn run() -> eyre::Result<()> {
             name,
             attach,
             hot_reload,
+            record_events,
         } => {
             let dataflow_descriptor =
                 Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
@@ -198,6 +202,7 @@ fn run() -> eyre::Result<()> {
                 dataflow_descriptor.clone(),
                 name,
                 working_dir,
+                record_events,
                 &mut *session,
             )?;
 
@@ -236,6 +241,7 @@ fn start_dataflow(
     dataflow: Descriptor,
     name: Option<String>,
     local_working_dir: PathBuf,
+    record_events: bool,
     session: &mut TcpRequestReplyConnection,
 ) -> Result<Uuid, eyre::ErrReport> {
     let reply_raw = session
@@ -244,6 +250,7 @@ fn start_dataflow(
                 dataflow,
                 name,
                 local_working_dir,
+                record_events,
             })
             .unwrap(),
         )

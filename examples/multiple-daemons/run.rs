@@ -135,6 +135,7 @@ async fn start_dataflow(
                 dataflow: dataflow_descriptor,
                 local_working_dir: working_dir,
                 name: None,
+                record_events: false,
             },
             reply_sender,
         }))
