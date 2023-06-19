@@ -564,11 +564,9 @@ impl Daemon {
         };
 
         if record {
-            dataflow.recorder = Some(Recorder::new(
-                working_dir.clone(),
-                self.machine_id.clone(),
-                dataflow_id,
-            ));
+            dataflow.recorder = Some(
+                Recorder::new(working_dir.clone(), self.machine_id.clone(), dataflow_id).await?,
+            );
         }
 
         for node in nodes {
@@ -943,37 +941,47 @@ impl Daemon {
 
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
-            let result = match self.dataflow_errors.get(&dataflow.id) {
-                None => Ok(()),
-                Some(errors) => {
-                    let mut output = "some nodes failed:".to_owned();
-                    for (node, error) in errors {
-                        use std::fmt::Write;
-                        write!(&mut output, "\n  - {node}: {error}").unwrap();
-                    }
-                    Err(output)
+            self.handle_dataflow_finished(dataflow_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_dataflow_finished(&mut self, dataflow_id: Uuid) -> Result<(), eyre::ErrReport> {
+        let Some(dataflow) = self.running.remove(&dataflow_id) else {
+            return Ok(())
+        };
+        if let Some(recorder) = dataflow.recorder {
+            recorder.finish().await?;
+        }
+        let result = match self.dataflow_errors.get(&dataflow.id) {
+            None => Ok(()),
+            Some(errors) => {
+                let mut output = "some nodes failed:".to_owned();
+                for (node, error) in errors {
+                    use std::fmt::Write;
+                    write!(&mut output, "\n  - {node}: {error}").unwrap();
                 }
-            };
-            tracing::info!(
-                "Dataflow `{dataflow_id}` finished on machine `{}`",
-                self.machine_id
-            );
-            if let Some(connection) = &mut self.coordinator_connection {
-                let msg = serde_json::to_vec(&Timestamped {
-                    inner: CoordinatorRequest::Event {
-                        machine_id: self.machine_id.clone(),
-                        event: DaemonEvent::AllNodesFinished {
-                            dataflow_id,
-                            result,
-                        },
-                    },
-                    timestamp: self.clock.new_timestamp(),
-                })?;
-                tcp_send(connection, &msg)
-                    .await
-                    .wrap_err("failed to report dataflow finish to dora-coordinator")?;
+                Err(output)
             }
-            self.running.remove(&dataflow_id);
+        };
+        tracing::info!(
+            "Dataflow `{dataflow_id}` finished on machine `{}`",
+            self.machine_id
+        );
+        if let Some(connection) = &mut self.coordinator_connection {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    machine_id: self.machine_id.clone(),
+                    event: DaemonEvent::AllNodesFinished {
+                        dataflow_id,
+                        result,
+                    },
+                },
+                timestamp: self.clock.new_timestamp(),
+            })?;
+            tcp_send(connection, &msg)
+                .await
+                .wrap_err("failed to report dataflow finish to dora-coordinator")?;
         }
         Ok(())
     }
