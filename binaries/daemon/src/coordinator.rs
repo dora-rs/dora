@@ -15,9 +15,11 @@ use tokio::{
 };
 use tokio_stream::{wrappers::ReceiverStream, Stream};
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct CoordinatorEvent {
+    #[serde(flatten)]
     pub event: DaemonCoordinatorEvent,
+    #[serde(skip)]
     pub reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
 }
 

@@ -1465,7 +1465,7 @@ struct DropTokenInformation {
     pending_nodes: BTreeSet<NodeId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub enum Event {
     Node {
         dataflow_id: DataflowId,
@@ -1485,21 +1485,27 @@ impl From<DoraEvent> for Event {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub enum DaemonNodeEvent {
     OutputsDone {
+        #[serde(skip)]
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     Subscribe {
+        #[serde(skip)]
         event_sender: UnboundedSender<Timestamped<daemon_messages::NodeEvent>>,
+        #[serde(skip)]
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     SubscribeDrop {
+        #[serde(skip)]
         event_sender: UnboundedSender<Timestamped<daemon_messages::NodeDropEvent>>,
+        #[serde(skip)]
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
         outputs: Vec<dora_core::config::DataId>,
+        #[serde(skip)]
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     SendOut {
@@ -1511,11 +1517,12 @@ pub enum DaemonNodeEvent {
         tokens: Vec<DropToken>,
     },
     EventStreamDropped {
+        #[serde(skip)]
         reply_sender: oneshot::Sender<DaemonReply>,
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum DoraEvent {
     Timer {
         dataflow_id: DataflowId,
@@ -1529,10 +1536,10 @@ pub enum DoraEvent {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum NodeExitStatus {
     Success,
-    IoError(io::Error),
+    IoError(String),
     ExitCode(i32),
     Signal(i32),
     Unknown,
@@ -1557,7 +1564,7 @@ impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
                     Self::Unknown
                 }
             }
-            Err(err) => Self::IoError(err),
+            Err(err) => Self::IoError(err.to_string()),
         }
     }
 }

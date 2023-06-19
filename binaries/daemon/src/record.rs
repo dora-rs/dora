@@ -4,6 +4,8 @@ use dora_core::{daemon_messages::DataflowId, message::uhlc::Timestamp};
 use eyre::Context;
 use tokio::io::AsyncWriteExt;
 
+use crate::Event;
+
 pub struct Recorder {
     working_dir: PathBuf,
     machine_id: String,
@@ -20,10 +22,11 @@ impl Recorder {
     }
 
     pub async fn record(&mut self, event: &crate::Event, timestamp: Timestamp) -> eyre::Result<()> {
-        let rendered = format!("at {timestamp}: {event:?}\n\n");
+        let entry = RecordEntry { timestamp, event };
+        let rendered = serde_json::to_string(&entry).context("failed to serialize record entry")?;
 
         let record_folder = self.record_folder().await?;
-        let record_file_path = record_folder.join(format!("events-{}.txt", self.machine_id));
+        let record_file_path = record_folder.join(format!("events-{}.json", self.machine_id));
         let mut record_file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -39,6 +42,10 @@ impl Recorder {
             .write_all(rendered.as_bytes())
             .await
             .context("failed to write event to record file")?;
+        record_file
+            .write_all("\n".as_bytes())
+            .await
+            .context("failed to write newline to record file")?;
 
         Ok(())
     }
@@ -58,4 +65,10 @@ impl Recorder {
             })?;
         Ok(record_folder)
     }
+}
+
+#[derive(Debug, serde::Serialize)]
+struct RecordEntry<'a> {
+    timestamp: Timestamp,
+    event: &'a Event,
 }
