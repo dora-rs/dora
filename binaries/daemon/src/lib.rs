@@ -18,6 +18,7 @@ use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
 use pending::PendingNodes;
+use record::Recorder;
 use shared_memory_server::ShmemConf;
 use std::env::temp_dir;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use std::{
 };
 use tcp_utils::tcp_send;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot::Sender;
@@ -46,6 +47,7 @@ mod inter_daemon;
 mod log;
 mod node_communication;
 mod pending;
+mod record;
 mod spawn;
 mod tcp_utils;
 
@@ -336,41 +338,9 @@ impl Daemon {
         let Some(dataflow) = self.running.get_mut(dataflow_id) else {
             bail!("no running dataflow with id `{dataflow_id}`");
         };
-        if !dataflow.record {
-            // event recording is disabled
-            return Ok(());
+        if let Some(recorder) = &mut dataflow.recorder {
+            recorder.record(event, timestamp).await?;
         }
-
-        let rendered = format!("at {timestamp}: {event:?}\n\n");
-
-        let record_folder = dataflow
-            .working_dir
-            .join("record")
-            .join(dataflow.id.to_string());
-        tokio::fs::create_dir_all(&record_folder)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to create record folder at {}",
-                    record_folder.display()
-                )
-            })?;
-        let record_file_path = record_folder.join(format!("events-{}.txt", self.machine_id));
-        let mut record_file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&record_file_path)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to open record file at {}",
-                    record_file_path.display()
-                )
-            })?;
-        record_file
-            .write_all(rendered.as_bytes())
-            .await
-            .context("failed to write event to record file")?;
 
         Ok(())
     }
@@ -585,8 +555,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         record: bool,
     ) -> eyre::Result<()> {
-        let dataflow =
-            RunningDataflow::new(dataflow_id, self.machine_id.clone(), working_dir.clone());
+        let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(dataflow),
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -594,7 +563,13 @@ impl Daemon {
             }
         };
 
-        dataflow.record = record;
+        if record {
+            dataflow.recorder = Some(Recorder::new(
+                working_dir.clone(),
+                self.machine_id.clone(),
+                dataflow_id,
+            ));
+        }
 
         for node in nodes {
             let local = node.deploy.machine == self.machine_id;
@@ -1334,7 +1309,6 @@ fn close_input(
 
 pub struct RunningDataflow {
     id: Uuid,
-    working_dir: PathBuf,
 
     /// Local nodes that are not started yet
     pending_nodes: PendingNodes,
@@ -1360,14 +1334,13 @@ pub struct RunningDataflow {
     empty_set: BTreeSet<DataId>,
 
     /// Whether the events of this dataflow should be recorded and saved to disk.
-    record: bool,
+    recorder: Option<Recorder>,
 }
 
 impl RunningDataflow {
-    fn new(dataflow_id: Uuid, machine_id: String, working_dir: PathBuf) -> RunningDataflow {
+    fn new(dataflow_id: Uuid, machine_id: String) -> RunningDataflow {
         Self {
             id: dataflow_id,
-            working_dir,
             pending_nodes: PendingNodes::new(dataflow_id, machine_id),
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
@@ -1380,7 +1353,7 @@ impl RunningDataflow {
             _timer_handles: Vec::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
-            record: false,
+            recorder: None,
         }
     }
 
