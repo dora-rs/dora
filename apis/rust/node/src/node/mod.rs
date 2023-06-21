@@ -8,7 +8,7 @@ use dora_core::{
     message::{uhlc, Metadata, MetadataParameters},
 };
 use eyre::{bail, WrapErr};
-use shared_memory::{Shmem, ShmemConf};
+use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{HashMap, VecDeque},
     ops::{Deref, DerefMut},

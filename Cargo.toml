@@ -102,7 +102,3 @@ path = "examples/benchmark/run.rs"
 [[example]]
 name = "multiple-daemons"
 path = "examples/multiple-daemons/run.rs"
-
-[patch.crates-io.shared_memory]
-git = "https://github.com/phil-opp/shared_memory.git"
-branch = "read-only"

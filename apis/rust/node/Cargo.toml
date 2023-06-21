@@ -24,7 +24,7 @@ flume = "0.10.14"
 uuid = { version = "1.1.2", features = ["v4"] }
 capnp = "0.14.11"
 bincode = "1.3.3"
-shared_memory = "0.12.0"
+shared_memory_extended = "0.13.0"
 dora-tracing = { workspace = true, optional = true }
 arrow = "35.0.0"
 
