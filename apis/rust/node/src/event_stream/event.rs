@@ -5,7 +5,7 @@ use dora_core::{
     message::Metadata,
 };
 use eyre::Context;
-use shared_memory::{Shmem, ShmemConf};
+use shared_memory_extended::{Shmem, ShmemConf};
 
 #[derive(Debug)]
 #[non_exhaustive]
