@@ -1,11 +1,8 @@
 [package]
-name = "rclrust-msg-gen"
+name = "dora-ros2-bridge-msg-gen"
 version = "0.1.0"
 edition = "2021"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
-
-description = "internal crate in rclrust-msg"
-repository = "https://github.com/rclrust/rclrust"
 license = "Apache-2.0"
 
 workspace = ".."
