@@ -1,2 +1,2 @@
 [workspace]
-members = ["rclrust-msg-gen"]
+members = ["msg-gen"]
