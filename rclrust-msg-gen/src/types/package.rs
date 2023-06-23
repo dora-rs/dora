@@ -32,7 +32,7 @@ impl Package {
                 // empty msg
             }
         } else {
-            let items = self.messages.iter().map(|v| v.token_stream_with_mod("msg"));
+            let items = self.messages.iter().map(|v| v.token_stream_with_mod());
             quote! {
                 pub mod msg {
                     #(#items)*
@@ -47,7 +47,7 @@ impl Package {
                 // empty srv
             }
         } else {
-            let items = self.services.iter().map(|v| v.token_stream_with_mod("srv"));
+            let items = self.services.iter().map(|v| v.token_stream_with_mod());
             quote! {
                 pub mod srv {
                     #(#items)*
@@ -62,10 +62,7 @@ impl Package {
                 // empty srv
             }
         } else {
-            let items = self
-                .actions
-                .iter()
-                .map(|v| v.token_stream_with_mod("action"));
+            let items = self.actions.iter().map(|v| v.token_stream_with_mod());
             quote! {
                 pub mod action {
                     #(#items)*

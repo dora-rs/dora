@@ -22,23 +22,26 @@ pub enum MemberType {
 }
 
 impl MemberType {
-    pub fn type_tokens(&self, package: &str) -> impl ToTokens {
+    pub fn type_tokens(&self, package: &str) -> (impl ToTokens, impl ToTokens) {
         match self {
             Self::NestableType(t) => {
                 let token = t.type_tokens(package);
-                quote! { #token }
+                (quote! {}, quote! { #token })
             }
             Self::Array(t) => {
                 let token = t.type_tokens(package);
-                quote! { #token }
+                (
+                    quote! { #[serde(with = "serde_big_array::BigArray")] },
+                    quote! { #token },
+                )
             }
             Self::Sequence(t) => {
                 let token = t.type_tokens(package);
-                quote! { #token }
+                (quote! {}, quote! { #token })
             }
             Self::BoundedSequence(t) => {
                 let token = t.type_tokens(package);
-                quote! { #token }
+                (quote! {}, quote! { #token })
             }
         }
     }

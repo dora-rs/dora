@@ -33,8 +33,8 @@ impl Member {
 
     fn rust_type_def(&self, package: &str) -> impl ToTokens {
         let name = self.name_token();
-        let type_ = self.r#type.type_tokens(package);
-        quote! { pub #name: #type_, }
+        let (attr, type_) = self.r#type.type_tokens(package);
+        quote! { #attr pub #name: #type_, }
     }
 
     fn default_value(&self) -> impl ToTokens {
@@ -122,9 +122,9 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn token_stream_with_mod(&self, namespace: &str) -> impl ToTokens {
+    pub fn token_stream_with_mod(&self) -> impl ToTokens {
         let mod_name = format_ident!("_{}", self.name.to_snake_case());
-        let inner = self.token_stream(namespace);
+        let inner = self.token_stream();
         quote! {
             pub use #mod_name::*;
             mod #mod_name {
@@ -133,22 +133,10 @@ impl Message {
         }
     }
 
-    pub fn token_stream(&self, namespace: &str) -> impl ToTokens {
+    pub fn token_stream(&self) -> impl ToTokens {
         let rust_type = format_ident!("{}", self.name);
         let raw_type = format_ident!("{}_Raw", self.name);
         let raw_ref_type = format_ident!("{}_RawRef", self.name);
-
-        let func_prefix = format!("{}__{}__{}", self.package, namespace, self.name);
-
-        let typesupport_c_lib = format!("{}__rosidl_typesupport_c", self.package);
-        let type_supprt_func = format_ident!(
-            "rosidl_typesupport_c__get_message_type_support_handle__{}",
-            func_prefix
-        );
-
-        let generator_c_lib = format!("{}__rosidl_generator_c", self.package);
-        let init_func = format_ident!("{}__init", func_prefix);
-        let fini_func = format_ident!("{}__fini", func_prefix);
 
         let members_for_c = if self.members.is_empty() {
             vec![Member::dummy()]
@@ -191,7 +179,7 @@ impl Message {
             };
 
             #[allow(non_camel_case_types)]
-            #[derive(std::fmt::Debug, std::clone::Clone, std::cmp::PartialEq)]
+            #[derive(std::fmt::Debug, std::clone::Clone, std::cmp::PartialEq, serde::Serialize, serde::Deserialize)]
             pub struct #rust_type {
                 #(#rust_type_def_inner)*
             }
@@ -200,20 +188,12 @@ impl Message {
                 #(#constants_def_inner)*
             }
 
-            #[link(name = #typesupport_c_lib)]
-            extern "C" {
-                fn #type_supprt_func() -> *const c_void;
-            }
 
             impl crate::_core::MessageT for #rust_type {
                 type Raw = #raw_type;
                 type RawRef = #raw_ref_type;
 
-                fn type_support() -> *const c_void {
-                    unsafe {
-                        #type_supprt_func()
-                    }
-                }
+
             }
 
             impl crate::_core::InternalDefault for #rust_type {
@@ -229,14 +209,6 @@ impl Message {
                 fn default() -> Self {
                     crate::_core::InternalDefault::_default()
                 }
-            }
-
-            #[link(name = #generator_c_lib)]
-            extern "C" {
-                #[must_use]
-                fn #init_func(msg: *mut #raw_type) -> bool;
-
-                fn #fini_func(msg: *mut #raw_type);
             }
 
 
@@ -257,27 +229,8 @@ impl Message {
                 }
             }
 
-            impl std::default::Default for #raw_type {
-                fn default() -> Self {
-                    unsafe {
-                        let mut msg: Self = std::mem::zeroed();
-                        assert!(#init_func(&mut msg));
-                        msg
-                    }
-
-                }
-            }
-
             unsafe impl std::marker::Send for #raw_type {}
             unsafe impl std::marker::Sync for #raw_type {}
-
-            impl std::ops::Drop for #raw_type {
-                fn drop(&mut self) {
-                    unsafe {
-                        #fini_func(self as *mut _);
-                    }
-                }
-            }
 
             #[allow(non_camel_case_types)]
             #[doc(hidden)]
