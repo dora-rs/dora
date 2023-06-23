@@ -215,7 +215,7 @@ impl GenericString {
 
     fn type_tokens(self) -> impl ToTokens {
         if self.is_wide() {
-            quote! { ::widestring::U16String }
+            quote! { crate::_core::string::U16String }
         } else {
             quote! { ::std::string::String }
         }

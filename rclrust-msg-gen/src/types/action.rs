@@ -132,9 +132,9 @@ impl Action {
         }
     }
 
-    pub fn token_stream_with_mod(&self, namespace: &str) -> impl ToTokens {
+    pub fn token_stream_with_mod(&self) -> impl ToTokens {
         let mod_name = format_ident!("_{}", self.name.to_snake_case());
-        let inner = self.token_stream(namespace);
+        let inner = self.token_stream();
         quote! {
             pub use #mod_name::*;
             mod #mod_name {
@@ -143,7 +143,7 @@ impl Action {
         }
     }
 
-    pub fn token_stream(&self, namespace: &str) -> impl ToTokens {
+    pub fn token_stream(&self) -> impl ToTokens {
         let action_type = format_ident!("{}", self.name);
         let goal_type = format_ident!("{}_Goal", self.name);
         let result_type = format_ident!("{}_Result", self.name);
@@ -152,20 +152,12 @@ impl Action {
         let get_result_type = format_ident!("{}_GetResult", self.name);
         let feeback_message_type = format_ident!("{}_FeedbackMessage", self.name);
 
-        let typesupport_c_lib = format!("{}__rosidl_typesupport_c", self.package);
-        let type_supprt_func = format_ident!(
-            "rosidl_typesupport_c__get_action_type_support_handle__{}__{}__{}",
-            self.package,
-            namespace,
-            self.name
-        );
-
-        let goal_body = self.goal.token_stream(namespace);
-        let result_body = self.result.token_stream(namespace);
-        let feedback_body = self.feedback.token_stream(namespace);
-        let send_goal_body = self.send_goal_srv().token_stream(namespace);
-        let get_result_body = self.get_result_srv().token_stream(namespace);
-        let feedback_message_body = self.feedback_message_msg().token_stream(namespace);
+        let goal_body = self.goal.token_stream();
+        let result_body = self.result.token_stream();
+        let feedback_body = self.feedback.token_stream();
+        let send_goal_body = self.send_goal_srv().token_stream();
+        let get_result_body = self.get_result_srv().token_stream();
+        let feedback_message_body = self.feedback_message_msg().token_stream();
 
         quote! {
             use std::os::raw::c_void;
@@ -181,10 +173,6 @@ impl Action {
             #[derive(std::fmt::Debug)]
             pub struct #action_type;
 
-            #[link(name = #typesupport_c_lib)]
-            extern "C" {
-                fn #type_supprt_func() -> *const c_void;
-            }
 
             impl crate::_core::ActionT for #action_type {
                 type Goal = #goal_type;
@@ -194,11 +182,6 @@ impl Action {
                 type GetResult = #get_result_type;
                 type FeedbackMessage = #feeback_message_type;
 
-                fn type_support() -> *const c_void {
-                    unsafe {
-                        #type_supprt_func()
-                    }
-                }
             }
 
             mod goal {
