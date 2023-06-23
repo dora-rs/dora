@@ -16,3 +16,7 @@ serde-big-array = "0.5.1"
 widestring = "1.0.2"
 ros2-client = "0.5.2"
 rustdds = "0.8.3"
+
+[dev-dependencies]
+rand = "0.8.5"
+futures = { version = "0.3.28", default-features = false }

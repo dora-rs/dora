@@ -143,6 +143,8 @@ version = "0.1.0"
 dependencies = [
  "array-init",
  "dora-ros2-bridge-msg-gen",
+ "futures",
+ "rand",
  "ros2-client",
  "rustdds",
  "serde",
