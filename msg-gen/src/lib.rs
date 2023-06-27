@@ -19,10 +19,8 @@ use crate::parser::get_packages;
 
 #[proc_macro]
 pub fn msg_include_all(_input: TokenStream) -> TokenStream {
-    let ament_prefix_paths =
-        std::env::var("AMENT_PREFIX_PATH").expect("$AMENT_PREFIX_PATH is supposed to be set.");
-
-    let paths = ament_prefix_paths
+    let ament_prefix_path = std::env!("DETECTED_AMENT_PREFIX_PATH");
+    let paths = ament_prefix_path
         .split(':')
         .map(Path::new)
         .collect::<Vec<_>>();
