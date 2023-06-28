@@ -142,7 +142,7 @@ name = "dora-ros2-bridge"
 version = "0.1.0"
 dependencies = [
  "array-init",
- "dora-ros2-bridge-msg-gen",
+ "dora-ros2-bridge-msg-gen-macro",
  "futures",
  "rand",
  "ros2-client",
@@ -157,6 +157,21 @@ name = "dora-ros2-bridge-msg-gen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "heck",
+ "nom",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 1.0.109",
+ "thiserror",
+]
+
+[[package]]
+name = "dora-ros2-bridge-msg-gen-macro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dora-ros2-bridge-msg-gen",
  "heck",
  "nom",
  "proc-macro2",
