@@ -137,7 +137,7 @@ impl<T> Drop for OwnedFFISeq<T> {
     }
 }
 
-/// Temporally borrowed buffer from Vec<T>
+/// Temporally borrowed buffer from `Vec<T>`
 #[repr(C)]
 #[derive(Debug)]
 pub struct RefFFISeq<T> {
