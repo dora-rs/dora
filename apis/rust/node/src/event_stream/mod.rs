@@ -15,6 +15,7 @@ use dora_core::{
 use eyre::{eyre, Context};
 
 mod event;
+pub mod merged;
 mod thread;
 
 pub struct EventStream {
