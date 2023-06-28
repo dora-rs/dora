@@ -1420,6 +1420,7 @@ dependencies = [
  "dora-tracing",
  "eyre",
  "flume",
+ "futures",
  "once_cell",
  "serde",
  "serde_json",

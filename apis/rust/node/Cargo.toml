@@ -27,6 +27,7 @@ bincode = "1.3.3"
 shared_memory = "0.12.0"
 dora-tracing = { workspace = true, optional = true }
 arrow = "35.0.0"
+futures = "0.3.28"
 
 [dev-dependencies]
 tokio = { version = "1.24.2", features = ["rt"] }
