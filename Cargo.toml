@@ -1,5 +1,5 @@
 [workspace]
-members = ["msg-gen"]
+members = ["msg-gen", "msg-gen-macro"]
 
 [package]
 name = "dora-ros2-bridge"
@@ -10,7 +10,7 @@ edition = "2021"
 
 [dependencies]
 array-init = "2.1.0"
-dora-ros2-bridge-msg-gen = { path = "msg-gen" }
+dora-ros2-bridge-msg-gen-macro = { path = "msg-gen-macro" }
 serde = { version = "1.0.164", features = ["derive"] }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
