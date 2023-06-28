@@ -133,6 +133,18 @@ impl DoraNode {
         self.send_output_sample(output_id, parameters, Some(sample))
     }
 
+    pub fn send_output_bytes(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        data_len: usize,
+        data: &[u8],
+    ) -> eyre::Result<()> {
+        self.send_output(output_id, parameters, data_len, |sample| {
+            sample.copy_from_slice(data)
+        })
+    }
+
     pub fn send_output_sample(
         &mut self,
         output_id: DataId,
