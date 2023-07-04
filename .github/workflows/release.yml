@@ -127,11 +127,14 @@ jobs:
           asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
           asset_content_type: application/zip
 
+      - name: "Add macOS ARM64 toolchains"
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin
+
       - name: "Build macOS ARM64"
         if: runner.os == 'macOS'
         uses: actions-rs/cargo@v1
         with:
-          use-cross: true
           command: build
           args: --release --target aarch64-apple-darwin -p dora-coordinator -p dora-cli -p dora-daemon
 
