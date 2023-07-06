@@ -8,6 +8,7 @@ edition = "2021"
 dora-ros2-bridge = { path = "..", default-features = false }
 pyo3 = { version = "0.18", features = ["eyre", "abi3-py37", "serde"] }
 eyre = "0.6"
+serde = "1.0.166"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
 arrow = { version = "35.0.0", features = ["pyarrow"] }
