@@ -5,8 +5,10 @@ use pyo3::{
     types::PyModule,
     PyAny, PyObject, PyResult, Python,
 };
+use typed::{TypeInfo, TypedValue};
 
 pub mod qos;
+pub mod typed;
 
 #[pyclass]
 pub struct Ros2Context {
@@ -49,7 +51,9 @@ impl Ros2Node {
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
         let topic = self.node.create_topic(name, type_name, &qos.into())?;
-        Ok(Ros2Topic { topic })
+        // TODO parse message types (use caching) and look up type info by name
+        let type_info = TypeInfo::I32;
+        Ok(Ros2Topic { topic, type_info })
     }
 
     pub fn create_publisher(
@@ -60,7 +64,10 @@ impl Ros2Node {
         let publisher = self
             .node
             .create_publisher(&topic.topic, qos.map(Into::into))?;
-        Ok(Ros2Publisher { publisher })
+        Ok(Ros2Publisher {
+            publisher,
+            type_info: topic.type_info.clone(),
+        })
     }
 
     pub fn create_subscription(
@@ -100,21 +107,32 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
+    type_info: TypeInfo,
 }
 
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
-    publisher: ros2_client::Publisher<serde_yaml::Value>,
+    type_info: TypeInfo,
+    publisher: ros2_client::Publisher<TypedValue<'static>>,
 }
 
 #[pymethods]
 impl Ros2Publisher {
     pub fn publish(&self, data: &PyAny) -> eyre::Result<()> {
         // TODO: add support for arrow types
-        let data = pythonize::depythonize(data).context("failed to depythonize data")?;
+        let value = pythonize::depythonize(data).context("failed to depythonize data")?;
 
-        self.publisher.publish(data).context("publish failed")?;
+        // add type info to ensure correct serialization (e.g. struct types
+        // and map types need to be serialized differently)
+        let typed_value = TypedValue {
+            value: &value,
+            type_info: &self.type_info,
+        };
+
+        self.publisher
+            .publish(typed_value)
+            .context("publish failed")?;
         Ok(())
     }
 }
