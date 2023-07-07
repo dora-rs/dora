@@ -459,6 +459,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "dora-ros2-bridge",
+ "dora-ros2-bridge-msg-gen",
  "eyre",
  "flume",
  "pyo3",
