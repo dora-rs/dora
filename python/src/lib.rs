@@ -1,5 +1,12 @@
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use ::dora_ros2_bridge::{ros2_client, rustdds};
-use eyre::Context;
+use dora_ros2_bridge_msg_gen::types::Message;
+use eyre::{eyre, Context};
 use pyo3::{
     prelude::{pyclass, pymethods, pymodule},
     types::PyModule,
@@ -13,14 +20,47 @@ pub mod typed;
 #[pyclass]
 pub struct Ros2Context {
     context: ros2_client::Context,
+    messages: Arc<HashMap<String, HashMap<String, Message>>>,
 }
 
 #[pymethods]
 impl Ros2Context {
     #[new]
-    pub fn new() -> eyre::Result<Self> {
+    pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
+        let ament_prefix_path = std::env::var("AMENT_PREFIX_PATH");
+        let empty = String::new();
+
+        let paths: Vec<_> = match &ros_paths {
+            Some(paths) => paths.iter().map(|p| p.as_path()).collect(),
+            None => {
+                let ament_prefix_path_parsed = match &ament_prefix_path {
+                    Ok(path) => path,
+                    Err(std::env::VarError::NotPresent) => &empty,
+                    Err(std::env::VarError::NotUnicode(s)) => {
+                        eyre::bail!(
+                            "AMENT_PREFIX_PATH is not valid unicode: `{}`",
+                            s.to_string_lossy()
+                        );
+                    }
+                };
+
+                ament_prefix_path_parsed.split(':').map(Path::new).collect()
+            }
+        };
+        let packages = dora_ros2_bridge_msg_gen::get_packages(&paths)
+            .map_err(|err| eyre!(err))
+            .context("failed to parse ROS2 message types")?;
+
+        let mut messages = HashMap::new();
+        for message in packages.into_iter().flat_map(|p| p.messages.into_iter()) {
+            let entry: &mut HashMap<String, Message> =
+                messages.entry(message.package.clone()).or_default();
+            entry.insert(message.name.clone(), message);
+        }
+
         Ok(Self {
             context: ros2_client::Context::new()?,
+            messages: Arc::new(messages),
         })
     }
 
@@ -33,6 +73,7 @@ impl Ros2Context {
     ) -> eyre::Result<Ros2Node> {
         Ok(Ros2Node {
             node: self.context.new_node(name, namespace, options.into())?,
+            messages: self.messages.clone(),
         })
     }
 }
@@ -40,6 +81,7 @@ impl Ros2Context {
 #[pyclass]
 pub struct Ros2Node {
     node: ros2_client::Node,
+    messages: Arc<HashMap<String, HashMap<String, Message>>>,
 }
 
 #[pymethods]
@@ -47,12 +89,18 @@ impl Ros2Node {
     pub fn create_topic(
         &self,
         name: &str,
-        type_name: String,
+        message_type: String,
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
-        let topic = self.node.create_topic(name, type_name, &qos.into())?;
-        // TODO parse message types (use caching) and look up type info by name
-        let type_info = TypeInfo::I32;
+        let topic = self.node.create_topic(
+            name,
+            // TODO add `msg::dds_::` modules?
+            message_type.clone(),
+            &qos.into(),
+        )?;
+        let type_info = TypeInfo::for_message(&self.messages, &message_type)
+            .context("failed to determine type info for message")?;
+
         Ok(Ros2Topic { topic, type_info })
     }
 
