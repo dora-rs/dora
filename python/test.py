@@ -9,6 +9,7 @@ topic_qos.reliability = Ros2Reliability.Reliable
 topic_qos.reliability_max_blocking_time = 0.1
 
 turtle_pose_topic = node.create_topic("/turtle1/pose", "turtlesim::Pose", topic_qos)
+turtle_twist_topic = node.create_topic("/foo", "geometry_msgs::Twist", topic_qos)
 
 pose_reader = node.create_subscription(turtle_pose_topic, topic_qos)
 
