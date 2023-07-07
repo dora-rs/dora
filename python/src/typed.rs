@@ -21,20 +21,19 @@ pub enum TypeInfo {
     },
     I32,
     F32,
+    F64,
 }
 
 impl TypeInfo {
     pub fn for_message(
         messages: &HashMap<String, HashMap<String, Message>>,
-        message_type: &str,
+        namespace_name: &str,
+        message_name: &str,
     ) -> eyre::Result<Self> {
-        let (package_name, type_name) = message_type
-            .split_once("::")
-            .context("message type must be of form `package::type`")?;
         let empty = HashMap::new();
-        let package_messages = messages.get(package_name).unwrap_or(&empty);
-        let message = package_messages
-            .get(type_name)
+        let namespace_messages = messages.get(namespace_name).unwrap_or(&empty);
+        let message = namespace_messages
+            .get(message_name)
             .context("unknown type name")?;
         Ok(Self::Struct {
             name: message.name.clone(),
@@ -44,7 +43,7 @@ impl TypeInfo {
                 .map(|m| {
                     Result::<_, eyre::Report>::Ok((
                         m.name.clone(),
-                        type_info_for_member(m, package_messages, messages)?,
+                        type_info_for_member(m, namespace_name, messages)?,
                     ))
                 })
                 .collect::<Result<_, _>>()?,
@@ -54,9 +53,11 @@ impl TypeInfo {
 
 fn type_info_for_member(
     m: &dora_ros2_bridge_msg_gen::types::Member,
-    package_messages: &HashMap<String, Message>,
+    namespace_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,
 ) -> eyre::Result<TypeInfo> {
+    let empty = HashMap::new();
+    let namespace_messages = messages.get(namespace_name).unwrap_or(&empty);
     Ok(match &m.r#type {
         MemberType::NestableType(t) => match t {
             NestableType::BasicType(t) => match t {
@@ -69,23 +70,19 @@ fn type_info_for_member(
                 BasicType::U32 => todo!(),
                 BasicType::U64 => todo!(),
                 BasicType::F32 => TypeInfo::F32,
-                BasicType::F64 => todo!(),
+                BasicType::F64 => TypeInfo::F64,
                 BasicType::Bool => todo!(),
                 BasicType::Char => todo!(),
                 BasicType::Byte => todo!(),
             },
             NestableType::NamedType(name) => {
-                let referenced_message = package_messages
+                let referenced_message = namespace_messages
                     .get(&name.0)
                     .context("unknown referenced message")?;
-                TypeInfo::for_message(messages, &referenced_message.name)?
+                TypeInfo::for_message(messages, namespace_name, &referenced_message.name)?
             }
             NestableType::NamespacedType(t) => {
-                let referenced_message = messages
-                    .get(&t.namespace)
-                    .and_then(|n| n.get(&t.name))
-                    .context("unknown referenced message")?;
-                TypeInfo::for_message(messages, &referenced_message.name)?
+                TypeInfo::for_message(messages, &t.namespace, &t.name)?
             }
             NestableType::GenericString(_) => todo!(),
         },
@@ -119,6 +116,14 @@ impl serde::Serialize for TypedValue<'_> {
                     .context("expected f32 value")
                     .map_err(serde::ser::Error::custom)? as f32;
                 serializer.serialize_f32(number)
+            }
+            TypeInfo::F64 => {
+                let number = self
+                    .value
+                    .as_f64()
+                    .context("expected f64 value")
+                    .map_err(serde::ser::Error::custom)?;
+                serializer.serialize_f64(number)
             }
             TypeInfo::Struct { name: _, fields } => {
                 /// Serde requires that struct and field names are known at

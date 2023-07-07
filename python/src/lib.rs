@@ -6,7 +6,7 @@ use std::{
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use dora_ros2_bridge_msg_gen::types::Message;
-use eyre::{eyre, Context};
+use eyre::{eyre, Context, ContextCompat};
 use pyo3::{
     prelude::{pyclass, pymethods, pymodule},
     types::PyModule,
@@ -92,13 +92,19 @@ impl Ros2Node {
         message_type: String,
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
+        let (namespace_name, message_name) = message_type.split_once("::").with_context(|| {
+            format!(
+                "message type must be of form `package::type`, is `{}`",
+                message_type
+            )
+        })?;
         let topic = self.node.create_topic(
             name,
             // TODO add `msg::dds_::` modules?
             message_type.clone(),
             &qos.into(),
         )?;
-        let type_info = TypeInfo::for_message(&self.messages, &message_type)
+        let type_info = TypeInfo::for_message(&self.messages, namespace_name, message_name)
             .context("failed to determine type info for message")?;
 
         Ok(Ros2Topic { topic, type_info })
