@@ -126,3 +126,36 @@ jobs:
           asset_path: archive_aarch64.zip
           asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
           asset_content_type: application/zip
+
+      - name: "Add macOS ARM64 toolchains"
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin
+
+      - name: "Build macOS ARM64"
+        if: runner.os == 'macOS'
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target aarch64-apple-darwin -p dora-coordinator -p dora-cli -p dora-daemon
+
+      - name: "Archive macOS ARM64"
+        if: runner.os == 'macOS'
+        run: |
+          mkdir archive_aarch64
+          cp target/aarch64-apple-darwin/release/dora-coordinator archive_aarch64
+          cp target/aarch64-apple-darwin/release/dora-daemon archive_aarch64
+          cp target/aarch64-apple-darwin/release/dora-cli archive_aarch64/dora
+          cd archive_aarch64
+          zip -r ../archive_aarch64.zip .
+          cd ..
+
+      - name: "Upload macOS ARM64 asset"
+        if: runner.os == 'macOS'
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: archive_aarch64.zip
+          asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
+          asset_content_type: application/zip
