@@ -97,13 +97,25 @@ jobs:
         run: |
           dora-cli up
           dora-cli list
-          dora-cli new test_project --internal-create-with-path-dependencies
+
+          # Test Rust template Project
+          dora-cli new test_project --internal-create-with-path-dependencies 
           cd test_project
           cargo build --all
           dora-cli start dataflow.yml --name ci-test
           sleep 10
           dora-cli stop --name ci-test
           cd ..
+
+          # Test Python template Project
+          dora-cli new test_project --lang python --internal-create-with-path-dependencies
+          cd test_project
+          cargo build --all
+          dora-cli start dataflow.yml --name ci-test
+          sleep 10
+          dora-cli stop --name ci-test
+          cd ..
+          
           dora-cli destroy
 
   examples-remote:
