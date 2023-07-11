@@ -108,6 +108,8 @@ jobs:
           cd ..
 
           # Test Python template Project
+          pip install maturin
+          maturin develop -m apis/python/node/Cargo.toml
           dora-cli new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
           cargo build --all
