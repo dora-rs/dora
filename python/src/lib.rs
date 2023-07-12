@@ -138,20 +138,22 @@ impl Ros2Node {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2NodeOptions {
-    pub enable_rosout: bool,
+    pub rosout: bool,
 }
 
 #[pymethods]
 impl Ros2NodeOptions {
     #[new]
-    pub fn new() -> Self {
-        Default::default()
+    pub fn new(rosout: Option<bool>) -> Self {
+        Self {
+            rosout: rosout.unwrap_or(false),
+        }
     }
 }
 
 impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
     fn from(value: Ros2NodeOptions) -> Self {
-        ros2_client::NodeOptions::new().enable_rosout(value.enable_rosout)
+        ros2_client::NodeOptions::new().enable_rosout(value.rosout)
     }
 }
 
