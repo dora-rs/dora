@@ -17,7 +17,7 @@ pub struct TypedValue<'a> {
 pub enum TypeInfo {
     Struct {
         name: String,
-        fields: Vec<(String, TypeInfo)>,
+        fields: Vec<StructField>,
     },
     I32,
     F32,
@@ -27,12 +27,12 @@ pub enum TypeInfo {
 impl TypeInfo {
     pub fn for_message(
         messages: &HashMap<String, HashMap<String, Message>>,
-        namespace_name: &str,
+        package_name: &str,
         message_name: &str,
     ) -> eyre::Result<Self> {
         let empty = HashMap::new();
-        let namespace_messages = messages.get(namespace_name).unwrap_or(&empty);
-        let message = namespace_messages
+        let package_messages = messages.get(package_name).unwrap_or(&empty);
+        let message = package_messages
             .get(message_name)
             .context("unknown type name")?;
         Ok(Self::Struct {
@@ -41,23 +41,31 @@ impl TypeInfo {
                 .members
                 .iter()
                 .map(|m| {
-                    Result::<_, eyre::Report>::Ok((
-                        m.name.clone(),
-                        type_info_for_member(m, namespace_name, messages)?,
-                    ))
+                    Result::<_, eyre::Report>::Ok(StructField {
+                        name: m.name.clone(),
+                        ty: type_info_for_member(m, package_name, messages)?,
+                        default: default_for_member(m, package_name, messages)?,
+                    })
                 })
                 .collect::<Result<_, _>>()?,
         })
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField {
+    pub name: String,
+    pub ty: TypeInfo,
+    pub default: Option<serde_yaml::Value>,
+}
+
 fn type_info_for_member(
     m: &dora_ros2_bridge_msg_gen::types::Member,
-    namespace_name: &str,
+    package_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,
 ) -> eyre::Result<TypeInfo> {
     let empty = HashMap::new();
-    let namespace_messages = messages.get(namespace_name).unwrap_or(&empty);
+    let package_messages = messages.get(package_name).unwrap_or(&empty);
     Ok(match &m.r#type {
         MemberType::NestableType(t) => match t {
             NestableType::BasicType(t) => match t {
@@ -76,13 +84,13 @@ fn type_info_for_member(
                 BasicType::Byte => todo!(),
             },
             NestableType::NamedType(name) => {
-                let referenced_message = namespace_messages
+                let referenced_message = package_messages
                     .get(&name.0)
                     .context("unknown referenced message")?;
-                TypeInfo::for_message(messages, namespace_name, &referenced_message.name)?
+                TypeInfo::for_message(messages, package_name, &referenced_message.name)?
             }
             NestableType::NamespacedType(t) => {
-                TypeInfo::for_message(messages, &t.namespace, &t.name)?
+                TypeInfo::for_message(messages, &t.package, &t.name)?
             }
             NestableType::GenericString(_) => todo!(),
         },
@@ -92,6 +100,101 @@ fn type_info_for_member(
             todo!()
         }
     })
+}
+
+fn default_for_member(
+    m: &dora_ros2_bridge_msg_gen::types::Member,
+    package_name: &str,
+    messages: &HashMap<String, HashMap<String, Message>>,
+) -> eyre::Result<Option<serde_yaml::Value>> {
+    let empty = HashMap::new();
+    let package_messages = messages.get(package_name).unwrap_or(&empty);
+
+    let value = match &m.r#type {
+        MemberType::NestableType(t) => match t {
+            t @ NestableType::BasicType(_) | t @ NestableType::GenericString(_) => {
+                match &m.default.as_deref() {
+                    Some([]) => eyre::bail!("empty default value not supported"),
+                    Some([default]) => serde_yaml::from_str(default).with_context(|| {
+                        format!("failed to parse default value for `{}`", m.name)
+                    })?,
+                    Some(_) => eyre::bail!(
+                        "there should be only a single default value for non-sequence types"
+                    ),
+                    None => default_for_basic_type(t),
+                }
+            }
+            NestableType::NamedType(name) => {
+                if m.default.is_some() {
+                    eyre::bail!("default values for nested types are not supported")
+                } else {
+                    let referenced_message = package_messages
+                        .get(&name.0)
+                        .context("unknown referenced message")?;
+
+                    default_for_referenced_message(referenced_message, package_name, messages)?
+                }
+            }
+            NestableType::NamespacedType(t) => {
+                let referenced_package_messages = messages.get(&t.package).unwrap_or(&empty);
+                let referenced_message = referenced_package_messages
+                    .get(&t.name)
+                    .context("unknown referenced message")?;
+                default_for_referenced_message(referenced_message, &t.package, messages)?
+            }
+        },
+        MemberType::Array(_) | MemberType::Sequence(_) | MemberType::BoundedSequence(_) => m
+            .default
+            .as_ref()
+            .map(|default| {
+                Result::<_, eyre::Report>::Ok(serde_yaml::Value::Sequence(
+                    default
+                        .iter()
+                        .map(|v| serde_yaml::from_str(v))
+                        .collect::<Result<_, _>>()?,
+                ))
+            })
+            .transpose()?,
+    };
+    Ok(value)
+}
+
+fn default_for_basic_type(t: &NestableType) -> Option<serde_yaml::Value> {
+    match t {
+        NestableType::BasicType(t) => match t {
+            BasicType::I8
+            | BasicType::I16
+            | BasicType::I32
+            | BasicType::I64
+            | BasicType::U8
+            | BasicType::U16
+            | BasicType::U32
+            | BasicType::U64
+            | BasicType::F32
+            | BasicType::F64
+            | BasicType::Char
+            | BasicType::Byte => Some(serde_yaml::Value::Number(0u32.into())),
+            BasicType::Bool => Some(serde_yaml::Value::Bool(false)),
+        },
+        NestableType::GenericString(_) => Some(serde_yaml::Value::String(String::new())),
+        _ => None,
+    }
+}
+
+fn default_for_referenced_message(
+    referenced_message: &Message,
+    package_name: &str,
+    messages: &HashMap<String, HashMap<String, Message>>,
+) -> eyre::Result<Option<serde_yaml::Value>> {
+    let mapping: Option<_> = referenced_message
+        .members
+        .iter()
+        .map(|m| {
+            let default = default_for_member(m, package_name, messages)?;
+            Ok(default.map(|d| (serde_yaml::Value::String(m.name.clone()), d)))
+        })
+        .collect::<Result<_, eyre::Report>>()?;
+    Ok(mapping.map(serde_yaml::Value::Mapping))
 }
 
 impl serde::Serialize for TypedValue<'_> {
@@ -138,17 +241,24 @@ impl serde::Serialize for TypedValue<'_> {
                 const DUMMY_FIELD_NAME: &str = "field";
 
                 let mut s = serializer.serialize_struct(DUMMY_STRUCT_NAME, fields.len())?;
-                for (field_name, field_type) in fields {
-                    let field_value = self
-                        .value
-                        .get(field_name)
-                        .with_context(|| format!("value has no field `{field_name}`"))
-                        .map_err(serde::ser::Error::custom)?;
+                for field in fields {
+                    let field_value = match self.value.get(&field.name) {
+                        Some(value) => value,
+                        None => match &field.default {
+                            Some(default) => default,
+                            None => {
+                                return Err(serde::ser::Error::custom(eyre::eyre!(
+                                    "value has no field `{}`",
+                                    &field.name
+                                )))
+                            }
+                        },
+                    };
                     s.serialize_field(
                         DUMMY_FIELD_NAME,
                         &TypedValue {
                             value: field_value,
-                            type_info: field_type,
+                            type_info: &field.ty,
                         },
                     )?;
                 }

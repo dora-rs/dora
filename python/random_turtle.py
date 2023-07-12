@@ -16,12 +16,8 @@ for i in range(500):
     direction = {
         'linear': {
             'x': random.random() + 1,
-            'y': 0,
-            'z': 0,
         },
         'angular': {
-            'x': 0,
-            'y': 0,
             'z': (random.random() - 0.5) * 5,
         }
     }
