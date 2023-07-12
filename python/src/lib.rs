@@ -98,12 +98,10 @@ impl Ros2Node {
                 message_type
             )
         })?;
-        let topic = self.node.create_topic(
-            name,
-            // TODO add `msg::dds_::` modules?
-            message_type.clone(),
-            &qos.into(),
-        )?;
+        let encoded_type_name = format!("{namespace_name}::msg::dds_::{message_name}_");
+        let topic = self
+            .node
+            .create_topic(name, dbg!(encoded_type_name), &qos.into())?;
         let type_info = TypeInfo::for_message(&self.messages, namespace_name, message_name)
             .context("failed to determine type info for message")?;
 
