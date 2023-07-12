@@ -4,9 +4,7 @@ import time
 context = Ros2Context()
 node = context.new_node("py_tel", "/", Ros2NodeOptions())
 
-topic_qos = Ros2QosPolicies()
-topic_qos.reliability = Ros2Reliability.Reliable
-topic_qos.reliability_max_blocking_time = 0.1
+topic_qos = Ros2QosPolicies(reliable = True, max_blocking_time = 0.1)
 
 turtle_pose_topic = node.create_topic("/turtle1/pose", "turtlesim::Pose", topic_qos)
 turtle_twist_topic = node.create_topic("/foo", "geometry_msgs::Twist", topic_qos)
