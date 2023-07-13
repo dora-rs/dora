@@ -74,8 +74,9 @@ pub struct DataReader<D: Keyed, DA: DeserializerAdapter<D> = CDRDeserializerAdap
 where
   <D as Keyed>::K: Key,
 {
-  simple_data_reader: SimpleDataReader<D, DA>,
+  simple_data_reader: SimpleDataReader<D>,
   datasample_cache: DataSampleCache<D>, // DataReader-local cache of deserialized samples
+  phantom: std::marker::PhantomData<DA>,
 }
 
 impl<D: 'static, DA> DataReader<D, DA>
@@ -84,12 +85,13 @@ where
   <D as Keyed>::K: Key,
   DA: DeserializerAdapter<D>,
 {
-  pub(crate) fn from_simple_data_reader(simple_data_reader: SimpleDataReader<D, DA>) -> Self {
+  pub(crate) fn from_simple_data_reader(simple_data_reader: SimpleDataReader<D>) -> Self {
     let dsc = DataSampleCache::new(simple_data_reader.topic().qos());
 
     Self {
       simple_data_reader,
       datasample_cache: dsc,
+      phantom: std::marker::PhantomData,
     }
   }
 
@@ -97,7 +99,7 @@ where
   // the serialized payload and stores the DataSamples (the actual data and the
   // samplestate) to local container, datasample_cache.
   fn fill_and_lock_local_datasample_cache(&mut self) -> Result<()> {
-    while let Some(dcc) = self.simple_data_reader.try_take_one()? {
+    while let Some(dcc) = self.simple_data_reader.try_take_one::<DA>()? {
       self
         .datasample_cache
         .fill_from_deserialized_cache_change(dcc);
@@ -791,7 +793,7 @@ where
   ) -> io::Result<()> {
     // SimpleDataReader implements .register() for two traits, so need to
     // use disambiguation syntax to call .register() here.
-    <SimpleDataReader<D, DA> as mio_08::event::Source>::register(
+    <SimpleDataReader<D> as mio_08::event::Source>::register(
       &mut self.simple_data_reader,
       registry,
       token,
@@ -805,7 +807,7 @@ where
     token: mio_08::Token,
     interests: mio_08::Interest,
   ) -> io::Result<()> {
-    <SimpleDataReader<D, DA> as mio_08::event::Source>::reregister(
+    <SimpleDataReader<D> as mio_08::event::Source>::reregister(
       &mut self.simple_data_reader,
       registry,
       token,
@@ -814,7 +816,7 @@ where
   }
 
   fn deregister(&mut self, registry: &mio_08::Registry) -> io::Result<()> {
-    <SimpleDataReader<D, DA> as mio_08::event::Source>::deregister(
+    <SimpleDataReader<D> as mio_08::event::Source>::deregister(
       &mut self.simple_data_reader,
       registry,
     )

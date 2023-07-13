@@ -937,17 +937,16 @@ impl InnerSubscriber {
     ))
   }
 
-  fn create_simple_datareader_internal<D: 'static, SA>(
+  fn create_simple_datareader_internal<D: 'static>(
     &self,
     outer: &Subscriber,
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     optional_qos: Option<QosPolicies>,
-  ) -> Result<with_key::SimpleDataReader<D, SA>>
+  ) -> Result<with_key::SimpleDataReader<D>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
-    SA: adapters::with_key::DeserializerAdapter<D>,
   {
     // incoming data notification channel from Reader to DataReader
     let (send, rec) = mio_channel::sync_channel::<()>(4);
@@ -1010,7 +1009,7 @@ impl InnerSubscriber {
       db.update_topic_data_p(topic);
     }
 
-    let datareader = with_key::SimpleDataReader::<D, SA>::new(
+    let datareader = with_key::SimpleDataReader::<D>::new(
       outer.clone(),
       entity_id,
       topic.clone(),
@@ -1101,7 +1100,7 @@ impl InnerSubscriber {
     let entity_id =
       self.unwrap_or_new_entity_id(entity_id_opt, EntityKind::READER_NO_KEY_USER_DEFINED);
 
-    let d = self.create_simple_datareader_internal::<NoKeyWrapper<D>, DAWrapper<SA>>(
+    let d = self.create_simple_datareader_internal::<NoKeyWrapper<D>>(
       outer,
       Some(entity_id),
       topic,
