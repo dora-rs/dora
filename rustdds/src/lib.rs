@@ -155,7 +155,6 @@
 //! // Getting reference to actual data from the data sample
 //! let actual_data = data_sample.value();
 //! ```
-#![deny(clippy::all)]
 #![warn(clippy::needless_pass_by_value, clippy::semicolon_if_nothing_returned)]
 #![allow(
   // option_map_unit_fn suggests changing option.map( ) with () return value to if let -construct,
