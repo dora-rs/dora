@@ -38,7 +38,7 @@ pub struct VisualizatorApp<'a> {
   local_nodes: Vec<NodeInfo>,
   ros_participants: Vec<ROSParticipantInfo>,
 
-  // viewed datas:
+  //viewed datas:
   topic_list_display_items: StatefulList<ListItem<'a>>,
   external_nodes_display_items: StatefulList<ListItem<'a>>,
   local_nodes_display_items: StatefulList<ListItem<'a>>,
@@ -87,7 +87,7 @@ impl<'a> VisualizatorApp<'a> {
             match self.tab_index {
               0 => self.ros_participants_display_items.previous(),
               1 => self.local_nodes_display_items.previous(),
-              // 2 => {self.external_nodes_display_items.previous()},
+              //2 => {self.external_nodes_display_items.previous()},
               2 => self.topic_list_display_items.previous(),
               _ => {}
             }
@@ -96,7 +96,7 @@ impl<'a> VisualizatorApp<'a> {
             match self.tab_index {
               0 => self.ros_participants_display_items.next(),
               1 => self.local_nodes_display_items.next(),
-              // 2 => {self.external_nodes_display_items.next()},
+              //2 => {self.external_nodes_display_items.next()},
               2 => self.topic_list_display_items.next(),
               _ => {}
             }

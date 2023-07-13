@@ -23,12 +23,12 @@ use rand::prelude::*;
 use smol::Timer;
 use futures::{stream::StreamExt, FutureExt, TryFutureExt};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Shape {
   color: String,
   x: i32,
   y: i32,
-  shape_size: i32,
+  shapesize: i32,
 }
 
 impl Keyed for Shape {
@@ -113,7 +113,7 @@ fn main() {
 
   let write_interval: Duration = match deadline_policy {
     None => Duration::from_millis(200), // This is the default rate
-    Some(Deadline(dd)) => Duration::from(dd).mul_f32(0.8), // slightly faster than deadline
+    Some(Deadline(dd)) => Duration::from(dd).mul_f32(0.8), // slightly faster than dealine
   };
 
   let topic = domain_participant
@@ -171,7 +171,7 @@ fn main() {
     color,
     x: 0,
     y: 0,
-    shape_size: 21,
+    shapesize: 21,
   };
 
   let mut random_gen = thread_rng();
@@ -209,7 +209,7 @@ fn main() {
                       sample.color,
                       sample.x,
                       sample.y,
-                      sample.shape_size,
+                      sample.shapesize,
                     ),
                     Sample::Dispose(key) => println!("Disposed key {key:?}"),
                   }
@@ -394,7 +394,7 @@ fn get_matches() -> ArgMatches {
 
 #[allow(clippy::similar_names)]
 fn move_shape(shape: Shape, xv: i32, yv: i32) -> (Shape, i32, i32) {
-  let half_size = shape.shape_size / 2 + 1;
+  let half_size = shape.shapesize / 2 + 1;
   let mut x = shape.x + xv;
   let mut y = shape.y + yv;
 
@@ -422,7 +422,7 @@ fn move_shape(shape: Shape, xv: i32, yv: i32) -> (Shape, i32, i32) {
       color: shape.color,
       x,
       y,
-      shape_size: shape.shape_size,
+      shapesize: shape.shapesize,
     },
     xv_new,
     yv_new,

@@ -15,9 +15,7 @@ pub(crate) mod topic;
 pub(crate) mod typedesc;
 
 pub mod result;
-pub use result::{
-  CreateError, CreateResult, ReadError, ReadResult, WaitError, WaitResult, WriteError, WriteResult,
-};
+pub use result::{Error, Result};
 
 // Public interface
 

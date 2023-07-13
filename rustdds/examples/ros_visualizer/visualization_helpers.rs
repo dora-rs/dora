@@ -1,4 +1,4 @@
-// GUI RENDERING FUNCTIONS:
+//GUI RENDERING FUNCTIONS:
 
 use tui::{
   layout::{Constraint, Direction, Layout, Rect},

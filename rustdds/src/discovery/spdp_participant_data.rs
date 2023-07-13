@@ -21,7 +21,7 @@ use crate::{
   security::{
     access_control::PermissionsToken, authentication::IdentityToken, ParticipantSecurityInfo,
   },
-  serialization::{pl_cdr_adapters::*, speedy_pl_cdr_helpers::*},
+  serialization::{error::Result, pl_cdr_adapters::*, speedy_pl_cdr_helpers::*},
   structure::{
     duration::Duration,
     entity::RTPSEntity,
@@ -185,7 +185,7 @@ impl SpdpDiscoveredParticipantData {
   }
 }
 
-// fake implementations. Real serialization is done using PlCdrSerialize
+// fake implemenatations. Real serialization is done using PlCdrSerialize
 impl Serialize for SpdpDiscoveredParticipantData {
   fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
   where
@@ -206,11 +206,8 @@ impl<'de> Deserialize<'de> for SpdpDiscoveredParticipantData {
 }
 
 impl PlCdrDeserialize for SpdpDiscoveredParticipantData {
-  fn from_pl_cdr_bytes(
-    input_bytes: &[u8],
-    encoding: RepresentationIdentifier,
-  ) -> Result<Self, PlCdrDeserializeError> {
-    let ctx = pl_cdr_rep_id_to_speedy_d(encoding)?;
+  fn from_pl_cdr_bytes(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Result<Self> {
+    let ctx = pl_cdr_rep_id_to_speedy(encoding)?;
     let pl = ParameterList::read_from_buffer_with_ctx(ctx, input_bytes)?;
     let pl_map = pl.to_map();
     let protocol_version: ProtocolVersion = get_first_from_pl_map(
@@ -333,10 +330,7 @@ impl PlCdrDeserialize for SpdpDiscoveredParticipantData {
 }
 
 impl PlCdrSerialize for SpdpDiscoveredParticipantData {
-  fn to_pl_cdr_bytes(
-    &self,
-    encoding: RepresentationIdentifier,
-  ) -> Result<Bytes, PlCdrSerializeError> {
+  fn to_pl_cdr_bytes(&self, encoding: RepresentationIdentifier) -> Result<Bytes> {
     // This "unnecessary" binding is to trigger a warning if we forget to
     // serialize any fields.
     let Self {
@@ -468,11 +462,8 @@ impl Keyed for SpdpDiscoveredParticipantData {
 }
 
 impl PlCdrDeserialize for Participant_GUID {
-  fn from_pl_cdr_bytes(
-    input_bytes: &[u8],
-    encoding: RepresentationIdentifier,
-  ) -> Result<Self, PlCdrDeserializeError> {
-    let ctx = pl_cdr_rep_id_to_speedy_d(encoding)?;
+  fn from_pl_cdr_bytes(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Result<Self> {
+    let ctx = pl_cdr_rep_id_to_speedy(encoding)?;
     let pl = ParameterList::read_from_buffer_with_ctx(ctx, input_bytes)?;
     let pl_map = pl.to_map();
 
@@ -488,10 +479,7 @@ impl PlCdrDeserialize for Participant_GUID {
 }
 
 impl PlCdrSerialize for Participant_GUID {
-  fn to_pl_cdr_bytes(
-    &self,
-    encoding: RepresentationIdentifier,
-  ) -> Result<Bytes, PlCdrSerializeError> {
+  fn to_pl_cdr_bytes(&self, encoding: RepresentationIdentifier) -> Result<Bytes> {
     let mut pl = ParameterList::new();
     let ctx = pl_cdr_rep_id_to_speedy(encoding)?;
     macro_rules! emit {
@@ -547,7 +535,7 @@ mod tests {
             eprintln!("deserialized  = {:?}", &participant_data);
             eprintln!("serialized = {:?}", &sdata);
             // order cannot be known at this point
-            // assert_eq!(
+            //assert_eq!(
             //  sdata.len(),
             //  d.serialized_payload.as_ref().unwrap().value.len()
             //);
@@ -595,7 +583,7 @@ mod tests {
       match &submsg.body {
         SubmessageBody::Writer(v) => match v {
           WriterSubmessage::Data(d, _) => {
-            let participant_data: Result<SpdpDiscoveredParticipantData, PlCdrDeserializeError> =
+            let participant_data: Result<SpdpDiscoveredParticipantData> =
               PlCdrDeserializerAdapter::from_bytes(
                 &d.serialized_payload.as_ref().unwrap().value,
                 RepresentationIdentifier::PL_CDR_LE,
@@ -635,7 +623,7 @@ mod tests {
       match &submsg.body {
         SubmessageBody::Writer(v) => match v {
           WriterSubmessage::Data(d, _) => {
-            let participant_data: Result<SpdpDiscoveredParticipantData, PlCdrDeserializeError> =
+            let participant_data: Result<SpdpDiscoveredParticipantData> =
               PlCdrDeserializerAdapter::from_bytes(
                 &d.serialized_payload.as_ref().unwrap().value,
                 RepresentationIdentifier::PL_CDR_LE,
@@ -683,7 +671,7 @@ mod tests {
       match &submsg.body {
         SubmessageBody::Writer(v) => match v {
           WriterSubmessage::Data(d, _) => {
-            let participant_data: Result<SpdpDiscoveredParticipantData, PlCdrDeserializeError> =
+            let participant_data: Result<SpdpDiscoveredParticipantData> =
               PlCdrDeserializerAdapter::from_bytes(
                 &d.serialized_payload.as_ref().unwrap().value,
                 RepresentationIdentifier::PL_CDR_LE,

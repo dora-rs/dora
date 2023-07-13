@@ -131,7 +131,7 @@ impl UiController {
 
       for event in events.iter() {
         if event.token() == UiController::KEYBOARD_CHECK_TOKEN {
-          // a small wait here to allow the termion input mechanism to react.
+          // a small wait here to allow the termion input mechnism to react.
           // Still some keyboard presses are missed. What are we doing wrong here?
           std::thread::sleep(std::time::Duration::from_millis(10));
           while let Some(Ok(termion::event::Event::Key(key))) = &self.async_reader.next() {

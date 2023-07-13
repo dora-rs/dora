@@ -29,7 +29,7 @@ const RTPS_MESSAGE_HEADER_SIZE: usize = 20;
 /// RTPS spec v2.3 Section 8.3.4 "The RTPS Message Receiver".
 /// It calls the message/submessage deserializers to parse the sequence of
 /// submessages. Then it processes the instructions in the Interpreter
-/// SUbmessages and forwards data in Entity Submessages to the appropriate
+/// SUbmessages and forwards data in Enity Submessages to the appropriate
 /// Entities. (See RTPS spec Section 8.3.7)
 
 pub(crate) struct MessageReceiver {
@@ -37,9 +37,9 @@ pub(crate) struct MessageReceiver {
   // GuidPrefix sent in this channel needs to be RTPSMessage source_guid_prefix. Writer needs this
   // to locate RTPSReaderProxy if negative acknack.
   acknack_sender: mio_channel::SyncSender<(GuidPrefix, AckSubmessage)>,
-  // We send notification of remote DomainParticipant liveness to Discovery to
-  // bypass Reader, DDSCache, DatasampleCache, and DataReader, because these will drop
-  // repeated messages with duplicate SequenceNumbers, but Discovery needs to see them.
+  // We send notification of remote DomainPArticiapnt liveness to Discovery to
+  // bypass Reader. DDSCache, DatasampleCache, and DataReader, because thse will drop
+  // reperated messages with duplicate SequenceNumbers, but Discovery needs to see them.
   spdp_liveness_sender: mio_channel::SyncSender<GuidPrefix>,
 
   own_guid_prefix: GuidPrefix,
@@ -95,7 +95,7 @@ impl MessageReceiver {
 
   fn give_message_receiver_info(&self) -> MessageReceiverState {
     MessageReceiverState {
-      // own_guid_prefix: self.own_guid_prefix,
+      //own_guid_prefix: self.own_guid_prefix,
       source_guid_prefix: self.source_guid_prefix,
       unicast_reply_locator_list: self.unicast_reply_locator_list.clone(),
       multicast_reply_locator_list: self.multicast_reply_locator_list.clone(),
@@ -223,7 +223,7 @@ impl MessageReceiver {
           for reader in self
             .available_readers
             .values_mut()
-            // exception: discovery protocol reader must read from unknown discovery protocol
+            // exception: discovery prococol reader must read from unkonwn discovery protocol
             // writers TODO: This logic here is uglyish. Can we just inject a
             // presupposed writer (proxy) to the built-in reader as it is created?
             .filter(|r| {
@@ -293,7 +293,7 @@ impl MessageReceiver {
           for reader in self
             .available_readers
             .values_mut()
-            // exception: discovery protocol reader must read from unknown discovery protocol
+            // exception: discovery prococol reader must read from unkonwn discovery protocol
             // writers TODO: This logic here is uglyish. Can we just inject a
             // presupposed writer (proxy) to the built-in reader as it is created?
             .filter(|r| {
@@ -338,7 +338,7 @@ impl MessageReceiver {
       return;
     }
 
-    // let _mr_state = self.give_message_receiver_info();
+    //let _mr_state = self.give_message_receiver_info();
     match submessage {
       ReaderSubmessage::AckNack(acknack, _) => {
         // Note: This must not block, because the receiving end is the same thread,
@@ -547,20 +547,15 @@ mod tests {
 
     let topic_cache_handle = dds_cache.write().unwrap().add_new_topic(
       "test".to_string(),
-      TypeDesc::new("test".to_string()),
+      TypeDesc::new("testi".to_string()),
       &qos_policy,
     );
-
-    let last_read_sequence_number_ref =
-      Arc::new(Mutex::new(BTreeMap::<GUID, SequenceNumber>::new()));
-
     let reader_ing = ReaderIngredients {
       guid: reader_guid,
       notification_sender,
       status_sender,
       topic_name: "test".to_string(),
       topic_cache_handle: topic_cache_handle.clone(),
-      last_read_sequence_number_ref,
       qos_policy,
       data_reader_command_receiver: reader_command_receiver,
       data_reader_waker: data_reader_waker.clone(),
@@ -605,7 +600,7 @@ mod tests {
         *sequence_numbers.first().unwrap(),
       )
       .expect("No data in topic cache");
-    info!("reader history cache DATA: {:?}", a.data());
+    info!("reader history chache DATA: {:?}", a.data());
 
     // Deserialize the ShapesType value from the data
     #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]

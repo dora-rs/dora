@@ -20,7 +20,7 @@ use crate::{
       QosPolicies, QosPolicyBuilder,
     },
     readcondition::ReadCondition,
-    result::{CreateError, CreateResult},
+    result::{Error, Result},
     topic::*,
     with_key::{
       datareader::{DataReader, DataReaderCdr},
@@ -84,7 +84,7 @@ pub(crate) struct Discovery {
   discovery_db: Arc<RwLock<DiscoveryDB>>,
 
   // Discovery started sender confirms to application thread that we are running
-  discovery_started_sender: std::sync::mpsc::Sender<CreateResult<()>>,
+  discovery_started_sender: std::sync::mpsc::Sender<Result<()>>,
   // notification sender goes to dp_event_loop thread
   discovery_updated_sender: mio_channel::SyncSender<DiscoveryNotificationType>,
   // Discovery gets commands from dp_event_loop from this channel
@@ -94,14 +94,14 @@ pub(crate) struct Discovery {
   liveliness_state: LivelinessState,
   self_locators: HashMap<Token, Vec<Locator>>,
 
-  // DDS Subscriber and Publisher for Discovery
+  // DDS Subsciber and Publisher for Discovery
   // ...but these are not actually used after initialization
-  // discovery_subscriber: Subscriber,
-  // discovery_publisher: Publisher,
+  //discovery_subscriber: Subscriber,
+  //discovery_publisher: Publisher,
 
   // Handling of "DCPSParticipant" topic. This is the mother of all topics
   // where participants announce their presence and built-in readers and writers.
-  #[allow(dead_code)] // Technically, the topic is not accessed after initialization
+  #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_participant_topic: Topic,
   dcps_participant_reader: DataReader<
     SpdpDiscoveredParticipantData,
@@ -111,11 +111,11 @@ pub(crate) struct Discovery {
     SpdpDiscoveredParticipantData,
     PlCdrSerializerAdapter<SpdpDiscoveredParticipantData>,
   >,
-  participant_cleanup_timer: Timer<()>, // garbage collection timer for dead remote participants
+  participant_cleanup_timer: Timer<()>, // garbage collection timer for dead remote particiapnts
   participant_send_info_timer: Timer<()>, // timer to periodically announce our presence
 
   // Topic "DCPSSubscription" - announcing and detecting Readers
-  #[allow(dead_code)] // Technically, the topic is not accessed after initialization
+  #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_subscription_topic: Topic,
   dcps_subscription_reader:
     DataReader<DiscoveredReaderData, PlCdrDeserializerAdapter<DiscoveredReaderData>>,
@@ -124,7 +124,7 @@ pub(crate) struct Discovery {
   readers_send_info_timer: Timer<()>,
 
   // Topic "DCPSPublication" - announcing and detecting Writers
-  #[allow(dead_code)] // Technically, the topic is not accessed after initialization
+  #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_publication_topic: Topic,
   dcps_publication_reader:
     DataReader<DiscoveredWriterData, PlCdrDeserializerAdapter<DiscoveredWriterData>>,
@@ -132,8 +132,8 @@ pub(crate) struct Discovery {
     DataWriter<DiscoveredWriterData, PlCdrSerializerAdapter<DiscoveredWriterData>>,
   writers_send_info_timer: Timer<()>,
 
-  // Topic "DCPSTopic" - announcing and detecting topics
-  #[allow(dead_code)] // Technically, the topic is not accessed after initialization
+  // Topic "DCPSTopic" - annoncing and detecting topics
+  #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_topic_topic: Topic,
   dcps_topic_reader: DataReader<DiscoveredTopicData, PlCdrDeserializerAdapter<DiscoveredTopicData>>,
   dcps_topic_writer: DataWriter<DiscoveredTopicData, PlCdrSerializerAdapter<DiscoveredTopicData>>,
@@ -141,7 +141,7 @@ pub(crate) struct Discovery {
   topic_cleanup_timer: Timer<()>,
 
   // DCPSParticipantMessage - used by participants to communicate liveness
-  #[allow(dead_code)] // Technically, the topic is not accessed after initialization
+  #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   participant_message_topic: Topic,
   dcps_participant_message_reader: DataReaderCdr<ParticipantMessageData>,
   dcps_participant_message_writer: DataWriterCdr<ParticipantMessageData>,
@@ -177,12 +177,12 @@ impl Discovery {
   pub fn new(
     domain_participant: DomainParticipantWeak,
     discovery_db: Arc<RwLock<DiscoveryDB>>,
-    discovery_started_sender: std::sync::mpsc::Sender<CreateResult<()>>,
+    discovery_started_sender: std::sync::mpsc::Sender<Result<()>>,
     discovery_updated_sender: mio_channel::SyncSender<DiscoveryNotificationType>,
     discovery_command_receiver: mio_channel::Receiver<DiscoveryCommand>,
     spdp_liveness_receiver: mio_channel::Receiver<GuidPrefix>,
     self_locators: HashMap<Token, Vec<Locator>>,
-  ) -> CreateResult<Self> {
+  ) -> Result<Self> {
     // helper macro to handle initialization failures.
     macro_rules! try_construct {
       ($constructor:expr, $msg:literal) => {
@@ -191,13 +191,9 @@ impl Discovery {
           Err(e) => {
             error!($msg, e);
             discovery_started_sender
-              .send(Err(CreateError::OutOfResources {
-                reason: $msg.to_string(),
-              }))
+              .send(Err(Error::OutOfResources))
               .unwrap_or(()); // We are trying to quit. If send fails, just ignore it.
-            return Err(CreateError::OutOfResources {
-              reason: $msg.to_string(),
-            });
+            return Err(Error::OutOfResources);
           }
         }
       };
@@ -247,14 +243,14 @@ impl Discovery {
       domain_participant.create_topic(
         "DCPSParticipant".to_string(),
         "SPDPDiscoveredParticipantData".to_string(),
-        &Self::create_spdp_participant_qos(),
+        &Self::create_spdp_patricipant_qos(),
         TopicKind::WithKey,
       ),
       "Unable to create DCPSParticipant topic. {:?}"
     );
 
     let dcps_participant_reader = try_construct!( discovery_subscriber
-      .create_datareader_with_entity_id
+      .create_datareader_with_entityid
         ::<SpdpDiscoveredParticipantData,PlCdrDeserializerAdapter<SpdpDiscoveredParticipantData>>(
         &dcps_participant_topic,
         EntityId::SPDP_BUILTIN_PARTICIPANT_READER,
@@ -262,7 +258,7 @@ impl Discovery {
       ) ,"Unable to create DataReader for DCPSParticipant. {:?}");
 
     let dcps_participant_writer = try_construct!(
-      discovery_publisher.create_datawriter_with_entity_id
+      discovery_publisher.create_datawriter_with_entityid
         ::<SpdpDiscoveredParticipantData,PlCdrSerializerAdapter<SpdpDiscoveredParticipantData>>(
         EntityId::SPDP_BUILTIN_PARTICIPANT_WRITER,
         &dcps_participant_topic,
@@ -323,7 +319,7 @@ impl Discovery {
     );
 
     let dcps_subscription_reader = try_construct!( discovery_subscriber
-      .create_datareader_with_entity_id::<DiscoveredReaderData, PlCdrDeserializerAdapter<DiscoveredReaderData>>(
+      .create_datareader_with_entityid::<DiscoveredReaderData, PlCdrDeserializerAdapter<DiscoveredReaderData>>(
         &dcps_subscription_topic,
         EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_READER,
         None,
@@ -340,7 +336,7 @@ impl Discovery {
     );
 
     let dcps_subscription_writer = try_construct!(
-      discovery_publisher.create_datawriter_with_entity_id
+      discovery_publisher.create_datawriter_with_entityid
         ::<DiscoveredReaderData,PlCdrSerializerAdapter<DiscoveredReaderData>>(
         EntityId::SEDP_BUILTIN_SUBSCRIPTIONS_WRITER,
         &dcps_subscription_topic,
@@ -376,7 +372,7 @@ impl Discovery {
     );
 
     let dcps_publication_reader = try_construct!( discovery_subscriber
-      .create_datareader_with_entity_id
+      .create_datareader_with_entityid
         ::<DiscoveredWriterData, PlCdrDeserializerAdapter<DiscoveredWriterData>>(
         &dcps_publication_topic,
         EntityId::SEDP_BUILTIN_PUBLICATIONS_READER,
@@ -394,7 +390,7 @@ impl Discovery {
     );
 
     let dcps_publication_writer = try_construct!(
-      discovery_publisher.create_datawriter_with_entity_id
+      discovery_publisher.create_datawriter_with_entityid
         ::<DiscoveredWriterData,PlCdrSerializerAdapter<DiscoveredWriterData>>(
         EntityId::SEDP_BUILTIN_PUBLICATIONS_WRITER,
         &dcps_publication_topic,
@@ -423,14 +419,14 @@ impl Discovery {
       domain_participant.create_topic(
         "DCPSTopic".to_string(),
         "DiscoveredTopicData".to_string(),
-        &QosPolicyBuilder::new().build(), // TODO: check what this should be
+        &QosPolicyBuilder::new().build(), //TODO: check what this should be
         TopicKind::WithKey,
       ),
       "Unable to create DCPSTopic topic. {:?}"
     );
 
     let dcps_topic_reader = try_construct!( discovery_subscriber
-      .create_datareader_with_entity_id
+      .create_datareader_with_entityid
         ::<DiscoveredTopicData, PlCdrDeserializerAdapter<DiscoveredTopicData>>(
         &dcps_topic_topic,
         EntityId::SEDP_BUILTIN_TOPIC_READER,
@@ -448,7 +444,7 @@ impl Discovery {
     );
 
     let dcps_topic_writer = try_construct!(
-      discovery_publisher.create_datawriter_with_entity_id
+      discovery_publisher.create_datawriter_with_entityid
         ::<DiscoveredTopicData,PlCdrSerializerAdapter<DiscoveredTopicData>>(
         EntityId::SEDP_BUILTIN_TOPIC_WRITER,
         &dcps_topic_topic,
@@ -495,7 +491,7 @@ impl Discovery {
     );
 
     let dcps_participant_message_reader = try_construct!(
-      discovery_subscriber.create_datareader_cdr_with_entity_id::<ParticipantMessageData>(
+      discovery_subscriber.create_datareader_cdr_with_entityid::<ParticipantMessageData>(
         &participant_message_topic,
         EntityId::P2P_BUILTIN_PARTICIPANT_MESSAGE_READER,
         None,
@@ -514,7 +510,7 @@ impl Discovery {
     );
 
     let dcps_participant_message_writer = try_construct!(
-      discovery_publisher.create_datawriter_cdr_with_entity_id::<ParticipantMessageData>(
+      discovery_publisher.create_datawriter_cdr_with_entityid::<ParticipantMessageData>(
         EntityId::P2P_BUILTIN_PARTICIPANT_MESSAGE_WRITER,
         &participant_message_topic,
         None,
@@ -784,7 +780,7 @@ impl Discovery {
     } // loop
   } // fn
 
-  // Initialize our own participant data into the Discovery DB.
+  // Initialize our own particiapnt data into the Discovery DB.
   // That causes ReaderProxies and WriterProxies to be constructed and
   // and we also get our own local readers and writers connected, both
   // built-in and user-defined.
@@ -804,7 +800,7 @@ impl Discovery {
       Duration::DURATION_INFINITE,
     );
 
-    // Initialize our own participant data into the Discovery DB, so we can talk to
+    // Initialize our own particiapnt data into the Discovery DB, so we can talk to
     // ourself.
     self
       .discovery_db_write()
@@ -846,7 +842,7 @@ impl Discovery {
       Some(dp.guid()),
       String::from("DCPSParticipant"),
       String::from("SPDPDiscoveredParticipantData"),
-      &Self::create_spdp_participant_qos(),
+      &Self::create_spdp_patricipant_qos(),
       None, // <<---------------TODO: None here means we advertise no EndpointSecurityInfo
     );
     let drd = DiscoveredReaderData {
@@ -955,7 +951,7 @@ impl Discovery {
         Ok(ds) => ds
           .map(|d| d.map_dispose(|g| g.0)) // map_dispose removes Endpoint_GUID wrapper around GUID
           .filter(|d|
-              // If a participant was specified, we must match its GUID prefix.
+              // If a particiapnt was specified, we must match its GUID prefix.
               match (read_history, d) {
                 (None, _) => true, // Not asked to filter by participant
                 (Some(participant_to_update), Sample::Value(drd)) =>
@@ -1008,7 +1004,7 @@ impl Discovery {
         // a reader and thus self
         Ok(ds) => ds
           .map(|d| d.map_dispose(|g| g.0)) // map_dispose removes Endpoint_GUID wrapper around GUID
-          // If a participant was specified, we must match its GUID prefix.
+          // If a particiapnt was specified, we must match its GUID prefix.
           .filter(|d| match (read_history, d) {
             (None, _) => true, // Not asked to filter by participant
             (Some(participant_to_update), Sample::Value(dwd)) => {
@@ -1079,9 +1075,9 @@ impl Discovery {
             .discovery_db_write()
             .update_topic_data(&topic_data, writer, DiscoveredVia::Topic);
           // Now check if we know any readers of writers to this topic. The topic QoS
-          // could cause these to became viable matches against local
+          // could cause these to became viable matches agains local
           // writers/readers. This is because at least RTI Connext sends QoS
-          // policies on a Topic, and then (apparently) assumes that its
+          // policies on a Topic, and then (apprently) assumes that its
           // readers/writers inherit those policies unless specified otherwise.
 
           let writers = self
@@ -1112,7 +1108,7 @@ impl Discovery {
   }
 
   // These messages are for updating participant liveliness
-  // The protocol distinguishes between automatic (by DDS library)
+  // The protocol distinguises between automatic (by DDS library)
   // and manual (by by application, via DDS API call) liveness
   // TODO: rewrite this function according to the pattern above
   pub fn handle_participant_message_reader(&mut self) {
@@ -1362,7 +1358,7 @@ impl Discovery {
       .build()
   }
 
-  pub fn create_spdp_participant_qos() -> QosPolicies {
+  pub fn create_spdp_patricipant_qos() -> QosPolicies {
     QosPolicyBuilder::new()
       .reliability(Reliability::BestEffort)
       .history(History::KeepLast { depth: 1 })
@@ -1401,7 +1397,7 @@ mod tests {
   use std::net::SocketAddr;
 
   use chrono::Utc;
-  // use bytes::Bytes;
+  //use bytes::Bytes;
   use mio_06::Token;
   use speedy::{Endianness, Writable};
 
@@ -1541,7 +1537,7 @@ mod tests {
 
     let msg_data = tdata
       .write_to_vec_with_ctx(Endianness::LittleEndian)
-      .expect("Failed to write msg data");
+      .expect("Failed to write msg dtaa");
 
     udp_sender.send_to_all(&msg_data, &addresses);
 

@@ -83,7 +83,7 @@ impl DataFrag {
     2 + // fragmentsInSubmessage
     2 + // fragmentSize
     4 + // sampleSize
-    self.inline_qos.as_ref().map(|q| q.len_serialized() ).unwrap_or(0) + // QoS ParameterList
+    self.inline_qos.as_ref().map(|q| q.len_serialized() ).unwrap_or(0) + // QoS ParamterList
     self.serialized_payload.len()
   }
 
@@ -140,7 +140,7 @@ impl DataFrag {
       u32::read_from_stream_unbuffered_with_ctx(endianness, &mut cursor).map_err(map_speedy_err)?;
 
     let expect_qos = flags.contains(DATAFRAG_Flags::InlineQos);
-    // let expect_key = flags.contains(DATAFRAG_Flags::Key);
+    //let expect_key = flags.contains(DATAFRAG_Flags::Key);
 
     // Size of header after "octets_to_inline_qos" field:
     // reader_id: 4
@@ -238,7 +238,7 @@ impl DataFrag {
     if fragment_starting_num < FragmentNumber::new(1) || fragment_starting_num > expected_total {
       return Err(io::Error::new(
         io::ErrorKind::Other,
-        format!("DataFrag fragmentStartingNum={:?} expected_total={:?}.  Expected 1 <= fragmentStartingNum <= expected_total.  Discarding as invalid.",
+        format!("DataFrag fragmentStartingNum={:?} expected_total={:?}.  Expected 1 <= fragmentStartingNum <= expeceted_total.  Discarding as invalid.",
           fragment_starting_num,expected_total)
       ));
     }

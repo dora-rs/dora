@@ -10,7 +10,7 @@ use log::{debug, error, info, trace, warn};
 use socketpair::*;
 use mio_08::{self, *};
 
-// PollEventSource and PollEventSender are an event communication
+// PollEventSource and PollEventSender are an event communcaion
 // channel. PollEventSource is a mio-0.8 event::Source for Poll,
 // so it can be Registered in mio-0.8.
 // These Events carry no data.

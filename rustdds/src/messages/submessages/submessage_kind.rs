@@ -27,11 +27,11 @@ impl SubmessageKind {
   pub const HEARTBEAT_FRAG: Self = Self { value: 0x13 };
   pub const DATA: Self = Self { value: 0x15 };
   pub const DATA_FRAG: Self = Self { value: 0x16 };
-  pub const SEC_BODY: Self = Self { value: 0x30 }; // Section 7.3.7.5.2 of the Security specification (v. 1.1)
-  pub const SEC_PREFIX: Self = Self { value: 0x31 }; // Section 7.3.7.6.2 of the Security specification (v. 1.1)
-  pub const SEC_POSTFIX: Self = Self { value: 0x32 }; // Section 7.3.7.7.2 of the Security specification (v. 1.1)
-  pub const SRTPS_PREFIX: Self = Self { value: 0x33 }; // Section 7.3.7.8.2 of the Security specification (v. 1.1)
-  pub const SRTPS_POSTFIX: Self = Self { value: 0x34 }; // Section 7.3.7.9.2 of the Security specification (v. 1.1)
+  pub const SEC_BODY: Self = Self { value: 0x30 }; //Section 7.3.7.5.2 of the Security specification (v. 1.1)
+  pub const SEC_PREFIX: Self = Self { value: 0x31 }; //Section 7.3.7.6.2 of the Security specification (v. 1.1)
+  pub const SEC_POSTFIX: Self = Self { value: 0x32 }; //Section 7.3.7.7.2 of the Security specification (v. 1.1)
+  pub const SRTPS_PREFIX: Self = Self { value: 0x33 }; //Section 7.3.7.8.2 of the Security specification (v. 1.1)
+  pub const SRTPS_POSTFIX: Self = Self { value: 0x34 }; //Section 7.3.7.9.2 of the Security specification (v. 1.1)
 }
 
 impl Debug for SubmessageKind {

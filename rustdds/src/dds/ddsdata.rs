@@ -7,7 +7,7 @@ use crate::{
   structure::cache_change::ChangeKind,
 };
 
-// DDSData represents a serialized data sample with metadata
+// DDSData represets a serialized data sample with metadata
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 // Contents of a DATA submessage or several DATAFRAG submessages. This is either

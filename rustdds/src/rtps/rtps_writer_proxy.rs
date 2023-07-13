@@ -18,7 +18,7 @@ use crate::{
   },
 };
 
-#[derive(Debug)] // these are not cloneable, because contained data may be large
+#[derive(Debug)] // these are not cloneable, because contined data may be large
 pub(crate) struct RtpsWriterProxy {
   /// Identifies the remote matched Writer
   pub remote_writer_guid: GUID,
@@ -138,7 +138,7 @@ impl RtpsWriterProxy {
     self.ack_base == SequenceNumber::new(0) && self.changes.is_empty()
   }
 
-  // Given an availability range from a HEARTBEAT, find out what we are missing.
+  // Given an availabilty range from a HEARTBEAT, find out what we are missing.
   //
   // Note: Heartbeat gives bounds only. Some samples within that range may
   // have been received already, or not really available, i.e. there may be GAPs
@@ -269,7 +269,7 @@ impl RtpsWriterProxy {
     if remove_from <= self.ack_base {
       let mut removed_and_after = self.changes.split_off(&remove_from);
       let mut after = removed_and_after.split_off(&remove_until_before);
-      // let removed = removed_and_after;
+      //let removed = removed_and_after;
       self.changes.append(&mut after);
 
       self.ack_base = max(remove_until_before, self.ack_base);
@@ -340,7 +340,7 @@ impl RtpsWriterProxy {
       fa.new_datafrag(datafrag, flags)
     } else {
       let mut fa = FragmentAssembler::new(datafrag.fragment_size);
-      // TODO: Test that the fragment size is not zero
+      //TODO: Test that the fragment size is not zero
       let ret = fa.new_datafrag(datafrag, flags);
       self.fragment_assembler = Some(fa);
       ret

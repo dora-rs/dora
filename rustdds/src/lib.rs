@@ -60,7 +60,7 @@
 //!   is the DDS default, then use [`CDRSerializerAdapter`] and
 //!   [`CDRDeserializerAdapter`]
 //!   when such adapters are required. If you need to use another serialization format, then you should find or write
-//!   a [Serde data format](https://serde.rs/data-format.html) implementation and wrap it as a (De)SerializerAdapter.
+//!   a [Serde data format](https://serde.rs/data-format.html) implementation and wrap it as a (De)SerializerAdaper.
 //!
 //! # Polling multiple DataReaders
 //!
@@ -116,7 +116,7 @@
 //! let some_topic = domain_participant.create_topic("some_topic".to_string(), "SomeType".to_string(), &qos, TopicKind::NoKey).unwrap();
 //!
 //! // Used type needs Serialize for writers and Deserialize for readers
-//! #[derive(Serialize, Deserialize, Debug)]
+//! #[derive(Serialize, Deserialize)]
 //! struct SomeType {
 //!   a: i32
 //! }

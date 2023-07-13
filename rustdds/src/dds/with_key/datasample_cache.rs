@@ -18,7 +18,7 @@ use crate::{
   with_key::WriteOptions,
 };
 
-// use std::num::Zero; unstable
+//use std::num::Zero; unstable
 
 // DataSampleCache is a structure local to DataReader and DataWriter. It acts as
 // a buffer between e.g. RTPS Reader and the application-facing DataReader. It
@@ -176,11 +176,10 @@ where
         },
       )
       .map_or_else(
-        // None: ok
-        || (),
-        // Some: key was there already!
+        /* None: ok */ || (),
+        /* Some: key was there already! */
         // TODO: We should not outright panic here, but rather raise a serious error.
-        // This is a symptom that the receive timestamps are not unique identifiers like they are
+        // This is a symption that the receive timestamps are not unique identifiers like they are
         // supposed to be.
         |_already_existed| {
           panic!(
@@ -362,7 +361,7 @@ where
   // vectors obtained from select_*_for_access -methods above, or their
   // subvectors.
   //
-  // There are two versions of both read and take: Return DataSample<D> (incl.
+  // Therea are two versions of both read and take: Return DataSample<D> (incl.
   // metadata) and "bare" versions without metadata.
 
   pub fn read_by_keys(&mut self, keys: &[(Timestamp, D::K)]) -> Vec<DataSample<&D>> {
@@ -408,7 +407,7 @@ where
     self.mark_instances_viewed(&instance_generations);
 
     // We need to do SampleInfo construction and final result construction as
-    // separate passes. This is because SampleInfo construction needs to mark
+    // separate passes. This is becaue SampleInfo construction needs to mark
     // items as read and generations as viewed, i.e. needs mutable reference to
     // data_samples. Result construction (in read, not take) needs to hand out
     // multiple references into data_samples, therefore it needs immutable
@@ -455,7 +454,7 @@ where
       let dswm = self.datasamples.remove(ts).unwrap();
       let imd = self.instance_map.get(key).unwrap();
       let sample_info = Self::make_sample_info(&dswm, imd, len - index - 1, mrs_total, mrsic_total);
-      // dwsm.sample_has_been_read = true; // no need to mark read, as the dswm is
+      //dwsm.sample_has_been_read = true; // no need to mark read, as the dswm is
       // about to be destroyed
       Self::record_instance_generation_viewed(
         &mut instance_generations,
@@ -516,7 +515,7 @@ where
 
     for (ts, key) in keys.iter() {
       let dswm = self.datasamples.remove(ts).unwrap();
-      // dwsm.sample_has_been_read = true; // no need to mark read, as the dswm is
+      //dwsm.sample_has_been_read = true; // no need to mark read, as the dswm is
       // about to be destroyed
       Self::record_instance_generation_viewed(
         &mut instance_generations,

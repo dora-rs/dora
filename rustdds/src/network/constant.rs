@@ -35,7 +35,7 @@ pub const REMOVE_WRITER_TOKEN: Token = Token(17 + PTB);
 // pub const ADD_DATAWRITER_TOKEN: Token = Token(18 + PTB);
 // pub const REMOVE_DATAWRITER_TOKEN: Token = Token(19 + PTB);
 
-pub const ACKNACK_MESSAGE_TO_LOCAL_WRITER_TOKEN: Token = Token(20 + PTB);
+pub const ACKNACK_MESSGAGE_TO_LOCAL_WRITER_TOKEN: Token = Token(20 + PTB);
 
 pub const DISCOVERY_UPDATE_NOTIFICATION_TOKEN: Token = Token(21 + PTB);
 pub const DISCOVERY_COMMAND_TOKEN: Token = Token(22 + PTB);

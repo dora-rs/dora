@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
   Copy,
   Clone,
 )]
-/// Duration is the DDS/RTPS representation for lengths of time, such as
+/// Duration is the DDS/RTPS representation for legths of time, such as
 /// timeouts. It is very similar to [`std::time::Duration`]. See also
 /// [`Timestamp`](crate::Timestamp).
 ///
@@ -120,8 +120,8 @@ impl From<std::time::Duration> for Duration {
 impl From<Duration> for std::time::Duration {
   fn from(d: Duration) -> Self {
     Self::from_nanos(
-      u64::try_from(d.to_nanoseconds()).unwrap_or(0), /* saturate to zero, because
-                                                       * std::time::Duration is unsigned */
+      u64::try_from(d.to_nanoseconds()).unwrap_or(0), /* saturate to zero, becaues
+                                                       * std::time::Duraiton is unsigned */
     )
   }
 }

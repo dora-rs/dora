@@ -62,7 +62,7 @@ impl UDPSender {
     let mut multicast_sockets = Vec::with_capacity(1);
     for multicast_if_ipaddr in get_local_multicast_ip_addrs()? {
       let raw_socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-      // beef: specify output interface
+      // beef: specify otput interface
       info!(
         "UDPSender: Multicast sender on interface {:?}",
         multicast_if_ipaddr
@@ -128,9 +128,6 @@ impl UDPSender {
   }
 
   pub fn send_to_locator(&self, buffer: &[u8], locator: &Locator) {
-    if buffer.len() > 1500 {
-      warn!("send_to_locator: Message size = {}", buffer.len());
-    }
     let send = |socket_address: SocketAddr| {
       if socket_address.ip().is_multicast() {
         for socket in &self.multicast_sockets {

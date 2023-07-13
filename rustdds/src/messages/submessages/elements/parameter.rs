@@ -41,7 +41,7 @@ impl Parameter {
     //+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
     //|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|X|F|U|D|
     //+--------------+---------------+---------------+----------------+
-    // The current version of the protocol (2.3) defines the DisposedFlag, the
+    //The current version of the protocol (2.3) defines the DisposedFlag, the
     // UnregisteredFlag, the FilteredFlag. DisposedFlag is represented with the
     // literal ‘D.’ UnregisteredFlag is represented with the literal ‘U.’
     // FilteredFlag is represented with the literal ‘F.’

@@ -8,7 +8,7 @@ use crate::structure::locator::Locator;
 #[derive(Debug, PartialEq, Eq, Clone, Readable, Writable)]
 pub struct InfoReply {
   /// Indicates an alternative set of unicast addresses that
-  /// the Writer should use to reach the Readers when
+  /// the Writershould use to reach the Readers when
   /// replying to the Submessages that follow.
   pub unicast_locator_list: Vec<Locator>,
 

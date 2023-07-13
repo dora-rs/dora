@@ -42,14 +42,14 @@ pub trait TopicDescription {
 /// ```
 #[derive(Clone)]
 pub struct Topic {
-  // TODO: Do we really need set_qos operation?
+  //TODO: Do we really need set_qos operation?
   // Maybe not. Let's make Topic immutable.
   inner: Arc<InnerTopic>,
 }
 
 impl Topic {
   pub(crate) fn new(
-    my_domain_participant: &DomainParticipantWeak,
+    my_domainparticipant: &DomainParticipantWeak,
     my_name: String,
     my_typedesc: TypeDesc,
     my_qos_policies: &QosPolicies,
@@ -57,7 +57,7 @@ impl Topic {
   ) -> Self {
     Self {
       inner: Arc::new(InnerTopic::new(
-        my_domain_participant,
+        my_domainparticipant,
         my_name,
         my_typedesc,
         my_qos_policies,
@@ -145,13 +145,13 @@ impl HasQoSPolicy for Topic {
   }
 }
 
-// impl DDSEntity for Topic {}
+//impl DDSEntity for Topic {}
 
 // -------------------------------- InnerTopic -----------------------------
 
 #[derive(Clone)]
 pub struct InnerTopic {
-  my_domain_participant: DomainParticipantWeak,
+  my_domainparticipant: DomainParticipantWeak,
   my_name: String,
   my_typedesc: TypeDesc,
   my_qos_policies: QosPolicies,
@@ -162,14 +162,14 @@ impl InnerTopic {
   // visibility pub(crate), because only DomainParticipant should be able to
   // create new Topic objects from an application point of view.
   fn new(
-    my_domain_participant: &DomainParticipantWeak,
+    my_domainparticipant: &DomainParticipantWeak,
     my_name: String,
     my_typedesc: TypeDesc,
     my_qos_policies: &QosPolicies,
     topic_kind: TopicKind,
   ) -> Self {
     Self {
-      my_domain_participant: my_domain_participant.clone(),
+      my_domainparticipant: my_domainparticipant.clone(),
       my_name,
       my_typedesc,
       my_qos_policies: my_qos_policies.clone(),
@@ -178,7 +178,7 @@ impl InnerTopic {
   }
 
   fn participant(&self) -> Option<DomainParticipant> {
-    self.my_domain_participant.clone().upgrade()
+    self.my_domainparticipant.clone().upgrade()
   }
 
   fn get_type(&self) -> TypeDesc {

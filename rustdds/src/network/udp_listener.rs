@@ -230,7 +230,7 @@ impl UDPListener {
       messages.push(Bytes::from(message)); // freeze bytes and push
     } // loop
 
-    // unreachable!(); // But why does this cause a warning? (rustc 1.66.0)
+    //unreachable!(); // But why does this cause a warning? (rustc 1.66.0)
     // Answer: https://github.com/rust-lang/rust/issues/46500
   }
 
@@ -250,9 +250,9 @@ impl UDPListener {
 
 #[cfg(test)]
 mod tests {
-  // use std::os::unix::io::AsRawFd;
-  // use nix::sys::socket::setsockopt;
-  // use nix::sys::socket::sockopt::IpMulticastLoop;
+  //use std::os::unix::io::AsRawFd;
+  //use nix::sys::socket::setsockopt;
+  //use nix::sys::socket::sockopt::IpMulticastLoop;
   use std::{thread, time};
 
   use super::*;
@@ -280,7 +280,7 @@ mod tests {
       UDPListener::new_multicast("0.0.0.0", 10002, Ipv4Addr::new(239, 255, 0, 1)).unwrap();
     let sender = UDPSender::new_with_random_port().unwrap();
 
-    // setsockopt(sender.socket.as_raw_fd(), IpMulticastLoop, &true)
+    //setsockopt(sender.socket.as_raw_fd(), IpMulticastLoop, &true)
     //  .expect("Unable set IpMulticastLoop option on socket");
 
     let data: Vec<u8> = vec![2, 4, 6];

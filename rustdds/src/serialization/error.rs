@@ -2,6 +2,8 @@ use std::{self, fmt::Display};
 
 use serde::{de, ser};
 
+use crate::dds::result::Error as DDSError;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 // This is a bare-bones implementation. A real library would provide additional
@@ -58,5 +60,13 @@ impl ser::Error for Error {
 impl de::Error for Error {
   fn custom<T: Display>(msg: T) -> Self {
     Self::Message(msg.to_string())
+  }
+}
+
+impl From<Error> for DDSError {
+  fn from(ser_error: Error) -> Self {
+    Self::Serialization {
+      reason: format!("{ser_error:?}"),
+    }
   }
 }

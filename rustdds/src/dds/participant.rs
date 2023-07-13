@@ -1,4 +1,4 @@
-// use mio::Token;
+//use mio::Token;
 use std::{
   collections::HashMap,
   io::ErrorKind,
@@ -15,13 +15,13 @@ use mio_06::Token;
 use log::{debug, error, info, trace, warn};
 
 use crate::{
-  create_error_out_of_resources, create_error_poisoned,
   dds::{pubsub::*, qos::*, result::*, topic::*, typedesc::TypeDesc},
   discovery::{
     discovery::{Discovery, DiscoveryCommand},
     discovery_db::DiscoveryDB,
     sedp_messages::DiscoveredTopicData,
   },
+  log_and_err_internal,
   network::{constant::*, udp_listener::UDPListener},
   rtps::{
     dp_event_loop::{DPEventLoop, DomainInfo},
@@ -58,7 +58,7 @@ impl DomainParticipant {
   ///
   /// let domain_participant = DomainParticipant::new(0).unwrap();
   /// ```
-  pub fn new(domain_id: u16) -> CreateResult<Self> {
+  pub fn new(domain_id: u16) -> Result<Self> {
     trace!("DomainParticipant construct start");
 
     // Discovery join channel is used to just send a join handle into the inner
@@ -100,7 +100,8 @@ impl DomainParticipant {
       dpi: Arc::new(Mutex::new(dp)),
     };
 
-    let (discovery_started_sender, discovery_started_receiver) = std::sync::mpsc::channel();
+    let (discovery_started_sender, discovery_started_receiver) =
+      std::sync::mpsc::channel::<Result<()>>();
 
     // Construct and start background thread
     let dp_clone = dp.weak_clone();
@@ -132,9 +133,9 @@ impl DomainParticipant {
       }
       Ok(Err(e)) => {
         std::mem::drop(dp);
-        create_error_poisoned!("Failed to start discovery thread: {e:?}")
+        log_and_err_internal!("Failed to start discovery thread: {e:?}")
       }
-      Err(e) => create_error_poisoned!("Discovery thread channel error: {e:?}"),
+      Err(e) => log_and_err_internal!("Discovery thread channel error: {e:?}"),
     }
   }
 
@@ -154,7 +155,7 @@ impl DomainParticipant {
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos);
   /// ```
-  pub fn create_publisher(&self, qos: &QosPolicies) -> CreateResult<Publisher> {
+  pub fn create_publisher(&self, qos: &QosPolicies) -> Result<Publisher> {
     let w = self.weak_clone(); // this must be done first to avoid deadlock
     self.dpi.lock().unwrap().create_publisher(&w, qos)
   }
@@ -175,7 +176,7 @@ impl DomainParticipant {
   /// let qos = QosPolicyBuilder::new().build();
   /// let subscriber = domain_participant.create_subscriber(&qos);
   /// ```
-  pub fn create_subscriber(&self, qos: &QosPolicies) -> CreateResult<Subscriber> {
+  pub fn create_subscriber(&self, qos: &QosPolicies) -> Result<Subscriber> {
     // println!("DP(outer): create_subscriber");
     let w = self.weak_clone(); // do this first, avoid deadlock
     self.dpi.lock().unwrap().create_subscriber(&w, qos)
@@ -205,7 +206,7 @@ impl DomainParticipant {
     type_desc: String,
     qos: &QosPolicies,
     topic_kind: TopicKind,
-  ) -> CreateResult<Topic> {
+  ) -> Result<Topic> {
     // println!("Create topic outer");
     let w = self.weak_clone();
     self
@@ -215,7 +216,7 @@ impl DomainParticipant {
       .create_topic(&w, name, type_desc, qos, topic_kind)
   }
 
-  pub fn find_topic(&self, name: &str, timeout: Duration) -> CreateResult<Option<Topic>> {
+  pub fn find_topic(&self, name: &str, timeout: Duration) -> Result<Option<Topic>> {
     let w = self.weak_clone();
     self.dpi.lock().unwrap().find_topic(&w, name, timeout)
   }
@@ -273,7 +274,7 @@ impl DomainParticipant {
   /// let domain_participant = DomainParticipant::new(0).expect("Failed to create participant");
   /// domain_participant.assert_liveliness();
   /// ```
-  pub fn assert_liveliness(self) -> WriteResult<(), ()> {
+  pub fn assert_liveliness(self) -> Result<()> {
     self.dpi.lock().unwrap().assert_liveliness()
   }
 
@@ -329,23 +330,19 @@ impl DomainParticipantWeak {
     }
   }
 
-  pub fn create_publisher(&self, qos: &QosPolicies) -> CreateResult<Publisher> {
+  pub fn create_publisher(&self, qos: &QosPolicies) -> Result<Publisher> {
     self
       .dpi
       .upgrade()
-      .ok_or(CreateError::ResourceDropped {
-        reason: "DomainParticipant".to_string(),
-      })
+      .ok_or(Error::OutOfResources)
       .and_then(|dpi| dpi.lock().unwrap().create_publisher(self, qos))
   }
 
-  pub fn create_subscriber(&self, qos: &QosPolicies) -> CreateResult<Subscriber> {
+  pub fn create_subscriber(&self, qos: &QosPolicies) -> Result<Subscriber> {
     self
       .dpi
       .upgrade()
-      .ok_or(CreateError::ResourceDropped {
-        reason: "DomainParticipant".to_string(),
-      })
+      .ok_or(Error::OutOfResources)
       .and_then(|dpi| dpi.lock().unwrap().create_subscriber(self, qos))
   }
 
@@ -355,13 +352,11 @@ impl DomainParticipantWeak {
     type_desc: String,
     qos: &QosPolicies,
     topic_kind: TopicKind,
-  ) -> CreateResult<Topic> {
+  ) -> Result<Topic> {
     self
       .dpi
       .upgrade()
-      .ok_or(CreateError::ResourceDropped {
-        reason: "DomainParticipant".to_string(),
-      })
+      .ok_or(Error::LockPoisoned)
       .and_then(|dpi| {
         dpi
           .lock()
@@ -435,7 +430,7 @@ impl DomainParticipantDisc {
     discovery_update_notification_receiver: mio_channel::Receiver<DiscoveryNotificationType>,
     discovery_command_sender: mio_channel::SyncSender<DiscoveryCommand>,
     spdp_liveness_sender: mio_channel::SyncSender<GuidPrefix>,
-  ) -> CreateResult<Self> {
+  ) -> Result<Self> {
     let dpi = DomainParticipantInner::new(
       domain_id,
       discovery_update_notification_receiver,
@@ -464,7 +459,7 @@ impl DomainParticipantDisc {
     &self,
     dp: &DomainParticipantWeak,
     qos: &QosPolicies,
-  ) -> CreateResult<Publisher> {
+  ) -> Result<Publisher> {
     self
       .dpi
       .lock()
@@ -476,7 +471,7 @@ impl DomainParticipantDisc {
     &self,
     dp: &DomainParticipantWeak,
     qos: &QosPolicies,
-  ) -> CreateResult<Subscriber> {
+  ) -> Result<Subscriber> {
     self
       .dpi
       .lock()
@@ -491,7 +486,7 @@ impl DomainParticipantDisc {
     type_desc: String,
     qos: &QosPolicies,
     topic_kind: TopicKind,
-  ) -> CreateResult<Topic> {
+  ) -> Result<Topic> {
     // println!("Create topic disc");
     self
       .dpi
@@ -505,7 +500,7 @@ impl DomainParticipantDisc {
     dp: &DomainParticipantWeak,
     name: &str,
     timeout: Duration,
-  ) -> CreateResult<Option<Topic>> {
+  ) -> Result<Option<Topic>> {
     self.dpi.lock().unwrap().find_topic(dp, name, timeout)
   }
 
@@ -529,15 +524,16 @@ impl DomainParticipantDisc {
   //   self.dpi.lock().unwrap().discovery_db.clone()
   // }
 
-  pub(crate) fn assert_liveliness(&self) -> WriteResult<(), ()> {
+  pub(crate) fn assert_liveliness(&self) -> Result<()> {
     // No point in checking for the LIVELINESS QoS of MANUAL_BY_PARTICIPANT,
     // the discovery command mutates a field which is only read
     // by writers with that particular QoS.
     self
       .discovery_command_sender
       .send(DiscoveryCommand::ManualAssertLiveliness)
-      // TODO: Are there more severe reasons than channel full? Is WouldBlock correct?
-      .map_err(|_e| WriteError::WouldBlock { data: () })
+      .or_else(|e| {
+        log_and_err_internal!("assert_liveness - Failed to send DiscoveryCommand. {e:?}")
+      })
   }
 
   pub(crate) fn self_locators(&self) -> HashMap<Token, Vec<Locator>> {
@@ -623,7 +619,7 @@ impl DomainParticipantInner {
     domain_id: u16,
     discovery_update_notification_receiver: mio_channel::Receiver<DiscoveryNotificationType>,
     spdp_liveness_sender: mio_channel::SyncSender<GuidPrefix>,
-  ) -> CreateResult<Self> {
+  ) -> Result<Self> {
     let mut listeners = HashMap::new();
 
     match UDPListener::new_multicast(
@@ -659,7 +655,7 @@ impl DomainParticipantInner {
     // here discovery_listener is redefined (shadowed)
     let discovery_listener = match discovery_listener {
       Some(dl) => dl,
-      None => return create_error_out_of_resources!("Could not find free ParticipantId"),
+      None => return log_and_err_internal!("Could not find free ParticipantId"),
     };
     listeners.insert(DISCOVERY_LISTENER_TOKEN, discovery_listener);
 
@@ -685,13 +681,13 @@ impl DomainParticipantInner {
         // If we do not get the preferred listening port,
         // try again, with "any" port number.
         UDPListener::new_unicast("0.0.0.0", 0).or_else(|e| {
-          create_error_out_of_resources!(
+          log_and_err_internal!(
             "Could not open unicast user traffic listener, any port number: {:?}",
             e
           )
         })
       } else {
-        create_error_out_of_resources!("Could not open unicast user traffic listener: {e:?}")
+        log_and_err_internal!("Could not open unicast user traffic listener: {e:?}")
       }
     })?;
 
@@ -816,7 +812,7 @@ impl DomainParticipantInner {
     domain_participant: &DomainParticipantWeak,
     qos: &QosPolicies,
     discovery_command: mio_channel::SyncSender<DiscoveryCommand>,
-  ) -> CreateResult<Publisher> {
+  ) -> Result<Publisher> {
     Ok(Publisher::new(
       domain_participant.clone(),
       self.discovery_db.clone(),
@@ -833,7 +829,7 @@ impl DomainParticipantInner {
     domain_participant: &DomainParticipantWeak,
     qos: &QosPolicies,
     discovery_command: mio_channel::SyncSender<DiscoveryCommand>,
-  ) -> CreateResult<Subscriber> {
+  ) -> Result<Subscriber> {
     Ok(Subscriber::new(
       domain_participant.clone(),
       self.discovery_db.clone(),
@@ -857,7 +853,7 @@ impl DomainParticipantInner {
     type_desc: String,
     qos: &QosPolicies,
     topic_kind: TopicKind,
-  ) -> CreateResult<Topic> {
+  ) -> Result<Topic> {
     let topic = Topic::new(
       domain_participant_weak,
       name,
@@ -877,7 +873,7 @@ impl DomainParticipantInner {
     domain_participant_weak: &DomainParticipantWeak,
     name: &str,
     timeout: Duration,
-  ) -> CreateResult<Option<Topic>> {
+  ) -> Result<Option<Topic>> {
     use mio_06 as mio;
 
     let poll = mio::Poll::new()?;
@@ -917,13 +913,8 @@ impl DomainParticipantInner {
     &self,
     domain_participant_weak: &DomainParticipantWeak,
     name: &str,
-  ) -> CreateResult<Option<Topic>> {
-    let db = self
-      .discovery_db
-      .read()
-      .map_err(|_| CreateError::Poisoned {
-        reason: "discovery db".to_string(),
-      })?;
+  ) -> Result<Option<Topic>> {
+    let db = self.discovery_db.read().map_err(|_| Error::LockPoisoned)?;
 
     let build_topic_fn = |d: &DiscoveredTopicData| {
       let qos = d.topic_data.qos();

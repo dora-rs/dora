@@ -6,7 +6,7 @@ use crate::{
   structure::{guid::GUID, time::Timestamp},
 };
 
-/// Analog of DDS GUID in ROS2 builtin data structures
+/// Analog of DDS GUID in ROS2 builtin datastructures
 #[derive(
   Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, CdrEncodingSize,
 )]

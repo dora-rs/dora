@@ -11,7 +11,7 @@ use crate::{
   },
   structure::{guid::EntityId, sequence_number::SequenceNumber},
 };
-// use log::debug;
+//use log::debug;
 
 /// This Submessage is sent from an RTPS Writer (NO_KEY or WITH_KEY)
 /// to an RTPS Reader (NO_KEY or WITH_KEY)
@@ -149,14 +149,14 @@ impl Data {
     4 + // readerId
     4 + // writerId
     8 + // writerSN
-    self.inline_qos.as_ref().map(|q| q.len_serialized() ).unwrap_or(0) + // QoS ParameterList
+    self.inline_qos.as_ref().map(|q| q.len_serialized() ).unwrap_or(0) + // QoS ParamterList
     self.serialized_payload.as_ref().map(|q| q.len_serialized()).unwrap_or(0)
   }
 }
 
 impl<C: Context> Writable<C> for Data {
   fn write_to<T: ?Sized + Writer<C>>(&self, writer: &mut T) -> Result<(), C::Error> {
-    // This version of the protocol (2.3) should set all the bits in the extraFlags
+    //This version of the protocol (2.3) should set all the bits in the extraFlags
     // to zero
     writer.write_u16(0)?;
     // The octetsToInlineQos field contains the number of octets starting from the

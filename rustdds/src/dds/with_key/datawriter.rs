@@ -27,11 +27,12 @@ use crate::{
       policy::{Liveliness, Reliability},
       HasQoSPolicy, QosPolicies,
     },
-    result::{CreateResult, WriteError, WriteResult},
+    result::{Error, Result},
     statusevents::*,
     topic::Topic,
   },
   discovery::{discovery::DiscoveryCommand, sedp_messages::SubscriptionBuiltinTopicData},
+  log_and_err_internal,
   messages::submessages::elements::serialized_payload::SerializedPayload,
   rtps::writer::WriterCommand,
   serialization::CDRSerializerAdapter,
@@ -129,7 +130,7 @@ pub type DataWriterCdr<D> = DataWriter<D, CDRSerializerAdapter<D>>;
 /// let qos = QosPolicyBuilder::new().build();
 /// let publisher = domain_participant.create_publisher(&qos).unwrap();
 ///
-/// #[derive(Serialize, Deserialize, Debug)]
+/// #[derive(Serialize, Deserialize)]
 /// struct SomeType { a: i32 }
 /// impl Keyed for SomeType {
 ///   type K = i32;
@@ -202,7 +203,7 @@ where
     cc_upload_waker: Arc<Mutex<Option<Waker>>>,
     discovery_command: mio_channel::SyncSender<DiscoveryCommand>,
     status_receiver_rec: StatusChannelReceiver<DataWriterStatus>,
-  ) -> CreateResult<Self> {
+  ) -> Result<Self> {
     if let Some(lv) = qos.liveliness {
       match lv {
         Liveliness::Automatic { .. } | Liveliness::ManualByTopic { .. } => (),
@@ -242,7 +243,7 @@ where
       .fetch_sub(1, Ordering::Relaxed);
   }
 
-  // This one function provides both get_matched_subscriptions and
+  // This one function provides both get_matched_subscrptions and
   // get_matched_subscription_data TODO: Maybe we could return references to the
   // subscription data to avoid copying? But then what if the result set changes
   // while the application processes it?
@@ -261,7 +262,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -309,7 +310,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -326,26 +327,13 @@ where
   /// let some_data = SomeType { a: 1 };
   /// data_writer.write(some_data, None).unwrap();
   /// ```
-  pub fn write(&self, data: D, source_timestamp: Option<Timestamp>) -> WriteResult<(), D> {
+  pub fn write(&self, data: D, source_timestamp: Option<Timestamp>) -> Result<()> {
     self.write_with_options(data, WriteOptions::from(source_timestamp))?;
     Ok(())
   }
 
-  pub fn write_with_options(
-    &self,
-    data: D,
-    write_options: WriteOptions,
-  ) -> WriteResult<SampleIdentity, D> {
-    // serialize
-    let send_buffer = match SA::to_bytes(&data) {
-      Ok(b) => b,
-      Err(e) => {
-        return Err(WriteError::Serialization {
-          reason: format!("{e}"),
-          data,
-        })
-      }
-    };
+  pub fn write_with_options(&self, data: D, write_options: WriteOptions) -> Result<SampleIdentity> {
+    let send_buffer = SA::to_bytes(&data)?; // serialize
 
     let ddsdata = DDSData::new(SerializedPayload::new_from_bytes(
       SA::output_encoding(),
@@ -368,25 +356,15 @@ where
           sequence_number,
         })
       }
-      Err(TrySendError::Full(_writer_command)) => {
+      Err(e) => {
         warn!(
-          "Write timed out: topic={:?}  timeout={:?}",
+          "Failed to write new data: topic={:?}  reason={:?}  timeout={:?}",
           self.my_topic.name(),
+          e,
           timeout,
         );
         self.undo_sequence_number();
-        Err(WriteError::WouldBlock { data })
-      }
-      Err(TrySendError::Disconnected(_)) => {
-        self.undo_sequence_number();
-        Err(WriteError::Poisoned {
-          reason: "Cannot send to Writer".to_string(),
-          data,
-        })
-      }
-      Err(TrySendError::Io(e)) => {
-        self.undo_sequence_number();
-        Err(e.into())
+        Err(Error::OutOfResources)
       }
     }
   }
@@ -398,8 +376,8 @@ where
   ///
   /// See DDS Spec 1.4 Section 2.2.2.4.1.12 wait_for_acknowledgments.
   ///
-  /// If this DataWriter is not set to Reliable, or there are no matched
-  /// DataReaders with Reliable QoS, the call succeeds immediately.
+  /// If this DataWriter is not set to Realiable, or there are no matched
+  /// DataReaders with Realibale QoS, the call succeeds imediately.
   ///
   /// Return values
   /// * `Ok(true)` - all acknowledged
@@ -416,7 +394,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -434,7 +412,7 @@ where
   /// data_writer.write(some_data, None).unwrap();
   /// data_writer.wait_for_acknowledgments(std::time::Duration::from_millis(100));
   /// ```
-  pub fn wait_for_acknowledgments(&self, max_wait: Duration) -> WriteResult<bool, ()> {
+  pub fn wait_for_acknowledgments(&self, max_wait: Duration) -> Result<bool> {
     match &self.qos_policy.reliability {
       None | Some(Reliability::BestEffort) => Ok(true),
       Some(Reliability::Reliable { .. }) => {
@@ -450,21 +428,15 @@ where
           .cc_upload
           .try_send(WriterCommand::WaitForAcknowledgments {
             all_acked: acked_sender,
-          })
-          .unwrap_or_else(|e| {
-            warn!("wait_for_acknowledgments: cannot initiate waiting. This will timeout. {e}");
-          });
-
+          })?;
         let mut events = Events::with_capacity(1);
         poll.poll(&mut events, Some(max_wait))?;
         if let Some(_event) = events.iter().next() {
-          match acked_receiver.try_recv() {
-            Ok(_) => Ok(true), // got token
-            Err(e) => {
-              warn!("wait_for_acknowledgments - Spurious poll event? - {e}");
-              Ok(false) // TODO: We could also loop here
-            }
-          }
+          let _ = acked_receiver
+            .try_recv()
+            .or_else(|_e| log_and_err_internal!("wait_for_acknowledgments - Spurious poll event?"));
+          // got reply
+          Ok(true)
         } else {
           // no token, so presumably timed out
           Ok(false)
@@ -488,7 +460,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -535,7 +507,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -573,7 +545,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -598,7 +570,7 @@ where
     while let Ok(status) = self.status_receiver.try_recv() {
       match status {
         StatusChange::OfferedDeadlineMissedStatus(status) => fstatus = status,
-  // TODO: possibly save old statuses
+        // TODO: possibly save old statuses
         _ => (),
       }
     }
@@ -630,7 +602,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -669,7 +641,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -709,7 +681,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -743,7 +715,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -776,7 +748,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -796,7 +768,7 @@ where
   // TODO: This cannot really fail, so could change type to () (alternatively,
   // make send error visible) TODO: Better make send failure visible, so
   // application can see if Discovery has failed.
-  pub fn assert_liveliness(&self) -> WriteResult<(), ()> {
+  pub fn assert_liveliness(&self) -> Result<()> {
     self.refresh_manual_liveliness();
 
     match self.qos().liveliness {
@@ -829,7 +801,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32 }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -872,7 +844,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// #[derive(Serialize, Deserialize, Debug)]
+  /// #[derive(Serialize, Deserialize)]
   /// struct SomeType { a: i32, val: usize }
   /// impl Keyed for SomeType {
   ///   type K = i32;
@@ -900,15 +872,8 @@ where
   /// // disposes both some_data_1_1 and some_data_1_2. They are no longer offered by this writer to this topic.
   /// data_writer.dispose(&1, None).unwrap();
   /// ```
-  pub fn dispose(
-    &self,
-    key: &<D as Keyed>::K,
-    source_timestamp: Option<Timestamp>,
-  ) -> WriteResult<(), ()> {
-    let send_buffer = SA::key_to_bytes(key).map_err(|e| WriteError::Serialization {
-      reason: format!("{e}"),
-      data: (),
-    })?; // serialize key
+  pub fn dispose(&self, key: &<D as Keyed>::K, source_timestamp: Option<Timestamp>) -> Result<()> {
+    let send_buffer = SA::key_to_bytes(key)?; // serialize key
 
     let ddsdata = DDSData::new_disposed_by_key(
       ChangeKind::NotAliveDisposed,
@@ -921,12 +886,9 @@ where
         write_options: WriteOptions::from(source_timestamp),
         sequence_number: self.next_sequence_number(),
       })
-      .map_err(|e| {
+      .or_else(|huh| {
         self.undo_sequence_number();
-        WriteError::Serialization {
-          reason: format!("{e}"),
-          data: (),
-        }
+        log_and_err_internal!("Cannot send dispose command: {:?}", huh)
       })?;
 
     self.refresh_manual_liveliness();
@@ -999,17 +961,6 @@ where
   sequence_number: SequenceNumber,
   timeout: Option<duration::Duration>,
   timeout_instant: Instant,
-  sample: Option<D>,
-}
-
-// This is required, because AsyncWrite contains "D".
-// TODO: Is it ok to promise Unpin here?
-impl<'a, D, SA> Unpin for AsyncWrite<'a, D, SA>
-where
-  D: Keyed,
-  <D as key::Keyed>::K: Key,
-  SA: SerializerAdapter<D>,
-{
 }
 
 impl<'a, D, SA> Future for AsyncWrite<'a, D, SA>
@@ -1018,7 +969,7 @@ where
   <D as key::Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
-  type Output = WriteResult<SampleIdentity, D>;
+  type Output = Result<SampleIdentity>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     match self.writer_command.take() {
@@ -1038,10 +989,9 @@ where
               self.writer_command = Some(wc);
               Poll::Pending
             } else {
-              // TODO: unwrap
-              Poll::Ready(Err(WriteError::WouldBlock {
-                data: self.sample.take().unwrap(),
-              }))
+              // TODO: Error should also return unsent sample (_tt) to
+              // the application, as this is the Rust way.
+              Poll::Ready(Err(Error::MustBlock))
             }
           }
           Err(other_err) => {
@@ -1054,17 +1004,14 @@ where
             // TODO: Is this (undo) the right thing to do, if there are
             // several futures in progress? (Can this result in confused numbering?)
             self.writer.undo_sequence_number();
-            Poll::Ready(Err(WriteError::Poisoned {
-              reason: format!("{other_err}"),
-              data: self.sample.take().unwrap(),
-            }))
+            Poll::Ready(Err(Error::OutOfResources))
           }
         }
       }
       None => {
         // the dog ate my homework
         // this should not happen
-        Poll::Ready(Err(WriteError::Internal {
+        Poll::Ready(Err(Error::Internal {
           reason: "someone stole my WriterCommand".to_owned(),
         }))
       }
@@ -1089,7 +1036,7 @@ where
     ack_wait_receiver: StatusChannelReceiver<()>,
     ack_wait_sender: StatusChannelSender<()>,
   },
-  Fail(WriteError<()>),
+  Fail(Error),
 }
 
 impl<'a, D, SA> Future for AsyncWaitForAcknowledgments<'a, D, SA>
@@ -1098,7 +1045,7 @@ where
   <D as key::Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
-  type Output = WriteResult<bool, ()>;
+  type Output = Result<bool>;
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
     match *self {
@@ -1120,10 +1067,10 @@ where
           // this should not really happen, but let's judge that as a "no"
           Poll::Ready(None) => Poll::Ready(Ok(false)),
 
-          Poll::Ready(Some(Err(_read_error)))
+          Poll::Ready(Some(Err(std::sync::mpsc::RecvError)))
             // RecvError means the sending side has disconnected.
             // We assume this would only be because the event loop thread is dead.
-            => Poll::Ready(Err(WriteError::Poisoned{ reason: "RecvError".to_string(), data:()})),
+            => Poll::Ready(Err(Error::LockPoisoned)),
 
           Poll::Ready(Some(Ok(()))) => Poll::Ready(Ok(true)),
           // There is no timeout support here, so we never really
@@ -1162,16 +1109,13 @@ where
             };
             Poll::Pending
           }
-          Err(TrySendError::Full(_other_writer_command)) =>
+          Err(TrySendError::Full(_otherwritercommand)) =>
           // We are sending WaitForAcknowledgments, so the channel
           // should return only that, if any.
           {
             unreachable!()
           }
-          Err(e) => Poll::Ready(Err(WriteError::Poisoned {
-            reason: format!("{e}"),
-            data: (),
-          })),
+          Err(e) => Poll::Ready(Err(e.into())),
         }
       }
     }
@@ -1184,11 +1128,7 @@ where
   <D as Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
-  pub async fn async_write(
-    &self,
-    data: D,
-    source_timestamp: Option<Timestamp>,
-  ) -> WriteResult<(), D> {
+  pub async fn async_write(&self, data: D, source_timestamp: Option<Timestamp>) -> Result<()> {
     match self
       .async_write_with_options(data, WriteOptions::from(source_timestamp))
       .await
@@ -1202,17 +1142,12 @@ where
     &self,
     data: D,
     write_options: WriteOptions,
-  ) -> WriteResult<SampleIdentity, D> {
+  ) -> Result<SampleIdentity> {
     // Construct a future for an async write operation and await for its completion
 
     let send_buffer = match SA::to_bytes(&data) {
       Ok(s) => s,
-      Err(e) => {
-        return Err(WriteError::Serialization {
-          reason: format!("{e}"),
-          data,
-        })
-      }
+      Err(e) => return Err(e.into()),
     };
 
     let dds_data = DDSData::new(SerializedPayload::new_from_bytes(
@@ -1237,14 +1172,13 @@ where
         + timeout
           .map(|t| t.to_std())
           .unwrap_or(crate::dds::helpers::TIMEOUT_FALLBACK.to_std()),
-      sample: Some(data),
     };
     write_future.await
   }
 
   /// Like the synchronous version.
   /// But there is no timeout. Use asyncs to bring your own timeout.
-  pub async fn async_wait_for_acknowledgments(&self) -> WriteResult<bool, ()> {
+  pub async fn async_wait_for_acknowledgments(&self) -> Result<bool> {
     match &self.qos_policy.reliability {
       None | Some(Reliability::BestEffort) => Ok(true),
       Some(Reliability::Reliable { .. }) => {
@@ -1317,7 +1251,7 @@ mod tests {
       .write(data, Some(timestamp))
       .expect("Unable to write data with timestamp");
 
-    // TODO: verify that data is sent/written correctly
+    // TODO: verify that data is sent/writtent correctly
     // TODO: write also with timestamp
   }
 

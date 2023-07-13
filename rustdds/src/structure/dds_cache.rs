@@ -1,7 +1,7 @@
 use std::{
   cmp::max,
   collections::{BTreeMap, HashMap},
-  ops::Bound::{Excluded, Included, Unbounded},
+  ops::Bound::{Excluded, Included},
   sync::{Arc, Mutex},
 };
 
@@ -24,7 +24,7 @@ use super::cache_change::CacheChange;
 /// DDSCache contains all cacheChanges that are produced by participant or
 /// received by participant. Each topic that has been published or subscribed to
 /// is contained in a separate TopicCache. One TopicCache contains
-/// only DDSCacheChanges of one serialized IDL datatype. -> all cache changes in
+/// only DDSCacheChanges of one serialized IDL datatype. -> all cachechanges in
 /// same TopicCache can be serialized/deserialized same way. Topic/TopicCache is
 /// identified by its name, which must be unique in the whole Domain.
 ///
@@ -102,10 +102,10 @@ pub(crate) struct TopicCache {
   topic_qos: QosPolicies,
   min_keep_samples: History,
   max_keep_samples: i32, // from QoS, for quick, repeated access
-  // TODO: Change this to Option<u32>, where None means "no limit".
+  //TODO: Change this to Option<u32>, where None means "no limit".
 
   // Tha main content of the cache is in this map.
-  // Timestamp is assumed to be unique id over all the CacheChanges.
+  // Timestamp is assumed to be unique id over all the ChacheChanges.
   changes: BTreeMap<Timestamp, CacheChange>,
 
   // sequence_numbers is an index to "changes" by GUID and SN
@@ -147,7 +147,7 @@ impl TopicCache {
 
     // Look up some Topic-specific resource limit
     // and remove earliest samples until we are within limit.
-    // This prevents cache from growing indefinitely.
+    // This prevents cache from groving indefinetly.
     let max_keep_samples = qos
       .resource_limits()
       .unwrap_or(ResourceLimits {
@@ -159,7 +159,7 @@ impl TopicCache {
     // TODO: We cannot currently keep track of instance counts, because TopicCache
     // or DDSCache below do not know about instances.
 
-    // If a definite minimum is specified, increase resource limit to at least that.
+    // If a definite minimum is apecified, increase resource limit to at least that.
     let max_keep_samples = match min_keep_samples {
       History::KeepLast { depth: n } if n > max_keep_samples => n,
       _ => max_keep_samples,
@@ -195,7 +195,7 @@ impl TopicCache {
     cache_change: CacheChange,
   ) -> Option<CacheChange> {
     // First, do garbage collection.
-    // But not at every insert, just to save time and effort.
+    // But not at everey insert, just to save time and effort.
     // Some heuristic to decide if we should collect now.
     let payload_size = max(1, cache_change.data_value.payload_size());
     let semi_random_number = i64::from(cache_change.sequence_number) as usize;
@@ -344,23 +344,9 @@ impl TopicCache {
     let to_retain = self.changes.split_off(&split_key);
     let to_remove = std::mem::replace(&mut self.changes, to_retain);
 
-    // update also SequenceNumber map
+    // update also SequeceNumber map
     for r in to_remove.values() {
       self.remove_sn(r);
-    }
-  }
-
-  /// Removes changes and sequence numbers corresponding to a writer GUID
-  /// starting from the given sequence number. To be called when a writer is
-  /// rediscovered, so that the old unread changes do not get mixed up with
-  /// incoming ones.
-  pub fn clear_starting_from(&mut self, writer: GUID, starting_sequence_number: SequenceNumber) {
-    if let Some(sn_to_ts) = self.sequence_numbers.get(&writer).cloned() {
-      for (_, time_stamp) in sn_to_ts.range((Included(starting_sequence_number), Unbounded)) {
-        if let Some(cache_change) = self.changes.remove(time_stamp) {
-          self.remove_sn(&cache_change);
-        }
-      }
     }
   }
 

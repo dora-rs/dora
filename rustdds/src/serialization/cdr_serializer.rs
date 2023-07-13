@@ -9,6 +9,7 @@ use crate::{
     adapters::{no_key, with_key},
     key::Keyed,
   },
+  serialization::error::{Error, Result},
   RepresentationIdentifier,
 };
 
@@ -105,8 +106,6 @@ where
   D: Serialize,
   BO: ByteOrder,
 {
-  type Error = Error;
-
   fn output_encoding() -> RepresentationIdentifier {
     RepresentationIdentifier::CDR_LE
   }
@@ -230,27 +229,6 @@ where
   Ok(buffer)
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-// cdr_serializer::Error
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-  #[error("CDR serialization requires sequence length to be specified at the start.")]
-  SequenceLengthUnknown,
-
-  #[error("Serde says:{0}")]
-  Serde(String),
-
-  #[error("std::io::Error {0}")]
-  Io(#[from] std::io::Error),
-}
-
-impl ser::Error for Error {
-  fn custom<T: std::fmt::Display>(msg: T) -> Self {
-    Self::Serde(msg.to_string())
-  }
-}
-
 // ----------------------------------------------------------
 // ----------------------------------------------------------
 // ----------------------------------------------------------
@@ -278,9 +256,9 @@ where
   type SerializeStruct = Self;
   type SerializeStructVariant = Self;
 
-  // Little-Endian encoding least significant bit is first.
+  //Little-Endian endcoding least significant bit is first.
 
-  // 15.3.1.5 Boolean
+  //15.3.1.5 Boolean
   //  Boolean values are encoded as single octets, where TRUE is the value 1, and
   // FALSE as 0.
   fn serialize_bool(self, v: bool) -> Result<()> {
@@ -292,14 +270,14 @@ where
     Ok(())
   }
 
-  // Figure 15-1 on page 15-7 illustrates the representations for OMG IDL integer
+  //Figure 15-1 on page 15-7 illustrates the representations for OMG IDL integer
   // data types, including the following data types:
-  // short
-  // unsigned short
-  // long
-  // unsigned long
-  // long long
-  // unsigned long long
+  //short
+  //unsigned short
+  //long
+  //unsigned long
+  //long long
+  //unsigned long long
 
   fn serialize_u8(self, v: u8) -> Result<()> {
     self.writer.write_u8(v)?;
@@ -364,7 +342,7 @@ where
     Ok(())
   }
 
-  // An IDL character is represented as a single octet; the code set used for
+  //An IDL character is represented as a single octet; the code set used for
   // transmission of character data (e.g., TCS-C) between a particular client
   // and server ORBs is determined via the process described in Section 13.10,
   // “Code Set Conversion,”
@@ -377,7 +355,7 @@ where
     Ok(())
   }
 
-  // A string is encoded as an unsigned long indicating the length of the string
+  //A string is encoded as an unsigned long indicating the length of the string
   // in octets, followed by the string value in single- or multi-byte form
   // represented as a sequence of octets. The string contents include a single
   // terminating null character. The string length includes the null character,
@@ -458,7 +436,7 @@ where
     value.serialize(self)
   }
 
-  // Sequences are encoded as an unsigned long value, followed by the elements of
+  //Sequences are encoded as an unsigned long value, followed by the elements of
   // the sequence. The initial unsigned long contains the number of elements in
   // the sequence. The elements of the sequence are encoded as specified for
   // their type.
@@ -517,7 +495,7 @@ where
 
   // Similar to tuple. No need to mark the beginning.
   fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
-    // self.calculate_padding_need_and_write_padding(4)?;
+    //self.calculate_padding_need_and_write_padding(4)?;
     // No! There is no "align to 4 before struct"-rule in CDR!
 
     // nothing to be done.
@@ -670,14 +648,14 @@ mod tests {
 
   #[test]
 
-  fn cdr_serialize_and_deserialize_sequence_of_structs() {
+  fn cdr_serialize_and_deserializesequence_of_structs() {
     // this length is not dividable by 4 so paddings are necessary???
     #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
-    pub struct MyType {
+    pub struct OmaTyyppi {
       first_value: i16,
       second: u8,
     }
-    impl MyType {
+    impl OmaTyyppi {
       pub fn new(first_value: i16, second: u8) -> Self {
         Self {
           first_value,
@@ -686,10 +664,13 @@ mod tests {
       }
     }
 
-    let sequence_of_structs: Vec<MyType> =
-      vec![MyType::new(1, 23), MyType::new(2, 34), MyType::new(-3, 45)];
+    let sequence_of_structs: Vec<OmaTyyppi> = vec![
+      OmaTyyppi::new(1, 23),
+      OmaTyyppi::new(2, 34),
+      OmaTyyppi::new(-3, 45),
+    ];
     let serialized = to_little_endian_binary(&sequence_of_structs).unwrap();
-    let deserialized: Vec<MyType> = deserialize_from_little_endian(&serialized).unwrap();
+    let deserialized: Vec<OmaTyyppi> = deserialize_from_little_endian(&serialized).unwrap();
     info!("deserialized    {:?}", deserialized);
     info!("serialized    {:?}", serialized);
     assert_eq!(deserialized, sequence_of_structs);
@@ -697,45 +678,46 @@ mod tests {
 
   #[test]
   fn cdr_serialize_enum() {
-    // Enum values are encoded as unsigned longs. The numeric values associated with
+    //Enum values are encoded as unsigned longs. The numeric values associated with
     // enum identifiers are determined by the order in which the identifiers
     // appear in the enum declaration. The first enum identifier has the numeric
     // value zero (0). Successive enum identifiers are take ascending numeric
     // values, in order of declaration from left to right. -> Only C type
     // "classic enumerations" are possible to be serialized. use Serialize_repr
-    // and Deserialize_repr when enum member has value that is not same as unit
-    // variant index (when specified explicitly in code with assign)
+    // and Deserialize_repr when enum member has value taht is not same as unit
+    // variant index (when specified explicitly in code with assing)
     #[derive(Debug, Eq, PartialEq, Serialize_repr, Deserialize_repr)]
     #[repr(u32)]
-    pub enum MyEnumeration {
+    pub enum OmaEnumeration {
       First,
       Second,
       Third,
-      // fourth(u8,u8,u8,u8),
-      // fifth(u8,u8,u16),
-      // sixth(i16,i16),
+      //fourth(u8,u8,u8,u8),
+      //fifth(u8,u8,u16),
+      //sixth(i16,i16),
       SevenHundredth = 700,
-      /*eighth(u32),
+      /*eigth(u32),
        *this_should_not_be_valid(u64,u8,u8,u16,String),
        *similar_to_fourth(u8,u8,u8,u8), */
     }
 
-    let enum_object_1 = MyEnumeration::First;
-    let enum_object_2 = MyEnumeration::Second;
-    let enum_object_3 = MyEnumeration::Third;
-    // let enum_object_4 = MyEnumeration::fourth(1,2,3,4);
-    // let enum_object_5 = MyEnumeration::fifth(5,6,7);
-    // let enum_object_6 = MyEnumeration::sixth(-8,9);
-    let enum_object_7 = MyEnumeration::SevenHundredth;
-    // let enum_object_8 = MyEnumeration::eighth(1000);
-    // let enum_object_9 =
-    // MyEnumeration::this_should_not_be_valid(1000,1,2,3,String::from("Hey all!"));
-    // let enum_object_10 =MyEnumeration::similar_to_fourth(5,6,7,8);
+    let enum_object_1 = OmaEnumeration::First;
+    let enum_object_2 = OmaEnumeration::Second;
+    let enum_object_3 = OmaEnumeration::Third;
+    //let enum_object_4 = OmaEnumeration::fourth(1,2,3,4);
+    //let enum_object_5 = OmaEnumeration::fifth(5,6,7);
+    //let enum_object_6 = OmaEnumeration::sixth(-8,9);
+    let enum_object_7 = OmaEnumeration::SevenHundredth;
+    //let enum_object_8 = OmaEnumeration::eigth(1000);
+    //let enum_object_9 =
+    // OmaEnumeration::this_should_not_be_valid(1000,1,2,3,String::from("Hejssan
+    // allihoppa!")); let enum_object_10 =
+    // OmaEnumeration::similar_to_fourth(5,6,7,8);
 
     let serialized_1 = to_little_endian_binary(&enum_object_1).unwrap();
     info!("{:?}", serialized_1);
     let u32_value_1: u32 = deserialize_from_little_endian(&serialized_1).unwrap();
-    let deserialized_1: MyEnumeration = deserialize_from_little_endian(&serialized_1).unwrap();
+    let deserialized_1: OmaEnumeration = deserialize_from_little_endian(&serialized_1).unwrap();
     info!("Deserialized 1: {:?}", deserialized_1);
     assert_eq!(deserialized_1, enum_object_1);
     assert_eq!(u32_value_1, 0);
@@ -743,26 +725,27 @@ mod tests {
     let serialized_2 = to_little_endian_binary(&enum_object_2).unwrap();
     info!("{:?}", serialized_2);
     let u32_value_2: u32 = deserialize_from_little_endian(&serialized_2).unwrap();
-    let deserialized_2: MyEnumeration = deserialize_from_little_endian(&serialized_2).unwrap();
+    let deserialized_2: OmaEnumeration = deserialize_from_little_endian(&serialized_2).unwrap();
     info!("Deserialized 2: {:?}", deserialized_2);
     assert_eq!(deserialized_2, enum_object_2);
     assert_eq!(u32_value_2, 1);
 
     let serialized_3 = to_little_endian_binary(&enum_object_3).unwrap();
     info!("{:?}", serialized_3);
-    let deserialized_3: MyEnumeration = deserialize_from_little_endian(&serialized_3).unwrap();
+    let deserialized_3: OmaEnumeration = deserialize_from_little_endian(&serialized_3).unwrap();
     let u32_value_3: u32 = deserialize_from_little_endian(&serialized_3).unwrap();
     info!("Deserialized 3: {:?}", deserialized_3);
     assert_eq!(deserialized_3, enum_object_3);
     assert_eq!(u32_value_3, 2);
 
-    // let serialized_4 = to_little_endian_binary(&enum_object_4).unwrap();
-    // let deserialized_4 : MyEnumeration =
-    // deserialize_from_little_endian(serialized_4).unwrap();
+    /*
+    let serialized_4 = to_little_endian_binary(&enum_object_4).unwrap();
+    let deserialized_4 : OmaEnumeration = deserialize_from_little_endian(serialized_4).unwrap();
+    */
 
     let serialized_7 = to_little_endian_binary(&enum_object_7).unwrap();
     info!("{:?}", serialized_7);
-    let deserialized_7: MyEnumeration = deserialize_from_little_endian(&serialized_7).unwrap();
+    let deserialized_7: OmaEnumeration = deserialize_from_little_endian(&serialized_7).unwrap();
     let u32_value_7: u32 = deserialize_from_little_endian(&serialized_7).unwrap();
     info!("Deserialized 7: {:?}", deserialized_7);
     assert_eq!(deserialized_7, enum_object_7);
@@ -806,7 +789,7 @@ mod tests {
   #[test]
   fn cdr_serialization_test() {
     #[derive(Serialize)]
-    struct MyType {
+    struct OmaTyyppi {
       first_value: u8,
       second_value: i8,
       third_value: i32,
@@ -814,7 +797,7 @@ mod tests {
       fifth: bool,
     }
 
-    let micky_mouse = MyType {
+    let mikki_hiiri = OmaTyyppi {
       first_value: 1,
       second_value: -1,
       third_value: 23,
@@ -822,45 +805,45 @@ mod tests {
       fifth: true,
     };
 
-    let serialized = to_little_endian_binary(&micky_mouse).unwrap();
+    let sarjallistettu = to_little_endian_binary(&mikki_hiiri).unwrap();
     let expected: Vec<u8> = vec![
       0x01, 0xff, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00, 0x67, 0x67, 0x34, 0x00, 0x00, 0x00, 0x00,
       0x00, 0x01,
     ];
-    assert_eq!(expected, serialized);
+    assert_eq!(expected, sarjallistettu);
   }
 
   #[test]
   fn cdr_serialization_char() {
     #[derive(Serialize)]
-    struct MyType {
+    struct OmaTyyppi {
       first_value: u8,
       second: u8,
       third: u8,
     }
-    let micky_mouse = MyType {
+    let mikki_hiiri = OmaTyyppi {
       first_value: b'a',
       second: b'b',
       third: b'\xE4', // 'ä'
     };
 
-    let serialized = to_little_endian_binary(&micky_mouse).unwrap();
+    let sarjallistettu = to_little_endian_binary(&mikki_hiiri).unwrap();
     let expected: Vec<u8> = vec![0x61, 0x62, 0xe4];
-    assert_eq!(expected, serialized);
+    assert_eq!(expected, sarjallistettu);
   }
 
   #[test]
   fn cdr_serialization_string() {
     #[derive(Serialize)]
-    struct MyType<'a> {
+    struct OmaTyyppi<'a> {
       first_value: &'a str,
     }
-    let micky_mouse = MyType {
+    let mikki_hiiri = OmaTyyppi {
       first_value: "BLUE",
     };
-    let serialized = to_little_endian_binary(&micky_mouse).unwrap();
+    let sarjallistettu = to_little_endian_binary(&mikki_hiiri).unwrap();
     let expected: Vec<u8> = vec![0x05, 0x00, 0x00, 0x00, 0x42, 0x4c, 0x55, 0x45, 0x00];
-    assert_eq!(expected, serialized);
+    assert_eq!(expected, sarjallistettu);
   }
 
   #[test]
@@ -875,19 +858,19 @@ mod tests {
   #[test]
   fn cdr_serialize_seq() {
     #[derive(Serialize)]
-    struct MyType {
+    struct OmaTyyppi {
       first_value: Vec<i32>,
     }
-    let micky_mouse = MyType {
+    let mikki_hiiri = OmaTyyppi {
       first_value: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 123123],
     };
-    let serialized = to_little_endian_binary(&micky_mouse).unwrap();
+    let sarjallistettu = to_little_endian_binary(&mikki_hiiri).unwrap();
     let expected: Vec<u8> = vec![
       0x0b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
       0x00, 0x04, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x07, 0x00,
       0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0xf3,
       0xe0, 0x01, 0x00,
     ];
-    assert_eq!(expected, serialized);
+    assert_eq!(expected, sarjallistettu);
   }
 }

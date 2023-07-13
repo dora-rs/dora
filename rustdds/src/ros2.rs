@@ -33,7 +33,7 @@
 //!
 //! // declaring some writer that use non keyed types
 //! let some_writer = ros_node
-//!   .create_ros_no_key_publisher::<NodeInfo, CDRSerializerAdapter<_>>(
+//!   .create_ros_nokey_publisher::<NodeInfo, CDRSerializerAdapter<_>>(
 //!     &some_topic, None)
 //!   .unwrap();
 //!

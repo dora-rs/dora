@@ -37,7 +37,7 @@ fn main() {
     .unwrap();
 
   // Used type needs Serialize for writers and Deserialize for readers
-  #[derive(Serialize, Deserialize, Debug)]
+  #[derive(Serialize, Deserialize)]
   struct SomeType {
     a: i32,
   }

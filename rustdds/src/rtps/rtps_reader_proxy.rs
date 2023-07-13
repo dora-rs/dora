@@ -21,7 +21,7 @@ use super::reader::ReaderIngredients;
 /// ReaderProxy class represents the information an RTPS StatefulWriter
 /// maintains on each matched RTPS Reader
 pub(crate) struct RtpsReaderProxy {
-  /// Identifies the remote matched RTPS Reader that is represented by the
+  ///Identifies the remote matched RTPS Reader that is represented by the
   /// ReaderProxy
   pub remote_reader_guid: GUID,
   /// Identifies the group to which the matched Reader belongs
@@ -87,7 +87,7 @@ impl RtpsReaderProxy {
 
     Self {
       remote_reader_guid: reader.guid,
-      remote_group_entity_id: EntityId::UNKNOWN, // TODO
+      remote_group_entity_id: EntityId::UNKNOWN, //TODO
       unicast_locator_list,
       multicast_locator_list,
       expects_in_line_qos: false,
@@ -124,7 +124,7 @@ impl RtpsReaderProxy {
 
     Self {
       remote_reader_guid: discovered_reader_data.reader_proxy.remote_reader_guid,
-      remote_group_entity_id: EntityId::UNKNOWN, // TODO
+      remote_group_entity_id: EntityId::UNKNOWN, //TODO
       unicast_locator_list,
       multicast_locator_list,
       expects_in_line_qos: discovered_reader_data.reader_proxy.expects_inline_qos,
@@ -172,7 +172,7 @@ impl RtpsReaderProxy {
     }
   }
 
-  /// this should be called every time a new CacheChange is set to RTPS writer
+  /// this should be called everytime a new CacheChange is set to RTPS writer
   /// HistoryCache
   pub fn notify_new_cache_change(&mut self, sequence_number: SequenceNumber) {
     if sequence_number == SequenceNumber::from(0) {
@@ -186,17 +186,6 @@ impl RtpsReaderProxy {
 
   pub fn acked_up_to_before(&self) -> SequenceNumber {
     self.all_acked_before
-  }
-
-  pub fn mark_all_frags_requested(&mut self, seq_num: SequenceNumber, frag_count: u32) {
-    // Insert all ones set with frag_count bits
-    self
-      .frags_requested
-      // TODO: explain why unwrap below succeeds
-      .insert(
-        seq_num,
-        BitVec::from_elem(frag_count.try_into().unwrap(), true),
-      );
   }
 
   pub fn mark_frags_requested(&mut self, seq_num: SequenceNumber, frag_nums: &FragmentNumberSet) {

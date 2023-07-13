@@ -60,7 +60,7 @@ impl AsRef<[u8]> for GuidPrefix {
 }
 
 impl fmt::Debug for GuidPrefix {
-  // This is so common that we skip all the introductions and just print the data.
+  // This is so common that we skip all the inroductions and just print the data.
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     self.bytes.fmt(f)
   }
@@ -106,7 +106,7 @@ pub struct EntityKind(u8);
 impl EntityKind {
   // constants from RTPS spec Table 9.1
   pub const UNKNOWN_USER_DEFINED: Self = Self(0x00);
-  // pub const PARTICIPANT_USER_DEFINED : Self = Self(0x01);
+  //pub const PARTICIPANT_USER_DEFINED : Self = Self(0x01);
   // User-defined participants do not exist by definition.
   pub const WRITER_WITH_KEY_USER_DEFINED: Self = Self(0x02);
   pub const WRITER_NO_KEY_USER_DEFINED: Self = Self(0x03);
@@ -295,7 +295,7 @@ impl EntityId {
   }
 
   fn as_usize(self) -> usize {
-    // usize is generated like this because there needs to be
+    // usize is generated like this beacause there needs to be
     // a way to tell entity kind from the result
     let u1 = u32::from(self.entity_key[0]);
     let u2 = u32::from(self.entity_key[1]);

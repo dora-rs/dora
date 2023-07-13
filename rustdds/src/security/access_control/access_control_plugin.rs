@@ -12,7 +12,7 @@ use super::*;
 /// specification. The main difference is that the functions return a Result
 /// type. With this, there is no need to provide a pointer to a
 /// SecurityException type which the function would fill in case of a failure.
-/// Instead, the Err-variant of the result contains the error information. Also,
+/// Instead, the Err-variant of the result contains the error informaton. Also,
 /// if a function has a single return value, it is returned inside the
 /// Ok-variant. When a function returns a boolean according to the
 /// specification, the Ok-variant is interpreted as true and Err-variant as
@@ -149,7 +149,7 @@ pub trait AccessControl {
 
   /// check_local_datareader_match: section 8.4.2.9.14 of the Security
   /// specification.
-  /// The parameter subscriber_partition is omitted since RustDDS does not yet
+  /// The parameter subscriber_partition is ommitted since RustDDS does not yet
   /// support PartitionQoS.
   fn check_local_datareader_match(
     &self,
