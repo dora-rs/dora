@@ -26,6 +26,8 @@ pub struct CDRDeserializerAdapter<D> {
   phantom: PhantomData<D>,
 }
 
+pub struct SeedCDRDeserializerAdapter;
+
 const REPR_IDS: [RepresentationIdentifier; 3] = [
   RepresentationIdentifier::CDR_BE,
   RepresentationIdentifier::CDR_LE,
@@ -42,6 +44,24 @@ where
 
   fn from_bytes(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Result<D> {
     deserialize_from_cdr(input_bytes, encoding).map(|(d, _size)| d)
+  }
+}
+
+impl no_key::SeedDeserializerAdapter for SeedCDRDeserializerAdapter {
+  fn supported_encodings() -> &'static [RepresentationIdentifier] {
+    &REPR_IDS
+  }
+
+  fn from_bytes<'a, D>(
+    deserialize: D,
+    input_bytes: &'a [u8],
+    encoding: RepresentationIdentifier,
+  ) -> Result<<D as DeserializeSeed<'static>>::Value>
+  where
+    D: for<'de> DeserializeSeed<'de>,
+    for<'x> <D as DeserializeSeed<'x>>::Value: 'static,
+  {
+    deserialize_seed_from_cdr(deserialize, input_bytes, encoding).map(move |(d, _size)| d)
   }
 }
 
@@ -136,6 +156,35 @@ where
     RepresentationIdentifier::CDR_BE | RepresentationIdentifier::PL_CDR_BE => {
       let mut deserializer = CdrDeserializer::<BigEndian>::new(input_bytes);
       let t = T::deserialize(&mut deserializer)?;
+      Ok((t, deserializer.serialized_data_count))
+    }
+
+    repr_id => Err(Error::Message(format!(
+      "Unknown representaiton identifier {:?}.",
+      repr_id
+    ))),
+  }
+}
+
+pub fn deserialize_seed_from_cdr<T>(
+  deserialize: T,
+  input_bytes: &[u8],
+  encoding: RepresentationIdentifier,
+) -> Result<(<T as DeserializeSeed<'static>>::Value, usize)>
+where
+  T: for<'de> DeserializeSeed<'de>,
+  for<'de> <T as DeserializeSeed<'de>>::Value: 'static,
+{
+  match encoding {
+    RepresentationIdentifier::CDR_LE | RepresentationIdentifier::PL_CDR_LE => {
+      let mut deserializer = CdrDeserializer::<LittleEndian>::new(input_bytes);
+      let t = deserialize.deserialize(&mut deserializer)?;
+      Ok((t, deserializer.serialized_data_count))
+    }
+
+    RepresentationIdentifier::CDR_BE | RepresentationIdentifier::PL_CDR_BE => {
+      let mut deserializer = CdrDeserializer::<BigEndian>::new(input_bytes);
+      let t = deserialize.deserialize(&mut deserializer)?;
       Ok((t, deserializer.serialized_data_count))
     }
 

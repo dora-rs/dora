@@ -8,6 +8,7 @@
 /// to data.
 pub mod no_key {
   use bytes::Bytes;
+  use serde::de::DeserializeSeed;
 
   use crate::{serialization::error::Result, RepresentationIdentifier};
 
@@ -33,6 +34,44 @@ pub mod no_key {
         total_payload.extend(iv);
       }
       Self::from_bytes(&total_payload, encoding)
+    }
+  }
+
+  pub trait SeedDeserializerAdapter {
+    /// Which data representations can the DeserializerAdapter read?
+    /// See RTPS specification Section 10 and Table 10.3
+    fn supported_encodings() -> &'static [RepresentationIdentifier];
+
+    /// Deserialize data from bytes to an object.
+    /// `encoding` must be something given by `supported_encodings()`, or
+    /// implementation may fail with Err or `panic!()`.
+    fn from_bytes<'a, D>(
+      deserialize: D,
+      input_bytes: &'a [u8],
+      encoding: RepresentationIdentifier,
+    ) -> Result<<D as DeserializeSeed<'static>>::Value>
+    where
+      D: for<'de> DeserializeSeed<'de>,
+      for<'de> <D as DeserializeSeed<'de>>::Value: 'static;
+
+    /// This method has a default implementation, but the default will make a
+    /// copy of all the input data in memory and then call from_bytes() .
+    // In order to avoid the copy, implement also this method.
+    fn from_vec_bytes<D>(
+      deserialize: D,
+      input_vec_bytes: &[Bytes],
+      encoding: RepresentationIdentifier,
+    ) -> Result<<D as DeserializeSeed<'static>>::Value>
+    where
+      D: for<'de> DeserializeSeed<'de>,
+      for<'de> <D as DeserializeSeed<'de>>::Value: 'static,
+    {
+      let total_len = input_vec_bytes.iter().map(Bytes::len).sum();
+      let mut total_payload = Vec::with_capacity(total_len);
+      for iv in input_vec_bytes {
+        total_payload.extend(iv);
+      }
+      Self::from_bytes(deserialize, &total_payload, encoding)
     }
   }
 

@@ -204,9 +204,7 @@ pub use dds::{
 /// CDR.
 pub use serialization::representation_identifier::RepresentationIdentifier;
 #[doc(inline)]
-pub use serialization::{
-  CDRDeserializerAdapter, CDRSerializerAdapter, CdrDeserializer, CdrSerializer,
-};
+pub use serialization::{CDRDeserializerAdapter, CDRSerializerAdapter, CdrDeserializer, CdrSerializer};
 pub use structure::{
   duration::Duration, entity::RTPSEntity, guid::GUID, sequence_number::SequenceNumber,
   time::Timestamp,
