@@ -1,5 +1,5 @@
 [workspace]
-members = ["msg-gen", "msg-gen-macro", "python"]
+members = ["msg-gen", "msg-gen-macro", "python", "ros2-client"]
 
 [package]
 name = "dora-ros2-bridge"
@@ -18,7 +18,7 @@ dora-ros2-bridge-msg-gen-macro = { path = "msg-gen-macro", optional = true }
 serde = { version = "1.0.164", features = ["derive"] }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
-ros2-client = "0.5.2"
+ros2-client = { path = "ros2-client" }
 rustdds = "0.8.3"
 
 [dev-dependencies]
