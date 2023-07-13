@@ -12,7 +12,7 @@ use super::*;
 /// specification. The main difference is that the functions return a Result
 /// type. With this, there is no need to provide a pointer to a
 /// SecurityException type which the function would fill in case of a failure.
-/// Instead, the Err-variant of the result contains the error information. Also,
+/// Instead, the Err-variant of the result contains the error informaton. Also,
 /// if a function has a single return value, it is returned inside the
 /// Ok-variant. When a function returns a boolean according to the
 /// specification, the Ok-variant is interpreted as true and Err-variant as
@@ -22,7 +22,7 @@ pub trait Authentication {
   /// specification
   fn validate_local_identity(
     &mut self,
-    local_identity_handle: &mut IdentityHandle,
+    local_indentity_handle: &mut IdentityHandle,
     adjusted_participant_guid: &mut GUID,
     domain_id: u16,
     participant_qos: &QosPolicies,

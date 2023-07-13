@@ -65,10 +65,10 @@ fn run_app<B: Backend>(
       .checked_sub(last_tick.elapsed())
       .unwrap_or_else(|| Duration::from_secs(0));
 
-    // If user presses quit button then send command to stop ros loop and exit from
+    //If user presses quit button then send command to stop ros loop and exit from
     // this loop also.
     if app.handle_user_input(&timeout) {
-      // TODO HANDLE RESULT
+      //TODO HANDLE RESULT
       let _send_command_result = command_sender.send(RosCommand::StopRosLoop);
       return Ok(());
     }
@@ -79,14 +79,14 @@ fn run_app<B: Backend>(
   }
 }
 
-// This loop runs in separate thread
+// This loop runs in separate thead
 // Polls ROS events and sends data via mio_channel to main thread.
 fn ros2_loop(
   sender: mio_channel::SyncSender<DataUpdate>,
   command_receiver: mio_channel::Receiver<RosCommand>,
 ) {
   let mut ros_participant = RosParticipant::new().unwrap();
-  // let mut ros_participant = &mut visualizator_app.ros_participant;
+  //let mut ros_participant = &mut visualizator_app.ros_participant;
   let poll = Poll::new().unwrap();
 
   let mut update_timer = mio_extras::timer::Timer::default();
@@ -160,7 +160,7 @@ fn ros2_loop(
                 return;
               }
             }
-            // TODO HANDLE ERROR
+            //TODO HANDLE ERROR
           }
           Err(_e) => {}
         }
@@ -206,15 +206,15 @@ fn main() -> Result<(), Box<dyn Error>> {
   let backend = CrosstermBackend::new(stdout);
   let mut terminal = Terminal::new(backend).unwrap();
 
-  // This channel sends DataUpdate messages to Visualizator App to be displayed
+  //This channel sends DataUpdate messages to Visualizator App to be displayed
   let (sender, receiver) = mio_channel::sync_channel::<DataUpdate>(10);
-  // This channel sends command messages from Visualizator to ROS thread.
+  //This channel sends command messages from Visualizator to ROS thread.
   let (command_sender, command_receiver) = mio_channel::sync_channel::<RosCommand>(10);
 
   let jhandle = std::thread::spawn(move || ros2_loop(sender, command_receiver));
   let visualizor_app = VisualizatorApp::new(receiver);
 
-  // This is GUI refresh rate
+  //This is GUI refresh rate
   let tick_rate = Duration::from_millis(250);
   let _res = run_app(&mut terminal, visualizor_app, tick_rate, command_sender);
 

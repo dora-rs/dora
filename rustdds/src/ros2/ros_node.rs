@@ -13,7 +13,7 @@ use crate::{
     key::{Key, Keyed},
     pubsub::{Publisher, Subscriber},
     qos::QosPolicies,
-    result::CreateError,
+    result::Error,
     topic::{Topic, TopicKind},
   },
   discovery::sedp_messages::DiscoveredTopicData,
@@ -40,13 +40,11 @@ pub struct RosParticipant {
 }
 
 impl RosParticipant {
-  pub fn new() -> Result<Self, CreateError> {
+  pub fn new() -> Result<Self, Error> {
     Self::from_domain_participant(DomainParticipant::new(0)?)
   }
 
-  pub fn from_domain_participant(
-    domain_participant: DomainParticipant,
-  ) -> Result<Self, CreateError> {
+  pub fn from_domain_participant(domain_participant: DomainParticipant) -> Result<Self, Error> {
     let i = RosParticipantInner::from_domain_participant(domain_participant)?;
     Ok(Self {
       inner: Arc::new(Mutex::new(i)),
@@ -58,7 +56,7 @@ impl RosParticipant {
     name: &str,
     namespace: &str,
     options: NodeOptions,
-  ) -> Result<RosNode, CreateError> {
+  ) -> Result<RosNode, Error> {
     RosNode::new(name, namespace, options, self.clone())
   }
   pub fn handle_node_read(&mut self) -> Vec<ROSParticipantInfo> {
@@ -142,9 +140,7 @@ struct RosParticipantInner {
 
 impl RosParticipantInner {
   // "new"
-  pub fn from_domain_participant(
-    domain_participant: DomainParticipant,
-  ) -> Result<Self, CreateError> {
+  pub fn from_domain_participant(domain_participant: DomainParticipant) -> Result<Self, Error> {
     let ros_discovery_topic = domain_participant.create_topic(
       ROSDiscoveryTopic::topic_name().to_string(),
       ROSDiscoveryTopic::type_name().to_string(),
@@ -250,8 +246,8 @@ impl RosParticipantInner {
     pts
   }
 
-  // rustdds::ros2::ros_node::RosParticipantInner
-  // external_nodes: HashMap<Gid, Vec<NodeInfo, Global>, RandomState>
+  //rustdds::ros2::ros_node::RosParticipantInner
+  //external_nodes: HashMap<Gid, Vec<NodeInfo, Global>, RandomState>
 
   /*
   pub fn get_all_discovered_ros_node_infos(&self) -> HashMap<Gid, Vec<NodeInfo>> {
@@ -312,7 +308,7 @@ pub struct NodeOptions {
 impl NodeOptions {
   /// # Arguments
   ///
-  /// * `enable_rosout` -  Whether or not ros logging is enabled (rosout writer)
+  /// * `enable_rosout` -  Wheter or not ros logging is enabled (rosout writer)
   pub fn new(/* domain_id: u16, */ enable_rosout: bool) -> Self {
     Self { enable_rosout }
   }
@@ -340,7 +336,7 @@ pub struct RosNode {
 
   // builtin writers and readers
   rosout_writer: Option<NoKeyDataWriter<Log>>,
-  // rosout_reader: Option<NoKeyDataReader<Log>>, // TODO
+  //rosout_reader: Option<NoKeyDataReader<Log>>, // TODO
   parameter_events_writer: NoKeyDataWriter<ParameterEvents>,
 }
 
@@ -350,7 +346,7 @@ impl RosNode {
     namespace: &str,
     options: NodeOptions,
     ros_participant: RosParticipant,
-  ) -> Result<Self, CreateError> {
+  ) -> Result<Self, Error> {
     let paramtopic = ros_participant.get_parameter_events_topic();
     let rosout_topic = ros_participant.get_rosout_topic();
 
@@ -376,7 +372,7 @@ impl RosNode {
       readers: HashSet::new(),
       writers: HashSet::new(),
       rosout_writer,
-      // rosout_reader: None, // TODO
+      //rosout_reader: None, // TODO
       parameter_events_writer,
     })
   }
@@ -496,11 +492,9 @@ impl RosNode {
     type_name: String,
     qos: &QosPolicies,
     topic_kind: TopicKind,
-  ) -> Result<Topic, CreateError> {
+  ) -> Result<Topic, Error> {
     if name.is_empty() {
-      return Err(CreateError::BadParameter {
-        reason: "Topic name must not be empty.".to_string(),
-      });
+      return Error::bad_parameter("Topic name must not be empty.");
     }
     // TODO: Implement the rest of the rules.
 
@@ -523,14 +517,14 @@ impl RosNode {
   /// * `topic` - Reference to topic created with `create_ros_topic`.
   /// * `qos` - Should take [QOS](../dds/qos/struct.QosPolicies.html) and use if
   ///   it's compatible with topics QOS. `None` indicates the use of Topics QOS.
-  pub fn create_ros_no_key_subscriber<
+  pub fn create_ros_nokey_subscriber<
     D: DeserializeOwned + 'static,
     DA: no_key::DeserializerAdapter<D>,
   >(
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<RosSubscriber<D, DA>, CreateError> {
+  ) -> Result<RosSubscriber<D, DA>, Error> {
     let sub = self
       .ros_participant
       .get_ros_discovery_subscriber()
@@ -551,7 +545,7 @@ impl RosNode {
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<KeyedRosSubscriber<D, DA>, CreateError>
+  ) -> Result<KeyedRosSubscriber<D, DA>, Error>
   where
     D: Keyed + DeserializeOwned + 'static,
     D::K: Key,
@@ -572,11 +566,11 @@ impl RosNode {
   /// * `qos` - Should take [QOS](../dds/qos/struct.QosPolicies.html) and use it
   ///   if it's compatible with topics QOS. `None` indicates the use of Topics
   ///   QOS.
-  pub fn create_ros_no_key_publisher<D: Serialize, SA: no_key::SerializerAdapter<D>>(
+  pub fn create_ros_nokey_publisher<D: Serialize, SA: no_key::SerializerAdapter<D>>(
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<RosPublisher<D, SA>, CreateError> {
+  ) -> Result<RosPublisher<D, SA>, Error> {
     let p = self
       .ros_participant
       .get_ros_discovery_publisher()
@@ -597,7 +591,7 @@ impl RosNode {
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<KeyedRosPublisher<D, SA>, CreateError>
+  ) -> Result<KeyedRosPublisher<D, SA>, Error>
   where
     D: Keyed + Serialize,
     D::K: Key,

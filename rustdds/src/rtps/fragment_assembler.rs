@@ -46,7 +46,7 @@ impl AssemblyBuffer {
                                 // Note: Technically RTPS spec allows fragment_size == 0.
 
     let mut buffer_bytes = BytesMut::with_capacity(data_size);
-    buffer_bytes.resize(data_size, 0); // TODO: Can we replace this with faster (and unsafer) .set_len and live with
+    buffer_bytes.resize(data_size, 0); //TODO: Can we replace this with faster (and unsafer) .set_len and live with
                                        // uninitialized data?
 
     let fragment_count = usize::from(datafrag.total_number_of_fragments());
@@ -141,7 +141,7 @@ impl fmt::Debug for FragmentAssembler {
 
 impl FragmentAssembler {
   pub fn new(fragment_size: u16) -> Self {
-    debug!("new FragmentAssembler. frag_size = {}", fragment_size);
+    debug!("new FragmentAssember. frag_size = {}", fragment_size);
     Self {
       fragment_size,
       assembly_buffers: BTreeMap::new(),
@@ -169,13 +169,11 @@ impl FragmentAssembler {
       if let Some(abuf) = self.assembly_buffers.remove(&writer_sn) {
         // Return what we have assembled.
         let ser_data_or_key = SerializedPayload::from_bytes(&abuf.buffer_bytes.freeze())
-          .map_or_else(
-            |e| {
-              error!("Deserializing SerializedPayload from DATAFRAG: {:?}", &e);
-              None
-            },
-            Some,
-          )?;
+          .map_err(|e| {
+            error!("Deserializing SeralizedPayload from DATAFRAG: {:?}", &e);
+            e
+          })
+          .ok()?;
         let ddsdata = if flags.contains(DATAFRAG_Flags::Key) {
           DDSData::new_disposed_by_key(ChangeKind::NotAliveDisposed, ser_data_or_key)
         } else {

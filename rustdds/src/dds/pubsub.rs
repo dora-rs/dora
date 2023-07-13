@@ -1,5 +1,4 @@
 use std::{
-  collections::BTreeMap,
   fmt::Debug,
   sync::{Arc, Mutex, MutexGuard, RwLock},
   time::Duration,
@@ -12,7 +11,6 @@ use byteorder::LittleEndian;
 use log::{debug, error, info, trace, warn};
 
 use crate::{
-  create_error_dropped, create_error_poisoned,
   dds::{
     adapters,
     key::{Key, Keyed},
@@ -22,7 +20,7 @@ use crate::{
     },
     participant::*,
     qos::*,
-    result::{CreateError, CreateResult, WaitResult},
+    result::{Error, Result},
     statusevents::{sync_status_channel, DataReaderStatus},
     topic::*,
     with_key,
@@ -33,7 +31,7 @@ use crate::{
   discovery::{
     discovery::DiscoveryCommand, discovery_db::DiscoveryDB, sedp_messages::DiscoveredWriterData,
   },
-  mio_source,
+  log_and_err_internal, log_and_err_precondition_not_met, mio_source,
   rtps::{
     reader::ReaderIngredients,
     writer::{WriterCommand, WriterIngredients},
@@ -44,7 +42,6 @@ use crate::{
     guid::{EntityId, EntityKind, GUID},
     topic_kind::TopicKind,
   },
-  SequenceNumber,
 };
 use super::{
   no_key::wrappers::{DAWrapper, NoKeyWrapper, SAWrapper},
@@ -57,7 +54,7 @@ use super::{
 ///
 /// The Publisher and Subscriber structures are collections of DataWriters
 /// and, respectively, DataReaders. They can contain DataWriters or DataReaders
-/// of different types, and attached to different Topics.
+/// of different types, and attacehd to different Topics.
 ///
 /// They can act as a domain of sample ordering or atomicity, if such QoS
 /// policies are used. For example, DDS participants could agree via QoS
@@ -153,7 +150,7 @@ impl Publisher {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataWriter<D, SA>>
+  ) -> Result<WithKeyDataWriter<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -162,13 +159,13 @@ impl Publisher {
     self.inner_lock().create_datawriter(self, None, topic, qos)
   }
 
-  /// Shorthand for crate_datawriter with Common Data Representation Little
+  /// Shorthand for crate_datawriter with Commaon Data Representation Little
   /// Endian
   pub fn create_datawriter_cdr<D>(
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
+  ) -> Result<WithKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
   where
     D: Keyed + serde::Serialize,
     <D as Keyed>::K: Key,
@@ -179,12 +176,12 @@ impl Publisher {
 
   // versions with callee-specified EntityId. These are for Discovery use only.
 
-  pub(crate) fn create_datawriter_with_entity_id<D, SA>(
+  pub(crate) fn create_datawriter_with_entityid<D, SA>(
     &self,
     entity_id: EntityId,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataWriter<D, SA>>
+  ) -> Result<WithKeyDataWriter<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -195,18 +192,18 @@ impl Publisher {
       .create_datawriter(self, Some(entity_id), topic, qos)
   }
 
-  pub(crate) fn create_datawriter_cdr_with_entity_id<D>(
+  pub(crate) fn create_datawriter_cdr_with_entityid<D>(
     &self,
     entity_id: EntityId,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
+  ) -> Result<WithKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
   where
     D: Keyed + serde::Serialize,
     <D as Keyed>::K: Key,
     <D as Keyed>::K: Serialize,
   {
-    self.create_datawriter_with_entity_id::<D, CDRSerializerAdapter<D, LittleEndian>>(
+    self.create_datawriter_with_entityid::<D, CDRSerializerAdapter<D, LittleEndian>>(
       entity_id, topic, qos,
     )
   }
@@ -241,7 +238,7 @@ impl Publisher {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<NoKeyDataWriter<D, SA>>
+  ) -> Result<NoKeyDataWriter<D, SA>>
   where
     SA: adapters::no_key::SerializerAdapter<D>,
   {
@@ -254,7 +251,7 @@ impl Publisher {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<NoKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
+  ) -> Result<NoKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
   where
     D: serde::Serialize,
   {
@@ -264,12 +261,12 @@ impl Publisher {
   // Versions with callee-specified EntityId. These are for Discovery use only.
   // ... except that Discovery has no use for no_key versions.
 
-  // pub(crate) fn create_datawriter_no_key_with_entity_id<D, SA>(
+  // pub(crate) fn create_datawriter_no_key_with_entityid<D, SA>(
   //   &self,
   //   entity_id: EntityId,
   //   topic: &Topic,
   //   qos: Option<QosPolicies>,
-  // ) -> CreateResult<NoKeyDataWriter<D, SA>>
+  // ) -> Result<NoKeyDataWriter<D, SA>>
   // where
   //   D: Serialize,
   //   SA: no_key::SerializerAdapter<D>,
@@ -279,16 +276,16 @@ impl Publisher {
   //     .create_datawriter_no_key(self, Some(entity_id), topic, qos)
   // }
 
-  // pub(crate) fn create_datawriter_no_key_cdr_with_entity_id<D>(
+  // pub(crate) fn create_datawriter_no_key_cdr_with_entityid<D>(
   //   &self,
   //   entity_id: EntityId,
   //   topic: &Topic,
   //   qos: Option<QosPolicies>,
-  // ) -> CreateResult<NoKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
+  // ) -> Result<NoKeyDataWriter<D, CDRSerializerAdapter<D, LittleEndian>>>
   // where
   //   D: Serialize,
   // {
-  //   self.create_datawriter_no_key_with_entity_id::<D, CDRSerializerAdapter<D,
+  //   self.create_datawriter_no_key_with_entityid::<D, CDRSerializerAdapter<D,
   // LittleEndian>>(     entity_id, topic, qos,
   //   )
   // }
@@ -299,18 +296,18 @@ impl Publisher {
   // lookup datawriter: maybe not necessary? App should remember datawriters it
   // has created.
 
-  // Suspend and resume publications are performance optimization methods.
+  // Suspend and resume publications are preformance optimization methods.
   // The minimal correct implementation is to do nothing. See DDS spec 2.2.2.4.1.8
   // and .9
   /// **NOT IMPLEMENTED. DO NOT USE**
   #[deprecated(note = "unimplemented")]
-  pub fn suspend_publications(&self) {
+  pub fn suspend_publications(&self) -> Result<()> {
     unimplemented!();
   }
 
   /// **NOT IMPLEMENTED. DO NOT USE**
   #[deprecated(note = "unimplemented")]
-  pub fn resume_publications(&self) {
+  pub fn resume_publications(&self) -> Result<()> {
     unimplemented!();
   }
 
@@ -320,18 +317,22 @@ impl Publisher {
   // Coherent set not implemented and currently does nothing
   /// **NOT IMPLEMENTED. DO NOT USE**
   #[deprecated(note = "unimplemented")]
-  pub fn begin_coherent_changes(&self) {}
+  pub fn begin_coherent_changes(&self) -> Result<()> {
+    unimplemented!();
+  }
 
   // Coherent set not implemented and currently does nothing
   /// **NOT IMPLEMENTED. DO NOT USE**
   #[deprecated(note = "unimplemented")]
-  pub fn end_coherent_changes(&self) {}
+  pub fn end_coherent_changes(&self) -> Result<()> {
+    unimplemented!();
+  }
 
   // Wait for all matched reliable DataReaders acknowledge data written so far,
   // or timeout.
   /// **NOT IMPLEMENTED. DO NOT USE**
   #[deprecated(note = "unimplemented")]
-  pub fn wait_for_acknowledgments(&self, _max_wait: Duration) -> WaitResult<()> {
+  pub fn wait_for_acknowledgments(&self, _max_wait: Duration) -> Result<()> {
     unimplemented!();
   }
 
@@ -442,10 +443,10 @@ impl InnerPublisher {
     remove_writer_sender: mio_channel::SyncSender<GUID>,
     discovery_command: mio_channel::SyncSender<DiscoveryCommand>,
   ) -> Self {
-    // We generate an arbitrary but unique id to distinguish Publishers from each
+    // We generate an arbitrary but unique id to distiguish Publishers from each
     // other. EntityKind is just some value, since we do not show it to anyone.
     let id = EntityId::MAX;
-    // dp.clone().upgrade().unwrap().new_entity_id(EntityKind::UNKNOWN_BUILT_IN);
+    //dp.clone().upgrade().unwrap().new_entity_id(EntityKind::UNKNOWN_BUILT_IN);
 
     Self {
       id,
@@ -465,7 +466,7 @@ impl InnerPublisher {
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     optional_qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataWriter<D, SA>>
+  ) -> Result<WithKeyDataWriter<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -494,12 +495,12 @@ impl InnerPublisher {
     let dp = self
       .participant()
       .ok_or("upgrade fail")
-      .or_else(|e| create_error_dropped!("Where is my DomainParticipant? {}", e))?;
+      .or_else(|e| log_and_err_internal!("Where is my DomainParticipant? {}", e))?;
 
     // Create a new topic to DDScache if it doesn't exist and get a handle to it
     let topic_cache_handle = match dp.dds_cache().write() {
       Ok(mut dds_cache) => dds_cache.add_new_topic(topic.name(), topic.get_type(), &writer_qos),
-      Err(e) => return create_error_poisoned!("Cannot lock DDScache. Error: {}", e),
+      Err(e) => return log_and_err_internal!("Cannot lock DDScache. Error: {}", e),
     };
 
     let guid = GUID::new_with_prefix_and_id(dp.guid().prefix, entity_id);
@@ -517,7 +518,7 @@ impl InnerPublisher {
     self
       .add_writer_sender
       .send(new_writer)
-      .or_else(|e| create_error_poisoned!("Adding a new writer failed: {}", e))?;
+      .or_else(|e| log_and_err_internal!("Adding a new writer failed: {}", e))?;
 
     let data_writer = WithKeyDataWriter::<D, SA>::new(
       outer.clone(),
@@ -531,12 +532,7 @@ impl InnerPublisher {
     )?;
 
     // notify Discovery DB
-    let mut db = self
-      .discovery_db
-      .write()
-      .map_err(|e| CreateError::Poisoned {
-        reason: format!("Discovery DB: {e}"),
-      })?;
+    let mut db = self.discovery_db.write()?;
     // TODO: "None" below hardwires security_info to None. So we do not publish any.
     let dwd = DiscoveredWriterData::new(&data_writer, topic, &dp, None);
     db.update_local_topic_writer(dwd);
@@ -551,7 +547,7 @@ impl InnerPublisher {
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<NoKeyDataWriter<D, SA>>
+  ) -> Result<NoKeyDataWriter<D, SA>>
   where
     SA: adapters::no_key::SerializerAdapter<D>,
   {
@@ -583,7 +579,7 @@ impl InnerPublisher {
     entity_id_opt: Option<EntityId>,
     entity_kind: EntityKind,
   ) -> EntityId {
-    // If the entity_id is given, then just use that. If not, then pull an arbitrary
+    // If the entity_id is given, then just use that. If not, then pull an arbirtaty
     // number out of participant's hat.
     entity_id_opt.unwrap_or_else(|| self.participant().unwrap().new_entity_id(entity_kind))
   }
@@ -702,7 +698,7 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -715,7 +711,7 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
+  ) -> Result<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
   where
     D: serde::de::DeserializeOwned + Keyed,
     <D as Keyed>::K: Key,
@@ -726,12 +722,12 @@ impl Subscriber {
 
   // versions with callee-specified EntityId. These are for Discovery use only.
 
-  pub(crate) fn create_datareader_with_entity_id<D: 'static, SA>(
+  pub(crate) fn create_datareader_with_entityid<D: 'static, SA>(
     &self,
     topic: &Topic,
     entity_id: EntityId,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -742,18 +738,18 @@ impl Subscriber {
       .create_datareader(self, topic, Some(entity_id), qos)
   }
 
-  pub(crate) fn create_datareader_cdr_with_entity_id<D: 'static>(
+  pub(crate) fn create_datareader_cdr_with_entityid<D: 'static>(
     &self,
     topic: &Topic,
     entity_id: EntityId,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
+  ) -> Result<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
   where
     D: serde::de::DeserializeOwned + Keyed,
     <D as Keyed>::K: Key,
     for<'de> <D as Keyed>::K: Deserialize<'de>,
   {
-    self.create_datareader_with_entity_id::<D, CDRDeserializerAdapter<D>>(topic, entity_id, qos)
+    self.create_datareader_with_entityid::<D, CDRDeserializerAdapter<D>>(topic, entity_id, qos)
   }
 
   /// Create DDS DataReader for non keyed Topics
@@ -789,20 +785,20 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<NoKeyDataReader<D, SA>>
+  ) -> Result<NoKeyDataReader<D, SA>>
   where
     SA: adapters::no_key::DeserializerAdapter<D>,
   {
     self.inner.create_datareader_no_key(self, topic, None, qos)
   }
 
-  pub fn create_simple_datareader_no_key<D: 'static, DA: 'static>(
+  pub fn create_simple_datareader_no_key<D: 'static, SA: 'static>(
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<no_key::SimpleDataReader<D, DA>>
+  ) -> Result<no_key::SimpleDataReader<D, SA>>
   where
-    DA: adapters::no_key::DeserializerAdapter<D>,
+    SA: adapters::no_key::DeserializerAdapter<D>,
   {
     self
       .inner
@@ -813,21 +809,21 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<NoKeyDataReader<D, CDRDeserializerAdapter<D>>>
+  ) -> Result<NoKeyDataReader<D, CDRDeserializerAdapter<D>>>
   where
     D: serde::de::DeserializeOwned,
   {
     self.create_datareader_no_key::<D, CDRDeserializerAdapter<D>>(topic, qos)
   }
 
-  // Exists for symmetry, but not really needed,
+  // Exists for symmetry, but not really neeeded,
   // as the only user is Discovery.
-  // pub(crate) fn create_datareader_no_key_with_entity_id<D: 'static, SA>(
+  // pub(crate) fn create_datareader_no_key_with_entityid<D: 'static, SA>(
   //   &self,
   //   topic: &Topic,
   //   entity_id: EntityId,
   //   qos: Option<QosPolicies>,
-  // ) -> CreateResult<NoKeyDataReader<D, SA>>
+  // ) -> Result<NoKeyDataReader<D, SA>>
   // where
   //   D: DeserializeOwned,
   //   SA: no_key::DeserializerAdapter<D>,
@@ -837,23 +833,23 @@ impl Subscriber {
   //     .create_datareader_no_key(self, topic, Some(entity_id), qos)
   // }
 
-  // Exists for symmetry, but not really needed,
+  // Exists for symmetry, but not really neeeded,
   // as the only user is Discovery.
-  // pub(crate) fn create_datareader_no_key_cdr_with_entity_id<D: 'static>(
+  // pub(crate) fn create_datareader_no_key_cdr_with_entityid<D: 'static>(
   //   &self,
   //   topic: &Topic,
   //   entity_id: EntityId,
   //   qos: Option<QosPolicies>,
-  // ) -> CreateResult<NoKeyDataReader<D, CDRDeserializerAdapter<D>>>
+  // ) -> Result<NoKeyDataReader<D, CDRDeserializerAdapter<D>>>
   // where
   //   D: DeserializeOwned,
   // {
   //   self
-  //     .create_datareader_no_key_with_entity_id::<D,
+  //     .create_datareader_no_key_with_entityid::<D,
   // CDRDeserializerAdapter<D>>(topic, entity_id, qos) }
 
   // Retrieves a previously created DataReader belonging to the Subscriber.
-  // TODO: Is this even possible. Would probably need to return reference and
+  // TODO: Is this even possible. Whould probably need to return reference and
   // store references on creation
   /*
   pub(crate) fn lookup_datareader<D, SA>(
@@ -865,7 +861,7 @@ impl Subscriber {
     SA: DeserializerAdapter<D>,
   {
     todo!()
-  // TO think: Is this really necessary? Because the caller would have to know
+    // TO think: Is this really necessary? Because the caller would have to know
     // types D and SA. Should we just trust whoever creates DataReaders to also remember them?
   }
   */
@@ -928,7 +924,7 @@ impl InnerSubscriber {
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     optional_qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -947,7 +943,7 @@ impl InnerSubscriber {
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     optional_qos: Option<QosPolicies>,
-  ) -> CreateResult<with_key::SimpleDataReader<D, SA>>
+  ) -> Result<with_key::SimpleDataReader<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -978,16 +974,14 @@ impl InnerSubscriber {
 
     let dp = match self.participant() {
       Some(dp) => dp,
-      None => return create_error_dropped!("DomainParticipant doesn't exist anymore."),
+      None => return log_and_err_precondition_not_met!("DomainParticipant doesn't exist anymore."),
     };
 
     // Create a new topic to DDScache if it doesn't exist and get a handle to it
     let topic_cache_handle = match dp.dds_cache().write() {
       Ok(mut dds_cache) => dds_cache.add_new_topic(topic.name(), topic.get_type(), &qos),
-      Err(e) => return create_error_poisoned!("Cannot lock DDScache. Error: {}", e),
+      Err(e) => return log_and_err_internal!("Cannot lock DDScache. Error: {}", e),
     };
-    let last_read_sequence_number_ref =
-      Arc::new(Mutex::new(BTreeMap::<GUID, SequenceNumber>::new()));
 
     let reader_guid = GUID::new_with_prefix_and_id(dp.guid_prefix(), entity_id);
 
@@ -1001,7 +995,6 @@ impl InnerSubscriber {
       status_sender,
       topic_name: topic.name(),
       topic_cache_handle: topic_cache_handle.clone(),
-      last_read_sequence_number_ref: last_read_sequence_number_ref.clone(),
       qos_policy: qos.clone(),
       data_reader_command_receiver: reader_command_receiver,
       data_reader_waker: data_reader_waker.clone(),
@@ -1012,19 +1005,18 @@ impl InnerSubscriber {
       let mut db = self
         .discovery_db
         .write()
-        .or_else(|e| create_error_poisoned!("Cannot lock discovery_db. {}", e))?;
+        .or_else(|e| log_and_err_internal!("Cannot lock discovery_db. {}", e))?;
       db.update_local_topic_reader(&dp, topic, &new_reader);
       db.update_topic_data_p(topic);
     }
 
-    let datareader = with_key::SimpleDataReader::new(
+    let datareader = with_key::SimpleDataReader::<D, SA>::new(
       outer.clone(),
       entity_id,
       topic.clone(),
       qos,
       rec,
       topic_cache_handle,
-      last_read_sequence_number_ref,
       self.discovery_command.clone(),
       status_receiver,
       reader_command_sender,
@@ -1036,7 +1028,7 @@ impl InnerSubscriber {
     self
       .sender_add_reader
       .try_send(new_reader)
-      .or_else(|e| create_error_poisoned!("Cannot add DataReader. Error: {}", e))?;
+      .or_else(|e| log_and_err_internal!("Cannot add DataReader. Error: {}", e))?;
 
     Ok(datareader)
   }
@@ -1047,14 +1039,16 @@ impl InnerSubscriber {
     topic: &Topic,
     entity_id: Option<EntityId>,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
     SA: adapters::with_key::DeserializerAdapter<D>,
   {
     if topic.kind() != TopicKind::WithKey {
-      return Err(CreateError::TopicKind(TopicKind::WithKey));
+      return Error::precondition_not_met(
+        "Topic is NO_KEY, but attempted to create WITH_KEY Datareader",
+      );
     }
     self.create_datareader_internal(outer, entity_id, topic, qos)
   }
@@ -1065,12 +1059,14 @@ impl InnerSubscriber {
     topic: &Topic,
     entity_id_opt: Option<EntityId>,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<NoKeyDataReader<D, SA>>
+  ) -> Result<NoKeyDataReader<D, SA>>
   where
     SA: adapters::no_key::DeserializerAdapter<D>,
   {
     if topic.kind() != TopicKind::NoKey {
-      return Err(CreateError::TopicKind(TopicKind::NoKey));
+      return Error::precondition_not_met(
+        "Topic is WITH_KEY, but attempted to create NO_KEY Datareader",
+      );
     }
 
     let entity_id =
@@ -1092,12 +1088,14 @@ impl InnerSubscriber {
     topic: &Topic,
     entity_id_opt: Option<EntityId>,
     qos: Option<QosPolicies>,
-  ) -> CreateResult<no_key::SimpleDataReader<D, SA>>
+  ) -> Result<no_key::SimpleDataReader<D, SA>>
   where
     SA: adapters::no_key::DeserializerAdapter<D> + 'static,
   {
     if topic.kind() != TopicKind::NoKey {
-      return Err(CreateError::TopicKind(TopicKind::NoKey));
+      return Error::precondition_not_met(
+        "Topic is WITH_KEY, but attempted to create NO_KEY Datareader",
+      );
     }
 
     let entity_id =
@@ -1129,7 +1127,7 @@ impl InnerSubscriber {
     entity_id_opt: Option<EntityId>,
     entity_kind: EntityKind,
   ) -> EntityId {
-    // If the entity_id is given, then just use that. If not, then pull an arbitrary
+    // If the entity_id is given, then just use that. If not, then pull an arbirtaty
     // number out of participant's hat.
     entity_id_opt.unwrap_or_else(|| self.participant().unwrap().new_entity_id(entity_kind))
   }

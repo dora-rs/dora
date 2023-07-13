@@ -8,10 +8,10 @@ use crate::{
     dds_entity::DDSEntity,
     pubsub::Publisher,
     qos::{HasQoSPolicy, QosPolicies},
-    result::{unwrap_no_key_write_error, WriteResult},
     statusevents::{DataWriterStatus, StatusReceiverStream},
     topic::Topic,
     with_key::datawriter as datawriter_with_key,
+    Result,
   },
   discovery::sedp_messages::SubscriptionBuiltinTopicData,
   serialization::CDRSerializerAdapter,
@@ -37,7 +37,7 @@ pub type DataWriterCdr<D> = DataWriter<D, CDRSerializerAdapter<D>>;
 /// let qos = QosPolicyBuilder::new().build();
 /// let publisher = domain_participant.create_publisher(&qos).unwrap();
 ///
-/// #[derive(Serialize, Deserialize, Debug)]
+/// #[derive(Serialize, Deserialize)]
 /// struct SomeType {}
 ///
 /// // NoKey is important
@@ -74,7 +74,7 @@ where
   /// let qos = QosPolicyBuilder::new().build();
   /// let publisher = domain_participant.create_publisher(&qos).unwrap();
   ///
-  /// # #[derive(Serialize, Deserialize, Debug)]
+  /// # #[derive(Serialize, Deserialize)]
   /// # struct SomeType {}
   /// #
   /// // NoKey is important
@@ -84,22 +84,20 @@ where
   /// let some_data = SomeType {};
   /// data_writer.write(some_data, None).unwrap();
   /// ```
-  pub fn write(&self, data: D, source_timestamp: Option<Timestamp>) -> WriteResult<(), D> {
+  pub fn write(&self, data: D, source_timestamp: Option<Timestamp>) -> Result<()> {
     self
       .keyed_datawriter
       .write(NoKeyWrapper::<D> { d: data }, source_timestamp)
-      .map_err(unwrap_no_key_write_error)
   }
 
   pub fn write_with_options(
     &self,
     data: D,
     write_options: datawriter_with_key::WriteOptions,
-  ) -> WriteResult<SampleIdentity, D> {
+  ) -> Result<SampleIdentity> {
     self
       .keyed_datawriter
       .write_with_options(NoKeyWrapper::<D> { d: data }, write_options)
-      .map_err(unwrap_no_key_write_error)
   }
 
   /// Waits for all acknowledgements to finish
@@ -126,7 +124,7 @@ where
   ///
   /// data_writer.wait_for_acknowledgments(Duration::from_millis(100));
   /// ```
-  pub fn wait_for_acknowledgments(&self, max_wait: Duration) -> WriteResult<bool, ()> {
+  pub fn wait_for_acknowledgments(&self, max_wait: Duration) -> Result<bool> {
     self.keyed_datawriter.wait_for_acknowledgments(max_wait)
   }
   /*
@@ -328,7 +326,7 @@ where
   ///
   /// data_writer.assert_liveliness();
   /// ```
-  pub fn assert_liveliness(&self) -> WriteResult<(), ()> {
+  pub fn assert_liveliness(&self) -> Result<()> {
     self.keyed_datawriter.assert_liveliness()
   }
 
@@ -438,31 +436,25 @@ impl<D, SA> DataWriter<D, SA>
 where
   SA: SerializerAdapter<D>,
 {
-  pub async fn async_write(
-    &self,
-    data: D,
-    source_timestamp: Option<Timestamp>,
-  ) -> WriteResult<(), D> {
+  pub async fn async_write(&self, data: D, source_timestamp: Option<Timestamp>) -> Result<()> {
     self
       .keyed_datawriter
       .async_write(NoKeyWrapper::<D> { d: data }, source_timestamp)
       .await
-      .map_err(unwrap_no_key_write_error)
   }
 
   pub async fn async_write_with_options(
     &self,
     data: D,
     write_options: datawriter_with_key::WriteOptions,
-  ) -> WriteResult<SampleIdentity, D> {
+  ) -> Result<SampleIdentity> {
     self
       .keyed_datawriter
       .async_write_with_options(NoKeyWrapper::<D> { d: data }, write_options)
       .await
-      .map_err(unwrap_no_key_write_error)
   }
 
-  pub async fn async_wait_for_acknowledgments(&self) -> WriteResult<bool, ()> {
+  pub async fn async_wait_for_acknowledgments(&self) -> Result<bool> {
     self.keyed_datawriter.async_wait_for_acknowledgments().await
   } // fn
 } // impl
@@ -515,7 +507,7 @@ mod tests {
       .write(data, Some(timestamp))
       .expect("Unable to write data with timestamp");
 
-    // TODO: verify that data is sent/written correctly
+    // TODO: verify that data is sent/writtent correctly
     // TODO: write also with timestamp
   }
 

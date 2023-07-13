@@ -1,5 +1,5 @@
 //! Interoperability test program for `RustDDS` library
-//! This is using package "mio" version 0.8.x.
+//! This is using pacakge "mio" version 0.8.x.
 
 #![deny(clippy::all)]
 #![warn(clippy::pedantic)]
@@ -30,12 +30,12 @@ use clap::{Arg, ArgMatches, Command}; // command line argument processing
 use mio_08::{Events, Interest, Poll, Token}; // non-blocking i/o polling
 use rand::prelude::*;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Shape {
   color: String,
   x: i32,
   y: i32,
-  shape_size: i32,
+  shapesize: i32,
 }
 
 impl Keyed for Shape {
@@ -110,17 +110,17 @@ fn main() {
   }
 
   assert!(
-    !matches.contains_id("partition"),
+    !matches.get_flag("partition"),
     "QoS policy Partition is not yet implemented."
   );
 
   assert!(
-    !matches.contains_id("interval"),
+    !matches.get_flag("interval"),
     "QoS policy Time Based Filter is not yet implemented."
   );
 
   assert!(
-    !matches.contains_id("ownership_strength"),
+    !matches.get_flag("ownership_strength"),
     "QoS policy Ownership Strength is not yet implemented."
   );
 
@@ -128,7 +128,7 @@ fn main() {
 
   let loop_delay: Duration = match deadline_policy {
     None => Duration::from_millis(200), // This is the default rate
-    Some(Deadline(dd)) => Duration::from(dd).mul_f32(0.8), // slightly faster than deadline
+    Some(Deadline(dd)) => Duration::from(dd).mul_f32(0.8), // slightly faster than dealine
   };
 
   let topic = domain_participant
@@ -205,7 +205,7 @@ fn main() {
     color: color.to_string(),
     x: 0,
     y: 0,
-    shape_size: 21,
+    shapesize: 21,
   };
   let mut random_gen = thread_rng();
   // a bit complicated lottery to ensure we do not end up with zero velocity.
@@ -243,7 +243,7 @@ fn main() {
                       sample.color,
                       sample.x,
                       sample.y,
-                      sample.shape_size,
+                      sample.shapesize,
                     ),
                     Sample::Dispose(key) => println!("Disposed key {key:?}"),
                   },
@@ -304,7 +304,7 @@ fn main() {
       None => {
         if is_publisher {
           error!("Where is my writer?");
-        } else { // never mind
+        } else { /* never mind */
         }
       }
     }
@@ -436,7 +436,7 @@ fn get_matches() -> ArgMatches {
 
 #[allow(clippy::similar_names)]
 fn move_shape(shape: Shape, xv: i32, yv: i32) -> (Shape, i32, i32) {
-  let half_size = shape.shape_size / 2 + 1;
+  let half_size = shape.shapesize / 2 + 1;
   let mut x = shape.x + xv;
   let mut y = shape.y + yv;
 
@@ -464,7 +464,7 @@ fn move_shape(shape: Shape, xv: i32, yv: i32) -> (Shape, i32, i32) {
       color: shape.color,
       x,
       y,
-      shape_size: shape.shape_size,
+      shapesize: shape.shapesize,
     },
     xv_new,
     yv_new,

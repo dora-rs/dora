@@ -13,8 +13,8 @@ pub struct ReadCondition {
   sample_state_mask: BitFlags<SampleState>,
   view_state_mask: BitFlags<ViewState>,
   instance_state_mask: BitFlags<InstanceState>,
-  // Extension idea: Add a query string and a list of query parameters to upgrade this
-  // to QueryCondition. But that would be a lot of work, especially in DataReader.
+  /* Extension idea: Add a query string and a list of query parameters to upgrade this
+   * to QueryCondition. But that would be a lot of work, especially in DataReader. */
 }
 
 impl ReadCondition {

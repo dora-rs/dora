@@ -1,257 +1,152 @@
-//! This module corresponds to "Return codes" in DDS spec Section "2.2.1.1
-//! Format and Conventions", but the error codes are not the same.
-//! In particular, a uniform error type is not used for all DDS calls, because
-//! most calls can only return a subset of errors.
-//! Using specialized error types makes the description of possible failures
-//! more precise.
+use mio_extras::channel::TrySendError;
 
-use crate::{
-  no_key::wrappers::NoKeyWrapper,
-  serialization::{cdr_deserializer, cdr_serializer},
-  TopicKind,
-};
+/// This is a specialized Result, similar to [`std::io::Result`]
+pub type Result<T> = std::result::Result<T, Error>;
 
-/// Error type for DDS "read" type operations.
-#[derive(Debug, thiserror::Error)]
-pub enum ReadError {
-  /// Data received over RTPS could not be decoded.
-  /// Reason field gives more details on what went wrong.
-  #[error("Deserialization error: {reason}")]
-  Deserialization { reason: String },
-
-  /// DDS received a data instance dispose message via RTPS, but was asked to
-  /// dispose an instance, which we do not have.
-  ///
-  /// If that data instance was published and last available for reading before
-  /// this DataReader joined the domain (i.e. was started), then it is normal
-  /// that we do not know it. Otherwise, it could be a symptom of communication
-  /// or serialization error.
-  #[error("Received dispose message with unknown key: {details}")]
-  UnknownKey { details: String },
-
-  /// Communication or synchronization with RTPS processing thread or Discovery
-  /// thread fails. This is most likely because either thread has panicked or
-  /// gotten stuck somewhere, neither of which is supposed to happen. This is
-  /// typically not recoverable, except by starting a new DomainParticipant.
-  #[error("Cannot communicate with background thread. It may have panicked. Details: {reason}")]
-  Poisoned { reason: String },
-
-  /// Something that should not go wrong went wrong anyway.
-  /// This is usually a bug in RustDDS
-  #[error("Internal error: {reason}")]
-  Internal { reason: String },
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! read_error_deserialization {
-  ($($arg:tt)*) => (
-      { log::error!($($arg)*);
-        Err( ReadError::Deserialization{ reason: format!($($arg)*) } )
-      }
-    )
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! read_error_unknown_key {
-  ($($arg:tt)*) => (
-      { log::error!($($arg)*);
-        Err( ReadError::UnknownKey{ reason: format!($($arg)*) } )
-      }
-    )
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! read_error_poisoned {
-  ($($arg:tt)*) => (
-      { log::error!($($arg)*);
-        Err( ReadError::Poisoned{ reason: format!($($arg)*) } )
-      }
-    )
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! read_error_internal {
-  ($($arg:tt)*) => (
-      { log::error!($($arg)*);
-        Err( ReadError::Internal{ reason: format!($($arg)*) } )
-      }
-    )
-}
-
-impl From<cdr_deserializer::Error> for ReadError {
-  fn from(e: cdr_deserializer::Error) -> Self {
-    ReadError::Deserialization {
-      reason: e.to_string(),
-    }
-  }
-}
-
-/// This is a specialized Result, similar to [`std::io::Result`].
-pub type ReadResult<T> = std::result::Result<T, ReadError>;
-
-/// Error type for DDS "Write" operations.
+/// This corresponds to "Return codes" in DDS spec 2.2.1.1 Format and
+/// Conventions
 ///
-/// Note: This type contains payload data type `D`. This means that `WriteError`
-/// implements `Debug` only if `D` does.
+/// Deviations from the DDS spec:
+/// * `OK` is not included. It is not an error. Ok/Error should be distinguished
+///   with the `Result` type.
+/// * `Error` is too unspecific.
+/// * `AlreadyDeleted` We should use Rust type system to avoid these, so no need
+///   for run-time error.
+/// * `Timeout`  This is normal operation and should be encoded as `Option` or
+///   `Result`
+/// * `NoData`  This should be encoded as `Option<SomeData>`, not an error code.
 #[derive(Debug, thiserror::Error)]
-pub enum WriteError<D> {
-  /// Data serializer (`SerializerAdapter`) reported an error when called.
-  /// Reason field gives more details on what went wrong.
-  #[error("Serialization error: {reason}")]
-  Serialization { reason: String, data: D },
-
-  /// Communication or synchronization with RTPS processing thread or Discovery
-  /// thread fails. This is most likely because either thread has panicked or
-  /// gotten stuck somewhere, neither of which is supposed to happen. This is
-  /// typically not recoverable, except by starting a new DomainParticipant.
-  #[error("Cannot communicate. Background thread may have panicked: {reason}")]
-  Poisoned { reason: String, data: D },
-
-  /// a [`std::io::Error`] occurred within RustDDS.
-  #[error("std:io:Error {0}")]
-  Io(#[from] std::io::Error),
-
-  /// The operation would block, or blocked until specified timeout expired.
-  #[error("Write operation timed out while blocking")]
-  WouldBlock { data: D },
-
-  /// Something that should not go wrong went wrong anyway.
-  /// This is usually a bug in RustDDS
-  #[error("Internal error: {reason}")]
-  Internal { reason: String },
-}
-
-// TODO replace cdr_serializer::Error with WriteError::Serialization altogether
-impl From<cdr_serializer::Error> for WriteError<()> {
-  fn from(e: cdr_serializer::Error) -> Self {
-    WriteError::Serialization {
-      reason: e.to_string(),
-      data: (),
-    }
-  }
-}
-
-impl<D> WriteError<D> {
-  /// Forgets the data of WriteError, which can be useful in cases where it is
-  /// not needed.
-  pub fn forget_data(self) -> WriteError<()> {
-    match self {
-      WriteError::Serialization { reason, data: _ } => {
-        WriteError::Serialization { reason, data: () }
-      }
-      WriteError::Poisoned { reason, data: _ } => WriteError::Poisoned { reason, data: () },
-      WriteError::Io(e) => WriteError::Io(e),
-      WriteError::WouldBlock { data: _ } => WriteError::WouldBlock { data: () },
-      WriteError::Internal { reason } => WriteError::Internal { reason },
-    }
-  }
-}
-
-/// This is a specialized Result, similar to [`std::io::Result`].
-pub type WriteResult<T, D> = std::result::Result<T, WriteError<D>>;
-
-pub(crate) fn unwrap_no_key_write_error<D>(
-  no_key_write_error: WriteError<NoKeyWrapper<D>>,
-) -> WriteError<D> {
-  match no_key_write_error {
-    WriteError::Serialization { reason, data } => WriteError::Serialization {
-      reason,
-      data: data.d,
-    },
-    WriteError::Poisoned { reason, data } => WriteError::Poisoned {
-      reason,
-      data: data.d,
-    },
-    WriteError::WouldBlock { data } => WriteError::WouldBlock { data: data.d },
-    WriteError::Internal { reason } => WriteError::Internal { reason },
-    WriteError::Io(io) => WriteError::Io(io),
-  }
-}
-
-/// Error type for object creation operations.
-#[derive(Debug, thiserror::Error)]
-pub enum CreateError {
-  #[error("Object creation failed, because necessary resource has been dropped: {reason}")]
-  ResourceDropped { reason: String },
-
-  #[error("Cannot communicate. Background thread may have panicked: {reason}")]
-  Poisoned { reason: String },
-
-  #[error("std:io:Error {0}")]
-  Io(#[from] std::io::Error),
-
-  #[error("Wrong Topic kind. Expected {0}")]
-  TopicKind(TopicKind),
-
-  /// Something that should not go wrong went wrong anyway.
-  /// This is usually a bug in RustDDS
-  #[error("Internal error: {reason}")]
-  Internal { reason: String },
-
-  #[error("Invalid call parameter: {reason}")]
+pub enum Error {
+  /// This is out of the DDS spec.
+  /// If DataWriter with Reliability == RELIABLE cannot send within the
+  /// QoS-specified timeout, this error will occur. This can be caused by
+  /// writing data faster than can be written to network, or some of the
+  /// matched reliable DataReaders cannot keep up, i.e. acknowledge samples
+  /// fast enough.
+  #[error("Write must wait for network or reliable DataReaders")]
+  MustBlock,
+  /// Illegal parameter value.
+  #[error("Bad parameter: {reason}")]
   BadParameter { reason: String },
 
-  #[error("Resource allocation failed: {reason}")]
-  OutOfResources { reason: String },
+  /// Unsupported operation. Can only be returned by operations that are
+  /// optional.
+  #[error("Unsupported operation")]
+  Unsupported,
+
+  /// Service ran out of the resources needed to complete the operation.
+  #[error("Out of resources")]
+  OutOfResources,
+
+  /// Operation invoked on an Entity that is not yet enabled.
+  #[error("Entity not yet enabled")]
+  NotEnabled,
+
+  /// Application attempted to modify an immutable QosPolicy.
+  #[error("Attempted to modify immutable entity")]
+  ImmutablePolicy, // can we check this statically?
+
+  /// Application specified a set of policies that are not consistent with each
+  /// other.
+  #[error("Inconsistent policies: {reason}")]
+  InconsistentPolicy { reason: String },
+
+  /// A pre-condition for the operation was not met.
+  #[error("Precondition not met: {precondition}")]
+  PreconditionNotMet { precondition: String },
+
+  /// An operation was invoked on an inappropriate object or at
+  /// an inappropriate time (as determined by policies set by the
+  /// specification or the Service implementation). There is no
+  /// precondition that could be changed to make the operation
+  /// succeed.
+  #[error("Illegal operation: {reason}")]
+  IllegalOperation { reason: String },
+
+  // Our own additions to the DDS spec below:
+  /// Synchronization with another thread failed because the [other thread
+  /// has exited while holding a lock.](https://doc.rust-lang.org/std/sync/struct.PoisonError.html)
+  /// Does not exist in the DDS spec.
+  #[error("Lock poisoned")]
+  LockPoisoned,
+
+  /// Something that should not go wrong went wrong anyway.
+  /// This is usually a bug in RustDDS
+  #[error("Internal error: {reason}")]
+  Internal { reason: String },
+
+  #[error(transparent)]
+  Io(#[from] std::io::Error),
+
+  #[error("Serialization error: {reason}")]
+  Serialization { reason: String },
+
+  #[error("Discovery error: {reason}")]
+  Discovery { reason: String },
 }
 
-/// This is a specialized Result, similar to [`std::io::Result`].
-pub type CreateResult<T> = std::result::Result<T, CreateError>;
+impl Error {
+  pub fn bad_parameter<T>(reason: impl Into<String>) -> Result<T> {
+    Err(Self::BadParameter {
+      reason: reason.into(),
+    })
+  }
+
+  pub fn precondition_not_met<T>(precondition: impl Into<String>) -> Result<T> {
+    Err(Self::PreconditionNotMet {
+      precondition: precondition.into(),
+    })
+  }
+
+  pub fn serialization_error<T>(reason: impl Into<String>) -> Result<T> {
+    Err(Self::Serialization {
+      reason: reason.into(),
+    })
+  }
+}
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! create_error_poisoned {
+macro_rules! log_and_err_precondition_not_met {
+  ($err_msg:literal) => {{
+    log::error!($err_msg);
+    Error::precondition_not_met($err_msg)
+  }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! log_and_err_internal {
   ($($arg:tt)*) => (
       { log::error!($($arg)*);
-        Err( CreateError::Poisoned{ reason: format!($($arg)*) } )
+        Err( Error::Internal{ reason: format!($($arg)*) } )
       }
     )
 }
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! create_error_dropped {
+macro_rules! log_and_err_discovery {
   ($($arg:tt)*) => (
-      { log::error!($($arg)*);
-        Err( CreateError::ResourceDropped{ reason: format!($($arg)*) } )
+      { error!($($arg)*);
+        Error::Message(format!($($arg)*) )
       }
     )
 }
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! create_error_out_of_resources {
-  ($($arg:tt)*) => (
-      { log::error!($($arg)*);
-        Err( CreateError::OutOfResources{ reason: format!($($arg)*) } )
-      }
-    )
+impl<T> From<std::sync::PoisonError<T>> for Error {
+  fn from(_e: std::sync::PoisonError<T>) -> Self {
+    Self::LockPoisoned
+  }
 }
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! create_error_bad_parameter {
-  ($($arg:tt)*) => (
-      { log::error!($($arg)*);
-        Err( CreateError::BadParameter{ reason: format!($($arg)*) } )
-      }
-    )
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum WaitError {
-  #[error("Waiting timed out")]
-  Timeout,
-}
-
-pub type WaitResult<T> = std::result::Result<T, WaitError>;
-
-#[derive(Debug, thiserror::Error)]
-pub enum QosError {
-  #[error("Parameter value or combination of values was bad. Details: {details}")]
-  BadParameter { details: String },
+impl<T> From<TrySendError<T>> for Error
+where
+  TrySendError<T>: std::error::Error,
+{
+  fn from(e: TrySendError<T>) -> Self {
+    Self::Internal {
+      reason: format!("Cannot send to internal mio channel: {e:?}"),
+    }
+  }
 }

@@ -327,7 +327,7 @@ impl MessageBuilder {
       kind: SubmessageKind::INFO_DST,
       flags: flags.bits(),
       content_length: 12u16,
-      // InfoDST length is always 12 because message contains only GuidPrefix
+      //InfoDST length is always 12 because message contains only GuidPrefix
     };
     let dst_submessage = Submessage {
       header: submessage_header,
@@ -395,7 +395,7 @@ impl MessageBuilder {
 
         // ... and tell what the key_hash means
         let status_info = Parameter::create_pid_status_info_parameter(
-          /* disposed */ true, /* unregistered */ true, /* filtered */ false,
+          /* disposed */ true, /* unregisterd */ true, /* filtered */ false,
         );
         param_list.parameters.push(status_info);
       }
@@ -552,7 +552,7 @@ impl MessageBuilder {
     // }
 
     let flags: BitFlags<DATAFRAG_Flags> =
-      // endianness flag
+      // endinness flag
       BitFlags::<DATAFRAG_Flags>::from_endianness(endianness)
       // key flag
       | (match cache_change.data_value {
@@ -571,7 +571,7 @@ impl MessageBuilder {
       header: SubmessageHeader {
         kind: SubmessageKind::DATA_FRAG,
         flags: flags.bits(),
-        content_length: data_message.len_serialized() as u16, // TODO: Handle overflow
+        content_length: data_message.len_serialized() as u16, //TODO: Handle overflow
       },
       body: SubmessageBody::Writer(WriterSubmessage::DataFrag(data_message, flags)),
     });
@@ -611,7 +611,7 @@ impl MessageBuilder {
   pub fn heartbeat_msg(
     mut self,
     writer: &RtpsWriter,
-    reader_entity_id: EntityId,
+    reader_entityid: EntityId,
     set_final_flag: bool,
     set_liveliness_flag: bool,
   ) -> Self {
@@ -619,7 +619,7 @@ impl MessageBuilder {
     let last = writer.last_change_sequence_number;
 
     let heartbeat = Heartbeat {
-      reader_id: reader_entity_id,
+      reader_id: reader_entityid,
       writer_id: writer.entity_id(),
       first_sn: first,
       last_sn: last,
@@ -668,7 +668,7 @@ mod tests {
 
   fn rtps_message_test_shapes_demo_message_deserialization() {
     // Data message should contain Shapetype values.
-    // captured with wireshark from shapes demo.
+    // caprured with wireshark from shapes demo.
     // packet with INFO_DST, INFO_TS, DATA, HEARTBEAT
     let bits1 = Bytes::from_static(&[
       0x52, 0x54, 0x50, 0x53, 0x02, 0x03, 0x01, 0x0f, 0x01, 0x0f, 0x99, 0x06, 0x78, 0x34, 0x00,
@@ -693,7 +693,7 @@ mod tests {
   }
   #[test]
   fn rtps_message_test_shapes_demo_DataP() {
-    // / captured with wireshark from shapes demo.
+    // / caprured with wireshark from shapes demo.
     // packet with DATA(p)
     let bits2 = Bytes::from_static(&[
       0x52, 0x54, 0x50, 0x53, 0x02, 0x04, 0x01, 0x03, 0x01, 0x03, 0x00, 0x0c, 0x29, 0x2d, 0x31,
@@ -732,7 +732,7 @@ mod tests {
 
   #[test]
   fn rtps_message_test_shapes_demo_info_TS_dataP() {
-    // captured with wireshark from shapes demo.
+    // caprured with wireshark from shapes demo.
     // rtps packet with info TS and Data(p)
     let bits1 = Bytes::from_static(&[
       0x52, 0x54, 0x50, 0x53, 0x02, 0x03, 0x01, 0x0f, 0x01, 0x0f, 0x99, 0x06, 0x78, 0x34, 0x00,
@@ -764,7 +764,7 @@ mod tests {
 
   #[test]
   fn rtps_message_test_shapes_demo_info_TS_AckNack() {
-    // captured with wireshark from shapes demo.
+    // caprured with wireshark from shapes demo.
     // rtps packet with info TS three AckNacks
     let bits1 = Bytes::from_static(&[
       0x52, 0x54, 0x50, 0x53, 0x02, 0x04, 0x01, 0x03, 0x01, 0x03, 0x00, 0x0c, 0x29, 0x2d, 0x31,
@@ -790,7 +790,7 @@ mod tests {
 
   #[test]
   fn rtps_message_info_ts_and_dataP() {
-    // captured with wireshark from shapes demo.
+    // caprured with wireshark from shapes demo.
     // rtps packet with info TS and data(p)
     let bits1 = Bytes::from_static(&[
       0x52, 0x54, 0x50, 0x53, 0x02, 0x03, 0x01, 0x0f, 0x01, 0x0f, 0x99, 0x06, 0x78, 0x34, 0x00,
@@ -822,7 +822,7 @@ mod tests {
 
   #[test]
   fn rtps_message_infoDST_infoTS_Data_w_heartbeat() {
-    // captured with wireshark from shapes demo.
+    // caprured with wireshark from shapes demo.
     // rtps packet with InfoDST InfoTS Data(w) Heartbeat
     // This datamessage serialized payload maybe contains topic name (square) and
     // its type (shapetype) look https://www.omg.org/spec/DDSI-RTPS/2.3/PDF page 185

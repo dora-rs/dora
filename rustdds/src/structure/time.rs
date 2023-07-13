@@ -37,8 +37,7 @@ pub struct Timestamp {
 }
 
 impl Timestamp {
-  // Special constants reserved by the RTPS protocol, from RTPS spec section
-  // 9.3.2.
+  // Special contants reserved by the RTPS protocol, from RTPS spec section 9.3.2.
   pub const ZERO: Self = Self {
     seconds: 0,
     fraction: 0,

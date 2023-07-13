@@ -13,7 +13,7 @@ use crate::{
     no_key::datasample::DataSample,
     qos::{HasQoSPolicy, QosPolicies},
     readcondition::ReadCondition,
-    result::ReadResult,
+    result::Result,
     statusevents::DataReaderStatus,
     with_key::{
       datareader as datareader_with_key,
@@ -104,7 +104,7 @@ where
     &mut self,
     max_samples: usize,
     read_condition: ReadCondition,
-  ) -> ReadResult<Vec<DataSample<&D>>> {
+  ) -> Result<Vec<DataSample<&D>>> {
     let values: Vec<WithKeyDataSample<&NoKeyWrapper<D>>> =
       self.keyed_datareader.read(max_samples, read_condition)?;
     let mut result = Vec::with_capacity(values.len());
@@ -149,7 +149,7 @@ where
     &mut self,
     max_samples: usize,
     read_condition: ReadCondition,
-  ) -> ReadResult<Vec<DataSample<D>>> {
+  ) -> Result<Vec<DataSample<D>>> {
     let values: Vec<WithKeyDataSample<NoKeyWrapper<D>>> =
       self.keyed_datareader.take(max_samples, read_condition)?;
     let mut result = Vec::with_capacity(values.len());
@@ -186,7 +186,7 @@ where
   ///   // Do something
   /// }
   /// ```
-  pub fn read_next_sample(&mut self) -> ReadResult<Option<DataSample<&D>>> {
+  pub fn read_next_sample(&mut self) -> Result<Option<DataSample<&D>>> {
     let mut ds = self.read(1, ReadCondition::not_read())?;
     Ok(ds.pop())
   }
@@ -216,14 +216,14 @@ where
   ///   // Do something
   /// }
   /// ```
-  pub fn take_next_sample(&mut self) -> ReadResult<Option<DataSample<D>>> {
+  pub fn take_next_sample(&mut self) -> Result<Option<DataSample<D>>> {
     let mut ds = self.take(1, ReadCondition::not_read())?;
     Ok(ds.pop())
   }
 
   // Iterator interface
 
-  /// Produces an iterator over the currently available NOT_READ samples.
+  /// Produces an interator over the currently available NOT_READ samples.
   /// Yields only payload data, not SampleInfo metadata
   /// This is not called `iter()` because it takes a mutable reference to self.
   ///
@@ -250,8 +250,8 @@ where
   ///   // Do something
   /// }
   /// ```
-  pub fn iterator(&mut self) -> ReadResult<impl Iterator<Item = &D>> {
-    // TODO: We could come up with a more efficient implementation than wrapping a
+  pub fn iterator(&mut self) -> Result<impl Iterator<Item = &D>> {
+    // TODO: We could come up with a more efficent implementation than wrapping a
     // read call
     Ok(
       self
@@ -261,7 +261,7 @@ where
     )
   }
 
-  /// Produces an iterator over the samples filtered by given condition.
+  /// Produces an interator over the samples filtered b ygiven condition.
   /// Yields only payload data, not SampleInfo metadata
   ///
   /// # Examples
@@ -290,8 +290,8 @@ where
   pub fn conditional_iterator(
     &mut self,
     read_condition: ReadCondition,
-  ) -> ReadResult<impl Iterator<Item = &D>> {
-    // TODO: We could come up with a more efficient implementation than wrapping a
+  ) -> Result<impl Iterator<Item = &D>> {
+    // TODO: We could come up with a more efficent implementation than wrapping a
     // read call
     Ok(
       self
@@ -301,7 +301,7 @@ where
     )
   }
 
-  /// Produces an iterator over the currently available NOT_READ samples.
+  /// Produces an interator over the currently available NOT_READ samples.
   /// Yields only payload data, not SampleInfo metadata
   /// Removes samples from `DataReader`.
   /// <strong>Note!</strong> If the iterator is only partially consumed, all the
@@ -330,8 +330,8 @@ where
   ///   // Do something
   /// }
   /// ```
-  pub fn into_iterator(&mut self) -> ReadResult<impl Iterator<Item = D>> {
-    // TODO: We could come up with a more efficient implementation than wrapping a
+  pub fn into_iterator(&mut self) -> Result<impl Iterator<Item = D>> {
+    // TODO: We could come up with a more efficent implementation than wrapping a
     // read call
     Ok(
       self
@@ -341,7 +341,7 @@ where
     )
   }
 
-  /// Produces an iterator over the samples filtered by given condition.
+  /// Produces an interator over the samples filtered b ygiven condition.
   /// Yields only payload data, not SampleInfo metadata
   /// <strong>Note!</strong> If the iterator is only partially consumed, all the
   /// samples it could have provided are still removed from the `Datareader`.
@@ -372,8 +372,8 @@ where
   pub fn into_conditional_iterator(
     &mut self,
     read_condition: ReadCondition,
-  ) -> ReadResult<impl Iterator<Item = D>> {
-    // TODO: We could come up with a more efficient implementation than wrapping a
+  ) -> Result<impl Iterator<Item = D>> {
+    // TODO: We could come up with a more efficent implementation than wrapping a
     // read call
     Ok(
       self
@@ -412,7 +412,7 @@ where
 
   pub fn get_requested_deadline_missed_status(
     &mut self,
-  ) -> ReadResult<Option<RequestedDeadlineMissedStatus>> {
+  ) -> Result<Option<RequestedDeadlineMissedStatus>> {
     self.keyed_datareader.get_requested_deadline_missed_status()
   }
   */
@@ -427,14 +427,14 @@ where
 
 /// WARNING! UNTESTED
 //  TODO: test
-// This is  not part of DDS spec. We implement mio Evented so that the
+// This is  not part of DDS spec. We implement mio Eventd so that the
 // application can asynchronously poll DataReader(s).
 impl<D, DA> Evented for DataReader<D, DA>
 where
   DA: DeserializerAdapter<D>,
 {
-  // We just delegate all the operations to notification_receiver, since it
-  // already implements Evented
+  // We just delegate all the operations to notification_receiver, since it alrady
+  // implements Evented
   fn register(
     &self,
     poll: &mio_06::Poll,
@@ -585,14 +585,14 @@ where
   D: 'static,
   DA: DeserializerAdapter<D>,
 {
-  type Item = ReadResult<D>;
+  type Item = Result<D>;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     match Pin::new(&mut Pin::into_inner(self).keyed_stream).poll_next(cx) {
       Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
       Poll::Ready(Some(Ok(Sample::Value(d)))) => Poll::Ready(Some(Ok(d.d))), /* Unwraps Sample and NoKeyWrapper */
-      // Disposed data is ignored
-      Poll::Ready(Some(Ok(Sample::Dispose(_)))) => Poll::Pending,
+      Poll::Ready(Some(Ok(Sample::Dispose(_)))) => Poll::Pending,            /* Disposed data is */
+      // ignored
       Poll::Ready(None) => Poll::Ready(None), // This should never happen
       Poll::Pending => Poll::Pending,
     }
@@ -625,7 +625,7 @@ where
   D: 'static,
   DA: DeserializerAdapter<D>,
 {
-  type Item = ReadResult<DataReaderStatus>;
+  type Item = std::result::Result<DataReaderStatus, std::sync::mpsc::RecvError>;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     Pin::new(&mut Pin::into_inner(self).keyed_stream).poll_next(cx)

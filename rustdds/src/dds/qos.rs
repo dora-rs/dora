@@ -5,16 +5,14 @@ use speedy::{Readable, Writable};
 use log::{debug, error, info, trace, warn};
 
 use crate::{
-  dds::result::QosError,
+  dds::result::Result,
   messages::submessages::elements::parameter::Parameter,
-  serialization::{
-    pl_cdr_adapters::{PlCdrDeserializeError, PlCdrSerializeError},
-    speedy_pl_cdr_helpers::*,
-  },
+  serialization,
+  serialization::speedy_pl_cdr_helpers::*,
   structure::{duration::Duration, endpoint::ReliabilityKind, parameter_id::ParameterId},
 };
 
-// This is to be implemented by all DomainParticipant, Publisher, Subscriber,
+// This is to be implemented by all DomanParticipant, Publisher, Subscriber,
 // DataWriter, DataReader, Topic
 /// Trait that is implemented by all necessary DDS Entities that are required to
 /// provide QosPolicies.
@@ -25,7 +23,7 @@ pub trait HasQoSPolicy {
 /// Trait that is implemented by all necessary DDS Entities that are required to
 /// have a mutable QosPolicies.
 pub trait MutQosPolicy {
-  fn set_qos(&mut self, new_qos: &QosPolicies) -> Result<(), QosError>;
+  fn set_qos(&mut self, new_qos: &QosPolicies) -> Result<()>;
 }
 
 /// DDS spec 2.3.3 defines this as "long" with named constants from 0 to 22.
@@ -33,29 +31,29 @@ pub trait MutQosPolicy {
 /// application interface
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum QosPolicyId {
-  // Invalid  // We should represent this using Option<QosPolicyId> where needed
-  // UserData,  // 1
+  //Invalid  // We should represent this using Option<QosPolicyId> where needed
+  //UserData,  // 1
   Durability,   // 2
   Presentation, // 3
   Deadline,
   LatencyBudget, // 5
   Ownership,
-  // OwnershipStrength, // 7
+  //OwnershipStrength, // 7
   Liveliness,
   TimeBasedFilter, // 9
-  // Partition,
+  //Partition,
   Reliability, // 11
   DestinationOrder,
   History, // 13
   ResourceLimits,
-  // EntityFactory, // 15
-  // WriterDataLifeCycle,
-  // ReaderDataLifeCycle, // 17
-  // TopicData, // 18
-  // GroupData,
-  // TransportPriority, // 20
+  //EntityFactory, // 15
+  //WriterDataLifeCycle,
+  //ReaderDataLifeCycle, // 17
+  //TopicData, // 18
+  //GroupData,
+  //TransportPriority, // 20
   Lifespan,
-  // DurabilityService, // 22
+  //DurabilityService, // 22
 }
 
 /// Utility for building [QosPolicies]
@@ -175,7 +173,7 @@ impl QosPolicyBuilder {
 /// QosPolicies are constructed using a [`QosPolicyBuilder`]
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct QosPolicies {
-  // pub(crate) because as we want to have some builtin QoS Policies as constant.
+  // pub(crate) beacuse as we want to have some builtin QoS Policies as constant.
   pub(crate) durability: Option<policy::Durability>,
   pub(crate) presentation: Option<policy::Presentation>,
   pub(crate) deadline: Option<policy::Deadline>,
@@ -278,7 +276,7 @@ impl QosPolicies {
     }
   }
 
-  /// Check if policy complies to another policy.
+  /// Check if policy commplies to another policy.
   ///
   /// `self` is the "offered" (publisher) QoS
   /// `other` is the "requested" (subscriber) QoS
@@ -313,7 +311,7 @@ impl QosPolicies {
     }
 
     // check Presentation:
-    // * If coherent_access is requested, it must be offered also. AND
+    // * If coherent_access is requsted, it must be offered also. AND
     // * Same for ordered_access. AND
     // * Offered access scope is broader than requested.
     if let (Some(off), Some(req)) = (self.presentation, other.presentation) {
@@ -386,7 +384,7 @@ impl QosPolicies {
   pub fn to_parameter_list(
     &self,
     ctx: speedy::Endianness,
-  ) -> Result<Vec<Parameter>, PlCdrSerializeError> {
+  ) -> std::result::Result<Vec<Parameter>, speedy::Error> {
     let mut pl = Vec::with_capacity(8);
 
     let QosPolicies {
@@ -489,7 +487,7 @@ impl QosPolicies {
   pub fn from_parameter_list(
     ctx: speedy::Endianness,
     pl_map: &BTreeMap<ParameterId, Vec<&Parameter>>,
-  ) -> Result<QosPolicies, PlCdrDeserializeError> {
+  ) -> std::result::Result<QosPolicies, serialization::error::Error> {
     macro_rules! get_option {
       ($pid:ident) => {
         get_option_from_pl_map(pl_map, ctx, ParameterId::$pid, "<not_used>")?
@@ -514,7 +512,7 @@ impl QosPolicies {
         Some(policy::Ownership::Exclusive { strength })
       }
       (Some(OwnershipKind::Exclusive), None) => {
-        warn!("QosPolicies deserializer: Received OwnershipKind::Exclusive but no strength value.");
+        warn!("QosPolicies deserializer: Received OwnershipKind::Exclusive but no stregth value.");
         None
       }
       (None, Some(_strength)) => {
@@ -619,7 +617,7 @@ pub mod policy {
     pub value: Vec<u8>,
   }
 
-  pub struct GroupData {
+  pub struct GropupData {
     pub value: Vec<u8>,
   }
 

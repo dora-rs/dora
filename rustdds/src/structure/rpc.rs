@@ -65,7 +65,7 @@ impl Default for RemoteExceptionCode {
 )]
 pub struct RequestHeader {
   pub request_id: SampleIdentity,
-  pub instance_name: String, // limit to 255 characters
+  pub instance_name: String, // limit to 255 chracters
 }
 
 #[derive(

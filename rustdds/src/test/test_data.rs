@@ -76,8 +76,8 @@ use std::{net::SocketAddr, time::Duration as StdDuration};
 
 use bytes::Bytes;
 use speedy::{Endianness, Writable};
-// use serde::Serialize;
-// use byteorder::LittleEndian;
+//use serde::Serialize;
+//use byteorder::LittleEndian;
 use enumflags2::BitFlags;
 
 use crate::{
@@ -189,14 +189,14 @@ pub(crate) fn spdp_participant_data() -> Option<SpdpDiscoveredParticipantData> {
     match &submsg.body {
       SubmessageBody::Writer(v) => match v {
         WriterSubmessage::Data(d, _) => {
-          let participant_data: SpdpDiscoveredParticipantData =
+          let particiapant_data: SpdpDiscoveredParticipantData =
             PlCdrDeserializerAdapter::from_bytes(
               &d.serialized_payload.as_ref().unwrap().value,
               RepresentationIdentifier::PL_CDR_LE,
             )
             .unwrap();
 
-          return Some(participant_data);
+          return Some(particiapant_data);
         }
         _ => continue,
       },
@@ -285,7 +285,7 @@ pub(crate) fn publication_builtin_topic_data() -> Option<PublicationBuiltinTopic
   let pub_topic_data = PublicationBuiltinTopicData {
     key: GUID::dummy_test_guid(EntityKind::WRITER_WITH_KEY_BUILT_IN),
     participant_key: Some(GUID::dummy_test_guid(EntityKind::PARTICIPANT_BUILT_IN)),
-    topic_name: "rand topic name".to_string(),
+    topic_name: "rand topic namm".to_string(),
     type_name: "RandomData".to_string(),
     durability: Some(Durability::Volatile),
     deadline: Some(Deadline(Duration::from_secs(30))),
@@ -371,7 +371,7 @@ pub(crate) fn create_rtps_data_message<D: PlCdrSerialize>(
   reader_id: EntityId,
   writer_id: EntityId,
 ) -> Message {
-  // let tdata = Bytes::from(to_bytes::<D, LittleEndian>(&data).unwrap());
+  //let tdata = Bytes::from(to_bytes::<D, LittleEndian>(&data).unwrap());
   let tdata = data
     .to_pl_cdr_bytes(RepresentationIdentifier::PL_CDR_LE)
     .unwrap();

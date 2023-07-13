@@ -26,7 +26,7 @@ New features:
 * Polling using either mio-0.6 or mio-0.8.
 * Simplified DataReader `SimpleDataReader` is available. It supports only `.take()` calls, but
 should be lighter and faster than regular DataReader. It is designed to have just enough
-functionality to implement a ROS2 Subscriber.
+functionality to implement a ROS2 Subscrber.
 
 This release breaks compatibility:
 
@@ -70,8 +70,8 @@ This release breaks compatibility with 0.4.0. Differences are
 * Deadline and Latency budget QoS
 * Sample fragmentation (large object exchange) ✅
 * `wait_for_acknowledgments` ✅
-* Listener (or equivalent) for DomainParticipants
-* Listener (or equivalent) for Topics
+* Listener (or equivalent) for DomainParticiapnts
+* Listerer (or equivalent) for Topics
 * Alternative API using Rust `async` tasks ✅
 * Shared-memory transport for local connections
 

@@ -28,12 +28,12 @@ use super::{
   spdp_participant_data::SpdpDiscoveredParticipantData,
 };
 
-// If remote participant does not specify lease duration, how long silence
+// If remote participant does not specifiy lease duration, how long silence
 // until we pronounce it dead.
 const DEFAULT_PARTICIPANT_LEASE_DURATION: Duration = Duration::from_secs(60);
 
 // How much longer to wait than lease duration before pronouncing lost.
-const PARTICIPANT_LEASE_DURATION_TOLERANCE: Duration = Duration::from_secs(0);
+const PARTICIPANT_LEASE_DURATION_TOLREANCE: Duration = Duration::from_secs(0);
 
 // TODO: Let DiscoveryDB itself become thread-safe and support smaller-scope
 // lock
@@ -68,7 +68,7 @@ pub(crate) struct DiscoveryDB {
 // How did we discover this topic
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub(crate) enum DiscoveredVia {
-  Topic,        // explicitly, via the topic topic (does this actually occur?)
+  Topic,        // excplicitly, via the topic topic (does this actually occur?)
   Publication,  // we discovered there is a writer on this topic
   Subscription, // we discovered a reader on this topic
 }
@@ -101,7 +101,7 @@ impl DiscoveryDB {
     }
   }
 
-  // Returns if participant was previously unknown
+  // Returns if particiapnt was previously unkonwn
   pub fn update_participant(&mut self, data: &SpdpDiscoveredParticipantData) -> bool {
     debug!("update_participant: {:?}", &data);
     let guid = data.participant_guid;
@@ -253,13 +253,13 @@ impl DiscoveryDB {
       let lease_duration = sp
         .lease_duration
         .unwrap_or(DEFAULT_PARTICIPANT_LEASE_DURATION);
-      // let lease_duration = lease_duration + lease_duration; // double it
+      //let lease_duration = lease_duration + lease_duration; // double it
       match self.participant_last_life_signs.get(&guid) {
         Some(&last_life) => {
-          // keep, if duration not exceeded
+          // keep, if duration not exeeded
           let elapsed = Duration::from_std(inow.duration_since(last_life));
-          if elapsed <= lease_duration + PARTICIPANT_LEASE_DURATION_TOLERANCE {
-            // No timeout yet, we keep this, so do nothing.
+          if elapsed <= lease_duration + PARTICIPANT_LEASE_DURATION_TOLREANCE {
+            // No timeout yet, we keep this, so do nothng.
           } else {
             info!("participant cleanup - deleting participant proxy {:?}. lease_duration = {:?} elapsed = {:?}",
                   guid, lease_duration, elapsed);
@@ -338,7 +338,7 @@ impl DiscoveryDB {
     self.local_topic_writers.remove(&guid);
   }
 
-  // TODO: This is silly. Returns one of the parameters cloned, or None
+  // TODO: This is silly. Returns one of the paramters cloned, or None
   // TODO: Why are we here checking if discovery db already has this? What about
   // reader proxies in writers?
 
@@ -403,7 +403,7 @@ impl DiscoveryDB {
     }
   }
 
-  // TODO: This is silly. Returns one of the parameters cloned, or None
+  // TODO: This is silly. Returns one of the paramters cloned, or None
   pub fn update_publication(&mut self, data: &DiscoveredWriterData) -> DiscoveredWriterData {
     let guid = data.writer_proxy.remote_writer_guid;
 
@@ -577,7 +577,7 @@ impl DiscoveryDB {
 
   // Note:
   // If multiple participants announce the same topic, this will
-  // return duplicates, one per announcing participant.
+  // return duplicates, one per announcing particiapnt.
   // The duplicates are not necessarily identical, but may have different QoS.
   pub fn all_user_topics(&self) -> impl Iterator<Item = &DiscoveredTopicData> {
     self
@@ -618,15 +618,15 @@ impl DiscoveryDB {
     topic_name: &str,
     participant: GuidPrefix,
   ) -> Vec<DiscoveredWriterData> {
-    let on_participant = self
+    let on_particiapnt = self
       .external_topic_writers
       .range(participant.range())
       .map(|(_guid, dwd)| dwd);
     info!(
       "Writers on participant {:?} are {:?}",
-      participant, on_participant
+      participant, on_particiapnt
     );
-    on_participant
+    on_particiapnt
       .filter(|dwd| dwd.publication_topic_data.topic_name == topic_name)
       .cloned()
       .collect()
@@ -696,7 +696,6 @@ mod tests {
       random_data::RandomData,
       test_data::{reader_proxy_data, spdp_participant_data, subscription_builtin_topic_data},
     },
-    SequenceNumber,
   };
 
   #[test]
@@ -786,8 +785,8 @@ mod tests {
     // creating data
     let reader1 = reader_proxy_data().unwrap();
     let reader1sub = subscription_builtin_topic_data().unwrap();
-    // reader1sub.set_key(reader1.remote_reader_guid);
-    // reader1sub.set_topic_name(&topic.name());
+    //reader1sub.set_key(reader1.remote_reader_guid);
+    //reader1sub.set_topic_name(&topic.name());
     let dreader1 = DiscoveredReaderData {
       reader_proxy: reader1.clone(),
       subscription_topic_data: reader1sub.clone(),
@@ -797,8 +796,8 @@ mod tests {
 
     let reader2 = reader_proxy_data().unwrap();
     let reader2sub = subscription_builtin_topic_data().unwrap();
-    // reader2sub.set_key(reader2.remote_reader_guid);
-    // reader2sub.set_topic_name(&topic2.name());
+    //reader2sub.set_key(reader2.remote_reader_guid);
+    //reader2sub.set_topic_name(&topic2.name());
     let dreader2 = DiscoveredReaderData {
       reader_proxy: reader2,
       subscription_topic_data: reader2sub,
@@ -850,16 +849,12 @@ mod tests {
         .unwrap()
         .add_new_topic(topic.name(), topic.get_type(), &topic.qos());
 
-    let last_read_sequence_number_ref =
-      Arc::new(Mutex::new(BTreeMap::<GUID, SequenceNumber>::new()));
-
     let reader1_ing = ReaderIngredients {
       guid: GUID::dummy_test_guid(EntityKind::READER_NO_KEY_USER_DEFINED),
       notification_sender: notification_sender1,
       status_sender: status_sender1,
       topic_name: topic.name(),
       topic_cache_handle: topic_cache.clone(),
-      last_read_sequence_number_ref: last_read_sequence_number_ref.clone(),
       qos_policy: QosPolicies::qos_none(),
       data_reader_command_receiver: reader_command_receiver1,
       data_reader_waker: data_reader_waker1,
@@ -895,7 +890,6 @@ mod tests {
       status_sender: status_sender2,
       topic_name: topic.name(),
       topic_cache_handle: topic_cache,
-      last_read_sequence_number_ref,
       qos_policy: QosPolicies::qos_none(),
       data_reader_command_receiver: reader_command_receiver2,
       data_reader_waker: data_reader_waker2,

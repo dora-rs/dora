@@ -15,7 +15,7 @@ impl Authentication for AuthenticationBuiltIn {
   // Currently only mocked
   fn validate_local_identity(
     &mut self,
-    local_identity_handle: &mut IdentityHandle,
+    local_indentity_handle: &mut IdentityHandle,
     adjusted_participant_guid: &mut GUID,
     domain_id: u16,
     participant_qos: &QosPolicies,
@@ -23,7 +23,7 @@ impl Authentication for AuthenticationBuiltIn {
   ) -> SecurityResult<ValidationOutcome> {
     // TODO: actual implementation
 
-    *local_identity_handle = IdentityHandle::MOCK;
+    *local_indentity_handle = IdentityHandle::MOCK;
     *adjusted_participant_guid = candidate_participant_guid;
 
     Ok(ValidationOutcome::Ok)

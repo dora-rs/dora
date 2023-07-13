@@ -69,7 +69,7 @@ mod tests {
       header_with_unknown_guid_prefix,
       Header::new(GuidPrefix::UNKNOWN),
       le = [0x52, 0x54, 0x50, 0x53, // protocol_id
-            0x02, 0x04,             // protocol_version
+            0x02, 0x04,             // protocol_verison
             0x01, 0x12,             // vendor_id
             0x00, 0x00, 0x00, 0x00, // guid_prefix
             0x00, 0x00, 0x00, 0x00,

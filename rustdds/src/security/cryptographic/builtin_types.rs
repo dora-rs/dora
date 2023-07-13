@@ -106,7 +106,7 @@ impl TryFrom<Bytes> for KeyMaterial_AES_GCM_GMAC {
       },
     )
     .and_then(
-      // map transformation_kind to builtin
+      //map transformation_kind to builtin
       |Serializable_KeyMaterial_AES_GCM_GMAC {
          transformation_kind,
          master_salt,
@@ -161,7 +161,7 @@ impl TryFrom<KeyMaterial_AES_GCM_GMAC> for Bytes {
   }
 }
 
-// For (de)serialization
+//For (de)serialization
 #[allow(non_camel_case_types)] // We use the name from the spec
 #[derive(Deserialize, Serialize, PartialEq)]
 struct Serializable_KeyMaterial_AES_GCM_GMAC {
@@ -258,7 +258,7 @@ impl TryFrom<CryptoHeader> for BuiltinCryptoHeader {
     }: CryptoHeader,
   ) -> Result<Self, Self::Error> {
     let crypto_header_extra = plugin_crypto_header_extra.data;
-    // Try to cast [CryptoTransformIdentifier] to [BuiltinCryptoTransformIdentifier]
+    //Try to cast [CryptoTransformIdentifier] to [BuiltinCryptoTransformIdentifier]
     // and read 'session_id' and 'initialization_vector_suffix' from
     // 'crypto_header_extra'
     match (

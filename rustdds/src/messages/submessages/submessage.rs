@@ -15,7 +15,7 @@ use super::{
   secure_rtps_postfix::SecureRTPSPostfix, secure_rtps_prefix::SecureRTPSPrefix,
 };
 
-// TODO: These messages are structured a bit oddly. Why is flags separate from
+//TODO: These messages are structured a bit oddly. Why is flags separate from
 // the submessage proper?
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -24,7 +24,7 @@ pub enum WriterSubmessage {
   DataFrag(DataFrag, BitFlags<DATAFRAG_Flags>),
   Gap(Gap, BitFlags<GAP_Flags>),
   Heartbeat(Heartbeat, BitFlags<HEARTBEAT_Flags>),
-  #[allow(dead_code)] // Functionality not yet implemented
+  #[allow(dead_code)] // Functinality not yet implemented
   HeartbeatFrag(HeartbeatFrag, BitFlags<HEARTBEATFRAG_Flags>),
 }
 
@@ -97,7 +97,7 @@ pub enum InterpreterSubmessage {
   InfoDestination(InfoDestination, BitFlags<INFODESTINATION_Flags>),
   InfoReply(InfoReply, BitFlags<INFOREPLY_Flags>),
   InfoTimestamp(InfoTimestamp, BitFlags<INFOTIMESTAMP_Flags>),
-  // Pad(Pad), // Pad message does not need to be processed above serialization layer
+  //Pad(Pad), // Pad message does not need to be processed above serialization layer
 }
 
 // See notes on impl Writer for EntitySubmessage
@@ -120,7 +120,7 @@ impl<C: Context> Writable<C> for InterpreterSubmessage {
 #[derive(Debug)]
 pub enum AckSubmessage {
   AckNack(AckNack),
-  #[allow(dead_code)] // Functionality not yet implemented
+  #[allow(dead_code)] // Functinality not yet implemented
   NackFrag(NackFrag),
 }
 

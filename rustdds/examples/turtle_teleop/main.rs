@@ -104,7 +104,7 @@ fn main() {
 
   jhandle.join().unwrap(); // wait until threads exit.
 
-  // need to wait a bit for cleanup, because drop is not waited for join
+  // need to wait a bit for cleanup, beacuse drop is not waited for join
   std::thread::sleep(Duration::from_millis(10));
 }
 
@@ -150,14 +150,14 @@ fn ros2_loop(
 
   // The point here is to publish Twist for the turtle
   let turtle_cmd_vel_writer = ros_node
-    .create_ros_no_key_publisher::<Twist, CDRSerializerAdapter<Twist>>(&turtle_cmd_vel_topic, None)
+    .create_ros_nokey_publisher::<Twist, CDRSerializerAdapter<Twist>>(&turtle_cmd_vel_topic, None)
     .unwrap();
 
   // But here is how to read it also, if anyone is interested.
-  // This should show what is the turtle command in case someone else is
-  // also issuing commands, i.e. there are two turtle controllers running.
+  // This should show what is the turle command in case someone else is
+  // also issuing commands, i.e. there are two turtla controllers running.
   let mut turtle_cmd_vel_reader = ros_node
-    .create_ros_no_key_subscriber::<Twist, CDRDeserializerAdapter<_>>(&turtle_cmd_vel_topic, None)
+    .create_ros_nokey_subscriber::<Twist, CDRDeserializerAdapter<_>>(&turtle_cmd_vel_topic, None)
     .unwrap();
 
   let turtle_pose_topic = ros_node
@@ -169,7 +169,7 @@ fn ros2_loop(
     )
     .unwrap();
   let mut turtle_pose_reader = ros_node
-    .create_ros_no_key_subscriber::<Pose, CDRDeserializerAdapter<_>>(&turtle_pose_topic, None)
+    .create_ros_nokey_subscriber::<Pose, CDRDeserializerAdapter<_>>(&turtle_pose_topic, None)
     .unwrap();
 
   let poll = Poll::new().unwrap();

@@ -81,7 +81,7 @@ impl<'a, C: Context> Readable<'a, C> for ParameterList {
 
       if parameter_id == ParameterId::PID_SENTINEL {
         // This is parameter list end marker.
-        // We do not read its Parameter contents ("value"),
+        // We do not read its Parameter contetns ("value"),
         // because it is of size zero by definition.
         return Ok(parameters);
       }

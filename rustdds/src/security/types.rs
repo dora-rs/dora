@@ -154,7 +154,7 @@ pub struct ParticipantSecurityInfo {
 // Clippy complains, because all variant names have the same prefix "Is",
 // but we blame the DDS Security spec for naming.
 pub enum ParticipantSecurityAttributesMask {
-  IsValid = 0x8000_0000, // (0x1 << 31) -- only this bit is understood outside security plugins
+  IsValid = 0x8000_0000, // (0x1 << 31) -- only this bit is understood ouside security plugins
 
   // DDS Security specification v1.1
   // Section 8.4.2.5 Definition of the ParticipantSecurityAttributesMask
@@ -178,7 +178,7 @@ pub enum PluginParticipantSecurityAttributesMask {
   IsRTPSEncrypted = 0b0000_0001,
   IsDiscoveryEncrypted = 0b0000_0010,
   IsLivelinessEncrypted = 0b0000_0100,
-  IsRTPSOriginAuthenticated = 0b0000_1000,
+  IsRTPSOriginAuthetincated = 0b0000_1000,
   IsDiscoveryOriginAuthenticated = 0b0001_0000,
   IsLivelinessOriginAuthenticated = 0b0010_0000,
 }
@@ -217,7 +217,7 @@ pub struct EndpointSecurityInfo {
 // Clippy complains, because all variant names have the same prefix "Is",
 // but we blame the DDS Security spec for naming.
 pub enum EndpointSecurityAttributesMask {
-  IsValid = 0x8000_0000, // (0x1 << 31) -- only this bit is understood outside security plugins
+  IsValid = 0x8000_0000, // (0x1 << 31) -- only this bit is understood ouside security plugins
 
   // DDS Security specification v1.1
   // Section 8.4.2.8 Definition of the EndpointSecurityAttributesMask

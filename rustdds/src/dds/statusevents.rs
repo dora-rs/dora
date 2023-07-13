@@ -1,9 +1,10 @@
-// Describe the communication status changes as events.
+//
+// Describe the commnucation status changes as events.
 //
 // These implement a mechanism equivalent to what is described in
 // Section 2.2.4 Listeners, Conditions, and Wait-sets
 //
-// Communication statues are detailed in Figure 2.13 and tables in Section
+// Communcation statues are detailed in Figure 2.13 and tables in Section
 // 2.2.4.1 in DDS Specification v1.4
 use std::{
   io,
@@ -19,13 +20,7 @@ use mio_06::Evented;
 use mio_extras::channel as mio_channel;
 use mio_08::{self, event, Interest, Registry, Token};
 
-use crate::{
-  dds::{
-    qos::QosPolicyId,
-    result::{ReadError, ReadResult},
-  },
-  mio_source::*,
-};
+use crate::{dds::qos::QosPolicyId, mio_source::*};
 
 /// This trait corresponds to set_listener() of the Entity class in DDS spec.
 /// Types implementing this trait can be registered to a poll and
@@ -33,7 +28,7 @@ use crate::{
 pub trait StatusEvented<E> {
   fn as_status_evented(&mut self) -> &dyn Evented; // This is for polling with mio-0.6.x
   fn as_status_source(&mut self) -> &mut dyn mio_08::event::Source; // This is for polling with mio-0.8.x
-                                                                    // fn as_async_receiver(&self) -> dyn Stream<E>;
+                                                                    //fn as_async_receiver(&self) -> dyn Stream<E>;
 
   fn try_recv_status(&self) -> Option<E>;
 }
@@ -187,16 +182,16 @@ impl<T> event::Source for StatusChannelReceiver<T> {
 // -------------------------------------------------------------------------------
 // -------------------------------------------------------------------------------
 
-// TODO: try to make private
+//TODO: try to make private
 pub struct StatusReceiverStream<'a, T> {
   sync_receiver: &'a StatusChannelReceiver<T>,
 }
 
 impl<'a, T> Stream for StatusReceiverStream<'a, T> {
-  type Item = ReadResult<T>;
+  type Item = Result<T, std::sync::mpsc::RecvError>;
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-    // debug!("poll_next");
+    //debug!("poll_next");
     let mut w = self.sync_receiver.waker.lock().unwrap();
     // lock already at the beginning, before try_recv
     match self.sync_receiver.try_recv() {
@@ -206,9 +201,7 @@ impl<'a, T> Stream for StatusReceiverStream<'a, T> {
         Poll::Pending
       }
       Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-        Poll::Ready(Some(Err(ReadError::Poisoned {
-          reason: "StatusReceiver channel disconnected".to_string(),
-        })))
+        Poll::Ready(Some(Err(std::sync::mpsc::RecvError)))
       }
       Ok(t) => Poll::Ready(Some(Ok(t))), // got date
     }
@@ -247,24 +240,24 @@ pub enum TopicStatus {
 
 #[derive(Debug, Clone)]
 pub enum DataReaderStatus {
-  /// Sample was rejected, because resource limits would have been exceeded.
+  /// Sample was rejected, because resource limits would have been exeeded.
   SampleRejected {
     count: CountWithChange,
     last_reason: SampleRejectedStatusKind,
-    // last_instance_key:
+    //last_instance_key:
   },
   /// Remote Writer has become active or inactive.
   LivelinessChanged {
     alive_total: CountWithChange,
     not_alive_total: CountWithChange,
-    // last_publication_key:
+    //last_publication_key:
   },
   /// Deadline requested by this DataReader was missed.
   RequestedDeadlineMissed {
     count: CountWithChange,
-    // last_instance_key:
+    //last_instance_key:
   },
-  /// This DataReader has requested a QoS policy that is incompatible with what
+  /// This DataReader has requested a QoS policy that is incompatibel with what
   /// is offered.
   RequestedIncompatibleQos {
     count: CountWithChange,
@@ -279,7 +272,7 @@ pub enum DataReaderStatus {
   /// * Check that the following interpretation is correct:
   /// * For a BEST_EFFORT reader: Whenever we skip ahead in SequenceNumber,
   ///   possibly because a message is lost, or messages arrive out of order.
-  /// * For a RELIABLE reader: Whenever we skip ahead in SequenceNumbers that
+  /// * For a RELIABLE reader: Whenever we skip ahead in SequenceNumbers taht
   ///   are delivered via DataReader. The reason may be that we receive a
   ///   HEARTBEAT or GAP submessage indicating that some samples we are
   ///   expecting are not available.
@@ -291,7 +284,7 @@ pub enum DataReaderStatus {
   SubscriptionMatched {
     total: CountWithChange,
     current: CountWithChange,
-    // last_publication_key:
+    //last_publication_key:
   },
 }
 
@@ -302,7 +295,7 @@ pub enum DataWriterStatus {
   },
   OfferedDeadlineMissed {
     count: CountWithChange,
-    // last_instance_key:
+    //last_instance_key:
   },
   OfferedIncompatibleQos {
     count: CountWithChange,
@@ -312,7 +305,7 @@ pub enum DataWriterStatus {
   PublicationMatched {
     total: CountWithChange,
     current: CountWithChange,
-    // last_subscription_key:
+    //last_subscription_key:
   },
 }
 

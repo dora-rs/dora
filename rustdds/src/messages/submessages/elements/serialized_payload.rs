@@ -11,8 +11,8 @@ use crate::RepresentationIdentifier;
 /// representation of either value of an application-defined data-object or
 /// the value of the key that uniquely identifies the data-object
 /// See RTPS spec v2.3 section 10.
-/// Standard representation identifier values are defined in sections 10.2 -
-/// 10.5 representation_options "shall be interpreted in the context of the
+/// Standard representation identifer values are defined in sections 10.2 - 10.5
+/// representation_options "shall be interpreted in the context of the
 /// RepresentationIdentifier, such that each RepresentationIdentifier may define
 /// the representation_options that it requires." and "The [2.3] version of the
 /// protocol does not use the representation_options: The sender shall set the
