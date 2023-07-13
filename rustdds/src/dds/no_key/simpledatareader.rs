@@ -20,7 +20,8 @@ use super::wrappers::{DAWrapper, NoKeyWrapper};
 /// SimpleDataReaders can only do "take" semantics and does not have
 /// any deduplication or other DataSampleCache functionality.
 pub struct SimpleDataReader<D, DA: DeserializerAdapter<D> = CDRDeserializerAdapter<D>> {
-  keyed_simpledatareader: with_key::SimpleDataReader<NoKeyWrapper<D>, DAWrapper<DA>>,
+  keyed_simpledatareader: with_key::SimpleDataReader<NoKeyWrapper<D>>,
+  phantom: std::marker::PhantomData<DA>,
 }
 
 /// Simplified type for CDR encoding
@@ -34,10 +35,11 @@ where
   // version) from the public API. That is, From a Subscriber object like a
   // normal Datareader. This is to be then used from the ros2-client package.
   pub(crate) fn from_keyed(
-    keyed_simpledatareader: with_key::SimpleDataReader<NoKeyWrapper<D>, DAWrapper<DA>>,
+    keyed_simpledatareader: with_key::SimpleDataReader<NoKeyWrapper<D>>,
   ) -> Self {
     Self {
       keyed_simpledatareader,
+      phantom: std::marker::PhantomData,
     }
   }
 
@@ -50,7 +52,7 @@ where
   }
 
   pub fn try_take_one(&self) -> Result<Option<DeserializedCacheChange<D>>> {
-    match self.keyed_simpledatareader.try_take_one() {
+    match self.keyed_simpledatareader.try_take_one::<DAWrapper<DA>>() {
       Err(e) => Err(e),
       Ok(None) => Ok(None),
       Ok(Some(kdcc)) => match DeserializedCacheChange::<D>::from_keyed(kdcc) {
@@ -73,7 +75,7 @@ where
   ) -> impl Stream<Item = Result<DeserializedCacheChange<D>>> + FusedStream + '_ {
     self
       .keyed_simpledatareader
-      .as_async_stream()
+      .as_async_stream::<DAWrapper<DA>>()
       .filter_map(move |r| async {
         // This is Stream::filter_map, so returning None means just skipping Item.
         match r {
