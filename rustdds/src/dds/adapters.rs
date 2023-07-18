@@ -101,6 +101,16 @@ pub mod with_key {
     fn key_from_bytes(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Result<D::K>;
   }
 
+  /// trait for connecting a Desrializer implementation and DataReader
+  /// together - with_key version.
+  pub trait SeedDeserializerAdapter<D>: no_key::SeedDeserializerAdapter
+  where
+    D: Keyed,
+  {
+    /// Deserialize a key `D::K` from bytes.
+    fn key_from_bytes(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Result<D::K>;
+  }
+
   /// trait for connecting a Serializer implementation and DataWriter
   /// together - with_key version.
   pub trait SerializerAdapter<D>: no_key::SerializerAdapter<D>
