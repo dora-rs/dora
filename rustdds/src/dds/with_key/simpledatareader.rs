@@ -88,9 +88,9 @@ impl<K: Key> ReadState<K> {
 
 /// SimpleDataReaders can only do "take" semantics and does not have
 /// any deduplication or other DataSampleCache functionality.
-pub struct SimpleDataReader<D: Keyed>
+pub struct SimpleDataReader<K>
 where
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   #[allow(dead_code)] // TODO: This is currently unused, because we do not implement
   // any subscriber-wide QoS policies, such as ordered or coherent access.
@@ -105,7 +105,7 @@ where
   // SimpleDataReader stores a pointer to a mutex on the topic cache
   topic_cache: Arc<Mutex<TopicCache>>,
 
-  read_state: Mutex<ReadState<<D as Keyed>::K>>,
+  read_state: Mutex<ReadState<K>>,
 
   discovery_command: mio_channel::SyncSender<DiscoveryCommand>,
   status_receiver: StatusReceiver<DataReaderStatus>,
@@ -118,10 +118,9 @@ where
   event_source: PollEventSource,
 }
 
-impl<D> Drop for SimpleDataReader<D>
+impl<K> Drop for SimpleDataReader<K>
 where
-  D: Keyed,
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   fn drop(&mut self) {
     // Tell dp_event_loop
@@ -144,10 +143,9 @@ where
   }
 }
 
-impl<D: 'static> SimpleDataReader<D>
+impl<K> SimpleDataReader<K>
 where
-  D: Keyed,
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   #[allow(clippy::too_many_arguments)]
   pub(crate) fn new(
@@ -222,10 +220,12 @@ where
     }
   }
 
-  fn update_hash_to_key_map(
-    hash_to_key_map: &mut BTreeMap<KeyHash, D::K>,
-    deserialized: &Sample<D, D::K>,
-  ) {
+  fn update_hash_to_key_map<D>(
+    hash_to_key_map: &mut BTreeMap<KeyHash, K>,
+    deserialized: &Sample<D, K>,
+  ) where
+    D: Keyed<K = K>,
+  {
     let instance_key = match deserialized {
       Sample::Value(d) => d.key(),
       Sample::Dispose(k) => k.clone(),
@@ -233,13 +233,14 @@ where
     hash_to_key_map.insert(instance_key.hash_key(), instance_key);
   }
 
-  fn deserialize<DA>(
+  fn deserialize<DA, D>(
     timestamp: Timestamp,
     cc: &CacheChange,
-    hash_to_key_map: &mut BTreeMap<KeyHash, D::K>,
+    hash_to_key_map: &mut BTreeMap<KeyHash, K>,
   ) -> std::result::Result<DeserializedCacheChange<D>, String>
   where
     DA: DeserializerAdapter<D>,
+    D: Keyed<K = K>,
   {
     match cc.data_value {
       DDSData::Data {
@@ -305,9 +306,10 @@ where
 
   /// Note: Always remember to call .drain_read_notifications() just before
   /// calling this one. Otherwise, new notifications may not appear.
-  pub fn try_take_one<DA>(&self) -> Result<Option<DeserializedCacheChange<D>>>
+  pub fn try_take_one<DA, D>(&self) -> Result<Option<DeserializedCacheChange<D>>>
   where
     DA: DeserializerAdapter<D>,
+    D: Keyed<K = K>,
   {
     let is_reliable = matches!(
       self.qos_policy.reliability(),
@@ -331,7 +333,7 @@ where
       Some((ts, cc)) => (ts, cc),
     };
 
-    match Self::deserialize::<DA>(timestamp, cc, hash_to_key_map) {
+    match Self::deserialize::<DA, D>(timestamp, cc, hash_to_key_map) {
       Ok(dcc) => {
         read_state_ref.latest_instant = max(read_state_ref.latest_instant, timestamp);
         read_state_ref
@@ -360,17 +362,19 @@ where
     &self.my_topic
   }
 
-  pub fn as_async_stream<DA>(&self) -> SimpleDataReaderStream<D, DA>
+  pub fn as_async_stream<DA, D>(&self) -> SimpleDataReaderStream<K, D, DA>
   where
     DA: DeserializerAdapter<D>,
+    D: Keyed<K = K>,
   {
     SimpleDataReaderStream {
       simple_datareader: self,
       phantom: std::marker::PhantomData,
+      phantom_d: std::marker::PhantomData,
     }
   }
 
-  pub fn as_simple_data_reader_event_stream(&self) -> SimpleDataReaderEventStream<D> {
+  pub fn as_simple_data_reader_event_stream(&self) -> SimpleDataReaderEventStream<K> {
     SimpleDataReaderEventStream {
       simple_datareader: self,
     }
@@ -389,10 +393,9 @@ where
 
 // This is  not part of DDS spec. We implement mio Eventd so that the
 // application can asynchronously poll DataReader(s).
-impl<D> Evented for SimpleDataReader<D>
+impl<K> Evented for SimpleDataReader<K>
 where
-  D: Keyed,
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   // We just delegate all the operations to notification_receiver, since it
   // already implements Evented
@@ -425,10 +428,9 @@ where
   }
 }
 
-impl<D> mio_08::event::Source for SimpleDataReader<D>
+impl<K> mio_08::event::Source for SimpleDataReader<K>
 where
-  D: Keyed,
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   fn register(
     &mut self,
@@ -453,10 +455,9 @@ where
   }
 }
 
-impl<D> StatusEvented<DataReaderStatus> for SimpleDataReader<D>
+impl<K> StatusEvented<DataReaderStatus> for SimpleDataReader<K>
 where
-  D: Keyed,
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   fn as_status_evented(&mut self) -> &dyn Evented {
     self.status_receiver.as_status_evented()
@@ -471,10 +472,9 @@ where
   }
 }
 
-impl<D> RTPSEntity for SimpleDataReader<D>
+impl<K> RTPSEntity for SimpleDataReader<K>
 where
-  D: Keyed + DeserializeOwned,
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   fn guid(&self) -> GUID {
     self.my_guid
@@ -488,30 +488,32 @@ where
 
 pub struct SimpleDataReaderStream<
   'a,
-  D: Keyed + 'static,
+  K: Key,
+  D: Keyed<K = K> + 'static,
   DA: DeserializerAdapter<D> + 'static = CDRDeserializerAdapter<D>,
 > where
   <D as Keyed>::K: Key,
 {
-  simple_datareader: &'a SimpleDataReader<D>,
+  simple_datareader: &'a SimpleDataReader<K>,
   phantom: std::marker::PhantomData<DA>,
+  phantom_d: std::marker::PhantomData<D>,
 }
 
 // ----------------------------------------------
 // ----------------------------------------------
 
 // https://users.rust-lang.org/t/take-in-impl-future-cannot-borrow-data-in-a-dereference-of-pin/52042
-impl<'a, D, DA> Unpin for SimpleDataReaderStream<'a, D, DA>
+impl<'a, K, D, DA> Unpin for SimpleDataReaderStream<'a, K, D, DA>
 where
-  D: Keyed + 'static,
-  <D as Keyed>::K: Key,
+  D: Keyed<K = K> + 'static,
+  K: Key,
   DA: DeserializerAdapter<D>,
 {
 }
 
-impl<'a, D, DA> Stream for SimpleDataReaderStream<'a, D, DA>
+impl<'a, K, D, DA> Stream for SimpleDataReaderStream<'a, K, D, DA>
 where
-  D: Keyed + 'static,
+  D: Keyed<K = K> + 'static,
   <D as Keyed>::K: Key,
   DA: DeserializerAdapter<D>,
 {
@@ -526,7 +528,7 @@ where
 
   fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
     debug!("poll_next");
-    match self.simple_datareader.try_take_one::<DA>() {
+    match self.simple_datareader.try_take_one::<DA, D>() {
       Err(e) =>
       // DDS fails
       {
@@ -544,7 +546,7 @@ where
         // 2. try take_bare again, in case something arrived just now
         // 3. if nothing still, return pending.
         self.simple_datareader.set_waker(Some(cx.waker().clone()));
-        match self.simple_datareader.try_take_one::<DA>() {
+        match self.simple_datareader.try_take_one::<DA, D>() {
           Err(e) => Poll::Ready(Some(Err(e))),
           Ok(Some(d)) => Poll::Ready(Some(Ok(d))),
           Ok(None) => Poll::Pending,
@@ -554,9 +556,9 @@ where
   } // fn
 } // impl
 
-impl<'a, D, DA> FusedStream for SimpleDataReaderStream<'a, D, DA>
+impl<'a, K, D, DA> FusedStream for SimpleDataReaderStream<'a, K, D, DA>
 where
-  D: Keyed + 'static,
+  D: Keyed<K = K> + 'static,
   <D as Keyed>::K: Key,
   DA: DeserializerAdapter<D>,
 {
@@ -568,17 +570,16 @@ where
 // ----------------------------------------------
 // ----------------------------------------------
 
-pub struct SimpleDataReaderEventStream<'a, D: Keyed + 'static>
+pub struct SimpleDataReaderEventStream<'a, K>
 where
-  <D as Keyed>::K: Key,
+  K: Key,
 {
-  simple_datareader: &'a SimpleDataReader<D>,
+  simple_datareader: &'a SimpleDataReader<K>,
 }
 
-impl<'a, D> Stream for SimpleDataReaderEventStream<'a, D>
+impl<'a, K> Stream for SimpleDataReaderEventStream<'a, K>
 where
-  D: Keyed + 'static,
-  <D as Keyed>::K: Key,
+  K: Key,
 {
   type Item = std::result::Result<DataReaderStatus, std::sync::mpsc::RecvError>;
 

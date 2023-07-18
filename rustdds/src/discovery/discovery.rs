@@ -46,6 +46,7 @@ use crate::{
     locator::Locator,
     time::Timestamp,
   },
+  Keyed,
 };
 
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -104,6 +105,7 @@ pub(crate) struct Discovery {
   #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_participant_topic: Topic,
   dcps_participant_reader: DataReader<
+    <SpdpDiscoveredParticipantData as Keyed>::K,
     SpdpDiscoveredParticipantData,
     PlCdrDeserializerAdapter<SpdpDiscoveredParticipantData>,
   >,
@@ -117,8 +119,11 @@ pub(crate) struct Discovery {
   // Topic "DCPSSubscription" - announcing and detecting Readers
   #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_subscription_topic: Topic,
-  dcps_subscription_reader:
-    DataReader<DiscoveredReaderData, PlCdrDeserializerAdapter<DiscoveredReaderData>>,
+  dcps_subscription_reader: DataReader<
+    <DiscoveredReaderData as Keyed>::K,
+    DiscoveredReaderData,
+    PlCdrDeserializerAdapter<DiscoveredReaderData>,
+  >,
   dcps_subscription_writer:
     DataWriter<DiscoveredReaderData, PlCdrSerializerAdapter<DiscoveredReaderData>>,
   readers_send_info_timer: Timer<()>,
@@ -126,8 +131,11 @@ pub(crate) struct Discovery {
   // Topic "DCPSPublication" - announcing and detecting Writers
   #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_publication_topic: Topic,
-  dcps_publication_reader:
-    DataReader<DiscoveredWriterData, PlCdrDeserializerAdapter<DiscoveredWriterData>>,
+  dcps_publication_reader: DataReader<
+    <DiscoveredWriterData as Keyed>::K,
+    DiscoveredWriterData,
+    PlCdrDeserializerAdapter<DiscoveredWriterData>,
+  >,
   dcps_publication_writer:
     DataWriter<DiscoveredWriterData, PlCdrSerializerAdapter<DiscoveredWriterData>>,
   writers_send_info_timer: Timer<()>,
@@ -135,7 +143,11 @@ pub(crate) struct Discovery {
   // Topic "DCPSTopic" - annoncing and detecting topics
   #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   dcps_topic_topic: Topic,
-  dcps_topic_reader: DataReader<DiscoveredTopicData, PlCdrDeserializerAdapter<DiscoveredTopicData>>,
+  dcps_topic_reader: DataReader<
+    <DiscoveredTopicData as Keyed>::K,
+    DiscoveredTopicData,
+    PlCdrDeserializerAdapter<DiscoveredTopicData>,
+  >,
   dcps_topic_writer: DataWriter<DiscoveredTopicData, PlCdrSerializerAdapter<DiscoveredTopicData>>,
   topic_info_send_timer: Timer<()>,
   topic_cleanup_timer: Timer<()>,
@@ -143,7 +155,8 @@ pub(crate) struct Discovery {
   // DCPSParticipantMessage - used by participants to communicate liveness
   #[allow(dead_code)] // Technically, the topic is not accesssed after initialization
   participant_message_topic: Topic,
-  dcps_participant_message_reader: DataReaderCdr<ParticipantMessageData>,
+  dcps_participant_message_reader:
+    DataReaderCdr<<ParticipantMessageData as Keyed>::K, ParticipantMessageData>,
   dcps_participant_message_writer: DataWriterCdr<ParticipantMessageData>,
   dcps_participant_message_timer: Timer<()>,
 }

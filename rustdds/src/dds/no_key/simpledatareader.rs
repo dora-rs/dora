@@ -11,7 +11,6 @@ use crate::{
     adapters::no_key::*, no_key::datasample::DeserializedCacheChange, qos::*, statusevents::*,
     with_key, Result,
   },
-  serialization::CDRDeserializerAdapter,
   structure::entity::RTPSEntity,
   GUID,
 };
@@ -19,27 +18,17 @@ use super::wrappers::{DAWrapper, NoKeyWrapper};
 
 /// SimpleDataReaders can only do "take" semantics and does not have
 /// any deduplication or other DataSampleCache functionality.
-pub struct SimpleDataReader<D, DA: DeserializerAdapter<D> = CDRDeserializerAdapter<D>> {
-  keyed_simpledatareader: with_key::SimpleDataReader<NoKeyWrapper<D>>,
-  phantom: std::marker::PhantomData<DA>,
+pub struct SimpleDataReader {
+  keyed_simpledatareader: with_key::SimpleDataReader<()>,
 }
 
-/// Simplified type for CDR encoding
-pub type SimpleDataReaderCdr<D> = SimpleDataReader<D, CDRDeserializerAdapter<D>>;
-
-impl<D: 'static, DA> SimpleDataReader<D, DA>
-where
-  DA: DeserializerAdapter<D> + 'static,
-{
+impl SimpleDataReader {
   // TODO: Make it possible to construct SimpleDataReader (particualrly, no_key
   // version) from the public API. That is, From a Subscriber object like a
   // normal Datareader. This is to be then used from the ros2-client package.
-  pub(crate) fn from_keyed(
-    keyed_simpledatareader: with_key::SimpleDataReader<NoKeyWrapper<D>>,
-  ) -> Self {
+  pub(crate) fn from_keyed(keyed_simpledatareader: with_key::SimpleDataReader<()>) -> Self {
     Self {
       keyed_simpledatareader,
-      phantom: std::marker::PhantomData,
     }
   }
 
@@ -51,8 +40,14 @@ where
     self.keyed_simpledatareader.drain_read_notifications();
   }
 
-  pub fn try_take_one(&self) -> Result<Option<DeserializedCacheChange<D>>> {
-    match self.keyed_simpledatareader.try_take_one::<DAWrapper<DA>>() {
+  pub fn try_take_one<DA, D>(&self) -> Result<Option<DeserializedCacheChange<D>>>
+  where
+    DA: DeserializerAdapter<D>,
+  {
+    match self
+      .keyed_simpledatareader
+      .try_take_one::<DAWrapper<DA>, NoKeyWrapper<D>>()
+    {
       Err(e) => Err(e),
       Ok(None) => Ok(None),
       Ok(Some(kdcc)) => match DeserializedCacheChange::<D>::from_keyed(kdcc) {
@@ -70,12 +65,16 @@ where
     self.keyed_simpledatareader.guid()
   }
 
-  pub fn as_async_stream(
+  pub fn as_async_stream<DA, D>(
     &self,
-  ) -> impl Stream<Item = Result<DeserializedCacheChange<D>>> + FusedStream + '_ {
+  ) -> impl Stream<Item = Result<DeserializedCacheChange<D>>> + FusedStream + '_
+  where
+    DA: DeserializerAdapter<D> + 'static,
+    D: 'static,
+  {
     self
       .keyed_simpledatareader
-      .as_async_stream::<DAWrapper<DA>>()
+      .as_async_stream::<DAWrapper<DA>, NoKeyWrapper<D>>()
       .filter_map(move |r| async {
         // This is Stream::filter_map, so returning None means just skipping Item.
         match r {
@@ -103,10 +102,7 @@ where
 
 // This is  not part of DDS spec. We implement mio Eventd so that the
 // application can asynchronously poll DataReader(s).
-impl<D, DA> Evented for SimpleDataReader<D, DA>
-where
-  DA: DeserializerAdapter<D>,
-{
+impl Evented for SimpleDataReader {
   // We just delegate all the operations to notification_receiver, since it
   // already implements Evented
   fn register(
@@ -138,10 +134,7 @@ where
   }
 }
 
-impl<D, DA> mio_08::event::Source for SimpleDataReader<D, DA>
-where
-  DA: DeserializerAdapter<D>,
-{
+impl mio_08::event::Source for SimpleDataReader {
   fn register(
     &mut self,
     registry: &mio_08::Registry,
@@ -168,10 +161,7 @@ where
   }
 }
 
-impl<D, DA> StatusEvented<DataReaderStatus> for SimpleDataReader<D, DA>
-where
-  DA: DeserializerAdapter<D>,
-{
+impl StatusEvented<DataReaderStatus> for SimpleDataReader {
   fn as_status_evented(&mut self) -> &dyn Evented {
     self.keyed_simpledatareader.as_status_evented()
   }
@@ -185,11 +175,7 @@ where
   }
 }
 
-impl<D, DA> RTPSEntity for SimpleDataReader<D, DA>
-where
-  D: 'static,
-  DA: DeserializerAdapter<D>,
-{
+impl RTPSEntity for SimpleDataReader {
   fn guid(&self) -> GUID {
     self.keyed_simpledatareader.guid()
   }

@@ -698,7 +698,7 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -711,7 +711,7 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
+  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, CDRDeserializerAdapter<D>>>
   where
     D: serde::de::DeserializeOwned + Keyed,
     <D as Keyed>::K: Key,
@@ -727,7 +727,7 @@ impl Subscriber {
     topic: &Topic,
     entity_id: EntityId,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -743,7 +743,7 @@ impl Subscriber {
     topic: &Topic,
     entity_id: EntityId,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
+  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, CDRDeserializerAdapter<D>>>
   where
     D: serde::de::DeserializeOwned + Keyed,
     <D as Keyed>::K: Key,
@@ -792,14 +792,11 @@ impl Subscriber {
     self.inner.create_datareader_no_key(self, topic, None, qos)
   }
 
-  pub fn create_simple_datareader_no_key<D: 'static, SA: 'static>(
+  pub fn create_simple_datareader_no_key(
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<no_key::SimpleDataReader<D, SA>>
-  where
-    SA: adapters::no_key::DeserializerAdapter<D>,
-  {
+  ) -> Result<no_key::SimpleDataReader> {
     self
       .inner
       .create_simple_datareader_no_key(self, topic, None, qos)
@@ -924,7 +921,7 @@ impl InnerSubscriber {
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     optional_qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -932,21 +929,18 @@ impl InnerSubscriber {
   {
     let simple_dr =
       self.create_simple_datareader_internal(outer, entity_id_opt, topic, optional_qos)?;
-    Ok(with_key::DataReader::<D, SA>::from_simple_data_reader(
-      simple_dr,
-    ))
+    Ok(with_key::DataReader::<<D as Keyed>::K, D, SA>::from_simple_data_reader(simple_dr))
   }
 
-  fn create_simple_datareader_internal<D: 'static>(
+  fn create_simple_datareader_internal<K: 'static>(
     &self,
     outer: &Subscriber,
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     optional_qos: Option<QosPolicies>,
-  ) -> Result<with_key::SimpleDataReader<D>>
+  ) -> Result<with_key::SimpleDataReader<K>>
   where
-    D: Keyed,
-    <D as Keyed>::K: Key,
+    K: Key,
   {
     // incoming data notification channel from Reader to DataReader
     let (send, rec) = mio_channel::sync_channel::<()>(4);
@@ -1009,7 +1003,7 @@ impl InnerSubscriber {
       db.update_topic_data_p(topic);
     }
 
-    let datareader = with_key::SimpleDataReader::<D>::new(
+    let datareader = with_key::SimpleDataReader::<K>::new(
       outer.clone(),
       entity_id,
       topic.clone(),
@@ -1038,7 +1032,7 @@ impl InnerSubscriber {
     topic: &Topic,
     entity_id: Option<EntityId>,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<D, SA>>
+  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
   where
     D: Keyed,
     <D as Keyed>::K: Key,
@@ -1081,16 +1075,13 @@ impl InnerSubscriber {
     Ok(NoKeyDataReader::<D, SA>::from_keyed(d))
   }
 
-  pub fn create_simple_datareader_no_key<D: 'static, SA>(
+  pub fn create_simple_datareader_no_key(
     &self,
     outer: &Subscriber,
     topic: &Topic,
     entity_id_opt: Option<EntityId>,
     qos: Option<QosPolicies>,
-  ) -> Result<no_key::SimpleDataReader<D, SA>>
-  where
-    SA: adapters::no_key::DeserializerAdapter<D> + 'static,
-  {
+  ) -> Result<no_key::SimpleDataReader> {
     if topic.kind() != TopicKind::NoKey {
       return Error::precondition_not_met(
         "Topic is WITH_KEY, but attempted to create NO_KEY Datareader",
@@ -1100,14 +1091,9 @@ impl InnerSubscriber {
     let entity_id =
       self.unwrap_or_new_entity_id(entity_id_opt, EntityKind::READER_NO_KEY_USER_DEFINED);
 
-    let d = self.create_simple_datareader_internal::<NoKeyWrapper<D>>(
-      outer,
-      Some(entity_id),
-      topic,
-      qos,
-    )?;
+    let d = self.create_simple_datareader_internal::<()>(outer, Some(entity_id), topic, qos)?;
 
-    Ok(no_key::SimpleDataReader::<D, SA>::from_keyed(d))
+    Ok(no_key::SimpleDataReader::from_keyed(d))
   }
 
   pub fn participant(&self) -> Option<DomainParticipant> {
