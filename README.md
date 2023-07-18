@@ -73,21 +73,27 @@ For more installation guideline, check out our installation guide here: https://
 
 1. Install the example python dependencies:
 ```bash
-pip install opencv-python numpy pyarrow
+pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.2.4/examples/python-operator-dataflow/requirements.txt
 ```
 
 2. Get some example operators:
 ```bash
-wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/webcam.py
-wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/plot.py
-wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/utils.py
-wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/dataflow.yml
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.2,4/examples/python-operator-dataflow/webcam.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.4/examples/python-operator-dataflow/plot.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.4/examples/python-operator-dataflow/utils.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.4/examples/python-operator-dataflow/object_detection.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.4/examples/python-operator-dataflow/dataflow.yml
 ```
 
 3. Start the dataflow
 ```bash
-dora start dataflow.yaml --attach --hot-reload
+dora up
+dora start dataflow.yml --attach --hot-reload
 ```
+
+> Make sure to have a webcam 
+
+To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
 
 To go further, you can add a yolov5 operator, check out our getting started here: https://dora.carsmos.ai/docs/guides/getting-started/yolov5
 
