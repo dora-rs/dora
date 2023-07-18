@@ -2,176 +2,107 @@
     <img src="./docs/src/logo.svg" width="400">
 </p>
 
-<h3 align="center">
-Dataflow Oriented Robotic Architecture ⚡
-</h3>
+
+
+<h2 align="center">
+  <a href="https://dora.carsmos.ai">Website</a>
+  |
+  <a href="https://dora.carsmos.ai/docs/api/python-api">Python API</a>
+  -
+  <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
+  |
+  <a href="https://dora.carsmos.ai/docs/guides/">Guide</a>
+  |
+  <a href="https://github.com/orgs/dora-rs/discussions">Discussion</a>
+</h2>
+
+<div align="center">
+  <a href="https://github.com/dora-rs/dora/actions">
+    <img src="https://github.com/dora-rs/dora/workflows/CI/badge.svg" alt="Build and test"/>
+  </a>
+  <a href="https://crates.io/crates/dora-rs">
+    <img src="https://img.shields.io/crates/v/dora_node_api.svg"/>
+  </a>
+  <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">
+    <img src="https://docs.rs/dora-node-api/badge.svg" alt="rust docs"/>
+  </a>
+  <a href="https://pypi.org/project/dora-rs/">
+    <img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPi Latest Release"/>
+  </a>
+</div>
 
 ---
 
-`dora` goal is to be a low latency, composable, and distributed data flow.
+## Why dora-rs?
 
-This project is in early development, and many features have yet to be implemented with breaking changes. Please don't take for granted the current design.
+In 2023, AI is booming! Robotic framework however hasn't changed much in years... This is why we create dora-rs! dora-rs is a new robotic framework that brings modernity into robotic application.
 
-`dora` primary support is with `Linux` as it is the primary OS for both Cloud and small computers. If you wish to use `dora` with another OS, please compile from source.
+dora-rs can already show impressive performance, up to 17x speedup compared to ROS2 in Python! This is the result of using our own shared memory server and Apache Arrow to achieve zero copy!
 
----
-## 📖 Documentation
+Those performance improvements make a world of difference for beginners, AI practitioners, and weekend hobbyists who have been limited by the lack of support for Python in this field!
 
-The documentation can be found here: [https://dora-rs.github.io/dora/](https://dora-rs.github.io/dora/) 
+But, dora-rs is still experimental and we're still working on many features such as:
+- [dora-ros2-bridge](https://github.com/dora-rs/dora-ros2-bridge) to bridge dora and ros 2!
+- dora-rs for Deep Learning applications, to make it easy to integrate state of the art DL model and hopefully train them within the framework.
 
----
+Feel free to reach out if you have any questions!
 
-## Getting started
+<p align="center">
+    <img src="./docs/src/latency.png" width="600">
+    
+</p>
 
+## Installation
 
-1. Install `dora` binaries from GitHub releases
+Quickest way:
 
-For linux
 ```bash
-wget https://github.com/dora-rs/dora/releases/download/<version>/dora-<version>-x86_64-Linux.zip
-unzip dora-<version>-x86_64-Linux.zip
-python3 -m pip install dora-rs==<version>
-PATH=$PATH:$(pwd)
+cargo install dora-cli
+alias dora='dora-cli'
+cargo install dora-coordinator
+cargo install dora-daemon
+pip install dora-rs ## For Python API
+
 dora --help
 ```
 
-> This is `x86_64` only for the moment.
+For more installation guideline, check out our installation guide here: https://dora.carsmos.ai/docs/guides/Installation/installing
 
-2. Create a new dataflow
+## Getting Started
 
+
+1. Install the example python dependencies:
 ```bash
-dora new abc_project --lang python
-cd abc_project
+pip install opencv-python numpy pyarrow
 ```
 
-This creates the following `abc_project` directory
+2. Get some example operators:
 ```bash
-.
-├── dataflow.yml
-├── node_1
-│   └── node_1.py
-├── op_1
-│   └── op_1.py
-└── op_2
-    └── op_2.py
+wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/webcam.py
+wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/plot.py
+wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/utils.py
+wget https://raw.githubusercontent.com/dora-rs/dora/main/examples/python-operator-dataflow/dataflow.yml
 ```
 
-3. Start `dora-coordinator` in a separate terminal window
+3. Start the dataflow
 ```bash
-# New terminal window
-dora up 
+dora start dataflow.yaml --attach --hot-reload
 ```
 
-4. Start your dataflow
-```bash
-# Other window
-dora start dataflow.yml
-# Output: c95d118b-cded-4531-a0e4-cd85b7c3916c
-```
-The output is the unique ID of the dataflow instance, which can be used to control it through the `dora` CLI.
+To go further, you can add a yolov5 operator, check out our getting started here: https://dora.carsmos.ai/docs/guides/getting-started/yolov5
 
-5. You will see in your `dora-coordinator` window operators receiving ticks.
-```bash
-Received input tick, with data: b''
-Received input tick, with data: b''
-Received input tick, with data: b''
-...
-```
+## Documentation
 
-6. Stop your dataflow
-```bash
-dora stop c95d118b-cded-4531-a0e4-cd85b7c3916c
-```
-(Pass the ID returned by `dora start` here.)
+The full documentation is available on our website: https://dora.carsmos.ai 
 
-7. You can then add or modify operators or nodes. For adding nodes easily, you can use the `dora` CLI again:
+## Discussion
 
-- Run `dora new --kind operator --lang rust <name>` to create a new Rust operator named `<name>`.
-- Run `dora new --kind custom-node --lang rust <name>` to create a new custom node named `<name>`.
+Our main communication channel is our Github Project Discussion page: https://github.com/orgs/dora-rs/discussions
 
-You need to add the created operators/nodes to your dataflow YAML file.
+Feel free to reach out on any topic, issues or ideas.
 
-8. You can also download already implemented operators by putting links in the dataflow. This example will launch a webcam plot stream. 
+We also have [a contributing guide](CONTRIBUTING.md).
 
-```yaml
-nodes:
-  - id: op_1
-    operator:
-      python: https://raw.githubusercontent.com/dora-rs/dora-drives/main/operators/webcam_op.py
-      inputs:
-        tick: dora/timer/millis/100
-      outputs:
-        - image
-  - id: op_2
-    operator:
-      python: https://raw.githubusercontent.com/dora-rs/dora-drives/main/physicals/plot.py
-      inputs:
-        image: op_1/image 
-```
-> Make sure to have a webcam and cv2 install via: `pip install opencv-python`
----
-
-## ✨ Features
-
-Composability as:
-- [x] `YAML` declarative programming
-- [x] Isolated operators and custom nodes that can be reused.
-- [x] Hot Reloading for Python Operators
-
-Low latency as:
-- [x] written in  <i>...Cough...blazingly fast ...Cough...</i> Rust.
-- [x] PubSub communication with shared memory!
-- [x] Zero-copy!
-
-Distributed as:
-- [ ] PubSub communication between machines with [`zenoh`](https://github.com/eclipse-zenoh/zenoh)
-- [x] Distributed telemetry with [`opentelemetry`](https://github.com/open-telemetry/opentelemetry-rust)
-
-## Support matrix
-
-### Programming Language API:
-
-- [x] Rust
-- [x] Python
-- [x] C
-- [x] C++
-- [ ] WebAssembly (Wished for)
-
-### OS:
-- [x] Linux Ubuntu (tested)
-- [x] MacOS (tested)
-- [x] Windows (tested)
-
-> Although, MacOS and Windows has a low priority for us now.
-
-### Platform:
-- [x] x86 (tested)
-- [ ] aarch64
-
-> Other platforms should also work althougth we haven't tested them yet.
-
-### Data Format
-- [x] Bytes
-- [x] Arrow Array (Uint8) for Python
-- [ ] Arrow Array (Uint16, Int32, ...) (Planned feature)
-- [ ] Arrow Map (Wished feature)
-
-### Local Communication
-- [x] TCP
-- [x] Shared Memory
-
-### Remote Communication
-- [x] TCP
-- [ ] Zenoh
-
----
-
-
-## 🏁 Further reading
-
-- Check out [dora-drives](https://github.com/dora-rs/dora-drives) for a template of an autonomous vehicle within a simulation.
-
-
-## ⚖️ LICENSE 
+## License
 
 This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for more information.
