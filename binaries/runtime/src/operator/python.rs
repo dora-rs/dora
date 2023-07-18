@@ -275,6 +275,11 @@ mod callback_impl {
     use pyo3::{pymethods, types::PyDict, PyObject, Python};
     use tokio::sync::oneshot;
 
+    /// Send an output from the operator:
+    /// - the first argument is the `output_id` as defined in your dataflow.
+    /// - the second argument is the data as either bytes or pyarrow.UInt8Array for zero copy.
+    /// - the third argument is dora metadata if you want ot link the tracing from one input into an output.
+    /// `e.g.:  send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`
     #[pymethods]
     impl SendOutputCallback {
         fn __call__(

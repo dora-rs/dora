@@ -34,7 +34,7 @@ class Operator:
     def on_event(
         self,
         dora_event: dict,
-        send_output: Callable[[str, bytes], None],
+        send_output: Callable[[str, bytes | pa.UInt8Array, dict], None],
     ) -> DoraStatus:
         if dora_event["type"] == "INPUT":
             return self.on_input(dora_event, send_output)
@@ -43,7 +43,7 @@ class Operator:
     def on_input(
         self,
         dora_input: dict,
-        send_output: Callable[[str, bytes], None],
+        send_output: Callable[[str, bytes | pa.UInt8Array, dict], None],
     ) -> DoraStatus:
         """
         Put image and bounding box on cv2 window.
@@ -51,8 +51,12 @@ class Operator:
         Args:
             dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
             dora_input["data"] (bytes): Bytes message of the dora_input
-            send_output (Callable[[str, bytes]]): Function enabling sending output back to dora.
-        """
+            send_output Callable[[str, bytes | pa.UInt8Array, dict], None]: 
+                Function for sending output to the dataflow:
+                - First argument is the `output_id`
+                - Second argument is the data as either bytes or `pa.UInt8Array` 
+                - Third argument is dora metadata dict
+                e.g.: `send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`        """
         if dora_input["id"] == "image":
             frame = (
                 dora_input["value"]
