@@ -19,7 +19,7 @@
 * Implement `Stream` for `EventStream` by @phil-opp in https://github.com/dora-rs/dora/pull/309
 * Replace unmaintained `atty` crate with `std::io::IsTerminal` by @phil-opp in https://github.com/dora-rs/dora/pull/318
 
-**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.2.3...v0.2.4-rc3
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.2.3...v0.2.4
 
 ## v0.2.3 (2023-05-24)
 
