@@ -1270,7 +1270,6 @@ dependencies = [
 name = "dora-cli"
 version = "0.2.3"
 dependencies = [
- "atty",
  "bat",
  "clap 4.3.0",
  "communication-layer-request-reply",

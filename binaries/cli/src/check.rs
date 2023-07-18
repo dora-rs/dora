@@ -2,13 +2,13 @@ use crate::connect_to_coordinator;
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{ControlRequest, ControlRequestReply};
 use eyre::{bail, Context};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
 pub fn check_environment() -> eyre::Result<()> {
     let mut error_occured = false;
 
-    let color_choice = if atty::is(atty::Stream::Stdout) {
+    let color_choice = if std::io::stdout().is_terminal() {
         ColorChoice::Auto
     } else {
         ColorChoice::Never
