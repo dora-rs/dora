@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::stream::{FusedStream, Stream};
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, DeserializeSeed};
 use mio_extras::channel as mio_channel;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -252,6 +252,79 @@ where
           .find(|r| **r == serialized_payload.representation_identifier)
         {
           match DA::from_bytes(&serialized_payload.value, *recognized_rep_id) {
+            // Data update, decoded ok
+            Ok(payload) => {
+              let p = Sample::Value(payload);
+              Self::update_hash_to_key_map(hash_to_key_map, &p);
+              Ok(DeserializedCacheChange::new(timestamp, cc, p))
+            }
+            Err(e) => Err(format!("Failed to deserialize sample bytes: {e}, ")),
+          }
+        } else {
+          Err(format!(
+            "Unknown representation id {:?}.",
+            serialized_payload.representation_identifier
+          ))
+        }
+      }
+
+      DDSData::DisposeByKey {
+        key: ref serialized_key,
+        ..
+      } => {
+        match DA::key_from_bytes(
+          &serialized_key.value,
+          serialized_key.representation_identifier,
+        ) {
+          Ok(key) => {
+            let k = Sample::Dispose(key);
+            Self::update_hash_to_key_map(hash_to_key_map, &k);
+            Ok(DeserializedCacheChange::new(timestamp, cc, k))
+          }
+          Err(e) => Err(format!("Failed to deserialize key {}", e)),
+        }
+      }
+
+      DDSData::DisposeByKeyHash { key_hash, .. } => {
+        // The cache should know hash -> key mapping even if the sample
+        // has been disposed or .take()n
+        if let Some(key) = hash_to_key_map.get(&key_hash) {
+          Ok(DeserializedCacheChange::new(
+            timestamp,
+            cc,
+            Sample::Dispose(key.clone()),
+          ))
+        } else {
+          Err(format!(
+            "Tried to dispose with unknown key hash: {:x?}",
+            key_hash
+          ))
+        }
+      }
+    } // match
+  }
+
+  fn deserialize_seed<DA, D, S>(
+    timestamp: Timestamp,
+    cc: &CacheChange,
+    hash_to_key_map: &mut BTreeMap<KeyHash, K>,
+    deserialize: S,
+  ) -> std::result::Result<DeserializedCacheChange<D>, String>
+  where
+    S: for<'de> DeserializeSeed<'de, Value = D>,
+    D: Keyed<K = K> + 'static,
+    DA: SeedDeserializerAdapter<D>,
+  {
+    match cc.data_value {
+      DDSData::Data {
+        ref serialized_payload,
+      } => {
+        // what is our data serialization format (representation identifier) ?
+        if let Some(recognized_rep_id) = DA::supported_encodings()
+          .iter()
+          .find(|r| **r == serialized_payload.representation_identifier)
+        {
+          match DA::from_bytes(deserialize, &serialized_payload.value, *recognized_rep_id) {
             // Data update, decoded ok
             Ok(payload) => {
               let p = Sample::Value(payload);
