@@ -37,7 +37,7 @@
 
 In 2023, AI is booming! Robotic framework however hasn't changed much in years... This is why we create dora-rs! dora-rs is a new robotic framework that brings modernity into robotic application.
 
-dora-rs can already show impressive performance, up to 17x speedup compared to ROS2! This is the result of using our own shared memory server and Apache Arrow to achieve zero copy!
+dora-rs can already show impressive performance, up to 17x speedup compared to ROS2 in Python! This is the result of using our own shared memory server and Apache Arrow to achieve zero copy!
 
 Those performance improvements make a world of difference for beginners, AI practitioners, and weekend hobbyists who have been limited by the lack of support for Python in this field!
 
