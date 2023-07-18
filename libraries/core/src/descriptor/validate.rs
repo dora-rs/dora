@@ -5,10 +5,10 @@ use crate::{
 };
 
 use eyre::{bail, eyre, Context};
-use std::{env::consts::EXE_EXTENSION, path::Path, process::Command};
+use std::{path::Path, process::Command};
 use tracing::info;
 
-use super::{Descriptor, SHELL_SOURCE};
+use super::{resolve_path, Descriptor, SHELL_SOURCE};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
@@ -31,16 +31,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                     if source_is_url(source) {
                         info!("{source} is a URL."); // TODO: Implement url check.
                     } else {
-                        let raw = Path::new(source);
-                        let path = if raw.extension().is_none() {
-                            raw.with_extension(EXE_EXTENSION)
-                        } else {
-                            raw.to_owned()
-                        };
-                        working_dir
-                            .join(&path)
-                            .canonicalize()
-                            .wrap_err_with(|| format!("no node exists at `{}`", path.display()))?;
+                        resolve_path(source, working_dir)
+                            .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
                     };
                 }
             },
