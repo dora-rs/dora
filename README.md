@@ -41,7 +41,11 @@ dora-rs can already show impressive performance, up to 17x speedup compared to R
 
 Those performance improvements make a world of difference for beginners, AI practitioners, and weekend hobbyists who have been limited by the lack of support for Python in this field!
 
-And that's only one example of the many innovative features that we can show for dora-rs!
+But, dora-rs is still experimental and we're still working on many features such as:
+- [dora-ros2-bridge](https://github.com/dora-rs/dora-ros2-bridge) to bridge dora and ros 2!
+- dora-rs for Deep Learning applications, to make it easy to integrate state of the art DL model and hopefully train them within the framework.
+
+Feel free to reach out if you have any questions!
 
 <p align="center">
     <img src="./docs/src/latency.png" width="600">
