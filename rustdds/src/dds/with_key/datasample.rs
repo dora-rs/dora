@@ -91,10 +91,7 @@ where
 
   // convenience shorthand to get the key directly, without digging out the
   // "value"
-  pub fn key(&self) -> D::K
-  where
-    <D as Keyed>::K: Key,
-  {
+  pub fn key(&self) -> D::K {
     match &self.value {
       Sample::Value(d) => d.key(),
       Sample::Dispose(k) => k.clone(),
