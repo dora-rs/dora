@@ -190,7 +190,6 @@ where
 impl<D, SA> DataWriter<D, SA>
 where
   D: Keyed,
-  <D as Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
   #[allow(clippy::too_many_arguments)]
@@ -953,7 +952,6 @@ where
 pub struct AsyncWrite<'a, D, SA>
 where
   D: Keyed,
-  <D as key::Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
   writer: &'a DataWriter<D, SA>,
@@ -966,7 +964,6 @@ where
 impl<'a, D, SA> Future for AsyncWrite<'a, D, SA>
 where
   D: Keyed,
-  <D as key::Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
   type Output = Result<SampleIdentity>;
@@ -1042,7 +1039,6 @@ where
 impl<'a, D, SA> Future for AsyncWaitForAcknowledgments<'a, D, SA>
 where
   D: Keyed,
-  <D as key::Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
   type Output = Result<bool>;
@@ -1125,7 +1121,6 @@ where
 impl<D, SA> DataWriter<D, SA>
 where
   D: Keyed,
-  <D as Keyed>::K: Key,
   SA: SerializerAdapter<D>,
 {
   pub async fn async_write(&self, data: D, source_timestamp: Option<Timestamp>) -> Result<()> {

@@ -548,7 +548,6 @@ impl RosNode {
   ) -> Result<KeyedRosSubscriber<D, DA>, Error>
   where
     D: Keyed + DeserializeOwned + 'static,
-    D::K: Key,
   {
     let sub = self
       .ros_participant
@@ -594,7 +593,6 @@ impl RosNode {
   ) -> Result<KeyedRosPublisher<D, SA>, Error>
   where
     D: Keyed + Serialize,
-    D::K: Key,
   {
     let p = self
       .ros_participant

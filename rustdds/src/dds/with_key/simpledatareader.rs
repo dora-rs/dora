@@ -564,9 +564,7 @@ pub struct SimpleDataReaderStream<
   K: Key,
   D: Keyed<K = K> + 'static,
   DA: DeserializerAdapter<D> + 'static = CDRDeserializerAdapter<D>,
-> where
-  <D as Keyed>::K: Key,
-{
+> {
   simple_datareader: &'a SimpleDataReader<K>,
   phantom: std::marker::PhantomData<DA>,
   phantom_d: std::marker::PhantomData<D>,
@@ -587,7 +585,6 @@ where
 impl<'a, K, D, DA> Stream for SimpleDataReaderStream<'a, K, D, DA>
 where
   D: Keyed<K = K> + 'static,
-  <D as Keyed>::K: Key,
   DA: DeserializerAdapter<D>,
 {
   type Item = Result<DeserializedCacheChange<D>>;
@@ -632,7 +629,6 @@ where
 impl<'a, K, D, DA> FusedStream for SimpleDataReaderStream<'a, K, D, DA>
 where
   D: Keyed<K = K> + 'static,
-  <D as Keyed>::K: Key,
   DA: DeserializerAdapter<D>,
 {
   fn is_terminated(&self) -> bool {

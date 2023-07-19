@@ -57,7 +57,6 @@ struct SampleWithMetaData<D: Keyed> {
 impl<D> SampleWithMetaData<D>
 where
   D: Keyed,
-  <D as Keyed>::K: Key,
 {
   pub fn key(&self) -> D::K {
     match &self.sample {
@@ -70,7 +69,6 @@ where
 impl<D> DataSampleCache<D>
 where
   D: Keyed,
-  <D as Keyed>::K: Key,
 {
   pub fn new(qos: QosPolicies) -> Self {
     Self {

@@ -46,7 +46,6 @@ trait TestingTrait {
 impl<'a, D: 'static, SA> DataReader<'a, D, SA>
 where
   D: DeserializeOwned + Keyed,
-  <D as Keyed>::K: Key,
   SA: DeserializerAdapter<D>,
   {
 
