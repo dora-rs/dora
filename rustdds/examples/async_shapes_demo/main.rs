@@ -16,7 +16,7 @@ use rustdds::{
   with_key::Sample, DomainParticipant, Keyed, QosPolicyBuilder, TopicDescription, TopicKind,
 };
 use rustdds::policy::{Deadline, Durability, History, Reliability}; /* import all QoS
-                                                                     * policies directly */
+                                                                    * policies directly */
 use serde::{Deserialize, Serialize};
 use clap::{Arg, ArgMatches, Command}; // command line argument processing
 use rand::prelude::*;

@@ -8,9 +8,7 @@ use crate::{
   serialization::cdr_serializer::to_bytes,
   CdrDeserializer,
 };
-use super::types::{
-  CryptoToken, CryptoTransformIdentifier, CryptoTransformKeyId, CryptoTransformKind,
-};
+use super::types::{CryptoToken, CryptoTransformIdentifier, CryptoTransformKeyId, CryptoTransformKind};
 
 const CRYPTO_TOKEN_CLASS_ID: &str = "DDS:Crypto:AES_GCM_GMAC";
 const CRYPTO_TOKEN_KEYMAT_NAME: &str = "dds.cryp.keymat";
