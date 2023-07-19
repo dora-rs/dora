@@ -242,7 +242,7 @@ where
     DA: DeserializerAdapter<D>,
     D: Keyed<K = K>,
   {
-    Self::deserialize_value::<DA, D>(
+    Self::deserialize_inner::<DA, D>(
       cc,
       hash_to_key_map,
       timestamp,
@@ -262,7 +262,7 @@ where
     D: Keyed<K = K> + 'static,
     DA: SeedDeserializerAdapter<D>,
   {
-    Self::deserialize_value::<DA, D>(
+    Self::deserialize_inner::<DA, D>(
       cc,
       hash_to_key_map,
       timestamp,
@@ -301,6 +301,56 @@ where
     };
 
     match Self::deserialize::<DA, D>(timestamp, cc, hash_to_key_map) {
+      Ok(dcc) => {
+        read_state_ref.latest_instant = max(read_state_ref.latest_instant, timestamp);
+        read_state_ref
+          .last_read_sn
+          .insert(dcc.writer_guid, dcc.sequence_number);
+        Ok(Some(dcc))
+      }
+      Err(string) => Error::serialization_error(format!(
+        "{} Topic = {}, Type = {:?}",
+        string,
+        self.my_topic.name(),
+        self.my_topic.get_type()
+      )),
+    }
+  }
+
+  /// Note: Always remember to call .drain_read_notifications() just before
+  /// calling this one. Otherwise, new notifications may not appear.
+  pub fn try_take_one_seed<DA, D, S>(
+    &self,
+    deserialize: S,
+  ) -> Result<Option<DeserializedCacheChange<D>>>
+  where
+    S: for<'de> DeserializeSeed<'de, Value = D>,
+    D: Keyed<K = K> + 'static,
+    DA: SeedDeserializerAdapter<D>,
+  {
+    let is_reliable = matches!(
+      self.qos_policy.reliability(),
+      Some(policy::Reliability::Reliable { .. })
+    );
+
+    let topic_cache = self.acquire_the_topic_cache_guard();
+
+    let mut read_state_ref = self.read_state.lock().unwrap();
+    let latest_instant = read_state_ref.latest_instant;
+    let (last_read_sn, hash_to_key_map) = read_state_ref.get_sn_map_and_hash_map();
+    let (timestamp, cc) = match Self::try_take_undecoded(
+      is_reliable,
+      &topic_cache,
+      latest_instant,
+      last_read_sn,
+    )
+    .next()
+    {
+      None => return Ok(None),
+      Some((ts, cc)) => (ts, cc),
+    };
+
+    match Self::deserialize_seed::<DA, D, S>(timestamp, cc, hash_to_key_map, deserialize) {
       Ok(dcc) => {
         read_state_ref.latest_instant = max(read_state_ref.latest_instant, timestamp);
         read_state_ref
@@ -357,7 +407,7 @@ where
     })
   }
 
-  fn deserialize_value<DA, D>(
+  fn deserialize_inner<DA, D>(
     cc: &CacheChange,
     hash_to_key_map: &mut BTreeMap<KeyHash, K>,
     timestamp: Timestamp,

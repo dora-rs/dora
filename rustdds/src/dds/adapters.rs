@@ -45,14 +45,14 @@ pub mod no_key {
     /// Deserialize data from bytes to an object.
     /// `encoding` must be something given by `supported_encodings()`, or
     /// implementation may fail with Err or `panic!()`.
-    fn from_bytes<'a, D>(
-      deserialize: D,
+    fn from_bytes<'a, S>(
+      deserialize: S,
       input_bytes: &'a [u8],
       encoding: RepresentationIdentifier,
-    ) -> Result<<D as DeserializeSeed<'static>>::Value>
+    ) -> Result<<S as DeserializeSeed<'static>>::Value>
     where
-      D: for<'de> DeserializeSeed<'de>,
-      for<'de> <D as DeserializeSeed<'de>>::Value: 'static;
+      S: for<'de> DeserializeSeed<'de>,
+      for<'de> <S as DeserializeSeed<'de>>::Value: 'static;
 
     /// This method has a default implementation, but the default will make a
     /// copy of all the input data in memory and then call from_bytes() .
@@ -117,6 +117,12 @@ pub mod with_key {
   /// together - with_key version.
   pub trait SeedDeserializerAdapter<D>: no_key::SeedDeserializerAdapter + KeyFromBytes<D>
   where
+    D: Keyed,
+  {
+  }
+  impl<T, D> SeedDeserializerAdapter<D> for T
+  where
+    T: no_key::SeedDeserializerAdapter + KeyFromBytes<D>,
     D: Keyed,
   {
   }
