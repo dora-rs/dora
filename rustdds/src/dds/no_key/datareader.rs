@@ -55,7 +55,7 @@ pub type DataReaderCdr<D> = DataReader<D, CDRDeserializerAdapter<D>>;
 /// let data_reader = subscriber.create_datareader_no_key::<SomeType, CDRDeserializerAdapter<_>>(&topic, None);
 /// ```
 pub struct DataReader<D, DA: DeserializerAdapter<D> = CDRDeserializerAdapter<D>> {
-  keyed_datareader: datareader_with_key::DataReader<(), NoKeyWrapper<D>, DAWrapper<DA>>,
+  keyed_datareader: datareader_with_key::DataReader<NoKeyWrapper<D>, DAWrapper<DA>>,
 }
 
 // TODO: rewrite DataSample so it can use current Keyed version (and send back
@@ -65,7 +65,7 @@ where
   DA: DeserializerAdapter<D>,
 {
   pub(crate) fn from_keyed(
-    keyed: datareader_with_key::DataReader<(), NoKeyWrapper<D>, DAWrapper<DA>>,
+    keyed: datareader_with_key::DataReader<NoKeyWrapper<D>, DAWrapper<DA>>,
   ) -> Self {
     Self {
       keyed_datareader: keyed,
@@ -476,7 +476,7 @@ where
   ) -> io::Result<()> {
     // with_key::DataReader implements .register() for two traits, so need to
     // use disambiguation syntax to call .register() here.
-    <WithKeyDataReader<(), NoKeyWrapper<D>, DAWrapper<DA>> as mio_08::event::Source>::register(
+    <WithKeyDataReader<NoKeyWrapper<D>, DAWrapper<DA>> as mio_08::event::Source>::register(
       &mut self.keyed_datareader,
       registry,
       token,
@@ -490,7 +490,7 @@ where
     token: mio_08::Token,
     interests: mio_08::Interest,
   ) -> io::Result<()> {
-    <WithKeyDataReader<(), NoKeyWrapper<D>, DAWrapper<DA>> as mio_08::event::Source>::reregister(
+    <WithKeyDataReader<NoKeyWrapper<D>, DAWrapper<DA>> as mio_08::event::Source>::reregister(
       &mut self.keyed_datareader,
       registry,
       token,
@@ -499,7 +499,7 @@ where
   }
 
   fn deregister(&mut self, registry: &mio_08::Registry) -> io::Result<()> {
-    <WithKeyDataReader<(), NoKeyWrapper<D>, DAWrapper<DA>> as mio_08::event::Source>::deregister(
+    <WithKeyDataReader<NoKeyWrapper<D>, DAWrapper<DA>> as mio_08::event::Source>::deregister(
       &mut self.keyed_datareader,
       registry,
     )
@@ -557,7 +557,7 @@ pub struct DataReaderStream<
   D: 'static,
   DA: DeserializerAdapter<D> + 'static = CDRDeserializerAdapter<D>,
 > {
-  keyed_stream: WithKeyDataReaderStream<(), NoKeyWrapper<D>, DAWrapper<DA>>,
+  keyed_stream: WithKeyDataReaderStream<NoKeyWrapper<D>, DAWrapper<DA>>,
 }
 
 impl<D, DA> DataReaderStream<D, DA>
@@ -617,7 +617,7 @@ pub struct DataReaderEventStream<
   D: 'static,
   DA: DeserializerAdapter<D> + 'static = CDRDeserializerAdapter<D>,
 > {
-  keyed_stream: WithKeyDataReaderEventStream<(), NoKeyWrapper<D>, DAWrapper<DA>>,
+  keyed_stream: WithKeyDataReaderEventStream<NoKeyWrapper<D>, DAWrapper<DA>>,
 }
 
 impl<D, DA> Stream for DataReaderEventStream<D, DA>

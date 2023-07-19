@@ -52,8 +52,7 @@ pub use ros_node::*;
 
 pub type RosSubscriber<D, DA> = crate::dds::no_key::datareader::DataReader<D, DA>;
 
-pub type KeyedRosSubscriber<D, DA> =
-  crate::dds::with_key::datareader::DataReader<<D as crate::Keyed>::K, D, DA>;
+pub type KeyedRosSubscriber<D, DA> = crate::dds::with_key::datareader::DataReader<D, DA>;
 
 pub type RosPublisher<D, SA> = crate::dds::no_key::datawriter::DataWriter<D, SA>;
 
@@ -64,11 +63,8 @@ pub type KeyedRosPublisher<D, SA> = crate::dds::with_key::datawriter::DataWriter
 pub type RosSubscriberCdr<D> =
   crate::dds::no_key::datareader::DataReader<D, crate::serialization::CDRDeserializerAdapter<D>>;
 
-pub type KeyedRosSubscriberCdr<D> = crate::dds::with_key::datareader::DataReader<
-  <D as crate::Keyed>::K,
-  D,
-  crate::serialization::CDRDeserializerAdapter<D>,
->;
+pub type KeyedRosSubscriberCdr<D> =
+  crate::dds::with_key::datareader::DataReader<D, crate::serialization::CDRDeserializerAdapter<D>>;
 
 pub type RosPublisherCdr<D> =
   crate::dds::no_key::datawriter::DataWriter<D, crate::serialization::CDRSerializerAdapter<D>>;

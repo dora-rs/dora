@@ -21,7 +21,6 @@ use crate::{
     dds_entity::DDSEntity,
     ddsdata::DDSData,
     helpers::*,
-    key,
     pubsub::Publisher,
     qos::{
       policy::{Liveliness, Reliability},
@@ -40,7 +39,7 @@ use crate::{
     cache_change::ChangeKind, duration, entity::RTPSEntity, guid::GUID, rpc::SampleIdentity,
     sequence_number::SequenceNumber, time::Timestamp,
   },
-  Key, Keyed, TopicDescription,
+  Keyed, TopicDescription,
 };
 
 // TODO: Move the write options and the builder type to some lower-level module
@@ -1207,6 +1206,7 @@ mod tests {
     serialization::cdr_serializer::CDRSerializerAdapter,
     structure::topic_kind::TopicKind,
     test::random_data::*,
+    Key,
   };
 
   #[test]
