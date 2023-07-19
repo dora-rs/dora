@@ -89,7 +89,7 @@ where
 }
 
 // then, implement with_key DA
-impl<D, DA> with_key::DeserializerAdapter<NoKeyWrapper<D>> for DAWrapper<DA>
+impl<D, DA> with_key::KeyFromBytes<NoKeyWrapper<D>> for DAWrapper<DA>
 where
   DA: no_key::DeserializerAdapter<D>,
 {

@@ -91,9 +91,7 @@ pub mod with_key {
   use crate::{serialization::Result, Keyed, RepresentationIdentifier};
   use super::no_key;
 
-  /// trait for connecting a Desrializer implementation and DataReader
-  /// together - with_key version.
-  pub trait DeserializerAdapter<D>: no_key::DeserializerAdapter<D>
+  pub trait KeyFromBytes<D>
   where
     D: Keyed,
   {
@@ -103,12 +101,24 @@ pub mod with_key {
 
   /// trait for connecting a Desrializer implementation and DataReader
   /// together - with_key version.
-  pub trait SeedDeserializerAdapter<D>: no_key::SeedDeserializerAdapter
+  pub trait DeserializerAdapter<D>: no_key::DeserializerAdapter<D> + KeyFromBytes<D>
   where
     D: Keyed,
   {
-    /// Deserialize a key `D::K` from bytes.
-    fn key_from_bytes(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Result<D::K>;
+  }
+  impl<T, D> DeserializerAdapter<D> for T
+  where
+    T: no_key::DeserializerAdapter<D> + KeyFromBytes<D>,
+    D: Keyed,
+  {
+  }
+
+  /// trait for connecting a Desrializer implementation and DataReader
+  /// together - with_key version.
+  pub trait SeedDeserializerAdapter<D>: no_key::SeedDeserializerAdapter + KeyFromBytes<D>
+  where
+    D: Keyed,
+  {
   }
 
   /// trait for connecting a Serializer implementation and DataWriter

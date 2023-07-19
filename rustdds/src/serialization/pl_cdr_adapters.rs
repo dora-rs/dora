@@ -90,7 +90,7 @@ where
   }
 }
 
-impl<D> with_key::DeserializerAdapter<D> for PlCdrDeserializerAdapter<D>
+impl<D> with_key::KeyFromBytes<D> for PlCdrDeserializerAdapter<D>
 where
   D: Keyed + PlCdrDeserialize,
   <D as Keyed>::K: PlCdrDeserialize,

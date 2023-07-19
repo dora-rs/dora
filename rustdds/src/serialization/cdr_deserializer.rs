@@ -65,7 +65,7 @@ impl no_key::SeedDeserializerAdapter for SeedCDRDeserializerAdapter {
   }
 }
 
-impl<D> with_key::DeserializerAdapter<D> for CDRDeserializerAdapter<D>
+impl<D> with_key::KeyFromBytes<D> for CDRDeserializerAdapter<D>
 where
   D: Keyed + DeserializeOwned,
   <D as Keyed>::K: DeserializeOwned, // Key should do this already?
