@@ -22,5 +22,9 @@ for i in range(500):
         }
     }
     twist_writer.publish(direction);
-    # print(pose_reader.next())
+    while True:
+        pose = pose_reader.next()
+        if pose == None:
+            break
+        print(pose)
     time.sleep(0.5)
