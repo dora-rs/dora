@@ -10,9 +10,7 @@ use crate::{
     sequence_number::{SequenceNumber, SequenceNumberSet},
   },
 };
-use super::{
-  submessage::WriterSubmessage, submessage_flag::GAP_Flags, submessage_kind::SubmessageKind,
-};
+use super::{submessage::WriterSubmessage, submessage_flag::GAP_Flags, submessage_kind::SubmessageKind};
 /// This Submessage is sent from an RTPS Writer to an RTPS Reader and
 /// indicates to the RTPS Reader that a range of sequence numbers
 /// is no longer relevant. The set may be a contiguous range of
