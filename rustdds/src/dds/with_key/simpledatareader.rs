@@ -8,7 +8,7 @@ use std::{
 };
 
 use futures::stream::{FusedStream, Stream};
-use serde::de::{DeserializeOwned, DeserializeSeed};
+use serde::de::DeserializeSeed;
 use mio_extras::channel as mio_channel;
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
@@ -435,7 +435,7 @@ where
     &self.my_topic
   }
 
-  pub fn as_async_stream<DA, D>(&self) -> SimpleDataReaderStream<K, D, DA>
+  pub fn as_async_stream<DA, D>(&self) -> SimpleDataReaderStream<D, DA>
   where
     DA: DeserializerAdapter<D>,
     D: Keyed<K = K>,
@@ -561,11 +561,10 @@ where
 
 pub struct SimpleDataReaderStream<
   'a,
-  K: Key,
-  D: Keyed<K = K> + 'static,
+  D: Keyed + 'static,
   DA: DeserializerAdapter<D> + 'static = CDRDeserializerAdapter<D>,
 > {
-  simple_datareader: &'a SimpleDataReader<K>,
+  simple_datareader: &'a SimpleDataReader<D::K>,
   phantom: std::marker::PhantomData<DA>,
   phantom_d: std::marker::PhantomData<D>,
 }
@@ -574,17 +573,16 @@ pub struct SimpleDataReaderStream<
 // ----------------------------------------------
 
 // https://users.rust-lang.org/t/take-in-impl-future-cannot-borrow-data-in-a-dereference-of-pin/52042
-impl<'a, K, D, DA> Unpin for SimpleDataReaderStream<'a, K, D, DA>
+impl<'a, D, DA> Unpin for SimpleDataReaderStream<'a, D, DA>
 where
-  D: Keyed<K = K> + 'static,
-  K: Key,
+  D: Keyed + 'static,
   DA: DeserializerAdapter<D>,
 {
 }
 
-impl<'a, K, D, DA> Stream for SimpleDataReaderStream<'a, K, D, DA>
+impl<'a, D, DA> Stream for SimpleDataReaderStream<'a, D, DA>
 where
-  D: Keyed<K = K> + 'static,
+  D: Keyed + 'static,
   DA: DeserializerAdapter<D>,
 {
   type Item = Result<DeserializedCacheChange<D>>;
@@ -626,9 +624,9 @@ where
   } // fn
 } // impl
 
-impl<'a, K, D, DA> FusedStream for SimpleDataReaderStream<'a, K, D, DA>
+impl<'a, D, DA> FusedStream for SimpleDataReaderStream<'a, D, DA>
 where
-  D: Keyed<K = K> + 'static,
+  D: Keyed + 'static,
   DA: DeserializerAdapter<D>,
 {
   fn is_terminated(&self) -> bool {

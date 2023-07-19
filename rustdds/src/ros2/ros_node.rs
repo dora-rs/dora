@@ -10,7 +10,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::{
   dds::{
     adapters::{no_key, with_key},
-    key::{Key, Keyed},
+    key::{Keyed},
     pubsub::{Publisher, Subscriber},
     qos::QosPolicies,
     result::Error,

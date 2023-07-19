@@ -693,7 +693,7 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     SA: adapters::with_key::DeserializerAdapter<D>,
@@ -705,7 +705,7 @@ impl Subscriber {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, CDRDeserializerAdapter<D>>>
+  ) -> Result<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
   where
     D: serde::de::DeserializeOwned + Keyed,
     for<'de> <D as Keyed>::K: Deserialize<'de>,
@@ -720,7 +720,7 @@ impl Subscriber {
     topic: &Topic,
     entity_id: EntityId,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     SA: adapters::with_key::DeserializerAdapter<D>,
@@ -735,7 +735,7 @@ impl Subscriber {
     topic: &Topic,
     entity_id: EntityId,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, CDRDeserializerAdapter<D>>>
+  ) -> Result<WithKeyDataReader<D, CDRDeserializerAdapter<D>>>
   where
     D: serde::de::DeserializeOwned + Keyed,
     for<'de> <D as Keyed>::K: Deserialize<'de>,
@@ -912,14 +912,16 @@ impl InnerSubscriber {
     entity_id_opt: Option<EntityId>,
     topic: &Topic,
     optional_qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     SA: adapters::with_key::DeserializerAdapter<D>,
   {
     let simple_dr =
       self.create_simple_datareader_internal(outer, entity_id_opt, topic, optional_qos)?;
-    Ok(with_key::DataReader::<<D as Keyed>::K, D, SA>::from_simple_data_reader(simple_dr))
+    Ok(with_key::DataReader::<D, SA>::from_simple_data_reader(
+      simple_dr,
+    ))
   }
 
   fn create_simple_datareader_internal<K: 'static>(
@@ -1022,7 +1024,7 @@ impl InnerSubscriber {
     topic: &Topic,
     entity_id: Option<EntityId>,
     qos: Option<QosPolicies>,
-  ) -> Result<WithKeyDataReader<<D as Keyed>::K, D, SA>>
+  ) -> Result<WithKeyDataReader<D, SA>>
   where
     D: Keyed,
     SA: adapters::with_key::DeserializerAdapter<D>,

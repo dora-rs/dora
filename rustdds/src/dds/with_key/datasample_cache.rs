@@ -8,7 +8,7 @@ use log::{debug, error, info, warn};
 
 use crate::{
   dds::{
-    key::{Key, Keyed},
+    key::Keyed,
     qos::{policy, QosPolicies},
     readcondition::ReadCondition,
     sampleinfo::*,

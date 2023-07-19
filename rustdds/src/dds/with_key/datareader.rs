@@ -28,7 +28,7 @@ use crate::{
 };
 
 /// Simplified type for CDR encoding
-pub type DataReaderCdr<K, D> = DataReader<K, D, CDRDeserializerAdapter<D>>;
+pub type DataReaderCdr<D> = DataReader<D, CDRDeserializerAdapter<D>>;
 
 /// Parameter for reading [Readers](../struct.With_Key_DataReader.html) data
 /// with key or with next from current key.
@@ -70,24 +70,22 @@ pub enum SelectByKey {
 /// *Note:* Many DataReader methods require mutable access to `self`, because
 /// they need to mutate the datasample ceche, which is an essential content of
 /// this struct.
-pub struct DataReader<K, D, DA /*= CDRDeserializerAdapter<D> */>
+pub struct DataReader<D, DA /*= CDRDeserializerAdapter<D> */>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
-  simple_data_reader: SimpleDataReader<K>,
+  simple_data_reader: SimpleDataReader<D::K>,
   datasample_cache: DataSampleCache<D>, // DataReader-local cache of deserialized samples
   phantom: std::marker::PhantomData<DA>,
 }
 
-impl<K, D, DA> DataReader<K, D, DA>
+impl<D, DA> DataReader<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
-  pub(crate) fn from_simple_data_reader(simple_data_reader: SimpleDataReader<K>) -> Self {
+  pub(crate) fn from_simple_data_reader(simple_data_reader: SimpleDataReader<D::K>) -> Self {
     let dsc = DataSampleCache::new(simple_data_reader.topic().qos());
 
     Self {
@@ -113,23 +111,23 @@ where
     self.simple_data_reader.drain_read_notifications();
   }
 
-  fn select_keys_for_access(&self, read_condition: ReadCondition) -> Vec<(Timestamp, K)> {
+  fn select_keys_for_access(&self, read_condition: ReadCondition) -> Vec<(Timestamp, D::K)> {
     self.datasample_cache.select_keys_for_access(read_condition)
   }
 
-  fn take_by_keys(&mut self, keys: &[(Timestamp, K)]) -> Vec<DataSample<D>> {
+  fn take_by_keys(&mut self, keys: &[(Timestamp, D::K)]) -> Vec<DataSample<D>> {
     self.datasample_cache.take_by_keys(keys)
   }
 
-  fn take_bare_by_keys(&mut self, keys: &[(Timestamp, K)]) -> Vec<Sample<D, K>> {
+  fn take_bare_by_keys(&mut self, keys: &[(Timestamp, D::K)]) -> Vec<Sample<D, D::K>> {
     self.datasample_cache.take_bare_by_keys(keys)
   }
 
   fn select_instance_keys_for_access(
     &self,
-    instance: &K,
+    instance: &D::K,
     rc: ReadCondition,
-  ) -> Vec<(Timestamp, K)> {
+  ) -> Vec<(Timestamp, D::K)> {
     self
       .datasample_cache
       .select_instance_keys_for_access(instance, rc)
@@ -340,7 +338,7 @@ where
     &mut self,
     max_samples: usize,
     read_condition: ReadCondition,
-  ) -> Result<Vec<Sample<&D, K>>> {
+  ) -> Result<Vec<Sample<&D, D::K>>> {
     self.drain_read_notifications();
     self.fill_and_lock_local_datasample_cache()?;
 
@@ -356,7 +354,7 @@ where
     &mut self,
     max_samples: usize,
     read_condition: ReadCondition,
-  ) -> Result<Vec<Sample<D, K>>> {
+  ) -> Result<Vec<Sample<D, D::K>>> {
     // Clear notification buffer. This must be done first to avoid race conditions.
     self.drain_read_notifications();
     self.fill_and_lock_local_datasample_cache()?;
@@ -407,7 +405,7 @@ where
   ///   // do something
   /// }
   /// ```
-  pub fn iterator(&mut self) -> Result<impl Iterator<Item = Sample<&D, K>>> {
+  pub fn iterator(&mut self) -> Result<impl Iterator<Item = Sample<&D, D::K>>> {
     // TODO: We could come up with a more efficent implementation than wrapping a
     // read call
     Ok(
@@ -455,7 +453,7 @@ where
   pub fn conditional_iterator(
     &mut self,
     read_condition: ReadCondition,
-  ) -> Result<impl Iterator<Item = Sample<&D, K>>> {
+  ) -> Result<impl Iterator<Item = Sample<&D, D::K>>> {
     // TODO: We could come up with a more efficent implementation than wrapping a
     // read call
     Ok(self.read_bare(std::usize::MAX, read_condition)?.into_iter())
@@ -500,7 +498,7 @@ where
   /// }
   /// ```
 
-  pub fn into_iterator(&mut self) -> Result<impl Iterator<Item = Sample<D, K>>> {
+  pub fn into_iterator(&mut self) -> Result<impl Iterator<Item = Sample<D, D::K>>> {
     // TODO: We could come up with a more efficent implementation than wrapping a
     // take call
     Ok(
@@ -550,7 +548,7 @@ where
   pub fn into_conditional_iterator(
     &mut self,
     read_condition: ReadCondition,
-  ) -> Result<impl Iterator<Item = Sample<D, K>>> {
+  ) -> Result<impl Iterator<Item = Sample<D, D::K>>> {
     // TODO: We could come up with a more efficent implementation than wrapping a
     // take call
     Ok(self.take_bare(std::usize::MAX, read_condition)?.into_iter())
@@ -559,7 +557,7 @@ where
   // ----------------------------------------------------------------------------
   // ----------------------------------------------------------------------------
 
-  fn infer_key(&self, instance_key: Option<K>, this_or_next: SelectByKey) -> Option<K> {
+  fn infer_key(&self, instance_key: Option<D::K>, this_or_next: SelectByKey) -> Option<D::K> {
     match instance_key {
       Some(k) => match this_or_next {
         SelectByKey::This => Some(k),
@@ -619,7 +617,7 @@ where
     read_condition: ReadCondition,
     // Select only samples from instance specified by key. In case of None, select the
     // "smallest" instance as specified by the key type Ord trait.
-    instance_key: Option<K>,
+    instance_key: Option<D::K>,
     // This = Select instance specified by key.
     // Next = select next instance in the order specified by Ord on keys.
     this_or_next: SelectByKey,
@@ -686,7 +684,7 @@ where
     read_condition: ReadCondition,
     // Select only samples from instance specified by key. In case of None, select the
     // "smallest" instance as specified by the key type Ord trait.
-    instance_key: Option<K>,
+    instance_key: Option<D::K>,
     // This = Select instance specified by key.
     // Next = select next instance in the order specified by Ord on keys.
     this_or_next: SelectByKey,
@@ -731,7 +729,7 @@ where
 
   /// An async stream for reading the (bare) data samples.
   /// The resulting Stream can be used to get another stream of status events.
-  pub fn async_sample_stream(self) -> DataReaderStream<K, D, DA> {
+  pub fn async_sample_stream(self) -> DataReaderStream<D, DA> {
     DataReaderStream {
       datareader: Arc::new(Mutex::new(self)),
     }
@@ -740,10 +738,9 @@ where
 
 // -------------------
 
-impl<K, D, DA> Evented for DataReader<K, D, DA>
+impl<D, DA> Evented for DataReader<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   // We just delegate all the operations to notification_receiver, since it alrady
@@ -777,10 +774,9 @@ where
   }
 }
 
-impl<K, D, DA> mio_08::event::Source for DataReader<K, D, DA>
+impl<D, DA> mio_08::event::Source for DataReader<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   fn register(
@@ -791,7 +787,7 @@ where
   ) -> io::Result<()> {
     // SimpleDataReader implements .register() for two traits, so need to
     // use disambiguation syntax to call .register() here.
-    <SimpleDataReader<K> as mio_08::event::Source>::register(
+    <SimpleDataReader<D::K> as mio_08::event::Source>::register(
       &mut self.simple_data_reader,
       registry,
       token,
@@ -805,7 +801,7 @@ where
     token: mio_08::Token,
     interests: mio_08::Interest,
   ) -> io::Result<()> {
-    <SimpleDataReader<K> as mio_08::event::Source>::reregister(
+    <SimpleDataReader<D::K> as mio_08::event::Source>::reregister(
       &mut self.simple_data_reader,
       registry,
       token,
@@ -814,17 +810,16 @@ where
   }
 
   fn deregister(&mut self, registry: &mio_08::Registry) -> io::Result<()> {
-    <SimpleDataReader<K> as mio_08::event::Source>::deregister(
+    <SimpleDataReader<D::K> as mio_08::event::Source>::deregister(
       &mut self.simple_data_reader,
       registry,
     )
   }
 }
 
-impl<K, D, DA> StatusEvented<DataReaderStatus> for DataReader<K, D, DA>
+impl<D, DA> StatusEvented<DataReaderStatus> for DataReader<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   fn as_status_evented(&mut self) -> &dyn Evented {
@@ -840,10 +835,9 @@ where
   }
 }
 
-impl<K, D, DA> HasQoSPolicy for DataReader<K, D, DA>
+impl<D, DA> HasQoSPolicy for DataReader<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   fn qos(&self) -> QosPolicies {
@@ -851,10 +845,9 @@ where
   }
 }
 
-impl<K, D, DA> RTPSEntity for DataReader<K, D, DA>
+impl<D, DA> RTPSEntity for DataReader<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   fn guid(&self) -> GUID {
@@ -867,23 +860,21 @@ where
 
 // Async interface to the DataReader
 
-pub struct DataReaderStream<K, D, DA /* = CDRDeserializerAdapter<D> */>
+pub struct DataReaderStream<D, DA /* = CDRDeserializerAdapter<D> */>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
-  datareader: Arc<Mutex<DataReader<K, D, DA>>>,
+  datareader: Arc<Mutex<DataReader<D, DA>>>,
 }
 
-impl<K, D, DA> DataReaderStream<K, D, DA>
+impl<D, DA> DataReaderStream<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   /// Get a stream of status events
-  pub fn async_event_stream(&self) -> DataReaderEventStream<K, D, DA> {
+  pub fn async_event_stream(&self) -> DataReaderEventStream<D, DA> {
     DataReaderEventStream {
       datareader: Arc::clone(&self.datareader),
     }
@@ -891,18 +882,16 @@ where
 }
 
 // https://users.rust-lang.org/t/take-in-impl-future-cannot-borrow-data-in-a-dereference-of-pin/52042
-impl<K, D, DA> Unpin for DataReaderStream<K, D, DA>
+impl<D, DA> Unpin for DataReaderStream<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
 }
 
-impl<K, D, DA> Stream for DataReaderStream<K, D, DA>
+impl<D, DA> Stream for DataReaderStream<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   type Item = Result<Sample<D, D::K>>;
@@ -943,10 +932,9 @@ where
   }
 }
 
-impl<K, D, DA> FusedStream for DataReaderStream<K, D, DA>
+impl<D, DA> FusedStream for DataReaderStream<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   fn is_terminated(&self) -> bool {
@@ -957,19 +945,17 @@ where
 // ----------------------------------------------------------------------------------------------------
 // ----------------------------------------------------------------------------------------------------
 
-pub struct DataReaderEventStream<K, D, DA /*= CDRDeserializerAdapter<D>*/>
+pub struct DataReaderEventStream<D, DA /*= CDRDeserializerAdapter<D>*/>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
-  datareader: Arc<Mutex<DataReader<K, D, DA>>>,
+  datareader: Arc<Mutex<DataReader<D, DA>>>,
 }
 
-impl<K, D, DA> Stream for DataReaderEventStream<K, D, DA>
+impl<D, DA> Stream for DataReaderEventStream<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   type Item = std::result::Result<DataReaderStatus, std::sync::mpsc::RecvError>;
@@ -985,10 +971,9 @@ where
   }
 }
 
-impl<K, D, DA> FusedStream for DataReaderEventStream<K, D, DA>
+impl<D, DA> FusedStream for DataReaderEventStream<D, DA>
 where
-  K: Key,
-  D: Keyed<K = K>,
+  D: Keyed,
   DA: DeserializerAdapter<D>,
 {
   fn is_terminated(&self) -> bool {
