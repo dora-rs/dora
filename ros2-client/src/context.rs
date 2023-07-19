@@ -20,6 +20,7 @@ use crate::{
   node_entities_info::NodeEntitiesInfo,
   participant_entities_info::ParticipantEntitiesInfo,
   pubsub::{Publisher, Subscription},
+  SubscriptionUntyped,
 };
 
 lazy_static! {
@@ -98,6 +99,17 @@ impl Context {
     Ok(Subscription::new(datareader))
   }
 
+  pub fn create_untyped_subscription(
+    &self,
+    topic: &Topic,
+    qos: Option<QosPolicies>,
+  ) -> dds::Result<SubscriptionUntyped> {
+    let datareader = self
+      .get_ros_default_subscriber()
+      .create_simple_datareader_no_key(topic, qos)?;
+    Ok(SubscriptionUntyped::new(datareader))
+  }
+
   pub(crate) fn create_datawriter<M, SA>(
     &self,
     topic: &Topic,
@@ -111,15 +123,11 @@ impl Context {
       .create_datawriter_no_key(topic, qos)
   }
 
-  pub fn create_simpledatareader<M, DA>(
+  pub fn create_simpledatareader(
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> dds::Result<no_key::SimpleDataReader<M, DA>>
-  where
-    M: 'static,
-    DA: 'static + DeserializerAdapter<M>,
-  {
+  ) -> dds::Result<no_key::SimpleDataReader> {
     self
       .get_ros_default_subscriber()
       .create_simple_datareader_no_key(topic, qos)

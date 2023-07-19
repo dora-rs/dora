@@ -4,9 +4,7 @@ use std::time::Duration;
 use log::{debug, error, info, warn};
 use futures::{pin_mut, FutureExt as StdFutureExt, StreamExt};
 use smol::future::FutureExt;
-use ros2_client::{
-  action, action_msgs, Context, MessageTypeName, Node, NodeOptions, ServiceMapping,
-};
+use ros2_client::{action, action_msgs, Context, MessageTypeName, Node, NodeOptions, ServiceMapping};
 use rustdds::{policy, QosPolicies, QosPolicyBuilder};
 
 // Test / demo program of ROS2 Action, client side.
