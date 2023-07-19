@@ -118,7 +118,7 @@ where
   S::Response: Message,
 {
   service_mapping: ServiceMapping,
-  request_receiver: SimpleDataReaderR<RequestWrapper<S::Request>>,
+  request_receiver: SimpleDataReaderR,
   response_sender: DataWriterR<ResponseWrapper<S::Response>>,
 }
 
@@ -135,9 +135,7 @@ where
     qos_response: Option<QosPolicies>,
   ) -> dds::Result<Self> {
     let request_receiver =
-      node.create_simpledatareader
-      ::<RequestWrapper<S::Request>, ServiceDeserializerAdapter<RequestWrapper<S::Request>>>(
-        request_topic, qos_request)?;
+      node.create_simpledatareader::<RequestWrapper<S::Request>>(request_topic, qos_request)?;
     let response_sender =
       node.create_datawriter
       ::<ResponseWrapper<S::Response>, ServiceSerializerAdapter<ResponseWrapper<S::Response>>>(
@@ -160,8 +158,9 @@ where
   /// Returns `Ok(None)` if no new requests have arrived.
   pub fn receive_request(&self) -> dds::Result<Option<(RmwRequestId, S::Request)>> {
     self.request_receiver.drain_read_notifications();
-    let dcc_rw: Option<no_key::DeserializedCacheChange<RequestWrapper<S::Request>>> =
-      self.request_receiver.try_take_one()?;
+    let dcc_rw: Option<no_key::DeserializedCacheChange<RequestWrapper<S::Request>>> = self
+      .request_receiver
+      .try_take_one::<ServiceDeserializerAdapter<RequestWrapper<S::Request>>, RequestWrapper<S::Request>>()?;
 
     match dcc_rw {
       None => Ok(None),
@@ -200,7 +199,9 @@ where
   /// The request_id must be sent back with the response to identify which
   /// request and response belong together.
   pub async fn async_receive_request(&self) -> dds::Result<(RmwRequestId, S::Request)> {
-    let dcc_stream = self.request_receiver.as_async_stream();
+    let dcc_stream = self
+      .request_receiver
+      .as_async_stream::<ServiceDeserializerAdapter<RequestWrapper<S::Request>>, RequestWrapper<S::Request>>();
     pin_mut!(dcc_stream);
 
     match dcc_stream.next().await {
@@ -224,7 +225,12 @@ where
   pub fn receive_request_stream(
     &self,
   ) -> impl Stream<Item = dds::Result<(RmwRequestId, S::Request)>> + FusedStream + '_ {
-    Box::pin(self.request_receiver.as_async_stream()).then(
+    Box::pin(
+      self
+        .request_receiver
+        .as_async_stream::<ServiceDeserializerAdapter<RequestWrapper<S::Request>>, RequestWrapper<S::Request>>(),
+    )
+    .then(
       move |dcc_r| async move {
         match dcc_r {
           Err(e) => Err(e),
@@ -300,7 +306,7 @@ where
 {
   service_mapping: ServiceMapping,
   request_sender: DataWriterR<RequestWrapper<S::Request>>,
-  response_receiver: SimpleDataReaderR<ResponseWrapper<S::Response>>,
+  response_receiver: SimpleDataReaderR,
   sequence_number_gen: atomic::AtomicI64, // used by basic and cyclone
   client_guid: GUID,                      // used by the Cyclone ServiceMapping
 }
@@ -322,9 +328,7 @@ where
       ::<RequestWrapper<S::Request>, ServiceSerializerAdapter<RequestWrapper<S::Request>>>(
         request_topic, qos_request)?;
     let response_receiver =
-      node.create_simpledatareader
-      ::<ResponseWrapper<S::Response>, ServiceDeserializerAdapter<ResponseWrapper<S::Response>>>(
-        response_topic, qos_response)?;
+      node.create_simpledatareader::<ResponseWrapper<S::Response>>(response_topic, qos_response)?;
 
     debug!(
       "Created new Client: request={} response={}",
@@ -381,8 +385,9 @@ where
   /// please do receive again.
   pub fn receive_response(&self) -> dds::Result<Option<(RmwRequestId, S::Response)>> {
     self.response_receiver.drain_read_notifications();
-    let dcc_rw: Option<no_key::DeserializedCacheChange<ResponseWrapper<S::Response>>> =
-      self.response_receiver.try_take_one()?;
+    let dcc_rw: Option<no_key::DeserializedCacheChange<ResponseWrapper<S::Response>>> = self
+      .response_receiver
+      .try_take_one::<ServiceDeserializerAdapter<ResponseWrapper<S::Response>>, ResponseWrapper<S::Response>>()?;
 
     match dcc_rw {
       None => Ok(None),
@@ -444,7 +449,9 @@ where
   /// The returned Future does not complete until the response has been
   /// received.
   pub async fn async_receive_response(&self, request_id: RmwRequestId) -> dds::Result<S::Response> {
-    let dcc_stream = self.response_receiver.as_async_stream();
+    let dcc_stream = self
+      .response_receiver
+      .as_async_stream::<ServiceDeserializerAdapter<ResponseWrapper<S::Response>>, ResponseWrapper<S::Response>>();
     pin_mut!(dcc_stream);
 
     loop {

@@ -309,8 +309,7 @@ fn cyclone_unwrap<R: Message>(
   }
 }
 
-pub(super) type SimpleDataReaderR<RW> =
-  no_key::SimpleDataReader<RW, ServiceDeserializerAdapter<RW>>;
+pub(super) type SimpleDataReaderR = no_key::SimpleDataReader;
 pub(super) type DataWriterR<RW> = no_key::DataWriter<RW, ServiceSerializerAdapter<RW>>;
 
 pub(super) struct ServiceDeserializerAdapter<RW> {

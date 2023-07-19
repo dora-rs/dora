@@ -15,6 +15,7 @@ use crate::{
   parameters::*,
   pubsub::{Publisher, Subscription},
   service::{Client, Server, Service, ServiceMapping},
+  SubscriptionUntyped,
 };
 
 /// Configuration of [Node]
@@ -264,6 +265,16 @@ impl Node {
     Ok(sub)
   }
 
+  pub fn create_untyped_subscription(
+    &mut self,
+    topic: &Topic,
+    qos: Option<QosPolicies>,
+  ) -> Result<SubscriptionUntyped, dds::Error> {
+    let sub = self.ros_context.create_untyped_subscription(topic, qos)?;
+    self.add_reader(sub.guid());
+    Ok(sub)
+  }
+
   fn check_name_and_add_prefix(mut prefix: String, name: &str) -> Result<String, dds::Error> {
     if name.is_empty() {
       return dds::Error::bad_parameter("Topic name must not be empty.");
@@ -295,14 +306,13 @@ impl Node {
     Ok(p)
   }
 
-  pub(crate) fn create_simpledatareader<D, DA>(
+  pub(crate) fn create_simpledatareader<D>(
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<no_key::SimpleDataReader<D, DA>, dds::Error>
+  ) -> Result<no_key::SimpleDataReader, dds::Error>
   where
     D: 'static,
-    DA: rustdds::no_key::DeserializerAdapter<D> + 'static,
   {
     self.ros_context.create_simpledatareader(topic, qos)
   }
