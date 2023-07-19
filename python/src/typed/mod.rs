@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 pub use serialize::TypedValue;
 
+pub mod deserialize;
 pub mod serialize;
 
 #[derive(Debug, Clone, PartialEq)]
