@@ -12,7 +12,7 @@ use pyo3::{
     types::PyModule,
     PyAny, PyObject, PyResult, Python,
 };
-use typed::{TypeInfo, TypedValue};
+use typed::{deserialize::TypedDeserializer, TypeInfo, TypedValue};
 
 pub mod qos;
 pub mod typed;
@@ -129,8 +129,11 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2Subscription> {
         let subscription = self
             .node
-            .create_subscription(&topic.topic, qos.map(Into::into))?;
-        Ok(Ros2Subscription { subscription })
+            .create_untyped_subscription(&topic.topic, qos.map(Into::into))?;
+        Ok(Ros2Subscription {
+            subscription,
+            deserializer: TypedDeserializer::new(topic.type_info.clone()),
+        })
     }
 }
 
@@ -194,7 +197,8 @@ impl Ros2Publisher {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Subscription {
-    subscription: ros2_client::Subscription<serde_yaml::Value>,
+    deserializer: TypedDeserializer,
+    subscription: ros2_client::SubscriptionUntyped,
 }
 
 #[pymethods]
@@ -202,7 +206,7 @@ impl Ros2Subscription {
     pub fn next(&self, py: Python) -> eyre::Result<Option<PyObject>> {
         let message = self
             .subscription
-            .take()
+            .take(self.deserializer.clone())
             .context("failed to take next message from subscription")?;
         let Some((value, _info)) = message else {
             return Ok(None)
