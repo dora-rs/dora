@@ -5,6 +5,7 @@ use futures::stream::{FusedStream, Stream, StreamExt};
 use log::{debug, error, info, trace, warn};
 use mio_06::{self, Evented};
 use mio_08;
+use serde::de::DeserializeSeed;
 
 use crate::{
   dds::{
@@ -47,6 +48,43 @@ impl SimpleDataReader {
     match self
       .keyed_simpledatareader
       .try_take_one::<DAWrapper<DA>, NoKeyWrapper<D>>()
+    {
+      Err(e) => Err(e),
+      Ok(None) => Ok(None),
+      Ok(Some(kdcc)) => match DeserializedCacheChange::<D>::from_keyed(kdcc) {
+        Some(dcc) => Ok(Some(dcc)),
+        None => Ok(None),
+      },
+    }
+  }
+
+  pub fn try_take_one_seed<DA, D, S>(
+    &self,
+    deserialize: S,
+  ) -> Result<Option<DeserializedCacheChange<D>>>
+  where
+    S: for<'de> DeserializeSeed<'de, Value = D>,
+    DA: SeedDeserializerAdapter,
+    D: 'static,
+  {
+    struct NoKeyWrapperDeserializer<S>(S);
+    impl<'d, S> DeserializeSeed<'d> for NoKeyWrapperDeserializer<S>
+    where
+      S: for<'de> DeserializeSeed<'de>,
+    {
+      type Value = NoKeyWrapper<<S as DeserializeSeed<'d>>::Value>;
+
+      fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+      where
+        D: serde::Deserializer<'d>,
+      {
+        S::deserialize(self.0, deserializer).map(NoKeyWrapper::from)
+      }
+    }
+
+    match self
+      .keyed_simpledatareader
+      .try_take_one_seed::<DAWrapper<DA>, NoKeyWrapper<D>, _>(NoKeyWrapperDeserializer(deserialize))
     {
       Err(e) => Err(e),
       Ok(None) => Ok(None),

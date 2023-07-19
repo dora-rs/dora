@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, ops::Deref};
 
 use bytes::Bytes;
+use serde::de::DeserializeSeed;
 
 use crate::{
   dds::adapters::*, messages::submessages::submessages::RepresentationIdentifier,
@@ -89,15 +90,33 @@ where
 }
 
 // then, implement with_key DA
-impl<D, DA> with_key::KeyFromBytes<NoKeyWrapper<D>> for DAWrapper<DA>
-where
-  DA: no_key::DeserializerAdapter<D>,
-{
+impl<D, DA> with_key::KeyFromBytes<NoKeyWrapper<D>> for DAWrapper<DA> {
   fn key_from_bytes(
     _input_bytes: &[u8],
     _encoding: RepresentationIdentifier,
   ) -> Result<<NoKeyWrapper<D> as Keyed>::K> {
     // also unreachable!() should work here, as this is not supposed to be used
     Ok(())
+  }
+}
+
+impl<DA> no_key::SeedDeserializerAdapter for DAWrapper<DA>
+where
+  DA: no_key::SeedDeserializerAdapter,
+{
+  fn supported_encodings() -> &'static [RepresentationIdentifier] {
+    DA::supported_encodings()
+  }
+
+  fn from_bytes<'a, S>(
+    deserialize: S,
+    input_bytes: &'a [u8],
+    encoding: RepresentationIdentifier,
+  ) -> Result<<S as DeserializeSeed<'static>>::Value>
+  where
+    S: for<'de> DeserializeSeed<'de>,
+    for<'de> <S as DeserializeSeed<'de>>::Value: 'static,
+  {
+    DA::from_bytes(deserialize, input_bytes, encoding)
   }
 }
