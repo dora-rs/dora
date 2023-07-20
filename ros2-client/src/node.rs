@@ -102,7 +102,7 @@ impl Node {
     namespace: &str,
     options: NodeOptions,
     ros_context: Context,
-  ) -> Result<Node, dds::Error> {
+  ) -> Result<Node, dds::CreateError> {
     let paramtopic = ros_context.get_parameter_events_topic();
     let rosout_topic = ros_context.get_rosout_topic();
 
@@ -234,7 +234,7 @@ impl Node {
     name: &str,
     type_name: String,
     qos: &QosPolicies,
-  ) -> Result<Topic, dds::Error> {
+  ) -> Result<Topic, dds::CreateError> {
     let oname = Self::check_name_and_add_prefix("rt/".to_owned(), name)?;
     info!("Creating topic, DDS name: {}", oname);
     let topic = self.ros_context.domain_participant().create_topic(
@@ -259,25 +259,20 @@ impl Node {
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<Subscription<D>, dds::Error> {
+  ) -> Result<Subscription<D>, dds::CreateError>
+  where
+    D: 'static,
+  {
     let sub = self.ros_context.create_subscription(topic, qos)?;
     self.add_reader(sub.guid());
     Ok(sub)
   }
 
-  pub fn create_untyped_subscription(
-    &mut self,
-    topic: &Topic,
-    qos: Option<QosPolicies>,
-  ) -> Result<SubscriptionUntyped, dds::Error> {
-    let sub = self.ros_context.create_untyped_subscription(topic, qos)?;
-    self.add_reader(sub.guid());
-    Ok(sub)
-  }
-
-  fn check_name_and_add_prefix(mut prefix: String, name: &str) -> Result<String, dds::Error> {
+  fn check_name_and_add_prefix(mut prefix: String, name: &str) -> Result<String, dds::CreateError> {
     if name.is_empty() {
-      return dds::Error::bad_parameter("Topic name must not be empty.");
+      return Err(dds::CreateError::BadParameter {
+        reason: "Topic name must not be empty.".into(),
+      });
     }
     // TODO: Implement the rest of the ROS2 name rules.
     // See https://design.ros2.org/articles/topic_and_service_names.html
@@ -300,19 +295,20 @@ impl Node {
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<Publisher<D>, dds::Error> {
+  ) -> Result<Publisher<D>, dds::CreateError> {
     let p = self.ros_context.create_publisher(topic, qos)?;
     self.add_writer(p.guid());
     Ok(p)
   }
 
-  pub(crate) fn create_simpledatareader<D>(
+  pub(crate) fn create_simpledatareader<D, DA>(
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<no_key::SimpleDataReader, dds::Error>
+  ) -> Result<no_key::SimpleDataReader<D, DA>, dds::CreateError>
   where
     D: 'static,
+    DA: rustdds::no_key::DeserializerAdapter<D> + 'static,
   {
     self.ros_context.create_simpledatareader(topic, qos)
   }
@@ -321,7 +317,7 @@ impl Node {
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> Result<no_key::DataWriter<D, SA>, dds::Error>
+  ) -> Result<no_key::DataWriter<D, SA>, dds::CreateError>
   where
     SA: rustdds::no_key::SerializerAdapter<D>,
   {
@@ -343,7 +339,7 @@ impl Node {
     response_type_name: &str,
     request_qos: QosPolicies,
     response_qos: QosPolicies,
-  ) -> Result<Client<S>, dds::Error>
+  ) -> Result<Client<S>, dds::CreateError>
   where
     S: Service + 'static,
     S::Request: Clone,
@@ -398,7 +394,7 @@ impl Node {
     response_type_name: &str,
     request_qos: QosPolicies,
     response_qos: QosPolicies,
-  ) -> Result<Server<S>, dds::Error>
+  ) -> Result<Server<S>, dds::CreateError>
   where
     S: Service + 'static,
     S::Request: Clone,
@@ -439,7 +435,7 @@ impl Node {
     action_name: &str,
     action_type_name: &MessageTypeName,
     action_qos: ActionClientQosPolicies,
-  ) -> Result<ActionClient<A>, dds::Error>
+  ) -> Result<ActionClient<A>, dds::CreateError>
   where
     A: ActionTypes + 'static,
   {
@@ -519,7 +515,7 @@ impl Node {
     action_name: &str,
     action_type_name: &MessageTypeName,
     action_qos: ActionServerQosPolicies,
-  ) -> Result<ActionServer<A>, dds::Error>
+  ) -> Result<ActionServer<A>, dds::CreateError>
   where
     A: ActionTypes + 'static,
   {
