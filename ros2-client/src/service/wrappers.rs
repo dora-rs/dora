@@ -7,7 +7,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use rustdds::{rpc::*, serialization::deserialize_from_cdr, *};
 
 use crate::{message::Message, pubsub::MessageInfo};
-use super::{request_id, RmwRequestId, ServiceMapping};
+use super::{request_id, RmwRequestId, ServiceMapping, DdsError};
 
 // trait Wrapper is for interfacing to Service-specific (De)SerializerAdapter.
 // These adapters are essentially pass-through, and do no actual serialization.
@@ -44,7 +44,7 @@ impl<R: Message> RequestWrapper<R> {
     &self,
     service_mapping: ServiceMapping,
     message_info: &MessageInfo,
-  ) -> dds::Result<(RmwRequestId, R)> {
+  ) -> dds::ReadResult<(RmwRequestId, R)> {
     match service_mapping {
       ServiceMapping::Basic => {
         // 1. decode "RequestHeader" and
@@ -53,7 +53,9 @@ impl<R: Message> RequestWrapper<R> {
         let (header, header_size) =
           deserialize_from_cdr::<BasicRequestHeader>(&bytes, self.encoding)?;
         if bytes.len() < header_size {
-          dds::Error::serialization_error("Service request too short")
+          Err(dds::ReadError::Deserialization {
+            reason: "Service request too short".into(),
+          })
         } else {
           let _header_bytes = bytes.split_off(header_size);
           let (request, _request_bytes) = deserialize_from_cdr::<R>(&bytes, self.encoding)?;
@@ -80,8 +82,8 @@ impl<R: Message> RequestWrapper<R> {
     service_mapping: ServiceMapping,
     r_id: RmwRequestId,
     encoding: RepresentationIdentifier,
-    request: R,
-  ) -> dds::Result<Self> {
+    request: &R,
+  ) -> Result<Self, DdsError<()>> {
     let mut ser_buffer = BytesMut::with_capacity(std::mem::size_of::<R>() * 3 / 2).writer();
 
     // First, write header
@@ -136,14 +138,16 @@ impl<R: Message> ResponseWrapper<R> {
     service_mapping: ServiceMapping,
     message_info: MessageInfo,
     client_guid: GUID,
-  ) -> dds::Result<(RmwRequestId, R)> {
+  ) -> dds::ReadResult<(RmwRequestId, R)> {
     match service_mapping {
       ServiceMapping::Basic => {
         let mut bytes = self.serialized_message.clone(); // ref copy only
         let (header, header_size) =
           deserialize_from_cdr::<BasicReplyHeader>(&bytes, self.encoding)?;
         if bytes.len() < header_size {
-          dds::Error::serialization_error("Service response too short")
+          Err(dds::ReadError::Deserialization {
+            reason: "Service response too short".into(),
+          })
         } else {
           let _header_bytes = bytes.split_off(header_size);
           let (response, _bytes) = deserialize_from_cdr::<R>(&bytes, self.encoding)?;
@@ -158,7 +162,7 @@ impl<R: Message> ResponseWrapper<R> {
         let related_sample_identity = match message_info.related_sample_identity() {
           Some(rsi) => rsi,
           None => {
-            return dds::Error::serialization_error("ServiceMapping=Enhanced, but response message did not have related_sample_identity paramter!")
+            return Err(dds::ReadError::Deserialization{reason:"ServiceMapping=Enhanced, but response message did not have related_sample_identity paramter!".into()})
           }
         };
         Ok((RmwRequestId::from(related_sample_identity), response))
@@ -189,8 +193,8 @@ impl<R: Message> ResponseWrapper<R> {
     service_mapping: ServiceMapping,
     r_id: RmwRequestId,
     encoding: RepresentationIdentifier,
-    response: R,
-  ) -> dds::Result<Self> {
+    response: &R,
+  ) -> Result<Self, DdsError<()>> {
     let mut ser_buffer = BytesMut::with_capacity(std::mem::size_of::<R>() * 3 / 2).writer();
     match service_mapping {
       ServiceMapping::Basic => {
@@ -205,7 +209,7 @@ impl<R: Message> ResponseWrapper<R> {
         serialization::to_writer_endian(&mut ser_buffer, &cyclone_header, encoding)?;
       }
     }
-    serialization::to_writer_endian(&mut ser_buffer, &response, encoding)?;
+    serialization::to_writer_endian(&mut ser_buffer, response, encoding)?;
     let serialized_message = ser_buffer.into_inner().freeze();
     Ok(ResponseWrapper {
       serialized_message,
@@ -285,13 +289,15 @@ fn cyclone_unwrap<R: Message>(
   serialized_message: Bytes,
   writer_guid: GUID,
   encoding: RepresentationIdentifier,
-) -> dds::Result<(RmwRequestId, R)> {
+) -> dds::ReadResult<(RmwRequestId, R)> {
   // 1. decode "CycloneHeader" and
   // 2. decode Request/response
   let mut bytes = serialized_message; // ref copy only, to make "mutable"
   let (header, header_size) = deserialize_from_cdr::<CycloneHeader>(&bytes, encoding)?;
   if bytes.len() < header_size {
-    dds::Error::serialization_error("Service message too short")
+    Err(dds::ReadError::Deserialization {
+      reason: "Service message too short".into(),
+    })
   } else {
     let _header_bytes = bytes.split_off(header_size);
     let (response, _response_bytes) = deserialize_from_cdr::<R>(&bytes, encoding)?;
@@ -309,7 +315,8 @@ fn cyclone_unwrap<R: Message>(
   }
 }
 
-pub(super) type SimpleDataReaderR = no_key::SimpleDataReader;
+pub(super) type SimpleDataReaderR<RW> =
+  no_key::SimpleDataReader<RW, ServiceDeserializerAdapter<RW>>;
 pub(super) type DataWriterR<RW> = no_key::DataWriter<RW, ServiceSerializerAdapter<RW>>;
 
 pub(super) struct ServiceDeserializerAdapter<RW> {

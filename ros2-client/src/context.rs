@@ -48,13 +48,13 @@ pub struct Context {
 }
 
 impl Context {
-  pub fn new() -> Result<Context, dds::Error> {
+  pub fn new() -> Result<Context, dds::CreateError> {
     Self::from_domain_participant(DomainParticipant::new(0)?)
   }
 
   pub fn from_domain_participant(
     domain_participant: DomainParticipant,
-  ) -> Result<Context, dds::Error> {
+  ) -> Result<Context, dds::CreateError> {
     let i = ContextInner::from_domain_participant(domain_participant)?;
     Ok(Context {
       inner: Arc::new(Mutex::new(i)),
@@ -66,7 +66,7 @@ impl Context {
     name: &str,
     namespace: &str,
     options: NodeOptions,
-  ) -> Result<Node, dds::Error> {
+  ) -> Result<Node, dds::CreateError> {
     Node::new(name, namespace, options, self.clone())
   }
 
@@ -74,7 +74,7 @@ impl Context {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> dds::Result<Publisher<M>>
+  ) -> dds::CreateResult<Publisher<M>>
   where
     M: Serialize,
   {
@@ -89,7 +89,7 @@ impl Context {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> dds::Result<Subscription<M>>
+  ) -> dds::CreateResult<Subscription<M>>
   where
     M: 'static + DeserializeOwned,
   {
@@ -114,7 +114,7 @@ impl Context {
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> dds::Result<no_key::DataWriter<M, SA>>
+  ) -> dds::CreateResult<no_key::DataWriter<M, SA>>
   where
     SA: SerializerAdapter<M>,
   {
@@ -216,7 +216,7 @@ impl ContextInner {
   // "new"
   pub fn from_domain_participant(
     domain_participant: DomainParticipant,
-  ) -> Result<ContextInner, dds::Error> {
+  ) -> Result<ContextInner, dds::CreateError> {
     let ros_discovery_topic = domain_participant.create_topic(
       builtin_topics::ros_discovery::TOPIC_NAME.to_string(),
       builtin_topics::ros_discovery::TYPE_NAME.to_string(),

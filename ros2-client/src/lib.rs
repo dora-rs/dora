@@ -70,6 +70,7 @@ pub use message::{Message, MessageTypeName};
 pub use node::*;
 #[doc(inline)]
 pub use pubsub::*;
+use rustdds::{dds, serialization::CdrSerializerError};
 #[doc(inline)]
 pub use service::{AService, Client, Server, Service, ServiceMapping};
 #[doc(inline)]
@@ -78,4 +79,59 @@ pub use action::{Action, ActionTypes};
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {
   pub use rustdds::{Duration, Timestamp};
+}
+
+#[derive(Debug)]
+pub enum DdsError<R> {
+  Create(dds::CreateError),
+  Request(dds::WriteError<R>),
+  Response(dds::ReadError),
+  CdrSerializerError(CdrSerializerError),
+}
+
+impl<R> DdsError<R> {
+  pub fn map_write_error_data<T>(self, f: impl FnOnce(R) -> T) -> DdsError<T> {
+    match self {
+      DdsError::Request(e) => DdsError::Request(match e {
+        dds::WriteError::Serialization { reason, data } => dds::WriteError::Serialization {
+          reason,
+          data: f(data),
+        },
+        dds::WriteError::Poisoned { reason, data } => dds::WriteError::Poisoned {
+          reason,
+          data: f(data),
+        },
+        dds::WriteError::Io(e) => dds::WriteError::Io(e),
+        dds::WriteError::WouldBlock { data } => dds::WriteError::WouldBlock { data: f(data) },
+        dds::WriteError::Internal { reason } => dds::WriteError::Internal { reason },
+      }),
+      DdsError::Create(e) => DdsError::Create(e),
+      DdsError::Response(e) => DdsError::Response(e),
+      DdsError::CdrSerializerError(e) => DdsError::CdrSerializerError(e),
+    }
+  }
+}
+
+impl<R> From<dds::CreateError> for DdsError<R> {
+  fn from(value: dds::CreateError) -> Self {
+    Self::Create(value)
+  }
+}
+
+impl<R> From<dds::WriteError<R>> for DdsError<R> {
+  fn from(value: dds::WriteError<R>) -> Self {
+    Self::Request(value)
+  }
+}
+
+impl<R> From<dds::ReadError> for DdsError<R> {
+  fn from(value: dds::ReadError) -> Self {
+    Self::Response(value)
+  }
+}
+
+impl<R> From<CdrSerializerError> for DdsError<R> {
+  fn from(value: CdrSerializerError) -> Self {
+    Self::CdrSerializerError(value)
+  }
 }

@@ -25,7 +25,7 @@ impl<M: Serialize> Publisher<M> {
     Publisher { datawriter }
   }
 
-  pub fn publish(&self, message: M) -> dds::Result<()> {
+  pub fn publish(&self, message: M) -> dds::WriteResult<(), M> {
     self.datawriter.write(message, Some(Timestamp::now()))
   }
 
@@ -37,7 +37,7 @@ impl<M: Serialize> Publisher<M> {
   //   self.datawriter.write_with_options(message, wo)
   // }
 
-  pub fn assert_liveliness(&self) -> dds::Result<()> {
+  pub fn assert_liveliness(&self) -> dds::WriteResult<(), ()> {
     self.datawriter.assert_liveliness()
   }
 
@@ -45,7 +45,7 @@ impl<M: Serialize> Publisher<M> {
     self.datawriter.guid()
   }
 
-  pub async fn async_publish(&self, message: M) -> dds::Result<()> {
+  pub async fn async_publish(&self, message: M) -> dds::WriteResult<(), M> {
     self
       .datawriter
       .async_write(message, Some(Timestamp::now()))
@@ -57,7 +57,7 @@ impl<M: Serialize> Publisher<M> {
     &self,
     message: M,
     wo: WriteOptions,
-  ) -> dds::Result<rustdds::rpc::SampleIdentity> {
+  ) -> dds::WriteResult<rustdds::rpc::SampleIdentity, M> {
     self.datawriter.async_write_with_options(message, wo).await
   }
 }
@@ -71,8 +71,8 @@ impl<M: Serialize> Publisher<M> {
 ///
 /// Corresponds to a (simplified) [`DataReader`](rustdds::no_key::DataReader) in
 /// DDS
-pub struct Subscription<M: DeserializeOwned> {
-  datareader: no_key::SimpleDataReader,
+pub struct Subscription<M> {
+  datareader: no_key::SimpleDataReader<M>,
   phantom: PhantomData<M>,
 }
 
@@ -85,11 +85,12 @@ impl<M: 'static + DeserializeOwned> Subscription<M> {
     }
   }
 
-  pub fn take(&self) -> dds::Result<Option<(M, MessageInfo)>> {
+  pub fn take(&self) -> dds::ReadResult<Option<(M, MessageInfo)>>
+  where
+    M: DeserializeOwned,
+  {
     self.datareader.drain_read_notifications();
-    let ds: Option<no_key::DeserializedCacheChange<M>> = self
-      .datareader
-      .try_take_one::<CDRDeserializerAdapter<M>, M>()?;
+    let ds: Option<no_key::DeserializedCacheChange<M>> = self.datareader.try_take_one()?;
     Ok(ds.map(dcc_to_value_and_messageinfo))
   }
 
@@ -101,7 +102,7 @@ impl<M: 'static + DeserializeOwned> Subscription<M> {
     match async_stream.next().await {
       Some(Err(e)) => Err(e),
       Some(Ok(ds)) => Ok(dcc_to_value_and_messageinfo(ds)),
-      None => Err(dds::Error::Internal {
+      None => Err(dds::ReadError::Internal {
         // Stream from SimpleDataReader is not supposed to ever end.
         reason: "async_take(): SimpleDataReader value stream unexpectedly ended!".to_string(),
       }),
@@ -111,7 +112,10 @@ impl<M: 'static + DeserializeOwned> Subscription<M> {
   // Returns an async Stream of messages with MessageInfo metadata
   pub fn async_stream(
     &self,
-  ) -> impl Stream<Item = dds::Result<(M, MessageInfo)>> + FusedStream + '_ {
+  ) -> impl Stream<Item = dds::ReadResult<(M, MessageInfo)>> + FusedStream + '_
+  where
+    M: DeserializeOwned,
+  {
     self
       .datareader
       .as_async_stream::<CDRDeserializerAdapter<M>, M>()

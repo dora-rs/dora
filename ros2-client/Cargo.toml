@@ -14,8 +14,7 @@ categories = ["network-programming", "science::robotics"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-
-rustdds = {  path = "../rustdds" }
+rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
 
 mio = "^0.6.23"
 mio-extras = "2.0.6"
