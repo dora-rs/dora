@@ -5,7 +5,7 @@ use futures::{
   pin_mut,
   stream::{FusedStream, Stream, StreamExt},
 };
-use rustdds::{rpc::SampleIdentity, *, serialization::SeedCDRDeserializerAdapter};
+use rustdds::{rpc::SampleIdentity, *};
 use serde::{
   de::{DeserializeOwned, DeserializeSeed},
   Serialize,
@@ -76,9 +76,9 @@ pub struct Subscription<M> {
   phantom: PhantomData<M>,
 }
 
-impl<M: 'static + DeserializeOwned> Subscription<M> {
+impl<M: 'static> Subscription<M> {
   // These must be created from Node
-  pub(crate) fn new(datareader: no_key::SimpleDataReader) -> Subscription<M> {
+  pub(crate) fn new(datareader: no_key::SimpleDataReader<M>) -> Subscription<M> {
     Subscription {
       datareader,
       phantom: PhantomData,
@@ -94,10 +94,20 @@ impl<M: 'static + DeserializeOwned> Subscription<M> {
     Ok(ds.map(dcc_to_value_and_messageinfo))
   }
 
-  pub async fn async_take(&self) -> dds::Result<(M, MessageInfo)> {
-    let async_stream = self
-      .datareader
-      .as_async_stream::<CDRDeserializerAdapter<M>, M>();
+  pub fn take_seed<'de, S>(&self, seed: S) -> dds::ReadResult<Option<(M, MessageInfo)>>
+  where
+    S: DeserializeSeed<'de, Value = M>,
+  {
+    self.datareader.drain_read_notifications();
+    let ds: Option<no_key::DeserializedCacheChange<M>> = self.datareader.try_take_one_seed(seed)?;
+    Ok(ds.map(dcc_to_value_and_messageinfo))
+  }
+
+  pub async fn async_take(&self) -> dds::ReadResult<(M, MessageInfo)>
+  where
+    M: DeserializeOwned,
+  {
+    let async_stream = self.datareader.as_async_stream();
     pin_mut!(async_stream);
     match async_stream.next().await {
       Some(Err(e)) => Err(e),
@@ -118,36 +128,8 @@ impl<M: 'static + DeserializeOwned> Subscription<M> {
   {
     self
       .datareader
-      .as_async_stream::<CDRDeserializerAdapter<M>, M>()
+      .as_async_stream()
       .map(|result| result.map(dcc_to_value_and_messageinfo))
-  }
-
-  pub fn guid(&self) -> rustdds::GUID {
-    self.datareader.guid()
-  }
-}
-
-pub struct SubscriptionUntyped {
-  datareader: no_key::SimpleDataReader,
-}
-
-impl SubscriptionUntyped {
-  // These must be created from Node
-  pub(crate) fn new(datareader: no_key::SimpleDataReader) -> Self {
-    Self { datareader }
-  }
-
-  pub fn take<S, D>(&self, deserialize: S) -> dds::Result<Option<(D, MessageInfo)>>
-  where
-    S: for<'a> DeserializeSeed<'a, Value = D>,
-    D: 'static,
-  {
-    self.datareader.drain_read_notifications();
-    let ds: Option<no_key::DeserializedCacheChange<S::Value>> =
-      self
-        .datareader
-        .try_take_one_seed::<SeedCDRDeserializerAdapter, _, _>(deserialize)?;
-    Ok(ds.map(dcc_to_value_and_messageinfo))
   }
 
   pub fn guid(&self) -> rustdds::GUID {

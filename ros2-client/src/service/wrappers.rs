@@ -1,6 +1,6 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, convert::Infallible};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeSeed};
 #[allow(unused_imports)]
 use log::{debug, error, info, warn};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -15,6 +15,7 @@ use super::{request_id, RmwRequestId, ServiceMapping, DdsError};
 // to apply, unlike (De)Serializer or their adapters. ServiceMapping must be
 // known in order to decode or generate the wire representation.
 pub(super) trait Wrapper {
+  type R;
   fn from_bytes_and_ri(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Self;
   fn bytes(&self) -> Bytes;
 }
@@ -26,6 +27,7 @@ pub(super) struct RequestWrapper<R> {
 }
 
 impl<R: Message> Wrapper for RequestWrapper<R> {
+  type R = R;
   fn from_bytes_and_ri(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Self {
     RequestWrapper {
       serialized_message: Bytes::copy_from_slice(input_bytes), // cloning here
@@ -118,6 +120,7 @@ pub(super) struct ResponseWrapper<R> {
 }
 
 impl<R: Message> Wrapper for ResponseWrapper<R> {
+  type R = R;
   fn from_bytes_and_ri(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Self {
     ResponseWrapper {
       serialized_message: Bytes::copy_from_slice(input_bytes), // cloning here
@@ -334,24 +337,43 @@ impl<RW> ServiceDeserializerAdapter<RW> {
 }
 
 impl<RW: Wrapper> no_key::DeserializerAdapter<RW> for ServiceDeserializerAdapter<RW> {
+  type Error = Infallible;
+  type Input = RW::R;
+
   fn supported_encodings() -> &'static [RepresentationIdentifier] {
     &Self::REPR_IDS
   }
 
-  fn from_bytes(
+  fn from_bytes_seed<'de, S>(
+    _input_bytes: &[u8],
+    _encoding: RepresentationIdentifier,
+    _seed: S,
+  ) -> Result<RW, Self::Error>
+  where
+    S: DeserializeSeed<'de, Value = Self::Input>,
+  {
+    unimplemented!()
+  }
+
+  fn from_bytes<'de>(
     input_bytes: &[u8],
     encoding: RepresentationIdentifier,
-  ) -> Result<RW, serialization::error::Error> {
+  ) -> Result<RW, Self::Error>
+  where
+    Self::Input: Deserialize<'de>,
+  {
     Ok(RW::from_bytes_and_ri(input_bytes, encoding))
   }
 }
 
 impl<RW: Wrapper> no_key::SerializerAdapter<RW> for ServiceSerializerAdapter<RW> {
+  type Error = serialization::error::Error;
+
   fn output_encoding() -> RepresentationIdentifier {
     RepresentationIdentifier::CDR_LE
   }
 
-  fn to_bytes(value: &RW) -> Result<Bytes, serialization::error::Error> {
+  fn to_bytes(value: &RW) -> Result<Bytes, Self::Error> {
     Ok(value.bytes())
   }
 }

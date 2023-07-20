@@ -5,6 +5,7 @@ use mio::{Evented, Poll, PollOpt, Ready, Token};
 use log::{debug, error, info, warn};
 use futures::{pin_mut, stream::FusedStream, Stream, StreamExt};
 use rustdds::{rpc::*, *};
+use serde::Deserialize;
 
 use crate::{message::Message, node::Node, pubsub::MessageInfo, DdsError};
 
@@ -118,7 +119,7 @@ where
   S::Response: Message,
 {
   service_mapping: ServiceMapping,
-  request_receiver: SimpleDataReaderR,
+  request_receiver: SimpleDataReaderR<RequestWrapper<S::Request>>,
   response_sender: DataWriterR<ResponseWrapper<S::Response>>,
 }
 
@@ -135,7 +136,9 @@ where
     qos_response: Option<QosPolicies>,
   ) -> dds::CreateResult<Self> {
     let request_receiver =
-      node.create_simpledatareader::<RequestWrapper<S::Request>>(request_topic, qos_request)?;
+      node.create_simpledatareader
+        ::<RequestWrapper<S::Request>, ServiceDeserializerAdapter<RequestWrapper<S::Request>>>
+        (request_topic, qos_request)?;
     let response_sender =
       node.create_datawriter
       ::<ResponseWrapper<S::Response>, ServiceSerializerAdapter<ResponseWrapper<S::Response>>>(
@@ -308,7 +311,7 @@ where
 {
   service_mapping: ServiceMapping,
   request_sender: DataWriterR<RequestWrapper<S::Request>>,
-  response_receiver: SimpleDataReaderR,
+  response_receiver: SimpleDataReaderR<ResponseWrapper<S::Response>>,
   sequence_number_gen: atomic::AtomicI64, // used by basic and cyclone
   client_guid: GUID,                      // used by the Cyclone ServiceMapping
 }

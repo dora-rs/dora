@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 use rustdds::*;
 
 use crate::{
@@ -15,7 +15,6 @@ use crate::{
   parameters::*,
   pubsub::{Publisher, Subscription},
   service::{Client, Server, Service, ServiceMapping},
-  SubscriptionUntyped,
 };
 
 /// Configuration of [Node]
@@ -255,7 +254,7 @@ impl Node {
   /// * `topic` - Reference to topic created with `create_ros_topic`.
   /// * `qos` - Should take [QOS](../dds/qos/struct.QosPolicies.html) and use if
   ///   it's compatible with topics QOS. `None` indicates the use of Topics QOS.
-  pub fn create_subscription<D: DeserializeOwned + 'static>(
+  pub fn create_subscription<D>(
     &mut self,
     topic: &Topic,
     qos: Option<QosPolicies>,
