@@ -6,7 +6,7 @@ use std::{
 #[allow(unused_imports)]
 use log::{debug, error, info, trace, warn};
 use mio::Evented;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 use rustdds::{
   no_key::{DeserializerAdapter, SerializerAdapter},
   policy::*,
@@ -20,7 +20,6 @@ use crate::{
   node_entities_info::NodeEntitiesInfo,
   participant_entities_info::ParticipantEntitiesInfo,
   pubsub::{Publisher, Subscription},
-  SubscriptionUntyped,
 };
 
 lazy_static! {
@@ -91,23 +90,12 @@ impl Context {
     qos: Option<QosPolicies>,
   ) -> dds::CreateResult<Subscription<M>>
   where
-    M: 'static + DeserializeOwned,
+    M: 'static,
   {
     let datareader = self
       .get_ros_default_subscriber()
       .create_simple_datareader_no_key(topic, qos)?;
     Ok(Subscription::new(datareader))
-  }
-
-  pub fn create_untyped_subscription(
-    &self,
-    topic: &Topic,
-    qos: Option<QosPolicies>,
-  ) -> dds::Result<SubscriptionUntyped> {
-    let datareader = self
-      .get_ros_default_subscriber()
-      .create_simple_datareader_no_key(topic, qos)?;
-    Ok(SubscriptionUntyped::new(datareader))
   }
 
   pub(crate) fn create_datawriter<M, SA>(
@@ -123,11 +111,15 @@ impl Context {
       .create_datawriter_no_key(topic, qos)
   }
 
-  pub fn create_simpledatareader(
+  pub fn create_simpledatareader<D, DA>(
     &self,
     topic: &Topic,
     qos: Option<QosPolicies>,
-  ) -> dds::Result<no_key::SimpleDataReader> {
+  ) -> dds::CreateResult<no_key::SimpleDataReader<D, DA>>
+  where
+    DA: DeserializerAdapter<D> + 'static,
+    D: 'static,
+  {
     self
       .get_ros_default_subscriber()
       .create_simple_datareader_no_key(topic, qos)
