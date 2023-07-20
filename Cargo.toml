@@ -1,5 +1,5 @@
 [workspace]
-members = ["msg-gen", "msg-gen-macro", "python", "ros2-client", "rustdds"]
+members = ["msg-gen", "msg-gen-macro", "python", "ros2-client"]
 
 [package]
 name = "dora-ros2-bridge"
