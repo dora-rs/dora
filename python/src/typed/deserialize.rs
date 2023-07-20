@@ -1,5 +1,16 @@
 use super::{StructField, TypeInfo};
 use core::fmt;
+use std::ops::Deref;
+
+pub struct Ros2Value(serde_yaml::Value);
+
+impl Deref for Ros2Value {
+    type Target = serde_yaml::Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedDeserializer {
@@ -13,13 +24,13 @@ impl TypedDeserializer {
 }
 
 impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
-    type Value = serde_yaml::Value;
+    type Value = Ros2Value;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        match self.type_info {
+        let value = match self.type_info {
             TypeInfo::Struct { name: _, fields } => {
                 /// Serde requires that struct and field names are known at
                 /// compile time with a `'static` lifetime, which is not
@@ -41,7 +52,8 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
             TypeInfo::I32 => deserializer.deserialize_i32(PrimitiveValueVisitor),
             TypeInfo::F32 => deserializer.deserialize_f32(PrimitiveValueVisitor),
             TypeInfo::F64 => deserializer.deserialize_f64(PrimitiveValueVisitor),
-        }
+        }?;
+        Ok(Ros2Value(value))
     }
 }
 
@@ -132,7 +144,7 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor {
             let value = match data.next_element_seed(TypedDeserializer {
                 type_info: field.ty,
             })? {
-                Some(value) => value,
+                Some(value) => value.0,
                 None => match field.default {
                     Some(value) => value,
                     None => {

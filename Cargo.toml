@@ -19,7 +19,7 @@ serde = { version = "1.0.164", features = ["derive"] }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
 ros2-client = { path = "ros2-client" }
-rustdds = { path = "rustdds" }
+rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
 
 [dev-dependencies]
 rand = "0.8.5"

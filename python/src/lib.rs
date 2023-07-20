@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -12,7 +13,10 @@ use pyo3::{
     types::PyModule,
     PyAny, PyObject, PyResult, Python,
 };
-use typed::{deserialize::TypedDeserializer, TypeInfo, TypedValue};
+use typed::{
+    deserialize::{Ros2Value, TypedDeserializer},
+    TypeInfo, TypedValue,
+};
 
 pub mod qos;
 pub mod typed;
@@ -129,7 +133,7 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2Subscription> {
         let subscription = self
             .node
-            .create_untyped_subscription(&topic.topic, qos.map(Into::into))?;
+            .create_subscription(&topic.topic, qos.map(Into::into))?;
         Ok(Ros2Subscription {
             subscription,
             deserializer: TypedDeserializer::new(topic.type_info.clone()),
@@ -189,6 +193,7 @@ impl Ros2Publisher {
 
         self.publisher
             .publish(typed_value)
+            .map_err(|e| e.forget_data())
             .context("publish failed")?;
         Ok(())
     }
@@ -198,7 +203,7 @@ impl Ros2Publisher {
 #[non_exhaustive]
 pub struct Ros2Subscription {
     deserializer: TypedDeserializer,
-    subscription: ros2_client::SubscriptionUntyped,
+    subscription: ros2_client::Subscription<Ros2Value>,
 }
 
 #[pymethods]
@@ -206,13 +211,14 @@ impl Ros2Subscription {
     pub fn next(&self, py: Python) -> eyre::Result<Option<PyObject>> {
         let message = self
             .subscription
-            .take(self.deserializer.clone())
+            .take_seed(self.deserializer.clone())
             .context("failed to take next message from subscription")?;
         let Some((value, _info)) = message else {
             return Ok(None)
         };
 
-        let message = pythonize::pythonize(py, &value).context("failed to pythonize value")?;
+        let message =
+            pythonize::pythonize(py, value.deref()).context("failed to pythonize value")?;
 
         // TODO: add `info`
 
