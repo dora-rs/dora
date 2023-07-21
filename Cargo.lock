@@ -1420,6 +1420,7 @@ dependencies = [
  "eyre",
  "flume",
  "futures",
+ "futures-concurrency",
  "once_cell",
  "serde",
  "serde_json",
@@ -1854,9 +1855,9 @@ dependencies = [
 
 [[package]]
 name = "futures-concurrency"
-version = "7.2.0"
+version = "7.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30ce9739c5655304eced9aaea4220e4393b8f60a3a5f1b84d09a206d6a5078a9"
+checksum = "b726119e6cd29cf120724495b2085e1ed3d17821ea17b86de54576d1aa565f5e"
 dependencies = [
  "bitvec",
  "futures-core",
