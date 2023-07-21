@@ -93,9 +93,7 @@ fn create_operator(
     let dep = if use_path_deps {
         r#"dora-operator-api = { path = "../../apis/rust/operator" }"#.to_string()
     } else {
-        format!(
-            r#"dora-operator-api = {{ git = "https://github.com/dora-rs/dora.git", tag = "v{VERSION}" }}"#
-        )
+        format!(r#"dora-operator-api = "{VERSION}""#)
     };
     let cargo_toml = CARGO_TOML
         .replace("___name___", &name)
@@ -143,9 +141,7 @@ fn create_custom_node(
     let dep = if use_path_deps {
         r#"dora-node-api = { path = "../../apis/rust/node" }"#.to_string()
     } else {
-        format!(
-            r#"dora-node-api = {{ git = "https://github.com/dora-rs/dora.git", tag = "v{VERSION}" }}"#
-        )
+        format!(r#"dora-node-api = "{VERSION}""#)
     };
     let cargo_toml = CARGO_TOML
         .replace("___name___", &name)
