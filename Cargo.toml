@@ -12,6 +12,7 @@ members = [
     "binaries/daemon",
     "binaries/runtime",
     "examples/rust-dataflow/*",
+    "examples/rust-ros2-dataflow/*",
     "examples/benchmark/*",
     "examples/multiple-daemons/*",
     "libraries/communication-layer/*",
@@ -56,6 +57,10 @@ edition = "2021"
 license = "Apache-2.0"
 
 
+[features]
+# enables examples that depend on a sourced ROS2 installation
+ros2-examples = []
+
 [dev-dependencies]
 eyre = "0.6.8"
 tokio = "1.24.2"
@@ -78,6 +83,11 @@ path = "examples/c-dataflow/run.rs"
 [[example]]
 name = "rust-dataflow"
 path = "examples/rust-dataflow/run.rs"
+
+[[example]]
+name = "rust-ros2-dataflow"
+path = "examples/rust-ros2-dataflow/run.rs"
+required-features = ["ros2-examples"]
 
 [[example]]
 name = "rust-dataflow-url"
