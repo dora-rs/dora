@@ -32,7 +32,7 @@ class Operator:
     def on_event(
         self,
         dora_event: str,
-        send_output: Callable[[str, bytes | pa.UInt8Array, dict], None],
+        send_output: Callable[[str, bytes | pa.UInt8Array, dict | None], None],
     ) -> DoraStatus:
         match dora_event["type"]:
             case "INPUT":
