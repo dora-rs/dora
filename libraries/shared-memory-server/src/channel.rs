@@ -1,7 +1,7 @@
 use eyre::{eyre, Context};
 use raw_sync_2::events::{Event, EventImpl, EventInit, EventState};
 use serde::{Deserialize, Serialize};
-use shared_memory::Shmem;
+use shared_memory_extended::Shmem;
 use std::{
     mem, slice,
     sync::atomic::{AtomicBool, AtomicU64},
