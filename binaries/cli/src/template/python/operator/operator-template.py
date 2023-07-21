@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Optional
 
 from dora import DoraStatus
 
@@ -15,7 +15,7 @@ class Operator:
     def on_event(
         self,
         dora_event: dict,
-        send_output: Callable[[str, bytes, dict | None], None],
+        send_output: Callable[[str, bytes, Optional[dict]], None],
     ) -> DoraStatus:
         if dora_event["type"] == "INPUT":
             return self.on_input(dora_event, send_output)
@@ -24,13 +24,13 @@ class Operator:
     def on_input(
         self,
         dora_input: dict,
-        send_output: Callable[[str, bytes, dict | None], None],
+        send_output: Callable[[str, bytes, Optional[dict]], None],
     ):
         """
 
         Args:
             dora_input (dict): Input dict containing an `id`, `data` and `metadata`.
-            send_output Callable[[str, bytes | pa.UInt8Array, dict | None], None]: 
+            send_output Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None]: 
                 Function for sending output to the dataflow:
                 - First argument is the `output_id`
                 - Second argument is the data as either bytes or `pa.UInt8Array` 

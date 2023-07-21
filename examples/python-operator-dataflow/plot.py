@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
-from typing import Callable
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -34,7 +34,7 @@ class Operator:
     def on_event(
         self,
         dora_event: dict,
-        send_output: Callable[[str, bytes | pa.UInt8Array, dict | None], None],
+        send_output: Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None],
     ) -> DoraStatus:
         if dora_event["type"] == "INPUT":
             return self.on_input(dora_event, send_output)
@@ -43,7 +43,7 @@ class Operator:
     def on_input(
         self,
         dora_input: dict,
-        send_output: Callable[[str, bytes | pa.UInt8Array, dict | None], None],
+        send_output: Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None],
     ) -> DoraStatus:
         """
         Put image and bounding box on cv2 window.
@@ -51,7 +51,7 @@ class Operator:
         Args:
             dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
             dora_input["data"] (bytes): Bytes message of the dora_input
-            send_output Callable[[str, bytes | pa.UInt8Array, dict | None], None]: 
+            send_output Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None]: 
                 Function for sending output to the dataflow:
                 - First argument is the `output_id`
                 - Second argument is the data as either bytes or `pa.UInt8Array` 
