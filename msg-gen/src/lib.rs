@@ -7,7 +7,7 @@
     clippy::nursery
 )]
 
-mod parser;
-mod types;
+pub mod parser;
+pub mod types;
 
 pub use crate::parser::get_packages;
