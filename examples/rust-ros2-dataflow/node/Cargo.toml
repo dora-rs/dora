@@ -5,6 +5,14 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+# enables binaries that depend on a sourced ROS2 installation
+ros2 = []
+
+[[bin]]
+name = "rust-ros2-dataflow-example-node"
+required-features = ["ros2"]
+
 [dependencies]
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"

@@ -1,7 +1,7 @@
 nodes:
   - id: rust-node
     custom:
-      build: cargo build -p rust-ros2-dataflow-example-node
+      build: cargo build -p rust-ros2-dataflow-example-node --features ros2
       source: ../../target/debug/rust-ros2-dataflow-example-node
       inputs:
         tick: dora/timer/millis/500
