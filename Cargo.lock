@@ -602,7 +602,7 @@ dependencies = [
  "dora-ros2-bridge-msg-gen-macro",
  "futures",
  "rand",
- "ros2-client",
+ "ros2-client 0.5.2 (git+https://github.com/dora-rs/ros2-client.git?branch=deserialize-seed)",
  "rustdds",
  "serde",
  "serde-big-array",
@@ -1810,6 +1810,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ros2-client"
+version = "0.5.2"
+source = "git+https://github.com/dora-rs/ros2-client.git?branch=deserialize-seed#2f4f3ce1635745634b9948541acd0c76aff2aa92"
+dependencies = [
+ "bytes",
+ "cdr-encoding-size",
+ "chrono",
+ "futures",
+ "lazy_static",
+ "log",
+ "mio 0.6.23",
+ "mio-extras",
+ "pin-utils",
+ "rustdds",
+ "serde",
+ "serde_repr",
+ "uuid",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1821,7 +1841,7 @@ dependencies = [
 [[package]]
 name = "rustdds"
 version = "0.8.4"
-source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#25c0373819db48f2f13e78a423dba95a6bb8f73b"
+source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#fb84f406575884d0058f853e79c7cacd4c01eb17"
 dependencies = [
  "bit-vec",
  "byteorder",

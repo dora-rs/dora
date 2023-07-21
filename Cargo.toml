@@ -18,7 +18,7 @@ dora-ros2-bridge-msg-gen-macro = { path = "msg-gen-macro", optional = true }
 serde = { version = "1.0.164", features = ["derive"] }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
-ros2-client = { path = "ros2-client" }
+ros2-client = { git = "https://github.com/dora-rs/ros2-client.git", branch = "deserialize-seed" }
 rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
 
 [dev-dependencies]
