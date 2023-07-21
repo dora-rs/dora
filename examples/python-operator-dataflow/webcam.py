@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 import os
 import cv2
@@ -32,7 +32,7 @@ class Operator:
     def on_event(
         self,
         dora_event: str,
-        send_output: Callable[[str, bytes], None],
+        send_output: Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None],
     ) -> DoraStatus:
         match dora_event["type"]:
             case "INPUT":
