@@ -1,5 +1,5 @@
 [workspace]
-members = ["msg-gen", "msg-gen-macro"]
+members = ["msg-gen", "msg-gen-macro", "python"]
 
 [package]
 name = "dora-ros2-bridge"
@@ -8,14 +8,18 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["generate-messages"]
+generate-messages = ["dep:dora-ros2-bridge-msg-gen-macro"]
+
 [dependencies]
 array-init = "2.1.0"
-dora-ros2-bridge-msg-gen-macro = { path = "msg-gen-macro" }
+dora-ros2-bridge-msg-gen-macro = { path = "msg-gen-macro", optional = true }
 serde = { version = "1.0.164", features = ["derive"] }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
-ros2-client = "0.5.2"
-rustdds = "0.8.3"
+ros2-client = { git = "https://github.com/dora-rs/ros2-client.git", branch = "deserialize-seed" }
+rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
 
 [dev-dependencies]
 rand = "0.8.5"
