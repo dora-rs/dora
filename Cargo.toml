@@ -6,11 +6,17 @@ name = "dora-ros2-bridge"
 version = "0.1.0"
 edition = "2021"
 
+[[example]]
+name = "random_turtle"
+required-features = ["ros2-examples"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
 default = ["generate-messages"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen-macro"]
+# enables examples that depend on a sourced ROS2 installation
+ros2-examples = []
 
 [dependencies]
 array-init = "2.1.0"
