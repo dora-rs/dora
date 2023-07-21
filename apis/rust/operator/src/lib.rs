@@ -45,6 +45,9 @@ pub trait DoraOperator: Default {
 pub struct DoraOutputSender<'a>(&'a SendOutput);
 
 impl DoraOutputSender<'_> {
+    ///  Send an output from the operator:
+    ///  - `id` is the `output_id` as defined in your dataflow.
+    ///  - `data` is the data that should be sent
     pub fn send(&mut self, id: String, data: Vec<u8>) -> Result<(), String> {
         let result = self.0.send_output.call(Output {
             id: id.into(),
