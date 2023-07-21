@@ -1425,7 +1425,7 @@ dependencies = [
  "serde_json",
  "serde_yaml 0.8.26",
  "shared-memory-server",
- "shared_memory",
+ "shared_memory_extended",
  "thiserror",
  "tokio",
  "tracing",
@@ -4339,19 +4339,19 @@ dependencies = [
  "eyre",
  "raw_sync_2",
  "serde",
- "shared_memory",
+ "shared_memory_extended",
  "tracing",
 ]
 
 [[package]]
-name = "shared_memory"
-version = "0.12.4"
+name = "shared_memory_extended"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba8593196da75d9dc4f69349682bd4c2099f8cde114257d1ef7ef1b33d1aba54"
+checksum = "004d7ece9a3be64f85471d50967710b0a146144225bed5f0abd0514a3bed086f"
 dependencies = [
  "cfg-if",
  "libc",
- "nix 0.23.2",
+ "nix 0.26.2",
  "rand",
  "win-sys",
 ]

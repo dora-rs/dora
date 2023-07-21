@@ -11,7 +11,7 @@ license.workspace = true
 [dependencies]
 eyre = "0.6.8"
 serde = { version = "1.0.152", features = ["derive"] }
-shared_memory = "0.12.0"
+shared_memory_extended = "0.13.0"
 # TODO use upstream release once https://github.com/elast0ny/raw_sync-rs/pull/29 is merged
 # Current fix, use personally pushed `raw_sync_2` version.
 raw_sync_2 = "0.1.5"

@@ -8,7 +8,7 @@ use dora_core::{
     message::{uhlc, Metadata, MetadataParameters},
 };
 use eyre::{bail, WrapErr};
-use shared_memory::{Shmem, ShmemConf};
+use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{HashMap, VecDeque},
     ops::{Deref, DerefMut},
@@ -231,6 +231,7 @@ impl DoraNode {
             None => ShmemHandle(Box::new(
                 ShmemConf::new()
                     .size(data_len)
+                    .writable(true)
                     .create()
                     .wrap_err("failed to allocate shared memory")?,
             )),

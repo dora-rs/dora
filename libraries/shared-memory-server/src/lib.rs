@@ -1,7 +1,7 @@
 use self::channel::ShmemChannel;
 use eyre::{eyre, Context};
 use serde::{Deserialize, Serialize};
-pub use shared_memory::{Shmem, ShmemConf};
+pub use shared_memory_extended::{Shmem, ShmemConf};
 use std::marker::PhantomData;
 use std::time::Duration;
 

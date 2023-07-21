@@ -58,6 +58,7 @@ class Operator:
                 dora_input["value"]
                 .to_numpy()
                 .reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))
+                .copy() # copy the image because we want to modify it below
             )
             self.image = frame
 

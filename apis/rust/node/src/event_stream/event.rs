@@ -5,7 +5,7 @@ use dora_core::{
     message::Metadata,
 };
 use eyre::Context;
-use shared_memory::{Shmem, ShmemConf};
+use shared_memory_extended::{Shmem, ShmemConf};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -78,6 +78,7 @@ impl MappedInputData {
         let memory = Box::new(
             ShmemConf::new()
                 .os_id(shared_memory_id)
+                .writable(false)
                 .open()
                 .wrap_err("failed to map shared memory input")?,
         );
