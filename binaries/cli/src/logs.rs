@@ -31,9 +31,9 @@ pub fn logs(
     };
 
     PrettyPrinter::new()
-        .header(true)
-        .grid(true)
-        .line_numbers(true)
+        .header(false)
+        .grid(false)
+        .line_numbers(false)
         .paging_mode(bat::PagingMode::QuitIfOneScreen)
         .inputs(vec![Input::from_bytes(&logs)
             .name("Logs")
