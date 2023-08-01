@@ -24,6 +24,9 @@ jobs:
         target: [x86_64, x86, aarch64]
     steps:
       - uses: actions/checkout@v3
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
       - uses: actions/setup-python@v4
         with:
           python-version: "3.7"
@@ -58,6 +61,9 @@ jobs:
         target: [x64, x86]
     steps:
       - uses: actions/checkout@v3
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
       - uses: actions/setup-python@v4
         with:
           python-version: "3.7"
@@ -89,6 +95,9 @@ jobs:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v3
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
       - uses: actions/setup-python@v4
         with:
           python-version: "3.7"
@@ -116,6 +125,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
