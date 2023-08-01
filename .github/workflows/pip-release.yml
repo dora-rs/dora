@@ -65,7 +65,7 @@ jobs:
       - uses: ros-tooling/setup-ros@v0.6
         with:
           required-ros-distributions: humble
-      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+      - run: 'call C:\dev\ros2_humble\local_setup.bat & echo "AMENT_PREFIX_PATH=$env:AMENT_PREFIX_PATH" >> $env:GITHUB_ENV'
       - uses: actions/setup-python@v4
         with:
           python-version: "3.7"
