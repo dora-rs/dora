@@ -24,10 +24,6 @@ jobs:
         target: [x86_64, x86, aarch64]
     steps:
       - uses: actions/checkout@v3
-      - uses: ros-tooling/setup-ros@v0.6
-        with:
-          required-ros-distributions: humble
-      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       - uses: actions/setup-python@v4
         with:
           python-version: "3.7"
@@ -62,10 +58,6 @@ jobs:
         target: [x64, x86]
     steps:
       - uses: actions/checkout@v3
-      - uses: ros-tooling/setup-ros@v0.6
-        with:
-          required-ros-distributions: humble
-      - run: 'call C:\dev\ros2_humble\local_setup.bat & echo "AMENT_PREFIX_PATH=$env:AMENT_PREFIX_PATH" >> $env:GITHUB_ENV'
       - uses: actions/setup-python@v4
         with:
           python-version: "3.7"
@@ -97,10 +89,6 @@ jobs:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v3
-      - uses: ros-tooling/setup-ros@v0.6
-        with:
-          required-ros-distributions: humble
-      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       - uses: actions/setup-python@v4
         with:
           python-version: "3.7"
@@ -128,10 +116,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: ros-tooling/setup-ros@v0.6
-        with:
-          required-ros-distributions: humble
-      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
