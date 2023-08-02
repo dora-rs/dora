@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "dora-ros2-bridge"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#d152ee3b03070165c10e0e28046bbe10407aca92"
+source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "array-init",
  "dora-ros2-bridge-msg-gen-macro",
@@ -1606,7 +1606,7 @@ dependencies = [
 [[package]]
 name = "dora-ros2-bridge-msg-gen"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#d152ee3b03070165c10e0e28046bbe10407aca92"
+source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "anyhow",
  "heck 0.3.3",
@@ -1621,7 +1621,7 @@ dependencies = [
 [[package]]
 name = "dora-ros2-bridge-msg-gen-macro"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#d152ee3b03070165c10e0e28046bbe10407aca92"
+source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "anyhow",
  "dora-ros2-bridge-msg-gen",
@@ -2573,7 +2573,17 @@ version = "0.17.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde93d48f0d9277f977a333eca8313695ddd5301dc96f7e02aeddcb0dd99096f"
 dependencies = [
- "io-lifetimes",
+ "io-lifetimes 1.0.11",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "io-extras"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d3c230ee517ee76b1cc593b52939ff68deda3fae9e41eca426c6b4993df51c4"
+dependencies = [
+ "io-lifetimes 2.0.2",
  "windows-sys 0.48.0",
 ]
 
@@ -2587,6 +2597,12 @@ dependencies = [
  "libc",
  "windows-sys 0.48.0",
 ]
+
+[[package]]
+name = "io-lifetimes"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bffb4def18c48926ccac55c1223e02865ce1a821751a95920448662696e7472c"
 
 [[package]]
 name = "iovec"
@@ -2619,7 +2635,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adcf93614601c8129ddf72e2d5633df827ba6551541c6d8c59520a371475be1f"
 dependencies = [
  "hermit-abi 0.3.1",
- "io-lifetimes",
+ "io-lifetimes 1.0.11",
  "rustix",
  "windows-sys 0.48.0",
 ]
@@ -4461,7 +4477,7 @@ dependencies = [
 [[package]]
 name = "rustdds"
 version = "0.8.4"
-source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#fb84f406575884d0058f853e79c7cacd4c01eb17"
+source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#25de36d50d6d1d9986067f885d66556db0f625a2"
 dependencies = [
  "bit-vec",
  "byteorder",
@@ -4471,6 +4487,7 @@ dependencies = [
  "enumflags2",
  "futures",
  "if-addrs",
+ "io-extras 0.18.0",
  "local-ip-address",
  "log",
  "md5",
@@ -4498,7 +4515,7 @@ checksum = "b96e891d04aa506a6d1f318d2771bcb1c7dfda84e126660ace067c9b474bb2c0"
 dependencies = [
  "bitflags",
  "errno",
- "io-lifetimes",
+ "io-lifetimes 1.0.11",
  "libc",
  "linux-raw-sys",
  "windows-sys 0.48.0",
@@ -4934,8 +4951,8 @@ version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "365cc8b798dfcc4f5518e75655521d47f089ded0ef7df335c637e30b6cc717de"
 dependencies = [
- "io-extras",
- "io-lifetimes",
+ "io-extras 0.17.4",
+ "io-lifetimes 1.0.11",
  "rustix",
  "uuid",
  "windows-sys 0.48.0",
