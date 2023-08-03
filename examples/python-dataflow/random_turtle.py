@@ -1,9 +1,10 @@
 import time, random
-from dora_ros2_bridge import *
 from dora import Node
+from dora_ros2_bridge import *
 import pyarrow as pa
 
-node = Node()
+
+dora_node = Node()
 context = Ros2Context()
 node = context.new_node("turtle_teleop", "/ros2_demo", Ros2NodeOptions(rosout=True))
 
@@ -17,7 +18,8 @@ twist_writer = node.create_publisher(turtle_twist_topic)
 turtle_pose_topic = node.create_topic("/turtle1/pose", "turtlesim::Pose", topic_qos)
 pose_reader = node.create_subscription(turtle_pose_topic)
 
-for event in node:
+print("looping", flush=True)
+for event in dora_node:
     match event["type"]:
         case "INPUT":
             match event["id"]:
@@ -30,21 +32,26 @@ for event in node:
                             "z": event["data"][5],
                         },
                     }
+
+                    print(direction, flush=True)
                     twist_writer.publish(direction)
                 case "tick":
                     pose = pose_reader.next()
+
                     if pose == None:
-                        break
-                    node.send_output(
+                        print("stop", flush=True)
+                        continue
+
+                    dora_node.send_output(
+                        "turtle_pose",
                         pa.array(
                             [
                                 pose["x"],
                                 pose["y"],
-                                pose["z"],
                                 pose["theta"],
-                                pose["linar_velocity"],
+                                pose["linear_velocity"],
                                 pose["angular_velocity"],
                             ],
                             type=pa.uint8(),
-                        )
+                        ),
                     )
