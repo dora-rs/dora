@@ -38,17 +38,21 @@ impl Node {
     }
 
     /// `.next()` gives you the next input that the node has received.
-    /// It blocks until the next input becomes available.
+    /// It blocks until the next event becomes available.
     /// It will return `None` when all senders has been dropped.
     ///
     /// ```python
-    /// input_id, value, metadata = node.next()
+    /// event = node.next()
     /// ```
     ///
-    /// You can also iterate over the node in a loop
+    /// You can also iterate over the event stream with a loop
     ///
     /// ```python
-    /// for input_id, value, metadata in node:
+    /// for event in node:
+    ///    match event["type"]:
+    ///        case "INPUT":
+    ///            match event["id"]:
+    ///                 case "image":
     /// ```
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self, py: Python) -> PyResult<Option<PyEvent>> {

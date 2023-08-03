@@ -1532,6 +1532,7 @@ dependencies = [
  "dora-runtime",
  "eyre",
  "flume",
+ "futures",
  "pyo3",
  "pythonize",
  "serde_yaml 0.8.26",
