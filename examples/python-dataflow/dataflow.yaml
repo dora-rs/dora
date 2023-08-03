@@ -1,11 +1,11 @@
 nodes:
-  - id: dora_ros2_bridge
+  - id: turtle
     custom:
       source: python
-      python: random_turtle.py
+      args: ./random_turtle.py
       inputs:
         direction: control/direction
-        timer: dora/timer/millis/50
+        tick: dora/timer/millis/50
       outputs:
         - turtle_pose
 
@@ -14,6 +14,6 @@ nodes:
       source: python
       args: ./control_node.py
       inputs:
-        turtle_pose: dora_ros2_bridge/turtle_pose
+        turtle_pose: turtle/turtle_pose
       outputs:
         - direction
