@@ -4,7 +4,6 @@ python3 -m venv .env
 . $(pwd)/.env/bin/activate
 # Dev dependencies
 pip install maturin
-pip install patchelf
 cd ../../apis/python/node
 maturin develop
 cd ../../../examples/python-operator-dataflow

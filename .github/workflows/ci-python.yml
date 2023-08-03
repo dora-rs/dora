@@ -17,7 +17,11 @@ env:
 jobs:
   examples:
     name: "Python Examples"
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v3
 

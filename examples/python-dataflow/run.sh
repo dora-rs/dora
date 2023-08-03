@@ -1,9 +1,8 @@
 set -e
 
-python3 -m venv .env
-. $(pwd)/.env/bin/activate
+python3 -m venv ../.env
+. $(pwd)/../.env/bin/activate
 # Dev dependencies
-pip install patchelf
 pip install maturin
 cd ../../apis/python/node
 maturin develop
