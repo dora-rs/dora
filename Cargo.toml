@@ -8,6 +8,7 @@ edition = "2021"
 
 [[example]]
 name = "random_turtle"
+path = "examples/rust-standalone-bridge/random_turtle.rs"
 required-features = ["ros2-examples"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
