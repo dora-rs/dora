@@ -1,6 +1,7 @@
 import time, random
 from dora_ros2_bridge import *
 from dora import Node
+import pyarrow as pa
 
 node = Node()
 context = Ros2Context()
@@ -34,4 +35,16 @@ for event in node:
                     pose = pose_reader.next()
                     if pose == None:
                         break
-                    node.send_output(pose)
+                    node.send_output(
+                        pa.array(
+                            [
+                                pose["x"],
+                                pose["y"],
+                                pose["z"],
+                                pose["theta"],
+                                pose["linar_velocity"],
+                                pose["angular_velocity"],
+                            ],
+                            type=pa.uint8(),
+                        )
+                    )
