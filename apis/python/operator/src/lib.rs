@@ -1,7 +1,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use arrow::pyarrow::PyArrowConvert;
-use dora_node_api::{Data, Event, Metadata, MetadataParameters};
+use dora_node_api::{merged::MergedEvent, Data, Event, Metadata, MetadataParameters};
 use eyre::{Context, Result};
 use pyo3::{
     exceptions::PyLookupError,
@@ -11,33 +11,38 @@ use pyo3::{
 
 #[pyclass]
 pub struct PyEvent {
-    event: Event,
+    event: MergedEvent<PyObject>,
     data: Option<Arc<Data>>,
 }
 
 #[pymethods]
 impl PyEvent {
     pub fn __getitem__(&self, key: &str, py: Python<'_>) -> PyResult<Option<PyObject>> {
-        let value = match key {
-            "type" => Some(self.ty().to_object(py)),
-            "id" => self.id().map(|v| v.to_object(py)),
-            "data" => self.data(py),
-            "value" => self.value(py)?,
-            "metadata" => self.metadata(py),
-            "error" => self.error().map(|v| v.to_object(py)),
-            other => {
-                return Err(PyLookupError::new_err(format!(
-                    "event has no property `{other}`"
-                )))
+        match &self.event {
+            MergedEvent::Dora(event) => {
+                let value = match key {
+                    "type" => Some(Self::ty(event).to_object(py)),
+                    "id" => Self::id(event).map(|v| v.to_object(py)),
+                    "data" => self.data(py),
+                    "value" => self.value(py)?,
+                    "metadata" => Self::metadata(event, py),
+                    "error" => Self::error(event).map(|v| v.to_object(py)),
+                    other => {
+                        return Err(PyLookupError::new_err(format!(
+                            "event has no property `{other}`"
+                        )))
+                    }
+                };
+                Ok(value)
             }
-        };
-        Ok(value)
+            MergedEvent::External(event) => event.call_method0(py, "__getitem__").map(Some),
+        }
     }
 }
 
 impl PyEvent {
-    fn ty(&self) -> &str {
-        match &self.event {
+    fn ty(event: &Event) -> &str {
+        match event {
             Event::Stop => "STOP",
             Event::Input { .. } => "INPUT",
             Event::InputClosed { .. } => "INPUT_CLOSED",
@@ -46,8 +51,8 @@ impl PyEvent {
         }
     }
 
-    fn id(&self) -> Option<&str> {
-        match &self.event {
+    fn id(event: &Event) -> Option<&str> {
+        match event {
             Event::Input { id, .. } => Some(id),
             Event::InputClosed { id } => Some(id),
             _ => None,
@@ -74,15 +79,15 @@ impl PyEvent {
         Ok(None)
     }
 
-    fn metadata(&self, py: Python<'_>) -> Option<PyObject> {
-        match &self.event {
+    fn metadata(event: &Event, py: Python<'_>) -> Option<PyObject> {
+        match event {
             Event::Input { metadata, .. } => Some(metadata_to_pydict(metadata, py).to_object(py)),
             _ => None,
         }
     }
 
-    fn error(&self) -> Option<&str> {
-        match &self.event {
+    fn error(event: &Event) -> Option<&str> {
+        match event {
             Event::Error(error) => Some(error),
             _other => None,
         }
@@ -90,8 +95,14 @@ impl PyEvent {
 }
 
 impl From<Event> for PyEvent {
-    fn from(mut event: Event) -> Self {
-        let data = if let Event::Input { data, .. } = &mut event {
+    fn from(event: Event) -> Self {
+        Self::from(MergedEvent::Dora(event))
+    }
+}
+
+impl From<MergedEvent<PyObject>> for PyEvent {
+    fn from(mut event: MergedEvent<PyObject>) -> Self {
+        let data = if let MergedEvent::Dora(Event::Input { data, .. }) = &mut event {
             data.take().map(Arc::new)
         } else {
             None

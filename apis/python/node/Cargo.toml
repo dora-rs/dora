@@ -23,6 +23,7 @@ flume = "0.10.14"
 dora-runtime = { workspace = true, features = ["tracing", "python"] }
 arrow = { version = "35.0.0", features = ["pyarrow"] }
 pythonize = "0.18.0"
+futures = "0.3.28"
 
 [lib]
 name = "dora"
