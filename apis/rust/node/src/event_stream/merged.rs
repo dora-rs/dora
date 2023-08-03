@@ -11,13 +11,22 @@ pub enum Either<A, B> {
     Second(B),
 }
 
+impl<A> Either<A, A> {
+    pub fn flatten(self) -> A {
+        match self {
+            Either::First(a) => a,
+            Either::Second(a) => a,
+        }
+    }
+}
+
 pub trait MergeExternal<'a, E> {
     type Item;
 
     fn merge_external(
         self,
-        external_events: impl Stream<Item = E> + Unpin + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + 'a>;
+        external_events: impl Stream<Item = E> + Send + Unpin + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Send + Unpin + 'a>;
 }
 
 impl<'a, E> MergeExternal<'a, E> for super::EventStream
@@ -28,8 +37,8 @@ where
 
     fn merge_external(
         self,
-        external_events: impl Stream<Item = E> + Unpin + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + 'a> {
+        external_events: impl Stream<Item = E> + Send + Unpin + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Send + Unpin + 'a> {
         let dora = self.map(MergedEvent::Dora);
         let external = external_events.map(MergedEvent::External);
         Box::new((dora, external).merge())
@@ -38,7 +47,7 @@ where
 
 impl<'a, E, F, S> MergeExternal<'a, F> for S
 where
-    S: Stream<Item = MergedEvent<E>> + Unpin + 'a,
+    S: Stream<Item = MergedEvent<E>> + Send + Unpin + 'a,
     E: 'a,
     F: 'a,
 {
@@ -46,8 +55,8 @@ where
 
     fn merge_external(
         self,
-        external_events: impl Stream<Item = F> + Unpin + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + 'a> {
+        external_events: impl Stream<Item = F> + Send + Unpin + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Send + Unpin + 'a> {
         let first = self.map(|e| match e {
             MergedEvent::Dora(d) => MergedEvent::Dora(d),
             MergedEvent::External(e) => MergedEvent::External(Either::First(e)),
