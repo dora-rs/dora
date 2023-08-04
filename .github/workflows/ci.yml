@@ -31,14 +31,24 @@ jobs:
       run: cargo build --examples
     - name: "Rust standalone"
       timeout-minutes: 30
-      run: cargo run --example random_turtle --features="ros2-examples"
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        cargo run --example random_turtle --features="ros2-examples"
     - name: "Rust Dataflow example"
       timeout-minutes: 30
-      run: cargo run --example rust-ros2-dataflow --features="ros2-examples"
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        cargo build -p rust-ros2-dataflow-example-node --features ros2
+        cargo run --example rust-ros2-dataflow --features="ros2-examples"
     - name: "Python Dataflow example"
       timeout-minutes: 30
-      run: cargo run --example python-ros2-dataflow --features="ros2-examples"
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        pip3 install examples/python-ros2-dataflow/requirements.txt
+        cargo run --example python-ros2-dataflow --features="ros2-examples"
     - name: "Python Standalone"
       timeout-minutes: 30
-      run: python3 examples/python-standalone-bridge/random_turtle.py
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        python3 examples/python-standalone-bridge/random_turtle.py
 
