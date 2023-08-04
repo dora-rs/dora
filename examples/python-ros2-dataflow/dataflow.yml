@@ -2,6 +2,7 @@ nodes:
   - id: turtle
     custom:
       source: python
+      build: pip3 install -r requirements.txt
       args: ./random_turtle.py
       inputs:
         direction: control/direction

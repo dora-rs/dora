@@ -7,7 +7,10 @@ import pyarrow as pa
 
 node = Node()
 
-for event in node:
+for i in range(500):
+    event = node.next()
+    if event is None:
+        break
     if event["type"] == "INPUT":
         print(
             f"""Node received:
