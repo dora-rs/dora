@@ -12,9 +12,11 @@ jobs:
 
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest]
+        platform: [ubuntu-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
+    env:
+      QT_QPA_PLATFORM: offscreen
 
     steps:
     - uses: actions/checkout@v3
@@ -44,7 +46,7 @@ jobs:
       timeout-minutes: 30
       run: |
         source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
-        pip3 install examples/python-ros2-dataflow/requirements.txt
+        pip3 install -r ./examples/python-ros2-dataflow/requirements.txt
         cargo run --example python-ros2-dataflow --features="ros2-examples"
     - name: "Python Standalone"
       timeout-minutes: 30
