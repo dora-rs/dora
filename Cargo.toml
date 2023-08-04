@@ -27,7 +27,7 @@ dora-ros2-bridge = { path = "." }
 default = ["generate-messages"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen-macro"]
 # enables examples that depend on a sourced ROS2 installation
-ros2-examples = ["eyre", "tokio"]
+ros2-examples = ["eyre", "tokio", "dora-daemon"]
 
 [dependencies]
 array-init = "2.1.0"
@@ -39,6 +39,7 @@ ros2-client = { git = "https://github.com/dora-rs/ros2-client.git", branch = "de
 rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
 eyre = { version = "0.6.8", optional = true }
 tokio = { version = "1.29.1", features = ["full"], optional = true }
+dora-daemon = { version = "0.2.4", optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
