@@ -8,9 +8,19 @@ async fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     let dataflow = Path::new("dataflow.yml");
+    build_dataflow(dataflow).await?;
 
     run_dataflow(dataflow).await?;
 
+    Ok(())
+}
+
+async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
+    let mut cmd = tokio::process::Command::new("dora");
+    cmd.arg("build").arg(dataflow);
+    if !cmd.status().await?.success() {
+        eyre::bail!("failed to build dataflow");
+    };
     Ok(())
 }
 

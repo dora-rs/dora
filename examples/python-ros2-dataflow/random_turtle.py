@@ -19,7 +19,10 @@ turtle_pose_topic = node.create_topic("/turtle1/pose", "turtlesim::Pose", topic_
 pose_reader = node.create_subscription(turtle_pose_topic)
 
 print("looping", flush=True)
-for event in dora_node:
+for i in range(500):
+    event = dora_node.next()
+    if event is None:
+        break
     match event["type"]:
         case "INPUT":
             match event["id"]:
