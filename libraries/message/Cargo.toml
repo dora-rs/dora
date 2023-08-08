@@ -17,6 +17,7 @@ build = false
 capnp = { version = "0.14.11", features = ["unaligned"] }
 uhlc = "0.5.1"
 serde = { version = "1.0.136", features = ["derive"] }
+arrow-schema = { version = "45.0.0", features = ["serde"] }
 
 [build-dependencies]
 capnpc = "0.14"
