@@ -51,18 +51,19 @@ class Operator:
         Args:
             dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
             dora_input["data"] (bytes): Bytes message of the dora_input
-            send_output Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None]: 
+            send_output Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None]:
                 Function for sending output to the dataflow:
                 - First argument is the `output_id`
-                - Second argument is the data as either bytes or `pa.UInt8Array` 
+                - Second argument is the data as either bytes or `pa.UInt8Array`
                 - Third argument is dora metadata dict
-                e.g.: `send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`        """
+                e.g.: `send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`
+        """
         if dora_input["id"] == "image":
             frame = (
                 dora_input["value"]
                 .to_numpy()
                 .reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))
-                .copy() # copy the image because we want to modify it below
+                .copy()  # copy the image because we want to modify it below
             )
             self.image = frame
 
@@ -74,11 +75,7 @@ class Operator:
             self.bboxs = np.reshape(bboxs, (-1, 6))
 
             self.bounding_box_messages += 1
-            print(
-                "received "
-                + str(self.bounding_box_messages)
-                + " bounding boxes"
-            )
+            print("received " + str(self.bounding_box_messages) + " bounding boxes")
 
         for bbox in self.bboxs:
             [
