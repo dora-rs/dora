@@ -13,6 +13,8 @@ from utils import LABELS
 CI = os.environ.get("CI")
 
 font = cv2.FONT_HERSHEY_SIMPLEX
+
+
 class Plotter:
     """
     Plot image and bounding box
@@ -75,7 +77,6 @@ class Plotter:
                 return DoraStatus.STOP
 
         return DoraStatus.CONTINUE
-
 
 
 plotter = Plotter()
