@@ -37,14 +37,20 @@ for i in range(500):
                     }
 
                     print(direction, flush=True)
+                    assert direction["linear"]["x"], "direction should not be 0."
                     twist_writer.publish(direction)
                 case "tick":
-                    pose = pose_reader.next()
+                    pose = (
+                        pose_reader.next()
+                    )  # TODO: Replace when stream merge is merged
 
                     if pose == None:
                         print("stop", flush=True)
                         continue
 
+                    assert (
+                        pose["x"] != 5.544445
+                    ), "turtle should not be at initial x axis"
                     dora_node.send_output(
                         "turtle_pose",
                         pa.array(
