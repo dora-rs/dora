@@ -1,0 +1,20 @@
+nodes:
+  - id: turtle
+    custom:
+      source: python
+      build: pip3 install -r requirements.txt
+      args: ./random_turtle.py
+      inputs:
+        direction: control/direction
+        tick: dora/timer/millis/50
+      outputs:
+        - turtle_pose
+
+  - id: control
+    custom:
+      source: python
+      args: ./control_node.py
+      inputs:
+        turtle_pose: turtle/turtle_pose
+      outputs:
+        - direction

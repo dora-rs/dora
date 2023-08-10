@@ -6,11 +6,18 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_LOG: trace
 
 jobs:
-  build:
+  build_and_examples:
 
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [ubuntu-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+    env:
+      QT_QPA_PLATFORM: offscreen
 
     steps:
     - uses: actions/checkout@v3
@@ -18,3 +25,33 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - uses: ros-tooling/setup-ros@v0.6
+      with:
+        required-ros-distributions: humble
+    - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+    - name: "Build examples"
+      timeout-minutes: 30
+      run: cargo build --examples
+    - name: "Rust standalone"
+      timeout-minutes: 30
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        cargo run --example random_turtle --features="ros2-examples"
+    - name: "Rust Dataflow example"
+      timeout-minutes: 30
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        cargo build -p rust-ros2-dataflow-example-node --features ros2
+        cargo run --example rust-ros2-dataflow --features="ros2-examples"
+    - name: "Python Dataflow example"
+      timeout-minutes: 30
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        pip3 install -r ./examples/python-ros2-dataflow/requirements.txt
+        cargo run --example python-ros2-dataflow --features="ros2-examples"
+    - name: "Python Standalone"
+      timeout-minutes: 30
+      run: |
+        source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        python3 examples/python-standalone-bridge/random_turtle.py
+
