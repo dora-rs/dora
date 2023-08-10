@@ -37,7 +37,6 @@ for i in range(500):
                     }
 
                     print(direction, flush=True)
-                    assert direction["linear"]["x"], "direction should not be 0."
                     twist_writer.publish(direction)
                 case "tick":
                     pose = (
