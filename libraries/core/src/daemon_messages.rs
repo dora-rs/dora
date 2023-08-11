@@ -87,6 +87,7 @@ impl DaemonRequest {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum Data {
+    #[serde(with = "serde_bytes")]
     Vec(Vec<u8>),
     SharedMemory {
         shared_memory_id: String,
