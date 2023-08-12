@@ -16,3 +16,4 @@ eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
 arrow = { version = "45.0.0", features = ["pyarrow"] }
+arrow-schema = "45.0.0"

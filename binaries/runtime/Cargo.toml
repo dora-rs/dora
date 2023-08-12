@@ -36,6 +36,7 @@ flume = "0.10.14"
 clap = { version = "4.0.3", features = ["derive"] }
 tracing-opentelemetry = { version = "0.18.0", optional = true }
 pythonize = { version = "0.19.0", optional = true }
+arrow-schema = "45.0.0"
 
 [features]
 default = ["tracing"]
