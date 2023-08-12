@@ -310,17 +310,18 @@ mod callback_impl {
                 Ok(())
             })?;
 
-            let metadata = pydict_to_metadata(metadata)
+            let parameters = pydict_to_metadata(metadata)
                 .wrap_err("failed to parse metadata")?
                 .into_owned();
-
-            let event = OperatorEvent::Output {
-                output_id: output.to_owned().into(),
-                metadata,
-                data: Some(sample),
-            };
+            let data_type = process_python_type(&data, py)?;
 
             py.allow_threads(|| {
+            let event = OperatorEvent::Output {
+                output_id: output.to_owned().into(),
+                    data_type,
+                    parameters,
+                data: Some(sample),
+            };
                 self.events_tx
                     .blocking_send(event)
                     .map_err(|_| eyre!("failed to send output to runtime"))
