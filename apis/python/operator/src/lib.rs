@@ -178,3 +178,13 @@ pub fn process_python_output<T>(
         eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
     }
 }
+
+pub fn process_python_type(data: &PyObject, py: Python) -> Result<DataType> {
+    if let Ok(_py_bytes) = data.downcast::<PyBytes>(py) {
+        Ok(DataType::UInt8)
+    } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
+        Ok(arrow_array.data_type().clone())
+    } else {
+        eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
+    }
+}

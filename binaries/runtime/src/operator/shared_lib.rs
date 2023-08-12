@@ -13,7 +13,6 @@ use dora_operator_api_types::{
 use eyre::{bail, eyre, Context, Result};
 use libloading::Symbol;
 use std::{
-    borrow::Cow,
     ffi::c_void,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -115,14 +114,16 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     open_telemetry_context,
                 },
             } = output;
-            let metadata = MetadataParameters {
-                open_telemetry_context: Cow::Owned(open_telemetry_context.into()),
+            let parameters = MetadataParameters {
+                open_telemetry_context: open_telemetry_context.into(),
                 ..Default::default()
             };
+            let data_type = arrow_schema::DataType::UInt8;
 
             let event = OperatorEvent::Output {
                 output_id: DataId::from(String::from(output_id)),
-                metadata,
+                data_type,
+                parameters,
                 data: Some(data.to_owned().into()),
             };
 
@@ -164,7 +165,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 span.set_parent(cx);
                 let cx = span.context();
                 let string_cx = serialize_context(&cx);
-                metadata.parameters.open_telemetry_context = Cow::Owned(string_cx);
+                metadata.parameters.open_telemetry_context = string_cx;
             }
 
             let operator_event = match event {
@@ -186,7 +187,6 @@ impl<'lib> SharedLibraryOperator<'lib> {
                             open_telemetry_context: metadata
                                 .parameters
                                 .open_telemetry_context
-                                .into_owned()
                                 .into(),
                         },
                     };
