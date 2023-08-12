@@ -1316,6 +1316,7 @@ impl RunningDataflow {
 
                     let metadata = dora_core::message::Metadata::from_parameters(
                         hlc.new_timestamp(),
+                        arrow_schema::DataType::Null,
                         MetadataParameters {
                             watermark: 0,
                             deadline: 0,
