@@ -758,7 +758,7 @@ impl Daemon {
         dataflow_id: Uuid,
         node_id: NodeId,
         output_id: DataId,
-        metadata: dora_core::message::Metadata<'static>,
+        metadata: dora_core::message::Metadata,
         data: Option<Data>,
     ) -> Result<(), eyre::ErrReport> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
@@ -1069,7 +1069,7 @@ async fn send_output_to_local_receivers(
     node_id: NodeId,
     output_id: DataId,
     dataflow: &mut RunningDataflow,
-    metadata: &dora_core::message::Metadata<'static>,
+    metadata: &dora_core::message::Metadata,
     data: Option<Data>,
     clock: &HLC,
 ) -> Result<Option<Vec<u8>>, eyre::ErrReport> {
@@ -1443,7 +1443,7 @@ pub enum DaemonNodeEvent {
     },
     SendOut {
         output_id: DataId,
-        metadata: dora_core::message::Metadata<'static>,
+        metadata: dora_core::message::Metadata,
         data: Option<Data>,
     },
     ReportDrop {
@@ -1459,7 +1459,7 @@ pub enum DoraEvent {
     Timer {
         dataflow_id: DataflowId,
         interval: Duration,
-        metadata: dora_core::message::Metadata<'static>,
+        metadata: dora_core::message::Metadata,
     },
     SpawnedNodeResult {
         dataflow_id: DataflowId,
