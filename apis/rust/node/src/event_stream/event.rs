@@ -16,7 +16,7 @@ pub enum Event {
     },
     Input {
         id: DataId,
-        metadata: Metadata<'static>,
+        metadata: Metadata,
         data: Option<Data>,
     },
     InputClosed {

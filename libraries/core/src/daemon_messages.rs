@@ -50,7 +50,7 @@ pub enum DaemonRequest {
     Subscribe,
     SendMessage {
         output_id: DataId,
-        metadata: Metadata<'static>,
+        metadata: Metadata,
         data: Option<Data>,
     },
     CloseOutputs(Vec<DataId>),
@@ -152,7 +152,7 @@ pub enum NodeEvent {
     },
     Input {
         id: DataId,
-        metadata: Metadata<'static>,
+        metadata: Metadata,
         data: Option<Data>,
     },
     InputClosed {
@@ -233,7 +233,7 @@ pub enum InterDaemonEvent {
         dataflow_id: DataflowId,
         node_id: NodeId,
         output_id: DataId,
-        metadata: Metadata<'static>,
+        metadata: Metadata,
         data: Option<Vec<u8>>,
     },
     InputsClosed {
