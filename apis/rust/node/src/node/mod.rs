@@ -1,6 +1,7 @@
 use crate::EventStream;
 
 use self::{control_channel::ControlChannel, drop_stream::DropStream};
+use arrow_schema::DataType;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     daemon_messages::{Data, DropToken, NodeConfig},
@@ -22,7 +23,7 @@ use dora_tracing::set_up_tracing;
 mod control_channel;
 mod drop_stream;
 
-const ZERO_COPY_THRESHOLD: usize = 4096;
+pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 pub struct DoraNode {
     id: NodeId,
@@ -130,7 +131,7 @@ impl DoraNode {
         let mut sample = self.allocate_data_sample(data_len)?;
         data(&mut sample);
 
-        self.send_output_sample(output_id, parameters, Some(sample))
+        self.send_output_sample(output_id, DataType::UInt8, parameters, Some(sample))
     }
 
     pub fn send_output_bytes(
@@ -145,9 +146,27 @@ impl DoraNode {
         })
     }
 
+    pub fn send_typed_output<F>(
+        &mut self,
+        output_id: DataId,
+        data_type: DataType,
+        parameters: MetadataParameters,
+        data_len: usize,
+        data: F,
+    ) -> eyre::Result<()>
+    where
+        F: FnOnce(&mut [u8]),
+    {
+        let mut sample = self.allocate_data_sample(data_len)?;
+        data(&mut sample);
+
+        self.send_output_sample(output_id, data_type, parameters, Some(sample))
+    }
+
     pub fn send_output_sample(
         &mut self,
         output_id: DataId,
+        data_type: DataType,
         parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> eyre::Result<()> {
@@ -156,8 +175,11 @@ impl DoraNode {
         if !self.node_config.outputs.contains(&output_id) {
             eyre::bail!("unknown output");
         }
-        let metadata =
-            Metadata::from_parameters(self.clock.new_timestamp(), parameters.into_owned());
+        let metadata = Metadata::from_parameters(
+            self.clock.new_timestamp(),
+            data_type,
+            parameters.into_owned(),
+        );
 
         let (data, shmem) = match sample {
             Some(sample) => sample.finalize(),
