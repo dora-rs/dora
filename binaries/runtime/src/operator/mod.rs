@@ -1,3 +1,4 @@
+use arrow_schema::DataType;
 use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource},
@@ -77,7 +78,8 @@ pub enum OperatorEvent {
     },
     Output {
         output_id: DataId,
-        metadata: MetadataParameters<'static>,
+        data_type: DataType,
+        parameters: MetadataParameters,
         data: Option<DataSample>,
     },
     Error(eyre::Error),

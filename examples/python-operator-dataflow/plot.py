@@ -71,7 +71,7 @@ class Operator:
             print("received " + str(self.image_messages) + " images")
 
         elif dora_input["id"] == "bbox" and len(self.image) != 0:
-            bboxs = dora_input["value"].to_numpy().view(np.float32)
+            bboxs = dora_input["value"].to_numpy()
             self.bboxs = np.reshape(bboxs, (-1, 6))
 
             self.bounding_box_messages += 1
