@@ -6,6 +6,7 @@ use std::{
 };
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
 use pyo3::{
@@ -182,10 +183,9 @@ pub struct Ros2Publisher {
 impl Ros2Publisher {
     pub fn publish(&self, data: &PyAny) -> eyre::Result<()> {
         // TODO: add support for arrow types
-        let value = pythonize::depythonize(data).context("failed to depythonize data")?;
-
-        // add type info to ensure correct serialization (e.g. struct types
-        // and map types need to be serialized differently)
+        let value = arrow::array::ArrayData::from_pyarrow(data)?;
+        //// add type info to ensure correct serialization (e.g. struct types
+        //// and map types need to be serialized differently)
         let typed_value = TypedValue {
             value: &value,
             type_info: &self.type_info,
@@ -217,9 +217,7 @@ impl Ros2Subscription {
             return Ok(None)
         };
 
-        let message =
-            pythonize::pythonize(py, value.deref()).context("failed to pythonize value")?;
-
+        let message = value.to_pyarrow(py)?;
         // TODO: add `info`
 
         Ok(Some(message))
