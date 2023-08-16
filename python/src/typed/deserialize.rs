@@ -1,11 +1,18 @@
 use super::{StructField, TypeInfo};
+use arrow::{
+    array::{
+        make_array, ArrayData, BooleanBuilder, Float64Builder, Int64Builder, NullArray,
+        StringBuilder, StructArray, UInt64Builder,
+    },
+    datatypes::Field,
+};
 use core::fmt;
-use std::ops::Deref;
+use std::{ops::Deref, sync::Arc};
 
-pub struct Ros2Value(serde_yaml::Value);
+pub struct Ros2Value(ArrayData);
 
 impl Deref for Ros2Value {
-    type Target = serde_yaml::Value;
+    type Target = ArrayData;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -52,6 +59,8 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
             TypeInfo::I32 => deserializer.deserialize_i32(PrimitiveValueVisitor),
             TypeInfo::F32 => deserializer.deserialize_f32(PrimitiveValueVisitor),
             TypeInfo::F64 => deserializer.deserialize_f64(PrimitiveValueVisitor),
+            TypeInfo::String => deserializer.deserialize_str(PrimitiveValueVisitor),
+            _ => todo!(),
         }?;
         Ok(Ros2Value(value))
     }
@@ -61,7 +70,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
 struct PrimitiveValueVisitor;
 
 impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
-    type Value = serde_yaml::Value;
+    type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a primitive value")
@@ -71,56 +80,70 @@ impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::Bool(b))
+        let mut array = BooleanBuilder::new();
+        array.append_value(b);
+        Ok(array.finish().into())
     }
 
     fn visit_i64<E>(self, i: i64) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::Number(i.into()))
+        let mut array = Int64Builder::new();
+        array.append_value(i);
+        Ok(array.finish().into())
     }
 
     fn visit_u64<E>(self, u: u64) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::Number(u.into()))
+        let mut array = UInt64Builder::new();
+        array.append_value(u);
+        Ok(array.finish().into())
     }
 
     fn visit_f64<E>(self, f: f64) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::Number(f.into()))
+        let mut array = Float64Builder::new();
+        array.append_value(f);
+        Ok(array.finish().into())
     }
 
     fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::String(s.to_owned()))
+        let mut array = StringBuilder::new();
+        array.append_value(s);
+        Ok(array.finish().into())
     }
 
     fn visit_string<E>(self, s: String) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::String(s))
+        let mut array = StringBuilder::new();
+        array.append_value(s);
+        Ok(array.finish().into())
     }
 
     fn visit_unit<E>(self) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::Null)
+        let array = NullArray::new(0);
+        Ok(array.into())
     }
 
     fn visit_none<E>(self) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
-        Ok(serde_yaml::Value::Null)
+        let array = NullArray::new(0);
+        Ok(array.into())
     }
 }
 
