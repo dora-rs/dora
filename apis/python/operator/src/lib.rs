@@ -69,7 +69,7 @@ impl PyEvent {
     fn value(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         if let Some(data) = &self.data {
             let data_type = match &self.event {
-                Event::Input { metadata, .. } => match &metadata
+                MergedEvent::Dora(Event::Input { metadata, .. }) => match &metadata
                     .schema
                     .fields()
                     .first()
