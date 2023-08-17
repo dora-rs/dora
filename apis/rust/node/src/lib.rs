@@ -17,7 +17,7 @@ pub use dora_core;
 pub use dora_core::message::{uhlc, Metadata, MetadataParameters};
 pub use event_stream::{merged, Data, Event, EventStream, MappedInputData};
 pub use flume::Receiver;
-pub use node::{DataSample, DoraNode};
+pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD};
 
 mod daemon_connection;
 mod event_stream;

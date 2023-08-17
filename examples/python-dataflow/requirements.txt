@@ -46,3 +46,4 @@ seaborn>=0.11.0
 # roboflow
 
 opencv-python>=4.1.1
+maturin

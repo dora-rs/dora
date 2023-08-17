@@ -83,7 +83,7 @@ impl ControlChannel {
     pub fn send_message(
         &mut self,
         output_id: DataId,
-        metadata: Metadata<'static>,
+        metadata: Metadata,
         data: Option<Data>,
     ) -> eyre::Result<()> {
         let request = DaemonRequest::SendMessage {
