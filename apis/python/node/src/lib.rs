@@ -121,6 +121,15 @@ impl Node {
 #[pyclass]
 pub struct ExternalEventStream(pub Option<Box<dyn Stream<Item = PyObject> + Unpin + Send>>);
 
+impl<S> From<S> for ExternalEventStream
+where
+    S: Stream<Item = PyObject> + Unpin + Send + 'static,
+{
+    fn from(value: S) -> Self {
+        Self(Some(Box::new(value)))
+    }
+}
+
 enum Events {
     Dora(EventStream),
     Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send>),
