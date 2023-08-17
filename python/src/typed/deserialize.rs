@@ -1,13 +1,12 @@
-use super::{StructField, TypeInfo};
 use arrow::{
     array::{
-        make_array, ArrayData, BooleanBuilder, Float64Builder, Int64Builder, NullArray,
-        StringBuilder, StructArray, UInt64Builder,
+        make_array, ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int64Builder,
+        NullArray, StringBuilder, StructArray, UInt64Builder,
     },
-    datatypes::Field,
+    datatypes::{DataType, Fields},
 };
 use core::fmt;
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
 
 pub struct Ros2Value(ArrayData);
 
@@ -21,11 +20,11 @@ impl Deref for Ros2Value {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedDeserializer {
-    type_info: TypeInfo,
+    type_info: DataType,
 }
 
 impl TypedDeserializer {
-    pub fn new(type_info: TypeInfo) -> Self {
+    pub fn new(type_info: DataType) -> Self {
         Self { type_info }
     }
 }
@@ -38,7 +37,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
         D: serde::Deserializer<'de>,
     {
         let value = match self.type_info {
-            TypeInfo::Struct { name: _, fields } => {
+            DataType::Struct(fields) => {
                 /// Serde requires that struct and field names are known at
                 /// compile time with a `'static` lifetime, which is not
                 /// possible in this case. Thus, we need to use dummy names
@@ -56,10 +55,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
                     StructVisitor { fields },
                 )
             }
-            TypeInfo::I32 => deserializer.deserialize_i32(PrimitiveValueVisitor),
-            TypeInfo::F32 => deserializer.deserialize_f32(PrimitiveValueVisitor),
-            TypeInfo::F64 => deserializer.deserialize_f64(PrimitiveValueVisitor),
-            TypeInfo::String => deserializer.deserialize_str(PrimitiveValueVisitor),
+            DataType::Int32 => deserializer.deserialize_i32(PrimitiveValueVisitor),
+            DataType::Float32 => deserializer.deserialize_f32(PrimitiveValueVisitor),
+            DataType::Float64 => deserializer.deserialize_f64(PrimitiveValueVisitor),
+            DataType::Utf8 => deserializer.deserialize_str(PrimitiveValueVisitor),
             _ => todo!(),
         }?;
         Ok(Ros2Value(value))
@@ -100,6 +99,15 @@ impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
     {
         let mut array = UInt64Builder::new();
         array.append_value(u);
+        Ok(array.finish().into())
+    }
+
+    fn visit_f32<E>(self, f: f32) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut array = Float32Builder::new();
+        array.append_value(f);
         Ok(array.finish().into())
     }
 
@@ -148,11 +156,11 @@ impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
 }
 
 struct StructVisitor {
-    fields: Vec<StructField>,
+    fields: Fields,
 }
 
 impl<'de> serde::de::Visitor<'de> for StructVisitor {
-    type Value = serde_yaml::Value;
+    type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a struct encoded as sequence")
@@ -162,25 +170,23 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let mut mapping = serde_yaml::Mapping::new();
-        for field in self.fields {
+        let mut fields = vec![];
+        for field in self.fields.iter() {
             let value = match data.next_element_seed(TypedDeserializer {
-                type_info: field.ty,
+                type_info: field.data_type().clone(),
             })? {
                 Some(value) => value.0,
-                None => match field.default {
-                    Some(value) => value,
                     None => {
                         return Err(serde::de::Error::custom(format!(
                             "missing field {}",
-                            &field.name
+                        &field.name()
                         )))
                     }
-                },
             };
-            mapping.insert(serde_yaml::Value::String(field.name), value);
+            fields.push((field.clone(), make_array(value)));
         }
 
-        Ok(serde_yaml::Value::Mapping(mapping))
+        let struct_array: StructArray = fields.into();
+        Ok(struct_array.into())
     }
 }

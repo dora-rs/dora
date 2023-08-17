@@ -1,3 +1,4 @@
+use arrow::datatypes::{DataType, Field};
 use dora_ros2_bridge_msg_gen::types::{
     primitives::{BasicType, NestableType},
     MemberType, Message,
@@ -10,57 +11,35 @@ pub use serialize::TypedValue;
 pub mod deserialize;
 pub mod serialize;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum TypeInfo {
-    Struct {
-        name: String,
-        fields: Vec<StructField>,
-    },
-    I32,
-    F32,
-    F64,
-}
-
-impl TypeInfo {
     pub fn for_message(
         messages: &HashMap<String, HashMap<String, Message>>,
         package_name: &str,
         message_name: &str,
-    ) -> eyre::Result<Self> {
+) -> eyre::Result<DataType> {
         let empty = HashMap::new();
         let package_messages = messages.get(package_name).unwrap_or(&empty);
         let message = package_messages
             .get(message_name)
             .context("unknown type name")?;
-        Ok(Self::Struct {
-            name: message.name.clone(),
-            fields: message
+    let fields = message
                 .members
                 .iter()
                 .map(|m| {
-                    Result::<_, eyre::Report>::Ok(StructField {
-                        name: m.name.clone(),
-                        ty: type_info_for_member(m, package_name, messages)?,
-                        default: default_for_member(m, package_name, messages)?,
-                    })
-                })
-                .collect::<Result<_, _>>()?,
+            Result::<_, eyre::Report>::Ok(Field::new(
+                m.name.clone(),
+                type_info_for_member(m, package_name, messages)?,
+                true, // default: default_for_member(m, package_name, messages)?,
+            ))
         })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct StructField {
-    pub name: String,
-    pub ty: TypeInfo,
-    pub default: Option<serde_yaml::Value>,
+        .collect::<Result<_, _>>()?;
+    Ok(DataType::Struct(fields))
 }
 
 fn type_info_for_member(
     m: &dora_ros2_bridge_msg_gen::types::Member,
     package_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,
-) -> eyre::Result<TypeInfo> {
+) -> eyre::Result<DataType> {
     let empty = HashMap::new();
     let package_messages = messages.get(package_name).unwrap_or(&empty);
     Ok(match &m.r#type {
@@ -68,14 +47,14 @@ fn type_info_for_member(
             NestableType::BasicType(t) => match t {
                 BasicType::I8 => todo!(),
                 BasicType::I16 => todo!(),
-                BasicType::I32 => TypeInfo::I32,
+                BasicType::I32 => DataType::Int32,
                 BasicType::I64 => todo!(),
                 BasicType::U8 => todo!(),
                 BasicType::U16 => todo!(),
                 BasicType::U32 => todo!(),
                 BasicType::U64 => todo!(),
-                BasicType::F32 => TypeInfo::F32,
-                BasicType::F64 => TypeInfo::F64,
+                BasicType::F32 => DataType::Float32,
+                BasicType::F64 => DataType::Float64,
                 BasicType::Bool => todo!(),
                 BasicType::Char => todo!(),
                 BasicType::Byte => todo!(),
@@ -84,15 +63,23 @@ fn type_info_for_member(
                 let referenced_message = package_messages
                     .get(&name.0)
                     .context("unknown referenced message")?;
-                TypeInfo::for_message(messages, package_name, &referenced_message.name)?
+                for_message(messages, package_name, &referenced_message.name)?
             }
-            NestableType::NamespacedType(t) => {
-                TypeInfo::for_message(messages, &t.package, &t.name)?
-            }
-            NestableType::GenericString(_) => todo!(),
+            NestableType::NamespacedType(t) => for_message(messages, &t.package, &t.name)?,
+            NestableType::GenericString(_) => DataType::Utf8,
         },
-        MemberType::Array(_) => todo!(),
-        MemberType::Sequence(_) => todo!(),
+        MemberType::Array(array) => match array.value_type {
+            _ => todo!(),
+        },
+        MemberType::Sequence(sequence) => match &sequence.value_type {
+            NestableType::NamedType(name) => {
+                let referenced_message = package_messages
+                    .get(&name.0)
+                    .context("unknown referenced message")?;
+                for_message(messages, package_name, &referenced_message.name)?
+            }
+            _ => todo!(),
+        },
         MemberType::BoundedSequence(_) => {
             todo!()
         }

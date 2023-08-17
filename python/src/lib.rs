@@ -1,12 +1,14 @@
 use std::{
     collections::HashMap,
-    ops::Deref,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
-use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use arrow::{
+    datatypes::DataType,
+    pyarrow::{FromPyArrow, ToPyArrow},
+};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
 use pyo3::{
@@ -16,7 +18,7 @@ use pyo3::{
 };
 use typed::{
     deserialize::{Ros2Value, TypedDeserializer},
-    TypeInfo, TypedValue,
+    for_message, TypedValue,
 };
 
 pub mod qos;
@@ -107,7 +109,7 @@ impl Ros2Node {
         let topic = self
             .node
             .create_topic(name, encoded_type_name, &qos.into())?;
-        let type_info = TypeInfo::for_message(&self.messages, namespace_name, message_name)
+        let type_info = for_message(&self.messages, namespace_name, message_name)
             .context("failed to determine type info for message")?;
 
         Ok(Ros2Topic { topic, type_info })
@@ -121,10 +123,7 @@ impl Ros2Node {
         let publisher = self
             .node
             .create_publisher(&topic.topic, qos.map(Into::into))?;
-        Ok(Ros2Publisher {
-            publisher,
-            type_info: topic.type_info.clone(),
-        })
+        Ok(Ros2Publisher { publisher })
     }
 
     pub fn create_subscription(
@@ -169,13 +168,12 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
-    type_info: TypeInfo,
+    type_info: DataType,
 }
 
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
-    type_info: TypeInfo,
     publisher: ros2_client::Publisher<TypedValue<'static>>,
 }
 
@@ -186,10 +184,7 @@ impl Ros2Publisher {
         let value = arrow::array::ArrayData::from_pyarrow(data)?;
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
-        let typed_value = TypedValue {
-            value: &value,
-            type_info: &self.type_info,
-        };
+        let typed_value = TypedValue { value: &value };
 
         self.publisher
             .publish(typed_value)
