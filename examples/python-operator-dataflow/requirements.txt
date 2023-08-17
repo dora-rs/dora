@@ -47,3 +47,4 @@ thop>=0.1.1  # FLOPs computation
 
 opencv-python>=4.1.1
 pyarrow
+maturin

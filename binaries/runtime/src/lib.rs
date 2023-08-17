@@ -218,13 +218,15 @@ async fn run(
                     }
                     OperatorEvent::Output {
                         output_id,
-                        metadata,
+                        data_type,
+                        parameters,
                         data,
                     } => {
                         let output_id = operator_output_id(&operator_id, &output_id);
                         let result;
                         (node, result) = tokio::task::spawn_blocking(move || {
-                            let result = node.send_output_sample(output_id, metadata, data);
+                            let result =
+                                node.send_output_sample(output_id, data_type, parameters, data);
                             (node, result)
                         })
                         .await
