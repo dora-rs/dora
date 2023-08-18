@@ -48,7 +48,8 @@ jobs:
       run: |
         source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
         pip3 install -r ./examples/python-ros2-dataflow/requirements.txt
-        maturin develop -m python/Cargo.toml
+        maturin build -m python/Cargo.toml
+        pip install target/wheels/*.whl
         cargo run --example python-ros2-dataflow --features="ros2-examples"
     - name: "Python Standalone"
       timeout-minutes: 30
