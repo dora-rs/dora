@@ -187,7 +187,7 @@ impl Ros2Publisher {
         //// and map types need to be serialized differently)
         let typed_value = TypedValue {
             value: &value,
-            type_info: self.type_info.clone(),
+            type_info: &self.type_info,
         };
 
         self.publisher

@@ -12,7 +12,7 @@ use super::TypeInfo;
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedValue<'a> {
     pub value: &'a ArrayData,
-    pub type_info: TypeInfo,
+    pub type_info: &'a TypeInfo,
 }
 
 impl serde::Serialize for TypedValue<'_> {
@@ -77,7 +77,7 @@ impl serde::Serialize for TypedValue<'_> {
                             DUMMY_FIELD_NAME,
                             &TypedValue {
                                 value: &field_value,
-                                type_info: TypeInfo {
+                                type_info: &TypeInfo {
                                     fields: field.data_type().clone(),
                                     defaults: default,
                                 },
