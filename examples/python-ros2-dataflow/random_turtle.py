@@ -37,7 +37,7 @@ for i in range(500):
                     }
 
                     print(direction, flush=True)
-                    twist_writer.publish(direction)
+                    twist_writer.publish(pa.array(direction))
                 case "tick":
                     pose = (
                         pose_reader.next()
@@ -46,6 +46,8 @@ for i in range(500):
                     if pose == None:
                         print("stop", flush=True)
                         continue
+
+                    pose = pose[0].as_py()
 
                     assert (
                         pose["x"] != 5.544445
