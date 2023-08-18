@@ -5,10 +5,7 @@ use std::{
 };
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
-use arrow::{
-    datatypes::DataType,
-    pyarrow::{FromPyArrow, ToPyArrow},
-};
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
 use pyo3::{
@@ -18,7 +15,7 @@ use pyo3::{
 };
 use typed::{
     deserialize::{Ros2Value, TypedDeserializer},
-    for_message, TypedValue,
+    for_message, TypeInfo, TypedValue,
 };
 
 pub mod qos;
@@ -123,7 +120,10 @@ impl Ros2Node {
         let publisher = self
             .node
             .create_publisher(&topic.topic, qos.map(Into::into))?;
-        Ok(Ros2Publisher { publisher })
+        Ok(Ros2Publisher {
+            publisher,
+            type_info: topic.type_info.clone(),
+        })
     }
 
     pub fn create_subscription(
@@ -168,13 +168,14 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
-    type_info: DataType,
+    type_info: TypeInfo,
 }
 
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
     publisher: ros2_client::Publisher<TypedValue<'static>>,
+    type_info: TypeInfo,
 }
 
 #[pymethods]
@@ -184,7 +185,10 @@ impl Ros2Publisher {
         let value = arrow::array::ArrayData::from_pyarrow(data)?;
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
-        let typed_value = TypedValue { value: &value };
+        let typed_value = TypedValue {
+            value: &value,
+            type_info: self.type_info.clone(),
+        };
 
         self.publisher
             .publish(typed_value)

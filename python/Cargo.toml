@@ -10,7 +10,6 @@ dora-ros2-bridge-msg-gen = { path = "../msg-gen" }
 pyo3 = { version = "0.19", features = ["eyre", "abi3-py37", "serde"] }
 eyre = "0.6"
 serde = "1.0.166"
-serde_yaml = "0.8.23"
 flume = "0.10.14"
 arrow = { version = "45.0.0", features = ["pyarrow"] }
 

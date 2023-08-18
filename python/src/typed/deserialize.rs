@@ -8,6 +8,8 @@ use arrow::{
 use core::fmt;
 use std::ops::Deref;
 
+use super::TypeInfo;
+
 pub struct Ros2Value(ArrayData);
 
 impl Deref for Ros2Value {
@@ -20,11 +22,11 @@ impl Deref for Ros2Value {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedDeserializer {
-    type_info: DataType,
+    type_info: TypeInfo,
 }
 
 impl TypedDeserializer {
-    pub fn new(type_info: DataType) -> Self {
+    pub fn new(type_info: TypeInfo) -> Self {
         Self { type_info }
     }
 }
@@ -36,7 +38,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = match self.type_info {
+        let value = match self.type_info.fields {
             DataType::Struct(fields) => {
                 /// Serde requires that struct and field names are known at
                 /// compile time with a `'static` lifetime, which is not
@@ -52,7 +54,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
                 deserializer.deserialize_struct(
                     DUMMY_STRUCT_NAME,
                     &DUMMY_FIELDS[..fields.len()],
-                    StructVisitor { fields },
+                    StructVisitor {
+                        fields,
+                        defaults: self.type_info.defaults,
+                    },
                 )
             }
             DataType::Int32 => deserializer.deserialize_i32(PrimitiveValueVisitor),
@@ -157,6 +162,7 @@ impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
 
 struct StructVisitor {
     fields: Fields,
+    defaults: ArrayData,
 }
 
 impl<'de> serde::de::Visitor<'de> for StructVisitor {
@@ -171,19 +177,26 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor {
         A: serde::de::SeqAccess<'de>,
     {
         let mut fields = vec![];
+        let defaults: StructArray = self.defaults.clone().into();
         for field in self.fields.iter() {
             let value = match data.next_element_seed(TypedDeserializer {
-                type_info: field.data_type().clone(),
+                type_info: TypeInfo {
+                    fields: field.data_type().clone(),
+                    defaults: self.defaults.clone(),
+                },
             })? {
-                Some(value) => value.0,
+                Some(value) => make_array(value.0),
+                None => match defaults.column_by_name(field.name()) {
+                    Some(value) => value.clone(),
                     None => {
                         return Err(serde::de::Error::custom(format!(
-                            "missing field {}",
-                        &field.name()
+                            "missing field {} for deserialization",
+                            &field.name()
                         )))
                     }
+                },
             };
-            fields.push((field.clone(), make_array(value)));
+            fields.push((field.clone(), value));
         }
 
         let struct_array: StructArray = fields.into();
