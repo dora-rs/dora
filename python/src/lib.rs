@@ -8,10 +8,11 @@ use std::{
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
+use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods, pymodule},
     types::PyModule,
-    PyAny, PyObject, PyResult, Python,
+    wrap_pyfunction, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject,
 };
 use typed::{
     deserialize::{Ros2Value, TypedDeserializer},
@@ -223,6 +224,29 @@ impl Ros2Subscription {
         // TODO: add `info`
 
         Ok(Some(message))
+    }
+}
+
+impl Ros2Subscription {
+    fn as_stream(
+        &self,
+    ) -> impl Stream<Item = Result<(Ros2Value, ros2_client::MessageInfo), rustdds::dds::ReadError>> + '_
+    {
+        self.subscription
+            .async_stream_seed(self.deserializer.clone())
+    }
+}
+
+impl Stream for Ros2Subscription {
+    type Item = Result<(Ros2Value, ros2_client::MessageInfo), rustdds::dds::ReadError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let s = self.as_stream();
+        futures::pin_mut!(s);
+        s.poll_next_unpin(cx)
     }
 }
 
