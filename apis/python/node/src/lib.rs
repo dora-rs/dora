@@ -192,7 +192,7 @@ impl Node {
 
 /// Start a runtime for Operators
 #[pyfunction]
-fn start_runtime() -> eyre::Result<()> {
+pub fn start_runtime() -> eyre::Result<()> {
     dora_runtime::main().wrap_err("Dora Runtime raised an error.")
 }
 
