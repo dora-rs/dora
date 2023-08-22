@@ -43,7 +43,7 @@ impl PyEvent {
                 };
                 Ok(value)
             }
-            MergedEvent::External(event) => event.call_method0(py, "__getitem__").map(Some),
+            MergedEvent::External(event) => event.call_method1(py, "__getitem__", (key,)).map(Some),
         }
     }
 }
