@@ -285,5 +285,9 @@ fn dora_ros2_bridge(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<qos::Ros2QosPolicies>()?;
     m.add_class::<qos::Ros2Durability>()?;
     m.add_class::<qos::Ros2Liveliness>()?;
+
+    m.add_function(wrap_pyfunction!(dora::start_runtime, m)?)?;
+    m.add_class::<Node>().unwrap();
+
     Ok(())
 }
