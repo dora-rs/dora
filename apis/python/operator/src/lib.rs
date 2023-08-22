@@ -19,6 +19,13 @@ pub struct PyEvent {
 #[pymethods]
 impl PyEvent {
     pub fn __getitem__(&self, key: &str, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        if key == "kind" {
+            let kind = match &self.event {
+                MergedEvent::Dora(_) => "dora",
+                MergedEvent::External(_) => "external",
+            };
+            return Ok(Some(kind.to_object(py)));
+        }
         match &self.event {
             MergedEvent::Dora(event) => {
                 let value = match key {
