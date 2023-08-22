@@ -7,13 +7,13 @@ edition = "2021"
 [dependencies]
 dora-ros2-bridge = { path = "..", default-features = false }
 dora-ros2-bridge-msg-gen = { path = "../msg-gen" }
-pyo3 = { version = "0.18", features = ["eyre", "abi3-py37", "serde"] }
+pyo3 = { version = "0.19", features = ["eyre", "abi3-py37", "serde"] }
 eyre = "0.6"
 serde = "1.0.166"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
-arrow = { version = "35.0.0", features = ["pyarrow"] }
-pythonize = "0.18.0"
+arrow = { version = "45.0.0", features = ["pyarrow"] }
+pythonize = "0.19.0"
 
 [lib]
 name = "dora_ros2_bridge"
