@@ -6,6 +6,7 @@ use std::{
 };
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
+use dora::{ExternalEventStream, Node};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
 use futures::{Stream, StreamExt};
@@ -139,6 +140,29 @@ impl Ros2Node {
             subscription,
             deserializer: TypedDeserializer::new(topic.type_info.clone()),
         })
+    }
+
+    pub fn create_subscription_stream(
+        &mut self,
+        topic: &Ros2Topic,
+        qos: Option<qos::Ros2QosPolicies>,
+    ) -> eyre::Result<ExternalEventStream> {
+        let subscription = self.create_subscription(topic, qos)?;
+        let stream = futures::stream::poll_fn(move |cx| {
+            let s = subscription.as_stream().map(|item| {
+                match item.context("failed to read ROS2 message") {
+                    Ok((value, _info)) => Python::with_gil(|py| {
+                        pythonize::pythonize(py, value.deref())
+                            .context("failed to pythonize value")
+                            .unwrap_or_else(|err| PyErr::from(err).to_object(py))
+                    }),
+                    Err(err) => Python::with_gil(|py| PyErr::from(err).to_object(py)),
+                }
+            });
+            futures::pin_mut!(s);
+            s.poll_next_unpin(cx)
+        });
+        Ok(ExternalEventStream::from(stream))
     }
 }
 
