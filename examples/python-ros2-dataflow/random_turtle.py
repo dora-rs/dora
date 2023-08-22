@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import time, random
 from dora import Node
 from dora_ros2_bridge import *
