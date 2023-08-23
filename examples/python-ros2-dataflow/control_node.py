@@ -18,12 +18,10 @@ for i in range(500):
     value: {event["data"]},
     metadata: {event["metadata"]}"""
         )
-        array = [random.random() + 1, 0, 0, 0, 0, random.random() - 0.5]
-        print("sending ",  array)
         node.send_output(
             "direction",
             pa.array(
-                array,
-                type=pa.float64(),
+                [1, 0, 0, 0, 0, 1],
+                type=pa.uint8(),
             ),
         )
