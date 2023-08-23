@@ -46,6 +46,13 @@ impl PyEvent {
             MergedEvent::External(event) => event.call_method1(py, "__getitem__", (key,)).map(Some),
         }
     }
+
+    pub fn inner(&mut self) -> Option<&PyObject> {
+        match &self.event {
+            MergedEvent::Dora(_) => None,
+            MergedEvent::External(event) => Some(event),
+        }
+    }
 }
 
 impl PyEvent {
