@@ -152,8 +152,9 @@ impl Ros2Node {
             let s = subscription.as_stream().map(|item| {
                 match item.context("failed to read ROS2 message") {
                     Ok((value, _info)) => Python::with_gil(|py| {
-                        pythonize::pythonize(py, value.deref())
-                            .context("failed to pythonize value")
+                        value
+                            .to_pyarrow(py)
+                            .context("failed to convert value to pyarrow")
                             .unwrap_or_else(|err| PyErr::from(err).to_object(py))
                     }),
                     Err(err) => Python::with_gil(|py| PyErr::from(err).to_object(py)),
