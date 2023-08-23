@@ -42,12 +42,13 @@ for i in range(500):
                             }
 
                             print(direction, flush=True)
-                            twist_writer.publish(direction)
+                            twist_writer.publish(pa.array(direction))
                         case "tick":
                             pass
 
         case "external":
-            pose = event
+            pose = event[0].as_py()
+
             assert (
                 pose["x"] != 5.544445
             ), "turtle should not be at initial x axis"

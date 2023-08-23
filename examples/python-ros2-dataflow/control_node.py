@@ -21,7 +21,7 @@ for i in range(500):
         node.send_output(
             "direction",
             pa.array(
-                [random.random() + 1, 0, 0, 0, 0, random.random() - 0.5],
+                [1, 0, 0, 0, 0, 1],
                 type=pa.uint8(),
             ),
         )
