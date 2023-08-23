@@ -1,5 +1,6 @@
 from dora_ros2_bridge import *
 import time, random
+import pyarrow as pa
 
 context = Ros2Context()
 node = context.new_node("turtle_teleop", "/ros2_demo", Ros2NodeOptions(rosout=True))
@@ -23,10 +24,10 @@ for i in range(500):
             "z": (random.random() - 0.5) * 5,
         },
     }
-    twist_writer.publish(direction)
+    twist_writer.publish(pa.array([direction]))
     while True:
         pose = pose_reader.next()
         if pose == None:
             break
-        print(pose)
+        print(f"pose: {pose.to_pylist()}")
     time.sleep(0.5)
