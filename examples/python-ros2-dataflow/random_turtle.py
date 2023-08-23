@@ -32,8 +32,6 @@ for i in range(500):
                 case "INPUT":
                     match event["id"]:
                         case "direction":
-                            # TODO: convert event["data"] to Arrow data instead of bytes array
-                            print(event["data"].to_py())
                             direction = {
                                 "linear": {
                                     "x": event["data"][0],
