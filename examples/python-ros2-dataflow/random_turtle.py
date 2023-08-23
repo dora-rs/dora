@@ -47,7 +47,7 @@ for i in range(500):
                             pass
 
         case "external":
-            pose = event[0].as_py()
+            pose = event.inner()[0].as_py()
 
             assert (
                 pose["x"] != 5.544445
