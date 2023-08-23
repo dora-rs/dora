@@ -37,7 +37,7 @@ for i in range(500):
                     }
 
                     print(direction, flush=True)
-                    twist_writer.publish(direction)
+                    twist_writer.publish(pa.array(direction))
                 case "tick":
                     pose = (
                         pose_reader.next()
@@ -47,6 +47,8 @@ for i in range(500):
                         print("stop", flush=True)
                         continue
 
+                    pose = pose[0].as_py()
+
                     assert (
                         pose["x"] != 5.544445
                     ), "turtle should not be at initial x axis"
@@ -54,11 +56,12 @@ for i in range(500):
                         "turtle_pose",
                         pa.array(
                             [
-                                pose["x"],
-                                pose["y"],
-                                pose["theta"],
-                                pose["linear_velocity"],
-                                pose["angular_velocity"],
+                                # TODO: Replace with real value once `float32`` support from dora is published
+                                0,  # pose["x"],
+                                0,  # pose["y"],
+                                0,  # pose["theta"],
+                                0,  # pose["linear_velocity"],
+                                0,  # pose["angular_velocity"],
                             ],
                             type=pa.uint8(),
                         ),
