@@ -61,6 +61,6 @@ for i in range(500):
                         pose["linear_velocity"],
                         pose["angular_velocity"],
                     ],
-                    type=pa.uint8(),
+                    type=pa.float64(),
                 ),
             )
