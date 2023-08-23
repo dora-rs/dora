@@ -13,6 +13,7 @@ use arrow::array::UInt32Array;
 use arrow::array::UInt64Array;
 use arrow::array::UInt8Array;
 use arrow::datatypes::DataType;
+use serde::ser::SerializeSeq;
 use serde::ser::SerializeStruct;
 
 use super::TypeInfo;
@@ -84,7 +85,34 @@ impl serde::Serialize for TypedValue<'_> {
                 let string = int_array.value(0);
                 serializer.serialize_str(string)
             }
-            DataType::List(_field_ref) => todo!(),
+            DataType::List(_field) => {
+                let list_array: ListArray = self.value.clone().into();
+                if let DataType::List(field) = self.type_info.data_type.clone() {
+                    let values = list_array.values();
+                    let mut s = serializer.serialize_seq(Some(values.len()))?;
+                    for value in list_array.iter() {
+                        let value = match value {
+                            Some(value) => value.to_data(),
+                            None => {
+                                return Err(serde::ser::Error::custom(format!(
+                                    "Value in ListArray is null and not yet supported",
+                                )))
+                            }
+                        };
+
+                        s.serialize_element(&TypedValue {
+                            value: &value,
+                            type_info: &TypeInfo {
+                                data_type: field.data_type().clone(),
+                                defaults: self.type_info.defaults.clone(),
+                            },
+                        })?;
+                    }
+                    s.end()
+                } else {
+                    return Err(serde::ser::Error::custom(format!("Wrong fields type",)));
+                }
+            }
             DataType::Struct(_fields) => {
                 /// Serde requires that struct and field names are known at
                 /// compile time with a `'static` lifetime, which is not
@@ -98,7 +126,7 @@ impl serde::Serialize for TypedValue<'_> {
                 const DUMMY_FIELD_NAME: &str = "field";
 
                 let struct_array: StructArray = self.value.clone().into();
-                if let DataType::Struct(fields) = self.type_info.fields.clone() {
+                if let DataType::Struct(fields) = self.type_info.data_type.clone() {
                     let mut s = serializer.serialize_struct(DUMMY_STRUCT_NAME, fields.len())?;
                     let defaults: StructArray = self.type_info.defaults.clone().into();
                     for field in fields.iter() {
@@ -121,7 +149,7 @@ impl serde::Serialize for TypedValue<'_> {
                             &TypedValue {
                                 value: &field_value,
                                 type_info: &TypeInfo {
-                                    fields: field.data_type().clone(),
+                                    data_type: field.data_type().clone(),
                                     defaults: default,
                                 },
                             },
