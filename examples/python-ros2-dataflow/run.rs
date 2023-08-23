@@ -32,11 +32,10 @@ async fn main() -> eyre::Result<()> {
         ),
     );
 
-    run(&["pip", "install", "maturin"], None).await?;
-    run(&["maturin", "develop"], Some(&root.join("python"))).await?;
-
     run(&["pip", "install", "--upgrade", "pip"], None).await?;
     run(&["pip", "install", "-r", "requirements.txt"], None).await?;
+
+    run(&["maturin", "develop"], Some(&root.join("python"))).await?;
 
     let dataflow = Path::new("dataflow.yml");
     dora_daemon::Daemon::run_dataflow(dataflow).await?;
