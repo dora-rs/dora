@@ -1,9 +1,10 @@
 use arrow::{
     array::{
         make_array, Array, ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int16Builder,
-        Int32Builder, Int64Builder, Int8Builder, NullArray, StringBuilder, StructArray,
+        Int32Builder, Int64Builder, Int8Builder, ListArray, NullArray, StringBuilder, StructArray,
         UInt16Builder, UInt32Builder, UInt64Builder, UInt8Builder,
     },
+    buffer::OffsetBuffer,
     compute::concat,
     datatypes::{DataType, Field, Fields},
 };
@@ -12,6 +13,7 @@ use std::{ops::Deref, sync::Arc};
 
 use super::TypeInfo;
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Ros2Value(ArrayData);
 
 impl Deref for Ros2Value {
@@ -40,7 +42,8 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = match self.type_info.fields {
+        let data_type = self.type_info.data_type;
+        let value = match data_type.clone() {
             DataType::Struct(fields) => {
                 /// Serde requires that struct and field names are known at
                 /// compile time with a `'static` lifetime, which is not
@@ -62,6 +65,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
                     },
                 )
             }
+            DataType::List(field) => deserializer.deserialize_seq(ListVisitor {
+                field,
+                defaults: self.type_info.defaults,
+            }),
             DataType::UInt8 => deserializer.deserialize_u8(PrimitiveValueVisitor),
             DataType::UInt16 => deserializer.deserialize_u16(PrimitiveValueVisitor),
             DataType::UInt32 => deserializer.deserialize_u32(PrimitiveValueVisitor),
@@ -237,27 +244,88 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor {
         let mut fields = vec![];
         let defaults: StructArray = self.defaults.clone().into();
         for field in self.fields.iter() {
+            let default = match defaults.column_by_name(field.name()) {
+                Some(value) => value.clone(),
+                None => {
+                    return Err(serde::de::Error::custom(format!(
+                        "missing field {} for deserialization",
+                        &field.name()
+                    )))
+                }
+            };
             let value = match data.next_element_seed(TypedDeserializer {
                 type_info: TypeInfo {
-                    fields: field.data_type().clone(),
-                    defaults: self.defaults.clone(),
+                    data_type: field.data_type().clone(),
+                    defaults: default.to_data(),
                 },
             })? {
                 Some(value) => make_array(value.0),
-                None => match defaults.column_by_name(field.name()) {
-                    Some(value) => value.clone(),
-                    None => {
-                        return Err(serde::de::Error::custom(format!(
-                            "missing field {} for deserialization",
-                            &field.name()
-                        )))
-                    }
-                },
+                None => default,
             };
-            fields.push((field.clone(), value));
+            fields.push((
+                // Recreate a new field as List(UInt8) can be converted to UInt8
+                Arc::new(Field::new(field.name(), value.data_type().clone(), true)),
+                value,
+            ));
         }
 
         let struct_array: StructArray = fields.into();
+
         Ok(struct_array.into())
+    }
+}
+
+struct ListVisitor {
+    field: Arc<Field>,
+    defaults: ArrayData,
+}
+
+impl<'de> serde::de::Visitor<'de> for ListVisitor {
+    type Value = ArrayData;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an array encoded as sequence")
+    }
+
+    fn visit_seq<A>(self, mut data: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut buffer = vec![];
+
+        while let Some(value) = data.next_element_seed(TypedDeserializer {
+            type_info: TypeInfo {
+                data_type: self.field.data_type().clone(),
+                defaults: self.defaults.clone(),
+            },
+        })? {
+            let element = make_array(value.0);
+            buffer.push(element);
+        }
+
+        if let Ok(array) = concat(
+            buffer
+                .iter()
+                .map(|data| data.as_ref())
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ) {
+            let values = array; //.to_data();
+
+            let offsets = OffsetBuffer::new(vec![0, values.len() as i32].into());
+
+            let field = Arc::new(Field::new(
+                self.field.name(),
+                values.data_type().clone(),
+                false,
+            ));
+            let array = ListArray::new(field.clone(), offsets.clone(), values.clone(), None);
+            Ok(array.to_data())
+        } else {
+            Ok(self.defaults) // TODO: Better handle deserialization error
+                              //return Err(serde::de::Error::custom(format!(
+                              //"Could not parse ROS2 list of values",
+                              //)));
+        }
     }
 }
