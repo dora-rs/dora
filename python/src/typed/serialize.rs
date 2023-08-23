@@ -1,9 +1,17 @@
 use arrow::array::ArrayData;
 use arrow::array::Float32Array;
 use arrow::array::Float64Array;
+use arrow::array::Int16Array;
 use arrow::array::Int32Array;
+use arrow::array::Int64Array;
+use arrow::array::Int8Array;
+use arrow::array::ListArray;
 use arrow::array::StringArray;
 use arrow::array::StructArray;
+use arrow::array::UInt16Array;
+use arrow::array::UInt32Array;
+use arrow::array::UInt64Array;
+use arrow::array::UInt8Array;
 use arrow::datatypes::DataType;
 use serde::ser::SerializeStruct;
 
@@ -21,10 +29,45 @@ impl serde::Serialize for TypedValue<'_> {
         S: serde::Serializer,
     {
         match &self.value.data_type() {
+            DataType::UInt8 => {
+                let uint_array: UInt8Array = self.value.clone().into();
+                let number = uint_array.value(0);
+                serializer.serialize_u8(number)
+            }
+            DataType::UInt16 => {
+                let uint_array: UInt16Array = self.value.clone().into();
+                let number = uint_array.value(0);
+                serializer.serialize_u16(number)
+            }
+            DataType::UInt32 => {
+                let uint_array: UInt32Array = self.value.clone().into();
+                let number = uint_array.value(0);
+                serializer.serialize_u32(number)
+            }
+            DataType::UInt64 => {
+                let uint_array: UInt64Array = self.value.clone().into();
+                let number = uint_array.value(0);
+                serializer.serialize_u64(number)
+            }
+            DataType::Int8 => {
+                let int_array: Int8Array = self.value.clone().into();
+                let number = int_array.value(0);
+                serializer.serialize_i8(number)
+            }
+            DataType::Int16 => {
+                let int_array: Int16Array = self.value.clone().into();
+                let number = int_array.value(0);
+                serializer.serialize_i16(number)
+            }
             DataType::Int32 => {
                 let int_array: Int32Array = self.value.clone().into();
                 let number = int_array.value(0);
                 serializer.serialize_i32(number)
+            }
+            DataType::Int64 => {
+                let int_array: Int64Array = self.value.clone().into();
+                let number = int_array.value(0);
+                serializer.serialize_i64(number)
             }
             DataType::Float32 => {
                 let int_array: Float32Array = self.value.clone().into();

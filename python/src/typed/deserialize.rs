@@ -1,12 +1,14 @@
 use arrow::{
     array::{
-        make_array, ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int64Builder,
-        NullArray, StringBuilder, StructArray, UInt64Builder,
+        make_array, Array, ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int16Builder,
+        Int32Builder, Int64Builder, Int8Builder, NullArray, StringBuilder, StructArray,
+        UInt16Builder, UInt32Builder, UInt64Builder, UInt8Builder,
     },
-    datatypes::{DataType, Fields},
+    compute::concat,
+    datatypes::{DataType, Field, Fields},
 };
 use core::fmt;
-use std::ops::Deref;
+use std::{ops::Deref, sync::Arc};
 
 use super::TypeInfo;
 
@@ -60,7 +62,14 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
                     },
                 )
             }
+            DataType::UInt8 => deserializer.deserialize_u8(PrimitiveValueVisitor),
+            DataType::UInt16 => deserializer.deserialize_u16(PrimitiveValueVisitor),
+            DataType::UInt32 => deserializer.deserialize_u32(PrimitiveValueVisitor),
+            DataType::UInt64 => deserializer.deserialize_u64(PrimitiveValueVisitor),
+            DataType::Int8 => deserializer.deserialize_i8(PrimitiveValueVisitor),
+            DataType::Int16 => deserializer.deserialize_i16(PrimitiveValueVisitor),
             DataType::Int32 => deserializer.deserialize_i32(PrimitiveValueVisitor),
+            DataType::Int64 => deserializer.deserialize_i64(PrimitiveValueVisitor),
             DataType::Float32 => deserializer.deserialize_f32(PrimitiveValueVisitor),
             DataType::Float64 => deserializer.deserialize_f64(PrimitiveValueVisitor),
             DataType::Utf8 => deserializer.deserialize_str(PrimitiveValueVisitor),
@@ -89,6 +98,31 @@ impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
         Ok(array.finish().into())
     }
 
+    fn visit_i8<E>(self, u: i8) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut array = Int8Builder::new();
+        array.append_value(u);
+        Ok(array.finish().into())
+    }
+
+    fn visit_i16<E>(self, u: i16) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut array = Int16Builder::new();
+        array.append_value(u);
+        Ok(array.finish().into())
+    }
+    fn visit_i32<E>(self, u: i32) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut array = Int32Builder::new();
+        array.append_value(u);
+        Ok(array.finish().into())
+    }
     fn visit_i64<E>(self, i: i64) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
@@ -98,6 +132,30 @@ impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
         Ok(array.finish().into())
     }
 
+    fn visit_u8<E>(self, u: u8) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut array = UInt8Builder::new();
+        array.append_value(u);
+        Ok(array.finish().into())
+    }
+    fn visit_u16<E>(self, u: u16) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut array = UInt16Builder::new();
+        array.append_value(u);
+        Ok(array.finish().into())
+    }
+    fn visit_u32<E>(self, u: u32) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        let mut array = UInt32Builder::new();
+        array.append_value(u);
+        Ok(array.finish().into())
+    }
     fn visit_u64<E>(self, u: u64) -> Result<Self::Value, E>
     where
         E: serde::de::Error,
