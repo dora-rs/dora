@@ -1,3 +1,4 @@
+use super::TypeInfo;
 use arrow::{
     array::{
         make_array, Array, ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int16Builder,
@@ -10,8 +11,6 @@ use arrow::{
 };
 use core::fmt;
 use std::{ops::Deref, sync::Arc};
-
-use super::TypeInfo;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ros2Value(ArrayData);
@@ -82,6 +81,12 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
             DataType::Utf8 => deserializer.deserialize_str(PrimitiveValueVisitor),
             _ => todo!(),
         }?;
+
+        debug_assert!(
+        value.data_type() == &data_type,
+        "Datatype does not correspond to default data type.\n Expected: {:#?} \n but got: {:#?}, with value: {:#?}", data_type, value.data_type(), value
+        );
+
         Ok(Ros2Value(value))
     }
 }
@@ -291,41 +296,115 @@ impl<'de> serde::de::Visitor<'de> for ListVisitor {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let mut buffer = vec![];
+        let data = match self.field.data_type().clone() {
+            DataType::UInt8 => {
+                let mut array = UInt8Builder::new();
+                while let Some(value) = data.next_element::<u8>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::UInt16 => {
+                let mut array = UInt16Builder::new();
+                while let Some(value) = data.next_element::<u16>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::UInt32 => {
+                let mut array = UInt32Builder::new();
+                while let Some(value) = data.next_element::<u32>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::UInt64 => {
+                let mut array = UInt64Builder::new();
+                while let Some(value) = data.next_element::<u64>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::Int8 => {
+                let mut array = Int8Builder::new();
+                while let Some(value) = data.next_element::<i8>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::Int16 => {
+                let mut array = Int16Builder::new();
+                while let Some(value) = data.next_element::<i16>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::Int32 => {
+                let mut array = Int32Builder::new();
+                while let Some(value) = data.next_element::<i32>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::Int64 => {
+                let mut array = Int64Builder::new();
+                while let Some(value) = data.next_element::<i64>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::Float32 => {
+                let mut array = Float32Builder::new();
+                while let Some(value) = data.next_element::<f32>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::Float64 => {
+                let mut array = Float64Builder::new();
+                while let Some(value) = data.next_element::<f64>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            DataType::Utf8 => {
+                let mut array = StringBuilder::new();
+                while let Some(value) = data.next_element::<String>()? {
+                    array.append_value(value);
+                }
+                Ok(array.finish().into())
+            }
+            _ => {
+                let mut buffer = vec![];
+                while let Some(value) = data.next_element_seed(TypedDeserializer {
+                    type_info: TypeInfo {
+                        data_type: self.field.data_type().clone(),
+                        defaults: self.defaults.clone(),
+                    },
+                })? {
+                    let element = make_array(value.0);
+                    buffer.push(element);
+                }
 
-        while let Some(value) = data.next_element_seed(TypedDeserializer {
-            type_info: TypeInfo {
-                data_type: self.field.data_type().clone(),
-                defaults: self.defaults.clone(),
-            },
-        })? {
-            let element = make_array(value.0);
-            buffer.push(element);
-        }
+                concat(
+                    buffer
+                        .iter()
+                        .map(|data| data.as_ref())
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                )
+                .map(|op| op.to_data())
+            }
+        };
 
-        if let Ok(array) = concat(
-            buffer
-                .iter()
-                .map(|data| data.as_ref())
-                .collect::<Vec<_>>()
-                .as_slice(),
-        ) {
-            let values = array; //.to_data();
-
+        if let Ok(values) = data {
             let offsets = OffsetBuffer::new(vec![0, values.len() as i32].into());
 
-            let field = Arc::new(Field::new(
-                self.field.name(),
-                values.data_type().clone(),
-                false,
-            ));
-            let array = ListArray::new(field.clone(), offsets.clone(), values.clone(), None);
-            Ok(array.to_data())
+            let array =
+                ListArray::new(self.field, offsets.clone(), make_array(values), None).to_data();
+            Ok(array)
         } else {
             Ok(self.defaults) // TODO: Better handle deserialization error
-                              //return Err(serde::de::Error::custom(format!(
-                              //"Could not parse ROS2 list of values",
-                              //)));
         }
     }
 }
