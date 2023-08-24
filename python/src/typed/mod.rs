@@ -59,85 +59,6 @@ pub fn for_message(
     })
 }
 
-fn type_info_for_member(
-    m: &dora_ros2_bridge_msg_gen::types::Member,
-    package_name: &str,
-    messages: &HashMap<String, HashMap<String, Message>>,
-) -> eyre::Result<DataType> {
-    Ok(match &m.r#type {
-        MemberType::NestableType(t) => type_info_for_nestable_type(t, package_name, messages)?,
-        MemberType::Array(array) => Field::new_list(
-            &m.name,
-            Field::new(
-                &m.name,
-                type_info_for_nestable_type(&array.value_type, package_name, messages)?,
-                true,
-            ),
-            true,
-        )
-        .data_type()
-        .clone(),
-        MemberType::Sequence(sequence) => Field::new_list(
-            &m.name,
-            Field::new(
-                &m.name,
-                type_info_for_nestable_type(&sequence.value_type, package_name, messages)?,
-                true,
-            ),
-            true,
-        )
-        .data_type()
-        .clone(),
-        MemberType::BoundedSequence(sequence) => Field::new_list(
-            &m.name,
-            Field::new(
-                &m.name,
-                type_info_for_nestable_type(&sequence.value_type, package_name, messages)?,
-                true,
-            ),
-            true,
-        )
-        .data_type()
-        .clone(),
-    })
-}
-
-fn type_info_for_nestable_type(
-    t: &NestableType,
-    package_name: &str,
-    messages: &HashMap<String, HashMap<String, Message>>,
-) -> Result<DataType> {
-    let empty = HashMap::new();
-    let package_messages = messages.get(package_name).unwrap_or(&empty);
-    let data_type = match t {
-        NestableType::BasicType(t) => match t {
-            BasicType::I8 => DataType::Int8,
-            BasicType::I16 => DataType::Int16,
-            BasicType::I32 => DataType::Int32,
-            BasicType::I64 => DataType::Int64,
-            BasicType::U8 => DataType::UInt8,
-            BasicType::U16 => DataType::UInt16,
-            BasicType::U32 => DataType::UInt32,
-            BasicType::U64 => DataType::UInt64,
-            BasicType::F32 => DataType::Float32,
-            BasicType::F64 => DataType::Float64,
-            BasicType::Bool => DataType::Boolean,
-            BasicType::Char => DataType::Utf8,
-            BasicType::Byte => DataType::UInt8,
-        },
-        NestableType::NamedType(name) => {
-            let referenced_message = package_messages
-                .get(&name.0)
-                .context("unknown referenced message")?;
-            for_message(messages, package_name, &referenced_message.name)?.data_type
-        }
-        NestableType::NamespacedType(t) => for_message(messages, &t.package, &t.name)?.data_type,
-        NestableType::GenericString(_) => DataType::Utf8,
-    };
-
-    Ok(data_type)
-}
-
 pub fn default_for_member(
     m: &dora_ros2_bridge_msg_gen::types::Member,
     package_name: &str,
@@ -248,7 +169,7 @@ pub fn default_for_member(
                     //let NestableType::BasicType(_t) = seq.value_type {
                     default_nested_type.into()
                 } else {
-                    let value_offsets = Buffer::from_slice_ref([0i64]);
+                    let value_offsets = Buffer::from_slice_ref([0i64, 1]);
 
                     let list_data_type = DataType::List(Arc::new(Field::new(
                         &m.name,
