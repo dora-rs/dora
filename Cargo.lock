@@ -724,7 +724,7 @@ dependencies = [
 [[package]]
 name = "dora-core"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "dora-message",
  "eyre",
@@ -742,7 +742,7 @@ dependencies = [
 [[package]]
 name = "dora-daemon"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "arrow-schema",
  "async-trait",
@@ -771,7 +771,7 @@ dependencies = [
 [[package]]
 name = "dora-download"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "eyre",
  "reqwest",
@@ -782,7 +782,7 @@ dependencies = [
 [[package]]
 name = "dora-message"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "arrow-schema",
  "capnp",
@@ -795,7 +795,7 @@ dependencies = [
 [[package]]
 name = "dora-node-api"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -821,7 +821,7 @@ dependencies = [
 [[package]]
 name = "dora-node-api-python"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "arrow",
  "dora-node-api",
@@ -838,7 +838,7 @@ dependencies = [
 [[package]]
 name = "dora-operator-api-python"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -852,7 +852,7 @@ dependencies = [
 [[package]]
 name = "dora-operator-api-types"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "safer-ffi",
 ]
@@ -924,7 +924,7 @@ dependencies = [
 [[package]]
 name = "dora-runtime"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "arrow-schema",
  "clap 4.3.19",
@@ -953,7 +953,7 @@ dependencies = [
 [[package]]
 name = "dora-tracing"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "eyre",
  "opentelemetry",
@@ -2812,7 +2812,7 @@ dependencies = [
 [[package]]
 name = "shared-memory-server"
 version = "0.2.4"
-source = "git+https://github.com/dora-rs/dora.git?branch=python-ros2-bridge-example#274a502b6eca9ced514bbd62b1feaf66ca6b41cd"
+source = "git+https://github.com/dora-rs/dora.git#8e7688a593ced7e9e7c0b33f7199478d36212b52"
 dependencies = [
  "bincode",
  "eyre",
