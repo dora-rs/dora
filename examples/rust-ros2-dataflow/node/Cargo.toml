@@ -14,7 +14,7 @@ name = "rust-ros2-dataflow-example-node"
 required-features = ["ros2"]
 
 [dependencies]
-dora-node-api = { git = "https://github.com/dora-rs/dora.git", branch = "python-ros2-bridge-example", features = [
+dora-node-api = { git = "https://github.com/dora-rs/dora.git", features = [
     "tracing",
 ] }
 eyre = "0.6.8"
