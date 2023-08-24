@@ -27,4 +27,4 @@ futures = "0.3.28"
 
 [lib]
 name = "dora"
-crate-type = ["cdylib"]
+crate-type = ["lib", "cdylib"]
