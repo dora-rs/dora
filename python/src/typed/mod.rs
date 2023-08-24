@@ -1,10 +1,11 @@
 use arrow::{
     array::{
-        make_array, Array, ArrayData, BooleanArray, Float32Array, Float64Array, Int16Array,
-        Int32Array, Int64Array, Int8Array, StringArray, StructArray, UInt16Array, UInt32Array,
-        UInt64Array, UInt8Array,
+        make_array, Array, ArrayData, ArrayRef, BooleanArray, Float32Array, Float64Array,
+        Int16Array, Int32Array, Int64Array, Int8Array, StringArray, StructArray, UInt16Array,
+        UInt32Array, UInt64Array, UInt8Array,
     },
     buffer::Buffer,
+    compute::concat,
     datatypes::{DataType, Field},
 };
 use dora_ros2_bridge_msg_gen::types::{
@@ -89,105 +90,15 @@ pub fn default_for_member(
                 default_for_nestable_type(t, package_name, messages)?
             }
         },
-        MemberType::Array(array) => match &m.default.as_deref() {
-            Some([]) => eyre::bail!("empty default value not supported"),
-            Some([default]) => preset_default_for_basic_type(&array.value_type, &default)
-                .with_context(|| format!("failed to parse default value for `{}`", m.name))?,
-            Some(_) => {
-                eyre::bail!("there should be only a single default value for non-sequence types")
-            }
-            None => {
-                let default_nested_type =
-                    default_for_nestable_type(&array.value_type, package_name, messages)?;
-                if false {
-                    //let NestableType::BasicType(_t) = array.value_type {
-                    default_nested_type.into()
-                } else {
-                    let value_offsets = Buffer::from_slice_ref([0i64]);
-
-                    let list_data_type = DataType::List(Arc::new(Field::new(
-                        &m.name,
-                        default_nested_type.data_type().clone(),
-                        true,
-                    )));
-                    // Construct a list array from the above two
-                    let array = ArrayData::builder(list_data_type)
-                        .len(1)
-                        .add_buffer(value_offsets.clone())
-                        .add_child_data(default_nested_type.clone())
-                        .build()
-                        .unwrap();
-
-                    array.into()
-                }
-            }
-        },
-        MemberType::Sequence(seq) => match &m.default.as_deref() {
-            Some([]) => eyre::bail!("empty default value not supported"),
-            Some([default]) => preset_default_for_basic_type(&seq.value_type, &default)
-                .with_context(|| format!("failed to parse default value for `{}`", m.name))?,
-            Some(_) => {
-                eyre::bail!("there should be only a single default value for non-sequence types")
-            }
-            None => {
-                let default_nested_type =
-                    default_for_nestable_type(&seq.value_type, package_name, messages)?;
-                if false {
-                    //} let NestableType::BasicType(_t) = seq.value_type {
-                    default_nested_type.into()
-                } else {
-                    let value_offsets = Buffer::from_slice_ref([0i64]);
-
-                    let list_data_type = DataType::List(Arc::new(Field::new(
-                        &m.name,
-                        default_nested_type.data_type().clone(),
-                        true,
-                    )));
-                    // Construct a list array from the above two
-                    let array = ArrayData::builder(list_data_type)
-                        .len(1)
-                        .add_buffer(value_offsets.clone())
-                        .add_child_data(default_nested_type.clone())
-                        .build()
-                        .unwrap();
-
-                    array.into()
-                }
-            }
-        },
-        MemberType::BoundedSequence(seq) => match &m.default.as_deref() {
-            Some([]) => eyre::bail!("empty default value not supported"),
-            Some([default]) => preset_default_for_basic_type(&seq.value_type, &default)
-                .with_context(|| format!("failed to parse default value for `{}`", m.name))?,
-            Some(_) => {
-                eyre::bail!("there should be only a single default value for non-sequence types")
-            }
-            None => {
-                let default_nested_type =
-                    default_for_nestable_type(&seq.value_type, package_name, messages)?;
-                if false {
-                    //let NestableType::BasicType(_t) = seq.value_type {
-                    default_nested_type.into()
-                } else {
-                    let value_offsets = Buffer::from_slice_ref([0i64, 1]);
-
-                    let list_data_type = DataType::List(Arc::new(Field::new(
-                        &m.name,
-                        default_nested_type.data_type().clone(),
-                        true,
-                    )));
-                    // Construct a list array from the above two
-                    let array = ArrayData::builder(list_data_type)
-                        .len(1)
-                        .add_buffer(value_offsets.clone())
-                        .add_child_data(default_nested_type.clone())
-                        .build()
-                        .unwrap();
-
-                    array.into()
-                }
-            }
-        },
+        MemberType::Array(array) => {
+            list_default_values(m, &array.value_type, package_name, messages)?
+        }
+        MemberType::Sequence(seq) => {
+            list_default_values(m, &seq.value_type, package_name, messages)?
+        }
+        MemberType::BoundedSequence(seq) => {
+            list_default_values(m, &seq.value_type, package_name, messages)?
+        }
     };
     Ok(value)
 }
@@ -312,4 +223,61 @@ fn default_for_referenced_message(
 
     let struct_array: StructArray = fields.into();
     Ok(struct_array.into())
+}
+
+fn list_default_values(
+    m: &dora_ros2_bridge_msg_gen::types::Member,
+    value_type: &NestableType,
+    package_name: &str,
+    messages: &HashMap<String, HashMap<String, Message>>,
+) -> Result<ArrayData> {
+    let defaults = match &m.default.as_deref() {
+        Some([]) => eyre::bail!("empty default value not supported"),
+        Some(defaults) => {
+            let raw_array: Vec<Arc<dyn Array>> = defaults
+                .iter()
+                .map(|default| {
+                    preset_default_for_basic_type(value_type, &default)
+                        .with_context(|| format!("failed to parse default value for `{}`", m.name))
+                        .map(|data| make_array(data))
+                })
+                .collect::<Result<_, _>>()?;
+            let default_values = concat(
+                raw_array
+                    .iter()
+                    .map(|data| data.as_ref())
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            )
+            .context("Failed to concatenate default list value")?;
+            default_values.to_data()
+        }
+        None => {
+            let default_nested_type =
+                default_for_nestable_type(&value_type, package_name, messages)?;
+            if false {
+                //let NestableType::BasicType(_t) = seq.value_type {
+                default_nested_type.into()
+            } else {
+                let value_offsets = Buffer::from_slice_ref([0i64, 1]);
+
+                let list_data_type = DataType::List(Arc::new(Field::new(
+                    &m.name,
+                    default_nested_type.data_type().clone(),
+                    true,
+                )));
+                // Construct a list array from the above two
+                let array = ArrayData::builder(list_data_type)
+                    .len(1)
+                    .add_buffer(value_offsets.clone())
+                    .add_child_data(default_nested_type.clone())
+                    .build()
+                    .unwrap();
+
+                array.into()
+            }
+        }
+    };
+
+    Ok(defaults)
 }
