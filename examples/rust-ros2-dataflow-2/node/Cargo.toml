@@ -1,5 +1,5 @@
 [package]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-dataflow-example-node-2"
 version.workspace = true
 edition = "2021"
 
@@ -10,13 +10,11 @@ edition = "2021"
 ros2 = []
 
 [[bin]]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-dataflow-example-node-2"
 required-features = ["ros2"]
 
 [dependencies]
-dora-node-api = { git = "https://github.com/dora-rs/dora.git", features = [
-    "tracing",
-] }
+dora-node-api = { path = "../../../apis/rust/node", features = ["tracing"] }
 eyre = "0.6.8"
 futures = "0.3.21"
 rand = "0.8.5"

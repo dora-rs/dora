@@ -97,6 +97,11 @@ path = "examples/rust-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]
 
 [[example]]
+name = "rust-ros2-dataflow-2"
+path = "examples/rust-ros2-dataflow-2/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
 name = "rust-dataflow-url"
 path = "examples/rust-dataflow-url/run.rs"
 

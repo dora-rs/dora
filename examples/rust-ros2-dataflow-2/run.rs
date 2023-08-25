@@ -14,9 +14,9 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    build_package("rust-ros2-dataflow-example-node")
+    build_package("rust-ros2-dataflow-example-node-2")
         .await
-        .wrap_err("failed to build rust-ros2-dataflow-example-node")?;
+        .wrap_err("failed to build rust-ros2-dataflow-example-node-2")?;
 
     let dataflow = Path::new("dataflow.yml");
     dora_daemon::Daemon::run_dataflow(dataflow).await?;
