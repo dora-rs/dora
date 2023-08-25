@@ -12,7 +12,7 @@ eyre = "0.6"
 serde = "1.0.166"
 flume = "0.10.14"
 arrow = { version = "45.0.0", features = ["pyarrow"] }
-dora-node-api-python = { git = "https://github.com/dora-rs/dora.git" }
+dora-node-api-python = { workspace = true }
 futures = "0.3.28"
 
 [lib]

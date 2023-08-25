@@ -1,27 +1,9 @@
-[workspace]
-members = [
-    "msg-gen",
-    "msg-gen-macro",
-    "python",
-    "examples/rust-ros2-dataflow/*",
-]
-
 [package]
 name = "dora-ros2-bridge"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[workspace.package]
-# Make sure to also bump `apis/node/python/__init__.py` version.
-version = "0.1.0"
-description = "`dora` goal is to be a low latency, composable, and distributed data flow."
-documentation = "https://dora.carsmos.ai"
-license = "Apache-2.0"
-
-[workspace.dependencies]
-dora-ros2-bridge = { path = "." }
 
 [features]
 default = ["generate-messages"]
@@ -39,7 +21,7 @@ ros2-client = { git = "https://github.com/dora-rs/ros2-client.git", branch = "de
 rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
 eyre = { version = "0.6.8", optional = true }
 tokio = { version = "1.29.1", features = ["full"], optional = true }
-dora-daemon = { git = "https://github.com/dora-rs/dora.git", optional = true }
+dora-daemon = { path = "../../../binaries/daemon", optional = true }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
 
