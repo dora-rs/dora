@@ -115,6 +115,11 @@ name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
 
 [[example]]
+name = "python-ros2-dataflow"
+path = "examples/python-ros2-dataflow/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
 name = "python-operator-dataflow"
 path = "examples/python-operator-dataflow/run.rs"
 

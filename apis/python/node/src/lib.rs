@@ -106,7 +106,10 @@ impl Node {
         pythonize::pythonize(py, self.node.dataflow_descriptor())
     }
 
-    pub fn merge_ros2_events(&mut self, subscription: &mut Ros2Subscription) -> eyre::Result<()> {
+    pub fn merge_external_events(
+        &mut self,
+        subscription: &mut Ros2Subscription,
+    ) -> eyre::Result<()> {
         let subscription = subscription.into_stream()?;
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
