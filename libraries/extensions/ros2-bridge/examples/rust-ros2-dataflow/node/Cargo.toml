@@ -1,0 +1,25 @@
+[package]
+name = "rust-ros2-dataflow-example-node"
+version.workspace = true
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+# enables binaries that depend on a sourced ROS2 installation
+ros2 = []
+
+[[bin]]
+name = "rust-ros2-dataflow-example-node"
+required-features = ["ros2"]
+
+[dependencies]
+dora-node-api = { git = "https://github.com/dora-rs/dora.git", features = [
+    "tracing",
+] }
+eyre = "0.6.8"
+futures = "0.3.21"
+rand = "0.8.5"
+tokio = { version = "1.24.2", features = ["rt", "macros"] }
+dora-ros2-bridge = { workspace = true }
+serde_json = "1.0.99"
