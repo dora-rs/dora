@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import random
-from dora import Node
+from dora_ros2_bridge import Node
 import pyarrow as pa
 
 node = Node()

@@ -1,3 +1,2 @@
 pyarrow
-dora-rs
 maturin
