@@ -1545,6 +1545,7 @@ dependencies = [
  "arrow",
  "dora-node-api",
  "dora-operator-api-python",
+ "dora-ros2-bridge-python",
  "dora-runtime",
  "eyre",
  "flume",
@@ -1661,7 +1662,6 @@ name = "dora-ros2-bridge-python"
 version = "0.1.0"
 dependencies = [
  "arrow",
- "dora-node-api-python",
  "dora-ros2-bridge",
  "dora-ros2-bridge-msg-gen",
  "eyre",

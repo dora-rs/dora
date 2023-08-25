@@ -56,6 +56,7 @@ dora-runtime = { version = "0.2.4", path = "binaries/runtime" }
 dora-daemon = { version = "0.2.4", path = "binaries/daemon" }
 dora-coordinator = { version = "0.2.4", path = "binaries/coordinator" }
 dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 
 [package]
 name = "dora-examples"
