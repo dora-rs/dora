@@ -1,0 +1,10 @@
+[build-system]
+requires = ["maturin>=0.13.2"]
+build-backend = "maturin"
+
+[project]
+name = "dora-ros2-bridge"
+dependencies = ['pyarrow']
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

@@ -1,0 +1,20 @@
+[package]
+name = "dora-ros2-bridge-python"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+dora-ros2-bridge = { path = "..", default-features = false }
+dora-ros2-bridge-msg-gen = { path = "../msg-gen" }
+pyo3 = { version = "0.19", features = ["eyre", "abi3-py37", "serde"] }
+eyre = "0.6"
+serde = "1.0.166"
+flume = "0.10.14"
+arrow = { version = "45.0.0", features = ["pyarrow"] }
+dora-node-api-python = { git = "https://github.com/dora-rs/dora.git" }
+futures = "0.3.28"
+
+[lib]
+name = "dora_ros2_bridge"
+crate-type = ["cdylib"]

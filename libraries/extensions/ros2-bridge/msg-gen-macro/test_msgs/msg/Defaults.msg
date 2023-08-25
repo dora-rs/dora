@@ -1,0 +1,13 @@
+bool bool_value true
+byte byte_value 50
+char char_value 100
+float32 float32_value 1.125
+float64 float64_value 1.125
+int8 int8_value -50
+uint8 uint8_value 200
+int16 int16_value -1000
+uint16 uint16_value 2000
+int32 int32_value -30000
+uint32 uint32_value 60000
+int64 int64_value -40000000
+uint64 uint64_value 50000000
