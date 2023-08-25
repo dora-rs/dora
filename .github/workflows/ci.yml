@@ -21,6 +21,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+
+    - uses: r7kamura/rust-problem-matchers@v1.1.0
+    - run: cargo --version --verbose
+    - uses: Swatinem/rust-cache@v2
+
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -55,5 +60,7 @@ jobs:
       timeout-minutes: 30
       run: |
         source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+        python3 -m venv examples/.env &&
+        source examples/.env/bin/activate &&
         python3 examples/python-standalone-bridge/random_turtle.py
 

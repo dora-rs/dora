@@ -39,7 +39,9 @@ ros2-client = { git = "https://github.com/dora-rs/ros2-client.git", branch = "de
 rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
 eyre = { version = "0.6.8", optional = true }
 tokio = { version = "1.29.1", features = ["full"], optional = true }
-dora-daemon = { version = "0.2.4", optional = true }
+dora-daemon = { git = "https://github.com/dora-rs/dora.git", optional = true }
+tracing = "0.1.37"
+tracing-subscriber = "0.3.17"
 
 [dev-dependencies]
 rand = "0.8.5"
