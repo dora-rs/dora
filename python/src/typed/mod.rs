@@ -1,9 +1,11 @@
 use arrow::{
     array::{
-        make_array, Array, ArrayData, BooleanArray, Float32Array, Float64Array, Int16Array,
-        Int32Array, Int64Array, Int8Array, StringArray, StructArray, UInt16Array, UInt32Array,
-        UInt64Array, UInt8Array,
+        make_array, Array, ArrayData, ArrayRef, BooleanArray, Float32Array, Float64Array,
+        Int16Array, Int32Array, Int64Array, Int8Array, StringArray, StructArray, UInt16Array,
+        UInt32Array, UInt64Array, UInt8Array,
     },
+    buffer::Buffer,
+    compute::concat,
     datatypes::{DataType, Field},
 };
 use dora_ros2_bridge_msg_gen::types::{
@@ -20,7 +22,7 @@ pub mod serialize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeInfo {
-    fields: DataType,
+    data_type: DataType,
     defaults: ArrayData,
 }
 
@@ -38,71 +40,23 @@ pub fn for_message(
         .members
         .iter()
         .map(|m| {
+            let default = make_array(default_for_member(m, package_name, messages)?);
             Result::<_, eyre::Report>::Ok((
                 Arc::new(Field::new(
                     m.name.clone(),
-                    type_info_for_member(m, package_name, messages)?,
-                    false,
+                    default.data_type().clone(),
+                    true,
                 )),
-                make_array(default_for_member(m, package_name, messages)?),
+                default,
             ))
         })
         .collect::<Result<_, _>>()?;
-    let default_struct: StructArray = default_struct_vec.into();
-    Ok(TypeInfo {
-        fields: default_struct.data_type().clone(),
-        defaults: default_struct.into(),
-    })
-}
 
-fn type_info_for_member(
-    m: &dora_ros2_bridge_msg_gen::types::Member,
-    package_name: &str,
-    messages: &HashMap<String, HashMap<String, Message>>,
-) -> eyre::Result<DataType> {
-    let empty = HashMap::new();
-    let package_messages = messages.get(package_name).unwrap_or(&empty);
-    Ok(match &m.r#type {
-        MemberType::NestableType(t) => match t {
-            NestableType::BasicType(t) => match t {
-                BasicType::I8 => todo!(),
-                BasicType::I16 => todo!(),
-                BasicType::I32 => DataType::Int32,
-                BasicType::I64 => todo!(),
-                BasicType::U8 => todo!(),
-                BasicType::U16 => todo!(),
-                BasicType::U32 => todo!(),
-                BasicType::U64 => todo!(),
-                BasicType::F32 => DataType::Float32,
-                BasicType::F64 => DataType::Float64,
-                BasicType::Bool => todo!(),
-                BasicType::Char => todo!(),
-                BasicType::Byte => todo!(),
-            },
-            NestableType::NamedType(name) => {
-                let referenced_message = package_messages
-                    .get(&name.0)
-                    .context("unknown referenced message")?;
-                for_message(messages, package_name, &referenced_message.name)?.fields
-            }
-            NestableType::NamespacedType(t) => for_message(messages, &t.package, &t.name)?.fields,
-            NestableType::GenericString(_) => DataType::Utf8,
-        },
-        MemberType::Array(array) => match array.value_type {
-            _ => todo!(),
-        },
-        MemberType::Sequence(sequence) => match &sequence.value_type {
-            NestableType::NamedType(name) => {
-                let referenced_message = package_messages
-                    .get(&name.0)
-                    .context("unknown referenced message")?;
-                for_message(messages, package_name, &referenced_message.name)?.fields
-            }
-            _ => todo!(),
-        },
-        MemberType::BoundedSequence(_) => {
-            todo!()
-        }
+    let default_struct: StructArray = default_struct_vec.into();
+
+    Ok(TypeInfo {
+        data_type: default_struct.data_type().clone(),
+        defaults: default_struct.into(),
     })
 }
 
@@ -111,12 +65,9 @@ pub fn default_for_member(
     package_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,
 ) -> eyre::Result<ArrayData> {
-    let empty = HashMap::new();
-    let package_messages = messages.get(package_name).unwrap_or(&empty);
-
     let value = match &m.r#type {
         MemberType::NestableType(t) => match t {
-            t @ NestableType::BasicType(_) | t @ NestableType::GenericString(_) => match &m
+            NestableType::BasicType(_) | NestableType::GenericString(_) => match &m
                 .default
                 .as_deref()
             {
@@ -126,36 +77,40 @@ pub fn default_for_member(
                 Some(_) => eyre::bail!(
                     "there should be only a single default value for non-sequence types"
                 ),
-                None => default_for_basic_type(t),
+                None => default_for_nestable_type(t, package_name, messages)?,
             },
-            NestableType::NamedType(name) => {
+            NestableType::NamedType(_) => {
                 if m.default.is_some() {
                     eyre::bail!("default values for nested types are not supported")
                 } else {
-                    let referenced_message = package_messages
-                        .get(&name.0)
-                        .context("unknown referenced message")?;
-
-                    default_for_referenced_message(referenced_message, package_name, messages)?
+                    default_for_nestable_type(t, package_name, messages)?
                 }
             }
-            NestableType::NamespacedType(t) => {
-                let referenced_package_messages = messages.get(&t.package).unwrap_or(&empty);
-                let referenced_message = referenced_package_messages
-                    .get(&t.name)
-                    .context("unknown referenced message")?;
-                default_for_referenced_message(referenced_message, &t.package, messages)?
+            NestableType::NamespacedType(_) => {
+                default_for_nestable_type(t, package_name, messages)?
             }
         },
-        MemberType::Array(_) | MemberType::Sequence(_) | MemberType::BoundedSequence(_) => {
-            todo!()
+        MemberType::Array(array) => {
+            list_default_values(m, &array.value_type, package_name, messages)?
+        }
+        MemberType::Sequence(seq) => {
+            list_default_values(m, &seq.value_type, package_name, messages)?
+        }
+        MemberType::BoundedSequence(seq) => {
+            list_default_values(m, &seq.value_type, package_name, messages)?
         }
     };
     Ok(value)
 }
 
-fn default_for_basic_type(t: &NestableType) -> ArrayData {
-    match t {
+fn default_for_nestable_type(
+    t: &NestableType,
+    package_name: &str,
+    messages: &HashMap<String, HashMap<String, Message>>,
+) -> Result<ArrayData> {
+    let empty = HashMap::new();
+    let package_messages = messages.get(package_name).unwrap_or(&empty);
+    let array = match t {
         NestableType::BasicType(t) => match t {
             BasicType::I8 => Int8Array::from(vec![0]).into(),
             BasicType::I16 => Int16Array::from(vec![0]).into(),
@@ -168,13 +123,28 @@ fn default_for_basic_type(t: &NestableType) -> ArrayData {
             BasicType::F32 => Float32Array::from(vec![0.]).into(),
             BasicType::F64 => Float64Array::from(vec![0.]).into(),
             BasicType::Char => StringArray::from(vec![""]).into(),
-            BasicType::Byte => UInt8Array::from(vec![] as Vec<u8>).into(),
+            BasicType::Byte => UInt8Array::from(vec![0u8] as Vec<u8>).into(),
             BasicType::Bool => BooleanArray::from(vec![false]).into(),
         },
         NestableType::GenericString(_) => StringArray::from(vec![""]).into(),
-        _ => todo!(),
-    }
+        NestableType::NamedType(name) => {
+            let referenced_message = package_messages
+                .get(&name.0)
+                .context("unknown referenced message")?;
+
+            default_for_referenced_message(referenced_message, package_name, messages)?
+        }
+        NestableType::NamespacedType(t) => {
+            let referenced_package_messages = messages.get(&t.package).unwrap_or(&empty);
+            let referenced_message = referenced_package_messages
+                .get(&t.name)
+                .context("unknown referenced message")?;
+            default_for_referenced_message(referenced_message, &t.package, messages)?
+        }
+    };
+    Ok(array)
 }
+
 fn preset_default_for_basic_type(t: &NestableType, preset: &str) -> Result<ArrayData> {
     Ok(match t {
         NestableType::BasicType(t) => match t {
@@ -244,7 +214,7 @@ fn default_for_referenced_message(
                 Arc::new(Field::new(
                     m.name.clone(),
                     default.data_type().clone(),
-                    false,
+                    true,
                 )),
                 make_array(default),
             ))
@@ -253,4 +223,61 @@ fn default_for_referenced_message(
 
     let struct_array: StructArray = fields.into();
     Ok(struct_array.into())
+}
+
+fn list_default_values(
+    m: &dora_ros2_bridge_msg_gen::types::Member,
+    value_type: &NestableType,
+    package_name: &str,
+    messages: &HashMap<String, HashMap<String, Message>>,
+) -> Result<ArrayData> {
+    let defaults = match &m.default.as_deref() {
+        Some([]) => eyre::bail!("empty default value not supported"),
+        Some(defaults) => {
+            let raw_array: Vec<Arc<dyn Array>> = defaults
+                .iter()
+                .map(|default| {
+                    preset_default_for_basic_type(value_type, &default)
+                        .with_context(|| format!("failed to parse default value for `{}`", m.name))
+                        .map(|data| make_array(data))
+                })
+                .collect::<Result<_, _>>()?;
+            let default_values = concat(
+                raw_array
+                    .iter()
+                    .map(|data| data.as_ref())
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            )
+            .context("Failed to concatenate default list value")?;
+            default_values.to_data()
+        }
+        None => {
+            let default_nested_type =
+                default_for_nestable_type(&value_type, package_name, messages)?;
+            if false {
+                //let NestableType::BasicType(_t) = seq.value_type {
+                default_nested_type.into()
+            } else {
+                let value_offsets = Buffer::from_slice_ref([0i64, 1]);
+
+                let list_data_type = DataType::List(Arc::new(Field::new(
+                    &m.name,
+                    default_nested_type.data_type().clone(),
+                    true,
+                )));
+                // Construct a list array from the above two
+                let array = ArrayData::builder(list_data_type)
+                    .len(1)
+                    .add_buffer(value_offsets.clone())
+                    .add_child_data(default_nested_type.clone())
+                    .build()
+                    .unwrap();
+
+                array.into()
+            }
+        }
+    };
+
+    Ok(defaults)
 }
