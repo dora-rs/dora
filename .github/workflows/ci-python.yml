@@ -38,3 +38,13 @@ jobs:
 
       - name: "Python Operator Dataflow example"
         run: cargo run --example python-operator-dataflow
+
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
+      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+      - name: "python-ros2-dataflow"
+        timeout-minutes: 30
+        run: |
+          source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+          cargo run --example python-ros2-dataflow --features="ros2-examples"
