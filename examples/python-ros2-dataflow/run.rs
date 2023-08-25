@@ -14,7 +14,9 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    run(&["python3", "-m", "venv", "../.env"], None).await?;
+    run(&["python3", "-m", "venv", "../.env"], None)
+        .await
+        .context("failed to create venv")?;
     let venv = &root.join("examples").join(".env");
     std::env::set_var(
         "VIRTUAL_ENV",
@@ -32,10 +34,19 @@ async fn main() -> eyre::Result<()> {
         ),
     );
 
-    run(&["pip", "install", "--upgrade", "pip"], None).await?;
-    run(&["pip", "install", "-r", "requirements.txt"], None).await?;
+    run(&["pip", "install", "--upgrade", "pip"], None)
+        .await
+        .context("failed to install pip")?;
+    run(&["pip", "install", "-r", "requirements.txt"], None)
+        .await
+        .context("pip install failed")?;
 
-    run(&["maturin", "develop"], Some(&root.join("python"))).await?;
+    run(
+        &["maturin", "develop"],
+        Some(&root.join("apis").join("python").join("node")),
+    )
+    .await
+    .context("maturin develop failed")?;
 
     let dataflow = Path::new("dataflow.yml");
     dora_daemon::Daemon::run_dataflow(dataflow).await?;

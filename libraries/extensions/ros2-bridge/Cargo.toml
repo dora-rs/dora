@@ -33,8 +33,3 @@ futures = { version = "0.3.28", default-features = false }
 name = "random_turtle"
 path = "examples/rust-standalone-bridge/random_turtle.rs"
 required-features = ["ros2-examples"]
-
-[[example]]
-name = "python-ros2-dataflow"
-path = "examples/python-ros2-dataflow/run.rs"
-required-features = ["ros2-examples"]
