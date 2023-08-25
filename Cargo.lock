@@ -2522,7 +2522,7 @@ dependencies = [
 [[package]]
 name = "ros2-client"
 version = "0.5.2"
-source = "git+https://github.com/dora-rs/ros2-client.git?branch=deserialize-seed#2f4f3ce1635745634b9948541acd0c76aff2aa92"
+source = "git+https://github.com/dora-rs/ros2-client.git?branch=deserialize-seed#3cab61b9d877322bd9da5779764b8a8e7d3f4030"
 dependencies = [
  "bytes",
  "cdr-encoding-size",
@@ -2570,7 +2570,7 @@ dependencies = [
 [[package]]
 name = "rustdds"
 version = "0.8.4"
-source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#25de36d50d6d1d9986067f885d66556db0f625a2"
+source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#f49cafcf6448767a26f0b8788856cb1857a254fc"
 dependencies = [
  "bit-vec",
  "byteorder",
