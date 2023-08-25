@@ -6,12 +6,14 @@ use std::{
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use dora::{ExternalEventStream, Node};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
+use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods, pymodule},
     types::PyModule,
-    PyAny, PyObject, PyResult, Python,
+    wrap_pyfunction, PyAny, PyErr, PyObject, PyResult, Python, ToPyObject,
 };
 use typed::{
     deserialize::{Ros2Value, TypedDeserializer},
@@ -139,6 +141,30 @@ impl Ros2Node {
             deserializer: TypedDeserializer::new(topic.type_info.clone()),
         })
     }
+
+    pub fn create_subscription_stream(
+        &mut self,
+        topic: &Ros2Topic,
+        qos: Option<qos::Ros2QosPolicies>,
+    ) -> eyre::Result<ExternalEventStream> {
+        let subscription = self.create_subscription(topic, qos)?;
+        let stream = futures::stream::poll_fn(move |cx| {
+            let s = subscription.as_stream().map(|item| {
+                match item.context("failed to read ROS2 message") {
+                    Ok((value, _info)) => Python::with_gil(|py| {
+                        value
+                            .to_pyarrow(py)
+                            .context("failed to convert value to pyarrow")
+                            .unwrap_or_else(|err| PyErr::from(err).to_object(py))
+                    }),
+                    Err(err) => Python::with_gil(|py| PyErr::from(err).to_object(py)),
+                }
+            });
+            futures::pin_mut!(s);
+            s.poll_next_unpin(cx)
+        });
+        Ok(ExternalEventStream::from(stream))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -223,6 +249,29 @@ impl Ros2Subscription {
     }
 }
 
+impl Ros2Subscription {
+    fn as_stream(
+        &self,
+    ) -> impl Stream<Item = Result<(Ros2Value, ros2_client::MessageInfo), rustdds::dds::ReadError>> + '_
+    {
+        self.subscription
+            .async_stream_seed(self.deserializer.clone())
+    }
+}
+
+impl Stream for Ros2Subscription {
+    type Item = Result<(Ros2Value, ros2_client::MessageInfo), rustdds::dds::ReadError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let s = self.as_stream();
+        futures::pin_mut!(s);
+        s.poll_next_unpin(cx)
+    }
+}
+
 #[pymodule]
 fn dora_ros2_bridge(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Ros2Context>()?;
@@ -234,5 +283,9 @@ fn dora_ros2_bridge(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<qos::Ros2QosPolicies>()?;
     m.add_class::<qos::Ros2Durability>()?;
     m.add_class::<qos::Ros2Liveliness>()?;
+
+    m.add_function(wrap_pyfunction!(dora::start_runtime, m)?)?;
+    m.add_class::<Node>().unwrap();
+
     Ok(())
 }
