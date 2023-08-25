@@ -5,8 +5,6 @@ edition = "2021"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 license = "Apache-2.0"
 
-workspace = ".."
-
 [dependencies]
 anyhow = "1.0"
 heck = "0.3"

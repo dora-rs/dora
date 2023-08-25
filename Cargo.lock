@@ -1610,21 +1610,26 @@ dependencies = [
 [[package]]
 name = "dora-ros2-bridge"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "array-init",
+ "dora-daemon",
  "dora-ros2-bridge-msg-gen-macro",
+ "eyre",
+ "futures",
+ "rand",
  "ros2-client",
  "rustdds",
  "serde",
  "serde-big-array",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "widestring",
 ]
 
 [[package]]
 name = "dora-ros2-bridge-msg-gen"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "anyhow",
  "heck 0.3.3",
@@ -1639,7 +1644,6 @@ dependencies = [
 [[package]]
 name = "dora-ros2-bridge-msg-gen-macro"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "anyhow",
  "dora-ros2-bridge-msg-gen",
@@ -1650,6 +1654,21 @@ dependencies = [
  "regex",
  "syn 1.0.109",
  "thiserror",
+]
+
+[[package]]
+name = "dora-ros2-bridge-python"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "dora-node-api-python",
+ "dora-ros2-bridge",
+ "dora-ros2-bridge-msg-gen",
+ "eyre",
+ "flume",
+ "futures",
+ "pyo3",
+ "serde",
 ]
 
 [[package]]
@@ -3775,9 +3794,9 @@ dependencies = [
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.9"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0a7ae3ac2f1173085d398531c705756c94a4c56843785df85a60c1a0afac116"
+checksum = "12cc1b0bf1727a77a54b6654e7b5f1af8604923edc8b81885f8ec92f9e3f0a05"
 
 [[package]]
 name = "pin-utils"
@@ -4055,6 +4074,7 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
+ "serde",
  "unindent",
 ]
 
@@ -4455,6 +4475,19 @@ dependencies = [
 
 [[package]]
 name = "rust-ros2-dataflow-example-node"
+version = "0.2.4"
+dependencies = [
+ "dora-node-api",
+ "dora-ros2-bridge",
+ "eyre",
+ "futures",
+ "rand",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rust-ros2-dataflow-example-node-2"
 version = "0.2.4"
 dependencies = [
  "dora-node-api",
@@ -5299,11 +5332,10 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.29.0"
+version = "1.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "374442f06ee49c3a28a8fc9f01a2596fed7559c6b99b31279c3261778e77d84f"
+checksum = "17ed6077ed6cd6c74735e21f37eb16dc3935f96878b1fe961074089cc80893f9"
 dependencies = [
- "autocfg",
  "backtrace",
  "bytes",
  "libc",
@@ -5312,7 +5344,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2 0.4.9",
+ "socket2 0.5.3",
  "tokio-macros",
  "windows-sys 0.48.0",
 ]
