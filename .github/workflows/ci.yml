@@ -67,6 +67,16 @@ jobs:
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
 
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
+      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+      - name: "Rust ROS2 Bridge example"
+        timeout-minutes: 30
+        run: |
+          source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &&
+          cargo run --example rust-ros2-dataflow --features="ros2-examples"
+
   python-examples:
     name: "Python Examples"
     strategy:
