@@ -301,11 +301,9 @@ mod callback_impl {
                             sample: tx,
                         })
                         .map_err(|_| eyre!("failed to send output to runtime"))?;
-                    let sample = rx
-                        .blocking_recv()
+                    rx.blocking_recv()
                         .wrap_err("failed to request output sample")?
-                        .wrap_err("failed to allocate output sample")?;
-                    sample
+                        .wrap_err("failed to allocate output sample")?
                 } else {
                     vec![0; data_len].into()
                 }

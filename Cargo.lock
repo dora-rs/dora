@@ -783,15 +783,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dca085c2c7d9d65ad749d450b19b551efaa8e3476a439bdca07aca8533097f3"
 
 [[package]]
-name = "capnpc"
-version = "0.14.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdc9f1dc84666d4ff007b1a16c8f97db80764a624625979be05d869bcff43aaa"
-dependencies = [
- "capnp",
-]
-
-[[package]]
 name = "cc"
 version = "1.0.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1474,8 +1465,6 @@ name = "dora-message"
 version = "0.2.4"
 dependencies = [
  "arrow-schema",
- "capnp",
- "capnpc",
  "eyre",
  "serde",
  "uhlc",
@@ -1545,6 +1534,7 @@ dependencies = [
  "arrow",
  "dora-node-api",
  "dora-operator-api-python",
+ "dora-ros2-bridge-python",
  "dora-runtime",
  "eyre",
  "flume",
@@ -1610,21 +1600,26 @@ dependencies = [
 [[package]]
 name = "dora-ros2-bridge"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "array-init",
+ "dora-daemon",
  "dora-ros2-bridge-msg-gen-macro",
+ "eyre",
+ "futures",
+ "rand",
  "ros2-client",
  "rustdds",
  "serde",
  "serde-big-array",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "widestring",
 ]
 
 [[package]]
 name = "dora-ros2-bridge-msg-gen"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "anyhow",
  "heck 0.3.3",
@@ -1639,7 +1634,6 @@ dependencies = [
 [[package]]
 name = "dora-ros2-bridge-msg-gen-macro"
 version = "0.1.0"
-source = "git+https://github.com/dora-rs/dora-ros2-bridge.git#f6eec1801b7c59ee4de198c6e833a884459b4e00"
 dependencies = [
  "anyhow",
  "dora-ros2-bridge-msg-gen",
@@ -1650,6 +1644,20 @@ dependencies = [
  "regex",
  "syn 1.0.109",
  "thiserror",
+]
+
+[[package]]
+name = "dora-ros2-bridge-python"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "dora-ros2-bridge",
+ "dora-ros2-bridge-msg-gen",
+ "eyre",
+ "flume",
+ "futures",
+ "pyo3",
+ "serde",
 ]
 
 [[package]]
@@ -3775,9 +3783,9 @@ dependencies = [
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.9"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0a7ae3ac2f1173085d398531c705756c94a4c56843785df85a60c1a0afac116"
+checksum = "12cc1b0bf1727a77a54b6654e7b5f1af8604923edc8b81885f8ec92f9e3f0a05"
 
 [[package]]
 name = "pin-utils"
@@ -4055,6 +4063,7 @@ dependencies = [
  "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
+ "serde",
  "unindent",
 ]
 
@@ -4389,7 +4398,7 @@ dependencies = [
 [[package]]
 name = "ros2-client"
 version = "0.5.2"
-source = "git+https://github.com/dora-rs/ros2-client.git?branch=deserialize-seed#2f4f3ce1635745634b9948541acd0c76aff2aa92"
+source = "git+https://github.com/dora-rs/ros2-client.git?branch=deserialize-seed#3cab61b9d877322bd9da5779764b8a8e7d3f4030"
 dependencies = [
  "bytes",
  "cdr-encoding-size",
@@ -4490,7 +4499,7 @@ dependencies = [
 [[package]]
 name = "rustdds"
 version = "0.8.4"
-source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#25de36d50d6d1d9986067f885d66556db0f625a2"
+source = "git+https://github.com/dora-rs/RustDDS.git?branch=deserialize-seed#f49cafcf6448767a26f0b8788856cb1857a254fc"
 dependencies = [
  "bit-vec",
  "byteorder",
@@ -5299,11 +5308,10 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.29.0"
+version = "1.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "374442f06ee49c3a28a8fc9f01a2596fed7559c6b99b31279c3261778e77d84f"
+checksum = "17ed6077ed6cd6c74735e21f37eb16dc3935f96878b1fe961074089cc80893f9"
 dependencies = [
- "autocfg",
  "backtrace",
  "bytes",
  "libc",
@@ -5312,7 +5320,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2 0.4.9",
+ "socket2 0.5.3",
  "tokio-macros",
  "windows-sys 0.48.0",
 ]

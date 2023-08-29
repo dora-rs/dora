@@ -1,0 +1,30 @@
+[package]
+name = "dora-ros2-bridge"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = ["generate-messages"]
+generate-messages = ["dep:dora-ros2-bridge-msg-gen-macro"]
+# enables examples that depend on a sourced ROS2 installation
+ros2-examples = ["eyre", "tokio", "dora-daemon"]
+
+[dependencies]
+array-init = "2.1.0"
+dora-ros2-bridge-msg-gen-macro = { path = "msg-gen-macro", optional = true }
+serde = { version = "1.0.164", features = ["derive"] }
+serde-big-array = "0.5.1"
+widestring = "1.0.2"
+ros2-client = { git = "https://github.com/dora-rs/ros2-client.git", branch = "deserialize-seed" }
+rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed" }
+eyre = { version = "0.6.8", optional = true }
+tokio = { version = "1.29.1", features = ["full"], optional = true }
+dora-daemon = { path = "../../../binaries/daemon", optional = true }
+tracing = "0.1.37"
+tracing-subscriber = "0.3.17"
+
+[dev-dependencies]
+rand = "0.8.5"
+futures = { version = "0.3.28", default-features = false }
