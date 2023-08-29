@@ -28,9 +28,10 @@ fn parse_action_string(pkg_name: &str, action_name: &str, action_string: &str) -
     let re = Regex::new(r"(?m)^---$").unwrap();
     let action_blocks: Vec<_> = re.split(action_string).collect();
     if action_blocks.len() != 3 {
-        return Err(RclMsgError::InvalidActionSpecification(
-            "Number of '---' separators nonconformant with action definition".into(),
-        )
+        return Err(RclMsgError::InvalidActionSpecification(format!(
+            "Number of '---' separators nonconformant with action definition (is {})",
+            action_blocks.len()
+        ))
         .into());
     }
 
