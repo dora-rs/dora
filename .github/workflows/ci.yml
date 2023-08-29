@@ -2,11 +2,14 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
 env:
   RUST_LOG: trace
+  CARGO_TERM_COLOR: always
 
 jobs:
   test:
@@ -67,6 +70,59 @@ jobs:
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
 
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
+      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+        if: runner.os == 'Linux'
+      - name: "Rust ROS2 Bridge example"
+        timeout-minutes: 30
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+          cargo run --example rust-ros2-dataflow --features="ros2-examples"
+
+  python-examples:
+    name: "Python Examples"
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-python@v2
+        with:
+          python-version: "3.10"
+
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
+
+      - name: "Python Dataflow example"
+        run: cargo run --example python-dataflow
+
+      - name: "Python Operator Dataflow example"
+        run: cargo run --example python-operator-dataflow
+
+      - uses: ros-tooling/setup-ros@v0.6
+        with:
+          required-ros-distributions: humble
+      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+        if: runner.os == 'Linux'
+      - name: "python-ros2-dataflow"
+        timeout-minutes: 30
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
+          cargo run --example python-ros2-dataflow --features="ros2-examples"
+
+
   CLI:
     name: "CLI Test"
     strategy:
@@ -99,7 +155,7 @@ jobs:
           dora-cli list
 
           # Test Rust template Project
-          dora-cli new test_rust_project --internal-create-with-path-dependencies 
+          dora-cli new test_rust_project --internal-create-with-path-dependencies
           cd test_rust_project
           cargo build --all
           dora-cli start dataflow.yml --name ci-rust-test

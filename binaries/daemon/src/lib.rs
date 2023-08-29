@@ -1321,7 +1321,7 @@ impl RunningDataflow {
                             watermark: 0,
                             deadline: 0,
                             #[cfg(feature = "telemetry")]
-                            open_telemetry_context: serialize_context(&span.context()).into(),
+                            open_telemetry_context: serialize_context(&span.context()),
                             #[cfg(not(feature = "telemetry"))]
                             open_telemetry_context: "".into(),
                         },

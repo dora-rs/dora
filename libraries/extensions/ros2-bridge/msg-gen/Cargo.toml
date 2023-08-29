@@ -1,0 +1,16 @@
+[package]
+name = "dora-ros2-bridge-msg-gen"
+version = "0.1.0"
+edition = "2021"
+authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+heck = "0.3"
+nom = "7"
+proc-macro2 = "1.0"
+quote = "1.0"
+regex = "1"
+syn = "1.0"
+thiserror = "1.0"
