@@ -4487,19 +4487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-ros2-dataflow-example-node-2"
-version = "0.2.4"
-dependencies = [
- "dora-node-api",
- "dora-ros2-bridge",
- "eyre",
- "futures",
- "rand",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"

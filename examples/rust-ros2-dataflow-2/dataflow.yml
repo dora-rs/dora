@@ -1,8 +1,0 @@
-nodes:
-  - id: rust-node
-    custom:
-      source: ../../target/debug/rust-ros2-dataflow-example-node-2
-      inputs:
-        tick: dora/timer/millis/500
-      outputs:
-        - pose
