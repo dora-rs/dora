@@ -94,9 +94,9 @@ impl serde::Serialize for TypedValue<'_> {
                         let value = match value {
                             Some(value) => value.to_data(),
                             None => {
-                                return Err(serde::ser::Error::custom(format!(
-                                    "Value in ListArray is null and not yet supported",
-                                )))
+                                return Err(serde::ser::Error::custom(
+                                    "Value in ListArray is null and not yet supported".to_string(),
+                                ))
                             }
                         };
 
@@ -110,7 +110,7 @@ impl serde::Serialize for TypedValue<'_> {
                     }
                     s.end()
                 } else {
-                    return Err(serde::ser::Error::custom(format!("Wrong fields type",)));
+                    Err(serde::ser::Error::custom("Wrong fields type".to_string()))
                 }
             }
             DataType::Struct(_fields) => {
@@ -157,7 +157,7 @@ impl serde::Serialize for TypedValue<'_> {
                     }
                     s.end()
                 } else {
-                    return Err(serde::ser::Error::custom(format!("Wrong fields type",)));
+                    Err(serde::ser::Error::custom("Wrong fields type".to_string()))
                 }
             }
             _ => todo!(),

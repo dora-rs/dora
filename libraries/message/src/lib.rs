@@ -23,7 +23,7 @@ pub struct MetadataParameters {
 impl MetadataParameters {
     pub fn into_owned(self) -> MetadataParameters {
         MetadataParameters {
-            open_telemetry_context: self.open_telemetry_context.into(),
+            open_telemetry_context: self.open_telemetry_context,
             ..self
         }
     }
