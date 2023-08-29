@@ -400,8 +400,7 @@ impl<'de> serde::de::Visitor<'de> for ListVisitor {
         if let Ok(values) = data {
             let offsets = OffsetBuffer::new(vec![0, values.len() as i32].into());
 
-            let array =
-                ListArray::new(self.field, offsets.clone(), make_array(values), None).to_data();
+            let array = ListArray::new(self.field, offsets, make_array(values), None).to_data();
             Ok(array)
         } else {
             Ok(self.defaults) // TODO: Better handle deserialization error

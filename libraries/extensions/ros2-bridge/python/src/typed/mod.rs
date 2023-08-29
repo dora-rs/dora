@@ -72,7 +72,7 @@ pub fn default_for_member(
                 .as_deref()
             {
                 Some([]) => eyre::bail!("empty default value not supported"),
-                Some([default]) => preset_default_for_basic_type(t, &default)
+                Some([default]) => preset_default_for_basic_type(t, default)
                     .with_context(|| format!("failed to parse default value for `{}`", m.name))?,
                 Some(_) => eyre::bail!(
                     "there should be only a single default value for non-sequence types"
@@ -237,9 +237,9 @@ fn list_default_values(
             let raw_array: Vec<Arc<dyn Array>> = defaults
                 .iter()
                 .map(|default| {
-                    preset_default_for_basic_type(value_type, &default)
+                    preset_default_for_basic_type(value_type, default)
                         .with_context(|| format!("failed to parse default value for `{}`", m.name))
-                        .map(|data| make_array(data))
+                        .map(make_array)
                 })
                 .collect::<Result<_, _>>()?;
             let default_values = concat(
@@ -254,28 +254,22 @@ fn list_default_values(
         }
         None => {
             let default_nested_type =
-                default_for_nestable_type(&value_type, package_name, messages)?;
-            if false {
-                //let NestableType::BasicType(_t) = seq.value_type {
-                default_nested_type.into()
-            } else {
-                let value_offsets = Buffer::from_slice_ref([0i64, 1]);
+                default_for_nestable_type(value_type, package_name, messages)?;
 
-                let list_data_type = DataType::List(Arc::new(Field::new(
-                    &m.name,
-                    default_nested_type.data_type().clone(),
-                    true,
-                )));
-                // Construct a list array from the above two
-                let array = ArrayData::builder(list_data_type)
-                    .len(1)
-                    .add_buffer(value_offsets.clone())
-                    .add_child_data(default_nested_type.clone())
-                    .build()
-                    .unwrap();
+            let value_offsets = Buffer::from_slice_ref([0i64, 1]);
 
-                array.into()
-            }
+            let list_data_type = DataType::List(Arc::new(Field::new(
+                &m.name,
+                default_nested_type.data_type().clone(),
+                true,
+            )));
+            // Construct a list array from the above two
+            ArrayData::builder(list_data_type)
+                .len(1)
+                .add_buffer(value_offsets)
+                .add_child_data(default_nested_type)
+                .build()
+                .context("Failed to build default list value")?
         }
     };
 

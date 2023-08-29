@@ -38,7 +38,7 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
     let dataflow_yml = DATAFLOW_YML.replace("___name___", &name);
     let dataflow_yml_path = root.join("dataflow.yml");
-    fs::write(&dataflow_yml_path, &dataflow_yml)
+    fs::write(&dataflow_yml_path, dataflow_yml)
         .with_context(|| format!("failed to write `{}`", dataflow_yml_path.display()))?;
 
     create_operator("op_1".into(), Some(root.join("op_1")))?;

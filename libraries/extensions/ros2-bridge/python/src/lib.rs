@@ -10,7 +10,7 @@ use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
 use futures::{Stream, StreamExt};
 use pyo3::{
-    prelude::{pyclass, pymethods, pymodule},
+    prelude::{pyclass, pymethods},
     types::PyModule,
     PyAny, PyObject, PyResult, Python,
 };
