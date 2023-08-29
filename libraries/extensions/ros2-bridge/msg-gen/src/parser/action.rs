@@ -25,7 +25,7 @@ pub fn parse_action_file<P: AsRef<Path>>(pkg_name: &str, interface_file: P) -> R
 }
 
 fn parse_action_string(pkg_name: &str, action_name: &str, action_string: &str) -> Result<Action> {
-    let re = Regex::new(r"(?m)^---$").unwrap();
+    let re = Regex::new(r"(?m)^---\r?$").unwrap();
     let action_blocks: Vec<_> = re.split(action_string).collect();
     if action_blocks.len() != 3 {
         return Err(RclMsgError::InvalidActionSpecification(format!(
