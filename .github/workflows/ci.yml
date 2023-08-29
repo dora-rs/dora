@@ -74,7 +74,7 @@ jobs:
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       - name: "Rust ROS2 Bridge example"
         timeout-minutes: 30
-        shell: "bash"
+        if: runner.os == 'Linux'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
@@ -111,6 +111,7 @@ jobs:
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       - name: "python-ros2-dataflow"
         timeout-minutes: 30
+        if: runner.os == 'Linux'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
