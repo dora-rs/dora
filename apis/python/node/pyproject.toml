@@ -4,6 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "dora-rs"
+# Install pyarrow at the same time of dora-rs
+dependencies = ['pyarrow']
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
