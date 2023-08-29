@@ -29,7 +29,7 @@ fn parse_action_string(pkg_name: &str, action_name: &str, action_string: &str) -
     let action_blocks: Vec<_> = re.split(action_string).collect();
     if action_blocks.len() != 3 {
         return Err(RclMsgError::InvalidActionSpecification(format!(
-            "Number of '---' separators nonconformant with action definition (is {}):\n{action_string}",
+            "Number of '---' separators nonconformant with action definition (is {}):\n{action_blocks:?}",
             action_blocks.len(),
         ))
         .into());
