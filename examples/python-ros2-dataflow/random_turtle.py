@@ -7,18 +7,26 @@ import dora
 from dora import Node
 import pyarrow as pa
 
-context = dora.experimental.ros2_bridge.Ros2Context()
-node = context.new_node("turtle_teleop", "/ros2_demo", dora.experimental.ros2_bridge.Ros2NodeOptions(rosout=True))
+ros2_context = dora.experimental.ros2_bridge.Ros2Context()
+ros2_node = ros2_context.new_node(
+    "turtle_teleop",
+    "/ros2_demo",
+    dora.experimental.ros2_bridge.Ros2NodeOptions(rosout=True),
+)
 
-topic_qos = dora.experimental.ros2_bridge.Ros2QosPolicies(reliable=True, max_blocking_time=0.1)
+topic_qos = dora.experimental.ros2_bridge.Ros2QosPolicies(
+    reliable=True, max_blocking_time=0.1
+)
 
-turtle_twist_topic = node.create_topic(
+turtle_twist_topic = ros2_node.create_topic(
     "/turtle1/cmd_vel", "geometry_msgs::Twist", topic_qos
 )
-twist_writer = node.create_publisher(turtle_twist_topic)
+twist_writer = ros2_node.create_publisher(turtle_twist_topic)
 
-turtle_pose_topic = node.create_topic("/turtle1/pose", "turtlesim::Pose", topic_qos)
-pose_reader = node.create_subscription(turtle_pose_topic)
+turtle_pose_topic = ros2_node.create_topic(
+    "/turtle1/pose", "turtlesim::Pose", topic_qos
+)
+pose_reader = ros2_node.create_subscription(turtle_pose_topic)
 
 dora_node = Node()
 dora_node.merge_external_events(pose_reader)
