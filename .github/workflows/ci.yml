@@ -78,7 +78,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &&
+          source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
           cargo run --example rust-ros2-dataflow --features="ros2-examples"
 
   python-examples:
