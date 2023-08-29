@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import time, random, dora
+import time
+import random
+import dora
 from dora import Node
 import pyarrow as pa
 
