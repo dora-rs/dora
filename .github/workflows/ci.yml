@@ -7,6 +7,7 @@ on:
 
 env:
   RUST_LOG: trace
+  CARGO_TERM_COLOR: always
 
 jobs:
   test:
