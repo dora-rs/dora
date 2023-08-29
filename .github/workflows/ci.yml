@@ -72,6 +72,7 @@ jobs:
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+        if: runner.os == 'Linux'
       - name: "Rust ROS2 Bridge example"
         timeout-minutes: 30
         if: runner.os == 'Linux'
@@ -109,6 +110,7 @@ jobs:
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+        if: runner.os == 'Linux'
       - name: "python-ros2-dataflow"
         timeout-minutes: 30
         if: runner.os == 'Linux'
