@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use arrow_schema::DataType;
-use dora_node_api::{merged::MergedEvent, Data, Event, Metadata, MetadataParameters};
-use eyre::{bail, Context, ContextCompat, Result};
+use arrow::{array::ArrayData, pyarrow::ToPyArrow};
+use dora_node_api::{
+    dora_core::message::{ArrowTypeInfo, BufferOffset},
+    merged::MergedEvent,
+    Data, Event, Metadata, MetadataParameters,
+};
+use eyre::{Context, Result};
 use pyo3::{
     exceptions::PyLookupError,
     prelude::*,
@@ -81,30 +84,18 @@ impl PyEvent {
 
     /// Returns the payload of an input event as an arrow array (if any).
     fn value(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
-        if let Some(data) = &self.data {
-            let data_type = match &self.event {
-                MergedEvent::Dora(Event::Input { metadata, .. }) => match &metadata
-                    .schema
-                    .fields()
-                    .first()
-                    .context("no field in schema")?
-                    .data_type()
-                {
-                    DataType::List(field) => field.data_type().clone(),
-                    _ => todo!(),
-                },
-                _ => DataType::UInt8,
-            };
-            let array = data
-                .clone()
-                .into_arrow_array(data_type)
-                .map_err(|err| arrow::pyarrow::PyArrowException::new_err(err.to_string()))?;
-            // TODO: Does this call leak data?
-            let array_data = array.to_pyarrow(py)?;
-            return Ok(Some(array_data));
+        match (&self.event, &self.data) {
+            (MergedEvent::Dora(Event::Input { metadata, .. }), Some(data)) => {
+                let array = data
+                    .clone()
+                    .into_arrow_array(&metadata.type_info)
+                    .map_err(|err| arrow::pyarrow::PyArrowException::new_err(err.to_string()))?;
+                // TODO: Does this call leak data?
+                let array_data = array.to_pyarrow(py)?;
+                Ok(Some(array_data))
+            }
+            _ => Ok(None),
         }
-
-        Ok(None)
     }
 
     fn metadata(event: &Event, py: Python<'_>) -> Option<PyObject> {
@@ -176,51 +167,43 @@ pub fn metadata_to_pydict<'a>(metadata: &'a Metadata, py: Python<'a>) -> &'a PyD
     dict
 }
 
-pub fn python_output_len(data: &PyObject, py: Python) -> eyre::Result<usize> {
-    if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
-        py_bytes.len().wrap_err("failed to get length of PyBytes")
-    } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
-        if arrow_array.buffers().len() != 1 {
-            eyre::bail!("output arrow array must contain a single buffer");
-        }
-
-        Ok(arrow_array.buffers()[0].len())
-    } else {
-        eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
-    }
+pub fn copy_array_into_sample(
+    target_buffer: &mut [u8],
+    arrow_array: &ArrayData,
+) -> eyre::Result<ArrowTypeInfo> {
+    let mut next_offset = 0;
+    copy_array_into_sample_inner(target_buffer, &mut next_offset, arrow_array)
 }
 
-pub fn process_python_output<T>(
-    data: &PyObject,
-    py: Python,
-    callback: impl FnOnce(&[u8]) -> eyre::Result<T>,
-) -> eyre::Result<T> {
-    if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
-        let data = py_bytes.as_bytes();
-        callback(data)
-    } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
-        if arrow_array.buffers().len() != 1 {
-            eyre::bail!("output arrow array must contain a single buffer");
-        }
-
-        let buffers = arrow_array.buffers();
-        if buffers.len() != 1 {
-            bail!("Arrow array must contain a single buffer");
-        }
-        let slice = buffers[0];
-
-        callback(slice)
-    } else {
-        eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
+fn copy_array_into_sample_inner(
+    target_buffer: &mut [u8],
+    next_offset: &mut usize,
+    arrow_array: &ArrayData,
+) -> eyre::Result<ArrowTypeInfo> {
+    let mut buffer_offsets = Vec::new();
+    for buffer in arrow_array.buffers().iter() {
+        let len = buffer.len();
+        target_buffer[*next_offset..][..len].copy_from_slice(buffer.as_slice());
+        buffer_offsets.push(BufferOffset {
+            offset: *next_offset,
+            len,
+        });
+        *next_offset += len;
     }
-}
 
-pub fn process_python_type(data: &PyObject, py: Python) -> Result<DataType> {
-    if let Ok(_py_bytes) = data.downcast::<PyBytes>(py) {
-        Ok(DataType::UInt8)
-    } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
-        Ok(arrow_array.data_type().clone())
-    } else {
-        eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
+    let mut child_data = Vec::new();
+    for child in arrow_array.child_data() {
+        let child_type_info = copy_array_into_sample_inner(target_buffer, next_offset, child)?;
+        child_data.push(child_type_info);
     }
+
+    Ok(ArrowTypeInfo {
+        data_type: arrow_array.data_type().clone(),
+        len: arrow_array.len(),
+        null_count: arrow_array.null_count(),
+        validity: arrow_array.nulls().map(|b| b.validity().to_owned()),
+        offset: arrow_array.offset(),
+        buffer_offsets,
+        child_data,
+    })
 }

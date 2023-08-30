@@ -1,8 +1,7 @@
-use arrow_schema::DataType;
 use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource},
-    message::MetadataParameters,
+    message::{ArrowTypeInfo, MetadataParameters},
 };
 use dora_node_api::{DataSample, Event};
 use eyre::{Context, Result};
@@ -78,7 +77,7 @@ pub enum OperatorEvent {
     },
     Output {
         output_id: DataId,
-        data_type: DataType,
+        type_info: ArrowTypeInfo,
         parameters: MetadataParameters,
         data: Option<DataSample>,
     },
