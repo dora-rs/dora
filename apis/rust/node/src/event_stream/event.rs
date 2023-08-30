@@ -1,11 +1,10 @@
 use std::{ptr::NonNull, sync::Arc};
 
-use arrow_schema::DataType;
 use dora_core::{
     config::{DataId, OperatorId},
-    message::Metadata,
+    message::{ArrowTypeInfo, Metadata},
 };
-use eyre::{Context, ContextCompat, Result};
+use eyre::{Context, Result};
 use shared_memory_extended::{Shmem, ShmemConf};
 
 #[derive(Debug)]
@@ -36,15 +35,24 @@ pub enum Data {
 impl Data {
     pub fn into_arrow_array(
         self: Arc<Self>,
-        data_type: DataType,
+        type_info: &ArrowTypeInfo,
     ) -> Result<arrow::array::ArrayData> {
         let ptr = NonNull::new(self.as_ptr() as *mut _).unwrap();
         let len = self.len();
-
         let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, self) };
-        let size = data_type.primitive_width().context("No primitive width")?;
-        arrow::array::ArrayData::try_new(data_type, len / size, None, 0, vec![buffer], vec![])
-            .context("Error creating Arrow Array")
+
+        arrow::array::ArrayData::try_new(
+            type_info.data_type.clone(),
+            type_info.len,
+            type_info
+                .validity
+                .clone()
+                .map(arrow::buffer::Buffer::from_vec),
+            type_info.offset,
+            vec![buffer],
+            vec![],
+        )
+        .context("Error creating Arrow Array")
     }
 }
 

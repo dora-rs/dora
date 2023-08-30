@@ -1,12 +1,11 @@
 use crate::EventStream;
 
 use self::{control_channel::ControlChannel, drop_stream::DropStream};
-use arrow_schema::DataType;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     daemon_messages::{Data, DropToken, NodeConfig},
     descriptor::Descriptor,
-    message::{uhlc, Metadata, MetadataParameters},
+    message::{uhlc, ArrowTypeInfo, Metadata, MetadataParameters},
 };
 use eyre::{bail, WrapErr};
 use shared_memory_extended::{Shmem, ShmemConf};
@@ -131,7 +130,9 @@ impl DoraNode {
         let mut sample = self.allocate_data_sample(data_len)?;
         data(&mut sample);
 
-        self.send_output_sample(output_id, DataType::UInt8, parameters, Some(sample))
+        let type_info = ArrowTypeInfo::byte_array(data_len);
+
+        self.send_output_sample(output_id, type_info, parameters, Some(sample))
     }
 
     pub fn send_output_bytes(
@@ -149,7 +150,7 @@ impl DoraNode {
     pub fn send_typed_output<F>(
         &mut self,
         output_id: DataId,
-        data_type: DataType,
+        type_info: ArrowTypeInfo,
         parameters: MetadataParameters,
         data_len: usize,
         data: F,
@@ -160,13 +161,13 @@ impl DoraNode {
         let mut sample = self.allocate_data_sample(data_len)?;
         data(&mut sample);
 
-        self.send_output_sample(output_id, data_type, parameters, Some(sample))
+        self.send_output_sample(output_id, type_info, parameters, Some(sample))
     }
 
     pub fn send_output_sample(
         &mut self,
         output_id: DataId,
-        data_type: DataType,
+        type_info: ArrowTypeInfo,
         parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> eyre::Result<()> {
@@ -177,7 +178,7 @@ impl DoraNode {
         }
         let metadata = Metadata::from_parameters(
             self.clock.new_timestamp(),
-            data_type,
+            type_info,
             parameters.into_owned(),
         );
 
