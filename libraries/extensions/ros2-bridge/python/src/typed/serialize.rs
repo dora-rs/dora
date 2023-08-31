@@ -29,7 +29,7 @@ impl serde::Serialize for TypedValue<'_> {
     where
         S: serde::Serializer,
     {
-        match &self.value.data_type() {
+        match &self.type_info.data_type {
             DataType::UInt8 => {
                 let uint_array: UInt8Array = self.value.clone().into();
                 let number = uint_array.value(0);
@@ -85,35 +85,31 @@ impl serde::Serialize for TypedValue<'_> {
                 let string = int_array.value(0);
                 serializer.serialize_str(string)
             }
-            DataType::List(_field) => {
+            DataType::List(field) => {
                 let list_array: ListArray = self.value.clone().into();
-                if let DataType::List(field) = self.type_info.data_type.clone() {
-                    let values = list_array.values();
-                    let mut s = serializer.serialize_seq(Some(values.len()))?;
-                    for value in list_array.iter() {
-                        let value = match value {
-                            Some(value) => value.to_data(),
-                            None => {
-                                return Err(serde::ser::Error::custom(
-                                    "Value in ListArray is null and not yet supported".to_string(),
-                                ))
-                            }
-                        };
+                let values = list_array.values();
+                let mut s = serializer.serialize_seq(Some(values.len()))?;
+                for value in list_array.iter() {
+                    let value = match value {
+                        Some(value) => value.to_data(),
+                        None => {
+                            return Err(serde::ser::Error::custom(
+                                "Value in ListArray is null and not yet supported".to_string(),
+                            ))
+                        }
+                    };
 
-                        s.serialize_element(&TypedValue {
-                            value: &value,
-                            type_info: &TypeInfo {
-                                data_type: field.data_type().clone(),
-                                defaults: self.type_info.defaults.clone(),
-                            },
-                        })?;
-                    }
-                    s.end()
-                } else {
-                    Err(serde::ser::Error::custom("Wrong fields type".to_string()))
+                    s.serialize_element(&TypedValue {
+                        value: &value,
+                        type_info: &TypeInfo {
+                            data_type: field.data_type().clone(),
+                            defaults: self.type_info.defaults.clone(),
+                        },
+                    })?;
                 }
+                s.end()
             }
-            DataType::Struct(_fields) => {
+            DataType::Struct(fields) => {
                 /// Serde requires that struct and field names are known at
                 /// compile time with a `'static` lifetime, which is not
                 /// possible in this case. Thus, we need to use dummy names
@@ -126,39 +122,35 @@ impl serde::Serialize for TypedValue<'_> {
                 const DUMMY_FIELD_NAME: &str = "field";
 
                 let struct_array: StructArray = self.value.clone().into();
-                if let DataType::Struct(fields) = self.type_info.data_type.clone() {
-                    let mut s = serializer.serialize_struct(DUMMY_STRUCT_NAME, fields.len())?;
-                    let defaults: StructArray = self.type_info.defaults.clone().into();
-                    for field in fields.iter() {
-                        let default = match defaults.column_by_name(field.name()) {
-                            Some(value) => value.to_data(),
-                            None => {
-                                return Err(serde::ser::Error::custom(format!(
-                                    "missing field {} for serialization",
-                                    &field.name()
-                                )))
-                            }
-                        };
-                        let field_value = match struct_array.column_by_name(field.name()) {
-                            Some(value) => value.to_data(),
-                            None => default.clone(),
-                        };
+                let mut s = serializer.serialize_struct(DUMMY_STRUCT_NAME, fields.len())?;
+                let defaults: StructArray = self.type_info.defaults.clone().into();
+                for field in fields.iter() {
+                    let default = match defaults.column_by_name(field.name()) {
+                        Some(value) => value.to_data(),
+                        None => {
+                            return Err(serde::ser::Error::custom(format!(
+                                "missing field {} for serialization",
+                                &field.name()
+                            )))
+                        }
+                    };
+                    let field_value = match struct_array.column_by_name(field.name()) {
+                        Some(value) => value.to_data(),
+                        None => default.clone(),
+                    };
 
-                        s.serialize_field(
-                            DUMMY_FIELD_NAME,
-                            &TypedValue {
-                                value: &field_value,
-                                type_info: &TypeInfo {
-                                    data_type: field.data_type().clone(),
-                                    defaults: default,
-                                },
+                    s.serialize_field(
+                        DUMMY_FIELD_NAME,
+                        &TypedValue {
+                            value: &field_value,
+                            type_info: &TypeInfo {
+                                data_type: field.data_type().clone(),
+                                defaults: default,
                             },
-                        )?;
-                    }
-                    s.end()
-                } else {
-                    Err(serde::ser::Error::custom("Wrong fields type".to_string()))
+                        },
+                    )?;
                 }
+                s.end()
             }
             _ => todo!(),
         }
