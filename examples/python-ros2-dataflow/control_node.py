@@ -15,7 +15,7 @@ for i in range(500):
         print(
             f"""Node received:
     id: {event["id"]},
-    value: {event["data"]},
+    value: {event["value"]},
     metadata: {event["metadata"]}"""
         )
         node.send_output(
