@@ -183,6 +183,12 @@ fn copy_array_into_sample_inner(
     let mut buffer_offsets = Vec::new();
     for buffer in arrow_array.buffers().iter() {
         let len = buffer.len();
+        assert!(
+            target_buffer[*next_offset..].len() >= len,
+            "target buffer too small (total_len: {}, offset: {}, required_len: {len})",
+            target_buffer.len(),
+            *next_offset,
+        );
         target_buffer[*next_offset..][..len].copy_from_slice(buffer.as_slice());
         buffer_offsets.push(BufferOffset {
             offset: *next_offset,
@@ -206,4 +212,15 @@ fn copy_array_into_sample_inner(
         buffer_offsets,
         child_data,
     })
+}
+
+pub fn required_data_size(array: &ArrayData) -> usize {
+    let mut size = 0;
+    for buffer in array.buffers() {
+        size += buffer.len();
+    }
+    for child in array.child_data() {
+        size += required_data_size(child);
+    }
+    size
 }

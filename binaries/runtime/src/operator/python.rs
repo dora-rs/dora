@@ -272,7 +272,9 @@ mod callback_impl {
     use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use dora_core::message::ArrowTypeInfo;
     use dora_node_api::ZERO_COPY_THRESHOLD;
-    use dora_operator_api_python::{copy_array_into_sample, pydict_to_metadata};
+    use dora_operator_api_python::{
+        copy_array_into_sample, pydict_to_metadata, required_data_size,
+    };
     use eyre::{eyre, Context, Result};
     use pyo3::{
         pymethods,
@@ -295,7 +297,7 @@ mod callback_impl {
             metadata: Option<&PyDict>,
             py: Python,
         ) -> Result<()> {
-            let mut allocate_sample = |data_len| {
+            let allocate_sample = |data_len| {
                 if data_len > ZERO_COPY_THRESHOLD {
                     let (tx, rx) = oneshot::channel();
                     self.events_tx
@@ -312,15 +314,13 @@ mod callback_impl {
                 }
             };
 
-            let parameters = pydict_to_metadata(metadata)?;
-
             let (sample, type_info) = if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
                 let data = py_bytes.as_bytes();
                 let mut sample = allocate_sample(data.len())?;
                 sample.copy_from_slice(data);
                 (sample, ArrowTypeInfo::byte_array(data.len()))
             } else if let Ok(arrow_array) = ArrayData::from_pyarrow(data.as_ref(py)) {
-                let total_len = arrow_array.get_buffer_memory_size();
+                let total_len = required_data_size(&arrow_array);
                 let mut sample = allocate_sample(total_len)?;
 
                 let type_info = copy_array_into_sample(&mut sample, &arrow_array)?;
