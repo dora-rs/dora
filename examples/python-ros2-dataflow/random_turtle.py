@@ -44,10 +44,10 @@ for i in range(500):
                         case "direction":
                             direction = {
                                 "linear": {
-                                    "x": event["data"][0],
+                                    "x": event["value"][0],
                                 },
                                 "angular": {
-                                    "z": event["data"][5],
+                                    "z": event["value"][5],
                                 },
                             }
 
