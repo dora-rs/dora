@@ -52,7 +52,18 @@ for i in range(500):
                             }
 
                             print(direction, flush=True)
-                            twist_writer.publish(pa.array(direction))
+                            # TODO FIXME: The below line seems to result in an
+                            # `["linear", "angular"]` array, completely ignoring the values.
+                            direction_arrow = pa.array(
+                                direction,
+                                # TODO: maybe type annotations help somehow?
+                                # type=pa.map_(
+                                #     pa.utf8(),
+                                #     pa.map_(pa.utf8(), pa.float32()),
+                                # ),
+                            )
+                            print(direction_arrow, flush=True)
+                            # twist_writer.publish(direction_arrow)
                         case "tick":
                             pass
 
