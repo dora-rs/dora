@@ -51,7 +51,7 @@ for i in range(500):
                                 },
                             }
 
-                            direction_arrow = pa.array([pa.scalar(direction)])
+                            direction_arrow = pa.scalar(direction)
                             twist_writer.publish(direction_arrow)
 
         case "external":
