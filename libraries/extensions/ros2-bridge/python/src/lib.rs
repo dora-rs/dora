@@ -11,7 +11,7 @@ use eyre::{eyre, Context, ContextCompat};
 use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods},
-    types::{PyList, PyModule},
+    types::{PyDict, PyList, PyModule},
     PyAny, PyObject, PyResult, Python,
 };
 use typed::{
@@ -184,7 +184,15 @@ impl Ros2Publisher {
     pub fn publish(&self, data: &PyAny) -> eyre::Result<()> {
         let pyarrow = PyModule::import(data.py(), "pyarrow")?;
 
+        let data = if data.is_instance_of::<PyDict>() {
+            // convert to arrow struct scalar
+            pyarrow.getattr("scalar")?.call1((data,))?
+        } else {
+            data
+        };
+
         let data = if data.is_instance(pyarrow.getattr("StructScalar")?)? {
+            // convert to arrow array
             let list = PyList::new(data.py(), [data]);
             pyarrow.getattr("array")?.call1((list,))?
         } else {
