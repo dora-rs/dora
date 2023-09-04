@@ -2,7 +2,7 @@
 
 We welcome bug reports, feature requests, and pull requests!
 
-Please discuss non-trivial changes in an issue or discussion first before implementing them.
+Please discuss non-trivial changes in a Github issue or on Discord first before implementing them.
 This way, we can avoid unnecessary work on both sides.
 
 ## Building
