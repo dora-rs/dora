@@ -37,11 +37,11 @@ clap = { version = "4.0.3", features = ["derive"] }
 tracing-opentelemetry = { version = "0.18.0", optional = true }
 pythonize = { version = "0.19.0", optional = true }
 arrow-schema = "45.0.0"
-arrow = { version = "45.0.0", features = ["pyarrow"] }
+arrow = { version = "45.0.0" }
 
 [features]
 default = ["tracing"]
 tracing = ["dora-tracing"]
 telemetry = ["tracing", "opentelemetry", "tracing-opentelemetry"]
 metrics = ["opentelemetry", "opentelemetry-system-metrics", "dora-metrics"]
-python = ["pyo3", "dora-operator-api-python", "pythonize"]
+python = ["pyo3", "dora-operator-api-python", "pythonize", "arrow/pyarrow"]
