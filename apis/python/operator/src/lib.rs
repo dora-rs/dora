@@ -89,7 +89,7 @@ impl PyEvent {
                 let array = data
                     .clone()
                     .into_arrow_array(&metadata.type_info)
-                    .map_err(|err| arrow::pyarrow::PyArrowException::new_err(err.to_string()))?;
+                    .context("Could not create arrow array")?;
                 // TODO: Does this call leak data?
                 let array_data = array.to_pyarrow(py)?;
                 Ok(Some(array_data))
