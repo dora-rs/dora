@@ -11,7 +11,7 @@ use eyre::{eyre, Context, ContextCompat};
 use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods},
-    types::PyModule,
+    types::{PyList, PyModule},
     PyAny, PyObject, PyResult, Python,
 };
 use typed::{
@@ -182,7 +182,15 @@ pub struct Ros2Publisher {
 #[pymethods]
 impl Ros2Publisher {
     pub fn publish(&self, data: &PyAny) -> eyre::Result<()> {
-        // TODO: add support for arrow types
+        let pyarrow = PyModule::import(data.py(), "pyarrow")?;
+
+        let data = if data.is_instance(pyarrow.getattr("StructScalar")?)? {
+            let list = PyList::new(data.py(), [data]);
+            pyarrow.getattr("array")?.call1((list,))?
+        } else {
+            data
+        };
+
         let value = arrow::array::ArrayData::from_pyarrow(data)?;
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
