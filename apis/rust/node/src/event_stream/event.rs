@@ -2,7 +2,7 @@ use std::{ptr::NonNull, sync::Arc};
 
 use dora_core::{
     config::{DataId, OperatorId},
-    message::{ArrowTypeInfo, Metadata},
+    message::{ArrowTypeInfo, BufferOffset, Metadata},
 };
 use eyre::{Context, Result};
 use shared_memory_extended::{Shmem, ShmemConf};
@@ -39,21 +39,39 @@ impl Data {
     ) -> Result<arrow::array::ArrayData> {
         let ptr = NonNull::new(self.as_ptr() as *mut _).unwrap();
         let len = self.len();
-        let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, self) };
 
-        arrow::array::ArrayData::try_new(
-            type_info.data_type.clone(),
-            type_info.len,
-            type_info
-                .validity
-                .clone()
-                .map(arrow::buffer::Buffer::from_vec),
-            type_info.offset,
-            vec![buffer],
-            vec![],
-        )
-        .context("Error creating Arrow Array")
+        let raw_buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, self) };
+
+        buffer_into_arrow_array(&raw_buffer, type_info)
     }
+}
+
+fn buffer_into_arrow_array(
+    raw_buffer: &arrow::buffer::Buffer,
+    type_info: &ArrowTypeInfo,
+) -> std::result::Result<arrow::array::ArrayData, eyre::Error> {
+    let mut buffers = Vec::new();
+    for BufferOffset { offset, len } in &type_info.buffer_offsets {
+        buffers.push(raw_buffer.slice_with_length(*offset, *len));
+    }
+
+    let mut child_data = Vec::new();
+    for child_type_info in &type_info.child_data {
+        child_data.push(buffer_into_arrow_array(raw_buffer, child_type_info)?)
+    }
+
+    arrow::array::ArrayData::try_new(
+        type_info.data_type.clone(),
+        type_info.len,
+        type_info
+            .validity
+            .clone()
+            .map(arrow::buffer::Buffer::from_vec),
+        type_info.offset,
+        buffers,
+        child_data,
+    )
+    .context("Error creating Arrow Array")
 }
 
 impl std::ops::Deref for Data {
