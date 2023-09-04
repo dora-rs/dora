@@ -22,6 +22,6 @@ for i in range(500):
             "direction",
             pa.array(
                 [random.random() + 1, 0, 0, 0, 0, (random.random() - 0.5) * 5],
-                type=pa.float32(),
+                type=pa.float64(),
             ),
         )
