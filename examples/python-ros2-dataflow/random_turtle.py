@@ -51,8 +51,7 @@ for i in range(500):
                                 },
                             }
 
-                            direction_arrow = pa.scalar(direction)
-                            twist_writer.publish(direction_arrow)
+                            twist_writer.publish(direction)
 
         case "external":
             pose = event.inner()[0].as_py()
