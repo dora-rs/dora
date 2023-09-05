@@ -13,7 +13,7 @@
   |
   <a href="https://dora.carsmos.ai/docs/guides/">Guide</a>
   |
-  <a href="https://github.com/orgs/dora-rs/discussions">Discussion</a>
+  <a href="https://discord.gg/ucY3AMeu">Discord</a>
 </h2>
 
 <div align="center">
@@ -101,9 +101,11 @@ To go further, you can add a yolov5 operator, check out our getting started here
 
 The full documentation is available on our website: https://dora.carsmos.ai 
 
-## Discussion
+## Discussions
 
-Our main communication channel is our Github Project Discussion page: https://github.com/orgs/dora-rs/discussions
+Our main communication channels are:
+- [Our Discord server](https://discord.gg/ucY3AMeu)
+- [Our Github Project Discussion](https://github.com/orgs/dora-rs/discussions)
 
 Feel free to reach out on any topic, issues or ideas.
 
