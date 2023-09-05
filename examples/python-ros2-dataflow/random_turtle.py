@@ -42,31 +42,10 @@ for i in range(500):
                 case "INPUT":
                     match event["id"]:
                         case "direction":
-                            direction = {
-                                "linear": {
-                                    "x": event["value"][0],
-                                },
-                                "angular": {
-                                    "z": event["value"][5],
-                                },
-                            }
-
-                            twist_writer.publish(direction)
+                            twist_writer.publish(event["value"])
 
         case "external":
             pose = event.inner()[0].as_py()
 
             assert pose["x"] != 5.544445, "turtle should not be at initial x axis"
-            dora_node.send_output(
-                "turtle_pose",
-                pa.array(
-                    [
-                        pose["x"],
-                        pose["y"],
-                        pose["theta"],
-                        pose["linear_velocity"],
-                        pose["angular_velocity"],
-                    ],
-                    type=pa.float64(),
-                ),
-            )
+            dora_node.send_output("turtle_pose", event.inner())
