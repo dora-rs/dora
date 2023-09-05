@@ -103,7 +103,7 @@ The full documentation is available on our website: https://dora.carsmos.ai
 
 ## Discussions
 
-Our main communication channel is:
+Our main communication channels are:
 - [Our Discord server](https://discord.gg/ucY3AMeu)
 - [Our Github Project Discussion](https://github.com/orgs/dora-rs/discussions)
 
