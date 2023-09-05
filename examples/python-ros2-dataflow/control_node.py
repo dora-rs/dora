@@ -18,10 +18,14 @@ for i in range(500):
                     f"""Pose: {event["value"]}""".replace("\r", "").replace("\n", " ")
                 )
             case "tick":
+                direction = {
+                    "linear": {
+                        "x": 1.0,
+                    },
+                    "angular": {"z": 1.0},
+                }
+
                 node.send_output(
                     "direction",
-                    pa.array(
-                        [random.random() + 1, 0, 0, 0, 0, (random.random() - 0.5) * 5],
-                        type=pa.float64(),
-                    ),
+                    pa.array([direction]),
                 )
