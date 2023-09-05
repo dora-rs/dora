@@ -111,6 +111,7 @@ jobs:
       - uses: ros-tooling/setup-ros@v0.6
         with:
           required-ros-distributions: humble
+        if: runner.os == 'Linux'
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
         if: runner.os == 'Linux'
       - name: "python-ros2-dataflow"
