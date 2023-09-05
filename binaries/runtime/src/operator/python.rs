@@ -269,12 +269,18 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
+    use arrow::{array::ArrayData, pyarrow::FromPyArrow};
+    use dora_core::message::ArrowTypeInfo;
     use dora_node_api::ZERO_COPY_THRESHOLD;
     use dora_operator_api_python::{
-        process_python_output, process_python_type, pydict_to_metadata, python_output_len,
+        copy_array_into_sample, pydict_to_metadata, required_data_size,
     };
     use eyre::{eyre, Context, Result};
-    use pyo3::{pymethods, types::PyDict, PyObject, Python};
+    use pyo3::{
+        pymethods,
+        types::{PyBytes, PyDict},
+        PyObject, Python,
+    };
     use tokio::sync::oneshot;
 
     /// Send an output from the operator:
@@ -291,8 +297,7 @@ mod callback_impl {
             metadata: Option<&PyDict>,
             py: Python,
         ) -> Result<()> {
-            let data_len = python_output_len(&data, py)?;
-            let mut sample = {
+            let allocate_sample = |data_len| {
                 if data_len > ZERO_COPY_THRESHOLD {
                     let (tx, rx) = oneshot::channel();
                     self.events_tx
@@ -303,26 +308,36 @@ mod callback_impl {
                         .map_err(|_| eyre!("failed to send output to runtime"))?;
                     rx.blocking_recv()
                         .wrap_err("failed to request output sample")?
-                        .wrap_err("failed to allocate output sample")?
+                        .wrap_err("failed to allocate output sample")
                 } else {
-                    vec![0; data_len].into()
+                    Ok(vec![0; data_len].into())
                 }
             };
 
-            process_python_output(&data, py, |data| {
+            let (sample, type_info) = if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
+                let data = py_bytes.as_bytes();
+                let mut sample = allocate_sample(data.len())?;
                 sample.copy_from_slice(data);
-                Ok(())
-            })?;
+                (sample, ArrowTypeInfo::byte_array(data.len()))
+            } else if let Ok(arrow_array) = ArrayData::from_pyarrow(data.as_ref(py)) {
+                let total_len = required_data_size(&arrow_array);
+                let mut sample = allocate_sample(total_len)?;
+
+                let type_info = copy_array_into_sample(&mut sample, &arrow_array)?;
+
+                (sample, type_info)
+            } else {
+                eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
+            };
 
             let parameters = pydict_to_metadata(metadata)
                 .wrap_err("failed to parse metadata")?
                 .into_owned();
-            let data_type = process_python_type(&data, py)?;
 
             py.allow_threads(|| {
                 let event = OperatorEvent::Output {
                     output_id: output.to_owned().into(),
-                    data_type,
+                    type_info,
                     parameters,
                     data: Some(sample),
                 };

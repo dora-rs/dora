@@ -1463,6 +1463,7 @@ dependencies = [
 name = "dora-message"
 version = "0.2.4"
 dependencies = [
+ "arrow-data",
  "arrow-schema",
  "eyre",
  "serde",
@@ -1663,6 +1664,7 @@ dependencies = [
 name = "dora-runtime"
 version = "0.2.4"
 dependencies = [
+ "arrow",
  "arrow-schema",
  "clap 4.3.9",
  "dora-core",

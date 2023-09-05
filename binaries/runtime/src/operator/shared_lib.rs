@@ -3,6 +3,7 @@ use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
     descriptor::source_is_url,
+    message::ArrowTypeInfo,
 };
 use dora_download::download_file;
 use dora_node_api::{Event, MetadataParameters};
@@ -118,11 +119,10 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 open_telemetry_context: open_telemetry_context.into(),
                 ..Default::default()
             };
-            let data_type = arrow_schema::DataType::UInt8;
 
             let event = OperatorEvent::Output {
                 output_id: DataId::from(String::from(output_id)),
-                data_type,
+                type_info: ArrowTypeInfo::byte_array(data.len()),
                 parameters,
                 data: Some(data.to_owned().into()),
             };

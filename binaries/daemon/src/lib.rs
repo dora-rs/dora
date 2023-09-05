@@ -3,7 +3,7 @@ use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{Data, InterDaemonEvent, Timestamped};
 use dora_core::message::uhlc::{self, HLC};
-use dora_core::message::MetadataParameters;
+use dora_core::message::{ArrowTypeInfo, MetadataParameters};
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
@@ -1316,7 +1316,7 @@ impl RunningDataflow {
 
                     let metadata = dora_core::message::Metadata::from_parameters(
                         hlc.new_timestamp(),
-                        arrow_schema::DataType::Null,
+                        ArrowTypeInfo::empty(),
                         MetadataParameters {
                             watermark: 0,
                             deadline: 0,
