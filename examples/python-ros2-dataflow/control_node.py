@@ -15,13 +15,19 @@ for i in range(500):
         match event["id"]:
             case "turtle_pose":
                 print(
-                    f"""Pose: {event["value"]}""".replace("\r", "").replace("\n", " ")
+                    f"""Pose: {event["value"].tolist()}""".replace("\r", "").replace(
+                        "\n", " "
+                    )
                 )
             case "tick":
+                direction = {
+                    "linear": {
+                        "x": 1.0 + random.random(),
+                    },
+                    "angular": {"z": (random.random() - 0.5) * 5},
+                }
+
                 node.send_output(
                     "direction",
-                    pa.array(
-                        [random.random() + 1, 0, 0, 0, 0, (random.random() - 0.5) * 5],
-                        type=pa.float64(),
-                    ),
+                    pa.array([direction]),
                 )
