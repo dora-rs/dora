@@ -7,6 +7,8 @@ import dora
 from dora import Node
 import pyarrow as pa
 
+CHECK_TICK = 20
+
 ros2_context = dora.experimental.ros2_bridge.Ros2Context()
 ros2_node = ros2_context.new_node(
     "turtle_teleop",
@@ -32,6 +34,7 @@ dora_node = Node()
 dora_node.merge_external_events(pose_reader)
 
 print("looping", flush=True)
+
 for i in range(500):
     event = dora_node.next()
     if event is None:
@@ -46,6 +49,8 @@ for i in range(500):
 
         case "external":
             pose = event.inner()[0].as_py()
-
-            assert pose["x"] != 5.544445, "turtle should not be at initial x axis"
+            if i == CHECK_TICK:
+                assert (
+                    pose["x"] != 5.544444561004639
+                ), "turtle should not be at initial x axis"
             dora_node.send_output("turtle_pose", event.inner())
