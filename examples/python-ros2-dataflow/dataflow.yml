@@ -4,7 +4,6 @@ nodes:
       source: ./random_turtle.py
       inputs:
         direction: control/direction
-        tick: dora/timer/millis/50
       outputs:
         - turtle_pose
 
@@ -13,5 +12,6 @@ nodes:
       source: ./control_node.py
       inputs:
         turtle_pose: turtle/turtle_pose
+        tick: dora/timer/millis/500
       outputs:
         - direction

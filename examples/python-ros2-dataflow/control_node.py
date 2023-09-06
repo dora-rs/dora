@@ -12,16 +12,16 @@ for i in range(500):
     if event is None:
         break
     if event["type"] == "INPUT":
-        print(
-            f"""Node received:
-    id: {event["id"]},
-    value: {event["data"]},
-    metadata: {event["metadata"]}"""
-        )
-        node.send_output(
-            "direction",
-            pa.array(
-                [1, 0, 0, 0, 0, 1],
-                type=pa.uint8(),
-            ),
-        )
+        match event["id"]:
+            case "turtle_pose":
+                print(
+                    f"""Pose: {event["value"]}""".replace("\r", "").replace("\n", " ")
+                )
+            case "tick":
+                node.send_output(
+                    "direction",
+                    pa.array(
+                        [random.random() + 1, 0, 0, 0, 0, (random.random() - 0.5) * 5],
+                        type=pa.float64(),
+                    ),
+                )
