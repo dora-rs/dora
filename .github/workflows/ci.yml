@@ -20,7 +20,7 @@ jobs:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -37,6 +37,26 @@ jobs:
         run: cargo build --all
       - name: "Test"
         run: cargo test --all
+
+  # Run examples as separate job because otherwise we will exhaust the disk
+  # space of the GitHub action runners.
+  examples:
+    name: "Examples"
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v3
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          # only save caches for `main` branch
+          # save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # general examples
       - name: "Build examples"
