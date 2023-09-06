@@ -88,6 +88,7 @@ jobs:
 
       # ROS2 bridge examples
       - uses: ros-tooling/setup-ros@v0.6
+        if: runner.os == 'Linux'
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
