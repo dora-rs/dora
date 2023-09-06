@@ -37,6 +37,45 @@ jobs:
       - name: "Test"
         run: cargo test --all
 
+      # CLI tests
+      - name: "Build cli and binaries"
+        timeout-minutes: 45
+        # fail-fast by using bash shell explictly
+        shell: bash
+        run: |
+          cargo install --path binaries/coordinator
+          cargo install --path binaries/daemon
+          cargo install --path binaries/cli
+      - name: "Test CLI"
+        timeout-minutes: 30
+        # fail-fast by using bash shell explictly
+        shell: bash
+        run: |
+          dora-cli up
+          dora-cli list
+
+          # Test Rust template Project
+          dora-cli new test_rust_project --internal-create-with-path-dependencies
+          cd test_rust_project
+          cargo build --all
+          dora-cli start dataflow.yml --name ci-rust-test
+          sleep 10
+          dora-cli stop --name ci-rust-test
+          cd ..
+
+          # Test Python template Project
+          pip3 install maturin
+          maturin build -m apis/python/node/Cargo.toml
+          pip3 install target/wheels/*
+          dora-cli new test_python_project --lang python --internal-create-with-path-dependencies
+          cd test_python_project
+          dora-cli start dataflow.yml --name ci-python-test
+          sleep 10
+          dora-cli stop --name ci-python-test
+          cd ..
+
+          dora-cli destroy
+
   # Run examples as separate job because otherwise we will exhaust the disk
   # space of the GitHub action runners.
   examples:
@@ -86,68 +125,43 @@ jobs:
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-operator-dataflow
 
-      # ROS2 bridge examples
+  # ROS2 bridge examples
+  ros2-bridge-examples:
+    name: "ROS2 Bridge Examples"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - run: cargo --version --verbose
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          # only save caches for `main` branch
+          # save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - uses: ros-tooling/setup-ros@v0.6
-        if: runner.os == 'Linux'
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
-        if: runner.os == 'Linux'
       - name: "Rust ROS2 Bridge example"
         timeout-minutes: 30
-        if: runner.os == 'Linux'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
           cargo run --example rust-ros2-dataflow --features="ros2-examples"
+      - uses: actions/setup-python@v2
+        with:
+          python-version: "3.10"
       - name: "python-ros2-dataflow"
         timeout-minutes: 30
-        if: runner.os == 'Linux'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
           cargo run --example python-ros2-dataflow --features="ros2-examples"
 
-      # CLI tests
-      - name: "Build cli and binaries"
-        timeout-minutes: 45
-        # fail-fast by using bash shell explictly
-        shell: bash
-        run: |
-          cargo install --path binaries/coordinator
-          cargo install --path binaries/daemon
-          cargo install --path binaries/cli
-      - name: "Test CLI"
-        timeout-minutes: 30
-        # fail-fast by using bash shell explictly
-        shell: bash
-        run: |
-          dora-cli up
-          dora-cli list
-
-          # Test Rust template Project
-          dora-cli new test_rust_project --internal-create-with-path-dependencies
-          cd test_rust_project
-          cargo build --all
-          dora-cli start dataflow.yml --name ci-rust-test
-          sleep 10
-          dora-cli stop --name ci-rust-test
-          cd ..
-
-          # Test Python template Project
-          pip3 install maturin
-          maturin build -m apis/python/node/Cargo.toml
-          pip3 install target/wheels/*
-          dora-cli new test_python_project --lang python --internal-create-with-path-dependencies
-          cd test_python_project
-          dora-cli start dataflow.yml --name ci-python-test
-          sleep 10
-          dora-cli stop --name ci-python-test
-          cd ..
-
-          dora-cli destroy
   bench:
     name: "Bench"
     strategy:
