@@ -26,6 +26,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-provider: buildjet
           cache-on-failure: true
           # only save caches for `main` branch
           # save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -50,6 +51,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-provider: buildjet
           cache-on-failure: true
           # only save caches for `main` branch
           # save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -109,6 +111,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-provider: buildjet
           cache-on-failure: true
           # only save caches for `main` branch
           # save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -153,6 +156,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-provider: buildjet
           cache-on-failure: true
           # only save caches for `main` branch
           # save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -193,6 +197,7 @@ jobs:
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-provider: buildjet
           cache-on-failure: true
           # only save caches for `main` branch
           # save-if: ${{ github.ref == 'refs/heads/main' }}
