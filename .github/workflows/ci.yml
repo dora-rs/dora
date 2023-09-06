@@ -148,7 +148,7 @@ jobs:
         timeout-minutes: 30
         run: cargo run --example benchmark --release
 
-  cli-test:
+  CLI:
     name: "CLI Test"
     strategy:
       matrix:
