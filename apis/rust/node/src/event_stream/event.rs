@@ -1,10 +1,11 @@
 use std::{ptr::NonNull, sync::Arc};
 
+use arrow_schema::DataType;
 use dora_core::{
     config::{DataId, OperatorId},
     message::{ArrowTypeInfo, BufferOffset, Metadata},
 };
-use eyre::{Context, Result};
+use eyre::{Context, ContextCompat, Result};
 use shared_memory_extended::{Shmem, ShmemConf};
 
 #[derive(Debug)]
@@ -17,7 +18,7 @@ pub enum Event {
     Input {
         id: DataId,
         metadata: Metadata,
-        data: Option<Data>,
+        data: ArrowData,
     },
     InputClosed {
         id: DataId,
@@ -25,13 +26,64 @@ pub enum Event {
     Error(String),
 }
 
-pub enum Data {
+#[derive(Debug)]
+pub struct ArrowData(arrow::array::ArrayData);
+
+impl ArrowData {
+    pub(super) fn new(data: Option<Data>, metadata: &Metadata) -> eyre::Result<ArrowData> {
+        let raw_data = Arc::new(data.unwrap_or(Data::Vec(Vec::new())));
+        raw_data.into_arrow_array(&metadata.type_info).map(Self)
+    }
+
+    pub fn as_byte_slice(&self) -> eyre::Result<&[u8]> {
+        let first_buffer = self.0.buffers().iter().next().context("no buffers")?;
+        if self.0.buffers().len() != 1 {
+            eyre::bail!(
+                "must have exactly one buffer, has {} buffers",
+                self.0.buffers().len()
+            );
+        }
+        if !self.0.child_data().is_empty() {
+            eyre::bail!(
+                "should have no child data, has {}",
+                self.0.child_data().len()
+            );
+        }
+
+        if !matches!(self.0.data_type(), DataType::UInt8) {
+            eyre::bail!("should have DataType::UInt8, has {}", self.0.data_type());
+        }
+        if self.0.len() != first_buffer.len() {
+            eyre::bail!(
+                "len ({}) should match len of first buffer ({})",
+                self.0.len(),
+                first_buffer.len()
+            );
+        }
+
+        if self.0.null_count() != 0 {
+            eyre::bail!("should have no nulls, has {}", self.0.null_count());
+        }
+
+        if self.0.offset() != 0 {
+            eyre::bail!(
+                "should start at offset 0, starts at offset {}",
+                self.0.offset()
+            );
+        }
+
+        Ok(first_buffer.as_slice())
+    }
+}
+
+pub(super) enum Data {
     Vec(Vec<u8>),
     SharedMemory {
         data: MappedInputData,
         _drop: flume::Sender<()>,
     },
 }
+
 impl Data {
     pub fn into_arrow_array(
         self: Arc<Self>,

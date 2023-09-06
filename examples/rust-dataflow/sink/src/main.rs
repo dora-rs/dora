@@ -1,19 +1,14 @@
 use dora_node_api::{self, DoraNode, Event};
-use eyre::{bail, Context, ContextCompat};
+use eyre::{bail, Context};
 
 fn main() -> eyre::Result<()> {
     let (_node, mut events) = DoraNode::init_from_env()?;
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input {
-                id,
-                metadata: _,
-                data,
-            } => match id.as_str() {
+            Event::Input { id, metadata, data } => match id.as_str() {
                 "message" => {
-                    let data = data.wrap_err("no data")?;
-                    let received_string = std::str::from_utf8(&data)
+                    let received_string = std::str::from_utf8(data.as_byte_slice()?)
                         .wrap_err("received message was not utf8-encoded")?;
                     println!("sink received message: {}", received_string);
                     if !received_string.starts_with("operator received random value ") {

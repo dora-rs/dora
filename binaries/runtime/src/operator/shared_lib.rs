@@ -182,7 +182,12 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 } => {
                     let operator_input = dora_operator_api_types::Input {
                         id: String::from(input_id).into(),
-                        data: data.map(|d| d.to_vec()).unwrap_or_default().into(),
+                        data: data
+                            .as_byte_slice()
+                            .map(|d| d.to_vec())
+                            // TODO: don't silence error
+                            .unwrap_or_default()
+                            .into(),
                         metadata: Metadata {
                             open_telemetry_context: metadata
                                 .parameters
