@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-pub use event::{Data, Event, MappedInputData};
+pub use event::{ArrowData, Event, MappedInputData};
 use futures::{Stream, StreamExt};
 
-use self::thread::{EventItem, EventStreamThreadHandle};
+use self::{
+    event::Data,
+    thread::{EventItem, EventStreamThreadHandle},
+};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
@@ -131,6 +134,7 @@ impl EventStream {
                             })
                         },
                     };
+                    let data = data.and_then(|data| ArrowData::new(data, &metadata));
                     match data {
                         Ok(data) => Event::Input { id, metadata, data },
                         Err(err) => Event::Error(format!("{err:?}")),

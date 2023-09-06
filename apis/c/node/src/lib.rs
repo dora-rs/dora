@@ -169,14 +169,19 @@ pub unsafe extern "C" fn read_dora_input_data(
 ) {
     let event: &Event = unsafe { &*event.cast() };
     match event {
-        Event::Input {
-            data: Some(data), ..
-        } => {
-            let ptr = data.as_ptr();
-            let len = data.len();
-            unsafe {
-                *out_ptr = ptr;
-                *out_len = len;
+        Event::Input { data, .. } => {
+            if let Ok(data) = data.as_byte_slice() {
+                let ptr = data.as_ptr();
+                let len = data.len();
+                unsafe {
+                    *out_ptr = ptr;
+                    *out_len = len;
+                }
+            } else {
+                unsafe {
+                    *out_ptr = ptr::null();
+                    *out_len = 0;
+                }
             }
         }
         _ => unsafe {
