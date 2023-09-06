@@ -62,9 +62,9 @@ jobs:
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
-          cargo install --path binaries/coordinator
-          cargo install --path binaries/daemon
-          cargo install --path binaries/cli
+          cargo install --path binaries/coordinator --locked
+          cargo install --path binaries/daemon --locked
+          cargo install --path binaries/cli --locked
       - name: "Test CLI"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
