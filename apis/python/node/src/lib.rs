@@ -3,9 +3,7 @@
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DoraNode, EventStream};
-use dora_operator_api_python::{
-    copy_array_into_sample, pydict_to_metadata, required_data_size, PyEvent,
-};
+use dora_operator_api_python::{pydict_to_metadata, PyEvent};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::Context;
 use futures::{Stream, StreamExt};
@@ -100,14 +98,11 @@ impl Node {
                 .send_output_bytes(output_id.into(), parameters, data.len(), data)
                 .wrap_err("failed to send output")?;
         } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
-            let total_len = required_data_size(&arrow_array);
-
-            let mut sample = self.node.allocate_data_sample(total_len)?;
-            let type_info = copy_array_into_sample(&mut sample, &arrow_array)?;
-
-            self.node
-                .send_output_sample(output_id.into(), type_info, parameters, Some(sample))
-                .wrap_err("failed to send output")?;
+            self.node.send_output(
+                output_id.into(),
+                parameters,
+                arrow::array::make_array(arrow_array),
+            )?;
         } else {
             eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
         }

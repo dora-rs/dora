@@ -1,6 +1,9 @@
 #![deny(elided_lifetimes_in_paths)] // required for safer-ffi
 
+pub use arrow;
 pub use safer_ffi;
+
+use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use safer_ffi::{closure::ArcDynFn1, derive_ReprC, ffi_export};
 use std::path::Path;
 
@@ -46,7 +49,7 @@ pub struct DoraOnEvent {
 #[repr(transparent)]
 pub struct OnEventFn(
     pub  unsafe extern "C" fn(
-        event: &RawEvent,
+        event: &mut RawEvent,
         send_output: &SendOutput,
         operator_context: *mut std::ffi::c_void,
     ) -> OnEventResult,
@@ -64,12 +67,12 @@ pub struct RawEvent {
 }
 
 #[derive_ReprC]
-#[ffi_export]
-#[repr(C)]
+#[repr(opaque)]
 #[derive(Debug)]
 pub struct Input {
     pub id: safer_ffi::String,
-    pub data: safer_ffi::Vec<u8>,
+    pub data_array: Option<FFI_ArrowArray>,
+    pub schema: FFI_ArrowSchema,
     pub metadata: Metadata,
 }
 
@@ -89,12 +92,12 @@ pub struct SendOutput {
 }
 
 #[derive_ReprC]
-#[ffi_export]
-#[repr(C)]
+#[repr(opaque)]
 #[derive(Debug)]
 pub struct Output {
     pub id: safer_ffi::String,
-    pub data: safer_ffi::Vec<u8>,
+    pub data_array: FFI_ArrowArray,
+    pub schema: FFI_ArrowSchema,
     pub metadata: Metadata,
 }
 

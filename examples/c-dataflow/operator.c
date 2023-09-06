@@ -23,7 +23,7 @@ DoraResult_t dora_drop_operator(void *operator_context)
 }
 
 OnEventResult_t dora_on_event(
-    const RawEvent_t *event,
+    RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
 {

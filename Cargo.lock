@@ -1511,6 +1511,7 @@ dependencies = [
 name = "dora-node-api-c"
 version = "0.2.4"
 dependencies = [
+ "arrow-array",
  "dora-node-api",
  "eyre",
  "flume",
@@ -1594,6 +1595,7 @@ dependencies = [
 name = "dora-operator-api-types"
 version = "0.2.4"
 dependencies = [
+ "arrow",
  "safer-ffi",
 ]
 
@@ -4618,9 +4620,9 @@ checksum = "ef703b7cb59335eae2eb93ceb664c0eb7ea6bf567079d843e09420219668e072"
 
 [[package]]
 name = "safer-ffi"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62fd645a8c0b4a71f0883dce1bc48e358fcc02b99c83613f62ede5660b3572c1"
+checksum = "4f47f1d2f33598dab2baa9517fffa1cf722f2e3a30633f2a230f20f9da67c564"
 dependencies = [
  "inventory",
  "libc",
@@ -4635,9 +4637,9 @@ dependencies = [
 
 [[package]]
 name = "safer_ffi-proc_macros"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d39be56c8f7e5878594154dd0d2c03e2b12c66fa5a5ba3fe302412bd89bad774"
+checksum = "b08f58cf71a58bda5734758eb20051cdb66c06c9243badbc45092ced1be834df"
 dependencies = [
  "macro_rules_attribute",
  "prettyplease",

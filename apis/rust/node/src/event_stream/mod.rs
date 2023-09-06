@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-pub use event::{ArrowData, Event, MappedInputData};
+pub use event::{Event, MappedInputData};
 use futures::{Stream, StreamExt};
 
 use self::{
@@ -134,7 +134,12 @@ impl EventStream {
                             })
                         },
                     };
-                    let data = data.and_then(|data| ArrowData::new(data, &metadata));
+                    let data = data.and_then(|data| {
+                        let raw_data = Arc::new(data.unwrap_or(Data::Vec(Vec::new())));
+                        raw_data
+                            .into_arrow_array(&metadata.type_info)
+                            .map(arrow::array::make_array)
+                    });
                     match data {
                         Ok(data) => Event::Input { id, metadata, data },
                         Err(err) => Event::Error(format!("{err:?}")),
