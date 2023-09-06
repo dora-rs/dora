@@ -242,6 +242,11 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-provider: buildjet
+          cache-on-failure: true
+          # only save caches for `main` branch
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - run: cargo install cargo-lichking
       - name: "Check dependency licenses"
