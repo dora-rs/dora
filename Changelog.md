@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.2.5 (2023-09-06)
+
+### Features
+* Use cargo instead of git in Rust `Cargo.toml` template by @haixuanTao in https://github.com/dora-rs/dora/pull/326
+* Use read_line instead of next_line in stderr by @haixuanTao in https://github.com/dora-rs/dora/pull/325
+* Add a `rust-ros2-dataflow` example using the dora-ros2-bridge by @phil-opp in https://github.com/dora-rs/dora/pull/324
+* Removing patchelf by @haixuanTao in https://github.com/dora-rs/dora/pull/333
+* Improving python example readibility by @haixuanTao in https://github.com/dora-rs/dora/pull/334
+* Use `serde_bytes` to serialize `Vec<u8>` by @haixuanTao in https://github.com/dora-rs/dora/pull/336
+* Adding support for `Arrow List(*)`  for Python by @haixuanTao in https://github.com/dora-rs/dora/pull/337
+* Bump rustls-webpki from 0.100.1 to 0.100.2 by @dependabot in https://github.com/dora-rs/dora/pull/340
+* Add support for event stream merging for Python node API by @phil-opp in https://github.com/dora-rs/dora/pull/339
+* Merge `dora-ros2-bridge` by @phil-opp in https://github.com/dora-rs/dora/pull/341
+* Update dependencies by @phil-opp in https://github.com/dora-rs/dora/pull/345
+* Add support for arbitrary Arrow types in Python API by @phil-opp in https://github.com/dora-rs/dora/pull/343
+* Use typed inputs in Python ROS2 example by @phil-opp in https://github.com/dora-rs/dora/pull/346
+* Use struct type instead of array for ros2 messages by @haixuanTao in https://github.com/dora-rs/dora/pull/349
+
+### Other
+
+* Add Discord :speech_balloon:  by @haixuanTao in https://github.com/dora-rs/dora/pull/348
+* Small refactoring by @haixuanTao in https://github.com/dora-rs/dora/pull/342
+
+
 ## v0.2.4 (2023-07-18)
 
 ### Features
