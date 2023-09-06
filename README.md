@@ -78,7 +78,7 @@ pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.2.5/examples/py
 
 2. Get some example operators:
 ```bash
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.2,4/examples/python-operator-dataflow/webcam.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.5/examples/python-operator-dataflow/webcam.py
 wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.5/examples/python-operator-dataflow/plot.py
 wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.5/examples/python-operator-dataflow/utils.py
 wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.5/examples/python-operator-dataflow/object_detection.py
