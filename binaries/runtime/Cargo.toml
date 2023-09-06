@@ -37,7 +37,7 @@ clap = { version = "4.0.3", features = ["derive"] }
 tracing-opentelemetry = { version = "0.18.0", optional = true }
 pythonize = { version = "0.19.0", optional = true }
 arrow-schema = "45.0.0"
-arrow = { version = "45.0.0" }
+arrow = { version = "45.0.0", features = ["ffi"] }
 
 [features]
 default = ["tracing"]

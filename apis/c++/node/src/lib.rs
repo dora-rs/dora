@@ -92,7 +92,7 @@ pub struct OutputSender(dora_node_api::DoraNode);
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
     let result = sender
         .0
-        .send_output(id.into(), Default::default(), data.len(), |out| {
+        .send_output_raw(id.into(), Default::default(), data.len(), |out| {
             out.copy_from_slice(data)
         });
     let error = match result {

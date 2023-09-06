@@ -8,6 +8,9 @@ license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[dependencies]
+arrow = { version = "45.0.0", features = ["ffi"] }
+
 [dependencies.safer-ffi]
-version = "0.1.0-rc1"
+version = "0.1.2"
 features = ["headers"]

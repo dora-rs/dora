@@ -3,10 +3,12 @@ use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
     descriptor::source_is_url,
-    message::ArrowTypeInfo,
 };
 use dora_download::download_file;
-use dora_node_api::{Event, MetadataParameters};
+use dora_node_api::{
+    arrow_utils::{copy_array_into_sample, required_data_size},
+    Event, MetadataParameters,
+};
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent,
     DoraResult, DoraStatus, Metadata, OnEventResult, Output, SendOutput,
@@ -110,7 +112,8 @@ impl<'lib> SharedLibraryOperator<'lib> {
         let send_output_closure = Arc::new(move |output: Output| {
             let Output {
                 id: output_id,
-                data,
+                data_array,
+                schema,
                 metadata: Metadata {
                     open_telemetry_context,
                 },
@@ -120,11 +123,31 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 ..Default::default()
             };
 
+            let arrow_array = match arrow::ffi::from_ffi(data_array, &schema) {
+                Ok(a) => a,
+                Err(err) => {
+                    return DoraResult {
+                        error: Some(err.to_string().into()),
+                    }
+                }
+            };
+
+            let total_len = required_data_size(&arrow_array);
+            let mut sample = vec![0; total_len];
+            let type_info = match copy_array_into_sample(&mut sample, &arrow_array) {
+                Ok(t) => t,
+                Err(err) => {
+                    return DoraResult {
+                        error: Some(err.to_string().into()),
+                    }
+                }
+            };
+
             let event = OperatorEvent::Output {
                 output_id: DataId::from(String::from(output_id)),
-                type_info: ArrowTypeInfo::byte_array(data.len()),
+                type_info,
                 parameters,
-                data: Some(data.to_owned().into()),
+                data: Some(sample.into()),
             };
 
             let result = self
@@ -168,7 +191,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 metadata.parameters.open_telemetry_context = string_cx;
             }
 
-            let operator_event = match event {
+            let mut operator_event = match event {
                 Event::Stop => dora_operator_api_types::RawEvent {
                     input: None,
                     input_closed: None,
@@ -180,14 +203,12 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     metadata,
                     data,
                 } => {
+                    let (data_array, schema) = arrow::ffi::to_ffi(&data.to_data())?;
+
                     let operator_input = dora_operator_api_types::Input {
                         id: String::from(input_id).into(),
-                        data: data
-                            .as_byte_slice()
-                            .map(|d| d.to_vec())
-                            // TODO: don't silence error
-                            .unwrap_or_default()
-                            .into(),
+                        data_array: Some(data_array),
+                        schema,
                         metadata: Metadata {
                             open_telemetry_context: metadata
                                 .parameters
@@ -232,7 +253,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 status,
             } = unsafe {
                 (self.bindings.on_event.on_event)(
-                    &operator_event,
+                    &mut operator_event,
                     &send_output,
                     operator_context.raw,
                 )

@@ -1,6 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use dora_node_api::{DoraNode, Event, EventStream};
+use arrow_array::BinaryArray;
+use dora_node_api::{arrow::array::AsArray, DoraNode, Event, EventStream};
 use eyre::Context;
 use std::{ffi::c_void, ptr, slice};
 
@@ -170,9 +171,10 @@ pub unsafe extern "C" fn read_dora_input_data(
     let event: &Event = unsafe { &*event.cast() };
     match event {
         Event::Input { data, .. } => {
-            if let Ok(data) = data.as_byte_slice() {
-                let ptr = data.as_ptr();
-                let len = data.len();
+            let data: Option<&BinaryArray> = data.as_binary_opt();
+            if let Some(data) = data {
+                let ptr = data.value(0).as_ptr();
+                let len = data.value(0).len();
                 unsafe {
                     *out_ptr = ptr;
                     *out_len = len;
@@ -250,7 +252,7 @@ unsafe fn try_send_output(
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
     context
         .node
-        .send_output(output_id, Default::default(), data.len(), |out| {
+        .send_output_raw(output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
         })
 }

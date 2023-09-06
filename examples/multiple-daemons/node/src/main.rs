@@ -23,7 +23,7 @@ fn main() -> eyre::Result<()> {
                     let random: u64 = rand::random();
                     println!("tick {i}, sending {random:#x}");
                     let data: &[u8] = &random.to_le_bytes();
-                    node.send_output(output.clone(), metadata.parameters, data.len(), |out| {
+                    node.send_output_raw(output.clone(), metadata.parameters, data.len(), |out| {
                         out.copy_from_slice(data);
                     })?;
                 }

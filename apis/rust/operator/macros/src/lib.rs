@@ -52,7 +52,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
     let on_event = quote! {
         #[no_mangle]
         pub unsafe extern "C" fn dora_on_event(
-            event: &dora_operator_api::types::RawEvent,
+            event: &mut dora_operator_api::types::RawEvent,
             send_output: &dora_operator_api::types::SendOutput,
             operator_context: *mut std::ffi::c_void,
         ) -> dora_operator_api::types::OnEventResult {

@@ -13,11 +13,12 @@
 //! dora new project_xyz --kind dataflow
 //! ```
 //!
+pub use arrow;
 pub use dora_core;
 pub use dora_core::message::{uhlc, Metadata, MetadataParameters};
-pub use event_stream::{merged, ArrowData, Event, EventStream, MappedInputData};
+pub use event_stream::{merged, Event, EventStream, MappedInputData};
 pub use flume::Receiver;
-pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD};
+pub use node::{arrow_utils, DataSample, DoraNode, ZERO_COPY_THRESHOLD};
 
 mod daemon_connection;
 mod event_stream;

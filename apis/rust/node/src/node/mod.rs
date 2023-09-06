@@ -1,6 +1,11 @@
 use crate::EventStream;
 
-use self::{control_channel::ControlChannel, drop_stream::DropStream};
+use self::{
+    arrow_utils::{copy_array_into_sample, required_data_size},
+    control_channel::ControlChannel,
+    drop_stream::DropStream,
+};
+use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     daemon_messages::{Data, DropToken, NodeConfig},
@@ -19,6 +24,7 @@ use std::{
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 
+pub mod arrow_utils;
 mod control_channel;
 mod drop_stream;
 
@@ -117,7 +123,7 @@ impl DoraNode {
     ///     }).expect("Could not send output");
     /// ```
     ///
-    pub fn send_output<F>(
+    pub fn send_output_raw<F>(
         &mut self,
         output_id: DataId,
         parameters: MetadataParameters,
@@ -135,6 +141,25 @@ impl DoraNode {
         self.send_output_sample(output_id, type_info, parameters, Some(sample))
     }
 
+    pub fn send_output(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        data: impl Array,
+    ) -> eyre::Result<()> {
+        let arrow_array = data.to_data();
+
+        let total_len = required_data_size(&arrow_array);
+
+        let mut sample = self.allocate_data_sample(total_len)?;
+        let type_info = copy_array_into_sample(&mut sample, &arrow_array)?;
+
+        self.send_output_sample(output_id, type_info, parameters, Some(sample))
+            .wrap_err("failed to send output")?;
+
+        Ok(())
+    }
+
     pub fn send_output_bytes(
         &mut self,
         output_id: DataId,
@@ -142,7 +167,7 @@ impl DoraNode {
         data_len: usize,
         data: &[u8],
     ) -> eyre::Result<()> {
-        self.send_output(output_id, parameters, data_len, |sample| {
+        self.send_output_raw(output_id, parameters, data_len, |sample| {
             sample.copy_from_slice(data)
         })
     }

@@ -21,14 +21,21 @@
 pub use dora_operator_api_macros::register_operator;
 pub use dora_operator_api_types as types;
 pub use types::DoraStatus;
-use types::{Metadata, Output, SendOutput};
+use types::{
+    arrow::{
+        self,
+        array::{Array, ArrayRef},
+    },
+    Metadata, Output, SendOutput,
+};
 
 pub mod raw;
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
-    Input { id: &'a str, data: &'a [u8] },
+    Input { id: &'a str, data: ArrayRef },
+    InputParseError { id: &'a str, error: String },
     InputClosed { id: &'a str },
     Stop,
 }
@@ -48,10 +55,13 @@ impl DoraOutputSender<'_> {
     ///  Send an output from the operator:
     ///  - `id` is the `output_id` as defined in your dataflow.
     ///  - `data` is the data that should be sent
-    pub fn send(&mut self, id: String, data: Vec<u8>) -> Result<(), String> {
+    pub fn send(&mut self, id: String, data: impl Array) -> Result<(), String> {
+        let (data_array, schema) =
+            arrow::ffi::to_ffi(&data.into_data()).map_err(|err| err.to_string())?;
         let result = self.0.send_output.call(Output {
             id: id.into(),
-            data: data.into(),
+            data_array,
+            schema,
             metadata: Metadata {
                 open_telemetry_context: String::new().into(), // TODO
             },

@@ -86,22 +86,7 @@ typedef struct OnEventResult {
 } OnEventResult_t;
 
 /** <No documentation available> */
-typedef struct Metadata {
-    /** <No documentation available> */
-    Vec_uint8_t open_telemetry_context;
-} Metadata_t;
-
-/** <No documentation available> */
-typedef struct Input {
-    /** <No documentation available> */
-    Vec_uint8_t id;
-
-    /** <No documentation available> */
-    Vec_uint8_t data;
-
-    /** <No documentation available> */
-    Metadata_t metadata;
-} Input_t;
+typedef struct Input Input_t;
 
 
 #include <stdbool.h>
@@ -122,16 +107,7 @@ typedef struct RawEvent {
 } RawEvent_t;
 
 /** <No documentation available> */
-typedef struct Output {
-    /** <No documentation available> */
-    Vec_uint8_t id;
-
-    /** <No documentation available> */
-    Vec_uint8_t data;
-
-    /** <No documentation available> */
-    Metadata_t metadata;
-} Output_t;
+typedef struct Output Output_t;
 
 /** \brief
  *  `Arc<dyn Send + Sync + Fn(A1) -> Ret>`
@@ -159,8 +135,14 @@ typedef struct SendOutput {
 /** <No documentation available> */
 typedef struct DoraOnEvent {
     /** <No documentation available> */
-    OnEventResult_t (*on_event)(RawEvent_t const *, SendOutput_t const *, void *);
+    OnEventResult_t (*on_event)(RawEvent_t *, SendOutput_t const *, void *);
 } DoraOnEvent_t;
+
+/** <No documentation available> */
+typedef struct Metadata {
+    /** <No documentation available> */
+    Vec_uint8_t open_telemetry_context;
+} Metadata_t;
 
 
 #ifdef __cplusplus
