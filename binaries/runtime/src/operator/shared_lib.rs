@@ -124,7 +124,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 output_id: DataId::from(String::from(output_id)),
                 type_info: ArrowTypeInfo::byte_array(data.len()),
                 parameters,
-                data: Some(data.to_owned().into()),
+                data: Some(Vec::from(data).into()),
             };
 
             let result = self
