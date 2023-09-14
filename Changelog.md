@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.6 (2023-09-14)
+
+* Update dependencies to fix some security advisories by @phil-opp in https://github.com/dora-rs/dora/pull/354
+  - Fixes `cargo install dora-daemon`
+
+
 ## v0.2.5 (2023-09-06)
 
 ### Features
