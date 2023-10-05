@@ -218,7 +218,7 @@ async fn run(
                     }
                     OperatorEvent::Output {
                         output_id,
-                        type_info: type_info,
+                        type_info,
                         parameters,
                         data,
                     } => {
