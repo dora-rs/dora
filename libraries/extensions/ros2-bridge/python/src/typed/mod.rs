@@ -1,8 +1,8 @@
 use arrow::{
     array::{
-        make_array, Array, ArrayData, ArrayRef, BooleanArray, Float32Array, Float64Array,
-        Int16Array, Int32Array, Int64Array, Int8Array, StringArray, StructArray, UInt16Array,
-        UInt32Array, UInt64Array, UInt8Array,
+        make_array, Array, ArrayData, BooleanArray, Float32Array, Float64Array, Int16Array,
+        Int32Array, Int64Array, Int8Array, StringArray, StructArray, UInt16Array, UInt32Array,
+        UInt64Array, UInt8Array,
     },
     buffer::Buffer,
     compute::concat,
