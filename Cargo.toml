@@ -96,10 +96,10 @@ name = "rust-ros2-dataflow"
 path = "examples/rust-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]
 
-# Fix #192
-# [[example]]
-# name = "rust-dataflow-url"
-# path = "examples/rust-dataflow-url/run.rs"
+# TODO: Fix example #192
+[[example]]
+name = "rust-dataflow-url"
+path = "examples/rust-dataflow-url/run.rs"
 
 [[example]]
 name = "cxx-dataflow"
