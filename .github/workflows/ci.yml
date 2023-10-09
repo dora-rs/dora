@@ -39,6 +39,11 @@ jobs:
           large-packages: false
           docker-images: true
           swap-storage: false
+      - name: Free disk Space (Windows)
+        if: runner.os == 'Windows' 
+        run: |
+          docker system prune -a
+          choco uninstall android-sdk
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -83,6 +88,11 @@ jobs:
           large-packages: false
           docker-images: true
           swap-storage: false
+      - name: Free disk Space (Windows)
+        if: runner.os == 'Windows' 
+        run: |
+          docker system prune -a
+          choco uninstall android-sdk
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
