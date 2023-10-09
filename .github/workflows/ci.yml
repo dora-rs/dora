@@ -25,6 +25,7 @@ jobs:
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux' 
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
@@ -35,9 +36,9 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: false
           docker-images: true
-          swap-storage: true
+          swap-storage: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -68,6 +69,7 @@ jobs:
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux' 
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
@@ -78,9 +80,9 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: false
           docker-images: true
-          swap-storage: true
+          swap-storage: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
