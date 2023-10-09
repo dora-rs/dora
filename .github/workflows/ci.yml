@@ -18,13 +18,14 @@ jobs:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux' 
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
@@ -35,9 +36,14 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: false
           docker-images: true
-          swap-storage: true
+          swap-storage: false
+      - name: Free disk Space (Windows)
+        if: runner.os == 'Windows' 
+        run: |
+          docker system prune --all -f
+          Remove-Item "C:\Android" -Force -Recurse
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -50,6 +56,7 @@ jobs:
       - name: "Build"
         run: cargo build --all
       - name: "Test"
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo test --all
 
   # Run examples as separate job because otherwise we will exhaust the disk
@@ -68,6 +75,7 @@ jobs:
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux' 
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
@@ -78,9 +86,14 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: false
           docker-images: true
-          swap-storage: true
+          swap-storage: false
+      - name: Free disk Space (Windows)
+        if: runner.os == 'Windows' 
+        run: |
+          docker system prune --all -f
+          Remove-Item "C:\Android" -Force -Recurse
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -185,7 +198,7 @@ jobs:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0

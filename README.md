@@ -13,7 +13,7 @@
   |
   <a href="https://dora.carsmos.ai/docs/guides/">Guide</a>
   |
-  <a href="https://discord.gg/ucY3AMeu">Discord</a>
+  <a href="https://discord.gg/UThgXmRK">Discord</a>
 </h2>
 
 <div align="center">
