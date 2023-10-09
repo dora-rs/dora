@@ -43,7 +43,7 @@ jobs:
         if: runner.os == 'Windows' 
         run: |
           docker system prune --all -f
-          rmdir /s /q C:\Android
+          rmdir /s C:\Android
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -92,7 +92,7 @@ jobs:
         if: runner.os == 'Windows' 
         run: |
           docker system prune --all -f
-          rmdir /s /q C:\Android
+          rmdir /s C:\Android
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
