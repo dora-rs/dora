@@ -5,7 +5,10 @@ use std::{
 };
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
-use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use arrow::{
+    array::ArrayData,
+    pyarrow::{FromPyArrow, ToPyArrow},
+};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{eyre, Context, ContextCompat};
 use futures::{Stream, StreamExt};
@@ -14,10 +17,7 @@ use pyo3::{
     types::{PyDict, PyList, PyModule},
     PyAny, PyObject, PyResult, Python,
 };
-use typed::{
-    deserialize::{Ros2Value, TypedDeserializer},
-    for_message, TypeInfo, TypedValue,
-};
+use typed::{deserialize::TypedDeserializer, for_message, TypeInfo, TypedValue};
 
 pub mod qos;
 pub mod typed;
@@ -219,7 +219,7 @@ impl Ros2Publisher {
 #[non_exhaustive]
 pub struct Ros2Subscription {
     deserializer: TypedDeserializer,
-    subscription: Option<ros2_client::Subscription<Ros2Value>>,
+    subscription: Option<ros2_client::Subscription<ArrayData>>,
 }
 
 #[pymethods]
@@ -258,13 +258,13 @@ impl Ros2Subscription {
 
 pub struct Ros2SubscriptionStream {
     deserializer: TypedDeserializer,
-    subscription: ros2_client::Subscription<Ros2Value>,
+    subscription: ros2_client::Subscription<ArrayData>,
 }
 
 impl Ros2SubscriptionStream {
     pub fn as_stream(
         &self,
-    ) -> impl Stream<Item = Result<(Ros2Value, ros2_client::MessageInfo), rustdds::dds::ReadError>> + '_
+    ) -> impl Stream<Item = Result<(ArrayData, ros2_client::MessageInfo), rustdds::dds::ReadError>> + '_
     {
         self.subscription
             .async_stream_seed(self.deserializer.clone())
@@ -272,7 +272,7 @@ impl Ros2SubscriptionStream {
 }
 
 impl Stream for Ros2SubscriptionStream {
-    type Item = Result<(Ros2Value, ros2_client::MessageInfo), rustdds::dds::ReadError>;
+    type Item = Result<(ArrayData, ros2_client::MessageInfo), rustdds::dds::ReadError>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
