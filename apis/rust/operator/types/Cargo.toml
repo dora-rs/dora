@@ -12,5 +12,5 @@ license.workspace = true
 arrow = { version = "45.0.0", features = ["ffi"] }
 
 [dependencies.safer-ffi]
-version = "0.1.2"
-features = ["headers"]
+version = "0.1.3"
+features = ["headers", "inventory-0-3-1"]
