@@ -10,19 +10,7 @@ use arrow::{
     datatypes::{DataType, Field, Fields},
 };
 use core::fmt;
-use std::{ops::Deref, sync::Arc};
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ros2Value(ArrayData);
-
-impl Deref for Ros2Value {
-    type Target = ArrayData;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
+use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedDeserializer {
     type_info: TypeInfo,
@@ -35,7 +23,7 @@ impl TypedDeserializer {
 }
 
 impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
-    type Value = Ros2Value;
+    type Value = ArrayData;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
@@ -87,7 +75,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for TypedDeserializer {
         "Datatype does not correspond to default data type.\n Expected: {:#?} \n but got: {:#?}, with value: {:#?}", data_type, value.data_type(), value
         );
 
-        Ok(Ros2Value(value))
+        Ok(value)
     }
 }
 
@@ -264,7 +252,7 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor {
                     defaults: default.to_data(),
                 },
             })? {
-                Some(value) => make_array(value.0),
+                Some(value) => make_array(value),
                 None => default,
             };
             fields.push((
@@ -382,7 +370,7 @@ impl<'de> serde::de::Visitor<'de> for ListVisitor {
                         defaults: self.defaults.clone(),
                     },
                 })? {
-                    let element = make_array(value.0);
+                    let element = make_array(value);
                     buffer.push(element);
                 }
 

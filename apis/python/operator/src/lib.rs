@@ -224,3 +224,92 @@ pub fn required_data_size(array: &ArrayData) -> usize {
     }
     size
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::{
+            ArrayData, ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, Int8Array,
+            ListArray, StructArray,
+        },
+        buffer::Buffer,
+    };
+
+    use arrow_schema::{DataType, Field};
+    use dora_node_api::Data;
+    use eyre::{Context, Result};
+
+    use crate::{copy_array_into_sample, required_data_size};
+
+    fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
+        let size = required_data_size(&arrow_array);
+        let mut sample: Vec<u8> = vec![0; size];
+
+        let info = copy_array_into_sample(&mut sample, &arrow_array)?;
+
+        let serialized_deserialized_arrow_array = Arc::new(Data::Vec(sample))
+            .into_arrow_array(&info)
+            .context("Could not create arrow array")?;
+        assert_eq!(arrow_array, &serialized_deserialized_arrow_array);
+
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_deserialize_arrow() -> Result<()> {
+        // Int8
+        let arrow_array = Int8Array::from(vec![1, -2, 3, 4]).into();
+        assert_roundtrip(&arrow_array)?;
+
+        // Int64
+        let arrow_array = Int64Array::from(vec![1, -2, 3, 4]).into();
+        assert_roundtrip(&arrow_array)?;
+
+        // Float64
+        let arrow_array = Float64Array::from(vec![1., -2., 3., 4.]).into();
+        assert_roundtrip(&arrow_array)?;
+
+        // Struct
+        let boolean = Arc::new(BooleanArray::from(vec![false, false, true, true]));
+        let int = Arc::new(Int32Array::from(vec![42, 28, 19, 31]));
+
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(Field::new("b", DataType::Boolean, false)),
+                boolean.clone() as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("c", DataType::Int32, false)),
+                int.clone() as ArrayRef,
+            ),
+        ])
+        .into();
+        assert_roundtrip(&struct_array)?;
+
+        // List
+        let value_data = ArrayData::builder(DataType::Int32)
+            .len(8)
+            .add_buffer(Buffer::from_slice_ref([0, 1, 2, 3, 4, 5, 6, 7]))
+            .build()
+            .unwrap();
+
+        // Construct a buffer for value offsets, for the nested array:
+        //  [[0, 1, 2], [3, 4, 5], [6, 7]]
+        let value_offsets = Buffer::from_slice_ref([0, 3, 6, 8]);
+
+        // Construct a list array from the above two
+        let list_data_type = DataType::List(Arc::new(Field::new("item", DataType::Int32, false)));
+        let list_data = ArrayData::builder(list_data_type.clone())
+            .len(3)
+            .add_buffer(value_offsets.clone())
+            .add_child_data(value_data.clone())
+            .build()
+            .unwrap();
+        let list_array = ListArray::from(list_data).into();
+        assert_roundtrip(&list_array)?;
+
+        Ok(())
+    }
+}
