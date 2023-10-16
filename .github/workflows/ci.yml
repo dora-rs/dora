@@ -56,6 +56,8 @@ jobs:
       - name: "Build"
         run: cargo build --all
       - name: "Test"
+        # Remove Windows as there is `pdb` linker issue.
+        # See: https://github.com/dora-rs/dora/pull/359#discussion_r1360268497
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo test --all
 
@@ -165,6 +167,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          # Reset only the turtlesim instance as it is not destroyed at the end of the previous job
           source /opt/ros/humble/setup.bash && ros2 service call /reset std_srvs/srv/Empty &
           cargo run --example python-ros2-dataflow --features="ros2-examples"
 
