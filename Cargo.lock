@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "benchmark-example-node"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "benchmark-example-sink"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -830,18 +830,17 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "chrono"
-version = "0.4.26"
+version = "0.4.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec837a71355b28f6556dbd569b37b3f363091c0bd4b2e735674521b4c5fd9bc5"
+checksum = "defd4e7873dbddba6c7c91e199c7fcb946abc4a6a4ac3195400bcfb01b5de877"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
  "js-sys",
  "num-traits",
  "serde",
- "time 0.1.45",
  "wasm-bindgen",
- "winapi 0.3.9",
+ "windows-targets 0.48.0",
 ]
 
 [[package]]
@@ -977,7 +976,7 @@ dependencies = [
 
 [[package]]
 name = "communication-layer-pub-sub"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "flume",
  "zenoh",
@@ -985,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "communication-layer-request-reply"
-version = "0.2.4"
+version = "0.2.6"
 
 [[package]]
 name = "concurrent-queue"
@@ -1338,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "dora-cli"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "bat",
  "clap 4.3.9",
@@ -1362,9 +1361,9 @@ dependencies = [
 
 [[package]]
 name = "dora-coordinator"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
- "clap 3.2.25",
+ "clap 4.3.9",
  "ctrlc",
  "dora-core",
  "dora-tracing",
@@ -1387,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "dora-core"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-message",
  "eyre",
@@ -1404,12 +1403,12 @@ dependencies = [
 
 [[package]]
 name = "dora-daemon"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow-schema",
  "async-trait",
  "bincode",
- "clap 3.2.25",
+ "clap 4.3.9",
  "ctrlc",
  "dora-core",
  "dora-download",
@@ -1432,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "dora-download"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "eyre",
  "reqwest",
@@ -1461,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow-data",
  "arrow-schema",
@@ -1472,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "dora-metrics"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "futures",
  "opentelemetry 0.17.0",
@@ -1483,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -1509,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-c"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow-array",
  "dora-node-api",
@@ -1520,7 +1519,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-cxx"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -1530,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-python"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow",
  "dora-node-api",
@@ -1547,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-operator-api-macros",
  "dora-operator-api-types",
@@ -1555,14 +1554,14 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-c"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-operator-api-types",
 ]
 
 [[package]]
 name = "dora-operator-api-cxx"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -1571,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-macros"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1580,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-python"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -1593,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-types"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow",
  "safer-ffi",
@@ -1664,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "dora-runtime"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -1695,7 +1694,7 @@ dependencies = [
 
 [[package]]
 name = "dora-tracing"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "eyre",
  "opentelemetry 0.18.0",
@@ -2149,15 +2148,15 @@ dependencies = [
  "cfg-if 1.0.0",
  "js-sys",
  "libc",
- "wasi 0.11.0+wasi-snapshot-preview1",
+ "wasi",
  "wasm-bindgen",
 ]
 
 [[package]]
 name = "ghost"
-version = "0.1.9"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e77ac7b51b8e6313251737fcef4b1c01a2ea102bde68415b62c0ee9268fec357"
+checksum = "fae7e09da323fc46f010e455cac340af26159678ba00ab18e963a5880ca6a9b6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2578,6 +2577,12 @@ dependencies = [
  "ghost",
  "inventory-impl",
 ]
+
+[[package]]
+name = "inventory"
+version = "0.3.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1be380c410bf0595e94992a648ea89db4dd3f3354ba54af206fd2a68cf5ac8e"
 
 [[package]]
 name = "inventory-impl"
@@ -3102,7 +3107,7 @@ checksum = "927a765cd3fc26206e66b296465fa9d3e5ab003e651c1b3c060e7956d96b19d2"
 dependencies = [
  "libc",
  "log",
- "wasi 0.11.0+wasi-snapshot-preview1",
+ "wasi",
  "windows-sys 0.48.0",
 ]
 
@@ -3138,7 +3143,7 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 
 [[package]]
 name = "multiple-daemons-example-node"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -3149,14 +3154,14 @@ dependencies = [
 
 [[package]]
 name = "multiple-daemons-example-operator"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-operator-api",
 ]
 
 [[package]]
 name = "multiple-daemons-example-sink"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -3834,7 +3839,7 @@ dependencies = [
  "line-wrap",
  "quick-xml",
  "serde",
- "time 0.3.22",
+ "time",
 ]
 
 [[package]]
@@ -4151,9 +4156,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.9.3"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67c10f662eee9c94ddd7135043e544f3c82fa839a1e7b865911331961b53186c"
+checksum = "c956be1b23f4261676aed05a0046e204e8a6836e50203902683a718af0797989"
 dependencies = [
  "bytes",
  "rand",
@@ -4446,7 +4451,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-node"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -4457,14 +4462,14 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-operator"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-operator-api",
 ]
 
 [[package]]
 name = "rust-dataflow-example-sink"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -4472,7 +4477,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ros2-dataflow-example-node"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "dora-node-api",
  "dora-ros2-bridge",
@@ -4620,11 +4625,12 @@ checksum = "ef703b7cb59335eae2eb93ceb664c0eb7ea6bf567079d843e09420219668e072"
 
 [[package]]
 name = "safer-ffi"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f47f1d2f33598dab2baa9517fffa1cf722f2e3a30633f2a230f20f9da67c564"
+checksum = "e9c1d19b288ca9898cd421c7b105fb7269918a7f8e9253a991e228981ca421ad"
 dependencies = [
- "inventory",
+ "inventory 0.1.11",
+ "inventory 0.3.12",
  "libc",
  "macro_rules_attribute",
  "paste",
@@ -4637,9 +4643,9 @@ dependencies = [
 
 [[package]]
 name = "safer_ffi-proc_macros"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b08f58cf71a58bda5734758eb20051cdb66c06c9243badbc45092ced1be834df"
+checksum = "e2d7a04caa3ca2224f5ea4ddd850e2629c3b36b2b83621f87a8303bf41020110"
 dependencies = [
  "macro_rules_attribute",
  "prettyplease",
@@ -4856,7 +4862,7 @@ dependencies = [
 
 [[package]]
 name = "shared-memory-server"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "bincode",
  "eyre",
@@ -5250,17 +5256,6 @@ dependencies = [
  "log",
  "ordered-float 1.1.1",
  "threadpool",
-]
-
-[[package]]
-name = "time"
-version = "0.1.45"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b797afad3f312d1c66a56d11d0316f916356d11bd158fbc6ca6389ff6bf805a"
-dependencies = [
- "libc",
- "wasi 0.10.0+wasi-snapshot-preview1",
- "winapi 0.3.9",
 ]
 
 [[package]]
@@ -5786,12 +5781,6 @@ dependencies = [
 
 [[package]]
 name = "wasi"
-version = "0.10.0+wasi-snapshot-preview1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a143597ca7c7793eff794def352d41792a93c481eb1042423ff7ff72ba2c31f"
-
-[[package]]
-name = "wasi"
 version = "0.11.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
@@ -5891,9 +5880,9 @@ dependencies = [
 
 [[package]]
 name = "webpki"
-version = "0.22.1"
+version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0e74f82d49d545ad128049b7e88f6576df2da6b02e9ce565c6f533be576957e"
+checksum = "07ecc0cd7cac091bf682ec5efa18b1cff79d617b84181f38b3951dbe135f607f"
 dependencies = [
  "ring",
  "untrusted",
@@ -6507,7 +6496,7 @@ dependencies = [
 
 [[package]]
 name = "zenoh-logger"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "zenoh",
 ]
