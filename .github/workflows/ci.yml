@@ -125,11 +125,14 @@ jobs:
 
       # python examples
       - uses: actions/setup-python@v2
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         with:
           python-version: "3.10"
       - name: "Python Dataflow example"
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-dataflow
       - name: "Python Operator Dataflow example"
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-operator-dataflow
 
   # ROS2 bridge examples
