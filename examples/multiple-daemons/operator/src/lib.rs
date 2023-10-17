@@ -2,11 +2,8 @@
 
 use dora_operator_api::{
     register_operator,
-    types::arrow::{
-        array::{AsArray, StringArray},
-        datatypes::UInt64Type,
-    },
-    DoraOperator, DoraOutputSender, DoraStatus, Event,
+    types::arrow::{array::AsArray, datatypes::UInt64Type},
+    DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
 };
 
 register_operator!(ExampleOperator);
@@ -33,11 +30,11 @@ impl DoraOperator for ExampleOperator {
                         .ok_or_else(|| "expected u64 value".to_owned())?
                         .value(0);
 
-                    let output = StringArray::from_iter(std::iter::once(Some(format!(
+                    let output = format!(
                         "operator received random value {data:#x} after {} ticks",
                         self.ticks
-                    ))));
-                    output_sender.send("status".into(), output)?;
+                    );
+                    output_sender.send("status".into(), output.into_arrow())?;
                 }
                 other => eprintln!("ignoring unexpected input {other}"),
             },

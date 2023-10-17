@@ -30,6 +30,7 @@ arrow = "45.0.0"
 arrow-schema = "45.0.0"
 futures = "0.3.28"
 futures-concurrency = "7.3.0"
+dora-arrow-convert = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1.24.2", features = ["rt"] }

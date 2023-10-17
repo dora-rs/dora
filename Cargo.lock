@@ -1331,6 +1331,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-arrow-convert"
+version = "0.2.6"
+dependencies = [
+ "arrow",
+]
+
+[[package]]
 name = "dora-cli"
 version = "0.2.6"
 dependencies = [
@@ -1483,6 +1490,7 @@ dependencies = [
  "arrow-schema",
  "bincode",
  "capnp",
+ "dora-arrow-convert",
  "dora-core",
  "dora-tracing",
  "eyre",
@@ -1543,6 +1551,7 @@ dependencies = [
 name = "dora-operator-api"
 version = "0.2.6"
 dependencies = [
+ "dora-arrow-convert",
  "dora-operator-api-macros",
  "dora-operator-api-types",
 ]

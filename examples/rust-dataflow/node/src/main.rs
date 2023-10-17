@@ -1,9 +1,4 @@
-use dora_node_api::{
-    self,
-    arrow::{array::PrimitiveBuilder, datatypes::UInt64Type},
-    dora_core::config::DataId,
-    DoraNode, Event,
-};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
 
 fn main() -> eyre::Result<()> {
     println!("hello");
@@ -27,12 +22,7 @@ fn main() -> eyre::Result<()> {
                 "tick" => {
                     let random: u64 = rand::random();
                     println!("tick {i}, sending {random:#x}");
-                    let data = {
-                        let mut builder: PrimitiveBuilder<UInt64Type> = PrimitiveBuilder::new();
-                        builder.append_value(random);
-                        builder.finish()
-                    };
-                    node.send_output(output.clone(), metadata.parameters, data)?;
+                    node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
