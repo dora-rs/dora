@@ -18,6 +18,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
 
+pub use dora_arrow_convert::*;
 pub use dora_operator_api_macros::register_operator;
 pub use dora_operator_api_types as types;
 pub use types::DoraStatus;

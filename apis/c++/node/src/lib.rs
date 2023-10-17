@@ -1,4 +1,8 @@
-use dora_node_api::{self, Event, EventStream};
+use dora_node_api::{
+    self,
+    arrow::array::{AsArray, BinaryArray},
+    Event, EventStream,
+};
 use eyre::bail;
 
 #[cxx::bridge]
@@ -81,9 +85,10 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
     let Some(Event::Input { id, metadata: _, data }) = event.0 else {
         bail!("not an input event");
     };
+    let data: Option<&BinaryArray> = data.as_binary_opt();
     Ok(ffi::DoraInput {
         id: id.into(),
-        data: data.map(|d| d.to_owned()).unwrap_or_default(),
+        data: data.map(|d| d.value(0).to_owned()).unwrap_or_default(),
     })
 }
 

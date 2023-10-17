@@ -1,11 +1,4 @@
-use std::iter;
-
-use dora_node_api::{
-    self,
-    arrow::{array::PrimitiveArray, datatypes::UInt64Type},
-    dora_core::config::DataId,
-    DoraNode, Event,
-};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
 
 fn main() -> eyre::Result<()> {
     println!("hello");
@@ -29,8 +22,7 @@ fn main() -> eyre::Result<()> {
                 "tick" => {
                     let random: u64 = rand::random();
                     println!("tick {i}, sending {random:#x}");
-                    let data: PrimitiveArray<UInt64Type> = iter::once(random).collect();
-                    node.send_output(output.clone(), metadata.parameters, data)?;
+                    node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

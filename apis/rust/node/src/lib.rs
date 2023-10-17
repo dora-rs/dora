@@ -14,6 +14,7 @@
 //! ```
 //!
 pub use arrow;
+pub use dora_arrow_convert::*;
 pub use dora_core;
 pub use dora_core::message::{uhlc, Metadata, MetadataParameters};
 pub use event_stream::{merged, Event, EventStream, MappedInputData};

@@ -3,10 +3,10 @@
 use dora_operator_api::{
     register_operator,
     types::arrow::{
-        array::{AsArray, PrimitiveArray, StringBuilder},
+        array::{AsArray, PrimitiveArray},
         datatypes::UInt64Type,
     },
-    DoraOperator, DoraOutputSender, DoraStatus, Event,
+    DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
 };
 
 register_operator!(ExampleOperator);
@@ -36,12 +36,7 @@ impl DoraOperator for ExampleOperator {
                         "operator received random value {value:#x} after {} ticks",
                         self.ticks
                     );
-                    let output_data = {
-                        let mut builder = StringBuilder::new();
-                        builder.append_value(output);
-                        builder.finish()
-                    };
-                    output_sender.send("status".into(), output_data)?;
+                    output_sender.send("status".into(), output.into_arrow())?;
                 }
                 other => eprintln!("ignoring unexpected input {other}"),
             },
