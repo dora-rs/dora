@@ -49,7 +49,7 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
         match data {
             Ok(data) => Event::Input {
                 id: &input.id,
-                data: arrow::array::make_array(data),
+                data: arrow::array::make_array(data).into(),
             },
             Err(err) => Event::InputParseError {
                 id: &input.id,

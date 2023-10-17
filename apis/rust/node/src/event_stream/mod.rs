@@ -141,7 +141,11 @@ impl EventStream {
                             .map(arrow::array::make_array)
                     });
                     match data {
-                        Ok(data) => Event::Input { id, metadata, data },
+                        Ok(data) => Event::Input {
+                            id,
+                            metadata,
+                            data: data.into(),
+                        },
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
                 }

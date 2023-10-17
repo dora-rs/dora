@@ -1,9 +1,5 @@
-use dora_node_api::{
-    self,
-    arrow::array::{AsArray, StringArray},
-    DoraNode, Event,
-};
-use eyre::{bail, ContextCompat};
+use dora_node_api::{self, DoraNode, Event};
+use eyre::{bail, Context};
 
 fn main() -> eyre::Result<()> {
     let (_node, mut events) = DoraNode::init_from_env()?;
@@ -12,10 +8,8 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "message" => {
-                    let string_array: &StringArray = data
-                        .as_string_opt()
-                        .wrap_err("received message was not utf8-encoded")?;
-                    let received_string = string_array.value(0);
+                    let received_string: &str =
+                        TryFrom::try_from(&data).context("expected string message")?;
                     println!("sink received message: {}", received_string);
                     if !received_string.starts_with("operator received random value ") {
                         bail!("unexpected message format (should start with 'operator received random value')")

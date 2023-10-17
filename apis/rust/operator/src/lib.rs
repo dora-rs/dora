@@ -23,10 +23,7 @@ pub use dora_operator_api_macros::register_operator;
 pub use dora_operator_api_types as types;
 pub use types::DoraStatus;
 use types::{
-    arrow::{
-        self,
-        array::{Array, ArrayRef},
-    },
+    arrow::{self, array::Array},
     Metadata, Output, SendOutput,
 };
 
@@ -35,7 +32,7 @@ pub mod raw;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
-    Input { id: &'a str, data: ArrayRef },
+    Input { id: &'a str, data: ArrowData },
     InputParseError { id: &'a str, error: String },
     InputClosed { id: &'a str },
     Stop,
