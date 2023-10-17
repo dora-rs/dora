@@ -1,5 +1,6 @@
 use std::{ptr::NonNull, sync::Arc};
 
+use dora_arrow_convert::ArrowData;
 use dora_core::{
     config::{DataId, OperatorId},
     message::{ArrowTypeInfo, BufferOffset, Metadata},
@@ -17,7 +18,7 @@ pub enum Event {
     Input {
         id: DataId,
         metadata: Metadata,
-        data: arrow::array::ArrayRef,
+        data: ArrowData,
     },
     InputClosed {
         id: DataId,

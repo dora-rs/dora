@@ -1335,6 +1335,7 @@ name = "dora-arrow-convert"
 version = "0.2.6"
 dependencies = [
  "arrow",
+ "eyre",
 ]
 
 [[package]]

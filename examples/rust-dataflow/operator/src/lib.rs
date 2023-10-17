@@ -1,12 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{
-    register_operator,
-    types::arrow::{
-        array::{AsArray, PrimitiveArray},
-        datatypes::UInt64Type,
-    },
-    DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
+    register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
 };
 
 register_operator!(ExampleOperator);
@@ -28,9 +23,8 @@ impl DoraOperator for ExampleOperator {
                     self.ticks += 1;
                 }
                 "random" => {
-                    let primitive_array: &PrimitiveArray<UInt64Type> =
-                        data.as_primitive_opt().ok_or("expected primitive array")?;
-                    let value = primitive_array.value(0);
+                    let value = u64::try_from(data)
+                        .map_err(|err| format!("unexpected data type: {err}"))?;
 
                     let output = format!(
                         "operator received random value {value:#x} after {} ticks",

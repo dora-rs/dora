@@ -1,9 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{
-    register_operator,
-    types::arrow::{array::AsArray, datatypes::UInt64Type},
-    DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
+    register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
 };
 
 register_operator!(ExampleOperator);
@@ -25,10 +23,8 @@ impl DoraOperator for ExampleOperator {
                     self.ticks += 1;
                 }
                 "random" => {
-                    let data: u64 = data
-                        .as_primitive_opt::<UInt64Type>()
-                        .ok_or_else(|| "expected u64 value".to_owned())?
-                        .value(0);
+                    let data = u64::try_from(data)
+                        .map_err(|err| format!("expected u64 message: {err}"))?;
 
                     let output = format!(
                         "operator received random value {data:#x} after {} ticks",
