@@ -7,7 +7,7 @@ import dora
 from dora import Node
 import pyarrow as pa
 
-CHECK_TICK = 20
+CHECK_TICK = 50
 
 ros2_context = dora.experimental.ros2_bridge.Ros2Context()
 ros2_node = ros2_context.new_node(

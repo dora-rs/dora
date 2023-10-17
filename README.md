@@ -13,7 +13,7 @@
   |
   <a href="https://dora.carsmos.ai/docs/guides/">Guide</a>
   |
-  <a href="https://discord.gg/ucY3AMeu">Discord</a>
+  <a href="https://discord.gg/6eMGGutkfE">Discord</a>
 </h2>
 
 <div align="center">
@@ -104,7 +104,7 @@ The full documentation is available on our website: https://dora.carsmos.ai
 ## Discussions
 
 Our main communication channels are:
-- [Our Discord server](https://discord.gg/ucY3AMeu)
+- [Our Discord server](https://discord.gg/6eMGGutkfE)
 - [Our Github Project Discussion](https://github.com/orgs/dora-rs/discussions)
 
 Feel free to reach out on any topic, issues or ideas.
