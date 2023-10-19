@@ -129,12 +129,6 @@ impl<'a> TryFrom<&'a ArrowData> for &'a [u8] {
     fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
         let array: &PrimitiveArray<arrow::datatypes::UInt8Type> =
             value.as_primitive_opt().wrap_err("not a primitive array")?;
-        if array.is_empty() {
-            eyre::bail!("empty array");
-        }
-        if array.len() != 1 {
-            eyre::bail!("expected length 1");
-        }
         if array.null_count() != 0 {
             eyre::bail!("array has nulls");
         }
