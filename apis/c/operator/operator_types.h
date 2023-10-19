@@ -164,6 +164,14 @@ char *
 dora_read_input_id (
     Input_t const * input);
 
+/** <No documentation available> */
+DoraResult_t
+dora_send_output (
+    SendOutput_t const * send_output,
+    char const * id,
+    uint8_t const * data_ptr,
+    size_t data_len);
+
 
 #ifdef __cplusplus
 } /* extern \"C\" */
