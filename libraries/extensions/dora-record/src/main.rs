@@ -99,11 +99,11 @@ fn write_event(
     let string_otel_context = metadata.parameters.open_telemetry_context.to_string();
     let otel_context = deserialize_to_hashmap(&string_otel_context);
     let traceparent = otel_context.get("traceparent").clone();
-    let traceparent = match traceparent {
+    let trace_id = match traceparent {
         None => "",
-        Some(trace) => trace.split("-").nth(2).context("Trace is malformatted")?,
+        Some(trace) => trace.split("-").nth(1).context("Trace is malformatted")?,
     };
-    let otel_context_array = StringArray::from(vec![traceparent]);
+    let otel_context_array = StringArray::from(vec![trace_id]);
     let otel_context_array = make_array(otel_context_array.into());
 
     let record = RecordBatch::try_new(
