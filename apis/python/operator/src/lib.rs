@@ -167,10 +167,10 @@ mod tests {
     use eyre::{Context, Result};
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
-        let size = required_data_size(&arrow_array);
+        let size = required_data_size(arrow_array);
         let mut sample: Vec<u8> = vec![0; size];
 
-        let info = copy_array_into_sample(&mut sample, &arrow_array)?;
+        let info = copy_array_into_sample(&mut sample, arrow_array)?;
 
         let serialized_deserialized_arrow_array = Arc::new(RawData::Vec(sample))
             .into_arrow_array(&info)
@@ -201,11 +201,11 @@ mod tests {
         let struct_array = StructArray::from(vec![
             (
                 Arc::new(Field::new("b", DataType::Boolean, false)),
-                boolean.clone() as ArrayRef,
+                boolean as ArrayRef,
             ),
             (
                 Arc::new(Field::new("c", DataType::Int32, false)),
-                int.clone() as ArrayRef,
+                int as ArrayRef,
             ),
         ])
         .into();
@@ -224,10 +224,10 @@ mod tests {
 
         // Construct a list array from the above two
         let list_data_type = DataType::List(Arc::new(Field::new("item", DataType::Int32, false)));
-        let list_data = ArrayData::builder(list_data_type.clone())
+        let list_data = ArrayData::builder(list_data_type)
             .len(3)
-            .add_buffer(value_offsets.clone())
-            .add_child_data(value_data.clone())
+            .add_buffer(value_offsets)
+            .add_child_data(value_data)
             .build()
             .unwrap();
         let list_array = ListArray::from(list_data).into();
