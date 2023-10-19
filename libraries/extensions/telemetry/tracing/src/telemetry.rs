@@ -54,12 +54,17 @@ pub fn serialize_context(context: &Context) -> String {
 }
 
 pub fn deserialize_context(string_context: &str) -> Context {
-    let mut map = MetadataMap(HashMap::new());
+    let map = MetadataMap(deserialize_to_hashmap(string_context));
+    global::get_text_map_propagator(|prop| prop.extract(&map))
+}
+
+pub fn deserialize_to_hashmap(string_context: &str) -> HashMap<&str, &str> {
+    let mut map = HashMap::new();
     for s in string_context.split(';') {
         let mut values = s.split(':');
         let key = values.next().unwrap();
         let value = values.next().unwrap_or("");
-        map.0.insert(key, value);
+        map.insert(key, value);
     }
-    global::get_text_map_propagator(|prop| prop.extract(&map))
+    map
 }
