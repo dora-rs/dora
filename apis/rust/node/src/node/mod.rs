@@ -114,7 +114,7 @@ impl DoraNode {
     /// let data: &[u8] = &[0, 1, 2, 3];
     /// let parameters = MetadataParameters::default();
     ///
-    /// node.send_output(
+    /// node.send_output_raw(
     ///    output,
     ///    parameters,
     ///    data.len(),
