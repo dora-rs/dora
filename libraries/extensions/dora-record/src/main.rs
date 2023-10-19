@@ -31,13 +31,15 @@ fn main() -> eyre::Result<()> {
                 match writers.get_mut(&id) {
                     None => {
                         let field_timestamp = Field::new("timestamp", DataType::Int64, true);
-                        let field_otel_context = Field::new("otel_context", DataType::Utf8, true);
+                        let field_trace_id = Field::new("trace_id", DataType::Utf8, true);
+                        let field_span_id = Field::new("span_id", DataType::Utf8, true);
                         let field_values =
                             Arc::new(Field::new("item", data.data_type().clone(), true));
                         let field_data = Field::new(id.clone(), DataType::List(field_values), true);
 
                         let schema = Arc::new(Schema::new(vec![
-                            field_otel_context,
+                            field_trace_id,
+                            field_span_id,
                             field_timestamp,
                             field_data,
                         ]));
@@ -80,6 +82,7 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Write a row of data into the writer
 fn write_event(
     writer_context: &mut WriterContext,
     data: Arc<dyn Array>,
@@ -103,12 +106,23 @@ fn write_event(
         None => "",
         Some(trace) => trace.split("-").nth(1).context("Trace is malformatted")?,
     };
-    let otel_context_array = StringArray::from(vec![trace_id]);
-    let otel_context_array = make_array(otel_context_array.into());
+    let span_id = match traceparent {
+        None => "",
+        Some(trace) => trace.split("-").nth(2).context("Trace is malformatted")?,
+    };
+    let trace_id_array = StringArray::from(vec![trace_id]);
+    let trace_id_array = make_array(trace_id_array.into());
+    let span_id_array = StringArray::from(vec![span_id]);
+    let span_id_array = make_array(span_id_array.into());
 
     let record = RecordBatch::try_new(
         writer_context.schema.clone(),
-        vec![otel_context_array, timestamp_array, make_array(list.into())],
+        vec![
+            trace_id_array,
+            span_id_array,
+            timestamp_array,
+            make_array(list.into()),
+        ],
     )
     .context("Could not create record batch with the given data")?;
     writer_context
