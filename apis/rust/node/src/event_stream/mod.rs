@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
-pub use event::{Event, MappedInputData};
+pub use event::{Event, MappedInputData, RawData};
 use futures::{Stream, StreamExt};
 
-use self::{
-    event::Data,
-    thread::{EventItem, EventStreamThreadHandle},
-};
+use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
@@ -120,14 +117,14 @@ impl EventStream {
                 NodeEvent::Input { id, metadata, data } => {
                     let data = match data {
                         None => Ok(None),
-                        Some(daemon_messages::Data::Vec(v)) => Ok(Some(Data::Vec(v))),
-                        Some(daemon_messages::Data::SharedMemory {
+                        Some(daemon_messages::DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
+                        Some(daemon_messages::DataMessage::SharedMemory {
                             shared_memory_id,
                             len,
                             drop_token: _, // handled in `event_stream_loop`
                         }) => unsafe {
                             MappedInputData::map(&shared_memory_id, len).map(|data| {
-                                Some(Data::SharedMemory {
+                                Some(RawData::SharedMemory {
                                     data,
                                     _drop: ack_channel,
                                 })
@@ -135,7 +132,7 @@ impl EventStream {
                         },
                     };
                     let data = data.and_then(|data| {
-                        let raw_data = Arc::new(data.unwrap_or(Data::Vec(Vec::new())));
+                        let raw_data = Arc::new(data.unwrap_or(RawData::Vec(Vec::new())));
                         raw_data
                             .into_arrow_array(&metadata.type_info)
                             .map(arrow::array::make_array)

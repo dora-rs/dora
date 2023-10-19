@@ -51,7 +51,7 @@ pub enum DaemonRequest {
     SendMessage {
         output_id: DataId,
         metadata: Metadata,
-        data: Option<Data>,
+        data: Option<DataMessage>,
     },
     CloseOutputs(Vec<DataId>),
     /// Signals that the node is finished sending outputs and that it received all
@@ -86,7 +86,7 @@ impl DaemonRequest {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub enum Data {
+pub enum DataMessage {
     #[serde(with = "serde_bytes")]
     Vec(Vec<u8>),
     SharedMemory {
@@ -96,16 +96,16 @@ pub enum Data {
     },
 }
 
-impl Data {
+impl DataMessage {
     pub fn drop_token(&self) -> Option<DropToken> {
         match self {
-            Data::Vec(_) => None,
-            Data::SharedMemory { drop_token, .. } => Some(*drop_token),
+            DataMessage::Vec(_) => None,
+            DataMessage::SharedMemory { drop_token, .. } => Some(*drop_token),
         }
     }
 }
 
-impl fmt::Debug for Data {
+impl fmt::Debug for DataMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Vec(v) => f
@@ -153,7 +153,7 @@ pub enum NodeEvent {
     Input {
         id: DataId,
         metadata: Metadata,
-        data: Option<Data>,
+        data: Option<DataMessage>,
     },
     InputClosed {
         id: DataId,

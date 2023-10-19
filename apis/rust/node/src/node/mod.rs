@@ -8,7 +8,7 @@ use self::{
 use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    daemon_messages::{Data, DropToken, NodeConfig},
+    daemon_messages::{DataMessage, DropToken, NodeConfig},
     descriptor::Descriptor,
     message::{uhlc, ArrowTypeInfo, Metadata, MetadataParameters},
 };
@@ -381,18 +381,18 @@ pub struct DataSample {
 }
 
 impl DataSample {
-    fn finalize(self) -> (Option<Data>, Option<(ShmemHandle, DropToken)>) {
+    fn finalize(self) -> (Option<DataMessage>, Option<(ShmemHandle, DropToken)>) {
         match self.inner {
             DataSampleInner::Shmem(shared_memory) => {
                 let drop_token = DropToken::generate();
-                let data = Data::SharedMemory {
+                let data = DataMessage::SharedMemory {
                     shared_memory_id: shared_memory.get_os_id().to_owned(),
                     len: self.len,
                     drop_token,
                 };
                 (Some(data), Some((shared_memory, drop_token)))
             }
-            DataSampleInner::Vec(buffer) => (Some(Data::Vec(buffer)), None),
+            DataSampleInner::Vec(buffer) => (Some(DataMessage::Vec(buffer)), None),
         }
     }
 }

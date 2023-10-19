@@ -1,7 +1,7 @@
 use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
-use dora_core::daemon_messages::{Data, InterDaemonEvent, Timestamped};
+use dora_core::daemon_messages::{DataMessage, InterDaemonEvent, Timestamped};
 use dora_core::message::uhlc::{self, HLC};
 use dora_core::message::{ArrowTypeInfo, MetadataParameters};
 use dora_core::{
@@ -461,7 +461,7 @@ impl Daemon {
                         output_id.clone(),
                         dataflow,
                         &metadata,
-                        data.map(Data::Vec),
+                        data.map(DataMessage::Vec),
                         &self.clock,
                     )
                     .await?;
@@ -759,7 +759,7 @@ impl Daemon {
         node_id: NodeId,
         output_id: DataId,
         metadata: dora_core::message::Metadata,
-        data: Option<Data>,
+        data: Option<DataMessage>,
     ) -> Result<(), eyre::ErrReport> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
@@ -1070,7 +1070,7 @@ async fn send_output_to_local_receivers(
     output_id: DataId,
     dataflow: &mut RunningDataflow,
     metadata: &dora_core::message::Metadata,
-    data: Option<Data>,
+    data: Option<DataMessage>,
     clock: &HLC,
 ) -> Result<Option<Vec<u8>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
@@ -1114,7 +1114,7 @@ async fn send_output_to_local_receivers(
     }
     let (data_bytes, drop_token) = match data {
         None => (None, None),
-        Some(Data::SharedMemory {
+        Some(DataMessage::SharedMemory {
             shared_memory_id,
             len,
             drop_token,
@@ -1126,7 +1126,7 @@ async fn send_output_to_local_receivers(
             let data = Some(unsafe { memory.as_slice() }[..len].to_owned());
             (data, Some(drop_token))
         }
-        Some(Data::Vec(v)) => (Some(v), None),
+        Some(DataMessage::Vec(v)) => (Some(v), None),
     };
     if let Some(token) = drop_token {
         // insert token into `pending_drop_tokens` even if there are no local subscribers
@@ -1445,7 +1445,7 @@ pub enum DaemonNodeEvent {
     SendOut {
         output_id: DataId,
         metadata: dora_core::message::Metadata,
-        data: Option<Data>,
+        data: Option<DataMessage>,
     },
     ReportDrop {
         tokens: Vec<DropToken>,

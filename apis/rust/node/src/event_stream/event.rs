@@ -26,7 +26,7 @@ pub enum Event {
     Error(String),
 }
 
-pub(super) enum Data {
+pub enum RawData {
     Vec(Vec<u8>),
     SharedMemory {
         data: MappedInputData,
@@ -34,7 +34,7 @@ pub(super) enum Data {
     },
 }
 
-impl Data {
+impl RawData {
     pub fn into_arrow_array(
         self: Arc<Self>,
         type_info: &ArrowTypeInfo,
@@ -76,18 +76,18 @@ fn buffer_into_arrow_array(
     .context("Error creating Arrow Array")
 }
 
-impl std::ops::Deref for Data {
+impl std::ops::Deref for RawData {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Data::SharedMemory { data, .. } => data,
-            Data::Vec(data) => data,
+            RawData::SharedMemory { data, .. } => data,
+            RawData::Vec(data) => data,
         }
     }
 }
 
-impl std::fmt::Debug for Data {
+impl std::fmt::Debug for RawData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Data").finish_non_exhaustive()
     }
