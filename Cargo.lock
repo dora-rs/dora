@@ -1600,6 +1600,7 @@ name = "dora-operator-api-types"
 version = "0.2.6"
 dependencies = [
  "arrow",
+ "dora-arrow-convert",
  "safer-ffi",
 ]
 
