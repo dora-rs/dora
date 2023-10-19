@@ -33,7 +33,7 @@ async fn main() -> eyre::Result<()> {
     build_c_node(root, "sink.c", "c_sink").await?;
 
     build_package("dora-operator-api-c").await?;
-    build_c_operator().await?;
+    build_c_operator(root).await?;
 
     let dataflow = Path::new("dataflow.yml").to_owned();
     dora_daemon::Daemon::run_dataflow(&dataflow).await?;
@@ -116,7 +116,7 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
     Ok(())
 }
 
-async fn build_c_operator() -> eyre::Result<()> {
+async fn build_c_operator(root: &Path) -> eyre::Result<()> {
     let mut compile = tokio::process::Command::new("clang");
     compile.arg("-c").arg("operator.c");
     compile.arg("-o").arg("build/operator.o");
@@ -129,6 +129,8 @@ async fn build_c_operator() -> eyre::Result<()> {
 
     let mut link = tokio::process::Command::new("clang");
     link.arg("-shared").arg("build/operator.o");
+    link.arg("-L").arg(root.join("target").join("debug"));
+    link.arg("-l").arg("dora_operator_api_c");
     link.arg("-o")
         .arg(Path::new("build").join(format!("{DLL_PREFIX}operator{DLL_SUFFIX}")));
     if !link.status().await?.success() {
