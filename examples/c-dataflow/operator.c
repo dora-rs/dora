@@ -56,7 +56,7 @@ OnEventResult_t dora_on_event(
             int count = snprintf(out_data, data_alloc_size, "The current counter value is %d", *counter);
             assert(count >= 0 && count < 100);
 
-            DoraResult_t res = dora_send_output(send_output, out_id_heap, (uint8_t *)out_data, strlen(out_data));
+            DoraResult_t res = dora_send_operator_output(send_output, out_id_heap, (uint8_t *)out_data, strlen(out_data));
             result.result = res;
 
             dora_free_data(data);

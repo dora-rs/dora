@@ -150,7 +150,7 @@ pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
 pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
 
 #[ffi_export]
-pub unsafe fn dora_send_output(
+pub unsafe fn dora_send_operator_output(
     send_output: &SendOutput,
     id: safer_ffi::char_p::char_p_ref<'_>,
     data_ptr: *const u8,
