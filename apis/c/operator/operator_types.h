@@ -144,6 +144,26 @@ typedef struct Metadata {
     Vec_uint8_t open_telemetry_context;
 } Metadata_t;
 
+/** <No documentation available> */
+void
+dora_free_data (
+    Vec_uint8_t _data);
+
+/** <No documentation available> */
+void
+dora_free_input_id (
+    char * _input_id);
+
+/** <No documentation available> */
+Vec_uint8_t
+dora_read_data (
+    Input_t * input);
+
+/** <No documentation available> */
+char *
+dora_read_input_id (
+    Input_t const * input);
+
 
 #ifdef __cplusplus
 } /* extern \"C\" */

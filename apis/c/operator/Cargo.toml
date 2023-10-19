@@ -6,5 +6,11 @@ description = "C API implemetation for Dora Operator"
 documentation.workspace = true
 license.workspace = true
 
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+dora-operator-api-types = { workspace = true }
+
 [build-dependencies]
 dora-operator-api-types = { workspace = true }

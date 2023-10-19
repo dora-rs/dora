@@ -10,6 +10,7 @@ license.workspace = true
 
 [dependencies]
 arrow = { version = "45.0.0", features = ["ffi"] }
+dora-arrow-convert = { workspace = true }
 
 [dependencies.safer-ffi]
 version = "0.1.3"
