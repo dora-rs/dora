@@ -166,7 +166,7 @@ dora_read_input_id (
 
 /** <No documentation available> */
 DoraResult_t
-dora_send_output (
+dora_send_operator_output (
     SendOutput_t const * send_output,
     char const * id,
     uint8_t const * data_ptr,
