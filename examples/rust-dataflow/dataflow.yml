@@ -23,3 +23,11 @@ nodes:
       source: ../../target/debug/rust-dataflow-example-sink
       inputs:
         message: runtime-node/rust-operator/status
+  - id: dora-record
+    custom:
+      build: cargo build -p dora-record
+      source: ../../target/debug/dora-record
+      inputs:
+        message: runtime-node/rust-operator/status
+        tick: dora/timer/millis/100
+        random: rust-node/random
