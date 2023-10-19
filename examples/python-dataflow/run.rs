@@ -20,9 +20,7 @@ async fn main() -> eyre::Result<()> {
     let venv = &root.join("examples").join(".env");
     std::env::set_var(
         "VIRTUAL_ENV",
-        venv.to_str()
-            .context("venv path not valid unicode")?
-            .to_owned(),
+        venv.to_str().context("venv path not valid unicode")?,
     );
     let orig_path = std::env::var("PATH")?;
     let venv_bin = venv.join("bin");

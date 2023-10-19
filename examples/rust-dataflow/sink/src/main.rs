@@ -6,7 +6,11 @@ fn main() -> eyre::Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, metadata, data } => match id.as_str() {
+            Event::Input {
+                id,
+                metadata: _,
+                data,
+            } => match id.as_str() {
                 "message" => {
                     let received_string: &str =
                         TryFrom::try_from(&data).context("expected string message")?;
