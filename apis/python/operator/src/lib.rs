@@ -172,7 +172,7 @@ mod tests {
 
         let info = copy_array_into_sample(&mut sample, arrow_array)?;
 
-        let serialized_deserialized_arrow_array = Arc::new(RawData::Vec(sample))
+        let serialized_deserialized_arrow_array = RawData::Vec(sample)
             .into_arrow_array(&info)
             .context("Could not create arrow array")?;
         assert_eq!(arrow_array, &serialized_deserialized_arrow_array);
