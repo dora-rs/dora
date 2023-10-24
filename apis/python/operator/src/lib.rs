@@ -185,15 +185,15 @@ mod tests {
     fn serialize_deserialize_arrow() -> Result<()> {
         // Int8
         let arrow_array = Int8Array::from(vec![1, -2, 3, 4]).into();
-        assert_roundtrip(&arrow_array)?;
+        assert_roundtrip(&arrow_array).context("Int8Array roundtrip failed")?;
 
         // Int64
         let arrow_array = Int64Array::from(vec![1, -2, 3, 4]).into();
-        assert_roundtrip(&arrow_array)?;
+        assert_roundtrip(&arrow_array).context("Int64Array roundtrip failed")?;
 
         // Float64
         let arrow_array = Float64Array::from(vec![1., -2., 3., 4.]).into();
-        assert_roundtrip(&arrow_array)?;
+        assert_roundtrip(&arrow_array).context("Float64Array roundtrip failed")?;
 
         // Struct
         let boolean = Arc::new(BooleanArray::from(vec![false, false, true, true]));
@@ -210,7 +210,7 @@ mod tests {
             ),
         ])
         .into();
-        assert_roundtrip(&struct_array)?;
+        assert_roundtrip(&struct_array).context("StructArray roundtrip failed")?;
 
         // List
         let value_data = ArrayData::builder(DataType::Int32)
@@ -232,7 +232,7 @@ mod tests {
             .build()
             .unwrap();
         let list_array = ListArray::from(list_data).into();
-        assert_roundtrip(&list_array)?;
+        assert_roundtrip(&list_array).context("ListArray roundtrip failed")?;
 
         Ok(())
     }
