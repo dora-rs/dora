@@ -1,5 +1,6 @@
 use std::{ptr::NonNull, sync::Arc};
 
+use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::{ArrowData, IntoArrow};
 use dora_core::{
     config::{DataId, OperatorId},
@@ -28,7 +29,7 @@ pub enum Event {
 
 pub enum RawData {
     Empty,
-    Vec(Vec<u8>),
+    Vec(AVec<u8, ConstAlign<128>>),
     SharedMemory(SharedMemoryData),
 }
 
@@ -36,7 +37,12 @@ impl RawData {
     pub fn into_arrow_array(self, type_info: &ArrowTypeInfo) -> Result<arrow::array::ArrayData> {
         let raw_buffer = match self {
             RawData::Empty => return Ok(().into_arrow().into()),
-            RawData::Vec(data) => arrow::buffer::Buffer::from_vec(data),
+            RawData::Vec(data) => {
+                let ptr = NonNull::new(data.as_ptr() as *mut _).unwrap();
+                let len = data.len();
+
+                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) }
+            }
             RawData::SharedMemory(data) => {
                 let ptr = NonNull::new(data.data.as_ptr() as *mut _).unwrap();
                 let len = data.data.len();

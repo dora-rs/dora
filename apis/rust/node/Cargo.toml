@@ -31,6 +31,7 @@ arrow-schema = { workspace = true }
 futures = "0.3.28"
 futures-concurrency = "7.3.0"
 dora-arrow-convert = { workspace = true }
+aligned-vec = "0.5.0"
 
 [dev-dependencies]
 tokio = { version = "1.24.2", features = ["rt"] }

@@ -17,3 +17,4 @@ serde_yaml = "0.8.23"
 flume = "0.10.14"
 arrow = { workspace = true, features = ["pyarrow"] }
 arrow-schema = { workspace = true }
+aligned-vec = "0.5.0"

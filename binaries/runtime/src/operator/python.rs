@@ -269,6 +269,7 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
+    use aligned_vec::avec;
     use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use dora_core::message::ArrowTypeInfo;
     use dora_node_api::{
@@ -311,7 +312,7 @@ mod callback_impl {
                         .wrap_err("failed to request output sample")?
                         .wrap_err("failed to allocate output sample")
                 } else {
-                    Ok(vec![0; data_len].into())
+                    Ok(avec![0; data_len].into())
                 }
             };
 

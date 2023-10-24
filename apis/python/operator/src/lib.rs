@@ -151,6 +151,7 @@ pub fn metadata_to_pydict<'a>(metadata: &'a Metadata, py: Python<'a>) -> &'a PyD
 mod tests {
     use std::sync::Arc;
 
+    use aligned_vec::avec;
     use arrow::{
         array::{
             ArrayData, ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, Int8Array,
@@ -168,7 +169,7 @@ mod tests {
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
         let size = required_data_size(arrow_array);
-        let mut sample: Vec<u8> = vec![0; size];
+        let mut sample = avec![0; size];
 
         let info = copy_array_into_sample(&mut sample, arrow_array)?;
 
