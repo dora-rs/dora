@@ -9,5 +9,5 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-arrow = { version = "45.0.0" }
+arrow = { workspace = true }
 eyre = "0.6.8"

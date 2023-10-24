@@ -11,9 +11,9 @@ license.workspace = true
 
 [dependencies]
 dora-node-api = { workspace = true }
-pyo3 = { version = "0.19", features = ["eyre", "abi3-py37"] }
+pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
 eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
-arrow = { version = "45.0.0", features = ["pyarrow"] }
-arrow-schema = "45.0.0"
+arrow = { workspace = true, features = ["pyarrow"] }
+arrow-schema = { workspace = true }

@@ -58,6 +58,12 @@ dora-daemon = { version = "0.2.6", path = "binaries/daemon" }
 dora-coordinator = { version = "0.2.6", path = "binaries/coordinator" }
 dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
+arrow = "48.0.0"
+arrow-schema = "48.0.0"
+arrow-data = "48.0.0"
+arrow-array = "48.0.0"
+pyo3 = "0.20.0"
+pythonize = "0.20.0"
 
 [package]
 name = "dora-examples"
