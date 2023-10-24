@@ -38,6 +38,7 @@ tracing-opentelemetry = { version = "0.18.0", optional = true }
 pythonize = { workspace = true, optional = true }
 arrow-schema = { workspace = true }
 arrow = { workspace = true, features = ["ffi"] }
+aligned-vec = "0.5.0"
 
 [features]
 default = ["tracing"]

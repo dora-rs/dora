@@ -1,3 +1,4 @@
+use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
@@ -1072,7 +1073,7 @@ async fn send_output_to_local_receivers(
     metadata: &dora_core::message::Metadata,
     data: Option<DataMessage>,
     clock: &HLC,
-) -> Result<Option<Vec<u8>>, eyre::ErrReport> {
+) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
@@ -1123,7 +1124,7 @@ async fn send_output_to_local_receivers(
                 .os_id(shared_memory_id)
                 .open()
                 .wrap_err("failed to map shared memory output")?;
-            let data = Some(unsafe { memory.as_slice() }[..len].to_owned());
+            let data = Some(AVec::from_slice(1, &unsafe { memory.as_slice() }[..len]));
             (data, Some(drop_token))
         }
         Some(DataMessage::Vec(v)) => (Some(v), None),
