@@ -113,7 +113,12 @@ async fn main() -> eyre::Result<()> {
             Path::new("operator-c-api").join("operator.cc"),
         )?],
         "operator_c_api",
-        &[],
+        &[
+            "-l",
+            "dora_operator_api_c",
+            "-L",
+            root.join("target").join("debug").to_str().unwrap(),
+        ],
     )
     .await?;
 
