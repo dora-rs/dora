@@ -3,7 +3,10 @@ use std::sync::Arc;
 pub use event::{Event, MappedInputData, RawData};
 use futures::{Stream, StreamExt};
 
-use self::thread::{EventItem, EventStreamThreadHandle};
+use self::{
+    event::SharedMemoryData,
+    thread::{EventItem, EventStreamThreadHandle},
+};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::NodeId,
@@ -124,15 +127,15 @@ impl EventStream {
                             drop_token: _, // handled in `event_stream_loop`
                         }) => unsafe {
                             MappedInputData::map(&shared_memory_id, len).map(|data| {
-                                Some(RawData::SharedMemory {
+                                Some(RawData::SharedMemory(SharedMemoryData {
                                     data,
                                     _drop: ack_channel,
-                                })
+                                }))
                             })
                         },
                     };
                     let data = data.and_then(|data| {
-                        let raw_data = Arc::new(data.unwrap_or(RawData::Vec(Vec::new())));
+                        let raw_data = data.unwrap_or(RawData::Empty);
                         raw_data
                             .into_arrow_array(&metadata.type_info)
                             .map(arrow::array::make_array)

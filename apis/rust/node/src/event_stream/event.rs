@@ -1,6 +1,6 @@
 use std::{ptr::NonNull, sync::Arc};
 
-use dora_arrow_convert::ArrowData;
+use dora_arrow_convert::{ArrowData, IntoArrow};
 use dora_core::{
     config::{DataId, OperatorId},
     message::{ArrowTypeInfo, BufferOffset, Metadata},
@@ -27,25 +27,31 @@ pub enum Event {
 }
 
 pub enum RawData {
+    Empty,
     Vec(Vec<u8>),
-    SharedMemory {
-        data: MappedInputData,
-        _drop: flume::Sender<()>,
-    },
+    SharedMemory(SharedMemoryData),
 }
 
 impl RawData {
-    pub fn into_arrow_array(
-        self: Arc<Self>,
-        type_info: &ArrowTypeInfo,
-    ) -> Result<arrow::array::ArrayData> {
-        let ptr = NonNull::new(self.as_ptr() as *mut _).unwrap();
-        let len = self.len();
+    pub fn into_arrow_array(self, type_info: &ArrowTypeInfo) -> Result<arrow::array::ArrayData> {
+        let raw_buffer = match self {
+            RawData::Empty => return Ok(().into_arrow().into()),
+            RawData::Vec(data) => arrow::buffer::Buffer::from_vec(data),
+            RawData::SharedMemory(data) => {
+                let ptr = NonNull::new(data.data.as_ptr() as *mut _).unwrap();
+                let len = data.data.len();
 
-        let raw_buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, self) };
+                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) }
+            }
+        };
 
         buffer_into_arrow_array(&raw_buffer, type_info)
     }
+}
+
+pub struct SharedMemoryData {
+    pub data: MappedInputData,
+    pub _drop: flume::Sender<()>,
 }
 
 fn buffer_into_arrow_array(
@@ -73,18 +79,7 @@ fn buffer_into_arrow_array(
         buffers,
         child_data,
     )
-    .context("Error creating Arrow Array")
-}
-
-impl std::ops::Deref for RawData {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            RawData::SharedMemory { data, .. } => data,
-            RawData::Vec(data) => data,
-        }
-    }
+    .context("Error creating Arrow array")
 }
 
 impl std::fmt::Debug for RawData {

@@ -137,3 +137,11 @@ impl IntoArrow for Vec<f64> {
         self.into()
     }
 }
+
+impl IntoArrow for () {
+    type A = arrow::array::NullArray;
+
+    fn into_arrow(self) -> Self::A {
+        arrow::array::NullArray::new(0)
+    }
+}
