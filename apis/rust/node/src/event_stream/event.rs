@@ -57,7 +57,11 @@ pub struct SharedMemoryData {
 fn buffer_into_arrow_array(
     raw_buffer: &arrow::buffer::Buffer,
     type_info: &ArrowTypeInfo,
-) -> std::result::Result<arrow::array::ArrayData, eyre::Error> {
+) -> eyre::Result<arrow::array::ArrayData> {
+    if raw_buffer.is_empty() {
+        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
+    }
+
     let mut buffers = Vec::new();
     for BufferOffset { offset, len } in &type_info.buffer_offsets {
         buffers.push(raw_buffer.slice_with_length(*offset, *len));
