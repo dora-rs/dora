@@ -9,7 +9,7 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-arrow = { version = "45.0.0", features = ["ffi"] }
+arrow = { workspace = true, features = ["ffi"] }
 dora-arrow-convert = { workspace = true }
 
 [dependencies.safer-ffi]

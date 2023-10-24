@@ -10,8 +10,8 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-arrow-data = { version = "45.0.0" }
+arrow-data = { workspace = true }
 uhlc = "0.5.1"
 serde = { version = "1.0.136", features = ["derive"] }
 eyre = "0.6.8"
-arrow-schema = { version = "45.0.0", features = ["serde"] }
+arrow-schema = { workspace = true, features = ["serde"] }
