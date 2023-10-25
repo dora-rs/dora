@@ -131,6 +131,39 @@ async fn build_c_operator(root: &Path) -> eyre::Result<()> {
     link.arg("-shared").arg("build/operator.o");
     link.arg("-L").arg(root.join("target").join("debug"));
     link.arg("-l").arg("dora_operator_api_c");
+    #[cfg(target_os = "windows")]
+    {
+        link.arg("-ladvapi32");
+        link.arg("-luserenv");
+        link.arg("-lkernel32");
+        link.arg("-lws2_32");
+        link.arg("-lbcrypt");
+        link.arg("-lncrypt");
+        link.arg("-lschannel");
+        link.arg("-lntdll");
+        link.arg("-liphlpapi");
+
+        link.arg("-lcfgmgr32");
+        link.arg("-lcredui");
+        link.arg("-lcrypt32");
+        link.arg("-lcryptnet");
+        link.arg("-lfwpuclnt");
+        link.arg("-lgdi32");
+        link.arg("-lmsimg32");
+        link.arg("-lmswsock");
+        link.arg("-lole32");
+        link.arg("-loleaut32");
+        link.arg("-lopengl32");
+        link.arg("-lsecur32");
+        link.arg("-lshell32");
+        link.arg("-lsynchronization");
+        link.arg("-luser32");
+        link.arg("-lwinspool");
+
+        link.arg("-Wl,-nodefaultlib:libcmt");
+        link.arg("-D_DLL");
+        link.arg("-lmsvcrt");
+    }
     #[cfg(target_os = "macos")]
     {
         link.arg("-framework").arg("CoreServices");
