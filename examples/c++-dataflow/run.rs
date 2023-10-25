@@ -273,6 +273,16 @@ async fn build_cxx_operator(
         link.arg("-lmsvcrt");
         link.arg("-fms-runtime-lib=static");
     }
+    #[cfg(target_os = "macos")]
+    {
+        link.arg("-framework").arg("CoreServices");
+        link.arg("-framework").arg("Security");
+        link.arg("-l").arg("System");
+        link.arg("-l").arg("resolv");
+        link.arg("-l").arg("pthread");
+        link.arg("-l").arg("c");
+        link.arg("-l").arg("m");
+    }
     link.arg("-o")
         .arg(Path::new("../build").join(format!("{DLL_PREFIX}{out_name}{DLL_SUFFIX}")));
     if let Some(parent) = paths[0].parent() {
