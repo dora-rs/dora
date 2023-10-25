@@ -131,6 +131,16 @@ async fn build_c_operator(root: &Path) -> eyre::Result<()> {
     link.arg("-shared").arg("build/operator.o");
     link.arg("-L").arg(root.join("target").join("debug"));
     link.arg("-l").arg("dora_operator_api_c");
+    #[cfg(target_os = "macos")]
+    {
+        link.arg("-framework").arg("CoreServices");
+        link.arg("-framework").arg("Security");
+        link.arg("-l").arg("System");
+        link.arg("-l").arg("resolv");
+        link.arg("-l").arg("pthread");
+        link.arg("-l").arg("c");
+        link.arg("-l").arg("m");
+    }
     link.arg("-o")
         .arg(Path::new("build").join(format!("{DLL_PREFIX}operator{DLL_SUFFIX}")));
     if !link.status().await?.success() {
