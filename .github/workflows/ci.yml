@@ -20,6 +20,11 @@ jobs:
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     steps:
+      - name: Override cargo target dir (Windows only)
+        run: echo "CARGO_TARGET_DIR=C:\cargo-target" >> "$GITHUB_ENV"
+        shell: bash
+        if: runner.os == 'Windows'
+
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
