@@ -58,6 +58,7 @@ jobs:
           cache-on-failure: true
           # only save caches for `main` branch
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-directories: ${{ env.CARGO_TARGET_DIR }}
 
       - name: "Check"
         run: cargo check --all
