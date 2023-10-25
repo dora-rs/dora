@@ -20,6 +20,9 @@ jobs:
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     steps:
+      - name: Print available space (Windows only)
+        run: Get-PSDrive
+        if: runner.os == 'Windows'
       - name: Override cargo target dir (Windows only)
         run: echo "CARGO_TARGET_DIR=C:\cargo-target" >> "$GITHUB_ENV"
         shell: bash
