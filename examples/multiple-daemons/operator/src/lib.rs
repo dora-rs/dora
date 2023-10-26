@@ -1,6 +1,8 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
+use dora_operator_api::{
+    register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
+};
 
 register_operator!(ExampleOperator);
 
@@ -21,16 +23,14 @@ impl DoraOperator for ExampleOperator {
                     self.ticks += 1;
                 }
                 "random" => {
-                    let parsed = {
-                        let data: [u8; 8] =
-                            (*data).try_into().map_err(|_| "unexpected random data")?;
-                        u64::from_le_bytes(data)
-                    };
+                    let data = u64::try_from(data)
+                        .map_err(|err| format!("expected u64 message: {err}"))?;
+
                     let output = format!(
-                        "operator received random value {parsed:#x} after {} ticks",
+                        "operator received random value {data:#x} after {} ticks",
                         self.ticks
                     );
-                    output_sender.send("status".into(), output.into_bytes())?;
+                    output_sender.send("status".into(), output.into_arrow())?;
                 }
                 other => eprintln!("ignoring unexpected input {other}"),
             },

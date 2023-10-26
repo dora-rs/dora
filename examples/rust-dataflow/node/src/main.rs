@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event};
+use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
 
 fn main() -> eyre::Result<()> {
     println!("hello");
@@ -22,10 +22,7 @@ fn main() -> eyre::Result<()> {
                 "tick" => {
                     let random: u64 = rand::random();
                     println!("tick {i}, sending {random:#x}");
-                    let data: &[u8] = &random.to_le_bytes();
-                    node.send_output(output.clone(), metadata.parameters, data.len(), |out| {
-                        out.copy_from_slice(data);
-                    })?;
+                    node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

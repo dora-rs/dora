@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{DaemonCommunication, DaemonRequest, Data, DataflowId, Timestamped},
+    daemon_messages::{DaemonCommunication, DaemonRequest, DataMessage, DataflowId, Timestamped},
     message::{uhlc::HLC, Metadata},
 };
 use eyre::{bail, eyre, Context};
@@ -84,7 +84,7 @@ impl ControlChannel {
         &mut self,
         output_id: DataId,
         metadata: Metadata,
-        data: Option<Data>,
+        data: Option<DataMessage>,
     ) -> eyre::Result<()> {
         let request = DaemonRequest::SendMessage {
             output_id,

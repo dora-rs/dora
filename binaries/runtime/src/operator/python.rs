@@ -269,12 +269,14 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
+    use aligned_vec::avec;
     use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use dora_core::message::ArrowTypeInfo;
-    use dora_node_api::ZERO_COPY_THRESHOLD;
-    use dora_operator_api_python::{
-        copy_array_into_sample, pydict_to_metadata, required_data_size,
+    use dora_node_api::{
+        arrow_utils::{copy_array_into_sample, required_data_size},
+        ZERO_COPY_THRESHOLD,
     };
+    use dora_operator_api_python::pydict_to_metadata;
     use eyre::{eyre, Context, Result};
     use pyo3::{
         pymethods,
@@ -310,7 +312,7 @@ mod callback_impl {
                         .wrap_err("failed to request output sample")?
                         .wrap_err("failed to allocate output sample")
                 } else {
-                    Ok(vec![0; data_len].into())
+                    Ok(avec![0; data_len].into())
                 }
             };
 

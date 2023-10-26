@@ -1,5 +1,7 @@
 use crate::{DoraOperator, DoraOutputSender, DoraStatus, Event};
-use dora_operator_api_types::{DoraInitResult, DoraResult, OnEventResult, RawEvent, SendOutput};
+use dora_operator_api_types::{
+    arrow, DoraInitResult, DoraResult, OnEventResult, RawEvent, SendOutput,
+};
 use std::ffi::c_void;
 
 pub type OutputFnRaw = unsafe extern "C" fn(
@@ -27,7 +29,7 @@ pub unsafe fn dora_drop_operator<O>(operator_context: *mut c_void) -> DoraResult
 }
 
 pub unsafe fn dora_on_event<O: DoraOperator>(
-    event: &RawEvent,
+    event: &mut RawEvent,
     send_output: &SendOutput,
     operator_context: *mut std::ffi::c_void,
 ) -> OnEventResult {
@@ -35,11 +37,24 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
 
     let operator: &mut O = unsafe { &mut *operator_context.cast() };
 
-    let event_variant = if let Some(input) = &event.input {
-        let data = input.data.as_ref().as_slice();
-        Event::Input {
-            id: &input.id,
-            data,
+    let event_variant = if let Some(input) = &mut event.input {
+        let Some(data_array) = input.data_array.take() else {
+            return OnEventResult {
+                result: DoraResult { error: Some("data already taken".to_string().into()) },
+                status: DoraStatus::Continue,
+            };
+         };
+        let data = arrow::ffi::from_ffi(data_array, &input.schema);
+
+        match data {
+            Ok(data) => Event::Input {
+                id: &input.id,
+                data: arrow::array::make_array(data).into(),
+            },
+            Err(err) => Event::InputParseError {
+                id: &input.id,
+                error: format!("{err}"),
+            },
         }
     } else if let Some(input_id) = &event.input_closed {
         Event::InputClosed { id: input_id }

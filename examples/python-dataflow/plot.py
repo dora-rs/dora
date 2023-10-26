@@ -33,15 +33,15 @@ class Plotter:
 
         Args:
             dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
-            dora_input["data"] (bytes): Bytes message of the dora_input
+            dora_input["value"] (arrow array): message of the dora_input
         """
         if dora_input["id"] == "image":
-            frame = np.frombuffer(dora_input["data"], dtype="uint8")
+            frame = dora_input["value"].to_numpy()
             frame = cv2.imdecode(frame, -1)
             self.image = frame
 
         elif dora_input["id"] == "bbox" and len(self.image) != 0:
-            bboxs = np.frombuffer(dora_input["data"], dtype="float32")
+            bboxs = dora_input["value"].to_numpy()
             self.bboxs = np.reshape(bboxs, (-1, 6))
         for bbox in self.bboxs:
             [
