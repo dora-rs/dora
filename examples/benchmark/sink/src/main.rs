@@ -22,7 +22,7 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, data } => {
                 // check if new size bracket
-                let data_len = data.map(|d| d.len()).unwrap_or_default();
+                let data_len = data.len();
                 if data_len != current_size {
                     if n > 0 {
                         record_results(start, current_size, n, latencies, latency);

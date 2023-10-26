@@ -1,7 +1,19 @@
 #![deny(elided_lifetimes_in_paths)] // required for safer-ffi
 
+pub use arrow;
+use dora_arrow_convert::{ArrowData, IntoArrow};
 pub use safer_ffi;
-use safer_ffi::{closure::ArcDynFn1, derive_ReprC, ffi_export};
+
+use arrow::{
+    array::Array,
+    ffi::{FFI_ArrowArray, FFI_ArrowSchema},
+};
+use core::slice;
+use safer_ffi::{
+    char_p::{self, char_p_boxed},
+    closure::ArcDynFn1,
+    derive_ReprC, ffi_export,
+};
 use std::path::Path;
 
 #[derive_ReprC]
@@ -46,7 +58,7 @@ pub struct DoraOnEvent {
 #[repr(transparent)]
 pub struct OnEventFn(
     pub  unsafe extern "C" fn(
-        event: &RawEvent,
+        event: &mut RawEvent,
         send_output: &SendOutput,
         operator_context: *mut std::ffi::c_void,
     ) -> OnEventResult,
@@ -64,12 +76,12 @@ pub struct RawEvent {
 }
 
 #[derive_ReprC]
-#[ffi_export]
-#[repr(C)]
+#[repr(opaque)]
 #[derive(Debug)]
 pub struct Input {
     pub id: safer_ffi::String,
-    pub data: safer_ffi::Vec<u8>,
+    pub data_array: Option<FFI_ArrowArray>,
+    pub schema: FFI_ArrowSchema,
     pub metadata: Metadata,
 }
 
@@ -89,12 +101,12 @@ pub struct SendOutput {
 }
 
 #[derive_ReprC]
-#[ffi_export]
-#[repr(C)]
+#[repr(opaque)]
 #[derive(Debug)]
 pub struct Output {
     pub id: safer_ffi::String,
-    pub data: safer_ffi::Vec<u8>,
+    pub data_array: FFI_ArrowArray,
+    pub schema: FFI_ArrowSchema,
     pub metadata: Metadata,
 }
 
@@ -115,6 +127,56 @@ pub enum DoraStatus {
     Continue = 0,
     Stop = 1,
     StopAll = 2,
+}
+
+#[ffi_export]
+pub fn dora_read_input_id(input: &Input) -> char_p_boxed {
+    char_p::new(&*input.id)
+}
+
+#[ffi_export]
+pub fn dora_free_input_id(_input_id: char_p_boxed) {}
+
+#[ffi_export]
+pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
+    let data_array = input.data_array.take()?;
+    let data = arrow::ffi::from_ffi(data_array, &input.schema).ok()?;
+    let array = ArrowData(arrow::array::make_array(data));
+    let bytes: &[u8] = TryFrom::try_from(&array).ok()?;
+    Some(bytes.to_owned().into())
+}
+
+#[ffi_export]
+pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
+
+#[ffi_export]
+pub unsafe fn dora_send_operator_output(
+    send_output: &SendOutput,
+    id: safer_ffi::char_p::char_p_ref<'_>,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> DoraResult {
+    let result = || {
+        let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+        let arrow_data = data.to_owned().into_arrow();
+        let (data_array, schema) =
+            arrow::ffi::to_ffi(&arrow_data.into_data()).map_err(|err| err.to_string())?;
+        let output = Output {
+            id: id.to_str().to_owned().into(),
+            data_array,
+            schema,
+            metadata: Metadata {
+                open_telemetry_context: String::new().into(), // TODO
+            },
+        };
+        Result::<_, String>::Ok(output)
+    };
+    match result() {
+        Ok(output) => send_output.send_output.call(output),
+        Err(error) => DoraResult {
+            error: Some(error.into()),
+        },
+    }
 }
 
 pub fn generate_headers(target_file: &Path) -> ::std::io::Result<()> {

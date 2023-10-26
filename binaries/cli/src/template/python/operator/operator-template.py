@@ -45,7 +45,7 @@ class Operator:
 
         """
         print(
-            f"Received input {dora_input['id']}, with data: {dora_input['data']}"
+            f"Received input {dora_input['id']}, with data: {dora_input['value']}"
         )
 
         return DoraStatus.CONTINUE

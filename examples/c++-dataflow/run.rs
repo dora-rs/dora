@@ -113,7 +113,12 @@ async fn main() -> eyre::Result<()> {
             Path::new("operator-c-api").join("operator.cc"),
         )?],
         "operator_c_api",
-        &[],
+        &[
+            "-l",
+            "dora_operator_api_c",
+            "-L",
+            root.join("target").join("debug").to_str().unwrap(),
+        ],
     )
     .await?;
 
@@ -267,6 +272,16 @@ async fn build_cxx_operator(
         link.arg("-D_DLL");
         link.arg("-lmsvcrt");
         link.arg("-fms-runtime-lib=static");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        link.arg("-framework").arg("CoreServices");
+        link.arg("-framework").arg("Security");
+        link.arg("-l").arg("System");
+        link.arg("-l").arg("resolv");
+        link.arg("-l").arg("pthread");
+        link.arg("-l").arg("c");
+        link.arg("-l").arg("m");
     }
     link.arg("-o")
         .arg(Path::new("../build").join(format!("{DLL_PREFIX}{out_name}{DLL_SUFFIX}")));

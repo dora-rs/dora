@@ -50,7 +50,7 @@ class Operator:
 
         Args:
             dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
-            dora_input["data"] (bytes): Bytes message of the dora_input
+            dora_input["value"] (arrow array): message of the dora_input
             send_output Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None]:
                 Function for sending output to the dataflow:
                 - First argument is the `output_id`

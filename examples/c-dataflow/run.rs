@@ -33,7 +33,7 @@ async fn main() -> eyre::Result<()> {
     build_c_node(root, "sink.c", "c_sink").await?;
 
     build_package("dora-operator-api-c").await?;
-    build_c_operator().await?;
+    build_c_operator(root).await?;
 
     let dataflow = Path::new("dataflow.yml").to_owned();
     dora_daemon::Daemon::run_dataflow(&dataflow).await?;
@@ -116,7 +116,7 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
     Ok(())
 }
 
-async fn build_c_operator() -> eyre::Result<()> {
+async fn build_c_operator(root: &Path) -> eyre::Result<()> {
     let mut compile = tokio::process::Command::new("clang");
     compile.arg("-c").arg("operator.c");
     compile.arg("-o").arg("build/operator.o");
@@ -129,6 +129,51 @@ async fn build_c_operator() -> eyre::Result<()> {
 
     let mut link = tokio::process::Command::new("clang");
     link.arg("-shared").arg("build/operator.o");
+    link.arg("-L").arg(root.join("target").join("debug"));
+    link.arg("-l").arg("dora_operator_api_c");
+    #[cfg(target_os = "windows")]
+    {
+        link.arg("-ladvapi32");
+        link.arg("-luserenv");
+        link.arg("-lkernel32");
+        link.arg("-lws2_32");
+        link.arg("-lbcrypt");
+        link.arg("-lncrypt");
+        link.arg("-lschannel");
+        link.arg("-lntdll");
+        link.arg("-liphlpapi");
+
+        link.arg("-lcfgmgr32");
+        link.arg("-lcredui");
+        link.arg("-lcrypt32");
+        link.arg("-lcryptnet");
+        link.arg("-lfwpuclnt");
+        link.arg("-lgdi32");
+        link.arg("-lmsimg32");
+        link.arg("-lmswsock");
+        link.arg("-lole32");
+        link.arg("-loleaut32");
+        link.arg("-lopengl32");
+        link.arg("-lsecur32");
+        link.arg("-lshell32");
+        link.arg("-lsynchronization");
+        link.arg("-luser32");
+        link.arg("-lwinspool");
+
+        link.arg("-Wl,-nodefaultlib:libcmt");
+        link.arg("-D_DLL");
+        link.arg("-lmsvcrt");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        link.arg("-framework").arg("CoreServices");
+        link.arg("-framework").arg("Security");
+        link.arg("-l").arg("System");
+        link.arg("-l").arg("resolv");
+        link.arg("-l").arg("pthread");
+        link.arg("-l").arg("c");
+        link.arg("-l").arg("m");
+    }
     link.arg("-o")
         .arg(Path::new("build").join(format!("{DLL_PREFIX}operator{DLL_SUFFIX}")));
     if !link.status().await?.success() {

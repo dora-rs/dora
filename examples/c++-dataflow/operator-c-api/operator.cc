@@ -7,6 +7,7 @@ extern "C"
 #include <iostream>
 #include <vector>
 #include <string.h>
+#include <cassert>
 
 class Operator
 {
@@ -31,7 +32,7 @@ extern "C" DoraResult_t dora_drop_operator(void *operator_context)
 }
 
 extern "C" OnEventResult_t dora_on_event(
-    const RawEvent_t *event,
+    RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
 {
@@ -39,19 +40,16 @@ extern "C" OnEventResult_t dora_on_event(
     {
         // input event
         Input_t *input = event->input;
-        std::string id((char *)input->id.ptr, input->id.len);
+        char *id = dora_read_input_id(input);
 
-        std::vector<unsigned char> data;
-        for (size_t i = 0; i < input->data.len; i++)
-        {
-            data.push_back(*(input->data.ptr + i));
-        }
+        Vec_uint8_t data = dora_read_data(input);
+        assert(data.ptr != NULL);
 
         std::cout
             << "C++ Operator (C-API) received input `" << id << "` with data: [";
-        for (unsigned char &v : data)
+        for (int i = 0; i < data.len; i++)
         {
-            std::cout << (unsigned int)v << ", ";
+            std::cout << (unsigned int)data.ptr[i] << ", ";
         }
         std::cout << "]" << std::endl;
 
@@ -60,18 +58,15 @@ extern "C" OnEventResult_t dora_on_event(
 
         size_t out_data_len = 1;
         uint8_t *out_data_heap = (uint8_t *)malloc(out_data_len);
-        *out_data_heap = data[0] / 2;
+        *out_data_heap = *data.ptr / 2;
 
-        Output_t output = {.id = {
-                               .ptr = (uint8_t *)out_id_heap,
-                               .len = strlen(out_id_heap),
-                               .cap = strlen(out_id_heap) + 1,
-                           },
-                           .data = {.ptr = out_data_heap, .len = out_data_len, .cap = out_data_len}};
-
-        DoraResult_t send_result = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
+        DoraResult_t send_result = dora_send_operator_output(send_output, out_id_heap, out_data_heap, out_data_len);
 
         OnEventResult_t result = {.result = send_result, .status = DORA_STATUS_CONTINUE};
+
+        dora_free_data(data);
+        dora_free_input_id(id);
+
         return result;
     }
     if (event->stop)

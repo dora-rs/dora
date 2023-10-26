@@ -31,7 +31,7 @@ fn main() -> eyre::Result<()> {
                 .sample_iter(rand::distributions::Standard)
                 .take(size)
                 .collect();
-            node.send_output(latency.clone(), Default::default(), data.len(), |out| {
+            node.send_output_raw(latency.clone(), Default::default(), data.len(), |out| {
                 out.copy_from_slice(&data);
             })?;
 
@@ -50,7 +50,7 @@ fn main() -> eyre::Result<()> {
                 .sample_iter(rand::distributions::Standard)
                 .take(size)
                 .collect();
-            node.send_output(throughput.clone(), Default::default(), data.len(), |out| {
+            node.send_output_raw(throughput.clone(), Default::default(), data.len(), |out| {
                 out.copy_from_slice(&data);
             })?;
         }

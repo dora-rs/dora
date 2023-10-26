@@ -18,7 +18,7 @@ for event in node:
             match event["id"]:
                 case "image":
                     print("[object detection] received image input")
-                    frame = np.frombuffer(event["data"], dtype="uint8")
+                    frame = event["value"].to_numpy()
                     frame = cv2.imdecode(frame, -1)
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                     results = model(frame)  # includes NMS

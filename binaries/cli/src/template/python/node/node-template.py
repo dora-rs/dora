@@ -10,6 +10,6 @@ if event["type"] == "INPUT":
     print(
         f"""Node received:
     id: {event["id"]},
-    value: {event["data"]},
+    value: {event["value"]},
     metadata: {event["metadata"]}"""
     )
