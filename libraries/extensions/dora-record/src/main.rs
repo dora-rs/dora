@@ -2,7 +2,10 @@ use chrono::{DateTime, Utc};
 use dora_node_api::{
     self,
     arrow::{
-        array::{make_array, Array, Int64Array, ListArray, StringArray, UInt64Array},
+        array::{
+            make_array, Array, Int64Array, ListArray, StringArray, Time32MillisecondArray,
+            TimestampMillisecondArray, TimestampSecondArray, UInt64Array,
+        },
         buffer::{OffsetBuffer, ScalarBuffer},
         datatypes::{DataType, Field, Schema},
         ipc::writer::FileWriter,
@@ -23,11 +26,15 @@ fn main() -> eyre::Result<()> {
             Event::Input { id, data, metadata } => {
                 match writers.get_mut(&id) {
                     None => {
-                        let field_uhlc = Field::new("timestamp_uhlc", DataType::UInt64, true);
-                        // DateTime are kept as there as Int64 because there is an issue in `pyarrow` when
-                        // reading pyarrow Date64 format. See: https://github.com/apache/arrow/issues/38488
-                        let field_utc_epoch =
-                            Field::new("timestamp_utc_epoch", DataType::Int64, true);
+                        let field_uhlc = Field::new("timestamp_uhlc", DataType::UInt64, false);
+                        let field_utc_epoch = Field::new(
+                            "timestamp_utc",
+                            DataType::Timestamp(
+                                dora_node_api::arrow::datatypes::TimeUnit::Millisecond,
+                                None,
+                            ),
+                            false,
+                        );
                         let field_trace_id = Field::new("trace_id", DataType::Utf8, true);
                         let field_span_id = Field::new("span_id", DataType::Utf8, true);
                         let field_values =
@@ -93,7 +100,7 @@ fn write_event(
     let system_time = timestamp.get_time().to_system_time();
 
     let dt: DateTime<Utc> = system_time.into();
-    let timestamp_utc = Int64Array::from(vec![dt.timestamp_millis()]);
+    let timestamp_utc = TimestampMillisecondArray::from(vec![dt.timestamp_millis()]);
     let timestamp_utc = make_array(timestamp_utc.into());
 
     let string_otel_context = metadata.parameters.open_telemetry_context.to_string();
