@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use dora_node_api::{
     self,
     arrow::{
-        array::{make_array, Array, Int64Array, ListArray, StringArray},
+        array::{make_array, Array, Int64Array, ListArray, StringArray, UInt64Array},
         buffer::{OffsetBuffer, ScalarBuffer},
         datatypes::{DataType, Field, Schema},
         ipc::writer::FileWriter,
@@ -23,7 +23,11 @@ fn main() -> eyre::Result<()> {
             Event::Input { id, data, metadata } => {
                 match writers.get_mut(&id) {
                     None => {
-                        let field_timestamp = Field::new("timestamp", DataType::Int64, true);
+                        let field_uhlc = Field::new("timestamp_uhlc", DataType::UInt64, true);
+                        // DateTime are kept as there as Int64 because there is an issue in `pyarrow` when
+                        // reading pyarrow Date64 format. See: https://github.com/apache/arrow/issues/38488
+                        let field_utc_epoch =
+                            Field::new("timestamp_utc_epoch", DataType::Int64, true);
                         let field_trace_id = Field::new("trace_id", DataType::Utf8, true);
                         let field_span_id = Field::new("span_id", DataType::Utf8, true);
                         let field_values =
@@ -33,7 +37,8 @@ fn main() -> eyre::Result<()> {
                         let schema = Arc::new(Schema::new(vec![
                             field_trace_id,
                             field_span_id,
-                            field_timestamp,
+                            field_uhlc,
+                            field_utc_epoch,
                             field_data,
                         ]));
                         let file = std::fs::File::create(format!("{id}.arrow")).unwrap();
@@ -83,11 +88,13 @@ fn write_event(
     let list = ListArray::new(field.clone(), offsets, data.clone(), None);
 
     let timestamp = metadata.timestamp();
-    let timestamp = timestamp.get_time().to_system_time();
+    let timestamp_uhlc = UInt64Array::from(vec![timestamp.get_time().0]);
+    let timestamp_uhlc = make_array(timestamp_uhlc.into());
+    let system_time = timestamp.get_time().to_system_time();
 
-    let dt: DateTime<Utc> = timestamp.into();
-    let timestamp_array = Int64Array::from(vec![dt.timestamp_millis()]);
-    let timestamp_array = make_array(timestamp_array.into());
+    let dt: DateTime<Utc> = system_time.into();
+    let timestamp_utc = Int64Array::from(vec![dt.timestamp_millis()]);
+    let timestamp_utc = make_array(timestamp_utc.into());
 
     let string_otel_context = metadata.parameters.open_telemetry_context.to_string();
     let otel_context = deserialize_to_hashmap(&string_otel_context);
@@ -110,7 +117,8 @@ fn write_event(
         vec![
             trace_id_array,
             span_id_array,
-            timestamp_array,
+            timestamp_uhlc,
+            timestamp_utc,
             make_array(list.into()),
         ],
     )
