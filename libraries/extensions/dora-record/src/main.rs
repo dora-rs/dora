@@ -14,13 +14,6 @@ use dora_tracing::telemetry::deserialize_to_hashmap;
 use eyre::{Context, ContextCompat};
 use std::{collections::HashMap, fs::File, sync::Arc};
 
-// Remove once arrow-rs 48.0 is published with access to writer schema.
-// See: https://github.com/apache/arrow-rs/pull/4940
-struct WriterContext {
-    writer: FileWriter<File>,
-    schema: Arc<Schema>,
-}
-
 fn main() -> eyre::Result<()> {
     let (_node, mut events) = DoraNode::init_from_env()?;
 
@@ -46,23 +39,20 @@ fn main() -> eyre::Result<()> {
                         let file = std::fs::File::create(format!("{id}.arrow")).unwrap();
 
                         let writer = FileWriter::try_new(file, &schema).unwrap();
-                        let mut writer_context = WriterContext { writer, schema };
-                        write_event(&mut writer_context, data.into(), &metadata)
+                        let mut writer = writer;
+                        write_event(&mut writer, data.into(), &metadata)
                             .context("could not write first record data")?;
-                        writers.insert(id.clone(), writer_context);
+                        writers.insert(id.clone(), writer);
                     }
-                    Some(writer_context) => {
-                        write_event(writer_context, data.into(), &metadata)
-                            .context("could not write first record data")?;
+                    Some(writer) => {
+                        write_event(writer, data.into(), &metadata)
+                            .context("could not write record data")?;
                     }
                 };
             }
             Event::InputClosed { id } => match writers.remove(&id) {
                 None => {}
-                Some(mut writer) => writer
-                    .writer
-                    .finish()
-                    .context("Could not finish arrow file")?,
+                Some(mut writer) => writer.finish().context("Could not finish arrow file")?,
             },
             _ => {}
         }
@@ -70,21 +60,21 @@ fn main() -> eyre::Result<()> {
 
     let result: eyre::Result<Vec<_>> = writers
         .iter_mut()
-        .map(|(_, wc)| -> eyre::Result<()> {
-            wc.writer
+        .map(|(_, writer)| -> eyre::Result<()> {
+            writer
                 .finish()
                 .context("Could not finish writing arrow file")?;
             Ok(())
         })
         .collect();
-    result.context("One of the input recorder file writer failed to finish")?;
+    result.context("At least one of the input recorder file writer failed to finish")?;
 
     Ok(())
 }
 
 /// Write a row of data into the writer
 fn write_event(
-    writer_context: &mut WriterContext,
+    writer: &mut FileWriter<File>,
     data: Arc<dyn Array>,
     metadata: &Metadata,
 ) -> eyre::Result<()> {
@@ -116,7 +106,7 @@ fn write_event(
     let span_id_array = make_array(span_id_array.into());
 
     let record = RecordBatch::try_new(
-        writer_context.schema.clone(),
+        writer.schema().clone(),
         vec![
             trace_id_array,
             span_id_array,
@@ -125,8 +115,7 @@ fn write_event(
         ],
     )
     .context("Could not create record batch with the given data")?;
-    writer_context
-        .writer
+    writer
         .write(&record)
         .context("Could not write recordbatch to file")?;
 
