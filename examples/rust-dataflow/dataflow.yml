@@ -29,5 +29,4 @@ nodes:
       source: ../../target/debug/dora-record
       inputs:
         message: runtime-node/rust-operator/status
-        tick: dora/timer/millis/100
         random: rust-node/random
