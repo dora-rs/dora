@@ -54,9 +54,8 @@ pub fn attach_dataflow(
 
     // Setup dataflow file watcher if reload option is set.
     let watcher_tx = tx.clone();
-    let _watcher = if hot_reload {
-        let hash = node_path_lookup.clone();
-        let paths = hash.keys();
+    let watched_paths: Vec<PathBuf> = node_path_lookup.clone().into_keys().collect();
+    let watcher = if hot_reload {
         let notifier = move |event| {
             if let Ok(NotifyEvent {
                 paths,
@@ -85,8 +84,10 @@ pub fn attach_dataflow(
             Config::default().with_poll_interval(Duration::from_secs(1)),
         )?;
 
-        for path in paths {
-            watcher.watch(path, RecursiveMode::Recursive)?;
+        for path in watched_paths.iter() {
+            watcher
+                .watch(path, RecursiveMode::Recursive)
+                .context("Could not add path to hot-reloading file watcher")?;
         }
         Some(watcher)
     } else {
@@ -113,7 +114,7 @@ pub fn attach_dataflow(
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
-    loop {
+    let result = loop {
         let control_request = match rx.recv_timeout(Duration::from_secs(1)) {
             Err(_err) => ControlRequest::Check {
                 dataflow_uuid: dataflow_id,
@@ -139,5 +140,16 @@ pub fn attach_dataflow(
             }
             other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };
+    };
+
+    // Cleanup watcher
+    if let Some(mut watcher) = watcher {
+        for path in watched_paths.iter() {
+            watcher
+                .unwatch(&path)
+                .context("Could not remove path from hot-reloading file watcher")?;
+        }
     }
+
+    result
 }
