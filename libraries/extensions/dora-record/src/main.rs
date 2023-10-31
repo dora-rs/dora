@@ -3,8 +3,7 @@ use dora_node_api::{
     self,
     arrow::{
         array::{
-            make_array, Array, Int64Array, ListArray, StringArray, Time32MillisecondArray,
-            TimestampMillisecondArray, TimestampSecondArray, UInt64Array,
+            make_array, Array, ListArray, StringArray, TimestampMillisecondArray, UInt64Array,
         },
         buffer::{OffsetBuffer, ScalarBuffer},
         datatypes::{DataType, Field, Schema},
@@ -92,7 +91,7 @@ fn write_event(
 ) -> eyre::Result<()> {
     let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0, data.len() as i32]));
     let field = Arc::new(Field::new("item", data.data_type().clone(), true));
-    let list = ListArray::new(field.clone(), offsets, data.clone(), None);
+    let list = ListArray::new(field, offsets, data.clone(), None);
 
     let timestamp = metadata.timestamp();
     let timestamp_uhlc = UInt64Array::from(vec![timestamp.get_time().0]);
@@ -105,14 +104,14 @@ fn write_event(
 
     let string_otel_context = metadata.parameters.open_telemetry_context.to_string();
     let otel_context = deserialize_to_hashmap(&string_otel_context);
-    let traceparent = otel_context.get("traceparent").clone();
+    let traceparent = otel_context.get("traceparent");
     let trace_id = match traceparent {
         None => "",
-        Some(trace) => trace.split("-").nth(1).context("Trace is malformatted")?,
+        Some(trace) => trace.split('-').nth(1).context("Trace is malformatted")?,
     };
     let span_id = match traceparent {
         None => "",
-        Some(trace) => trace.split("-").nth(2).context("Trace is malformatted")?,
+        Some(trace) => trace.split('-').nth(2).context("Trace is malformatted")?,
     };
     let trace_id_array = StringArray::from(vec![trace_id]);
     let trace_id_array = make_array(trace_id_array.into());
