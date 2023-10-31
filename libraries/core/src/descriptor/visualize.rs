@@ -93,22 +93,36 @@ fn visualize_runtime_node(
     operators: &[OperatorDefinition],
     flowchart: &mut String,
 ) {
-    writeln!(flowchart, "subgraph {node_id}").unwrap();
-    for operator in operators {
-        let operator_id = &operator.id;
+    if operators.len() == 1 && operators[0].id.to_string() == "op" {
+        let operator = &operators[0];
+        // single operator node
         if operator.config.inputs.is_empty() {
-            // source operator
-            writeln!(flowchart, "  {node_id}/{operator_id}[\\{operator_id}/]").unwrap();
+            // source node
+            writeln!(flowchart, "  {node_id}/op[\\{node_id}/]").unwrap();
         } else if operator.config.outputs.is_empty() {
-            // sink operator
-            writeln!(flowchart, "  {node_id}/{operator_id}[/{operator_id}\\]").unwrap();
+            // sink node
+            writeln!(flowchart, "  {node_id}/op[/{node_id}\\]").unwrap();
         } else {
-            // normal operator
-            writeln!(flowchart, "  {node_id}/{operator_id}[{operator_id}]").unwrap();
+            // normal node
+            writeln!(flowchart, "  {node_id}/op[{node_id}]").unwrap();
         }
+    } else {
+        writeln!(flowchart, "subgraph {node_id}").unwrap();
+        for operator in operators {
+            let operator_id = &operator.id;
+            if operator.config.inputs.is_empty() {
+                // source operator
+                writeln!(flowchart, "  {node_id}/{operator_id}[\\{operator_id}/]").unwrap();
+            } else if operator.config.outputs.is_empty() {
+                // sink operator
+                writeln!(flowchart, "  {node_id}/{operator_id}[/{operator_id}\\]").unwrap();
+            } else {
+                // normal operator
+                writeln!(flowchart, "  {node_id}/{operator_id}[{operator_id}]").unwrap();
+            }
+        }
+        flowchart.push_str("end\n");
     }
-
-    flowchart.push_str("end\n");
 }
 
 fn visualize_node_inputs(
