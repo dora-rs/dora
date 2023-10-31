@@ -1,5 +1,5 @@
 [package]
-name = "zenoh-logger"
+name = "dora-record"
 version.workspace = true
 edition = "2021"
 documentation.workspace = true
@@ -9,4 +9,7 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-zenoh = "0.7.0-rc"
+dora-node-api = { workspace = true, features = ["tracing"] }
+eyre = "0.6.8"
+chrono = "0.4.31"
+dora-tracing = { workspace = true }

@@ -22,7 +22,7 @@ members = [
     "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
-    "libraries/extensions/zenoh-logger",
+    "libraries/extensions/dora-record",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/msg-gen-macro",
