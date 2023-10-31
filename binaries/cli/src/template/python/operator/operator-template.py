@@ -30,10 +30,10 @@ class Operator:
 
         Args:
             dora_input (dict): Input dict containing an `id`, `data` and `metadata`.
-            send_output Callable[[str, bytes | pa.UInt8Array, Optional[dict]], None]: 
+            send_output Callable[[str, bytes | pa.Array, Optional[dict]], None]:
                 Function for sending output to the dataflow:
                 - First argument is the `output_id`
-                - Second argument is the data as either bytes or `pa.UInt8Array` 
+                - Second argument is the data as either bytes or `pa.Array`
                 - Third argument is dora metadata dict
                 e.g.: `send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`
 
@@ -44,9 +44,7 @@ class Operator:
                 STOP means that the operator stop listening for inputs.
 
         """
-        print(
-            f"Received input {dora_input['id']}, with data: {dora_input['value']}"
-        )
+        print(f"Received input {dora_input['id']}, with data: {dora_input['value']}")
 
         return DoraStatus.CONTINUE
 
