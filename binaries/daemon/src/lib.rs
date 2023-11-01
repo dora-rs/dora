@@ -1,4 +1,4 @@
-use aligned_vec::{AVec, ConstAlign};
+use aligned_vec::{AVec, ConstAlign, CACHELINE_ALIGN};
 use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
@@ -1073,7 +1073,7 @@ async fn send_output_to_local_receivers(
     metadata: &dora_core::message::Metadata,
     data: Option<DataMessage>,
     clock: &HLC,
-) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
+) -> Result<Option<AVec<u8, ConstAlign<CACHELINE_ALIGN>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
