@@ -4,16 +4,20 @@
 
 ## Features
 
-- Bump quinn-proto from 0.9.3 to 0.9.5 by @dependabot in https://github.com/dora-rs/dora/pull/357
-- Bump webpki from 0.22.1 to 0.22.2 by @dependabot in https://github.com/dora-rs/dora/pull/358
-- Remove `Ros2Value` encapsulation of `ArrayData` by @haixuanTao in https://github.com/dora-rs/dora/pull/359
-- Update README discord link by @Felixhuangsiling in https://github.com/dora-rs/dora/pull/361
-- Bump rustix from 0.37.24 to 0.37.25 by @dependabot in https://github.com/dora-rs/dora/pull/364
-- Update `rustix` v0.38 dependency by @phil-opp in https://github.com/dora-rs/dora/pull/366
 - Rust node API typed using arrow by @phil-opp in https://github.com/dora-rs/dora/pull/353
 - Dora record by @haixuanTao in https://github.com/dora-rs/dora/pull/365
 - beautify graph visualisation by @haixuanTao in https://github.com/dora-rs/dora/pull/370
+- Remove `Ros2Value` encapsulation of `ArrayData` by @haixuanTao in https://github.com/dora-rs/dora/pull/359
 - Refactor python typing by @haixuanTao in https://github.com/dora-rs/dora/pull/369
+- Update README discord link by @Felixhuangsiling in https://github.com/dora-rs/dora/pull/361
+
+### Other
+
+- Update `rustix` v0.38 dependency by @phil-opp in https://github.com/dora-rs/dora/pull/366
+- Bump rustix from 0.37.24 to 0.37.25 by @dependabot in https://github.com/dora-rs/dora/pull/364
+- Bump quinn-proto from 0.9.3 to 0.9.5 by @dependabot in https://github.com/dora-rs/dora/pull/357
+- Bump webpki from 0.22.1 to 0.22.2 by @dependabot in https://github.com/dora-rs/dora/pull/358
+- Update README discord link by @Felixhuangsiling in https://github.com/dora-rs/dora/pull/361
 
 ## New Contributors
 
