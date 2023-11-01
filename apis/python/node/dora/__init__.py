@@ -15,7 +15,7 @@ from enum import Enum
 from .dora import *
 
 __author__ = "Dora-rs Authors"
-__version__ = "0.3.0-rc3"
+__version__ = "0.3.0"
 
 
 class DoraStatus(Enum):
