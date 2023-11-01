@@ -257,7 +257,7 @@ impl DoraNode {
                 len: data_len,
             }
         } else {
-            avec![0; data_len].into()
+            avec![0u8; data_len].into()
         };
 
         Ok(data)
