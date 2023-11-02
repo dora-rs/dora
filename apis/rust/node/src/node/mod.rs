@@ -5,7 +5,7 @@ use self::{
     control_channel::ControlChannel,
     drop_stream::DropStream,
 };
-use aligned_vec::{avec, AVec, ConstAlign, CACHELINE_ALIGN};
+use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
@@ -257,7 +257,11 @@ impl DoraNode {
                 len: data_len,
             }
         } else {
-            avec![0u8; data_len].into()
+            let mut avec: AVec<u8, ConstAlign<128>> = AVec::new(128);
+            for _ in 0..data_len {
+                avec.push(0);
+            }
+            avec.into()
         };
 
         Ok(data)
@@ -420,8 +424,8 @@ impl DerefMut for DataSample {
     }
 }
 
-impl From<AVec<u8, ConstAlign<CACHELINE_ALIGN>>> for DataSample {
-    fn from(value: AVec<u8, ConstAlign<CACHELINE_ALIGN>>) -> Self {
+impl From<AVec<u8, ConstAlign<128>>> for DataSample {
+    fn from(value: AVec<u8, ConstAlign<128>>) -> Self {
         Self {
             len: value.len(),
             inner: DataSampleInner::Vec(value),
@@ -444,7 +448,7 @@ impl std::fmt::Debug for DataSample {
 
 enum DataSampleInner {
     Shmem(ShmemHandle),
-    Vec(AVec<u8, ConstAlign<CACHELINE_ALIGN>>),
+    Vec(AVec<u8, ConstAlign<128>>),
 }
 
 struct ShmemHandle(Box<Shmem>);

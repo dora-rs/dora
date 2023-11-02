@@ -269,7 +269,7 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
-    use aligned_vec::avec;
+    use aligned_vec::{AVec, ConstAlign};
     use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use dora_core::message::ArrowTypeInfo;
     use dora_node_api::{
@@ -312,7 +312,11 @@ mod callback_impl {
                         .wrap_err("failed to request output sample")?
                         .wrap_err("failed to allocate output sample")
                 } else {
-                    Ok(avec![0; data_len].into())
+                    let mut avec: AVec<u8, ConstAlign<128>> = AVec::new(128);
+                    for _ in 0..data_len {
+                        avec.push(0);
+                    }
+                    Ok(avec.into())
                 }
             };
 
