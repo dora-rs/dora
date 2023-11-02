@@ -9,7 +9,7 @@ use crate::{
     config::{DataId, NodeId, NodeRunConfig, OperatorId},
     descriptor::{Descriptor, OperatorDefinition, ResolvedNode},
 };
-use aligned_vec::{AVec, ConstAlign, CACHELINE_ALIGN};
+use aligned_vec::{AVec, ConstAlign};
 use dora_message::{uhlc, Metadata};
 use uuid::Uuid;
 
@@ -88,7 +88,7 @@ impl DaemonRequest {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum DataMessage {
-    Vec(AVec<u8, ConstAlign<CACHELINE_ALIGN>>),
+    Vec(AVec<u8, ConstAlign<128>>),
     SharedMemory {
         shared_memory_id: String,
         len: usize,
@@ -234,7 +234,7 @@ pub enum InterDaemonEvent {
         node_id: NodeId,
         output_id: DataId,
         metadata: Metadata,
-        data: Option<AVec<u8, ConstAlign<CACHELINE_ALIGN>>>,
+        data: Option<AVec<u8, ConstAlign<128>>>,
     },
     InputsClosed {
         dataflow_id: DataflowId,

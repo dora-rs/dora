@@ -1,6 +1,6 @@
 use std::{ptr::NonNull, sync::Arc};
 
-use aligned_vec::{AVec, ConstAlign, CACHELINE_ALIGN};
+use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::{ArrowData, IntoArrow};
 use dora_core::{
     config::{DataId, OperatorId},
@@ -29,7 +29,7 @@ pub enum Event {
 
 pub enum RawData {
     Empty,
-    Vec(AVec<u8, ConstAlign<CACHELINE_ALIGN>>),
+    Vec(AVec<u8, ConstAlign<128>>),
     SharedMemory(SharedMemoryData),
 }
 
