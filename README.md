@@ -2,8 +2,6 @@
     <img src="./docs/src/logo.svg" width="400">
 </p>
 
-
-
 <h2 align="center">
   <a href="https://dora.carsmos.ai">Website</a>
   |
@@ -42,6 +40,7 @@ dora-rs can already show impressive performance, up to 17x speedup compared to R
 Those performance improvements make a world of difference for beginners, AI practitioners, and weekend hobbyists who have been limited by the lack of support for Python in this field!
 
 But, dora-rs is still experimental and we're still working on many features such as:
+
 - [dora-ros2-bridge](https://github.com/dora-rs/dora-ros2-bridge) to bridge dora and ros 2!
 - dora-rs for Deep Learning applications, to make it easy to integrate state of the art DL model and hopefully train them within the framework.
 
@@ -70,28 +69,30 @@ For more installation guideline, check out our installation guide here: https://
 
 ## Getting Started
 
-
 1. Install the example python dependencies:
+
 ```bash
-pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.2.6/examples/python-operator-dataflow/requirements.txt
+pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/requirements.txt
 ```
 
 2. Get some example operators:
+
 ```bash
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.6/examples/python-operator-dataflow/webcam.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.6/examples/python-operator-dataflow/plot.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.6/examples/python-operator-dataflow/utils.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.6/examples/python-operator-dataflow/object_detection.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.2.6/examples/python-operator-dataflow/dataflow.yml
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/webcam.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/plot.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/utils.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/object_detection.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/dataflow.yml
 ```
 
 3. Start the dataflow
+
 ```bash
 dora up
 dora start dataflow.yml --attach --hot-reload
 ```
 
-> Make sure to have a webcam 
+> Make sure to have a webcam
 
 To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
 
@@ -99,11 +100,12 @@ To go further, you can add a yolov5 operator, check out our getting started here
 
 ## Documentation
 
-The full documentation is available on our website: https://dora.carsmos.ai 
+The full documentation is available on our website: https://dora.carsmos.ai
 
 ## Discussions
 
 Our main communication channels are:
+
 - [Our Discord server](https://discord.gg/6eMGGutkfE)
 - [Our Github Project Discussion](https://github.com/orgs/dora-rs/discussions)
 

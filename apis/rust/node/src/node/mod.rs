@@ -5,7 +5,7 @@ use self::{
     control_channel::ControlChannel,
     drop_stream::DropStream,
 };
-use aligned_vec::{avec, AVec, ConstAlign};
+use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
@@ -257,7 +257,9 @@ impl DoraNode {
                 len: data_len,
             }
         } else {
-            avec![0; data_len].into()
+            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+
+            avec.into()
         };
 
         Ok(data)
