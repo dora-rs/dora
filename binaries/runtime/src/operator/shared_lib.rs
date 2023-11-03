@@ -134,10 +134,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             };
 
             let total_len = required_data_size(&arrow_array);
-            let mut sample: AVec<u8, ConstAlign<128>> = AVec::new(128);
-            for _ in 0..total_len {
-                sample.push(0);
-            }
+            let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, total_len);
 
             let type_info = match copy_array_into_sample(&mut sample, &arrow_array) {
                 Ok(t) => t,
