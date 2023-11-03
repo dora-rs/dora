@@ -257,10 +257,8 @@ impl DoraNode {
                 len: data_len,
             }
         } else {
-            let mut avec: AVec<u8, ConstAlign<128>> = AVec::new(128);
-            for _ in 0..data_len {
-                avec.push(0);
-            }
+            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+
             avec.into()
         };
 
