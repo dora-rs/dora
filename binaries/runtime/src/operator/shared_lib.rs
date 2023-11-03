@@ -1,5 +1,5 @@
 use super::{OperatorEvent, StopReason};
-use aligned_vec::avec;
+use aligned_vec::{AVec, ConstAlign};
 use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
@@ -134,7 +134,8 @@ impl<'lib> SharedLibraryOperator<'lib> {
             };
 
             let total_len = required_data_size(&arrow_array);
-            let mut sample = avec![0; total_len];
+            let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, total_len);
+
             let type_info = match copy_array_into_sample(&mut sample, &arrow_array) {
                 Ok(t) => t,
                 Err(err) => {
