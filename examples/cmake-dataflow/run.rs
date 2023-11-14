@@ -57,17 +57,6 @@ async fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_filter(LevelFilter::DEBUG);
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
-}
-
 async fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
@@ -77,5 +66,16 @@ async fn build_package(package: &str) -> eyre::Result<()> {
         bail!("failed to build {package}");
     }
     Ok(())
+}
+
+fn set_up_tracing() -> eyre::Result<()> {
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .pretty()
+        .with_filter(LevelFilter::DEBUG);
+    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
+    tracing::subscriber::set_global_default(subscriber)
+        .context("failed to set tracing global subscriber")
 }
 
