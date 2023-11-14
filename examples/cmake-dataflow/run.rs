@@ -75,7 +75,7 @@ async fn build_package(package: &str) -> eyre::Result<()> {
     cmd.arg("--package").arg(package);
     if !cmd.status().await?.success() {
         bail!("failed to build {package}");
-    };
+    }
     Ok(())
 }
 
