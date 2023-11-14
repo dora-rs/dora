@@ -30,7 +30,6 @@ async fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     tokio::fs::create_dir_all("build").await?;
-    
     let mut cmd = tokio::process::Command::new("cmake");
     cmd.arg(format!("-DDORA_ROOT_DIR={}", root.display()));
     cmd.arg("-B").arg("build");
@@ -76,8 +75,7 @@ async fn build_package(package: &str) -> eyre::Result<()> {
     cmd.arg("--package").arg(package);
     if !cmd.status().await?.success() {
         bail!("failed to build {package}");
-    }
-    
+    };
     Ok(())
 }
 
