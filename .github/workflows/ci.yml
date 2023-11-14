@@ -133,7 +133,7 @@ jobs:
         run: cargo run --example cxx-dataflow
       - name: "Cmake example"
         timeout-minutes: 30
-        run: cargo run --example dataflow
+        run: cargo run --example cmake-dataflow
 
       # python examples
       - uses: actions/setup-python@v2
