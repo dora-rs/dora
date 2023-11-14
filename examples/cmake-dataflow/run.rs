@@ -78,4 +78,3 @@ fn set_up_tracing() -> eyre::Result<()> {
     tracing::subscriber::set_global_default(subscriber)
         .context("failed to set tracing global subscriber")
 }
-
