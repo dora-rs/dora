@@ -26,7 +26,7 @@ class Plotter:
 
     def on_input(
         self,
-        dora_input: dict,
+        dora_input,
     ) -> DoraStatus:
         """
         Put image and bounding box on cv2 window.

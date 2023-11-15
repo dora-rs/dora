@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -26,8 +25,8 @@ class Operator:
 
     def on_event(
         self,
-        dora_event: dict,
-        send_output: Callable[[str, bytes | pa.Array, Optional[dict]], None],
+        dora_event,
+        send_output,
     ) -> DoraStatus:
         if dora_event["type"] == "INPUT":
             return self.on_input(dora_event, send_output)
@@ -35,12 +34,12 @@ class Operator:
 
     def on_input(
         self,
-        dora_input: dict,
-        send_output: Callable[[str, bytes | pa.Array, Optional[dict]], None],
+        dora_input,
+        send_output,
     ) -> DoraStatus:
         """Handle image
         Args:
-            dora_input (dict): Dict containing the "id", value, and "metadata"
+            dora_input (dict) containing the "id", value, and "metadata"
             send_output Callable[[str, bytes | pa.Array, Optional[dict]], None]:
                 Function for sending output to the dataflow:
                 - First argument is the `output_id`

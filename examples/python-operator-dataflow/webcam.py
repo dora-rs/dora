@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import time
-from typing import Callable, Optional
-
 import os
+import time
+
 import cv2
 import numpy as np
 import pyarrow as pa
@@ -32,7 +31,7 @@ class Operator:
     def on_event(
         self,
         dora_event: str,
-        send_output: Callable[[str, bytes | pa.Array, Optional[dict]], None],
+        send_output,
     ) -> DoraStatus:
         match dora_event["type"]:
             case "INPUT":

@@ -1,5 +1,3 @@
-from typing import Callable, Optional
-
 from dora import DoraStatus
 
 
@@ -14,22 +12,13 @@ class Operator:
 
     def on_event(
         self,
-        dora_event: dict,
-        send_output: Callable[[str, bytes, Optional[dict]], None],
+        dora_event,
+        send_output,
     ) -> DoraStatus:
-        if dora_event["type"] == "INPUT":
-            return self.on_input(dora_event, send_output)
-        return DoraStatus.CONTINUE
-
-    def on_input(
-        self,
-        dora_input: dict,
-        send_output: Callable[[str, bytes, Optional[dict]], None],
-    ):
         """
 
         Args:
-            dora_input (dict): Input dict containing an `id`, `data` and `metadata`.
+            dora_event: Event containing an `id`, `data` and `metadata`.
             send_output Callable[[str, bytes | pa.Array, Optional[dict]], None]:
                 Function for sending output to the dataflow:
                 - First argument is the `output_id`
@@ -44,7 +33,10 @@ class Operator:
                 STOP means that the operator stop listening for inputs.
 
         """
-        print(f"Received input {dora_input['id']}, with data: {dora_input['value']}")
+        if dora_event["type"] == "INPUT":
+            print(
+                f"Received input {dora_input['id']}, with data: {dora_input['value']}"
+            )
 
         return DoraStatus.CONTINUE
 
