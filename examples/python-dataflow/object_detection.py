@@ -27,7 +27,7 @@ for event in node:
             node.send_output("bbox", arrays, event["metadata"])
         else:
             print("[object detection] ignoring unexpected input:", event_id)
-    elif event_type == "INPUT":
+    elif event_type == "STOP":
         print("[object detection] received stop")
     elif event_type == "ERROR":
         print("[object detection] error: ", event["error"])

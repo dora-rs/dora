@@ -92,7 +92,7 @@ for event in node:
             case DoraStatus.STOP:
                 print("plotter returned stop status")
                 break
-    elif event_type == "INPUT":
+    elif event_type == "STOP":
         print("received stop")
     else:
         print("received unexpected event:", event_type)
