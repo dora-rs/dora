@@ -33,35 +33,35 @@ class Operator:
         dora_event: str,
         send_output,
     ) -> DoraStatus:
-        match dora_event["type"]:
-            case "INPUT":
-                ret, frame = self.video_capture.read()
-                if ret:
-                    frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
+        event_type = dora_event["type"]
+        if event_type == "INPUT":
+            ret, frame = self.video_capture.read()
+            if ret:
+                frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
 
-                ## Push an error image in case the camera is not available.
-                else:
-                    frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
-                    cv2.putText(
-                        frame,
-                        "No Webcam was found at index %d" % (CAMERA_INDEX),
-                        (int(30), int(30)),
-                        font,
-                        0.75,
-                        (255, 255, 255),
-                        2,
-                        1,
-                    )
-
-                send_output(
-                    "image",
-                    pa.array(frame.ravel()),
-                    dora_event["metadata"],
+            ## Push an error image in case the camera is not available.
+            else:
+                frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
+                cv2.putText(
+                    frame,
+                    "No Webcam was found at index %d" % (CAMERA_INDEX),
+                    (int(30), int(30)),
+                    font,
+                    0.75,
+                    (255, 255, 255),
+                    2,
+                    1,
                 )
-            case "STOP":
-                print("received stop")
-            case other:
-                print("received unexpected event:", other)
+
+            send_output(
+                "image",
+                pa.array(frame.ravel()),
+                dora_event["metadata"],
+            )
+        elif event_type == "INPUT":
+            print("received stop")
+        else:
+            print("received unexpected event:", event_type)
 
         if time.time() - self.start_time < 20:
             return DoraStatus.CONTINUE

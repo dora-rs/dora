@@ -43,20 +43,20 @@ for i in range(500):
     event = dora_node.next()
     if event is None:
         break
-    match event["kind"]:
-        # Dora event
-        case "dora":
-            match event["type"]:
-                case "INPUT":
-                    match event["id"]:
-                        case "direction":
-                            twist_writer.publish(event["value"])
+    event_kind = event["kind"]
+    # Dora event
+    if event_kind == "dora":
+        event_type = event["type"]
+        if event_type == "INPUT":
+            event_id = event["id"]
+            if event_id == "direction":
+                twist_writer.publish(event["value"])
 
         # ROS2 Event
-        case "external":
-            pose = event.inner()[0].as_py()
-            if i == CHECK_TICK:
-                assert (
-                    pose["x"] != 5.544444561004639
-                ), "turtle should not be at initial x axis"
-            dora_node.send_output("turtle_pose", event.inner())
+    elif event_kind == "external":
+        pose = event.inner()[0].as_py()
+        if i == CHECK_TICK:
+            assert (
+                pose["x"] != 5.544444561004639
+            ), "turtle should not be at initial x axis"
+        dora_node.send_output("turtle_pose", event.inner())
