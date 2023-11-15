@@ -58,7 +58,7 @@ class Operator:
                 pa.array(frame.ravel()),
                 dora_event["metadata"],
             )
-        elif event_type == "INPUT":
+        elif event_type == "STOP":
             print("received stop")
         else:
             print("received unexpected event:", event_type)

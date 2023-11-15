@@ -42,7 +42,7 @@ while time.time() - start < 10:
             cv2.imencode(".jpg", frame)[1].tobytes(),
             event["metadata"],
         )
-    elif event_type == "INPUT":
+    elif event_type == "STOP":
         print("received stop")
         break
     else:
