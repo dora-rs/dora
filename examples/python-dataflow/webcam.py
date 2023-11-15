@@ -22,31 +22,31 @@ start = time.time()
 while time.time() - start < 10:
     # Wait next dora_input
     event = node.next()
-    match event["type"]:
-        case "INPUT":
-            ret, frame = video_capture.read()
-            if not ret:
-                frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
-                cv2.putText(
-                    frame,
-                    "No Webcam was found at index %d" % (CAMERA_INDEX),
-                    (int(30), int(30)),
-                    font,
-                    0.75,
-                    (255, 255, 255),
-                    2,
-                    1,
-                )
-            node.send_output(
-                "image",
-                cv2.imencode(".jpg", frame)[1].tobytes(),
-                event["metadata"],
+    event_type = event["type"]
+    if event_type == "INPUT":
+        ret, frame = video_capture.read()
+        if not ret:
+            frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
+            cv2.putText(
+                frame,
+                "No Webcam was found at index %d" % (CAMERA_INDEX),
+                (int(30), int(30)),
+                font,
+                0.75,
+                (255, 255, 255),
+                2,
+                1,
             )
-        case "STOP":
-            print("received stop")
-            break
-        case other:
-            print("received unexpected event:", other)
-            break
+        node.send_output(
+            "image",
+            cv2.imencode(".jpg", frame)[1].tobytes(),
+            event["metadata"],
+        )
+    elif event_type == "INPUT":
+        print("received stop")
+        break
+    else:
+        print("received unexpected event:", event_type)
+        break
 
 video_capture.release()
