@@ -35,7 +35,7 @@ class Operator:
         """
         if dora_event["type"] == "INPUT":
             print(
-                f"Received input {dora_input['id']}, with data: {dora_input['value']}"
+                f"Received input {dora_event['id']}, with data: {dora_event['value']}"
             )
 
         return DoraStatus.CONTINUE
