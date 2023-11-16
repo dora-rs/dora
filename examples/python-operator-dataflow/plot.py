@@ -2,14 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import os
-from typing import Callable, Optional
 
 import cv2
 import numpy as np
 import pyarrow as pa
-from utils import LABELS
 
 from dora import DoraStatus
+from utils import LABELS
 
 pa.array([])
 
@@ -33,8 +32,8 @@ class Operator:
 
     def on_event(
         self,
-        dora_event: dict,
-        send_output: Callable[[str, bytes | pa.Array, Optional[dict]], None],
+        dora_event,
+        send_output,
     ) -> DoraStatus:
         if dora_event["type"] == "INPUT":
             return self.on_input(dora_event, send_output)
@@ -42,8 +41,8 @@ class Operator:
 
     def on_input(
         self,
-        dora_input: dict,
-        send_output: Callable[[str, bytes | pa.Array, Optional[dict]], None],
+        dora_input,
+        send_output,
     ) -> DoraStatus:
         """
         Put image and bounding box on cv2 window.
