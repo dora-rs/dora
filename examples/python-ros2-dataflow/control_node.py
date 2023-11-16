@@ -12,22 +12,22 @@ for i in range(500):
     if event is None:
         break
     if event["type"] == "INPUT":
-        match event["id"]:
-            case "turtle_pose":
-                print(
-                    f"""Pose: {event["value"].tolist()}""".replace("\r", "").replace(
-                        "\n", " "
-                    )
+        event_id = event["id"]
+        if event_id == "turtle_pose":
+            print(
+                f"""Pose: {event["value"].tolist()}""".replace("\r", "").replace(
+                    "\n", " "
                 )
-            case "tick":
-                direction = {
-                    "linear": {
-                        "x": 1.0 + random.random(),
-                    },
-                    "angular": {"z": (random.random() - 0.5) * 5},
-                }
+            )
+        elif event_id == "tick":
+            direction = {
+                "linear": {
+                    "x": 1.0 + random.random(),
+                },
+                "angular": {"z": (random.random() - 0.5) * 5},
+            }
 
-                node.send_output(
-                    "direction",
-                    pa.array([direction]),
-                )
+            node.send_output(
+                "direction",
+                pa.array([direction]),
+            )

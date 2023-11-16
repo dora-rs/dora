@@ -13,23 +13,23 @@ model = torch.hub.load("ultralytics/yolov5", "yolov5n")
 node = Node()
 
 for event in node:
-    match event["type"]:
-        case "INPUT":
-            match event["id"]:
-                case "image":
-                    print("[object detection] received image input")
-                    frame = event["value"].to_numpy()
-                    frame = cv2.imdecode(frame, -1)
-                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
-                    results = model(frame)  # includes NMS
-                    arrays = np.array(results.xyxy[0].cpu()).tobytes()
+    event_type = event["type"]
+    if event_type == "INPUT":
+        event_id = event["id"]
+        if event_id == "image":
+            print("[object detection] received image input")
+            frame = event["value"].to_numpy()
+            frame = cv2.imdecode(frame, -1)
+            frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+            results = model(frame)  # includes NMS
+            arrays = np.array(results.xyxy[0].cpu()).tobytes()
 
-                    node.send_output("bbox", arrays, event["metadata"])
-                case other:
-                    print("[object detection] ignoring unexpected input:", other)
-        case "STOP":
-            print("[object detection] received stop")
-        case "ERROR":
-            print("[object detection] error: ", event["error"])
-        case other:
-            print("[object detection] received unexpected event:", other)
+            node.send_output("bbox", arrays, event["metadata"])
+        else:
+            print("[object detection] ignoring unexpected input:", event_id)
+    elif event_type == "STOP":
+        print("[object detection] received stop")
+    elif event_type == "ERROR":
+        print("[object detection] error: ", event["error"])
+    else:
+        print("[object detection] received unexpected event:", event_type)

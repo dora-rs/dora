@@ -33,12 +33,12 @@ jobs:
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
-        if: runner.os == 'Linux' 
+        if: runner.os == 'Linux'
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
           tool-cache: false
-        
+
           # all of these default to true, but feel free to set to
           # "false" if necessary for your workflow
           android: true
@@ -48,7 +48,7 @@ jobs:
           docker-images: true
           swap-storage: false
       - name: Free disk Space (Windows)
-        if: runner.os == 'Windows' 
+        if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
           Remove-Item "C:\Android" -Force -Recurse
@@ -89,12 +89,12 @@ jobs:
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
-        if: runner.os == 'Linux' 
+        if: runner.os == 'Linux'
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
           tool-cache: false
-        
+
           # all of these default to true, but feel free to set to
           # "false" if necessary for your workflow
           android: true
@@ -104,7 +104,7 @@ jobs:
           docker-images: true
           swap-storage: false
       - name: Free disk Space (Windows)
-        if: runner.os == 'Windows' 
+        if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
           Remove-Item "C:\Android" -Force -Recurse
@@ -136,7 +136,7 @@ jobs:
       - uses: actions/setup-python@v2
         if: runner.os == 'Linux' || runner.os == 'macOS'
         with:
-          python-version: "3.10"
+          python-version: "3.8"
       - name: "Python Dataflow example"
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-dataflow
@@ -173,7 +173,7 @@ jobs:
           cargo run --example rust-ros2-dataflow --features="ros2-examples"
       - uses: actions/setup-python@v2
         with:
-          python-version: "3.10"
+          python-version: "3.8"
       - name: "python-ros2-dataflow"
         timeout-minutes: 30
         env:
