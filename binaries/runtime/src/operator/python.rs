@@ -120,11 +120,13 @@ pub fn run(
                 }
             };
 
+        let mut reload = false;
         let reason = loop {
             #[allow(unused_mut)]
             let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
 
             if let Event::Reload { .. } = event {
+                reload = true;
                 // Reloading method
                 match Python::with_gil(|py| -> Result<Py<PyAny>> {
                     // Saving current state
@@ -213,13 +215,27 @@ pub fn run(
                 }
 
                 let py_event = PyEvent::from(event);
+
                 let status_enum = operator
                     .call_method1(py, "on_event", (py_event, send_output.clone()))
-                    .map_err(traceback)?;
-                let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
-                    .wrap_err("on_event must have enum return value")?;
-                Python::with_gil(|py| status_val.extract(py))
-                    .wrap_err("on_event has invalid return value")
+                    .map_err(traceback);
+                match status_enum {
+                    Ok(status_enum) => {
+                        let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
+                            .wrap_err("on_event must have enum return value")?;
+                        Python::with_gil(|py| status_val.extract(py))
+                            .wrap_err("on_event has invalid return value")
+                    }
+                    Err(err) => {
+                        if reload {
+                            // Allow error in hot reloading environment to help development.
+                            warn!("{err}");
+                            Ok(DoraStatus::Continue as i32)
+                        } else {
+                            Err(err)
+                        }
+                    }
+                }
             })?;
             match status {
                 s if s == DoraStatus::Continue as i32 => {} // ok
