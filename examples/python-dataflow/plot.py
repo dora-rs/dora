@@ -86,12 +86,11 @@ for event in node:
     event_type = event["type"]
     if event_type == "INPUT":
         status = plotter.on_input(event)
-        match status:
-            case DoraStatus.CONTINUE:
-                pass
-            case DoraStatus.STOP:
-                print("plotter returned stop status")
-                break
+        if status == DoraStatus.CONTINUE:
+            pass
+        elif status == DoraStatus.STOP:
+            print("plotter returned stop status")
+            break
     elif event_type == "STOP":
         print("received stop")
     else:
