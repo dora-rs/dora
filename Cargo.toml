@@ -1,7 +1,9 @@
 [workspace]
 members = [
-    "apis/c/*",
-    "apis/c++/*",
+    "apis/c/node",
+    "apis/c/operator",
+    "apis/c++/node",
+    "apis/c++/operator",
     "apis/python/node",
     "apis/python/operator",
     "apis/rust/*",
@@ -133,3 +135,7 @@ path = "examples/benchmark/run.rs"
 [[example]]
 name = "multiple-daemons"
 path = "examples/multiple-daemons/run.rs"
+
+[[example]]
+name = "cmake-dataflow"
+path = "examples/cmake-dataflow/run.rs"
