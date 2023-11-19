@@ -10,33 +10,29 @@
 //! [`sysinfo`]: https://github.com/GuillaumeGomez/sysinfo
 //! [`opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
 
-use futures::stream::Stream;
-use futures::StreamExt;
-use opentelemetry::sdk::metrics::{selectors, PushController};
+use opentelemetry::metrics::{self};
+use opentelemetry_sdk::{metrics::MeterProvider, runtime};
+
 use opentelemetry_otlp::{ExportConfig, WithExportConfig};
-use std::time::Duration;
-
-// Skip first immediate tick from tokio, not needed for async_std.
-fn delayed_interval(duration: Duration) -> impl Stream<Item = tokio::time::Instant> {
-    opentelemetry::util::tokio_interval_stream(duration).skip(1)
-}
-
 /// Init opentelemetry meter
 ///
 /// Use the default Opentelemetry exporter with default config
 /// TODO: Make Opentelemetry configurable
 ///
-pub fn init_meter() -> PushController {
-    let export_config = ExportConfig::default();
+pub fn init_metrics() -> metrics::Result<MeterProvider> {
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4317".to_string());
+    let export_config = ExportConfig {
+        endpoint,
+        ..ExportConfig::default()
+    };
 
     opentelemetry_otlp::new_pipeline()
-        .metrics(tokio::spawn, delayed_interval)
+        .metrics(runtime::Tokio)
         .with_exporter(
             opentelemetry_otlp::new_exporter()
                 .tonic()
                 .with_export_config(export_config),
         )
-        .with_aggregator_selector(selectors::simple::Selector::Exact)
         .build()
-        .unwrap()
 }
