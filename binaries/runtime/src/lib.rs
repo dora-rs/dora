@@ -132,7 +132,7 @@ async fn run(
         let meter = global::meter(Cow::Borrowed(Box::leak(
             config.node_id.to_string().into_boxed_str(),
         )));
-        init_process_observer(meter);
+        init_process_observer(meter).context("could not initiale system metrics observer")?;
         _started
     };
 
