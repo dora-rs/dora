@@ -14,6 +14,7 @@ use operator::{run_operator, OperatorEvent, StopReason};
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
 };
@@ -123,13 +124,15 @@ async fn run(
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
     let _started = {
-        use dora_metrics::init_meter;
+        use dora_metrics::init_metrics;
         use opentelemetry::global;
         use opentelemetry_system_metrics::init_process_observer;
 
-        let _started = init_meter();
-        let meter = global::meter(Box::leak(node.id().to_string().into_boxed_str()));
-        init_process_observer(meter);
+        let _started = init_metrics().context("Could not create opentelemetry meter")?;
+        let meter = global::meter(Cow::Borrowed(Box::leak(
+            config.node_id.to_string().into_boxed_str(),
+        )));
+        init_process_observer(meter).context("could not initiale system metrics observer")?;
         _started
     };
 

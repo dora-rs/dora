@@ -15,11 +15,8 @@ dora-operator-api-types = { workspace = true }
 dora-core = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 dora-metrics = { workspace = true, optional = true }
-opentelemetry = { version = "0.18.0", features = [
-    "rt-tokio",
-    "metrics",
-], optional = true }
-opentelemetry-system-metrics = { version = "0.1.1", optional = true }
+opentelemetry = { version = "0.21.0", features = ["metrics"], optional = true }
+opentelemetry-system-metrics = { version = "0.1.6", optional = true }
 eyre = "0.6.8"
 futures = "0.3.21"
 futures-concurrency = "7.1.0"
@@ -41,7 +38,7 @@ arrow = { workspace = true, features = ["ffi"] }
 aligned-vec = "0.5.0"
 
 [features]
-default = ["tracing"]
+default = ["tracing", "metrics"]
 tracing = ["dora-tracing"]
 telemetry = ["tracing", "opentelemetry", "tracing-opentelemetry"]
 metrics = ["opentelemetry", "opentelemetry-system-metrics", "dora-metrics"]
