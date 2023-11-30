@@ -1,7 +1,11 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub use event::{Event, MappedInputData, RawData};
-use futures::{Stream, StreamExt};
+use futures::{
+    future::{select, Either},
+    Stream, StreamExt,
+};
+use futures_timer::Delay;
 
 use self::{
     event::SharedMemoryData,
@@ -104,11 +108,28 @@ impl EventStream {
 
     /// wait for the next event on the events stream.
     pub fn recv(&mut self) -> Option<Event> {
-        futures::executor::block_on(self.recv_async())
+        futures::executor::block_on(self.recv_async(None))
     }
 
-    pub async fn recv_async(&mut self) -> Option<Event> {
-        self.receiver.next().await.map(Self::convert_event_item)
+    /// wait for the next event on the events stream until timeout
+    pub fn recv_timeout(&mut self, secs: f32) -> Option<Event> {
+        futures::executor::block_on(self.recv_async(Some(secs)))
+    }
+
+    pub async fn recv_async(&mut self, secs: Option<f32>) -> Option<Event> {
+        let receive_event = self.receiver.next();
+        match secs {
+            None => receive_event.await,
+            Some(secs) => {
+                match select(Delay::new(Duration::from_secs_f32(secs)), receive_event).await {
+                    Either::Left((_elapsed, _)) => {
+                        Some(EventItem::TimedoutError(eyre!("Receiver timed out")))
+                    }
+                    Either::Right((event, _)) => event,
+                }
+            }
+        }
+        .map(Self::convert_event_item)
     }
 
     fn convert_event_item(item: EventItem) -> Event {
@@ -160,6 +181,9 @@ impl EventStream {
 
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
+            }
+            EventItem::TimedoutError(err) => {
+                Event::Error(format!("Timeout event stream error: {err:?}"))
             }
         }
     }
