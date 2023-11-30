@@ -30,6 +30,7 @@ pub enum EventItem {
         ack_channel: flume::Sender<()>,
     },
     FatalError(eyre::Report),
+    TimedoutError(eyre::Report),
 }
 
 pub struct EventStreamThreadHandle {

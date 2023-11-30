@@ -57,12 +57,13 @@ impl Node {
     ///                 case "image":
     /// ```
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
-        self.__next__(py)
+    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<PyEvent>> {
+        let event = py.allow_threads(|| self.events.recv(timeout));
+        Ok(event)
     }
 
     pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
-        let event = py.allow_threads(|| self.events.recv());
+        let event = py.allow_threads(|| self.events.recv(None));
         Ok(event)
     }
 
@@ -156,9 +157,12 @@ enum Events {
 }
 
 impl Events {
-    fn recv(&mut self) -> Option<PyEvent> {
+    fn recv(&mut self, timeout: Option<f32>) -> Option<PyEvent> {
         match self {
-            Events::Dora(events) => events.recv().map(PyEvent::from),
+            Events::Dora(events) => match timeout {
+                Some(timeout) => events.recv_timeout(timeout).map(PyEvent::from),
+                None => events.recv().map(PyEvent::from),
+            },
             Events::Merged(events) => futures::executor::block_on(events.next()).map(PyEvent::from),
         }
     }
