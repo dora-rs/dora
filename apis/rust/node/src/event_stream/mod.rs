@@ -112,22 +112,20 @@ impl EventStream {
     }
 
     /// wait for the next event on the events stream until timeout
-    pub fn recv_timeout(&mut self, secs: f32) -> Option<Event> {
-        futures::executor::block_on(self.recv_async(Some(secs)))
+    pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
+        futures::executor::block_on(self.recv_async(Some(dur)))
     }
 
-    pub async fn recv_async(&mut self, secs: Option<f32>) -> Option<Event> {
+    pub async fn recv_async(&mut self, dur: Option<Duration>) -> Option<Event> {
         let receive_event = self.receiver.next();
-        match secs {
+        match dur {
             None => receive_event.await,
-            Some(secs) => {
-                match select(Delay::new(Duration::from_secs_f32(secs)), receive_event).await {
-                    Either::Left((_elapsed, _)) => {
-                        Some(EventItem::TimedoutError(eyre!("Receiver timed out")))
-                    }
-                    Either::Right((event, _)) => event,
+            Some(dur) => match select(Delay::new(dur), receive_event).await {
+                Either::Left((_elapsed, _)) => {
+                    Some(EventItem::TimeoutError(eyre!("Receiver timed out")))
                 }
-            }
+                Either::Right((event, _)) => event,
+            },
         }
         .map(Self::convert_event_item)
     }
@@ -182,7 +180,7 @@ impl EventStream {
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
             }
-            EventItem::TimedoutError(err) => {
+            EventItem::TimeoutError(err) => {
                 Event::Error(format!("Timeout event stream error: {err:?}"))
             }
         }
