@@ -136,14 +136,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let total_len = required_data_size(&arrow_array);
             let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, total_len);
 
-            let type_info = match copy_array_into_sample(&mut sample, &arrow_array) {
-                Ok(t) => t,
-                Err(err) => {
-                    return DoraResult {
-                        error: Some(err.to_string().into()),
-                    }
-                }
-            };
+            let type_info = copy_array_into_sample(&mut sample, &arrow_array);
 
             let event = OperatorEvent::Output {
                 output_id: DataId::from(String::from(output_id)),
