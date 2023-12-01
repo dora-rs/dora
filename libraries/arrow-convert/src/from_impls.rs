@@ -1,5 +1,5 @@
 use arrow::{
-    array::{Array, AsArray, PrimitiveArray, StringArray},
+    array::{make_array, Array, AsArray, PrimitiveArray, StringArray},
     datatypes::ArrowPrimitiveType,
 };
 use eyre::ContextCompat;
@@ -15,6 +15,18 @@ impl From<ArrowData> for arrow::array::ArrayRef {
 impl From<arrow::array::ArrayRef> for ArrowData {
     fn from(value: arrow::array::ArrayRef) -> Self {
         Self(value)
+    }
+}
+
+impl From<ArrowData> for arrow::array::ArrayData {
+    fn from(value: ArrowData) -> Self {
+        value.0.to_data()
+    }
+}
+
+impl From<arrow::array::ArrayData> for ArrowData {
+    fn from(value: arrow::array::ArrayData) -> Self {
+        Self(make_array(value))
     }
 }
 
@@ -133,6 +145,18 @@ impl<'a> TryFrom<&'a ArrowData> for &'a [u8] {
             eyre::bail!("array has nulls");
         }
         Ok(array.values())
+    }
+}
+
+impl<'a> TryFrom<&'a ArrowData> for Vec<u8> {
+    type Error = eyre::Report;
+    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
+        let array: &PrimitiveArray<arrow::datatypes::UInt8Type> =
+            value.as_primitive_opt().wrap_err("not a primitive array")?;
+        if array.null_count() != 0 {
+            eyre::bail!("array has nulls");
+        }
+        Ok(array.values().to_vec())
     }
 }
 
