@@ -14,6 +14,7 @@ nodes:
         image: webcam/image
       outputs:
         - bbox
+        - logs
 
   - id: plot
     operator:
@@ -21,3 +22,4 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
+        object_detection_logs: object_detection/logs
