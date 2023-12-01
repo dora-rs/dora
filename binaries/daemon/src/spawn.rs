@@ -1,10 +1,12 @@
 use crate::{
-    log, node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
-    runtime_node_outputs, DoraEvent, Event, NodeExitStatus,
+    log, node_communication::spawn_listener_loop, node_inputs, node_outputs, runtime_node_inputs,
+    runtime_node_outputs, DoraEvent, Event, NodeExitStatus, OutputId,
 };
+use aligned_vec::{AVec, ConstAlign};
+use dora_arrow_convert::IntoArrow;
 use dora_core::{
-    config::NodeRunConfig,
-    daemon_messages::{DataflowId, NodeConfig, RuntimeConfig, Timestamped},
+    config::{DataId, NodeRunConfig},
+    daemon_messages::{DataMessage, DataflowId, NodeConfig, RuntimeConfig, Timestamped},
     descriptor::{
         resolve_path, source_is_url, Descriptor, OperatorSource, ResolvedNode, SHELL_SOURCE,
     },
@@ -12,6 +14,11 @@ use dora_core::{
     message::uhlc::HLC,
 };
 use dora_download::download_file;
+use dora_node_api::{
+    arrow::array::ArrayData,
+    arrow_utils::{copy_array_into_sample, required_data_size},
+    Metadata,
+};
 use eyre::WrapErr;
 use std::{
     env::{consts::EXE_EXTENSION, temp_dir},
@@ -51,6 +58,8 @@ pub async fn spawn_node(
         clock.clone(),
     )
     .await?;
+    let outputs = node_outputs(&node);
+    let log_output = outputs.contains(&DataId::from("op/logs".to_string()));
 
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
@@ -265,6 +274,8 @@ pub async fn spawn_node(
     // Stderr listener stream
     let stderr_tx = tx.clone();
     let node_id = node.id.clone();
+    let uhlc = clock.clone();
+    let daemon_tx_log = daemon_tx.clone();
     tokio::spawn(async move {
         let mut buffer = String::new();
         let mut finished = false;
@@ -317,9 +328,38 @@ pub async fn spawn_node(
         let _ = daemon_tx.send(event).await;
     });
 
+    let node_id = node.id.clone();
     // Log to file stream.
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
+            // If log is an output, we're sending the logs to the dataflow
+            if log_output {
+                // Convert logs to DataMessage
+                let array = message.into_arrow();
+
+                let array: ArrayData = array.into();
+                let total_len = required_data_size(&array);
+                let mut sample: AVec<u8, ConstAlign<128>> =
+                    AVec::__from_elem(128, 0, total_len as usize);
+
+                let type_info = copy_array_into_sample(&mut sample, &array);
+
+                let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
+                let output_id = OutputId(node_id.clone(), DataId::from("op/logs".to_string()));
+                let event = DoraEvent::Logs {
+                    dataflow_id,
+                    output_id,
+                    metadata,
+                    message: DataMessage::Vec(sample),
+                }
+                .into();
+                let event = Timestamped {
+                    inner: event,
+                    timestamp: uhlc.new_timestamp(),
+                };
+                let _ = daemon_tx_log.send(event).await;
+            }
+
             let _ = file
                 .write_all(message.as_bytes())
                 .await
