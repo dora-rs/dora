@@ -14,6 +14,7 @@ nodes:
         image: webcam/image
       outputs:
         - bbox
+        - logs
 
   - id: plot
     operator:
@@ -21,10 +22,4 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
-  - id: dora-record
-    custom:
-      build: cargo build -p dora-record
-      source: ../../target/debug/dora-record
-      inputs:
-        image: webcam/image
-        bbox: object_detection/bbox
+        object_detection_logs: object_detection/logs
