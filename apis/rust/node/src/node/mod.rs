@@ -153,7 +153,7 @@ impl DoraNode {
         let total_len = required_data_size(&arrow_array);
 
         let mut sample = self.allocate_data_sample(total_len)?;
-        let type_info = copy_array_into_sample(&mut sample, &arrow_array)?;
+        let type_info = copy_array_into_sample(&mut sample, &arrow_array);
 
         self.send_output_sample(output_id, type_info, parameters, Some(sample))
             .wrap_err("failed to send output")?;
