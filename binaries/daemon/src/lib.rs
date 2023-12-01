@@ -1,10 +1,11 @@
 use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
+use dora_arrow_convert::{ArrowData, IntoArrow};
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{DataMessage, InterDaemonEvent, Timestamped};
 use dora_core::message::uhlc::{self, HLC};
-use dora_core::message::{ArrowTypeInfo, MetadataParameters};
+use dora_core::message::{ArrowTypeInfo, Metadata, MetadataParameters};
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
@@ -14,6 +15,7 @@ use dora_core::{
     },
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
+
 use eyre::{bail, eyre, Context, ContextCompat};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
@@ -40,7 +42,7 @@ use tokio::sync::oneshot::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::error;
-use uuid::Uuid;
+use uuid::{Timestamp, Uuid};
 
 mod coordinator;
 mod inter_daemon;
@@ -965,6 +967,49 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(id);
                 }
             }
+            DoraEvent::Logs {
+                dataflow_id,
+                output_id,
+                message,
+                metadata,
+            } => {
+                let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+                    tracing::warn!("Logs event for unknown dataflow `{dataflow_id}`");
+                    return Ok(RunStatus::Continue);
+                };
+
+                let Some(subscribers) = dataflow.mappings.get(&output_id) else {
+                    tracing::warn!("No subscribers found for {:?} in {:?}", output_id, dataflow.mappings);
+                    return Ok(RunStatus::Continue);
+                };
+
+                let mut closed = Vec::new();
+                for (receiver_id, input_id) in subscribers {
+                    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+                        tracing::warn!("No subscriber channel found for {:?}", output_id);
+                        continue;
+                    };
+
+                    let send_result = send_with_timestamp(
+                        channel,
+                        daemon_messages::NodeEvent::Input {
+                            id: input_id.clone(),
+                            metadata: metadata.clone(),
+                            data: Some(message.clone()),
+                        },
+                        &self.clock,
+                    );
+                    match send_result {
+                        Ok(()) => {}
+                        Err(_) => {
+                            closed.push(receiver_id);
+                        }
+                    }
+                }
+                for id in closed {
+                    dataflow.subscribe_channels.remove(id);
+                }
+            }
             DoraEvent::SpawnedNodeResult {
                 dataflow_id,
                 node_id,
@@ -1148,6 +1193,13 @@ fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
     match &node.kind {
         CoreNodeKind::Custom(n) => n.run_config.inputs.clone(),
         CoreNodeKind::Runtime(n) => runtime_node_inputs(n),
+    }
+}
+
+fn node_outputs(node: &ResolvedNode) -> BTreeSet<DataId> {
+    match &node.kind {
+        CoreNodeKind::Custom(n) => n.run_config.outputs.clone(),
+        CoreNodeKind::Runtime(n) => runtime_node_outputs(n),
     }
 }
 
@@ -1395,7 +1447,7 @@ impl RunningDataflow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct OutputId(NodeId, DataId);
+pub struct OutputId(NodeId, DataId);
 type InputId = (NodeId, DataId);
 
 struct DropTokenInformation {
@@ -1462,6 +1514,12 @@ pub enum DoraEvent {
         dataflow_id: DataflowId,
         interval: Duration,
         metadata: dora_core::message::Metadata,
+    },
+    Logs {
+        dataflow_id: DataflowId,
+        output_id: OutputId,
+        message: DataMessage,
+        metadata: Metadata,
     },
     SpawnedNodeResult {
         dataflow_id: DataflowId,
