@@ -120,13 +120,13 @@ pub fn run(
                 }
             };
 
-        let mut reload = false;
+        let mut previous_operator = None;
         let reason = loop {
             #[allow(unused_mut)]
             let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
 
             if let Event::Reload { .. } = event {
-                reload = true;
+                previous_operator = Some(operator.clone());
                 // Reloading method
                 match Python::with_gil(|py| -> Result<Py<PyAny>> {
                     // Saving current state
@@ -227,9 +227,10 @@ pub fn run(
                             .wrap_err("on_event has invalid return value")
                     }
                     Err(err) => {
-                        if reload {
+                        if let Some(prev_operator) = previous_operator.clone() {
                             // Allow error in hot reloading environment to help development.
-                            warn!("{err}");
+                            warn!("Reloaded Operator Failed with: {err}. Reverting to previous operator");
+                            operator = prev_operator;
                             Ok(DoraStatus::Continue as i32)
                         } else {
                             Err(err)
