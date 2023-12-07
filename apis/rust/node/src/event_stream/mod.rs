@@ -119,16 +119,15 @@ impl EventStream {
     pub async fn recv_async(&mut self) -> Option<Event> {
         self.receiver.next().await.map(Self::convert_event_item)
     }
-    
+
     pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
         let next_event = match select(Delay::new(dur), self.receiver.next()).await {
-                Either::Left((_elapsed, _)) => {
-                    Some(EventItem::TimeoutError(eyre!("Receiver timed out")))
-                }
-                Either::Right((event, _)) => event,
-            };
-        next_event
-        .map(Self::convert_event_item)
+            Either::Left((_elapsed, _)) => {
+                Some(EventItem::TimeoutError(eyre!("Receiver timed out")))
+            }
+            Either::Right((event, _)) => event,
+        };
+        next_event.map(Self::convert_event_item)
     }
 
     fn convert_event_item(item: EventItem) -> Event {
