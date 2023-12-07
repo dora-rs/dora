@@ -108,25 +108,26 @@ impl EventStream {
 
     /// wait for the next event on the events stream.
     pub fn recv(&mut self) -> Option<Event> {
-        futures::executor::block_on(self.recv_async(None))
+        futures::executor::block_on(self.recv_async())
     }
 
     /// wait for the next event on the events stream until timeout
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
-        futures::executor::block_on(self.recv_async(Some(dur)))
+        futures::executor::block_on(self.recv_async_timeout(dur))
     }
 
-    pub async fn recv_async(&mut self, dur: Option<Duration>) -> Option<Event> {
-        let receive_event = self.receiver.next();
-        match dur {
-            None => receive_event.await,
-            Some(dur) => match select(Delay::new(dur), receive_event).await {
+    pub async fn recv_async(&mut self) -> Option<Event> {
+        self.receiver.next().await.map(Self::convert_event_item)
+    }
+    
+    pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
+        let next_event = match select(Delay::new(dur), self.receiver.next()).await {
                 Either::Left((_elapsed, _)) => {
                     Some(EventItem::TimeoutError(eyre!("Receiver timed out")))
                 }
                 Either::Right((event, _)) => event,
-            },
-        }
+            };
+        next_event
         .map(Self::convert_event_item)
     }
 
