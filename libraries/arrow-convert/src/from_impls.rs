@@ -18,11 +18,7 @@ impl From<arrow::array::ArrayRef> for ArrowData {
     }
 }
 
-impl From<ArrowData> for arrow::array::ArrayData {
-    fn from(value: ArrowData) -> Self {
-        value.0.to_data()
-    }
-}
+
 
 impl From<arrow::array::ArrayData> for ArrowData {
     fn from(value: arrow::array::ArrayData) -> Self {
@@ -151,12 +147,7 @@ impl<'a> TryFrom<&'a ArrowData> for &'a [u8] {
 impl<'a> TryFrom<&'a ArrowData> for Vec<u8> {
     type Error = eyre::Report;
     fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::UInt8Type> =
-            value.as_primitive_opt().wrap_err("not a primitive array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values().to_vec())
+        value.try_into().map(|slice: &'a [u8]| slice.to_vec())
     }
 }
 
@@ -174,4 +165,20 @@ where
         eyre::bail!("array has nulls");
     }
     Ok(array.value(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::array::{PrimitiveArray, make_array};
+
+    use crate::ArrowData;
+
+    #[test]
+    fn test_u8() {
+        let array = make_array(PrimitiveArray::<arrow::datatypes::UInt8Type>::from(vec![42]).into());
+        let data: ArrowData = array.into();
+        let value: u8 = (&data).try_into().unwrap();
+        assert_eq!(value, 42);
+    }
+    
 }
