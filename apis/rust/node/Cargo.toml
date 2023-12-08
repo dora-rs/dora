@@ -30,6 +30,7 @@ arrow = { workspace = true }
 arrow-schema = { workspace = true }
 futures = "0.3.28"
 futures-concurrency = "7.3.0"
+futures-timer = "3.0.2"
 dora-arrow-convert = { workspace = true }
 aligned-vec = "0.5.0"
 
