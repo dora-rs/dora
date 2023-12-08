@@ -1,5 +1,5 @@
 use arrow::{
-    array::{Array, AsArray, PrimitiveArray, StringArray},
+    array::{make_array, Array, AsArray, PrimitiveArray, StringArray},
     datatypes::ArrowPrimitiveType,
 };
 use eyre::ContextCompat;
@@ -136,6 +136,13 @@ impl<'a> TryFrom<&'a ArrowData> for &'a [u8] {
     }
 }
 
+impl<'a> TryFrom<&'a ArrowData> for Vec<u8> {
+    type Error = eyre::Report;
+    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
+        value.try_into().map(|slice: &'a [u8]| slice.to_vec())
+    }
+}
+
 fn extract_single_primitive<T>(array: &PrimitiveArray<T>) -> Result<T::Native, eyre::Error>
 where
     T: ArrowPrimitiveType,
@@ -150,4 +157,20 @@ where
         eyre::bail!("array has nulls");
     }
     Ok(array.value(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::array::{make_array, PrimitiveArray};
+
+    use crate::ArrowData;
+
+    #[test]
+    fn test_u8() {
+        let array =
+            make_array(PrimitiveArray::<arrow::datatypes::UInt8Type>::from(vec![42]).into());
+        let data: ArrowData = array.into();
+        let value: u8 = (&data).try_into().unwrap();
+        assert_eq!(value, 42);
+    }
 }
