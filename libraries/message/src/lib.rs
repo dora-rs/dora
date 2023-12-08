@@ -82,7 +82,7 @@ impl ArrowTypeInfo {
                     let offset = usize::try_from(unsafe { ptr.offset_from(region_start) })
                         .context("offset_from is negative")?;
 
-                    Ok(BufferOffset {
+                    Result::<_, eyre::Report>::Ok(BufferOffset {
                         offset,
                         len: b.len(),
                     })
