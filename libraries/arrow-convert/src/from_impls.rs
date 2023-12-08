@@ -18,12 +18,6 @@ impl From<arrow::array::ArrayRef> for ArrowData {
     }
 }
 
-impl From<arrow::array::ArrayData> for ArrowData {
-    fn from(value: arrow::array::ArrayData) -> Self {
-        Self(make_array(value))
-    }
-}
-
 impl TryFrom<&ArrowData> for bool {
     type Error = eyre::Report;
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
