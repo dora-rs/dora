@@ -18,8 +18,6 @@ impl From<arrow::array::ArrayRef> for ArrowData {
     }
 }
 
-
-
 impl From<arrow::array::ArrayData> for ArrowData {
     fn from(value: arrow::array::ArrayData) -> Self {
         Self(make_array(value))
@@ -169,16 +167,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use arrow::array::{PrimitiveArray, make_array};
+    use arrow::array::{make_array, PrimitiveArray};
 
     use crate::ArrowData;
 
     #[test]
     fn test_u8() {
-        let array = make_array(PrimitiveArray::<arrow::datatypes::UInt8Type>::from(vec![42]).into());
+        let array =
+            make_array(PrimitiveArray::<arrow::datatypes::UInt8Type>::from(vec![42]).into());
         let data: ArrowData = array.into();
         let value: u8 = (&data).try_into().unwrap();
         assert_eq!(value, 42);
     }
-    
 }
