@@ -164,6 +164,15 @@ pub struct ResolvedNode {
     pub kind: CoreNodeKind,
 }
 
+impl ResolvedNode {
+    pub fn send_stdout_as(&self) -> Option<&str> {
+        match &self.kind {
+            CoreNodeKind::Runtime(_) => None, // todo: add support for operator-level stdout capture
+            CoreNodeKind::Custom(n) => n.send_stdout_as.as_deref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResolvedDeploy {
     pub machine: String,
@@ -275,6 +284,8 @@ pub struct CustomNode {
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_stdout_as: Option<String>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
