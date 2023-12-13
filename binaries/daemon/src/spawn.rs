@@ -57,8 +57,7 @@ pub async fn spawn_node(
         clock.clone(),
     )
     .await?;
-    let outputs = node_outputs(&node);
-    let log_output = outputs.contains(&DataId::from("op/logs".to_string()));
+    let send_stdout_to = node.send_stdout_as().map(ToOwned::to_owned);
 
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
@@ -318,19 +317,21 @@ pub async fn spawn_node(
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
             // If log is an output, we're sending the logs to the dataflow
-            if log_output {
+            if let Some(stdout_output_name) = &send_stdout_to {
                 // Convert logs to DataMessage
                 let array = message.into_arrow();
 
                 let array: ArrayData = array.into();
                 let total_len = required_data_size(&array);
-                let mut sample: AVec<u8, ConstAlign<128>> =
-                    AVec::__from_elem(128, 0, total_len as usize);
+                let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, total_len);
 
                 let type_info = copy_array_into_sample(&mut sample, &array);
 
                 let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
-                let output_id = OutputId(node_id.clone(), DataId::from("op/logs".to_string()));
+                let output_id = OutputId(
+                    node_id.clone(),
+                    DataId::from(stdout_output_name.to_string()),
+                );
                 let event = DoraEvent::Logs {
                     dataflow_id,
                     output_id,
