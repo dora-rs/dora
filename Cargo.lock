@@ -1390,15 +1390,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-arrow-convert"
-version = "0.3.0"
-dependencies = [
- "arrow",
- "eyre",
-]
-
-[[package]]
-name = "dora-cli"
+name = "dora"
 version = "0.3.0"
 dependencies = [
  "bat",
@@ -1419,6 +1411,14 @@ dependencies = [
  "tracing",
  "uuid",
  "webbrowser",
+]
+
+[[package]]
+name = "dora-arrow-convert"
+version = "0.3.0"
+dependencies = [
+ "arrow",
+ "eyre",
 ]
 
 [[package]]
