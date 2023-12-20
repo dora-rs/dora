@@ -16,7 +16,7 @@ nodes:
 
   - id: custom-node_1
     custom:
-      source: python3
+      source: python
       args: ./node_1/node_1.py
       inputs:
         tick: dora/timer/secs/1
