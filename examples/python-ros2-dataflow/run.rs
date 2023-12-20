@@ -1,3 +1,4 @@
+use dora_core::get_python_path;
 use eyre::{ContextCompat, WrapErr};
 use std::path::Path;
 use tracing_subscriber::{
@@ -22,7 +23,7 @@ async fn main() -> eyre::Result<()> {
                 .context("Could not convert python path to string")?,
             "-m",
             "venv",
-            "../.env",
+            ".env",
         ],
         None,
     )
