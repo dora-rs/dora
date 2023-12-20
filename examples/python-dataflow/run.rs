@@ -23,7 +23,7 @@ async fn main() -> eyre::Result<()> {
                 .context("Could not convert python path to string")?,
             "-m",
             "venv",
-            "../.env",
+            ".env",
         ],
         None,
     )
