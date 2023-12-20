@@ -1491,6 +1491,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "uuid",
+ "which",
 ]
 
 [[package]]
