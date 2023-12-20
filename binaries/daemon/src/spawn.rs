@@ -137,7 +137,12 @@ pub async fn spawn_node(
 
             let mut command = if has_python_operator && !has_other_operator {
                 // Use python to spawn runtime if there is a python operator
-                let mut command = tokio::process::Command::new("python3");
+                let python = match which::which("python3") {
+                    Ok(python) => python,
+                    Err(_) => which::which("python")
+                        .context("failed to find `python` or `python3` in dora-daemon path. Make sure that python is available for the daemon.")?,
+                };
+                let mut command = tokio::process::Command::new(python);
                 command.args([
                     "-c",
                     format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
