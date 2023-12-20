@@ -132,6 +132,8 @@ jobs:
 
       # python examples
       - uses: actions/setup-python@v2
+        with:
+          python-version: "3.8"
       - name: "Python Dataflow example"
         run: cargo run --example python-dataflow
       - name: "Python Operator Dataflow example"
