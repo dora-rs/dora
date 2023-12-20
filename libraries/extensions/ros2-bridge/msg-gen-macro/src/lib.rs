@@ -12,9 +12,43 @@ use std::path::Path;
 use dora_ros2_bridge_msg_gen::get_packages;
 use proc_macro::TokenStream;
 use quote::quote;
+use syn::{punctuated::Punctuated, MetaNameValue, Token};
+
+struct Config {
+    create_cxx_bridge: bool,
+}
+
+impl syn::parse::Parse for Config {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let punctuated = Punctuated::<MetaNameValue, Token![,]>::parse_terminated(input)?;
+
+        let mut config = Self {
+            create_cxx_bridge: false,
+        };
+
+        for item in &punctuated {
+            let ident = item.path.require_ident()?;
+            if ident == "cxx_bridge" {
+                let syn::Expr::Lit(lit) = &item.value else {
+                    return Err(syn::Error::new_spanned(&item.value, "invalid value, expected bool"));
+                };
+                let syn::Lit::Bool(b) = &lit.lit else {
+                    return Err(syn::Error::new_spanned(&lit.lit, "invalid value, expected bool"));
+                };
+                config.create_cxx_bridge = b.value;
+            } else {
+                return Err(syn::Error::new_spanned(&item.path, "invalid argument"));
+            }
+        }
+
+        Ok(config)
+    }
+}
 
 #[proc_macro]
-pub fn msg_include_all(_input: TokenStream) -> TokenStream {
+pub fn msg_include_all(input: TokenStream) -> TokenStream {
+    let config = syn::parse_macro_input!(input as Config);
+
     let ament_prefix_path = std::env!("DETECTED_AMENT_PREFIX_PATH").trim();
     if ament_prefix_path.is_empty() {
         quote! {
@@ -32,7 +66,7 @@ pub fn msg_include_all(_input: TokenStream) -> TokenStream {
         let packages = get_packages(&paths)
             .unwrap()
             .iter()
-            .map(|v| v.token_stream())
+            .map(|v| v.token_stream(config.create_cxx_bridge))
             .collect::<Vec<_>>();
 
         (quote! {

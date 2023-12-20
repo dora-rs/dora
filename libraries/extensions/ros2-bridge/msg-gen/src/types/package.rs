@@ -71,13 +71,21 @@ impl Package {
         }
     }
 
-    pub fn token_stream(&self) -> impl ToTokens {
+    pub fn token_stream(&self, gen_cxx_bridge: bool) -> impl ToTokens {
         let name = Ident::new(&self.name, Span::call_site());
         let messages_block = self.messages_block();
         let services_block = self.services_block();
         let actions_block = self.actions_block();
 
+        let attributes = if gen_cxx_bridge {
+            let namespace = &self.name;
+            quote! { #[cxx::bridge(namespace = #namespace)] }
+        } else {
+            quote! {}
+        };
+
         quote! {
+            #attributes
             pub mod #name {
                 #messages_block
                 #services_block
