@@ -1,5 +1,5 @@
 [package]
-name = "dora"
+name = "dora-cli"
 version.workspace = true
 edition = "2021"
 documentation.workspace = true

@@ -28,4 +28,4 @@ dora-ros2-bridge-python = { workspace = true }
 
 [lib]
 name = "dora"
-crate-type = ["lib", "cdylib"]
+crate-type = ["cdylib"]
