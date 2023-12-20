@@ -14,9 +14,20 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    run(&["python3", "-m", "venv", "../.env"], None)
-        .await
-        .context("failed to create venv")?;
+    run(
+        &[
+            get_python_path()
+                .context("Could not get python binary")?
+                .to_str()
+                .context("Could not convert python path to string")?,
+            "-m",
+            "venv",
+            "../.env",
+        ],
+        None,
+    )
+    .await
+    .context("failed to create venv")?;
     let venv = &root.join("examples").join(".env");
     std::env::set_var(
         "VIRTUAL_ENV",

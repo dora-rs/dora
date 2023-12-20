@@ -2,6 +2,7 @@ use crate::{
     adjust_shared_library_path,
     config::{DataId, Input, InputMapping, OperatorId, UserInputMapping},
     descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
+    get_python_path,
 };
 
 use eyre::{bail, eyre, Context};
@@ -152,7 +153,7 @@ fn check_python_runtime() -> eyre::Result<()> {
     // Check if python dora-rs is installed and match cli version
     let reinstall_command =
         format!("Please reinstall it with: `pip install dora-rs=={VERSION} --force`");
-    let mut command = Command::new("python3");
+    let mut command = Command::new(get_python_path().context("Could not get python binary")?);
     command.args([
         "-c",
         &format!(

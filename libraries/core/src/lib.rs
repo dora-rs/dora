@@ -1,4 +1,4 @@
-use eyre::{bail, eyre};
+use eyre::{bail, eyre, Context};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX},
     path::Path,
@@ -29,4 +29,16 @@ pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyr
 
     let path = path.with_file_name(library_filename);
     Ok(path)
+}
+
+// Search for python binary.
+// First search for `python3` of python as for ubuntu <20, `python` resolves to `python2,7`
+// Then search for `python`, this will resolve for windows.
+pub fn get_python_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
+    let python = match which::which("python3") {
+                    Ok(python) => python,
+                    Err(_) => which::which("python")
+                        .context("failed to find `python` or `python3` in dora-daemon path. Make sure that python is available for the daemon.")?,
+                };
+    Ok(python)
 }
