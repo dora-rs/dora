@@ -3,6 +3,7 @@ use dora_core::{
     descriptor::Descriptor,
     topics::{ControlRequest, ControlRequestReply, DataflowId},
 };
+use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
 use futures::stream;
 use std::{
@@ -19,8 +20,6 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::Layer;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, clap::Parser)]
@@ -36,7 +35,7 @@ async fn main() -> eyre::Result<()> {
         return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
     }
 
-    set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
+    set_up_tracing("multiple-daemon-runner").wrap_err("failed to set up tracing subscriber")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -210,15 +209,4 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
         bail!("failed to build dataflow");
     };
     Ok(())
-}
-
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_filter(LevelFilter::TRACE);
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
 }
