@@ -1,3 +1,4 @@
+use dora_core::{get_pip_path, get_python_path, run};
 use dora_tracing::set_up_tracing;
 use eyre::{ContextCompat, WrapErr};
 use std::path::Path;
@@ -11,15 +12,8 @@ async fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     run(
-        &[
-            get_python_path()
-                .context("Could not get python binary")?
-                .to_str()
-                .context("Could not convert python path to string")?,
-            "-m",
-            "venv",
-            ".env",
-        ],
+        get_python_path().context("Could not get python binary")?,
+        &["-m", "venv", "../.env"],
         None,
     )
     .await
@@ -39,15 +33,24 @@ async fn main() -> eyre::Result<()> {
         ),
     );
 
-    run(&["pip", "install", "--upgrade", "pip"], None)
-        .await
-        .context("failed to install pip")?;
-    run(&["pip", "install", "-r", "requirements.txt"], None)
-        .await
-        .context("pip install failed")?;
+    run(
+        get_pip_path().context("Could not get pip binary")?,
+        &["install", "--upgrade", "pip"],
+        None,
+    )
+    .await
+    .context("failed to install pip")?;
+    run(
+        get_pip_path().context("Could not get pip binary")?,
+        &["install", "-r", "requirements.txt"],
+        None,
+    )
+    .await
+    .context("pip install failed")?;
 
     run(
-        &["maturin", "develop"],
+        "maturin",
+        &["develop"],
         Some(&root.join("apis").join("python").join("node")),
     )
     .await
