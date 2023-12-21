@@ -10,7 +10,7 @@ use dora_ros2_bridge::{
     rustdds::{self, policy},
     turtlesim::msg::Pose,
 };
-use eyre::Context;
+use eyre::{eyre, Context};
 
 fn main() -> eyre::Result<()> {
     let mut ros_node = init_ros_node()?;
@@ -79,8 +79,8 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 
     ros_context
         .new_node(
-            "turtle_teleop", // name
-            "/ros2_demo",    // namespace
+            ros2_client::NodeName::new("/ros2_demo", "turtle_teleop")
+                .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
             NodeOptions::new().enable_rosout(true),
         )
         .context("failed to create ros2 node")
@@ -93,7 +93,7 @@ fn create_vel_publisher(
         rustdds::QosPolicyBuilder::new()
             .durability(policy::Durability::Volatile)
             .liveliness(policy::Liveliness::Automatic {
-                lease_duration: ros2::Duration::DURATION_INFINITE,
+                lease_duration: ros2::Duration::INFINITE,
             })
             .reliability(policy::Reliability::Reliable {
                 max_blocking_time: ros2::Duration::from_millis(100),
@@ -104,8 +104,9 @@ fn create_vel_publisher(
 
     let turtle_cmd_vel_topic = ros_node
         .create_topic(
-            "/turtle1/cmd_vel",
-            String::from("geometry_msgs::msg::dds_::Twist_"),
+            &ros2_client::Name::new("/turtle1", "cmd_vel")
+                .map_err(|e| eyre!("failed to create ROS2 name: {e}"))?,
+            ros2_client::MessageTypeName::new("geometry_msgs", "Twist"),
             &topic_qos,
         )
         .context("failed to create topic")?;
@@ -122,8 +123,9 @@ fn create_pose_reader(
 ) -> eyre::Result<ros2_client::Subscription<Pose>> {
     let turtle_pose_topic = ros_node
         .create_topic(
-            "/turtle1/pose",
-            String::from("turtlesim::msg::dds_::Pose_"),
+            &ros2_client::Name::new("/turtle1", "pose")
+                .map_err(|e| eyre!("failed to create ROS2 name: {e}"))?,
+            ros2_client::MessageTypeName::new("turtlesim", "Pose"),
             &Default::default(),
         )
         .context("failed to create topic")?;
