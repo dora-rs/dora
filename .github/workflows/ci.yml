@@ -62,41 +62,8 @@ jobs:
 
       - name: "Check"
         run: cargo check --all
-      - name: "Build (UNIX)"
-        if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: cargo build --all
-      - name: "Build (Windows). Remove node python api as it create name collision."
-        if: runner.os == 'Windows'
-        run: |
-
-          # build libraries crates
-          cargo build -p dora-message
-          cargo build -p dora-tracing
-          cargo build -p dora-metrics
-          cargo build -p dora-download
-          cargo build -p dora-core
-          cargo build -p communication-layer-pub-sub
-          cargo build -p communication-layer-request-reply
-          cargo build -p shared-memory-server
-          cargo build -p dora-arrow-convert
-
-          # build rust API
-          cargo build -p dora-operator-api-macros
-          cargo build -p dora-operator-api-types
-          cargo build -p dora-operator-api
-          cargo build -p dora-node-api
-          # cargo build -p dora-operator-api-python
-          cargo build -p dora-operator-api-c
-          cargo build -p dora-node-api-c
-
-          # build binaries crates
-          cargo build -p dora-cli
-          cargo build -p dora-coordinator
-          cargo build -p dora-runtime
-          cargo build -p dora-daemon
-
-          # build extension crates
-          cargo build -p dora-record
+      - name: "Build  (Without Python node as it is build with maturin)"
+        run: cargo build --all --exclude dora-node-api-python
       - name: "Test"
         # Remove Windows as there is `pdb` linker issue.
         # See: https://github.com/dora-rs/dora/pull/359#discussion_r1360268497
