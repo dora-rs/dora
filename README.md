@@ -57,7 +57,6 @@ Quickest way:
 
 ```bash
 cargo install dora-cli
-alias dora='dora-cli'
 cargo install dora-coordinator
 cargo install dora-daemon
 pip install dora-rs ## For Python API
