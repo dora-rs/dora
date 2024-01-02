@@ -61,24 +61,8 @@ pub async fn run<S>(program: S, args: &[&str], pwd: Option<&Path>) -> eyre::Resu
 where
     S: AsRef<OsStr>,
 {
-    // if platform is windows, use a shell
-    let mut run = if cfg!(windows) {
-        let mut run = tokio::process::Command::new("cmd.exe");
-        let mut wrapped_args = vec![
-            "/c",
-            program
-                .as_ref()
-                .to_str()
-                .context("Could not get path string")?,
-        ];
-        wrapped_args.extend(args);
-        run.args(wrapped_args);
-        run
-    } else {
-        let mut run = tokio::process::Command::new(program);
-        run.args(args);
-        run
-    };
+    let mut run = tokio::process::Command::new(program);
+    run.args(args);
 
     if let Some(pwd) = pwd {
         run.current_dir(pwd);
