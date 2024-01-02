@@ -92,7 +92,7 @@ jobs:
           New-Item -Path archive -ItemType Directory
           Copy-Item target/release/dora-coordinator.exe -Destination archive
           Copy-Item target/release/dora-daemon.exe -Destination archive
-          Copy-Item target/release/dora-cli.exe -Destination archive/dora.exe
+          Copy-Item target/release/dora.exe -Destination archive/dora.exe
           Compress-Archive -Path archive\* -DestinationPath archive.zip
 
       - name: "Upload release asset"
@@ -130,7 +130,7 @@ jobs:
           mkdir archive
           cp target/release/dora-coordinator archive
           cp target/release/dora-daemon archive
-          cp target/release/dora-cli archive/dora
+          cp target/release/dora archive/dora
           cd archive
           zip -r ../archive.zip .
           cd ..
@@ -174,7 +174,7 @@ jobs:
           mkdir archive_aarch64
           cp target/aarch64-unknown-linux-gnu/release/dora-coordinator archive_aarch64
           cp target/aarch64-unknown-linux-gnu/release/dora-daemon archive_aarch64
-          cp target/aarch64-unknown-linux-gnu/release/dora-cli archive_aarch64/dora
+          cp target/aarch64-unknown-linux-gnu/release/dora archive_aarch64/dora
           cd archive_aarch64
           zip -r ../archive_aarch64.zip .
           cd ..
@@ -221,7 +221,7 @@ jobs:
           mkdir archive_aarch64
           cp target/aarch64-apple-darwin/release/dora-coordinator archive_aarch64
           cp target/aarch64-apple-darwin/release/dora-daemon archive_aarch64
-          cp target/aarch64-apple-darwin/release/dora-cli archive_aarch64/dora
+          cp target/aarch64-apple-darwin/release/dora archive_aarch64/dora
           cd archive_aarch64
           zip -r ../archive_aarch64.zip .
           cd ..
