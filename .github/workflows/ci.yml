@@ -152,7 +152,7 @@ jobs:
   ros2-bridge-examples:
     name: "ROS2 Bridge Examples"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
