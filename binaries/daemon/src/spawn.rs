@@ -8,6 +8,7 @@ use dora_core::{
     descriptor::{
         resolve_path, source_is_url, Descriptor, OperatorSource, ResolvedNode, SHELL_SOURCE,
     },
+    get_python_path,
     message::uhlc::HLC,
 };
 use dora_download::download_file;
@@ -82,7 +83,21 @@ pub async fn spawn_node(
                     };
 
                     tracing::info!("spawning {}", resolved_path.display());
-                    let mut cmd = tokio::process::Command::new(&resolved_path);
+                    // If extension is .py, use python to run the script
+                    let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
+                        Some(Some("py")) => {
+                            let mut cmd = tokio::process::Command::new(
+                                &get_python_path().context("Could not get python path")?,
+                            );
+                            cmd.arg(&resolved_path);
+                            cmd
+                        }
+                        _ => {
+                            let cmd = tokio::process::Command::new(&resolved_path);
+                            cmd
+                        }
+                    };
+
                     if let Some(args) = &n.args {
                         cmd.args(args.split_ascii_whitespace());
                     }
