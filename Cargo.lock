@@ -1696,6 +1696,7 @@ name = "dora-ros2-bridge"
 version = "0.1.0"
 dependencies = [
  "array-init",
+ "cxx",
  "dora-daemon",
  "dora-ros2-bridge-msg-gen-macro",
  "eyre",
