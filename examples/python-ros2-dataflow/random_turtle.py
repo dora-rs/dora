@@ -39,6 +39,12 @@ dora_node.merge_external_events(pose_reader)
 
 print("looping", flush=True)
 
+# take track of minimum and maximum coordinates of turtle
+min_x = 1000
+max_x = 0
+min_y = 1000
+max_y = 0
+
 for i in range(500):
     event = dora_node.next()
     if event is None:
@@ -55,8 +61,10 @@ for i in range(500):
         # ROS2 Event
     elif event_kind == "external":
         pose = event.inner()[0].as_py()
-        if i == CHECK_TICK:
-            assert (
-                pose["x"] != 5.544444561004639
-            ), "turtle should not be at initial x axis"
+        min_x = min([min_x, pose["x"]])
+        max_x = max([max_x, pose["x"]])
+        min_y = min([min_y, pose["y"]])
+        max_y = max([max_y, pose["y"]])
         dora_node.send_output("turtle_pose", event.inner())
+
+assert max_x - min_x > 1 or max_y - min_y > 1, "no turtle movement"
