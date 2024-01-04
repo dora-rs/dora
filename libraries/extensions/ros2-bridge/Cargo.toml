@@ -8,6 +8,7 @@ edition = "2021"
 [features]
 default = ["generate-messages"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen-macro"]
+cxx-bridge = ["dep:cxx"]
 # enables examples that depend on a sourced ROS2 installation
 ros2-examples = ["eyre", "tokio", "dora-daemon"]
 
@@ -24,6 +25,7 @@ tokio = { version = "1.29.1", features = ["full"], optional = true }
 dora-daemon = { path = "../../../binaries/daemon", optional = true }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+cxx = { version = "1.0", optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"

@@ -1,5 +1,6 @@
 use heck::SnakeCase;
 use quote::{format_ident, quote, ToTokens};
+use syn::Ident;
 
 use super::{primitives::*, sequences::Array, ConstantType, MemberType};
 
@@ -122,9 +123,69 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn token_stream_with_mod(&self) -> impl ToTokens {
+    pub fn struct_token_stream(&self, package_name: &Ident, gen_cxx_bridge: bool) -> impl ToTokens {
+        let cxx_name = format_ident!("{}", self.name);
+        let struct_raw_name = format_ident!("{package_name}__{}", self.name);
+
+        let rust_type_def_inner = self.members.iter().map(|m| m.rust_type_def(&self.package));
+        let constants_def_inner = self.constants.iter().map(|c| c.token_stream());
+        let rust_type_default_inner = self.members.iter().map(|m| m.default_value());
+
+        let attributes = if gen_cxx_bridge {
+            quote! {
+                #[namespace = #package_name]
+                #[cxx_name = #cxx_name]
+            }
+        } else {
+            quote! {}
+        };
+
+        if self.members.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                #[allow(non_camel_case_types)]
+                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+                #attributes
+                pub struct #struct_raw_name {
+                    #(#rust_type_def_inner)*
+                }
+
+                impl crate::_core::InternalDefault for #struct_raw_name {
+                    fn _default() -> Self {
+                        Self {
+                            #(#rust_type_default_inner)*
+                        }
+                    }
+                }
+
+                impl std::default::Default for #struct_raw_name {
+                    #[inline]
+                    fn default() -> Self {
+                        crate::_core::InternalDefault::_default()
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens {
+        let cxx_name = format_ident!("{}", self.name);
+        let struct_raw_name = format_ident!("{package_name}__{}", self.name);
+
+        if self.members.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                pub use super::super::ffi::#struct_raw_name as #cxx_name;
+            }
+        }
+    }
+
+    pub fn token_stream_with_mod(&self, gen_cxx_bridge: bool) -> impl ToTokens {
         let mod_name = format_ident!("_{}", self.name.to_snake_case());
-        let inner = self.token_stream();
+        let inner = self.token_stream_args(gen_cxx_bridge);
+
         quote! {
             pub use #mod_name::*;
             mod #mod_name {
@@ -134,6 +195,10 @@ impl Message {
     }
 
     pub fn token_stream(&self) -> impl ToTokens {
+        self.token_stream_args(false)
+    }
+
+    pub fn token_stream_args(&self, gen_cxx_bridge: bool) -> impl ToTokens {
         let rust_type = format_ident!("{}", self.name);
         let raw_type = format_ident!("{}_Raw", self.name);
         let raw_ref_type = format_ident!("{}_RawRef", self.name);
@@ -142,6 +207,13 @@ impl Message {
             vec![Member::dummy()]
         } else {
             self.members.clone()
+        };
+
+        let attributes = if gen_cxx_bridge {
+            let namespace = &self.name;
+            quote! { #[cxx::bridge(namespace = #namespace)] }
+        } else {
+            quote! {}
         };
 
         let rust_type_def_inner = self.members.iter().map(|m| m.rust_type_def(&self.package));
@@ -178,10 +250,15 @@ impl Message {
                 FFIToRust as _FFIToRust,
             };
 
-            #[allow(non_camel_case_types)]
-            #[derive(std::fmt::Debug, std::clone::Clone, std::cmp::PartialEq, serde::Serialize, serde::Deserialize)]
-            pub struct #rust_type {
-                #(#rust_type_def_inner)*
+            pub use self::t::#rust_type;
+
+            #attributes
+            mod t {
+                #[allow(non_camel_case_types)]
+                #[derive(std::fmt::Debug, std::clone::Clone, std::cmp::PartialEq, serde::Serialize, serde::Deserialize)]
+                pub struct #rust_type {
+                    #(#rust_type_def_inner)*
+                }
             }
 
             impl #rust_type {
