@@ -1,6 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use arrow_array::BinaryArray;
+use arrow_array::UInt8Array;
 use dora_node_api::{arrow::array::AsArray, DoraNode, Event, EventStream};
 use eyre::Context;
 use std::{ffi::c_void, ptr, slice};
@@ -170,22 +170,24 @@ pub unsafe extern "C" fn read_dora_input_data(
 ) {
     let event: &Event = unsafe { &*event.cast() };
     match event {
-        Event::Input { data, .. } => {
-            let data: Option<&BinaryArray> = data.as_binary_opt();
-            if let Some(data) = data {
-                let ptr = data.value(0).as_ptr();
-                let len = data.value(0).len();
+        Event::Input { data, metadata, .. } => match metadata.type_info.data_type {
+            dora_node_api::arrow::datatypes::DataType::UInt8 => {
+                let array: &UInt8Array = data.as_primitive();
+                let ptr = array.values().as_ptr();
                 unsafe {
                     *out_ptr = ptr;
-                    *out_len = len;
-                }
-            } else {
-                unsafe {
-                    *out_ptr = ptr::null();
-                    *out_len = 0;
+                    *out_len = metadata.type_info.len;
                 }
             }
-        }
+            dora_node_api::arrow::datatypes::DataType::Null => unsafe {
+                *out_ptr = ptr::null();
+                *out_len = 0;
+            },
+            _ => {
+                todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8. 
+                The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
+            }
+        },
         _ => unsafe {
             *out_ptr = ptr::null();
             *out_len = 0;
