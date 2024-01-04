@@ -96,7 +96,7 @@ pub enum Ros2Liveliness {
 impl Ros2Liveliness {
     fn convert(self, lease_duration: f64) -> policy::Liveliness {
         let lease_duration = if lease_duration.is_infinite() {
-            rustdds::Duration::DURATION_INFINITE
+            rustdds::Duration::INFINITE
         } else {
             rustdds::Duration::from_frac_seconds(lease_duration)
         };

@@ -76,8 +76,10 @@ impl Ros2Context {
         namespace: &str,
         options: Ros2NodeOptions,
     ) -> eyre::Result<Ros2Node> {
+        let name = ros2_client::NodeName::new(namespace, name)
+            .map_err(|err| eyre!("invalid node name: {err}"))?;
         Ok(Ros2Node {
-            node: self.context.new_node(name, namespace, options.into())?,
+            node: self.context.new_node(name, options.into())?,
             messages: self.messages.clone(),
         })
     }
@@ -103,12 +105,16 @@ impl Ros2Node {
                 message_type
             )
         })?;
-        let encoded_type_name = format!("{namespace_name}::msg::dds_::{message_name}_");
+        let message_type_name = ros2_client::MessageTypeName::new(namespace_name, message_name);
+        let topic_name = ros2_client::Name::parse(name)
+            .map_err(|err| eyre!("failed to parse ROS2 topic name: {err}"))?;
         let topic = self
             .node
-            .create_topic(name, encoded_type_name, &qos.into())?;
-        let type_info = for_message(&self.messages, namespace_name, message_name)
-            .context("failed to determine type info for message")?;
+            .create_topic(&topic_name, message_type_name, &qos.into())?;
+        let type_info =
+            for_message(&self.messages, namespace_name, message_name).with_context(|| {
+                format!("failed to determine type info for message {namespace_name}/{message_name}")
+            })?;
 
         Ok(Ros2Topic { topic, type_info })
     }
