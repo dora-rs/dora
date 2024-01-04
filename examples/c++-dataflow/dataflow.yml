@@ -10,7 +10,7 @@ nodes:
     custom:
       source: build/node_c_api
       inputs:
-        tick: dora/timer/millis/300
+        tick: cxx-node-rust-api/counter
       outputs:
         - counter
 
