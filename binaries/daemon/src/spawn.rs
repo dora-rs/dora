@@ -82,17 +82,17 @@ pub async fn spawn_node(
                         })?
                     };
 
-                    tracing::info!("spawning {}", resolved_path.display());
                     // If extension is .py, use python to run the script
                     let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
                         Some(Some("py")) => {
-                            let mut cmd = tokio::process::Command::new(
-                                &get_python_path().context("Could not get python path")?,
-                            );
+                            let python = get_python_path().context("Could not get python path")?;
+                            tracing::info!("spawning: {:?} {}", &python, resolved_path.display());
+                            let mut cmd = tokio::process::Command::new(&python);
                             cmd.arg(&resolved_path);
                             cmd
                         }
                         _ => {
+                            tracing::info!("spawning: {}", resolved_path.display());
                             let cmd = tokio::process::Command::new(&resolved_path);
                             cmd
                         }
@@ -133,10 +133,9 @@ pub async fn spawn_node(
                 .spawn()
                 .wrap_err_with(move || {
                     format!(
-                        "failed to run `{}` with args `{}`. If this was run with python, the python used was: {:?}",
+                        "failed to run `{}` with args `{}.",
                         n.source,
                         n.args.as_deref().unwrap_or_default(),
-                        get_python_path().unwrap_or_default()
                     )
                 })?
         }
@@ -153,11 +152,7 @@ pub async fn spawn_node(
 
             let mut command = if has_python_operator && !has_other_operator {
                 // Use python to spawn runtime if there is a python operator
-                let python = match which::which("python3") {
-                    Ok(python) => python,
-                    Err(_) => which::which("python")
-                        .context("failed to find `python` or `python3` in dora-daemon path. Make sure that python is available for the daemon.")?,
-                };
+                let python = get_python_path().context("Could not find python in daemon")?;
                 let mut command = tokio::process::Command::new(python);
                 command.args([
                     "-c",
