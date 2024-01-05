@@ -123,7 +123,11 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn struct_token_stream(&self, package_name: &Ident, gen_cxx_bridge: bool) -> impl ToTokens {
+    pub fn struct_token_stream(
+        &self,
+        package_name: &Ident,
+        gen_cxx_bridge: bool,
+    ) -> (impl ToTokens, impl ToTokens) {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
 
@@ -141,17 +145,18 @@ impl Message {
         };
 
         if self.members.is_empty() {
-            quote! {}
+            (quote! {}, quote! {})
         } else {
-            quote! {
+            let def = quote! {
                 #[allow(non_camel_case_types)]
                 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
                 #attributes
                 pub struct #struct_raw_name {
                     #(#rust_type_def_inner)*
                 }
-
-                impl crate::_core::InternalDefault for #struct_raw_name {
+            };
+            let impls = quote! {
+                impl crate::_core::InternalDefault for ffi::#struct_raw_name {
                     fn _default() -> Self {
                         Self {
                             #(#rust_type_default_inner)*
@@ -159,13 +164,15 @@ impl Message {
                     }
                 }
 
-                impl std::default::Default for #struct_raw_name {
+                impl std::default::Default for ffi::#struct_raw_name {
                     #[inline]
                     fn default() -> Self {
                         crate::_core::InternalDefault::_default()
                     }
                 }
-            }
+            };
+
+            (def, impls)
         }
     }
 

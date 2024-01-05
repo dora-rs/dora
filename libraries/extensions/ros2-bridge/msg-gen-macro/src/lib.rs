@@ -66,8 +66,11 @@ pub fn msg_include_all(input: TokenStream) -> TokenStream {
         let message_structs = get_packages(&paths)
             .unwrap()
             .iter()
-            .map(|v| v.struct_token_stream(config.create_cxx_bridge))
+            .map(|v| v.message_structs(config.create_cxx_bridge))
             .collect::<Vec<_>>();
+        let message_struct_defs = message_structs.iter().map(|(s, _)| s);
+        let message_struct_impls = message_structs.iter().map(|(_, i)| i);
+
         let aliases = get_packages(&paths)
             .unwrap()
             .iter()
@@ -100,15 +103,17 @@ pub fn msg_include_all(input: TokenStream) -> TokenStream {
                     chars: Vec<u16>,
                 }
 
-                impl crate::_core::InternalDefault for U16String {
-                    fn _default() -> Self {
-                        Default::default()
-                    }
-                }
-
-
-                #(#message_structs)*
+                #(#message_struct_defs)*
             }
+
+
+            impl crate::_core::InternalDefault for ffi::U16String {
+                fn _default() -> Self {
+                    Default::default()
+                }
+            }
+
+            #(#message_struct_impls)*
 
             #(#aliases)*
 
