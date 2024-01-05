@@ -7,14 +7,13 @@ edition = "2021"
 
 [features]
 default = ["generate-messages"]
-generate-messages = ["dep:dora-ros2-bridge-msg-gen-macro"]
-cxx-bridge = ["dep:cxx"]
+generate-messages = ["dep:dora-ros2-bridge-msg-gen", "dep:rust-format"]
+cxx-bridge = ["dep:cxx", "dep:cxx-build"]
 # enables examples that depend on a sourced ROS2 installation
 ros2-examples = ["eyre", "tokio", "dora-daemon"]
 
 [dependencies]
 array-init = "2.1.0"
-dora-ros2-bridge-msg-gen-macro = { path = "msg-gen-macro", optional = true }
 serde = { version = "1.0.164", features = ["derive"] }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
@@ -30,3 +29,10 @@ cxx = { version = "1.0", optional = true }
 [dev-dependencies]
 rand = "0.8.5"
 futures = { version = "0.3.28", default-features = false }
+
+[build-dependencies]
+dora-ros2-bridge-msg-gen = { path = "msg-gen", optional = true }
+rust-format = { version = "0.3.4", features = [
+    "pretty_please",
+], optional = true }
+cxx-build = { version = "1.0.73", optional = true }

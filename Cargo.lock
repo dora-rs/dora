@@ -1697,12 +1697,14 @@ version = "0.1.0"
 dependencies = [
  "array-init",
  "cxx",
+ "cxx-build",
  "dora-daemon",
- "dora-ros2-bridge-msg-gen-macro",
+ "dora-ros2-bridge-msg-gen",
  "eyre",
  "futures",
  "rand",
  "ros2-client",
+ "rust-format",
  "rustdds",
  "serde",
  "serde-big-array",
@@ -1723,21 +1725,6 @@ dependencies = [
  "quote",
  "regex",
  "syn 1.0.109",
- "thiserror",
-]
-
-[[package]]
-name = "dora-ros2-bridge-msg-gen-macro"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dora-ros2-bridge-msg-gen",
- "heck 0.3.3",
- "nom",
- "proc-macro2",
- "quote",
- "regex",
- "syn 2.0.41",
  "thiserror",
 ]
 
@@ -4677,6 +4664,17 @@ version = "0.3.0"
 dependencies = [
  "dora-node-api",
  "eyre",
+]
+
+[[package]]
+name = "rust-format"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60e7c00b6c3bf5e38a880eec01d7e829d12ca682079f8238a464def3c4b31627"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "syn 1.0.109",
 ]
 
 [[package]]

@@ -16,8 +16,11 @@ pub mod types;
 
 pub use crate::parser::get_packages;
 
-pub fn gen(paths: &[&Path], create_cxx_bridge: bool) -> proc_macro2::TokenStream {
-    let message_structs = get_packages(&paths)
+pub fn gen<P>(paths: &[P], create_cxx_bridge: bool) -> proc_macro2::TokenStream
+where
+    P: AsRef<Path>,
+{
+    let message_structs = get_packages(paths)
         .unwrap()
         .iter()
         .map(|v| v.message_structs(create_cxx_bridge))
@@ -25,12 +28,12 @@ pub fn gen(paths: &[&Path], create_cxx_bridge: bool) -> proc_macro2::TokenStream
     let message_struct_defs = message_structs.iter().map(|(s, _)| s);
     let message_struct_impls = message_structs.iter().map(|(_, i)| i);
 
-    let aliases = get_packages(&paths)
+    let aliases = get_packages(paths)
         .unwrap()
         .iter()
         .map(|v| v.aliases_token_stream())
         .collect::<Vec<_>>();
-    let packages = get_packages(&paths)
+    let packages = get_packages(paths)
         .unwrap()
         .iter()
         .map(|v| v.token_stream(create_cxx_bridge))
@@ -47,9 +50,9 @@ pub fn gen(paths: &[&Path], create_cxx_bridge: bool) -> proc_macro2::TokenStream
         )
     };
 
-    (quote! {
+    quote! {
         #attributes
-        pub mod ffi {
+        mod ffi {
             #imports
 
             #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +76,5 @@ pub fn gen(paths: &[&Path], create_cxx_bridge: bool) -> proc_macro2::TokenStream
 
 
         // #(#packages)*
-    })
-    .into()
+    }
 }
