@@ -1604,6 +1604,7 @@ dependencies = [
  "cxx",
  "cxx-build",
  "dora-node-api",
+ "dora-ros2-bridge",
  "eyre",
 ]
 

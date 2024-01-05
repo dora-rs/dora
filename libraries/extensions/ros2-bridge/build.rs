@@ -9,9 +9,9 @@ fn main() {
         .format_tokens(generated)
         .unwrap();
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let target_file = out_dir.join("generated.rs");
+    let target_file = out_dir.join("messages.rs");
     std::fs::write(&target_file, generated_string).unwrap();
-    println!("cargo:rustc-env=GENERATED_PATH={}", target_file.display());
+    println!("cargo:rustc-env=MESSAGES_PATH={}", target_file.display());
 
     #[cfg(feature = "cxx-bridge")]
     let _build = cxx_build::bridge(&target_file);
