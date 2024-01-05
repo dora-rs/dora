@@ -26,19 +26,25 @@ impl Package {
         self.messages.is_empty() && self.services.is_empty() && self.actions.is_empty()
     }
 
-    fn message_structs(&self, package_name: Ident, gen_cxx_bridge: bool) -> impl ToTokens {
+    pub fn message_structs(&self, gen_cxx_bridge: bool) -> (impl ToTokens, impl ToTokens) {
+        let package_name = Ident::new(&self.name, Span::call_site());
         if self.messages.is_empty() {
-            quote! {
-                // empty msg
-            }
+            // empty msg
+            (quote! {}, quote! {})
         } else {
             let items = self
                 .messages
                 .iter()
                 .map(|v| v.struct_token_stream(&package_name, gen_cxx_bridge));
-            quote! {
-                #(#items)*
-            }
+            let defs = items.clone().map(|(def, _)| def);
+            let impls = items.clone().map(|(_, im)| im);
+            let def_tokens = quote! {
+                #(#defs)*
+            };
+            let impl_tokens = quote! {
+                #(#impls)*
+            };
+            (def_tokens, impl_tokens)
         }
     }
 
@@ -105,15 +111,6 @@ impl Package {
                     #(#items)*
                 }  // action
             }
-        }
-    }
-
-    pub fn struct_token_stream(&self, gen_cxx_bridge: bool) -> impl ToTokens {
-        let package_name = Ident::new(&self.name, Span::call_site());
-        let message_structs = self.message_structs(package_name, gen_cxx_bridge);
-
-        quote! {
-            #message_structs
         }
     }
 
