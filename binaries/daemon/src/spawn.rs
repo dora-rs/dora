@@ -133,9 +133,10 @@ pub async fn spawn_node(
                 .spawn()
                 .wrap_err_with(move || {
                     format!(
-                        "failed to run `{}` with args `{}`",
+                        "failed to run `{}` with args `{}`. If this was run with python, the python used was: {:?}",
                         n.source,
-                        n.args.as_deref().unwrap_or_default()
+                        n.args.as_deref().unwrap_or_default(),
+                        get_python_path().unwrap_or_default()
                     )
                 })?
         }
