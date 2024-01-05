@@ -138,3 +138,8 @@ path = "examples/multiple-daemons/run.rs"
 [[example]]
 name = "cmake-dataflow"
 path = "examples/cmake-dataflow/run.rs"
+
+[[example]]
+name = "cxx-ros2-dataflow"
+path = "examples/c++-ros2-dataflow/run.rs"
+required-features = ["ros2-examples"]
