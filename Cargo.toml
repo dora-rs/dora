@@ -27,7 +27,6 @@ members = [
     "libraries/extensions/dora-record",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
-    "libraries/extensions/ros2-bridge/msg-gen-macro",
     "libraries/extensions/ros2-bridge/python",
 ]
 
