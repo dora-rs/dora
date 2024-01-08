@@ -31,13 +31,24 @@ async fn main() -> eyre::Result<()> {
     } else {
         venv.join("bin")
     };
-    std::env::set_var(
-        "PATH",
-        format!(
-            "{}:{orig_path}",
-            venv_bin.to_str().context("venv path not valid unicode")?
-        ),
-    );
+
+    if cfg!(windows) {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{};{orig_path}",
+                venv_bin.to_str().context("venv path not valid unicode")?
+            ),
+        );
+    } else {
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{orig_path}",
+                venv_bin.to_str().context("venv path not valid unicode")?
+            ),
+        );
+    }
 
     run(
         get_pip_path().context("Could not get pip binary")?,
