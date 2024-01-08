@@ -33,13 +33,14 @@ pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyr
 }
 
 // Search for python binary.
-// First search for `python3` of python as for ubuntu <20, `python` resolves to `python2,7`
-// Then search for `python`, this will resolve for windows as python3.
+// Match `python` for windows and `python3` for other platforms.
 pub fn get_python_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
-    let python = match which::which("python3") {
-        Ok(python) => python,
-        Err(_) => which::which("python")
-            .context("failed to find `python` or `python3`. Make sure that python is available.")?,
+    let python = if cfg!(windows) {
+        which::which("python")
+            .context("failed to find `python` or `python3`. Make sure that python is available.")?
+    } else {
+        which::which("python3")
+            .context("failed to find `python` or `python3`. Make sure that python is available.")?
     };
     Ok(python)
 }
