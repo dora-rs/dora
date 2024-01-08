@@ -27,7 +27,7 @@ dora-tracing = { workspace = true, optional = true }
 futures-concurrency = "7.1.0"
 zenoh = "0.7.0-rc"
 serde_json = "1.0.86"
-which = "4.3.0"
+which = "5.0.0"
 thiserror = "1.0.37"
 ctrlc = "3.2.5"
 clap = { version = "4.0.3", features = ["derive"] }
