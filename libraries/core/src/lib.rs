@@ -1,4 +1,5 @@
-use eyre::{bail, eyre, Context};
+use eyre::{bail, eyre, Context, ContextCompat};
+use maturin::BuildOptions;
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX},
     ffi::OsStr,
