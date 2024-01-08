@@ -133,7 +133,7 @@ pub async fn spawn_node(
                 .spawn()
                 .wrap_err_with(move || {
                     format!(
-                        "failed to run `{}` with args `{}.",
+                        "failed to run `{}` with args `{}`",
                         n.source,
                         n.args.as_deref().unwrap_or_default(),
                     )
