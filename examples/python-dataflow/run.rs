@@ -51,8 +51,8 @@ async fn main() -> eyre::Result<()> {
     }
 
     run(
-        get_pip_path().context("Could not get pip binary")?,
-        &["install", "--upgrade", "pip"],
+        get_python_path().context("Could not get pip binary")?,
+        &["-m", "pip", "install", "--upgrade", "pip"],
         None,
     )
     .await
