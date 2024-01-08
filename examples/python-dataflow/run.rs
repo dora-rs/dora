@@ -24,7 +24,13 @@ async fn main() -> eyre::Result<()> {
         venv.to_str().context("venv path not valid unicode")?,
     );
     let orig_path = std::env::var("PATH")?;
-    let venv_bin = venv.join("bin");
+    // bin folder is named Scripts on windows.
+    // 🤦‍♂️ See: https://github.com/pypa/virtualenv/commit/993ba1316a83b760370f5a3872b3f5ef4dd904c1
+    let venv_bin = if cfg!(windows) {
+        venv.join("Scripts")
+    } else {
+        venv.join("bin")
+    };
     std::env::set_var(
         "PATH",
         format!(
