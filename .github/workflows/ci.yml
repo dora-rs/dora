@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  RUST_LOG: trace
+  RUST_LOG: INFO
 
 jobs:
   test:
