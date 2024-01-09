@@ -93,8 +93,7 @@ pub async fn spawn_node(
                         }
                         _ => {
                             tracing::info!("spawning: {}", resolved_path.display());
-                            let cmd = tokio::process::Command::new(&resolved_path);
-                            cmd
+                            tokio::process::Command::new(&resolved_path)
                         }
                     };
 
