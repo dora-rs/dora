@@ -1,4 +1,5 @@
 use dora_core::{get_pip_path, get_python_path, run};
+use dora_download::download_file;
 use dora_tracing::set_up_tracing;
 use eyre::{ContextCompat, WrapErr};
 use std::path::Path;
@@ -72,6 +73,12 @@ async fn main() -> eyre::Result<()> {
     )
     .await
     .context("maturin develop failed")?;
+    download_file(
+        "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
+        Path::new("yolov8n.pt"),
+    )
+    .await
+    .context("Could not download weights.")?;
 
     let dataflow = Path::new("dataflow.yml");
     dora_daemon::Daemon::run_dataflow(dataflow).await?;
