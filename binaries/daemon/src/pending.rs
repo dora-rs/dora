@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    intrinsics::mir::Len,
-};
+use std::collections::{HashMap, HashSet};
 
 use dora_core::{
     config::NodeId,
@@ -9,7 +6,7 @@ use dora_core::{
     daemon_messages::{DaemonReply, DataflowId, Timestamped},
     message::uhlc::{Timestamp, HLC},
 };
-use eyre::{bail, Context, ContextCompat};
+use eyre::{bail, Context};
 use tokio::{net::TcpStream, sync::oneshot};
 
 use crate::tcp_utils::tcp_send;
