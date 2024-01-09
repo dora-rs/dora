@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-from typing import Callable
 from dora import Node
 from dora import DoraStatus
 
