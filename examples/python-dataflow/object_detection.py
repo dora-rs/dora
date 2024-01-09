@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from typing import Callable
-from dora import Node
-
+import os
 import cv2
 import numpy as np
 import torch
 
-model = torch.hub.load("ultralytics/yolov5", "yolov5n")
+from dora import Node
+
+# Reload only if on Windows
+reload = os.name == "nt"
+model = torch.hub.load("ultralytics/yolov5", "yolov5n", force_reload=reload)
 
 node = Node()
 

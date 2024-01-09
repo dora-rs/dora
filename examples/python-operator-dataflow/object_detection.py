@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 
 
-import cv2
 import numpy as np
 import pyarrow as pa
 import torch
-
+import os
 from dora import DoraStatus
 
 pa.array([])
@@ -21,7 +20,11 @@ class Operator:
     """
 
     def __init__(self):
-        self.model = torch.hub.load("ultralytics/yolov5", "yolov5n")
+        # Reload only if on Windows
+        reload = os.name == "nt"
+        self.model = torch.hub.load(
+            "ultralytics/yolov5", "yolov5n", force_reload=reload
+        )
 
     def on_event(
         self,
