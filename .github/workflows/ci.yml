@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  RUST_LOG: trace
+  RUST_LOG: INFO
 
 jobs:
   test:
@@ -65,13 +65,7 @@ jobs:
       - name: "Build  (Without Python node as it is build with maturin)"
         run: cargo build --all --exclude dora-node-api-python
       - name: "Test"
-        # Remove Windows as there is `pdb` linker issue.
-        # See: https://github.com/dora-rs/dora/pull/359#discussion_r1360268497
-        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo test --all
-      - name: "Test"
-        if: runner.os == 'Windows'
-        run: cargo test --all --lib
 
   # Run examples as separate job because otherwise we will exhaust the disk
   # space of the GitHub action runners.
@@ -138,14 +132,16 @@ jobs:
 
       # python examples
       - uses: actions/setup-python@v2
-        if: runner.os == 'Linux' || runner.os == 'macOS'
+        if: runner.os != 'Windows'
         with:
           python-version: "3.8"
+      - uses: actions/setup-python@v2
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.10"
       - name: "Python Dataflow example"
-        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-dataflow
       - name: "Python Operator Dataflow example"
-        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-operator-dataflow
 
   # ROS2 bridge examples
@@ -176,8 +172,13 @@ jobs:
           source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
           cargo run --example rust-ros2-dataflow --features="ros2-examples"
       - uses: actions/setup-python@v2
+        if: runner.os != 'Windows'
         with:
           python-version: "3.8"
+      - uses: actions/setup-python@v2
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.10"
       - name: "python-ros2-dataflow"
         timeout-minutes: 30
         env:
