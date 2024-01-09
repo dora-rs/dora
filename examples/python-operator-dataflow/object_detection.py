@@ -20,11 +20,7 @@ class Operator:
     """
 
     def __init__(self):
-        # Reload only if on Windows
-        reload = os.name == "nt"
-        self.model = torch.hub.load(
-            "ultralytics/yolov5", "yolov5n", force_reload=reload
-        )
+        self.model = torch.hub.load("ultralytics/yolov5", "yolov5n")
 
     def on_event(
         self,

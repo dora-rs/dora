@@ -9,8 +9,7 @@ import torch
 from dora import Node
 
 # Reload only if on Windows
-reload = os.name == "nt"
-model = torch.hub.load("ultralytics/yolov5", "yolov5n", force_reload=reload)
+model = torch.hub.load("ultralytics/yolov5", "yolov5n")
 
 node = Node()
 
