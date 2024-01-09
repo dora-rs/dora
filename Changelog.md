@@ -24,7 +24,7 @@
 
 - @XxChang made their first contribution in https://github.com/dora-rs/dora/pull/381
 
-**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.0...v0.3.1-rc5
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.0...v0.3.1
 
 ## v0.3.0 (2023-11-01)
 
