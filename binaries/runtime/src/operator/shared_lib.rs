@@ -168,7 +168,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
         let reason = loop {
             #[allow(unused_mut)]
             let Ok(mut event) = self.incoming_events.recv() else {
-                break StopReason::InputsClosed
+                break StopReason::InputsClosed;
             };
 
             let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);

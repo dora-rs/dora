@@ -299,7 +299,11 @@ impl Listener {
 
         // iterate over queued events, newest first
         for event in self.queue.iter_mut().rev() {
-            let Some(Timestamped { inner: NodeEvent::Input { id, data, .. }, ..}) = event.as_mut() else {
+            let Some(Timestamped {
+                inner: NodeEvent::Input { id, data, .. },
+                ..
+            }) = event.as_mut()
+            else {
                 continue;
             };
             match queue_size_remaining.get_mut(id) {
