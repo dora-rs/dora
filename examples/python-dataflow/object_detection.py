@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 import cv2
 import numpy as np
-import torch
+from ultralytics import YOLO
 
 from dora import Node
+import pyarrow as pa
 
-# Reload only if on Windows
-model = torch.hub.load("ultralytics/yolov5", "yolov5n")
+model = YOLO("yolov8n.pt")
 
 node = Node()
 
@@ -23,9 +22,14 @@ for event in node:
             frame = cv2.imdecode(frame, -1)
             frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
             results = model(frame)  # includes NMS
-            arrays = np.array(results.xyxy[0].cpu()).tobytes()
+            # Process results
+            boxes = np.array(results[0].boxes.xyxy.cpu())
+            conf = np.array(results[0].boxes.conf)
+            label = np.array(results[0].boxes.cls)
+            # concatenate them together
+            arrays = np.concatenate((boxes, conf[:, None], label[:, None]), axis=1)
 
-            node.send_output("bbox", arrays, event["metadata"])
+            node.send_output("bbox", pa.array(arrays.ravel()), event["metadata"])
         else:
             print("[object detection] ignoring unexpected input:", event_id)
     elif event_type == "STOP":
