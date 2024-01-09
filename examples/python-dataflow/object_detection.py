@@ -24,8 +24,8 @@ for event in node:
             results = model(frame)  # includes NMS
             # Process results
             boxes = np.array(results[0].boxes.xyxy.cpu())
-            conf = np.array(results[0].boxes.conf)
-            label = np.array(results[0].boxes.cls)
+            conf = np.array(results[0].boxes.conf.cpu())
+            label = np.array(results[0].boxes.cls.cpu())
             # concatenate them together
             arrays = np.concatenate((boxes, conf[:, None], label[:, None]), axis=1)
 
