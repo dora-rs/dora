@@ -1,7 +1,6 @@
+use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
 use std::path::Path;
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::Layer;
 
 #[derive(Debug, Clone, clap::Parser)]
 pub struct Args {
@@ -16,7 +15,7 @@ async fn main() -> eyre::Result<()> {
     if run_dora_runtime {
         return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
     }
-    set_up_tracing().wrap_err("failed to set up tracing")?;
+    set_up_tracing("cmake-dataflow-runner").wrap_err("failed to set up tracing")?;
 
     if cfg!(windows) {
         tracing::error!(
@@ -66,15 +65,4 @@ async fn build_package(package: &str) -> eyre::Result<()> {
         bail!("failed to build {package}");
     }
     Ok(())
-}
-
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_filter(LevelFilter::DEBUG);
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
 }

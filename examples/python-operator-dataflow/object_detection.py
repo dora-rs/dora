@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 
 
-import cv2
 import numpy as np
 import pyarrow as pa
-import torch
 
 from dora import DoraStatus
+from ultralytics import YOLO
 
 pa.array([])
 
@@ -21,7 +20,7 @@ class Operator:
     """
 
     def __init__(self):
-        self.model = torch.hub.load("ultralytics/yolov5", "yolov5n")
+        self.model = YOLO("yolov8n.pt")
 
     def on_event(
         self,
@@ -51,6 +50,12 @@ class Operator:
         frame = dora_input["value"].to_numpy().reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))
         frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
         results = self.model(frame)  # includes NMS
-        arrays = pa.array(np.array(results.xyxy[0].cpu()).ravel())
-        send_output("bbox", arrays, dora_input["metadata"])
+        # Process results
+        boxes = np.array(results[0].boxes.xyxy.cpu())
+        conf = np.array(results[0].boxes.conf.cpu())
+        label = np.array(results[0].boxes.cls.cpu())
+        # concatenate them together
+        arrays = np.concatenate((boxes, conf[:, None], label[:, None]), axis=1)
+
+        send_output("bbox", pa.array(arrays.ravel()), dora_input["metadata"])
         return DoraStatus.CONTINUE

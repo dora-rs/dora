@@ -84,6 +84,8 @@ tokio = "1.24.2"
 dora-daemon = { workspace = true }
 dora-coordinator = { workspace = true }
 dora-core = { workspace = true }
+dora-tracing = { workspace = true }
+dora-download = { workspace = true }
 dunce = "1.0.2"
 serde_yaml = "0.8.23"
 uuid = { version = "1.2.1", features = ["v4", "serde"] }
