@@ -57,5 +57,5 @@ class Operator:
         # concatenate them together
         arrays = np.concatenate((boxes, conf[:, None], label[:, None]), axis=1)
 
-        send_output("bbox", pa.array(arrays), dora_input["metadata"])
+        send_output("bbox", pa.array(arrays.ravel()), dora_input["metadata"])
         return DoraStatus.CONTINUE
