@@ -251,8 +251,11 @@ async fn start_inner(
 
                                 // notify all machines that run parts of the dataflow
                                 for machine_id in &dataflow.machines {
-                                    let Some(connection) = daemon_connections.get_mut(machine_id) else {
-                                        tracing::warn!("no daemon connection found for machine `{machine_id}`");
+                                    let Some(connection) = daemon_connections.get_mut(machine_id)
+                                    else {
+                                        tracing::warn!(
+                                            "no daemon connection found for machine `{machine_id}`"
+                                        );
                                         continue;
                                     };
                                     tcp_send(&mut connection.stream, &message)

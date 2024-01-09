@@ -238,7 +238,7 @@ impl Ros2Subscription {
             .take_seed(self.deserializer.clone())
             .context("failed to take next message from subscription")?;
         let Some((value, _info)) = message else {
-            return Ok(None)
+            return Ok(None);
         };
 
         let message = value.to_pyarrow(py)?;
