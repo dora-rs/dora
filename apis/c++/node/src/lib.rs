@@ -82,7 +82,12 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
 }
 
 fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
-    let Some(Event::Input { id, metadata: _, data }) = event.0 else {
+    let Some(Event::Input {
+        id,
+        metadata: _,
+        data,
+    }) = event.0
+    else {
         bail!("not an input event");
     };
     let data: Option<&BinaryArray> = data.as_binary_opt();

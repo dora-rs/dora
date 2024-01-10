@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "benchmark-example-node"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "benchmark-example-sink"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "communication-layer-pub-sub"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "flume",
  "zenoh",
@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "communication-layer-request-reply"
-version = "0.3.0"
+version = "0.3.1"
 
 [[package]]
 name = "concurrent-queue"
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "dora-arrow-convert"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "eyre",
@@ -1411,7 +1411,7 @@ dependencies = [
 
 [[package]]
 name = "dora-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bat",
  "clap 4.4.6",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "dora-coordinator"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap 4.4.6",
  "ctrlc",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "dora-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aligned-vec",
  "dora-message",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "dora-daemon"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aligned-vec",
  "arrow-schema",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "dora-download"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "eyre",
  "reqwest",
@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-data",
  "arrow-schema",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "dora-metrics"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures",
  "opentelemetry 0.21.0",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aligned-vec",
  "arrow",
@@ -1590,7 +1590,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-c"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-array",
  "dora-node-api",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-cxx"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-python"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "dora-node-api",
@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-arrow-convert",
  "dora-operator-api-macros",
@@ -1637,14 +1637,14 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-c"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-operator-api-types",
 ]
 
 [[package]]
 name = "dora-operator-api-cxx"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1662,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-python"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aligned-vec",
  "arrow",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-types"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "dora-arrow-convert",
@@ -1685,7 +1685,7 @@ dependencies = [
 
 [[package]]
 name = "dora-record"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "dora-node-api",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "dora-runtime"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aligned-vec",
  "arrow",
@@ -1790,7 +1790,7 @@ dependencies = [
 
 [[package]]
 name = "dora-tracing"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "eyre",
  "opentelemetry 0.18.0",
@@ -3269,7 +3269,7 @@ dependencies = [
 
 [[package]]
 name = "multiple-daemons-example-node"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -3280,14 +3280,14 @@ dependencies = [
 
 [[package]]
 name = "multiple-daemons-example-operator"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-operator-api",
 ]
 
 [[package]]
 name = "multiple-daemons-example-sink"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -3521,7 +3521,7 @@ checksum = "cfb77679af88f8b125209d354a202862602672222e7f2313fdd6dc349bad4712"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.38",
+ "syn 2.0.48",
 ]
 
 [[package]]
@@ -4688,7 +4688,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-node"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -4699,14 +4699,14 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-operator"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-operator-api",
 ]
 
 [[package]]
 name = "rust-dataflow-example-sink"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -4714,7 +4714,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ros2-dataflow-example-node"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "dora-node-api",
  "dora-ros2-bridge",
@@ -4881,9 +4881,9 @@ checksum = "ef703b7cb59335eae2eb93ceb664c0eb7ea6bf567079d843e09420219668e072"
 
 [[package]]
 name = "safer-ffi"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c1d19b288ca9898cd421c7b105fb7269918a7f8e9253a991e228981ca421ad"
+checksum = "395ace5aff9629c7268ca8255aceb945525b2cb644015f3caec5131a6a537c11"
 dependencies = [
  "inventory 0.1.11",
  "inventory 0.3.12",
@@ -4899,9 +4899,9 @@ dependencies = [
 
 [[package]]
 name = "safer_ffi-proc_macros"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2d7a04caa3ca2224f5ea4ddd850e2629c3b36b2b83621f87a8303bf41020110"
+checksum = "9255504d5467bae9e07d58b8de446ba6739b29bf72e1fa35b2387e30d29dcbfe"
 dependencies = [
  "macro_rules_attribute",
  "prettyplease",
@@ -5118,7 +5118,7 @@ dependencies = [
 
 [[package]]
 name = "shared-memory-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bincode",
  "eyre",

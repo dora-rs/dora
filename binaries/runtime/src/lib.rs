@@ -190,7 +190,9 @@ async fn run(
                         }
 
                         let Some(config) = operators.get(&operator_id) else {
-                            tracing::warn!("received Finished event for unknown operator `{operator_id}`");
+                            tracing::warn!(
+                                "received Finished event for unknown operator `{operator_id}`"
+                            );
                             continue;
                         };
                         let outputs = config
