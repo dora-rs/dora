@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.3.1 (2024-01-09)
+
+## Features
+
+- Support legacy python by @haixuanTao in https://github.com/dora-rs/dora/pull/382
+- Add an error catch in python `on_event` when using hot-reloading by @haixuanTao in https://github.com/dora-rs/dora/pull/372
+- add cmake example by @XxChang in https://github.com/dora-rs/dora/pull/381
+- Bump opentelemetry metrics to 0.21 by @haixuanTao in https://github.com/dora-rs/dora/pull/383
+- Trace send_output as it can be a big source of overhead for large messages by @haixuanTao in https://github.com/dora-rs/dora/pull/384
+- Adding a timeout method to not block indefinitely next event by @haixuanTao in https://github.com/dora-rs/dora/pull/386
+- Adding `Vec<u8>` conversion by @haixuanTao in https://github.com/dora-rs/dora/pull/387
+- Dora cli renaming by @haixuanTao in https://github.com/dora-rs/dora/pull/399
+- Update `ros2-client` and `rustdds` dependencies to latest fork version by @phil-opp in https://github.com/dora-rs/dora/pull/397
+
+## Fix
+
+- Fix window path error by @haixuanTao in https://github.com/dora-rs/dora/pull/398
+- Fix read error in C++ node input by @haixuanTao in https://github.com/dora-rs/dora/pull/406
+- Bump unsafe-libyaml from 0.2.9 to 0.2.10 by @dependabot in https://github.com/dora-rs/dora/pull/400
+
+## New Contributors
+
+- @XxChang made their first contribution in https://github.com/dora-rs/dora/pull/381
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.0...v0.3.1
+
 ## v0.3.0 (2023-11-01)
 
 ## Features

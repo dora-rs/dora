@@ -13,5 +13,5 @@ arrow = { workspace = true, features = ["ffi"] }
 dora-arrow-convert = { workspace = true }
 
 [dependencies.safer-ffi]
-version = "0.1.3"
+version = "0.1.4"
 features = ["headers", "inventory-0-3-1"]

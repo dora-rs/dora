@@ -123,7 +123,9 @@ pub fn run(
         let mut reload = false;
         let reason = loop {
             #[allow(unused_mut)]
-            let Ok(mut event) = incoming_events.recv() else { break StopReason::InputsClosed };
+            let Ok(mut event) = incoming_events.recv() else {
+                break StopReason::InputsClosed;
+            };
 
             if let Event::Reload { .. } = event {
                 reload = true;
