@@ -29,13 +29,12 @@ where
     let mut message_topic_impls = Vec::new();
     let mut aliases = Vec::new();
     for package in &packages {
-        let package_name = Ident::new(&package.name, Span::call_site());
         for message in &package.messages {
-            let (def, imp) = message.struct_token_stream(&package_name, create_cxx_bridge);
+            let (def, imp) = message.struct_token_stream(&package.name, create_cxx_bridge);
             shared_type_defs.push(def);
             message_struct_impls.push(imp);
             if create_cxx_bridge {
-                let (topic_def, topic_impl) = message.topic_def(&package_name);
+                let (topic_def, topic_impl) = message.topic_def(&package.name);
                 message_topic_defs.push(topic_def);
                 message_topic_impls.push(topic_impl);
             }
@@ -52,7 +51,6 @@ where
                     type Ros2Node;
                     fn init_ros2_context() -> Result<Box<Ros2Context>>;
                     fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
-
                     #(#message_topic_defs)*
                 }
             },

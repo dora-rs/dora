@@ -9,6 +9,9 @@ int main()
     std::cout << "HELLO FROM C++" << std::endl;
 
     auto ros2_context = init_ros2_context();
+    auto node = ros2_context->new_node("/ros2_demo", "turtle_teleop");
+    auto vel_topic = node->create_topic_geometry_msgs_Twist("/turtle1", "cmd_vel", 0);
+    auto vel_publisher = node->create_publisher(vel_topic, 0);
 
     geometry_msgs::Twist twist = {
         .linear = {.x = 1, .y = 0, .z = 0},
