@@ -35,3 +35,9 @@ ctrlc = "3.2.5"
 tracing = "0.1.36"
 dora-tracing = { workspace = true, optional = true }
 bat = "0.23.0"
+dora-daemon = { workspace = true }
+dora-coordinator = { workspace = true }
+dora-runtime = { workspace = true }
+tokio = { version = "1.20.1", features = ["full"] }
+tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
+futures = "0.3.21"
