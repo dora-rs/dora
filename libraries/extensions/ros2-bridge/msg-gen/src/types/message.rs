@@ -176,6 +176,31 @@ impl Message {
         }
     }
 
+    pub fn topic_def(&self, package_name: &Ident) -> (impl ToTokens, impl ToTokens) {
+        let topic_name = format_ident!("Topic__{package_name}__{}", self.name);
+        let fn_name = format_ident!("new__Topic__{package_name}__{}", self.name);
+        let cxx_topic_name = format_ident!("Topic_{}", self.name);
+        let cxx_fn_name = format!("create_{cxx_topic_name}");
+
+        let def = quote! {
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_topic_name]
+            type #topic_name;
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_fn_name]
+            fn #fn_name() -> Box<#topic_name>;
+        };
+        let imp = quote! {
+            #[allow(non_camel_case_types)]
+            pub struct #topic_name;
+            #[allow(non_snake_case)]
+            pub fn #fn_name() -> Box<#topic_name> {
+                Box::new(#topic_name)
+            }
+        };
+        (def, imp)
+    }
+
     pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);

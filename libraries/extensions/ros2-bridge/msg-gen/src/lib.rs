@@ -9,7 +9,9 @@
 
 use std::path::Path;
 
+use proc_macro2::Span;
 use quote::quote;
+use syn::Ident;
 
 pub mod parser;
 pub mod types;
@@ -20,27 +22,36 @@ pub fn gen<P>(paths: &[P], create_cxx_bridge: bool) -> proc_macro2::TokenStream
 where
     P: AsRef<Path>,
 {
-    let message_structs = get_packages(paths)
-        .unwrap()
-        .iter()
-        .map(|v| v.message_structs(create_cxx_bridge))
-        .collect::<Vec<_>>();
-    let message_struct_defs = message_structs.iter().map(|(s, _)| s);
-    let message_struct_impls = message_structs.iter().map(|(_, i)| i);
+    let packages = get_packages(paths).unwrap();
+    let mut shared_type_defs = Vec::new();
+    let mut message_struct_impls = Vec::new();
+    let mut message_topic_defs = Vec::new();
+    let mut message_topic_impls = Vec::new();
+    let mut aliases = Vec::new();
+    for package in &packages {
+        let package_name = Ident::new(&package.name, Span::call_site());
+        for message in &package.messages {
+            let (def, imp) = message.struct_token_stream(&package_name, create_cxx_bridge);
+            shared_type_defs.push(def);
+            message_struct_impls.push(imp);
+            if create_cxx_bridge {
+                let (topic_def, topic_impl) = message.topic_def(&package_name);
+                message_topic_defs.push(topic_def);
+                message_topic_impls.push(topic_impl);
+            }
+        }
+        aliases.push(package.aliases_token_stream());
+    }
 
-    let aliases = get_packages(paths)
-        .unwrap()
-        .iter()
-        .map(|v| v.aliases_token_stream())
-        .collect::<Vec<_>>();
-    let packages = get_packages(paths)
-        .unwrap()
-        .iter()
-        .map(|v| v.token_stream(create_cxx_bridge))
-        .collect::<Vec<_>>();
-
-    let (attributes, imports) = if create_cxx_bridge {
-        (quote! { #[cxx::bridge] }, quote! {})
+    let (attributes, imports_and_functions) = if create_cxx_bridge {
+        (
+            quote! { #[cxx::bridge] },
+            quote! {
+                extern "Rust" {
+                    #(#message_topic_defs)*
+                }
+            },
+        )
     } else {
         (
             quote! {},
@@ -53,14 +64,14 @@ where
     quote! {
         #attributes
         mod ffi {
-            #imports
+            #imports_and_functions
 
             #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
             pub struct U16String {
                 chars: Vec<u16>,
             }
 
-            #(#message_struct_defs)*
+            #(#shared_type_defs)*
         }
 
 
@@ -71,10 +82,8 @@ where
         }
 
         #(#message_struct_impls)*
+        #(#message_topic_impls)*
 
         #(#aliases)*
-
-
-        // #(#packages)*
     }
 }
