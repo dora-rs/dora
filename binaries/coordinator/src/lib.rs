@@ -38,23 +38,6 @@ mod listener;
 mod run;
 mod tcp_utils;
 
-#[derive(Debug, Clone, clap::Parser)]
-#[clap(about = "Dora coordinator")]
-pub struct Args {
-    #[clap(long)]
-    pub port: Option<u16>,
-}
-
-pub async fn run(args: Args) -> eyre::Result<()> {
-    let ctrlc_events = set_up_ctrlc_handler()?;
-
-    let (_, task) = start(None, ctrlc_events).await?;
-
-    task.await?;
-
-    Ok(())
-}
-
 pub async fn start(
     port: Option<u16>,
     external_events: impl Stream<Item = Event> + Unpin,
@@ -602,28 +585,6 @@ struct DaemonConnection {
     stream: TcpStream,
     listen_socket: SocketAddr,
     last_heartbeat: Instant,
-}
-
-fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
-    let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
-
-    let mut ctrlc_sent = false;
-    ctrlc::set_handler(move || {
-        if ctrlc_sent {
-            tracing::warn!("received second ctrlc signal -> aborting immediately");
-            std::process::abort();
-        } else {
-            tracing::info!("received ctrlc signal");
-            if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                tracing::error!("failed to report ctrl-c event to dora-coordinator");
-            }
-
-            ctrlc_sent = true;
-        }
-    })
-    .wrap_err("failed to set ctrl-c handler")?;
-
-    Ok(ReceiverStream::new(ctrlc_rx))
 }
 
 async fn handle_destroy(
