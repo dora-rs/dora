@@ -125,7 +125,7 @@ pub struct Message {
 impl Message {
     pub fn struct_token_stream(
         &self,
-        package_name: &Ident,
+        package_name: &str,
         gen_cxx_bridge: bool,
     ) -> (impl ToTokens, impl ToTokens) {
         let cxx_name = format_ident!("{}", self.name);
@@ -176,27 +176,62 @@ impl Message {
         }
     }
 
-    pub fn topic_def(&self, package_name: &Ident) -> (impl ToTokens, impl ToTokens) {
+    pub fn topic_def(&self, package_name: &str) -> (impl ToTokens, impl ToTokens) {
+        if self.members.is_empty() {
+            return (quote! {}, quote! {});
+        };
+
         let topic_name = format_ident!("Topic__{package_name}__{}", self.name);
-        let fn_name = format_ident!("new__Topic__{package_name}__{}", self.name);
         let cxx_topic_name = format_ident!("Topic_{}", self.name);
-        let cxx_fn_name = format!("create_{cxx_topic_name}");
+        let create_topic = format_ident!("new__Topic__{package_name}__{}", self.name);
+        let cxx_create_topic = format!("create_topic_{package_name}_{}", self.name);
+
+        let publisher_name = format_ident!("Publisher__{package_name}__{}", self.name);
+        let cxx_publisher_name = format_ident!("Publisher_{}", self.name);
+        let create_publisher = format_ident!("new__Publisher__{package_name}__{}", self.name);
+        let cxx_create_publisher = format_ident!("create_publisher");
+        let struct_raw_name = format_ident!("{package_name}__{}", self.name);
+        let self_name = &self.name;
 
         let def = quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_topic_name]
             type #topic_name;
+            #[cxx_name = #cxx_create_topic]
+            fn #create_topic(self: &Ros2Node, name_space: &str, base_name: &str, qos: u32) -> Result<Box<#topic_name>>;
+
             #[namespace = #package_name]
-            #[cxx_name = #cxx_fn_name]
-            fn #fn_name() -> Box<#topic_name>;
+            #[cxx_name = #cxx_publisher_name]
+            type #publisher_name;
+            #[cxx_name = #cxx_create_publisher]
+            fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: u32) -> Result<Box<#publisher_name>>;
         };
         let imp = quote! {
             #[allow(non_camel_case_types)]
-            pub struct #topic_name;
-            #[allow(non_snake_case)]
-            pub fn #fn_name() -> Box<#topic_name> {
-                Box::new(#topic_name)
+            pub struct #topic_name(rustdds::Topic);
+
+            impl Ros2Node {
+                #[allow(non_snake_case)]
+                pub fn #create_topic(&self, name_space: &str, base_name: &str, qos: u32) -> eyre::Result<Box<#topic_name>> {
+                    let name = ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
+                    let type_name = ros2_client::MessageTypeName::new(#package_name, #self_name);
+                    let qos = Default::default(); // TODO
+                    let topic = self.0.create_topic(&name, type_name, &qos)?;
+                    Ok(Box::new(#topic_name(topic)))
+                }
             }
+
+            #[allow(non_camel_case_types)]
+            pub struct #publisher_name(ros2_client::Subscription<ffi::#struct_raw_name>);
+
+            impl Ros2Node {
+                #[allow(non_snake_case)]
+                pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: u32) -> eyre::Result<Box<#publisher_name>> {
+                    let subscription = self.0.create_subscription(&topic.0, None)?; // TODO
+                    Ok(Box::new(#publisher_name(subscription)))
+                }
+            }
+
         };
         (def, imp)
     }

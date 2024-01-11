@@ -27,7 +27,6 @@ impl Package {
     }
 
     pub fn message_structs(&self, gen_cxx_bridge: bool) -> (impl ToTokens, impl ToTokens) {
-        let package_name = Ident::new(&self.name, Span::call_site());
         if self.messages.is_empty() {
             // empty msg
             (quote! {}, quote! {})
@@ -35,7 +34,7 @@ impl Package {
             let items = self
                 .messages
                 .iter()
-                .map(|v| v.struct_token_stream(&package_name, gen_cxx_bridge));
+                .map(|v| v.struct_token_stream(&self.name, gen_cxx_bridge));
             let defs = items.clone().map(|(def, _)| def);
             let impls = items.clone().map(|(_, im)| im);
             let def_tokens = quote! {
