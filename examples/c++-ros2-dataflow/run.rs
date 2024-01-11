@@ -64,6 +64,7 @@ async fn main() -> eyre::Result<()> {
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
             &dunce::canonicalize(build_dir.join("node-bridge.cc"))?,
+            &dunce::canonicalize(build_dir.join("messages.cc"))?,
         ],
         "node_rust_api",
         &["-l", "dora_node_api_cxx"],
