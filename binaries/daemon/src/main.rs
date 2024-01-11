@@ -25,9 +25,6 @@ pub struct Args {
 
     #[clap(long)]
     pub run_dataflow: Option<PathBuf>,
-
-    #[clap(long)]
-    pub run_dora_runtime: bool,
 }
 
 #[tokio::main]
@@ -42,12 +39,7 @@ async fn run() -> eyre::Result<()> {
         run_dataflow,
         machine_id,
         coordinator_addr,
-        run_dora_runtime,
     } = clap::Parser::parse();
-
-    if run_dora_runtime {
-        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
-    }
 
     #[cfg(feature = "tracing")]
     set_up_tracing("dora-daemon").wrap_err("failed to set up tracing subscriber")?;

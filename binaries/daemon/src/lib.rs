@@ -1062,10 +1062,6 @@ impl Daemon {
     }
 }
 
-pub fn run_dora_runtime() -> eyre::Result<()> {
-    dora_runtime::main()
-}
-
 async fn send_output_to_local_receivers(
     node_id: NodeId,
     output_id: DataId,
