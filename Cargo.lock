@@ -1443,8 +1443,6 @@ dependencies = [
 name = "dora-coordinator"
 version = "0.3.1"
 dependencies = [
- "clap 4.4.6",
- "ctrlc",
  "dora-core",
  "dora-tracing",
  "eyre",
@@ -1460,7 +1458,6 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "uuid",
- "which",
  "zenoh",
 ]
 
@@ -1490,8 +1487,6 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "bincode",
- "clap 4.4.6",
- "ctrlc",
  "dora-core",
  "dora-download",
  "dora-tracing",
@@ -1508,7 +1503,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "uuid",
- "which",
 ]
 
 [[package]]
@@ -1768,7 +1762,6 @@ dependencies = [
  "aligned-vec",
  "arrow",
  "arrow-schema",
- "clap 4.4.6",
  "dora-core",
  "dora-download",
  "dora-metrics",
