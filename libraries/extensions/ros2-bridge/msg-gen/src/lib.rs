@@ -43,13 +43,36 @@ where
         aliases.push(package.aliases_token_stream());
     }
 
-    let (attributes, imports_and_functions) = if create_cxx_bridge {
+    let (attributes, imports_and_functions, cxx_bridge_impls) = if create_cxx_bridge {
         (
             quote! { #[cxx::bridge] },
             quote! {
                 extern "Rust" {
+                    type Ros2Context;
+                    type Ros2Node;
+                    fn init_ros2_context() -> Result<Box<Ros2Context>>;
+                    fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
+
                     #(#message_topic_defs)*
                 }
+            },
+            quote! {
+                struct Ros2Context(ros2_client::Context);
+
+                fn init_ros2_context() -> eyre::Result<Box<Ros2Context>> {
+                    Ok(Box::new(Ros2Context(ros2_client::Context::new()?)))
+                }
+
+                impl Ros2Context {
+                    fn new_node(&self, name_space: &str, base_name: &str) -> eyre::Result<Box<Ros2Node>> {
+                        let name = ros2_client::NodeName::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
+                        let options = ros2_client::NodeOptions::new().enable_rosout(true);
+                        let node = self.0.new_node(name, options)?;
+                        Ok(Box::new(Ros2Node(node)))
+                    }
+                }
+
+                struct Ros2Node(ros2_client::Node);
             },
         )
     } else {
@@ -58,6 +81,7 @@ where
             quote! {
                 use serde::{Serialize, Deserialize};
             },
+            quote! {},
         )
     };
 
@@ -82,7 +106,10 @@ where
         }
 
         #(#message_struct_impls)*
+
+        #cxx_bridge_impls
         #(#message_topic_impls)*
+
 
         #(#aliases)*
     }
