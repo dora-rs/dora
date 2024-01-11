@@ -22,19 +22,8 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, clap::Parser)]
-pub struct Args {
-    #[clap(long)]
-    pub run_dora_runtime: bool,
-}
-
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let Args { run_dora_runtime } = clap::Parser::parse();
-    if run_dora_runtime {
-        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
-    }
-
     set_up_tracing("multiple-daemon-runner").wrap_err("failed to set up tracing subscriber")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -45,11 +34,8 @@ async fn main() -> eyre::Result<()> {
     build_dataflow(dataflow).await?;
 
     let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
-    let (coordinator_port, coordinator) = dora_coordinator::start(
-        dora_coordinator::Args { port: Some(0) },
-        ReceiverStream::new(coordinator_events_rx),
-    )
-    .await?;
+    let (coordinator_port, coordinator) =
+        dora_coordinator::start(Some(0), ReceiverStream::new(coordinator_events_rx)).await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
     let daemon_a = dora_daemon::Daemon::run(coordinator_addr, "A".into(), stream::empty());
     let daemon_b = dora_daemon::Daemon::run(coordinator_addr, "B".into(), stream::empty());
