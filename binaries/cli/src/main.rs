@@ -159,7 +159,7 @@ fn run() -> eyre::Result<()> {
             set_up_tracing("dora-daemon").context("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
-            set_up_tracing("dora-runtime").context("failed to set up tracing subscriber")?;
+            // Do not set the runtime in the cli.
         }
         Command::Coordinator { .. } => {
             set_up_tracing("dora-coordinator").context("failed to set up tracing subscriber")?;
