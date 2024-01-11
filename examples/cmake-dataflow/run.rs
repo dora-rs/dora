@@ -2,19 +2,8 @@ use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
 use std::path::Path;
 
-#[derive(Debug, Clone, clap::Parser)]
-pub struct Args {
-    #[clap(long)]
-    pub run_dora_runtime: bool,
-}
-
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let Args { run_dora_runtime } = clap::Parser::parse();
-
-    if run_dora_runtime {
-        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
-    }
     set_up_tracing("cmake-dataflow-runner").wrap_err("failed to set up tracing")?;
 
     if cfg!(windows) {
