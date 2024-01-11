@@ -815,12 +815,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "981520c98f422fcc584dc1a95c334e6953900b9106bc47a9839b81790009eb21"
 
 [[package]]
-name = "capnp"
-version = "0.14.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dca085c2c7d9d65ad749d450b19b551efaa8e3476a439bdca07aca8533097f3"
-
-[[package]]
 name = "cc"
 version = "1.0.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1449,16 +1443,11 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "names",
- "rand",
- "serde",
  "serde_json",
- "serde_yaml 0.8.26",
- "thiserror",
  "tokio",
  "tokio-stream",
  "tracing",
  "uuid",
- "zenoh",
 ]
 
 [[package]]
@@ -1471,7 +1460,6 @@ dependencies = [
  "once_cell",
  "serde",
  "serde-with-expand-env",
- "serde_bytes",
  "serde_yaml 0.9.25",
  "tokio",
  "tracing",
@@ -1484,7 +1472,6 @@ name = "dora-daemon"
 version = "0.3.1"
 dependencies = [
  "aligned-vec",
- "arrow-schema",
  "async-trait",
  "bincode",
  "dora-core",
@@ -1494,7 +1481,6 @@ dependencies = [
  "flume",
  "futures",
  "futures-concurrency",
- "serde",
  "serde_json",
  "serde_yaml 0.8.26",
  "shared-memory-server",
@@ -1551,11 +1537,9 @@ dependencies = [
 name = "dora-metrics"
 version = "0.3.1"
 dependencies = [
- "futures",
  "opentelemetry 0.21.0",
  "opentelemetry-otlp",
  "opentelemetry_sdk 0.21.1",
- "tokio",
 ]
 
 [[package]]
@@ -1564,9 +1548,7 @@ version = "0.3.1"
 dependencies = [
  "aligned-vec",
  "arrow",
- "arrow-schema",
  "bincode",
- "capnp",
  "dora-arrow-convert",
  "dora-core",
  "dora-tracing",
@@ -1575,16 +1557,11 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "futures-timer",
- "once_cell",
- "serde",
- "serde_json",
  "serde_yaml 0.8.26",
  "shared-memory-server",
  "shared_memory_extended",
- "thiserror",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -1594,7 +1571,6 @@ dependencies = [
  "arrow-array",
  "dora-node-api",
  "eyre",
- "flume",
  "tracing",
 ]
 
@@ -1749,7 +1725,6 @@ dependencies = [
  "dora-ros2-bridge",
  "dora-ros2-bridge-msg-gen",
  "eyre",
- "flume",
  "futures",
  "pyo3",
  "serde",
@@ -1761,7 +1736,6 @@ version = "0.3.1"
 dependencies = [
  "aligned-vec",
  "arrow",
- "arrow-schema",
  "dora-core",
  "dora-download",
  "dora-metrics",
@@ -1783,7 +1757,6 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-opentelemetry",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1793,7 +1766,6 @@ dependencies = [
  "eyre",
  "opentelemetry 0.18.0",
  "opentelemetry-jaeger",
- "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -5003,15 +4975,6 @@ checksum = "888d884a3be3a209308d0b66f1918ff18f60e93db837259e53ea7d8dd14e7e98"
 dependencies = [
  "serde",
  "shellexpand 2.1.2",
-]
-
-[[package]]
-name = "serde_bytes"
-version = "0.11.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab33ec92f677585af6d88c65593ae2375adde54efdbf16d597f2cbc7a6d368ff"
-dependencies = [
- "serde",
 ]
 
 [[package]]
