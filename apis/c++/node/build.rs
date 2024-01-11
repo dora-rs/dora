@@ -44,8 +44,10 @@ fn generate_ros2_message_header() {
         .join("src")
         .join("messages.rs.h");
 
-    std::fs::copy(header_path, &target_path).unwrap();
-    std::fs::copy(code_path, target_path.with_file_name("messages.rs.cc")).unwrap();
+    std::fs::copy(&header_path, &target_path).unwrap();
+    println!("cargo:rerun-if-changed={}", header_path.display());
+    std::fs::copy(&code_path, target_path.with_file_name("messages.rs.cc")).unwrap();
+    println!("cargo:rerun-if-changed={}", code_path.display());
 }
 
 // copy from cxx-build source

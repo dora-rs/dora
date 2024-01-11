@@ -14,13 +14,15 @@ crate-type = ["staticlib"]
 [features]
 default = ["tracing"]
 tracing = ["dora-node-api/tracing"]
-ros2-bridge = []
+ros2-bridge = ["dep:dora-ros2-bridge"]
 
 [dependencies]
 cxx = "1.0.73"
 dora-node-api = { workspace = true }
 eyre = "0.6.8"
-dora-ros2-bridge = { workspace = true, features = ["cxx-bridge"] }
+dora-ros2-bridge = { workspace = true, optional = true, features = [
+    "cxx-bridge",
+] }
 
 [build-dependencies]
 cxx-build = "1.0.73"
