@@ -48,7 +48,7 @@ pub struct Args {
 pub async fn run(args: Args) -> eyre::Result<()> {
     let ctrlc_events = set_up_ctrlc_handler()?;
 
-    let (_, task) = start(args, ctrlc_events).await?;
+    let (_, task) = start(None, ctrlc_events).await?;
 
     task.await?;
 
@@ -56,10 +56,10 @@ pub async fn run(args: Args) -> eyre::Result<()> {
 }
 
 pub async fn start(
-    args: Args,
+    port: Option<u16>,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let port = args.port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
+    let port = port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
     let listener = listener::create_listener(port).await?;
     let port = listener
         .local_addr()
