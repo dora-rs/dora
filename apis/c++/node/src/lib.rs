@@ -5,6 +5,9 @@ use dora_node_api::{
 };
 use eyre::bail;
 
+#[cfg(feature = "ros2-bridge")]
+pub use dora_ros2_bridge as ros2;
+
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
 mod ffi {
