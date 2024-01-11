@@ -6,17 +6,13 @@ use std::{fs, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(
-    config_path: Option<&Path>,
-    coordinator: Option<&Path>,
-    daemon: Option<&Path>,
-) -> eyre::Result<()> {
+pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
 
     let mut session = match connect_to_coordinator() {
         Ok(session) => session,
         Err(_) => {
-            start_coordinator(coordinator).wrap_err("failed to start dora-coordinator")?;
+            start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
             loop {
                 match connect_to_coordinator() {
@@ -31,7 +27,7 @@ pub(crate) fn up(
     };
 
     if !daemon_running(&mut *session)? {
-        start_daemon(daemon).wrap_err("failed to start dora-daemon")?;
+        start_daemon().wrap_err("failed to start dora-daemon")?;
     }
 
     Ok(())
@@ -70,24 +66,24 @@ fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrRe
     Ok(config)
 }
 
-fn start_coordinator(coordinator: Option<&Path>) -> eyre::Result<()> {
-    let coordinator = coordinator.unwrap_or_else(|| Path::new("dora-coordinator"));
-
-    let mut cmd = Command::new(coordinator);
+fn start_coordinator() -> eyre::Result<()> {
+    let mut cmd =
+        Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
+    cmd.arg("coordinator");
     cmd.spawn()
-        .wrap_err_with(|| format!("failed to run {}", coordinator.display()))?;
+        .wrap_err_with(|| format!("failed to run `dora coordinator`"))?;
 
     println!("started dora coordinator");
 
     Ok(())
 }
 
-fn start_daemon(daemon: Option<&Path>) -> eyre::Result<()> {
-    let daemon = daemon.unwrap_or_else(|| Path::new("dora-daemon"));
-
-    let mut cmd = Command::new(daemon);
+fn start_daemon() -> eyre::Result<()> {
+    let mut cmd =
+        Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
+    cmd.arg("daemon");
     cmd.spawn()
-        .wrap_err_with(|| format!("failed to run {}", daemon.display()))?;
+        .wrap_err_with(|| format!("failed to run `dora daemon`"))?;
 
     println!("started dora daemon");
 

@@ -66,10 +66,6 @@ enum Command {
     Up {
         #[clap(long)]
         config: Option<PathBuf>,
-        #[clap(long)]
-        coordinator_path: Option<PathBuf>,
-        #[clap(long)]
-        daemon_path: Option<PathBuf>,
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
@@ -203,15 +199,7 @@ fn run() -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Up {
-            config,
-            coordinator_path,
-            daemon_path,
-        } => up::up(
-            config.as_deref(),
-            coordinator_path.as_deref(),
-            daemon_path.as_deref(),
-        )?,
+        Command::Up { config } => up::up(config.as_deref())?,
         Command::Logs { dataflow, node } => {
             let uuid = Uuid::parse_str(&dataflow).ok();
             let name = if uuid.is_some() { None } else { Some(dataflow) };
@@ -294,7 +282,7 @@ fn run() -> eyre::Result<()> {
             run_dataflow,
         } => {
             let rt = Builder::new_multi_thread()
-                .enable_io()
+                .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {

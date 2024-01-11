@@ -162,7 +162,7 @@ pub async fn spawn_node(
                 let mut cmd = tokio::process::Command::new(
                     std::env::current_exe().wrap_err("failed to get current executable path")?,
                 );
-                cmd.arg("--run-dora-runtime");
+                cmd.arg("runtime");
                 cmd
             } else {
                 eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
