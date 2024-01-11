@@ -8,6 +8,8 @@ int main()
 {
     std::cout << "HELLO FROM C++" << std::endl;
 
+    auto ros2_context = init_ros2_context();
+
     geometry_msgs::Twist twist = {
         .linear = {.x = 1, .y = 0, .z = 0},
         .angular = {.x = 0, .y = 0, .z = 0.5}};

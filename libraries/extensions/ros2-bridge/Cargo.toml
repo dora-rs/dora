@@ -9,9 +9,9 @@ links = "dora-ros2-bridge"
 [features]
 default = ["generate-messages"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen", "dep:rust-format"]
-cxx-bridge = ["dep:cxx", "dep:cxx-build"]
+cxx-bridge = ["dep:cxx", "dep:cxx-build", "dep:eyre"]
 # enables examples that depend on a sourced ROS2 installation
-ros2-examples = ["eyre", "tokio", "dora-daemon"]
+ros2-examples = ["dep:eyre", "tokio", "dora-daemon"]
 
 [dependencies]
 array-init = "2.1.0"
