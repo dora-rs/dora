@@ -87,6 +87,9 @@ async fn build_package(package: &str, features: &[&str]) -> eyre::Result<()> {
     if !features.is_empty() {
         cmd.arg("--features").arg(features.join(","));
     }
+    if !cmd.status().await?.success() {
+        bail!("failed to compile {package}");
+    };
     Ok(())
 }
 
