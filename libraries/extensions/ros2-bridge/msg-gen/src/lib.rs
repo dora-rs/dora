@@ -51,7 +51,36 @@ where
                     type Ros2Node;
                     fn init_ros2_context() -> Result<Box<Ros2Context>>;
                     fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
+                    fn qos_default() -> Ros2QosPolicies;
                     #(#message_topic_defs)*
+                }
+
+                #[derive(Debug, Clone)]
+                pub struct Ros2QosPolicies {
+                    pub durability: Ros2Durability,
+                    pub liveliness: Ros2Liveliness,
+                    pub lease_duration: f64,
+                    pub reliable: bool,
+                    pub max_blocking_time: f64,
+                    pub keep_all: bool,
+                    pub keep_last: i32,
+                }
+
+                /// DDS 2.2.3.4 DURABILITY
+                #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+                pub enum Ros2Durability {
+                    Volatile,
+                    TransientLocal,
+                    Transient,
+                    Persistent,
+                }
+
+                /// DDS 2.2.3.11 LIVELINESS
+                #[derive(Copy, Clone, Debug, PartialEq)]
+                pub enum Ros2Liveliness {
+                    Automatic,
+                    ManualByParticipant,
+                    ManualByTopic,
                 }
             },
             quote! {
@@ -71,6 +100,91 @@ where
                 }
 
                 struct Ros2Node(ros2_client::Node);
+
+                fn qos_default() -> ffi::Ros2QosPolicies {
+                    ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)
+                }
+
+                impl ffi::Ros2QosPolicies {
+                    pub fn new(
+                        durability: Option<ffi::Ros2Durability>,
+                        liveliness: Option<ffi::Ros2Liveliness>,
+                        reliable: Option<bool>,
+                        keep_all: Option<bool>,
+                        lease_duration: Option<f64>,
+                        max_blocking_time: Option<f64>,
+                        keep_last: Option<i32>,
+                    ) -> Self {
+                        Self {
+                            durability: durability.unwrap_or(ffi::Ros2Durability::Volatile),
+                            liveliness: liveliness.unwrap_or(ffi::Ros2Liveliness::Automatic),
+                            lease_duration: lease_duration.unwrap_or(f64::INFINITY),
+                            reliable: reliable.unwrap_or(false),
+                            max_blocking_time: max_blocking_time.unwrap_or(0.0),
+                            keep_all: keep_all.unwrap_or(false),
+                            keep_last: keep_last.unwrap_or(1),
+                        }
+                    }
+                }
+
+                impl From<ffi::Ros2QosPolicies> for rustdds::QosPolicies {
+                    fn from(value: ffi::Ros2QosPolicies) -> Self {
+                        rustdds::QosPolicyBuilder::new()
+                            .durability(value.durability.into())
+                            .liveliness(value.liveliness.convert(value.lease_duration))
+                            .reliability(if value.reliable {
+                                rustdds::policy::Reliability::Reliable {
+                                    max_blocking_time: rustdds::Duration::from_frac_seconds(
+                                        value.max_blocking_time,
+                                    ),
+                                }
+                            } else {
+                                rustdds::policy::Reliability::BestEffort
+                            })
+                            .history(if value.keep_all {
+                                rustdds::policy::History::KeepAll
+                            } else {
+                                rustdds::policy::History::KeepLast {
+                                    depth: value.keep_last,
+                                }
+                            })
+                            .build()
+                    }
+                }
+
+
+
+                impl From<ffi::Ros2Durability> for rustdds::policy::Durability {
+                    fn from(value: ffi::Ros2Durability) -> Self {
+                        match value {
+                            ffi::Ros2Durability::Volatile => rustdds::policy::Durability::Volatile,
+                            ffi::Ros2Durability::TransientLocal => rustdds::policy::Durability::TransientLocal,
+                            ffi::Ros2Durability::Transient => rustdds::policy::Durability::Transient,
+                            ffi::Ros2Durability::Persistent => rustdds::policy::Durability::Persistent,
+                            _ => unreachable!(), // required because enums are represented as integers in bridge
+                        }
+                    }
+                }
+
+
+                impl ffi::Ros2Liveliness {
+                    fn convert(self, lease_duration: f64) -> rustdds::policy::Liveliness {
+                        let lease_duration = if lease_duration.is_infinite() {
+                            rustdds::Duration::INFINITE
+                        } else {
+                            rustdds::Duration::from_frac_seconds(lease_duration)
+                        };
+                        match self {
+                            ffi::Ros2Liveliness::Automatic => rustdds::policy::Liveliness::Automatic { lease_duration },
+                            ffi::Ros2Liveliness::ManualByParticipant => {
+                                rustdds::policy::Liveliness::ManualByParticipant { lease_duration }
+                            }
+                            ffi::Ros2Liveliness::ManualByTopic => rustdds::policy::Liveliness::ManualByTopic { lease_duration },
+                            _ => unreachable!(), // required because enums are represented as integers in bridge
+                        }
+                    }
+                }
+
             },
         )
     } else {

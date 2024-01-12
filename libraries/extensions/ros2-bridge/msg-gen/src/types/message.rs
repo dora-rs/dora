@@ -201,9 +201,9 @@ impl Message {
             #[cxx_name = #cxx_topic_name]
             type #topic_name;
             #[cxx_name = #cxx_create_topic]
-            fn #create_topic(self: &Ros2Node, name_space: &str, base_name: &str, qos: u32) -> Result<Box<#topic_name>>;
+            fn #create_topic(self: &Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies) -> Result<Box<#topic_name>>;
             #[cxx_name = #cxx_create_publisher]
-            fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: u32) -> Result<Box<#publisher_name>>;
+            fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#publisher_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_publisher_name]
@@ -218,17 +218,16 @@ impl Message {
 
             impl Ros2Node {
                 #[allow(non_snake_case)]
-                pub fn #create_topic(&self, name_space: &str, base_name: &str, qos: u32) -> eyre::Result<Box<#topic_name>> {
+                pub fn #create_topic(&self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
                     let name = ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
                     let type_name = ros2_client::MessageTypeName::new(#package_name, #self_name);
-                    let qos = Default::default(); // TODO
-                    let topic = self.0.create_topic(&name, type_name, &qos)?;
+                    let topic = self.0.create_topic(&name, type_name, &qos.into())?;
                     Ok(Box::new(#topic_name(topic)))
                 }
 
                 #[allow(non_snake_case)]
-                pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: u32) -> eyre::Result<Box<#publisher_name>> {
-                    let publisher = self.0.create_publisher(&topic.0, None)?; // TODO
+                pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#publisher_name>> {
+                    let publisher = self.0.create_publisher(&topic.0, Some(qos.into()))?;
                     Ok(Box::new(#publisher_name(publisher)))
                 }
             }

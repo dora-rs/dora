@@ -8,10 +8,16 @@ int main()
 {
     std::cout << "HELLO FROM C++" << std::endl;
 
+    auto qos = qos_default();
+    qos.durability = Ros2Durability::Volatile;
+    qos.liveliness = Ros2Liveliness::Automatic;
+    qos.reliable = true;
+    qos.max_blocking_time = 0.1;
+
     auto ros2_context = init_ros2_context();
     auto node = ros2_context->new_node("/ros2_demo", "turtle_teleop");
-    auto vel_topic = node->create_topic_geometry_msgs_Twist("/turtle1", "cmd_vel", 0);
-    auto vel_publisher = node->create_publisher(vel_topic, 0);
+    auto vel_topic = node->create_topic_geometry_msgs_Twist("/turtle1", "cmd_vel", qos);
+    auto vel_publisher = node->create_publisher(vel_topic, qos);
 
     geometry_msgs::Twist twist = {
         .linear = {.x = 1, .y = 0, .z = 0},
