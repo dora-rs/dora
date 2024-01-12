@@ -236,6 +236,7 @@ impl Message {
             pub struct #publisher_name(ros2_client::Publisher<ffi::#struct_raw_name>);
 
             impl #publisher_name {
+                #[allow(non_snake_case)]
                 fn #publish(&mut self, message: ffi::#struct_raw_name) -> eyre::Result<()> {
                     use eyre::Context;
                     self.0.publish(message).context("publish failed")
