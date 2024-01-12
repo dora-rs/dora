@@ -193,18 +193,24 @@ impl Message {
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
         let self_name = &self.name;
 
+        let publish = format_ident!("publish__{package_name}__{}", self.name);
+        let cxx_publish = format_ident!("publish");
+
         let def = quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_topic_name]
             type #topic_name;
             #[cxx_name = #cxx_create_topic]
             fn #create_topic(self: &Ros2Node, name_space: &str, base_name: &str, qos: u32) -> Result<Box<#topic_name>>;
+            #[cxx_name = #cxx_create_publisher]
+            fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: u32) -> Result<Box<#publisher_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_publisher_name]
             type #publisher_name;
-            #[cxx_name = #cxx_create_publisher]
-            fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: u32) -> Result<Box<#publisher_name>>;
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_publish]
+            fn #publish(self: &mut #publisher_name, message: #struct_raw_name) -> Result<()>;
         };
         let imp = quote! {
             #[allow(non_camel_case_types)]
@@ -219,16 +225,21 @@ impl Message {
                     let topic = self.0.create_topic(&name, type_name, &qos)?;
                     Ok(Box::new(#topic_name(topic)))
                 }
+
+                #[allow(non_snake_case)]
+                pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: u32) -> eyre::Result<Box<#publisher_name>> {
+                    let publisher = self.0.create_publisher(&topic.0, None)?; // TODO
+                    Ok(Box::new(#publisher_name(publisher)))
+                }
             }
 
             #[allow(non_camel_case_types)]
-            pub struct #publisher_name(ros2_client::Subscription<ffi::#struct_raw_name>);
+            pub struct #publisher_name(ros2_client::Publisher<ffi::#struct_raw_name>);
 
-            impl Ros2Node {
-                #[allow(non_snake_case)]
-                pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: u32) -> eyre::Result<Box<#publisher_name>> {
-                    let subscription = self.0.create_subscription(&topic.0, None)?; // TODO
-                    Ok(Box::new(#publisher_name(subscription)))
+            impl #publisher_name {
+                fn #publish(&mut self, message: ffi::#struct_raw_name) -> eyre::Result<()> {
+                    use eyre::Context;
+                    self.0.publish(message).context("publish failed")
                 }
             }
 

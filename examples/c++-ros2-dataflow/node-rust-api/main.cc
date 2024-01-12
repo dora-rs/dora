@@ -23,6 +23,7 @@ int main()
 
     for (int i = 0; i < 20; i++)
     {
+        vel_publisher->publish(twist);
 
         auto event = next_event(dora_node.events);
         auto ty = event_type(event);
