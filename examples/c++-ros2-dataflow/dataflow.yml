@@ -3,6 +3,6 @@ nodes:
     custom:
       source: build/node_rust_api
       inputs:
-        tick: dora/timer/millis/300
+        tick: dora/timer/millis/500
       outputs:
         - counter
