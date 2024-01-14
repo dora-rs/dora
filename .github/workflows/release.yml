@@ -81,15 +81,7 @@ jobs:
 
       - name: "Build binaries"
         timeout-minutes: 60
-        run: "cargo build --release -p dora-coordinator -p dora-cli -p dora-daemon"
-
-      - name: Create Archive (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          New-Item -Path archive -ItemType Directory
-          Copy-Item target/release/dora.exe -Destination archive/dora.exe
-          Compress-Archive -Path archive\* -DestinationPath archive.zip
+        run: "cargo build --release -p dora-cli"
 
       - name: "Upload release asset"
         uses: actions/upload-release-asset@v1.0.1
@@ -97,7 +89,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive.zip
+          asset_path: target/release/dora.exe
           asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
           asset_content_type: application/zip
 
@@ -117,16 +109,7 @@ jobs:
 
       - name: "Build binaries"
         timeout-minutes: 60
-        run: "cargo build --release -p dora-coordinator -p dora-cli -p dora-daemon"
-
-      - name: "Create Archive (Unix)"
-        if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: |
-          mkdir archive
-          cp target/release/dora archive/dora
-          cd archive
-          zip -r ../archive.zip .
-          cd ..
+        run: "cargo build --release -p dora-cli"
 
       - name: "Upload release asset"
         uses: actions/upload-release-asset@v1.0.1
@@ -134,7 +117,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive.zip
+          asset_path: target/release/dora
           asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
           asset_content_type: application/zip
 
@@ -158,16 +141,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --release --target aarch64-unknown-linux-gnu -p dora-coordinator -p dora-cli -p dora-daemon
-
-      - name: "Archive Linux ARM64"
-        if: runner.os == 'Linux'
-        run: |
-          mkdir archive_aarch64
-          cp target/aarch64-unknown-linux-gnu/release/dora archive_aarch64/dora
-          cd archive_aarch64
-          zip -r ../archive_aarch64.zip .
-          cd ..
+          args: --release --target aarch64-unknown-linux-gnu -p dora-cli
 
       - name: "Upload Linux ARM64 asset"
         if: runner.os == 'Linux'
@@ -176,7 +150,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive_aarch64.zip
+          asset_path: target/aarch64-unknown-linux-gnu/release/dora archive_aarch64/dora
           asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
           asset_content_type: application/zip
 
@@ -202,16 +176,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release --target aarch64-apple-darwin -p dora-coordinator -p dora-cli -p dora-daemon
-
-      - name: "Archive macOS ARM64"
-        if: runner.os == 'macOS'
-        run: |
-          mkdir archive_aarch64
-          cp target/aarch64-apple-darwin/release/dora archive_aarch64/dora
-          cd archive_aarch64
-          zip -r ../archive_aarch64.zip .
-          cd ..
+          args: --release --target aarch64-apple-darwin -p dora-cli
 
       - name: "Upload macOS ARM64 asset"
         if: runner.os == 'macOS'
@@ -220,6 +185,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive_aarch64.zip
+          asset_path: target/aarch64-apple-darwin/release/dora archive_aarch64/dora
           asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
           asset_content_type: application/zip
