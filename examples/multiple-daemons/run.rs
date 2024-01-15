@@ -5,7 +5,7 @@ use dora_core::{
 };
 use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
-use futures::stream;
+
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, SocketAddr},
@@ -37,8 +37,8 @@ async fn main() -> eyre::Result<()> {
     let (coordinator_port, coordinator) =
         dora_coordinator::start(Some(0), ReceiverStream::new(coordinator_events_rx)).await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
-    let daemon_a = dora_daemon::Daemon::run(coordinator_addr, "A".into(), stream::empty());
-    let daemon_b = dora_daemon::Daemon::run(coordinator_addr, "B".into(), stream::empty());
+    let daemon_a = dora_daemon::Daemon::run(coordinator_addr, "A".into());
+    let daemon_b = dora_daemon::Daemon::run(coordinator_addr, "B".into());
 
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
