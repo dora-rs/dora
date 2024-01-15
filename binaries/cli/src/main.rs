@@ -4,9 +4,7 @@ use attach::attach_dataflow;
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_core::{
-    daemon_messages::Timestamped,
     descriptor::Descriptor,
-    message::uhlc::HLC,
     topics::{
         control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -16,10 +14,8 @@ use dora_daemon::Daemon;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
-use futures::{Stream, StreamExt};
 use std::net::SocketAddr;
-use tokio::{runtime::Builder, sync::mpsc};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::runtime::Builder;
 use uuid::Uuid;
 
 mod attach;
@@ -114,10 +110,6 @@ enum Command {
     Coordinator { port: Option<u16> },
 }
 
-enum Event {
-    CtrlC,
-}
-
 #[derive(Debug, clap::Args)]
 pub struct CommandNew {
     #[clap(long, value_enum, default_value_t = Kind::Dataflow)]
@@ -168,8 +160,6 @@ fn run() -> eyre::Result<()> {
             set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
         }
     };
-
-    let ctrlc_events = set_up_ctrlc_handler()?;
 
     match args.command {
         Command::Check { dataflow } => match dataflow {
@@ -265,13 +255,7 @@ fn run() -> eyre::Result<()> {
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
-                let (_, task) = dora_coordinator::start(
-                    port,
-                    ctrlc_events.map(|event| match event {
-                        Event::CtrlC => dora_coordinator::Event::CtrlC,
-                    }),
-                )
-                .await?;
+                let (_, task) = dora_coordinator::start(port).await?;
                 task.await
             })
             .context("failed to run dora-coordinator")?
@@ -300,15 +284,6 @@ fn run() -> eyre::Result<()> {
                                 (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
                             }),
                             machine_id.unwrap_or_default(),
-                            ctrlc_events.map(|event| {
-                                let clock = HLC::default();
-                                match event {
-                                    Event::CtrlC => Timestamped {
-                                        inner: dora_daemon::Event::CtrlC,
-                                        timestamp: clock.new_timestamp(),
-                                    },
-                                }
-                            }),
                         )
                         .await
                     }
@@ -438,26 +413,4 @@ fn query_running_dataflows(
 
 fn connect_to_coordinator() -> std::io::Result<Box<TcpRequestReplyConnection>> {
     TcpLayer::new().connect(control_socket_addr())
-}
-
-fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
-    let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
-
-    let mut ctrlc_sent = false;
-    ctrlc::set_handler(move || {
-        if ctrlc_sent {
-            tracing::warn!("received second ctrlc signal -> aborting immediately");
-            std::process::abort();
-        } else {
-            tracing::info!("received ctrlc signal");
-            if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                tracing::error!("failed to report ctrl-c event to dora-coordinator");
-            }
-
-            ctrlc_sent = true;
-        }
-    })
-    .wrap_err("failed to set ctrl-c handler")?;
-
-    Ok(ReceiverStream::new(ctrlc_rx))
 }

@@ -1437,6 +1437,7 @@ dependencies = [
 name = "dora-coordinator"
 version = "0.3.1"
 dependencies = [
+ "ctrlc",
  "dora-core",
  "dora-tracing",
  "eyre",
@@ -1474,6 +1475,7 @@ dependencies = [
  "aligned-vec",
  "async-trait",
  "bincode",
+ "ctrlc",
  "dora-core",
  "dora-download",
  "dora-tracing",
