@@ -256,7 +256,7 @@ fn run() -> eyre::Result<()> {
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
-                let (_, task) =
+                let (_port, task) =
                     dora_coordinator::start(port, futures::stream::empty::<Event>()).await?;
                 task.await
             })
@@ -276,18 +276,20 @@ fn run() -> eyre::Result<()> {
                     Some(dataflow_path) => {
                         tracing::info!("Starting dataflow `{}`", dataflow_path.display());
 
-                        Daemon::run_dataflow(&dataflow_path).await
-                    }
-                    None => {
-                        Daemon::run(
-                            coordinator_addr.unwrap_or_else(|| {
-                                tracing::info!("Starting in local mode");
-                                let localhost = Ipv4Addr::new(127, 0, 0, 1);
-                                (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
-                            }),
+                        Daemon::run_dataflow(
+                            &dataflow_path,
+                            coordinator_addr,
                             machine_id.unwrap_or_default(),
                         )
                         .await
+                    }
+                    None => {
+                        let addr = coordinator_addr.unwrap_or_else(|| {
+                            tracing::info!("Starting in local mode");
+                            let localhost = Ipv4Addr::new(127, 0, 0, 1);
+                            (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
+                        });
+                        Daemon::run(addr, machine_id.unwrap_or_default()).await
                     }
                 }
             })

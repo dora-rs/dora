@@ -116,7 +116,11 @@ impl Daemon {
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
+    pub async fn run_dataflow(
+        dataflow_path: &Path,
+        coordinator_addr: Option<SocketAddr>,
+        machine_id: String,
+    ) -> eyre::Result<()> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canoncialize dataflow path")?
@@ -156,8 +160,8 @@ impl Daemon {
         });
         let run_result = Self::run_general(
             Box::pin(coordinator_events),
-            None,
-            "".into(),
+            coordinator_addr,
+            machine_id,
             Some(exit_when_done),
             clock,
         );
