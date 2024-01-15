@@ -13,7 +13,7 @@ async fn main() -> eyre::Result<()> {
     let dataflow = Path::new("dataflow.yml");
     build_dataflow(dataflow).await?;
 
-    dora_daemon::Daemon::run_dataflow(dataflow).await?;
+    run_dataflow(dataflow).await?;
 
     Ok(())
 }
@@ -26,6 +26,21 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     cmd.arg("--").arg("build").arg(dataflow);
     if !cmd.status().await?.success() {
         bail!("failed to build dataflow");
+    };
+    Ok(())
+}
+
+async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
+    let cargo = std::env::var("CARGO").unwrap();
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--")
+        .arg("daemon")
+        .arg("--run-dataflow")
+        .arg(dataflow);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
     };
     Ok(())
 }
