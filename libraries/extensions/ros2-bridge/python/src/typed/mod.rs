@@ -1,10 +1,10 @@
 use arrow::{
     array::{
         make_array, Array, ArrayData, BooleanArray, Float32Array, Float64Array, Int16Array,
-        Int32Array, Int64Array, Int8Array, StringArray, StructArray, UInt16Array, UInt32Array,
-        UInt64Array, UInt8Array,
+        Int32Array, Int64Array, Int8Array, ListArray, StringArray, StructArray, UInt16Array,
+        UInt32Array, UInt64Array, UInt8Array,
     },
-    buffer::Buffer,
+    buffer::{OffsetBuffer, ScalarBuffer},
     compute::concat,
     datatypes::{DataType, Field},
 };
@@ -13,7 +13,7 @@ use dora_ros2_bridge_msg_gen::types::{
     MemberType, Message,
 };
 use eyre::{Context, ContextCompat, Result};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, vec};
 
 pub use serialize::TypedValue;
 
@@ -40,7 +40,10 @@ pub fn for_message(
         .members
         .iter()
         .map(|m| {
-            let default = make_array(default_for_member(m, package_name, messages)?);
+            let default = make_array(
+                default_for_member(m, package_name, messages)
+                    .context(format!("Could not create default value for {:#?}", m))?,
+            );
             Result::<_, eyre::Report>::Ok((
                 Arc::new(Field::new(
                     m.name.clone(),
@@ -50,8 +53,8 @@ pub fn for_message(
                 default,
             ))
         })
-        .collect::<Result<_, _>>()?;
-
+        .collect::<Result<_, _>>()
+        .context("Could not build default value")?;
     let default_struct: StructArray = default_struct_vec.into();
 
     Ok(TypeInfo {
@@ -77,28 +80,36 @@ pub fn default_for_member(
                 Some(_) => eyre::bail!(
                     "there should be only a single default value for non-sequence types"
                 ),
-                None => default_for_nestable_type(t, package_name, messages)?,
+                None => default_for_nestable_type(t, package_name, messages, 1)?,
             },
             NestableType::NamedType(_) => {
                 if m.default.is_some() {
                     eyre::bail!("default values for nested types are not supported")
                 } else {
-                    default_for_nestable_type(t, package_name, messages)?
+                    default_for_nestable_type(t, package_name, messages, 1)?
                 }
             }
             NestableType::NamespacedType(_) => {
-                default_for_nestable_type(t, package_name, messages)?
+                default_for_nestable_type(t, package_name, messages, 1)?
             }
         },
-        MemberType::Array(array) => {
-            list_default_values(m, &array.value_type, package_name, messages)?
-        }
+        MemberType::Array(array) => list_default_values(
+            m,
+            &array.value_type,
+            package_name,
+            messages,
+            Some(array.size),
+        )?,
         MemberType::Sequence(seq) => {
-            list_default_values(m, &seq.value_type, package_name, messages)?
+            list_default_values(m, &seq.value_type, package_name, messages, None)?
         }
-        MemberType::BoundedSequence(seq) => {
-            list_default_values(m, &seq.value_type, package_name, messages)?
-        }
+        MemberType::BoundedSequence(seq) => list_default_values(
+            m,
+            &seq.value_type,
+            package_name,
+            messages,
+            Some(seq.max_size),
+        )?,
     };
     Ok(value)
 }
@@ -107,24 +118,25 @@ fn default_for_nestable_type(
     t: &NestableType,
     package_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,
+    size: usize,
 ) -> Result<ArrayData> {
     let empty = HashMap::new();
     let package_messages = messages.get(package_name).unwrap_or(&empty);
     let array = match t {
         NestableType::BasicType(t) => match t {
-            BasicType::I8 => Int8Array::from(vec![0]).into(),
-            BasicType::I16 => Int16Array::from(vec![0]).into(),
-            BasicType::I32 => Int32Array::from(vec![0]).into(),
-            BasicType::I64 => Int64Array::from(vec![0]).into(),
-            BasicType::U8 => UInt8Array::from(vec![0]).into(),
-            BasicType::U16 => UInt16Array::from(vec![0]).into(),
-            BasicType::U32 => UInt32Array::from(vec![0]).into(),
-            BasicType::U64 => UInt64Array::from(vec![0]).into(),
-            BasicType::F32 => Float32Array::from(vec![0.]).into(),
-            BasicType::F64 => Float64Array::from(vec![0.]).into(),
+            BasicType::I8 => Int8Array::from(vec![0; size]).into(),
+            BasicType::I16 => Int16Array::from(vec![0; size]).into(),
+            BasicType::I32 => Int32Array::from(vec![0; size]).into(),
+            BasicType::I64 => Int64Array::from(vec![0; size]).into(),
+            BasicType::U8 => UInt8Array::from(vec![0; size]).into(),
+            BasicType::U16 => UInt16Array::from(vec![0; size]).into(),
+            BasicType::U32 => UInt32Array::from(vec![0; size]).into(),
+            BasicType::U64 => UInt64Array::from(vec![0; size]).into(),
+            BasicType::F32 => Float32Array::from(vec![0.; size]).into(),
+            BasicType::F64 => Float64Array::from(vec![0.; size]).into(),
             BasicType::Char => StringArray::from(vec![""]).into(),
-            BasicType::Byte => UInt8Array::from(vec![0u8] as Vec<u8>).into(),
-            BasicType::Bool => BooleanArray::from(vec![false]).into(),
+            BasicType::Byte => UInt8Array::from(vec![0u8; size]).into(),
+            BasicType::Bool => BooleanArray::from(vec![false; size]).into(),
         },
         NestableType::GenericString(_) => StringArray::from(vec![""]).into(),
         NestableType::NamedType(name) => {
@@ -230,6 +242,7 @@ fn list_default_values(
     value_type: &NestableType,
     package_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,
+    size: Option<usize>,
 ) -> Result<ArrayData> {
     let defaults = match &m.default.as_deref() {
         Some([]) => eyre::bail!("empty default value not supported"),
@@ -253,23 +266,18 @@ fn list_default_values(
             default_values.to_data()
         }
         None => {
+            let size = size.unwrap_or(1);
             let default_nested_type =
-                default_for_nestable_type(value_type, package_name, messages)?;
+                default_for_nestable_type(value_type, package_name, messages, size)?;
+            let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0, size as i32]));
 
-            let value_offsets = Buffer::from_slice_ref([0i64, 1]);
-
-            let list_data_type = DataType::List(Arc::new(Field::new(
-                &m.name,
+            let field = Arc::new(Field::new(
+                "item",
                 default_nested_type.data_type().clone(),
                 true,
-            )));
-            // Construct a list array from the above two
-            ArrayData::builder(list_data_type)
-                .len(1)
-                .add_buffer(value_offsets)
-                .add_child_data(default_nested_type)
-                .build()
-                .context("Failed to build default list value")?
+            ));
+            let list = ListArray::new(field, offsets, make_array(default_nested_type), None);
+            list.to_data()
         }
     };
 
