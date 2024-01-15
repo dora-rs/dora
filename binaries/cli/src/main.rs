@@ -3,6 +3,7 @@ use std::{net::Ipv4Addr, path::PathBuf};
 use attach::attach_dataflow;
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
+use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
@@ -255,7 +256,8 @@ fn run() -> eyre::Result<()> {
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
-                let (_, task) = dora_coordinator::start(port).await?;
+                let (_, task) =
+                    dora_coordinator::start(port, futures::stream::empty::<Event>()).await?;
                 task.await
             })
             .context("failed to run dora-coordinator")?

@@ -40,6 +40,7 @@ mod tcp_utils;
 
 pub async fn start(
     port: Option<u16>,
+    external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let port = port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
     let listener = listener::create_listener(port).await?;
@@ -53,7 +54,7 @@ pub async fn start(
     let ctrlc_events = set_up_ctrlc_handler()?;
 
     let future = async move {
-        start_inner(listener, &tasks, ctrlc_events).await?;
+        start_inner(listener, &tasks, (ctrlc_events, external_events).merge()).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
