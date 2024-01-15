@@ -6,7 +6,7 @@ use std::{
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
-    array::ArrayData,
+    array::{make_array, ArrayData},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
@@ -52,6 +52,7 @@ impl Ros2Context {
                 ament_prefix_path_parsed.split(':').map(Path::new).collect()
             }
         };
+
         let packages = dora_ros2_bridge_msg_gen::get_packages(&paths)
             .map_err(|err| eyre!(err))
             .context("failed to parse ROS2 message types")?;
@@ -209,7 +210,7 @@ impl Ros2Publisher {
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
         let typed_value = TypedValue {
-            value: &value,
+            value: &make_array(value),
             type_info: &self.type_info,
         };
 

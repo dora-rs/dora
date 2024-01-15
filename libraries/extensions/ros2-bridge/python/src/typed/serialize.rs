@@ -1,4 +1,7 @@
-use arrow::array::ArrayData;
+use arrow::array::make_array;
+use arrow::array::Array;
+use arrow::array::ArrayRef;
+use arrow::array::AsArray;
 use arrow::array::Float32Array;
 use arrow::array::Float64Array;
 use arrow::array::Int16Array;
@@ -20,7 +23,7 @@ use super::TypeInfo;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedValue<'a> {
-    pub value: &'a ArrayData,
+    pub value: &'a ArrayRef,
     pub type_info: &'a TypeInfo,
 }
 
@@ -31,81 +34,154 @@ impl serde::Serialize for TypedValue<'_> {
     {
         match &self.type_info.data_type {
             DataType::UInt8 => {
-                let uint_array: UInt8Array = self.value.clone().into();
-                let number = uint_array.value(0);
-                serializer.serialize_u8(number)
+                let uint_array: &UInt8Array = self.value.as_primitive();
+                if uint_array.len() == 1 {
+                    let number = uint_array.value(0);
+                    serializer.serialize_u8(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(uint_array.len()))?;
+                    for value in uint_array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::UInt16 => {
-                let uint_array: UInt16Array = self.value.clone().into();
-                let number = uint_array.value(0);
-                serializer.serialize_u16(number)
+                let uint_array: &UInt16Array = self.value.as_primitive();
+                if uint_array.len() == 1 {
+                    let number = uint_array.value(0);
+                    serializer.serialize_u16(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(uint_array.len()))?;
+                    for value in uint_array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::UInt32 => {
-                let uint_array: UInt32Array = self.value.clone().into();
-                let number = uint_array.value(0);
-                serializer.serialize_u32(number)
+                let array: &UInt32Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_u32(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::UInt64 => {
-                let uint_array: UInt64Array = self.value.clone().into();
-                let number = uint_array.value(0);
-                serializer.serialize_u64(number)
+                let array: &UInt64Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_u64(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::Int8 => {
-                let int_array: Int8Array = self.value.clone().into();
-                let number = int_array.value(0);
-                serializer.serialize_i8(number)
+                let array: &Int8Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_i8(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::Int16 => {
-                let int_array: Int16Array = self.value.clone().into();
-                let number = int_array.value(0);
-                serializer.serialize_i16(number)
+                let array: &Int16Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_i16(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::Int32 => {
-                let int_array: Int32Array = self.value.clone().into();
-                let number = int_array.value(0);
-                serializer.serialize_i32(number)
+                let array: &Int32Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_i32(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::Int64 => {
-                let int_array: Int64Array = self.value.clone().into();
-                let number = int_array.value(0);
-                serializer.serialize_i64(number)
+                let array: &Int64Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_i64(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::Float32 => {
-                let int_array: Float32Array = self.value.clone().into();
-                let number = int_array.value(0);
-                serializer.serialize_f32(number)
+                let array: &Float32Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_f32(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::Float64 => {
-                let int_array: Float64Array = self.value.clone().into();
-                let number = int_array.value(0);
-                serializer.serialize_f64(number)
+                let array: &Float64Array = self.value.as_primitive();
+                if array.len() == 1 {
+                    let number = array.value(0);
+                    serializer.serialize_f64(number)
+                } else {
+                    let mut s = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array.iter() {
+                        s.serialize_element(&value)?;
+                    }
+                    s.end()
+                }
             }
             DataType::Utf8 => {
-                let int_array: StringArray = self.value.clone().into();
+                let int_array: &StringArray = self.value.as_string();
                 let string = int_array.value(0);
                 serializer.serialize_str(string)
             }
             DataType::List(field) => {
-                let list_array: ListArray = self.value.clone().into();
-                let values = list_array.values();
-                let mut s = serializer.serialize_seq(Some(values.len()))?;
+                let list_array: &ListArray = self.value.as_list();
+                // let values: &UInt16Array = list_array.values().as_primitive();
+                let mut s = serializer.serialize_seq(Some(list_array.len()))?;
                 for value in list_array.iter() {
-                    let value = match value {
-                        Some(value) => value.to_data(),
-                        None => {
-                            return Err(serde::ser::Error::custom(
-                                "Value in ListArray is null and not yet supported".to_string(),
-                            ))
-                        }
-                    };
-
-                    s.serialize_element(&TypedValue {
-                        value: &value,
-                        type_info: &TypeInfo {
-                            data_type: field.data_type().clone(),
-                            defaults: self.type_info.defaults.clone(),
-                        },
-                    })?;
+                    if let Some(value) = value {
+                        s.serialize_element(&TypedValue {
+                            value: &value,
+                            type_info: &TypeInfo {
+                                data_type: field.data_type().clone(),
+                                defaults: self.type_info.defaults.clone(),
+                            },
+                        })?;
+                    }
                 }
                 s.end()
             }
@@ -121,7 +197,7 @@ impl serde::Serialize for TypedValue<'_> {
                 const DUMMY_STRUCT_NAME: &str = "struct";
                 const DUMMY_FIELD_NAME: &str = "field";
 
-                let struct_array: StructArray = self.value.clone().into();
+                let struct_array: &StructArray = self.value.as_struct();
                 let mut s = serializer.serialize_struct(DUMMY_STRUCT_NAME, fields.len())?;
                 let defaults: StructArray = self.type_info.defaults.clone().into();
                 for field in fields.iter() {
@@ -134,15 +210,16 @@ impl serde::Serialize for TypedValue<'_> {
                             )))
                         }
                     };
+                    let value = make_array(default.clone());
                     let field_value = match struct_array.column_by_name(field.name()) {
-                        Some(value) => value.to_data(),
-                        None => default.clone(),
+                        Some(value) => value,
+                        None => &value,
                     };
 
                     s.serialize_field(
                         DUMMY_FIELD_NAME,
                         &TypedValue {
-                            value: &field_value,
+                            value: &field_value.clone(),
                             type_info: &TypeInfo {
                                 data_type: field.data_type().clone(),
                                 defaults: default,
