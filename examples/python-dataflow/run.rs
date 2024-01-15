@@ -1,7 +1,7 @@
 use dora_core::{get_pip_path, get_python_path, run};
 use dora_download::download_file;
 use dora_tracing::set_up_tracing;
-use eyre::{ContextCompat, WrapErr};
+use eyre::{bail, ContextCompat, WrapErr};
 use std::path::Path;
 
 #[tokio::main]
@@ -81,7 +81,22 @@ async fn main() -> eyre::Result<()> {
     .context("Could not download weights.")?;
 
     let dataflow = Path::new("dataflow.yml");
-    dora_daemon::Daemon::run_dataflow(dataflow).await?;
+    run_dataflow(dataflow).await?;
 
+    Ok(())
+}
+
+async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
+    let cargo = std::env::var("CARGO").unwrap();
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--")
+        .arg("daemon")
+        .arg("--run-dataflow")
+        .arg(dataflow);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
+    };
     Ok(())
 }

@@ -37,8 +37,8 @@ async fn main() -> eyre::Result<()> {
     let (coordinator_port, coordinator) =
         dora_coordinator::start(Some(0), ReceiverStream::new(coordinator_events_rx)).await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
-    let daemon_a = dora_daemon::Daemon::run(coordinator_addr, "A".into());
-    let daemon_b = dora_daemon::Daemon::run(coordinator_addr, "B".into());
+    let daemon_a = run_dataflow(coordinator_addr.to_string(), "A".into(), dataflow);
+    let daemon_b = run_dataflow(coordinator_addr.to_string(), "B".into(), dataflow);
 
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
@@ -193,6 +193,25 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     cmd.arg("--").arg("build").arg(dataflow);
     if !cmd.status().await?.success() {
         bail!("failed to build dataflow");
+    };
+    Ok(())
+}
+
+async fn run_dataflow(coordinator: String, machine_id: &str, dataflow: &Path) -> eyre::Result<()> {
+    let cargo = std::env::var("CARGO").unwrap();
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--")
+        .arg("daemon")
+        .arg("--run-dataflow")
+        .arg(dataflow)
+        .arg("--machine-id")
+        .arg(machine_id)
+        .arg("--coordinator-addr")
+        .arg(coordinator);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
     };
     Ok(())
 }
