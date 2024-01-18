@@ -431,10 +431,18 @@ impl Daemon {
             }
             DaemonCoordinatorEvent::Destroy => {
                 tracing::info!("received destroy command -> exiting");
-                let reply = DaemonCoordinatorReply::DestroyResult(Ok(()));
+                let (notify_tx, notify_rx) = oneshot::channel();
+                let reply = DaemonCoordinatorReply::DestroyResult {
+                    result: Ok(()),
+                    notify: Some(notify_tx),
+                };
                 let _ = reply_tx
                     .send(Some(reply))
                     .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
+                // wait until the reply is sent out
+                if notify_rx.await.is_err() {
+                    tracing::warn!("no confirmation received for DestroyReply");
+                }
                 RunStatus::Exit
             }
             DaemonCoordinatorEvent::Heartbeat => {
