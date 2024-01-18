@@ -18,5 +18,5 @@ uuid = { version = "1.2.1", features = ["serde"] }
 dora-message = { workspace = true }
 tracing = "0.1"
 serde-with-expand-env = "1.1.0"
-tokio = { version = "1.24.1", features = ["fs", "process"] }
+tokio = { version = "1.24.1", features = ["fs", "process", "sync"] }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
