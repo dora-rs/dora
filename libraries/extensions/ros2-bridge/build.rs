@@ -1,7 +1,11 @@
-use rust_format::Formatter;
 use std::path::PathBuf;
 
+#[cfg(not(feature = "generate-messages"))]
+fn main() {}
+
+#[cfg(feature = "generate-messages")]
 fn main() {
+    use rust_format::Formatter;
     let create_cxx_bridge = cfg!(feature = "cxx-bridge");
     let paths = ament_prefix_paths();
     let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), create_cxx_bridge);
