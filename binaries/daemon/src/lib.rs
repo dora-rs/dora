@@ -431,8 +431,9 @@ impl Daemon {
             }
             DaemonCoordinatorEvent::Destroy => {
                 tracing::info!("received destroy command -> exiting");
+                let reply = DaemonCoordinatorReply::DestroyResult(Ok(()));
                 let _ = reply_tx
-                    .send(None)
+                    .send(Some(reply))
                     .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
                 RunStatus::Exit
             }
