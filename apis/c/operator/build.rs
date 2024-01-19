@@ -7,6 +7,5 @@ fn main() {
     // don't rebuild on changes (otherwise we rebuild on every run as we're
     // writing the `operator_types.h` file; cargo will still rerun this script
     // when the `dora_operator_api_types` crate changes)
-    println!("cargo:rerun-if-changed=../../rust/operator/types/src/lib.rs");
-    println!("cargo:rerun-if-changed=operator_api.h");
+    println!("cargo:rerun-if-changed=build.rs");
 }
