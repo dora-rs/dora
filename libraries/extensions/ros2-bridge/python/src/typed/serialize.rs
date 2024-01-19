@@ -34,153 +34,200 @@ impl serde::Serialize for TypedValue<'_> {
     {
         match &self.type_info.data_type {
             DataType::UInt8 => {
-                let uint_array: &UInt8Array = self.value.as_primitive();
-                if uint_array.len() == 1 {
-                    let number = uint_array.value(0);
-                    serializer.serialize_u8(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(uint_array.len()))?;
-                    for value in uint_array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                let array: &UInt8Array = self.value.as_primitive();
+                debug_assert!(array.len() == 1, "array length was: {}", array.len());
+                let number = array.value(0);
+                serializer.serialize_u8(number)
             }
             DataType::UInt16 => {
-                let uint_array: &UInt16Array = self.value.as_primitive();
-                if uint_array.len() == 1 {
-                    let number = uint_array.value(0);
-                    serializer.serialize_u16(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(uint_array.len()))?;
-                    for value in uint_array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                let array: &UInt16Array = self.value.as_primitive();
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_u16(number)
             }
             DataType::UInt32 => {
                 let array: &UInt32Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_u32(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_u32(number)
             }
             DataType::UInt64 => {
                 let array: &UInt64Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_u64(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_u64(number)
             }
             DataType::Int8 => {
                 let array: &Int8Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_i8(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_i8(number)
             }
             DataType::Int16 => {
                 let array: &Int16Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_i16(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_i16(number)
             }
             DataType::Int32 => {
                 let array: &Int32Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_i32(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_i32(number)
             }
             DataType::Int64 => {
                 let array: &Int64Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_i64(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1, "array was: {:#?}", array);
+                let number = array.value(0);
+                serializer.serialize_i64(number)
             }
             DataType::Float32 => {
                 let array: &Float32Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_f32(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_f32(number)
             }
             DataType::Float64 => {
                 let array: &Float64Array = self.value.as_primitive();
-                if array.len() == 1 {
-                    let number = array.value(0);
-                    serializer.serialize_f64(number)
-                } else {
-                    let mut s = serializer.serialize_seq(Some(array.len()))?;
-                    for value in array.iter() {
-                        s.serialize_element(&value)?;
-                    }
-                    s.end()
-                }
+                debug_assert!(array.len() == 1);
+                let number = array.value(0);
+                serializer.serialize_f64(number)
             }
             DataType::Utf8 => {
                 let int_array: &StringArray = self.value.as_string();
                 let string = int_array.value(0);
                 serializer.serialize_str(string)
             }
-            DataType::List(field) => {
+            DataType::List(_field) => {
                 let list_array: &ListArray = self.value.as_list();
-                // let values: &UInt16Array = list_array.values().as_primitive();
                 let mut s = serializer.serialize_seq(Some(list_array.len()))?;
-                for value in list_array.iter() {
-                    if let Some(value) = value {
-                        s.serialize_element(&TypedValue {
-                            value: &value,
-                            type_info: &TypeInfo {
-                                data_type: field.data_type().clone(),
-                                defaults: self.type_info.defaults.clone(),
-                            },
-                        })?;
+                for root in list_array.iter() {
+                    if let Some(values) = root {
+                        match values.data_type() {
+                            DataType::UInt8 => {
+                                let values: &UInt8Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::UInt16 => {
+                                let values: &UInt16Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::UInt32 => {
+                                let values: &UInt32Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::UInt64 => {
+                                let values: &UInt64Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Int8 => {
+                                let values: &Int8Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Int16 => {
+                                let values: &Int16Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Int32 => {
+                                let values: &Int32Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Int64 => {
+                                let values: &Int64Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Float32 => {
+                                let values: &Float32Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Float64 => {
+                                let values: &Float64Array = values.as_primitive();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Utf8 => {
+                                let values: &StringArray = values.as_string();
+                                for value in values.iter() {
+                                    if let Some(value) = value {
+                                        s.serialize_element(&value)?;
+                                    } else {
+                                        todo!("Implement null management");
+                                    }
+                                }
+                            }
+                            DataType::Struct(_fields) => {
+                                let list_array: ListArray = self.type_info.defaults.clone().into();
+                                s.serialize_element(&TypedValue {
+                                    value: &values,
+                                    type_info: &TypeInfo {
+                                        data_type: values.data_type().clone(),
+                                        defaults: list_array.value(0).to_data(),
+                                    },
+                                })?;
+                            }
+                            op => todo!("Implement additional type: {:?}", op),
+                        }
+                    } else {
+                        todo!("Implement null management");
                     }
                 }
                 s.end()
