@@ -81,29 +81,6 @@ pub async fn register(
                 timestamp,
             } = event;
             let (reply_tx, reply_rx) = oneshot::channel();
-
-            // Respond to the coordinator's destroy event immediately as the daemon is about to destroy itself.
-            match event {
-                DaemonCoordinatorEvent::Destroy => {
-                    tracing::info!("Received destroy event from dora-coordinator");
-                    let serialized =
-                        match serde_json::to_vec(&DaemonCoordinatorReply::DestroyResult(Ok(())))
-                            .wrap_err("failed to serialize DaemonCoordinatorReply")
-                        {
-                            Ok(r) => r,
-                            Err(err) => {
-                                tracing::error!("{err:?}");
-                                continue;
-                            }
-                        };
-                    if let Err(err) = tcp_send(&mut stream, &serialized).await {
-                        tracing::warn!("failed to send reply to coordinator: {err}");
-                        continue;
-                    };
-                }
-                _ => {}
-            }
-
             match tx
                 .send(Timestamped {
                     inner: CoordinatorEvent { event, reply_tx },
@@ -136,6 +113,12 @@ pub async fn register(
                     tracing::warn!("failed to send reply to coordinator: {err}");
                     continue;
                 };
+                if let DaemonCoordinatorReply::DestroyResult { notify, .. } = reply {
+                    if let Some(notify) = notify {
+                        let _ = notify.send(());
+                    }
+                    break;
+                }
             }
         }
     });

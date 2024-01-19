@@ -852,7 +852,7 @@ async fn destroy_daemons(
         match serde_json::from_slice(&reply_raw)
             .wrap_err("failed to deserialize destroy reply from daemon")?
         {
-            DaemonCoordinatorReply::DestroyResult(result) => result
+            DaemonCoordinatorReply::DestroyResult { result, .. } => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to destroy dataflow")?,
             other => bail!("unexpected reply after sending `destroy`: {other:?}"),
