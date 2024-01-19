@@ -275,13 +275,14 @@ fn run() -> eyre::Result<()> {
                 match run_dataflow {
                     Some(dataflow_path) => {
                         tracing::info!("Starting dataflow `{}`", dataflow_path.display());
+                        if let Some(coordinator_addr) = coordinator_addr {
+                            tracing::info!(
+                                "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
+                                coordinator_addr
+                            );
+                        }
 
-                        Daemon::run_dataflow(
-                            &dataflow_path,
-                            coordinator_addr,
-                            machine_id.unwrap_or_default(),
-                        )
-                        .await
+                        Daemon::run_dataflow(&dataflow_path).await
                     }
                     None => {
                         let addr = coordinator_addr.unwrap_or_else(|| {
