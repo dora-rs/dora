@@ -1507,10 +1507,8 @@ dependencies = [
 name = "dora-examples"
 version = "0.0.0"
 dependencies = [
- "clap 4.4.6",
  "dora-coordinator",
  "dora-core",
- "dora-daemon",
  "dora-download",
  "dora-tracing",
  "dunce",
@@ -1520,7 +1518,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
