@@ -46,8 +46,6 @@ async fn main() -> eyre::Result<()> {
     tasks.spawn(daemon_a);
     tasks.spawn(daemon_b);
 
-    std::thread::sleep(Duration::from_secs(20));
-    // wait until both daemons are connected
     tracing::info!("waiting until daemons are connected to coordinator");
     let mut retries = 0;
     loop {
