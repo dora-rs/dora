@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
@@ -17,7 +18,7 @@ use pyo3::{
     types::{PyDict, PyList, PyModule},
     PyAny, PyObject, PyResult, Python,
 };
-use typed::{deserialize::TypedDeserializer, for_message, TypeInfo, TypedValue};
+use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
 
 pub mod qos;
 pub mod typed;
@@ -112,10 +113,11 @@ impl Ros2Node {
         let topic = self
             .node
             .create_topic(&topic_name, message_type_name, &qos.into())?;
-        let type_info =
-            for_message(&self.messages, namespace_name, message_name).with_context(|| {
-                format!("failed to determine type info for message {namespace_name}/{message_name}")
-            })?;
+        let type_info = TypeInfo {
+            package_name: namespace_name.to_owned().into(),
+            message_name: message_name.to_owned().into(),
+            messages: self.messages.clone(),
+        };
 
         Ok(Ros2Topic { topic, type_info })
     }
@@ -144,7 +146,7 @@ impl Ros2Node {
             .create_subscription(&topic.topic, qos.map(Into::into))?;
         Ok(Ros2Subscription {
             subscription: Some(subscription),
-            deserializer: TypedDeserializer::new(topic.type_info.clone()),
+            deserializer: StructDeserializer::new(Cow::Owned(topic.type_info.clone())),
         })
     }
 }
@@ -176,14 +178,14 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
-    type_info: TypeInfo,
+    type_info: TypeInfo<'static>,
 }
 
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
     publisher: ros2_client::Publisher<TypedValue<'static>>,
-    type_info: TypeInfo,
+    type_info: TypeInfo<'static>,
 }
 
 #[pymethods]
@@ -225,7 +227,7 @@ impl Ros2Publisher {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Subscription {
-    deserializer: TypedDeserializer,
+    deserializer: StructDeserializer<'static>,
     subscription: Option<ros2_client::Subscription<ArrayData>>,
 }
 
@@ -264,7 +266,7 @@ impl Ros2Subscription {
 }
 
 pub struct Ros2SubscriptionStream {
-    deserializer: TypedDeserializer,
+    deserializer: StructDeserializer<'static>,
     subscription: ros2_client::Subscription<ArrayData>,
 }
 
