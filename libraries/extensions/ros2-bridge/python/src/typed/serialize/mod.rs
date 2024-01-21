@@ -145,6 +145,7 @@ impl serde::Serialize for TypedValue<'_> {
                         &array::ArraySerializeWrapper {
                             array_info: a,
                             column: column.as_ref(),
+                            type_info: self.type_info,
                         },
                     )?;
                 }
@@ -154,6 +155,7 @@ impl serde::Serialize for TypedValue<'_> {
                         &sequence::SequenceSerializeWrapper {
                             item_type: &v.value_type,
                             column: column.as_ref(),
+                            type_info: self.type_info,
                         },
                     )?;
                 }
@@ -163,6 +165,7 @@ impl serde::Serialize for TypedValue<'_> {
                         &sequence::SequenceSerializeWrapper {
                             item_type: &v.value_type,
                             column: column.as_ref(),
+                            type_info: self.type_info,
                         },
                     )?;
                 }

@@ -1,21 +1,24 @@
-use std::marker::PhantomData;
+use std::{borrow::Cow, marker::PhantomData, sync::Arc};
 
 use arrow::{
-    array::{Array, ArrayRef, AsArray, PrimitiveArray},
+    array::{Array, ArrayRef, AsArray, OffsetSizeTrait, PrimitiveArray},
     datatypes::{self, ArrowPrimitiveType},
 };
 use dora_ros2_bridge_msg_gen::types::{
-    primitives::{BasicType, NestableType},
+    primitives::{BasicType, GenericString, NestableType},
     sequences,
 };
 use serde::ser::SerializeTuple;
 
-use super::error;
+use crate::typed::TypeInfo;
+
+use super::{error, TypedValue};
 
 /// Serialize an array with known size as tuple.
 pub struct ArraySerializeWrapper<'a> {
     pub array_info: &'a sequences::Array,
     pub column: &'a ArrayRef,
+    pub type_info: &'a TypeInfo<'a>,
 }
 
 impl serde::Serialize for ArraySerializeWrapper<'_> {
@@ -106,13 +109,67 @@ impl serde::Serialize for ArraySerializeWrapper<'_> {
                 }
                 .serialize(serializer),
             },
-            NestableType::NamedType(_) => todo!("serializing arrays of NestableType::NamedType"),
-            NestableType::NamespacedType(_) => {
-                todo!("serializing arrays of NestableType::NamespacedType")
+            NestableType::NamedType(name) => {
+                let array = entry
+                    .as_struct_opt()
+                    .ok_or_else(|| error("not a struct array"))?;
+                let mut seq = serializer.serialize_tuple(self.array_info.size)?;
+                for i in 0..array.len() {
+                    let row = array.slice(i, 1);
+                    seq.serialize_element(&TypedValue {
+                        value: &(Arc::new(row) as ArrayRef),
+                        type_info: &crate::typed::TypeInfo {
+                            package_name: Cow::Borrowed(&self.type_info.package_name),
+                            message_name: Cow::Borrowed(&name.0),
+                            messages: self.type_info.messages.clone(),
+                        },
+                    })?;
+                }
+                seq.end()
             }
-            NestableType::GenericString(_) => {
-                todo!("serializing arrays of NestableType::GenericString")
+            NestableType::NamespacedType(reference) => {
+                if reference.namespace != "msg" {
+                    return Err(error(format!(
+                        "sequence references non-message type {reference:?}"
+                    )));
+                }
+
+                let array = entry
+                    .as_struct_opt()
+                    .ok_or_else(|| error("not a struct array"))?;
+                let mut seq = serializer.serialize_tuple(self.array_info.size)?;
+                for i in 0..array.len() {
+                    let row = array.slice(i, 1);
+                    seq.serialize_element(&TypedValue {
+                        value: &(Arc::new(row) as ArrayRef),
+                        type_info: &crate::typed::TypeInfo {
+                            package_name: Cow::Borrowed(&reference.package),
+                            message_name: Cow::Borrowed(&reference.name),
+                            messages: self.type_info.messages.clone(),
+                        },
+                    })?;
+                }
+                seq.end()
             }
+            NestableType::GenericString(s) => match s {
+                GenericString::String | GenericString::BoundedString(_) => {
+                    match entry.as_string_opt::<i32>() {
+                        Some(array) => {
+                            serialize_arrow_string(serializer, array, self.array_info.size)
+                        }
+                        None => {
+                            let array = entry
+                                .as_string_opt::<i64>()
+                                .ok_or_else(|| error("expected string array"))?;
+                            serialize_arrow_string(serializer, array, self.array_info.size)
+                        }
+                    }
+                }
+                GenericString::WString => {
+                    todo!("serializing WString sequences")
+                }
+                GenericString::BoundedWString(_) => todo!("serializing BoundedWString sequences"),
+            },
         }
     }
 }
@@ -183,4 +240,20 @@ impl serde::Serialize for BoolArrayAsTuple<'_> {
 
         seq.end()
     }
+}
+
+fn serialize_arrow_string<S, O>(
+    serializer: S,
+    array: &arrow::array::GenericByteArray<datatypes::GenericStringType<O>>,
+    array_len: usize,
+) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
+where
+    S: serde::Serializer,
+    O: OffsetSizeTrait,
+{
+    let mut seq = serializer.serialize_tuple(array_len)?;
+    for s in array.iter() {
+        seq.serialize_element(s.unwrap_or_default())?;
+    }
+    seq.end()
 }
