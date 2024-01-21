@@ -1,8 +1,8 @@
-use std::{borrow::Cow, marker::PhantomData, sync::Arc};
+use std::{any::type_name, borrow::Cow, marker::PhantomData, sync::Arc};
 
 use arrow::{
     array::{Array, ArrayRef, AsArray, OffsetSizeTrait, PrimitiveArray},
-    datatypes::{self, ArrowPrimitiveType},
+    datatypes::{self, ArrowPrimitiveType, UInt8Type},
 };
 use dora_ros2_bridge_msg_gen::types::primitives::{BasicType, GenericString, NestableType};
 use serde::ser::{SerializeSeq, SerializeTuple};
@@ -27,15 +27,23 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
             // should match the length of the outer struct
             assert_eq!(list.len(), 1);
             list.value(0)
-        } else {
-            // try as large list
-            let list = self
-                .column
-                .as_list_opt::<i64>()
-                .ok_or_else(|| error("value is not compatible with expected Array type"))?;
+        } else if let Some(list) = self.column.as_list_opt::<i64>() {
             // should match the length of the outer struct
             assert_eq!(list.len(), 1);
             list.value(0)
+        } else if let Some(list) = self.column.as_binary_opt::<i32>() {
+            // should match the length of the outer struct
+            assert_eq!(list.len(), 1);
+            Arc::new(list.slice(0, 1)) as ArrayRef
+        } else if let Some(list) = self.column.as_binary_opt::<i64>() {
+            // should match the length of the outer struct
+            assert_eq!(list.len(), 1);
+            Arc::new(list.slice(0, 1)) as ArrayRef
+        } else {
+            return Err(error(format!(
+                "value is not compatible with expected sequence type: {:?}",
+                self.column
+            )));
         };
         match &self.item_type {
             NestableType::BasicType(t) => match t {
@@ -59,11 +67,9 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                     ty: PhantomData::<datatypes::Int64Type>,
                 }
                 .serialize(serializer),
-                BasicType::U8 | BasicType::Char | BasicType::Byte => BasicSequence {
-                    value: &entry,
-                    ty: PhantomData::<datatypes::UInt8Type>,
+                BasicType::U8 | BasicType::Char | BasicType::Byte => {
+                    ByteSequence { value: &entry }.serialize(serializer)
                 }
-                .serialize(serializer),
                 BasicType::U16 => BasicSequence {
                     value: &entry,
                     ty: PhantomData::<datatypes::UInt16Type>,
@@ -196,6 +202,46 @@ where
 
         seq.end()
     }
+}
+
+struct ByteSequence<'a> {
+    value: &'a ArrayRef,
+}
+
+impl serde::Serialize for ByteSequence<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if let Some(binary) = self.value.as_binary_opt::<i32>() {
+            serialize_binary(serializer, binary)
+        } else if let Some(binary) = self.value.as_binary_opt::<i64>() {
+            serialize_binary(serializer, binary)
+        } else {
+            BasicSequence {
+                value: self.value,
+                ty: PhantomData::<UInt8Type>,
+            }
+            .serialize(serializer)
+        }
+    }
+}
+
+fn serialize_binary<S, O>(
+    serializer: S,
+    binary: &arrow::array::GenericByteArray<datatypes::GenericBinaryType<O>>,
+) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
+where
+    S: serde::Serializer,
+    O: OffsetSizeTrait,
+{
+    let mut seq = serializer.serialize_seq(Some(binary.len()))?;
+
+    for value in binary.iter() {
+        seq.serialize_element(value.unwrap_or_default())?;
+    }
+
+    seq.end()
 }
 
 struct BoolArray<'a> {
