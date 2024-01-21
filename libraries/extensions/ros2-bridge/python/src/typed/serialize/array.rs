@@ -1,4 +1,4 @@
-use std::{borrow::Cow, marker::PhantomData, sync::Arc};
+use std::{any::type_name, borrow::Cow, marker::PhantomData, sync::Arc};
 
 use arrow::{
     array::{Array, ArrayRef, AsArray, OffsetSizeTrait, PrimitiveArray},
@@ -35,7 +35,7 @@ impl serde::Serialize for ArraySerializeWrapper<'_> {
             let list = self
                 .column
                 .as_list_opt::<i64>()
-                .ok_or_else(|| error("value is not compatible with expected Array type"))?;
+                .ok_or_else(|| error("value is not compatible with expected array type"))?;
             // should match the length of the outer struct
             assert_eq!(list.len(), 1);
             list.value(0)
@@ -194,7 +194,7 @@ where
         let array: &PrimitiveArray<T> = self
             .value
             .as_primitive_opt()
-            .ok_or_else(|| error("not a primitive array"))?;
+            .ok_or_else(|| error(format!("not a primitive {} array", type_name::<T>())))?;
         if array.len() != self.len {
             return Err(error(format!(
                 "expected array with length {}, got length {}",
