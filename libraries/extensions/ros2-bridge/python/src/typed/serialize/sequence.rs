@@ -186,7 +186,7 @@ where
         let array: &PrimitiveArray<T> = self
             .value
             .as_primitive_opt()
-            .ok_or_else(|| error("not a primitive array"))?;
+            .ok_or_else(|| error(format!("not a primitive {} array", type_name::<T>())))?;
 
         let mut seq = serializer.serialize_seq(Some(array.len()))?;
 
