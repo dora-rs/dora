@@ -5,8 +5,16 @@ use arrow::{
 use core::fmt;
 use dora_ros2_bridge_msg_gen::types::primitives::{self, BasicType, NestableType};
 use serde::Deserialize;
+use std::{borrow::Cow, ops::Deref};
 
-pub struct SequenceDeserializer<'a>(pub &'a NestableType);
+use crate::typed::TypeInfo;
+
+use super::{error, StructDeserializer};
+
+pub struct SequenceDeserializer<'a> {
+    pub item_type: &'a NestableType,
+    pub type_info: &'a TypeInfo<'a>,
+}
 
 impl<'de> serde::de::DeserializeSeed<'de> for SequenceDeserializer<'_> {
     type Value = ArrayData;
@@ -15,11 +23,17 @@ impl<'de> serde::de::DeserializeSeed<'de> for SequenceDeserializer<'_> {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_seq(SequenceVisitor(self.0))
+        deserializer.deserialize_seq(SequenceVisitor {
+            item_type: self.item_type,
+            type_info: self.type_info,
+        })
     }
 }
 
-pub struct SequenceVisitor<'a>(pub &'a NestableType);
+pub struct SequenceVisitor<'a> {
+    pub item_type: &'a NestableType,
+    pub type_info: &'a TypeInfo<'a>,
+}
 
 impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
     type Value = ArrayData;
@@ -32,7 +46,7 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        match &self.0 {
+        match &self.item_type {
             NestableType::BasicType(t) => match t {
                 BasicType::I8 => deserialize_primitive_seq::<_, datatypes::Int8Type>(seq),
                 BasicType::I16 => deserialize_primitive_seq::<_, datatypes::Int16Type>(seq),
@@ -54,9 +68,30 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
                     Ok(array.finish().into())
                 }
             },
-            NestableType::NamedType(_) => todo!("deserialize sequence of NestableType::NamedType"),
-            NestableType::NamespacedType(_) => {
-                todo!("deserialize sequence of NestableType::NamedspacedType")
+            NestableType::NamedType(name) => {
+                let deserializer = StructDeserializer {
+                    type_info: Cow::Owned(TypeInfo {
+                        package_name: Cow::Borrowed(&self.type_info.package_name),
+                        message_name: Cow::Borrowed(&name.0),
+                        messages: self.type_info.messages.clone(),
+                    }),
+                };
+                deserialize_struct_array(&mut seq, deserializer)
+            }
+            NestableType::NamespacedType(reference) => {
+                if reference.namespace != "msg" {
+                    return Err(error(format!(
+                        "sequence item references non-message type {reference:?}",
+                    )));
+                }
+                let deserializer = StructDeserializer {
+                    type_info: Cow::Owned(TypeInfo {
+                        package_name: Cow::Borrowed(&reference.package),
+                        message_name: Cow::Borrowed(&reference.name),
+                        messages: self.type_info.messages.clone(),
+                    }),
+                };
+                deserialize_struct_array(&mut seq, deserializer)
             }
             NestableType::GenericString(t) => match t {
                 primitives::GenericString::String | primitives::GenericString::BoundedString(_) => {
@@ -73,6 +108,23 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
             },
         }
     }
+}
+
+fn deserialize_struct_array<'de, A>(
+    seq: &mut A,
+    deserializer: StructDeserializer<'_>,
+) -> Result<ArrayData, <A as serde::de::SeqAccess<'de>>::Error>
+where
+    A: serde::de::SeqAccess<'de>,
+{
+    let mut values = Vec::new();
+    while let Some(value) = seq.next_element_seed(deserializer.clone())? {
+        values.push(arrow::array::make_array(value));
+    }
+    let refs: Vec<_> = values.iter().map(|a| a.deref()).collect();
+    arrow::compute::concat(&refs)
+        .map(|a| a.to_data())
+        .map_err(super::error)
 }
 
 fn deserialize_primitive_seq<'de, S, T>(

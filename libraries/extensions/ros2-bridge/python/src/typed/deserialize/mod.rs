@@ -125,13 +125,13 @@ impl<'a, 'de> serde::de::Visitor<'de> for StructVisitor<'a> {
                     }
                 },
                 dora_ros2_bridge_msg_gen::types::MemberType::Array(a) => {
-                    data.next_element_seed(array::ArrayDeserializer(a))?
+                    data.next_element_seed(array::ArrayDeserializer{ array_type : a, type_info: self.type_info})?
                 },
                 dora_ros2_bridge_msg_gen::types::MemberType::Sequence(s) => {
-                    data.next_element_seed(sequence::SequenceDeserializer(&s.value_type))?
+                    data.next_element_seed(sequence::SequenceDeserializer{item_type: &s.value_type, type_info: self.type_info})?
                 },
                 dora_ros2_bridge_msg_gen::types::MemberType::BoundedSequence(s) => {
-                    data.next_element_seed(sequence::SequenceDeserializer(&s.value_type))?
+                    data.next_element_seed(sequence::SequenceDeserializer{ item_type: &s.value_type, type_info: self.type_info})?
                 },
             };
 
