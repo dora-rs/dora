@@ -76,12 +76,10 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub async fn run(
-        coordinator_addr: SocketAddr,
-        machine_id: String,
-        external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<()> {
+    pub async fn run(coordinator_addr: SocketAddr, machine_id: String) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
+
+        let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
 
         // spawn listen loop
         let (events_tx, events_rx) = flume::bounded(10);
@@ -108,7 +106,7 @@ impl Daemon {
                 );
 
         Self::run_general(
-            (coordinator_events, external_events, daemon_events).merge(),
+            (coordinator_events, ctrlc_events, daemon_events).merge(),
             Some(coordinator_addr),
             machine_id,
             None,
@@ -159,7 +157,7 @@ impl Daemon {
         let run_result = Self::run_general(
             Box::pin(coordinator_events),
             None,
-            "".into(),
+            "".to_string(),
             Some(exit_when_done),
             clock,
         );
@@ -429,10 +427,18 @@ impl Daemon {
             }
             DaemonCoordinatorEvent::Destroy => {
                 tracing::info!("received destroy command -> exiting");
-                let reply = DaemonCoordinatorReply::DestroyResult(Ok(()));
+                let (notify_tx, notify_rx) = oneshot::channel();
+                let reply = DaemonCoordinatorReply::DestroyResult {
+                    result: Ok(()),
+                    notify: Some(notify_tx),
+                };
                 let _ = reply_tx
                     .send(Some(reply))
                     .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
+                // wait until the reply is sent out
+                if notify_rx.await.is_err() {
+                    tracing::warn!("no confirmation received for DestroyReply");
+                }
                 RunStatus::Exit
             }
             DaemonCoordinatorEvent::Heartbeat => {
@@ -1062,10 +1068,6 @@ impl Daemon {
     }
 }
 
-pub fn run_dora_runtime() -> eyre::Result<()> {
-    dora_runtime::main()
-}
-
 async fn send_output_to_local_receivers(
     node_id: NodeId,
     output_id: DataId,
@@ -1518,4 +1520,34 @@ fn send_with_timestamp<T>(
         inner: event,
         timestamp: clock.new_timestamp(),
     })
+}
+
+fn set_up_ctrlc_handler(
+    clock: Arc<HLC>,
+) -> Result<impl Stream<Item = Timestamped<Event>>, eyre::ErrReport> {
+    let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
+
+    let mut ctrlc_sent = false;
+    ctrlc::set_handler(move || {
+        if ctrlc_sent {
+            tracing::warn!("received second ctrlc signal -> aborting immediately");
+            std::process::abort();
+        } else {
+            tracing::info!("received ctrlc signal");
+            if ctrlc_tx
+                .blocking_send(Timestamped {
+                    inner: Event::CtrlC,
+                    timestamp: clock.new_timestamp(),
+                })
+                .is_err()
+            {
+                tracing::error!("failed to report ctrl-c event to dora-coordinator");
+            }
+
+            ctrlc_sent = true;
+        }
+    })
+    .wrap_err("failed to set ctrl-c handler")?;
+
+    Ok(ReceiverStream::new(ctrlc_rx))
 }
