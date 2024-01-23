@@ -5,7 +5,7 @@ use dora_ros2_bridge_msg_gen::types::{
     primitives::{GenericString, NestableType},
     MemberType,
 };
-use serde::ser::SerializeStruct;
+use serde::ser::{SerializeStruct, SerializeTupleStruct};
 
 use super::{TypeInfo, DUMMY_FIELD_NAME, DUMMY_STRUCT_NAME};
 
@@ -61,7 +61,7 @@ impl serde::Serialize for TypedValue<'_> {
                 input.len()
             )))?;
         }
-        let mut s = serializer.serialize_struct(DUMMY_STRUCT_NAME, message.members.len())?;
+        let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len())?;
         for field in message.members.iter() {
             let column: Cow<_> = match input.column_by_name(&field.name) {
                 Some(input) => Cow::Borrowed(input),
@@ -79,13 +79,10 @@ impl serde::Serialize for TypedValue<'_> {
             match &field.r#type {
                 MemberType::NestableType(t) => match t {
                     NestableType::BasicType(t) => {
-                        s.serialize_field(
-                            DUMMY_FIELD_NAME,
-                            &primitive::SerializeWrapper {
-                                t,
-                                column: column.as_ref(),
-                            },
-                        )?;
+                        s.serialize_field(&primitive::SerializeWrapper {
+                            t,
+                            column: column.as_ref(),
+                        })?;
                     }
                     NestableType::NamedType(name) => {
                         let referenced_value = &TypedValue {
@@ -96,7 +93,7 @@ impl serde::Serialize for TypedValue<'_> {
                                 messages: self.type_info.messages.clone(),
                             },
                         };
-                        s.serialize_field(DUMMY_FIELD_NAME, &referenced_value)?;
+                        s.serialize_field(&referenced_value)?;
                     }
                     NestableType::NamespacedType(reference) => {
                         if reference.namespace != "msg" {
@@ -114,7 +111,7 @@ impl serde::Serialize for TypedValue<'_> {
                                 messages: self.type_info.messages.clone(),
                             },
                         };
-                        s.serialize_field(DUMMY_FIELD_NAME, &referenced_value)?;
+                        s.serialize_field(&referenced_value)?;
                     }
                     NestableType::GenericString(t) => match t {
                         GenericString::String | GenericString::BoundedString(_) => {
@@ -131,7 +128,7 @@ impl serde::Serialize for TypedValue<'_> {
                                 assert_eq!(string_array.len(), 1);
                                 string_array.value(0)
                             };
-                            s.serialize_field(DUMMY_FIELD_NAME, string)?;
+                            s.serialize_field(string)?;
                         }
                         GenericString::WString => todo!("serializing WString types"),
                         GenericString::BoundedWString(_) => {
@@ -140,34 +137,25 @@ impl serde::Serialize for TypedValue<'_> {
                     },
                 },
                 dora_ros2_bridge_msg_gen::types::MemberType::Array(a) => {
-                    s.serialize_field(
-                        DUMMY_FIELD_NAME,
-                        &array::ArraySerializeWrapper {
-                            array_info: a,
-                            column: column.as_ref(),
-                            type_info: self.type_info,
-                        },
-                    )?;
+                    s.serialize_field(&array::ArraySerializeWrapper {
+                        array_info: a,
+                        column: column.as_ref(),
+                        type_info: self.type_info,
+                    })?;
                 }
                 dora_ros2_bridge_msg_gen::types::MemberType::Sequence(v) => {
-                    s.serialize_field(
-                        DUMMY_FIELD_NAME,
-                        &sequence::SequenceSerializeWrapper {
-                            item_type: &v.value_type,
-                            column: column.as_ref(),
-                            type_info: self.type_info,
-                        },
-                    )?;
+                    s.serialize_field(&sequence::SequenceSerializeWrapper {
+                        item_type: &v.value_type,
+                        column: column.as_ref(),
+                        type_info: self.type_info,
+                    })?;
                 }
                 dora_ros2_bridge_msg_gen::types::MemberType::BoundedSequence(v) => {
-                    s.serialize_field(
-                        DUMMY_FIELD_NAME,
-                        &sequence::SequenceSerializeWrapper {
-                            item_type: &v.value_type,
-                            column: column.as_ref(),
-                            type_info: self.type_info,
-                        },
-                    )?;
+                    s.serialize_field(&sequence::SequenceSerializeWrapper {
+                        item_type: &v.value_type,
+                        column: column.as_ref(),
+                        type_info: self.type_info,
+                    })?;
                 }
             }
         }

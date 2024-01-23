@@ -59,7 +59,7 @@ impl<'a, 'de> serde::de::Visitor<'de> for StructVisitor<'a> {
     type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a struct encoded as sequence")
+        formatter.write_str("a struct encoded as TupleStruct")
     }
 
     fn visit_seq<A>(self, mut data: A) -> Result<Self::Value, A::Error>
