@@ -1,12 +1,24 @@
+use std::any::Any;
+
 use dora_node_api::{
     self,
     arrow::array::{AsArray, BinaryArray},
+    merged::{MergeExternal, MergedEvent},
     Event, EventStream,
 };
 use eyre::bail;
+use futures_lite::Stream;
 
 #[cfg(feature = "ros2-bridge")]
-pub use dora_ros2_bridge as ros2;
+use dora_ros2_bridge::_core;
+#[cfg(feature = "ros2-bridge")]
+pub use ros2::ExternalEvents;
+
+#[cfg(feature = "ros2-bridge")]
+pub mod ros2 {
+    pub use dora_ros2_bridge::*;
+    include!(env!("ROS2_BINDINGS_PATH"));
+}
 
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
@@ -34,14 +46,21 @@ mod ffi {
         error: String,
     }
 
+    extern "C++" {
+        #[cfg(feature = "ros2-bridge")]
+        type ExternalEvents = crate::ros2::ExternalEvents;
+    }
+
     extern "Rust" {
         type Events;
+        // type ExternalEvents;
+        type MergedEvents;
         type OutputSender;
         type DoraEvent;
 
         fn init_dora_node() -> Result<DoraNode>;
 
-        fn next_event(inputs: &mut Box<Events>) -> Box<DoraEvent>;
+        fn next(self: &mut Events) -> Box<DoraEvent>;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
         fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
         fn send_output(
@@ -49,6 +68,9 @@ mod ffi {
             id: String,
             data: &[u8],
         ) -> DoraResult;
+
+        #[cfg(feature = "ros2-bridge")]
+        fn merge_events(dora: Box<Events>, external: Box<ExternalEvents>) -> Box<MergedEvents>;
     }
 }
 
@@ -65,9 +87,25 @@ fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
 
 pub struct Events(EventStream);
 
-fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
-    Box::new(DoraEvent(events.0.recv()))
+impl Events {
+    fn next(&mut self) -> Box<DoraEvent> {
+        Box::new(DoraEvent(self.0.recv()))
+    }
 }
+
+#[cfg(feature = "ros2-bridge")]
+#[allow(clippy::boxed_local)]
+pub fn merge_events(
+    dora_events: Box<Events>,
+    external: Box<ros2::ExternalEvents>,
+) -> Box<MergedEvents> {
+    let merge_external = dora_events
+        .0
+        .merge_external(external.events.0.as_event_stream());
+    Box::new(MergedEvents(merge_external))
+}
+
+pub struct MergedEvents(Box<dyn Stream<Item = MergedEvent<Box<dyn Any>>> + Unpin>);
 
 pub struct DoraEvent(Option<Event>);
 

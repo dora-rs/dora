@@ -6,9 +6,8 @@ fn main() {}
 #[cfg(feature = "generate-messages")]
 fn main() {
     use rust_format::Formatter;
-    let create_cxx_bridge = cfg!(feature = "cxx-bridge");
     let paths = ament_prefix_paths();
-    let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), create_cxx_bridge);
+    let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), false);
     let generated_string = rust_format::PrettyPlease::default()
         .format_tokens(generated)
         .unwrap();
