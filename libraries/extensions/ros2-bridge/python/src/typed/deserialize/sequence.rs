@@ -1,11 +1,14 @@
 use arrow::{
-    array::{ArrayData, BooleanBuilder, PrimitiveBuilder, StringBuilder},
-    datatypes::{self, ArrowPrimitiveType},
+    array::{
+        Array, ArrayData, BooleanBuilder, ListArray, ListBuilder, PrimitiveBuilder, StringBuilder,
+    },
+    buffer::OffsetBuffer,
+    datatypes::{self, ArrowPrimitiveType, Field},
 };
 use core::fmt;
 use dora_ros2_bridge_msg_gen::types::primitives::{self, BasicType, NestableType};
 use serde::Deserialize;
-use std::{borrow::Cow, ops::Deref};
+use std::{borrow::Cow, ops::Deref, sync::Arc};
 
 use crate::typed::TypeInfo;
 
@@ -65,7 +68,10 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
                     while let Some(value) = seq.next_element()? {
                         array.append_value(value);
                     }
-                    Ok(array.finish().into())
+                    // wrap array into list of length 1
+                    let mut list = ListBuilder::new(array);
+                    list.append(true);
+                    Ok(list.finish().into())
                 }
             },
             NestableType::NamedType(name) => {
@@ -99,7 +105,10 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
                     while let Some(value) = seq.next_element::<String>()? {
                         array.append_value(value);
                     }
-                    Ok(array.finish().into())
+                    // wrap array into list of length 1
+                    let mut list = ListBuilder::new(array);
+                    list.append(true);
+                    Ok(list.finish().into())
                 }
                 primitives::GenericString::WString => todo!("deserialize sequence of WString"),
                 primitives::GenericString::BoundedWString(_) => {
@@ -122,9 +131,17 @@ where
         values.push(arrow::array::make_array(value));
     }
     let refs: Vec<_> = values.iter().map(|a| a.deref()).collect();
-    arrow::compute::concat(&refs)
-        .map(|a| a.to_data())
-        .map_err(super::error)
+    let concatenated = arrow::compute::concat(&refs).map_err(super::error)?;
+
+    let list = ListArray::try_new(
+        Arc::new(Field::new("item", concatenated.data_type().clone(), true)),
+        OffsetBuffer::from_lengths([concatenated.len()]),
+        Arc::new(concatenated),
+        None,
+    )
+    .map_err(error)?;
+
+    Ok(list.to_data())
 }
 
 fn deserialize_primitive_seq<'de, S, T>(
@@ -139,5 +156,8 @@ where
     while let Some(value) = seq.next_element::<T::Native>()? {
         array.append_value(value);
     }
-    Ok(array.finish().into())
+    // wrap array into list of length 1
+    let mut list = ListBuilder::new(array);
+    list.append(true);
+    Ok(list.finish().into())
 }
