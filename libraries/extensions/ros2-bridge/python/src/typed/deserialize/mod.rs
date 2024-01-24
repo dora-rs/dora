@@ -143,7 +143,6 @@ impl<'a, 'de> serde::de::Visitor<'de> for StructVisitor<'a> {
             })?;
 
             fields.push((
-                // Recreate a new field as List(UInt8) can be converted to UInt8
                 Arc::new(Field::new(&member.name, value.data_type().clone(), true)),
                 make_array(value),
             ));
