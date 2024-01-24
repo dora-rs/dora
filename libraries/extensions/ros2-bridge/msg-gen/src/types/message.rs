@@ -190,11 +190,19 @@ impl Message {
         let cxx_publisher_name = format_ident!("Publisher_{}", self.name);
         let create_publisher = format_ident!("new__Publisher__{package_name}__{}", self.name);
         let cxx_create_publisher = format_ident!("create_publisher");
+
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
         let self_name = &self.name;
 
         let publish = format_ident!("publish__{package_name}__{}", self.name);
         let cxx_publish = format_ident!("publish");
+
+        let subscription_name = format_ident!("Subscription__{package_name}__{}", self.name);
+        let cxx_subscription_name = format_ident!("Subscription_{}", self.name);
+        let create_subscription = format_ident!("new__Subscription__{package_name}__{}", self.name);
+        let cxx_create_subscription = format_ident!("create_subscription");
+        let event_stream = format_ident!("event_stream__{package_name}__{}", self.name);
+        let cxx_event_stream = format_ident!("event_stream");
 
         let def = quote! {
             #[namespace = #package_name]
@@ -204,6 +212,8 @@ impl Message {
             fn #create_topic(self: &Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies) -> Result<Box<#topic_name>>;
             #[cxx_name = #cxx_create_publisher]
             fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#publisher_name>>;
+            #[cxx_name = #cxx_create_subscription]
+            fn #create_subscription(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#subscription_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_publisher_name]
@@ -211,6 +221,14 @@ impl Message {
             #[namespace = #package_name]
             #[cxx_name = #cxx_publish]
             fn #publish(self: &mut #publisher_name, message: #struct_raw_name) -> Result<()>;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_subscription_name]
+            type #subscription_name;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_event_stream]
+            fn #event_stream(subscription: Box<#subscription_name>) -> Box<ExternalEvents>;
         };
         let imp = quote! {
             #[allow(non_camel_case_types)]
@@ -230,6 +248,12 @@ impl Message {
                     let publisher = self.0.create_publisher(&topic.0, Some(qos.into()))?;
                     Ok(Box::new(#publisher_name(publisher)))
                 }
+
+                #[allow(non_snake_case)]
+                pub fn #create_subscription(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#subscription_name>> {
+                    let subscription = self.0.create_subscription(&topic.0, Some(qos.into()))?;
+                    Ok(Box::new(#subscription_name(subscription)))
+                }
             }
 
             #[allow(non_camel_case_types)]
@@ -243,6 +267,24 @@ impl Message {
                 }
             }
 
+            #[allow(non_camel_case_types)]
+            pub struct #subscription_name(ros2_client::Subscription<ffi::#struct_raw_name>);
+
+            #[allow(non_snake_case)]
+            fn #event_stream(subscription: Box<#subscription_name>) -> Box<ExternalEvents> {
+                Box::new(ExternalEvents { events: Box::new(ExternalRos2Events(subscription)) })
+            }
+
+            impl AsEventStream for #subscription_name {
+                fn as_event_stream(self: Box<Self>) -> Box<dyn futures_lite::Stream<Item = Box<dyn std::any::Any>> + Unpin> {
+                    let stream = futures_lite::stream::unfold(self.0, |sub| async {
+                        let item = sub.async_take().await;
+                        let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
+                        Some((item_boxed, sub))
+                    });
+                    Box::new(Box::pin(stream))
+                }
+            }
         };
         (def, imp)
     }
