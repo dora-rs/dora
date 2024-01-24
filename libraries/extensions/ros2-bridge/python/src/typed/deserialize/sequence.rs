@@ -82,7 +82,7 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
                         messages: self.type_info.messages.clone(),
                     }),
                 };
-                deserialize_struct_array(&mut seq, deserializer)
+                deserialize_struct_seq(&mut seq, deserializer)
             }
             NestableType::NamespacedType(reference) => {
                 if reference.namespace != "msg" {
@@ -97,7 +97,7 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
                         messages: self.type_info.messages.clone(),
                     }),
                 };
-                deserialize_struct_array(&mut seq, deserializer)
+                deserialize_struct_seq(&mut seq, deserializer)
             }
             NestableType::GenericString(t) => match t {
                 primitives::GenericString::String | primitives::GenericString::BoundedString(_) => {
@@ -119,7 +119,7 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
     }
 }
 
-fn deserialize_struct_array<'de, A>(
+fn deserialize_struct_seq<'de, A>(
     seq: &mut A,
     deserializer: StructDeserializer<'_>,
 ) -> Result<ArrayData, <A as serde::de::SeqAccess<'de>>::Error>
