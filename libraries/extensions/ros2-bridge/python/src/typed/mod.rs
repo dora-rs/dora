@@ -22,4 +22,3 @@ pub struct TypeInfo<'a> {
 /// the CDR format of ROS2 does not encode struct or field
 /// names.
 const DUMMY_STRUCT_NAME: &str = "struct";
-const DUMMY_FIELD_NAME: &str = "field";

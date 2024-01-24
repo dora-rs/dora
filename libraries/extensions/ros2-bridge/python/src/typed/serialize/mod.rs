@@ -5,9 +5,9 @@ use dora_ros2_bridge_msg_gen::types::{
     primitives::{GenericString, NestableType},
     MemberType,
 };
-use serde::ser::{SerializeStruct, SerializeTupleStruct};
+use serde::ser::SerializeTupleStruct;
 
-use super::{TypeInfo, DUMMY_FIELD_NAME, DUMMY_STRUCT_NAME};
+use super::{TypeInfo, DUMMY_STRUCT_NAME};
 
 mod array;
 mod defaults;
