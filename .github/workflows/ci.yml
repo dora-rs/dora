@@ -65,7 +65,7 @@ jobs:
       - name: "Build  (Without Python node as it is build with maturin)"
         run: cargo build --all --exclude dora-node-api-python
       - name: "Test"
-        run: cargo test --all
+        run: cargo test --all --exclude dora-ros2-bridge-python
 
   # Run examples as separate job because otherwise we will exhaust the disk
   # space of the GitHub action runners.
@@ -164,6 +164,10 @@ jobs:
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+      - name: "Install pyarrow for testing"
+        run: pip install numpy pyarrow
+      - name: "Test"
+        run: cargo test -p dora-ros2-bridge-python
       - name: "Rust ROS2 Bridge example"
         timeout-minutes: 30
         env:

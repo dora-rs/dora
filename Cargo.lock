@@ -1424,7 +1424,7 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
- "serde_yaml 0.9.25",
+ "serde_yaml 0.9.30",
  "termcolor",
  "tokio",
  "tokio-stream",
@@ -1461,7 +1461,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde-with-expand-env",
- "serde_yaml 0.9.25",
+ "serde_yaml 0.9.30",
  "tokio",
  "tracing",
  "uuid",
@@ -1727,6 +1727,7 @@ dependencies = [
  "futures",
  "pyo3",
  "serde",
+ "serde_assert",
 ]
 
 [[package]]
@@ -4977,6 +4978,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_assert"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92b7be0ad5a7b2eefaa5418eb141838270f1ad2d2c6e88acec3795d2425ffa97"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "serde_derive"
 version = "1.0.195"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5035,9 +5045,9 @@ dependencies = [
 
 [[package]]
 name = "serde_yaml"
-version = "0.9.25"
+version = "0.9.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a49e178e4452f45cb61d0cd8cebc1b0fafd3e41929e996cef79aa3aca91f574"
+checksum = "b1bf28c79a99f70ee1f1d83d10c875d2e70618417fda01ad1785e027579d9d38"
 dependencies = [
  "indexmap 2.0.2",
  "itoa",
@@ -6626,7 +6636,7 @@ dependencies = [
  "num_cpus",
  "serde",
  "serde_json",
- "serde_yaml 0.9.25",
+ "serde_yaml 0.9.30",
  "validated_struct",
  "zenoh-cfg-properties",
  "zenoh-core",
