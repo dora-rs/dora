@@ -64,6 +64,8 @@ jobs:
         run: cargo check --all
       - name: "Build  (Without Python node as it is build with maturin)"
         run: cargo build --all --exclude dora-node-api-python
+      - name: "Install pyarrow for testing"
+        run: pip install numpy pyarrow
       - name: "Test"
         run: cargo test --all
 
