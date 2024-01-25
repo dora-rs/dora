@@ -40,10 +40,12 @@ impl serde::Serialize for TypedValue<'_> {
                 ))
             })?;
 
-        let input = self
-            .value
-            .as_struct_opt()
-            .ok_or_else(|| error("expected struct array"))?;
+        let input = self.value.as_struct_opt().ok_or_else(|| {
+            error(format!(
+                "expected struct array for message: {}, with following format: {:#?} \n But, got value: {:#?}",
+               self.type_info.message_name, message, self.value
+            ))
+        })?;
         for column_name in input.column_names() {
             if !message.members.iter().any(|m| m.name == column_name) {
                 return Err(error(format!(
