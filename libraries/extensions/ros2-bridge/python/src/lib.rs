@@ -101,7 +101,7 @@ impl Ros2Node {
         message_type: String,
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
-        let (namespace_name, message_name) = message_type.split_once("::").with_context(|| {
+        let (namespace_name, message_name) = message_type.split_once("/").with_context(|| {
             format!(
                 "message type must be of form `package::type`, is `{}`",
                 message_type
