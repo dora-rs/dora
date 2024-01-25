@@ -39,7 +39,7 @@ impl TryFrom<&ArrowData> for u8 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::UInt8Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive UInt8Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -48,7 +48,7 @@ impl TryFrom<&ArrowData> for u16 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::UInt16Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive UInt16Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -57,7 +57,7 @@ impl TryFrom<&ArrowData> for u32 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::UInt32Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive UInt32Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -66,7 +66,7 @@ impl TryFrom<&ArrowData> for u64 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::UInt64Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive UInt64Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -75,7 +75,7 @@ impl TryFrom<&ArrowData> for i8 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::Int8Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive Int8Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -84,7 +84,7 @@ impl TryFrom<&ArrowData> for i16 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::Int16Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive Int16Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -93,7 +93,7 @@ impl TryFrom<&ArrowData> for i32 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::Int32Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive Int32Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -102,7 +102,7 @@ impl TryFrom<&ArrowData> for i64 {
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
         let array = value
             .as_primitive_opt::<arrow::datatypes::Int64Type>()
-            .context("not a primitive array")?;
+            .context("not a primitive Int64Type array")?;
         extract_single_primitive(array)
     }
 }
@@ -127,8 +127,9 @@ impl<'a> TryFrom<&'a ArrowData> for &'a str {
 impl<'a> TryFrom<&'a ArrowData> for &'a [u8] {
     type Error = eyre::Report;
     fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::UInt8Type> =
-            value.as_primitive_opt().wrap_err("not a primitive array")?;
+        let array: &PrimitiveArray<arrow::datatypes::UInt8Type> = value
+            .as_primitive_opt()
+            .wrap_err("not a primitive UInt8Type array")?;
         if array.null_count() != 0 {
             eyre::bail!("array has nulls");
         }
