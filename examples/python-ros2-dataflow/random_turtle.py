@@ -21,14 +21,12 @@ topic_qos = dora.experimental.ros2_bridge.Ros2QosPolicies(
 
 # Create a publisher to cmd_vel topic
 turtle_twist_topic = ros2_node.create_topic(
-    "/turtle1/cmd_vel", "geometry_msgs::Twist", topic_qos
+    "/turtle1/cmd_vel", "geometry_msgs/Twist", topic_qos
 )
 twist_writer = ros2_node.create_publisher(turtle_twist_topic)
 
 # Create a listener to pose topic
-turtle_pose_topic = ros2_node.create_topic(
-    "/turtle1/pose", "turtlesim::Pose", topic_qos
-)
+turtle_pose_topic = ros2_node.create_topic("/turtle1/pose", "turtlesim/Pose", topic_qos)
 pose_reader = ros2_node.create_subscription(turtle_pose_topic)
 
 # Create a dora node

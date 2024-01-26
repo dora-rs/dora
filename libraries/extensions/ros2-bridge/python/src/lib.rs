@@ -101,12 +101,13 @@ impl Ros2Node {
         message_type: String,
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
-        let (namespace_name, message_name) = message_type.split_once("::").with_context(|| {
-            format!(
-                "message type must be of form `package::type`, is `{}`",
-                message_type
-            )
-        })?;
+        let (namespace_name, message_name) =
+            match (message_type.split_once("/"), message_type.split_once("::")) {
+                (Some(msg), None) => msg,
+                (None, Some(msg)) => msg,
+                _ => eyre::bail!("Expected message type in the format `namespace/message` or `namespace::message`, such as `std_msgs/UInt8` but got: {}", message_type),
+            };
+
         let message_type_name = ros2_client::MessageTypeName::new(namespace_name, message_name);
         let topic_name = ros2_client::Name::parse(name)
             .map_err(|err| eyre!("failed to parse ROS2 topic name: {err}"))?;
