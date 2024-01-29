@@ -90,7 +90,11 @@ enum Command {
     // Planned for future releases:
     // Dashboard,
     /// Show logs of a given dataflow and node.
-    Logs { dataflow: String, node: String },
+    #[command(allow_missing_positional = true)]
+    Logs {
+        dataflow: Option<String>,
+        node: String,
+    },
     // Metrics,
     // Stats,
     // Get,
@@ -191,12 +195,24 @@ fn run() -> eyre::Result<()> {
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
         Command::Up { config } => up::up(config.as_deref())?,
+
         Command::Logs { dataflow, node } => {
-            let uuid = Uuid::parse_str(&dataflow).ok();
-            let name = if uuid.is_some() { None } else { Some(dataflow) };
             let mut session =
                 connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
-            logs::logs(&mut *session, uuid, name, node)?
+            let uuids = query_running_dataflows(&mut *session)
+                .wrap_err("failed to query running dataflows")?;
+            if let Some(dataflow) = dataflow {
+                let uuid = Uuid::parse_str(&dataflow).ok();
+                let name = if uuid.is_some() { None } else { Some(dataflow) };
+                logs::logs(&mut *session, uuid, name, node)?
+            } else {
+                let uuid = match &uuids[..] {
+                    [] => bail!("No dataflows are running"),
+                    [uuid] => uuid.clone(),
+                    _ => inquire::Select::new("Choose dataflow to show logs:", uuids).prompt()?,
+                };
+                logs::logs(&mut *session, Some(uuid.uuid), None, node)?
+            }
         }
         Command::Start {
             dataflow,
