@@ -10,6 +10,8 @@
 //! [`sysinfo`]: https://github.com/GuillaumeGomez/sysinfo
 //! [`opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
 
+use std::time::Duration;
+
 use opentelemetry::metrics::{self};
 use opentelemetry_sdk::{metrics::MeterProvider, runtime};
 
@@ -34,5 +36,6 @@ pub fn init_metrics() -> metrics::Result<MeterProvider> {
                 .tonic()
                 .with_export_config(export_config),
         )
+        .with_period(Duration::from_secs(10))
         .build()
 }
