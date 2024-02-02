@@ -12,10 +12,11 @@
 
 use std::time::Duration;
 
-use opentelemetry::metrics::{self};
-use opentelemetry_sdk::{metrics::MeterProvider, runtime};
-
+use eyre::{Context, Result};
+use opentelemetry::metrics::{self, MeterProvider as _};
 use opentelemetry_otlp::{ExportConfig, WithExportConfig};
+use opentelemetry_sdk::{metrics::MeterProvider, runtime};
+use opentelemetry_system_metrics::init_process_observer;
 /// Init opentelemetry meter
 ///
 /// Use the default Opentelemetry exporter with default config
@@ -38,4 +39,11 @@ pub fn init_metrics() -> metrics::Result<MeterProvider> {
         )
         .with_period(Duration::from_secs(10))
         .build()
+}
+
+pub fn init_meter_provider(meter_id: String) -> Result<MeterProvider> {
+    let meter_provider = init_metrics().context("Could not create opentelemetry meter")?;
+    let meter = meter_provider.meter(meter_id);
+    let _ = init_process_observer(meter).context("could not initiale system metrics observer")?;
+    Ok(meter_provider)
 }

@@ -5,6 +5,7 @@ use dora_core::{
     daemon_messages::{NodeConfig, RuntimeConfig},
     descriptor::OperatorConfig,
 };
+use dora_metrics::init_meter_provider;
 use dora_node_api::{DoraNode, Event};
 use eyre::{bail, Context, Result};
 use futures::{Stream, StreamExt};
@@ -122,17 +123,7 @@ async fn run(
     init_done: oneshot::Receiver<Result<()>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
-    let _meter_provider = {
-        use dora_metrics::init_metrics;
-        use opentelemetry::metrics::MeterProvider as _;
-        use opentelemetry_system_metrics::init_process_observer;
-
-        let meter_provider = init_metrics().context("Could not create opentelemetry meter")?;
-        let meter = meter_provider.meter(config.node_id.to_string());
-        let _ =
-            init_process_observer(meter).context("could not initiale system metrics observer")?;
-        meter_provider
-    };
+    let _meter_provider = init_meter_provider(config.node_id.to_string());
     init_done
         .await
         .wrap_err("the `init_done` channel was closed unexpectedly")?
