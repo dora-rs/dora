@@ -11,4 +11,5 @@ license.workspace = true
 [dependencies]
 opentelemetry = { version = "0.21", features = ["metrics"] }
 opentelemetry-otlp = { version = "0.14.0", features = ["tonic", "metrics"] }
-opentelemetry_sdk = { version = "0.21.0", features = ["rt-tokio", "metrics"] }
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio", "metrics"] }
+    
