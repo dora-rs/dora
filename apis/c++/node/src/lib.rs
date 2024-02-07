@@ -3,22 +3,13 @@ use std::any::Any;
 use dora_node_api::{
     self,
     arrow::array::{AsArray, BinaryArray},
-    merged::{MergeExternal, MergedEvent},
+    merged::MergedEvent,
     Event, EventStream,
 };
 use eyre::bail;
-use futures_lite::Stream;
 
 #[cfg(feature = "ros2-bridge")]
 use dora_ros2_bridge::_core;
-#[cfg(feature = "ros2-bridge")]
-pub use ros2::ExternalEvents;
-
-#[cfg(feature = "ros2-bridge")]
-pub mod ros2 {
-    pub use dora_ros2_bridge::*;
-    include!(env!("ROS2_BINDINGS_PATH"));
-}
 
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
@@ -47,16 +38,18 @@ mod ffi {
     }
 
     extern "C++" {
-        #[cfg(feature = "ros2-bridge")]
+        #[allow(dead_code)]
         type ExternalEvents = crate::ros2::ExternalEvents;
+        #[allow(dead_code)]
+        type Ros2Event = crate::ros2::Ros2Event;
     }
 
     extern "Rust" {
         type Events;
-        // type ExternalEvents;
         type MergedEvents;
         type OutputSender;
         type DoraEvent;
+        type MergedDoraEvent;
 
         fn init_dora_node() -> Result<DoraNode>;
 
@@ -69,8 +62,32 @@ mod ffi {
             data: &[u8],
         ) -> DoraResult;
 
-        #[cfg(feature = "ros2-bridge")]
         fn merge_events(dora: Box<Events>, external: Box<ExternalEvents>) -> Box<MergedEvents>;
+        fn next(self: &mut MergedEvents) -> Box<MergedDoraEvent>;
+
+        fn is_ros2(event: &Box<MergedDoraEvent>) -> bool;
+        fn downcast_ros2(event: Box<MergedDoraEvent>) -> Result<Box<Ros2Event>>;
+        fn is_dora(event: &Box<MergedDoraEvent>) -> bool;
+        fn downcast_dora(event: Box<MergedDoraEvent>) -> Result<Box<DoraEvent>>;
+    }
+}
+
+#[cfg(feature = "ros2-bridge")]
+pub mod ros2 {
+    pub use dora_ros2_bridge::*;
+    include!(env!("ROS2_BINDINGS_PATH"));
+}
+
+/// Dummy placeholder.
+#[cfg(not(feature = "ros2-bridge"))]
+#[cxx::bridge]
+#[allow(clippy::needless_lifetimes)]
+mod ros2 {
+    pub struct ExternalEvents {
+        dummy: u8,
+    }
+    pub struct Ros2Event {
+        dummy: u8,
     }
 }
 
@@ -92,20 +109,6 @@ impl Events {
         Box::new(DoraEvent(self.0.recv()))
     }
 }
-
-#[cfg(feature = "ros2-bridge")]
-#[allow(clippy::boxed_local)]
-pub fn merge_events(
-    dora_events: Box<Events>,
-    external: Box<ros2::ExternalEvents>,
-) -> Box<MergedEvents> {
-    let merge_external = dora_events
-        .0
-        .merge_external(external.events.0.as_event_stream());
-    Box::new(MergedEvents(merge_external))
-}
-
-pub struct MergedEvents(Box<dyn Stream<Item = MergedEvent<Box<dyn Any>>> + Unpin>);
 
 pub struct DoraEvent(Option<Event>);
 
@@ -146,4 +149,76 @@ fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::
         Err(err) => format!("{err:?}"),
     };
     ffi::DoraResult { error }
+}
+
+#[cfg(feature = "ros2-bridge")]
+#[allow(clippy::boxed_local)]
+pub fn merge_events(
+    dora_events: Box<Events>,
+    external: Box<ros2::ExternalEvents>,
+) -> Box<MergedEvents> {
+    use dora_node_api::merged::MergeExternal;
+
+    let merge_external = dora_events
+        .0
+        .merge_external(external.events.0.as_event_stream());
+    Box::new(MergedEvents(Box::new(futures_lite::stream::block_on(
+        merge_external,
+    ))))
+}
+
+/// Dummy
+#[cfg(not(feature = "ros2-bridge"))]
+#[allow(clippy::boxed_local)]
+pub fn merge_events(
+    dora_events: Box<Events>,
+    _external: Box<ros2::ExternalEvents>,
+) -> Box<MergedEvents> {
+    use dora_node_api::merged::MergeExternal;
+
+    let merge_external = dora_events.0.merge_external(futures_lite::stream::empty());
+    Box::new(MergedEvents(Box::new(futures_lite::stream::block_on(
+        merge_external,
+    ))))
+}
+
+pub struct MergedEvents(Box<dyn Iterator<Item = MergedEvent<Box<dyn Any>>> + Unpin>);
+
+impl MergedEvents {
+    fn next(&mut self) -> Box<MergedDoraEvent> {
+        let event = self.0.next();
+        Box::new(MergedDoraEvent(event))
+    }
+}
+
+pub struct MergedDoraEvent(Option<MergedEvent<Box<dyn Any>>>);
+
+fn is_ros2(event: &Box<MergedDoraEvent>) -> bool {
+    match event.0 {
+        Some(MergedEvent::External(_)) => true,
+        _ => false,
+    }
+}
+
+fn downcast_ros2(event: Box<MergedDoraEvent>) -> eyre::Result<Box<ros2::Ros2Event>> {
+    match event.0 {
+        Some(MergedEvent::External(event)) => Ok(Box::new(ros2::Ros2Event {
+            event: Box::new(ros2::ExternalRos2Event(event)),
+        })),
+        _ => eyre::bail!("not an external event"),
+    }
+}
+
+fn is_dora(event: &Box<MergedDoraEvent>) -> bool {
+    match event.0 {
+        Some(MergedEvent::Dora(_)) => true,
+        _ => false,
+    }
+}
+
+fn downcast_dora(event: Box<MergedDoraEvent>) -> eyre::Result<Box<DoraEvent>> {
+    match event.0 {
+        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent(Some(event)))),
+        _ => eyre::bail!("not an external event"),
+    }
 }

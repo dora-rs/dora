@@ -1,17 +1,35 @@
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 fn main() {
     let mut bridge_files = vec![PathBuf::from("src/lib.rs")];
     #[cfg(feature = "ros2-bridge")]
     bridge_files.push(ros2::generate());
 
-    let _build = cxx_build::bridges(dbg!(&bridge_files));
+    let _build = cxx_build::bridges(&bridge_files);
     println!("cargo:rerun-if-changed=src/lib.rs");
+
+    // rename header files
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap();
+    let src_dir = root
+        .join("target")
+        .join("cxxbridge")
+        .join("dora-node-api-cxx")
+        .join("src");
+    let target_dir = src_dir.parent().unwrap();
+    std::fs::copy(src_dir.join("lib.rs.h"), target_dir.join("dora-node-api.h")).unwrap();
+    std::fs::copy(
+        src_dir.join("lib.rs.cc"),
+        target_dir.join("dora-node-api.cc"),
+    )
+    .unwrap();
 
     #[cfg(feature = "ros2-bridge")]
     ros2::generate_ros2_message_header(bridge_files.last().unwrap());
 
-    // to avoid unnecessary `mut`` warning
+    // to avoid unnecessary `mut` warning
     bridge_files.clear();
 }
 
@@ -90,14 +108,13 @@ mod ros2 {
             .join("target")
             .join("cxxbridge")
             .join("dora-node-api-cxx")
-            .join("src")
-            .join("ros2_bindings.rs.h");
+            .join("dora-ros2-bindings.h");
 
-        std::fs::copy(dbg!(&header_path), dbg!(&target_path)).unwrap();
+        std::fs::copy(&header_path, &target_path).unwrap();
         println!("cargo:rerun-if-changed={}", header_path.display());
         std::fs::copy(
             &code_path,
-            target_path.with_file_name("ros2_bindings.rs.cc"),
+            target_path.with_file_name("dora-ros2-bindings.cc"),
         )
         .unwrap();
         println!("cargo:rerun-if-changed={}", code_path.display());

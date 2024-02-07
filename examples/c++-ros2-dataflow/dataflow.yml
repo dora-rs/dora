@@ -5,4 +5,4 @@ nodes:
       inputs:
         tick: dora/timer/millis/500
       outputs:
-        - counter
+        - pose

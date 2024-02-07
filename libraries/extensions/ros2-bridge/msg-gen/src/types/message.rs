@@ -204,6 +204,11 @@ impl Message {
         let event_stream = format_ident!("event_stream__{package_name}__{}", self.name);
         let cxx_event_stream = format_ident!("event_stream");
 
+        let is = format_ident!("is__{package_name}__{}", self.name);
+        let cxx_is = format_ident!("is_{}", self.name);
+        let downcast = format_ident!("downcast__{package_name}__{}", self.name);
+        let cxx_downcast = format_ident!("downcast_{}", self.name);
+
         let def = quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_topic_name]
@@ -229,6 +234,13 @@ impl Message {
             #[namespace = #package_name]
             #[cxx_name = #cxx_event_stream]
             fn #event_stream(subscription: Box<#subscription_name>) -> Box<ExternalEvents>;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_is]
+            fn #is(event: &Box<Ros2Event>) -> bool;
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_downcast]
+            fn #downcast(event: Box<Ros2Event>) -> Result<Box<#struct_raw_name>>;
         };
         let imp = quote! {
             #[allow(non_camel_case_types)]
@@ -273,6 +285,15 @@ impl Message {
             #[allow(non_snake_case)]
             fn #event_stream(subscription: Box<#subscription_name>) -> Box<ExternalEvents> {
                 Box::new(ExternalEvents { events: Box::new(ExternalRos2Events(subscription)) })
+            }
+
+            #[allow(non_snake_case)]
+            fn #is(event: &Box<Ros2Event>) -> bool {
+                event.event.0.is::<ffi::#struct_raw_name>()
+            }
+            #[allow(non_snake_case)]
+            fn #downcast(event: Box<Ros2Event>) -> eyre::Result<Box<ffi::#struct_raw_name>> {
+                event.event.0.downcast().map_err(|_| eyre::eyre!("downcast failed"))
             }
 
             impl AsEventStream for #subscription_name {

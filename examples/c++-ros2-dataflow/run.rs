@@ -34,28 +34,25 @@ async fn main() -> eyre::Result<()> {
     let build_dir = Path::new("build");
 
     build_package("dora-node-api-cxx", &["ros2-bridge"]).await?;
-    let node_cxxbridge = target
-        .join("cxxbridge")
-        .join("dora-node-api-cxx")
-        .join("src");
+    let node_cxxbridge = target.join("cxxbridge").join("dora-node-api-cxx");
     tokio::fs::copy(
-        node_cxxbridge.join("lib.rs.cc"),
-        build_dir.join("node-bridge.cc"),
+        node_cxxbridge.join("dora-node-api.cc"),
+        build_dir.join("dora-node-api.cc"),
     )
     .await?;
     tokio::fs::copy(
-        node_cxxbridge.join("lib.rs.h"),
+        node_cxxbridge.join("dora-node-api.h"),
         build_dir.join("dora-node-api.h"),
     )
     .await?;
     tokio::fs::copy(
-        node_cxxbridge.join("messages.rs.cc"),
-        build_dir.join("messages.cc"),
+        node_cxxbridge.join("dora-ros2-bindings.cc"),
+        build_dir.join("dora-ros2-bindings.cc"),
     )
     .await?;
     tokio::fs::copy(
-        node_cxxbridge.join("messages.rs.h"),
-        build_dir.join("messages.h"),
+        node_cxxbridge.join("dora-ros2-bindings.h"),
+        build_dir.join("dora-ros2-bindings.h"),
     )
     .await?;
 
@@ -63,8 +60,8 @@ async fn main() -> eyre::Result<()> {
         root,
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
-            &dunce::canonicalize(build_dir.join("node-bridge.cc"))?,
-            &dunce::canonicalize(build_dir.join("messages.cc"))?,
+            &dunce::canonicalize(build_dir.join("dora-ros2-bindings.cc"))?,
+            &dunce::canonicalize(build_dir.join("dora-node-api.cc"))?,
         ],
         "node_rust_api",
         &["-l", "dora_node_api_cxx"],
@@ -82,9 +79,6 @@ async fn build_package(package: &str, features: &[&str]) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("build");
     cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
-        bail!("failed to build {package}");
-    };
     if !features.is_empty() {
         cmd.arg("--features").arg(features.join(","));
     }
