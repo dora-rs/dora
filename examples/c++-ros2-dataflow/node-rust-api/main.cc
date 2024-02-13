@@ -9,6 +9,9 @@ int main()
 {
     std::cout << "HELLO FROM C++" << std::endl;
 
+    auto dora_node = init_dora_node();
+    auto merged_events = dora_events_into_combined(std::move(dora_node.events));
+
     auto qos = qos_default();
     qos.durability = Ros2Durability::Volatile;
     qos.liveliness = Ros2Liveliness::Automatic;
@@ -20,38 +23,19 @@ int main()
     auto vel_topic = node->create_topic_geometry_msgs_Twist("/turtle1", "cmd_vel", qos);
     auto vel_publisher = node->create_publisher(vel_topic, qos);
     auto pose_topic = node->create_topic_turtlesim_Pose("/turtle1", "pose", qos);
-    auto pose_subscription = node->create_subscription(pose_topic, qos);
+    auto pose_subscription = node->create_subscription(pose_topic, qos, merged_events);
 
     std::random_device dev;
     std::default_random_engine gen(dev());
     std::uniform_real_distribution<> dist(0., 1.);
 
-    auto dora_node = init_dora_node();
-
-    std::cout << "MERGING EVENTS" << std::endl;
-    auto merged_events = merge_events(std::move(dora_node.events), event_stream(std::move(pose_subscription)));
-    std::cout << "MERGED EVENTS" << std::endl;
-
     auto received_ticks = 0;
 
     for (int i = 0; i < 1000; i++)
     {
-        auto event = merged_events->next();
+        auto event = merged_events.next();
 
-        if (is_ros2(event))
-        {
-            auto ros2_event = downcast_ros2(std::move(event));
-            if (turtlesim::is_Pose(ros2_event))
-            {
-                auto pose = turtlesim::downcast_Pose(std::move(ros2_event));
-                std::cout << "Received Pose { x: " << pose->x << ", y: " << pose->y << " }" << std::endl;
-            }
-            else
-            {
-                std::cout << "received unexpected ros2 input" << std::endl;
-            }
-        }
-        else if (is_dora(event))
+        if (event.is_dora())
         {
             auto dora_event = downcast_dora(std::move(event));
 
@@ -82,6 +66,15 @@ int main()
             {
                 break;
             }
+        }
+        else if (pose_subscription->matches(event))
+        {
+            auto pose = pose_subscription->downcast(std::move(event));
+            std::cout << "Received pose x:" << pose.x << ", y:" << pose.y << std::endl;
+        }
+        else
+        {
+            std::cout << "received unexpected event" << std::endl;
         }
     }
 

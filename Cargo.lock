@@ -1608,6 +1608,7 @@ dependencies = [
  "dora-ros2-bridge-msg-gen",
  "eyre",
  "futures-lite 2.2.0",
+ "prettyplease",
  "rust-format",
  "serde",
  "serde-big-array",
@@ -4863,9 +4864,9 @@ checksum = "ef703b7cb59335eae2eb93ceb664c0eb7ea6bf567079d843e09420219668e072"
 
 [[package]]
 name = "safer-ffi"
-version = "0.1.3"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c1d19b288ca9898cd421c7b105fb7269918a7f8e9253a991e228981ca421ad"
+checksum = "4483c5ab47f222d2c297e73a520c9003e09e2fe1f1b04edcb572e6939f303003"
 dependencies = [
  "inventory 0.1.11",
  "inventory 0.3.12",
@@ -4881,9 +4882,9 @@ dependencies = [
 
 [[package]]
 name = "safer_ffi-proc_macros"
-version = "0.1.3"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2d7a04caa3ca2224f5ea4ddd850e2629c3b36b2b83621f87a8303bf41020110"
+checksum = "bf04ebd3786110e64269a74eea58c5564dd92a1e790c0f6f9871d6fe1b8e34db"
 dependencies = [
  "macro_rules_attribute",
  "prettyplease",

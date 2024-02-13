@@ -192,22 +192,22 @@ impl Message {
         let cxx_create_publisher = format_ident!("create_publisher");
 
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
+        let struct_raw_name_str = struct_raw_name.to_string();
         let self_name = &self.name;
 
         let publish = format_ident!("publish__{package_name}__{}", self.name);
         let cxx_publish = format_ident!("publish");
 
         let subscription_name = format_ident!("Subscription__{package_name}__{}", self.name);
+        let subscription_name_str = subscription_name.to_string();
         let cxx_subscription_name = format_ident!("Subscription_{}", self.name);
         let create_subscription = format_ident!("new__Subscription__{package_name}__{}", self.name);
         let cxx_create_subscription = format_ident!("create_subscription");
-        let event_stream = format_ident!("event_stream__{package_name}__{}", self.name);
-        let cxx_event_stream = format_ident!("event_stream");
 
-        let is = format_ident!("is__{package_name}__{}", self.name);
-        let cxx_is = format_ident!("is_{}", self.name);
+        let matches = format_ident!("matches__{package_name}__{}", self.name);
+        let cxx_matches = format_ident!("matches");
         let downcast = format_ident!("downcast__{package_name}__{}", self.name);
-        let cxx_downcast = format_ident!("downcast_{}", self.name);
+        let cxx_downcast = format_ident!("downcast");
 
         let def = quote! {
             #[namespace = #package_name]
@@ -218,7 +218,7 @@ impl Message {
             #[cxx_name = #cxx_create_publisher]
             fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#publisher_name>>;
             #[cxx_name = #cxx_create_subscription]
-            fn #create_subscription(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#subscription_name>>;
+            fn #create_subscription(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#subscription_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_publisher_name]
@@ -232,15 +232,11 @@ impl Message {
             type #subscription_name;
 
             #[namespace = #package_name]
-            #[cxx_name = #cxx_event_stream]
-            fn #event_stream(subscription: Box<#subscription_name>) -> Box<ExternalEvents>;
-
-            #[namespace = #package_name]
-            #[cxx_name = #cxx_is]
-            fn #is(event: &Box<Ros2Event>) -> bool;
+            #[cxx_name = #cxx_matches]
+            fn #matches(self: &#subscription_name, event: &CombinedEvent) -> bool;
             #[namespace = #package_name]
             #[cxx_name = #cxx_downcast]
-            fn #downcast(event: Box<Ros2Event>) -> Result<Box<#struct_raw_name>>;
+            fn #downcast(self: &#subscription_name, event: CombinedEvent) -> Result<#struct_raw_name>;
         };
         let imp = quote! {
             #[allow(non_camel_case_types)]
@@ -262,9 +258,16 @@ impl Message {
                 }
 
                 #[allow(non_snake_case)]
-                pub fn #create_subscription(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#subscription_name>> {
-                    let subscription = self.0.create_subscription(&topic.0, Some(qos.into()))?;
-                    Ok(Box::new(#subscription_name(subscription)))
+                pub fn #create_subscription(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#subscription_name>> {
+                    let subscription = self.0.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
+                    let stream = futures_lite::stream::unfold(subscription, |sub| async {
+                        let item = sub.async_take().await;
+                        let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
+                        Some((item_boxed, sub))
+                    });
+                    let id = events.events.merge(Box::pin(stream));
+
+                    Ok(Box::new(#subscription_name { id }))
                 }
             }
 
@@ -280,30 +283,32 @@ impl Message {
             }
 
             #[allow(non_camel_case_types)]
-            pub struct #subscription_name(ros2_client::Subscription<ffi::#struct_raw_name>);
-
-            #[allow(non_snake_case)]
-            fn #event_stream(subscription: Box<#subscription_name>) -> Box<ExternalEvents> {
-                Box::new(ExternalEvents { events: Box::new(ExternalRos2Events(subscription)) })
+            pub struct #subscription_name {
+                id: u32,
             }
 
-            #[allow(non_snake_case)]
-            fn #is(event: &Box<Ros2Event>) -> bool {
-                event.event.0.is::<ffi::#struct_raw_name>()
-            }
-            #[allow(non_snake_case)]
-            fn #downcast(event: Box<Ros2Event>) -> eyre::Result<Box<ffi::#struct_raw_name>> {
-                event.event.0.downcast().map_err(|_| eyre::eyre!("downcast failed"))
-            }
+            impl #subscription_name {
+                #[allow(non_snake_case)]
+                fn #matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                    match &event.event.as_ref().0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.id  => true,
+                        _ => false
+                    }
+                }
+                #[allow(non_snake_case)]
+                fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<ffi::#struct_raw_name> {
+                    use eyre::WrapErr;
 
-            impl AsEventStream for #subscription_name {
-                fn as_event_stream(self: Box<Self>) -> Box<dyn futures_lite::Stream<Item = Box<dyn std::any::Any>> + Unpin> {
-                    let stream = futures_lite::stream::unfold(self.0, |sub| async {
-                        let item = sub.async_take().await;
-                        let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
-                        Some((item_boxed, sub))
-                    });
-                    Box::new(Box::pin(stream))
+                    match (*event.event).0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.id  => {
+                            let result = event.event.downcast::<rustdds::dds::result::ReadResult<(ffi::#struct_raw_name, ros2_client::MessageInfo)>>()
+                                .map_err(|_| eyre::eyre!("downcast to {} failed", #struct_raw_name_str))?;
+
+                            let (data, _info) = result.with_context(|| format!("failed to receive {} event", #subscription_name_str))?;
+                            Ok(data)
+                        },
+                        _ => eyre::bail!("not a {} event", #subscription_name_str),
+                    }
                 }
             }
         };

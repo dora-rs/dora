@@ -80,6 +80,8 @@ mod ros2 {
     }
 
     pub fn generate_ros2_message_header(source_file: &Path) {
+        use std::io::Write as _;
+
         let out_dir = source_file.parent().unwrap();
         let relative_path = local_relative_path(&source_file)
             .ancestors()
@@ -112,12 +114,18 @@ mod ros2 {
 
         std::fs::copy(&header_path, &target_path).unwrap();
         println!("cargo:rerun-if-changed={}", header_path.display());
-        std::fs::copy(
-            &code_path,
-            target_path.with_file_name("dora-ros2-bindings.cc"),
-        )
-        .unwrap();
+
+        let mut node_header =
+            std::fs::File::open(target_path.with_file_name("dora-node-api.h")).unwrap();
+        let mut code_file = std::fs::File::open(&code_path).unwrap();
         println!("cargo:rerun-if-changed={}", code_path.display());
+        let mut code_target_file =
+            std::fs::File::create(target_path.with_file_name("dora-ros2-bindings.cc")).unwrap();
+
+        // copy both the node header and the code file to prevent import errors
+        std::io::copy(&mut node_header, &mut code_target_file).unwrap();
+        std::io::copy(&mut code_file, &mut code_target_file).unwrap();
+        code_target_file.flush().unwrap();
     }
 
     // copy from cxx-build source
