@@ -18,6 +18,7 @@ ros2-bridge = [
     "dep:dora-ros2-bridge",
     "dep:dora-ros2-bridge-msg-gen",
     "dep:rust-format",
+    "dep:prettyplease",
     "dep:serde",
     "dep:serde-big-array",
 ]
@@ -37,3 +38,4 @@ dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ], optional = true }
+prettyplease = { version = "0.1", features = ["verbatim"], optional = true }

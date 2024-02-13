@@ -46,23 +46,19 @@ where
         (
             quote! { #[cxx::bridge] },
             quote! {
+                extern "C++" {
+                    type CombinedEvents = crate::ffi::CombinedEvents;
+                    type CombinedEvent = crate::ffi::CombinedEvent;
+                }
+
                 extern "Rust" {
                     type Ros2Context;
                     type Ros2Node;
-                    type ExternalRos2Events;
-                    type ExternalRos2Event;
                     fn init_ros2_context() -> Result<Box<Ros2Context>>;
                     fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
                     fn qos_default() -> Ros2QosPolicies;
+
                     #(#message_topic_defs)*
-                }
-
-                pub struct ExternalEvents {
-                    events: Box<ExternalRos2Events>,
-                }
-
-                pub struct Ros2Event {
-                    event: Box<ExternalRos2Event>,
                 }
 
                 #[derive(Debug, Clone)]
@@ -194,19 +190,6 @@ where
                         }
                     }
                 }
-
-                pub use ffi::ExternalEvents;
-                pub use ffi::Ros2Event;
-
-                pub struct ExternalRos2Events(
-                    pub Box<dyn AsEventStream>,
-                );
-
-                pub trait AsEventStream {
-                    fn as_event_stream(self: Box<Self>) -> Box<dyn futures_lite::Stream<Item = Box<dyn std::any::Any>> + Unpin>;
-                }
-
-                pub struct ExternalRos2Event(pub Box<dyn core::any::Any>);
             },
         )
     } else {
