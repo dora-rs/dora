@@ -20,7 +20,7 @@ pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
 eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
-dora-runtime = { workspace = true, features = ["tracing", "python"] }
+dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
 arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"

@@ -1536,9 +1536,11 @@ dependencies = [
 name = "dora-metrics"
 version = "0.3.2"
 dependencies = [
+ "eyre",
  "opentelemetry 0.21.0",
  "opentelemetry-otlp",
- "opentelemetry_sdk 0.21.1",
+ "opentelemetry-system-metrics",
+ "opentelemetry_sdk 0.21.2",
 ]
 
 [[package]]
@@ -1748,8 +1750,6 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "libloading",
- "opentelemetry 0.21.0",
- "opentelemetry-system-metrics",
  "pyo3",
  "pythonize",
  "serde_yaml 0.8.26",
@@ -1976,9 +1976,9 @@ dependencies = [
 
 [[package]]
 name = "eyre"
-version = "0.6.8"
+version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c2b6b5a29c02cdc822728b7d7b8ae1bab3e3b05d44522770ddd49722eeac7eb"
+checksum = "7cd915d99f24784cdc19fd37ef22b97e3ff0ae756c7e492e9fbfe897d61e2aec"
 dependencies = [
  "indenter",
  "once_cell",
@@ -3677,7 +3677,7 @@ dependencies = [
  "opentelemetry 0.21.0",
  "opentelemetry-proto",
  "opentelemetry-semantic-conventions 0.13.0",
- "opentelemetry_sdk 0.21.1",
+ "opentelemetry_sdk 0.21.2",
  "prost",
  "thiserror",
  "tokio",
@@ -3691,7 +3691,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2e155ce5cc812ea3d1dffbd1539aed653de4bf4882d60e6e04dcf0901d674e1"
 dependencies = [
  "opentelemetry 0.21.0",
- "opentelemetry_sdk 0.21.1",
+ "opentelemetry_sdk 0.21.2",
  "prost",
  "tonic",
 ]
@@ -3768,9 +3768,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.21.1"
+version = "0.21.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "968ba3f2ca03e90e5187f5e4f46c791ef7f2c163ae87789c8ce5f5ca3b7b7de5"
+checksum = "2f16aec8a98a457a52664d69e0091bac3a0abd18ead9b641cb00202ba4e0efe4"
 dependencies = [
  "async-trait",
  "crossbeam-channel",
