@@ -9,12 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/lib.rs");
 
     // rename header files
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .unwrap();
-    let src_dir = root
-        .join("target")
+    let src_dir = target_dir()
         .join("cxxbridge")
         .join("dora-node-api-cxx")
         .join("src");
@@ -31,6 +26,18 @@ fn main() {
 
     // to avoid unnecessary `mut` warning
     bridge_files.clear();
+}
+
+fn target_dir() -> PathBuf {
+    std::env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .nth(3)
+                .unwrap();
+            root.join("target")
+        })
 }
 
 #[cfg(feature = "ros2-bridge")]
@@ -102,12 +109,7 @@ mod ros2 {
             .join("ros2_bindings.rs.cc");
 
         // copy message files to target directory
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .unwrap();
-        let target_path = root
-            .join("target")
+        let target_path = target_dir()
             .join("cxxbridge")
             .join("dora-node-api-cxx")
             .join("dora-ros2-bindings.h");
