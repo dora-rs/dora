@@ -3,8 +3,9 @@ use dora_core::{
     descriptor::Descriptor,
     topics::{ControlRequest, ControlRequestReply, DataflowId},
 };
+use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
-use futures::stream;
+
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, SocketAddr},
@@ -19,24 +20,11 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::Layer;
 use uuid::Uuid;
-
-#[derive(Debug, Clone, clap::Parser)]
-pub struct Args {
-    #[clap(long)]
-    pub run_dora_runtime: bool,
-}
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let Args { run_dora_runtime } = clap::Parser::parse();
-    if run_dora_runtime {
-        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
-    }
-
-    set_up_tracing().wrap_err("failed to set up tracing subscriber")?;
+    set_up_tracing("multiple-daemon-runner").wrap_err("failed to set up tracing subscriber")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -46,14 +34,11 @@ async fn main() -> eyre::Result<()> {
     build_dataflow(dataflow).await?;
 
     let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
-    let (coordinator_port, coordinator) = dora_coordinator::start(
-        dora_coordinator::Args { port: Some(0) },
-        ReceiverStream::new(coordinator_events_rx),
-    )
-    .await?;
+    let (coordinator_port, coordinator) =
+        dora_coordinator::start(None, ReceiverStream::new(coordinator_events_rx)).await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
-    let daemon_a = dora_daemon::Daemon::run(coordinator_addr, "A".into(), stream::empty());
-    let daemon_b = dora_daemon::Daemon::run(coordinator_addr, "B".into(), stream::empty());
+    let daemon_a = run_daemon(coordinator_addr.to_string(), "A".into());
+    let daemon_b = run_daemon(coordinator_addr.to_string(), "B".into());
 
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
@@ -61,7 +46,6 @@ async fn main() -> eyre::Result<()> {
     tasks.spawn(daemon_a);
     tasks.spawn(daemon_b);
 
-    // wait until both daemons are connected
     tracing::info!("waiting until daemons are connected to coordinator");
     let mut retries = 0;
     loop {
@@ -212,13 +196,19 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_filter(LevelFilter::TRACE);
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
+async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
+    let cargo = std::env::var("CARGO").unwrap();
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--")
+        .arg("daemon")
+        .arg("--machine-id")
+        .arg(machine_id)
+        .arg("--coordinator-addr")
+        .arg(coordinator);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
+    };
+    Ok(())
 }

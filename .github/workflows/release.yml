@@ -15,7 +15,6 @@ jobs:
     strategy:
       matrix:
         platform: [ubuntu-20.04]
-        python-version: ["3.7"]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
 
@@ -58,10 +57,10 @@ jobs:
           cargo publish -p dora-node-api-c --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
           # Publish binaries crates
-          cargo publish -p dora-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-coordinator --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-runtime --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-daemon --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo publish -p dora-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
           # Publish extension crates
           cargo publish -p dora-record --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -72,7 +71,6 @@ jobs:
     strategy:
       matrix:
         platform: [windows-2022]
-        python-version: ["3.7"]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
 
@@ -83,16 +81,14 @@ jobs:
 
       - name: "Build binaries"
         timeout-minutes: 60
-        run: "cargo build --release -p dora-coordinator -p dora-cli -p dora-daemon"
+        run: "cargo build --release -p dora-cli"
 
       - name: Create Archive (Windows)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
           New-Item -Path archive -ItemType Directory
-          Copy-Item target/release/dora-coordinator.exe -Destination archive
-          Copy-Item target/release/dora-daemon.exe -Destination archive
-          Copy-Item target/release/dora-cli.exe -Destination archive/dora.exe
+          Copy-Item target/release/dora.exe -Destination archive/dora.exe
           Compress-Archive -Path archive\* -DestinationPath archive.zip
 
       - name: "Upload release asset"
@@ -111,7 +107,6 @@ jobs:
     strategy:
       matrix:
         platform: [macos-12, ubuntu-20.04]
-        python-version: ["3.7"]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
 
@@ -122,15 +117,13 @@ jobs:
 
       - name: "Build binaries"
         timeout-minutes: 60
-        run: "cargo build --release -p dora-coordinator -p dora-cli -p dora-daemon"
+        run: "cargo build --release -p dora-cli"
 
       - name: "Create Archive (Unix)"
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: |
           mkdir archive
-          cp target/release/dora-coordinator archive
-          cp target/release/dora-daemon archive
-          cp target/release/dora-cli archive/dora
+          cp target/release/dora archive/dora
           cd archive
           zip -r ../archive.zip .
           cd ..
@@ -151,7 +144,6 @@ jobs:
     strategy:
       matrix:
         platform: [ubuntu-20.04]
-        python-version: ["3.7"]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
 
@@ -166,15 +158,13 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --release --target aarch64-unknown-linux-gnu -p dora-coordinator -p dora-cli -p dora-daemon
+          args: --release --target aarch64-unknown-linux-gnu -p dora-cli
 
       - name: "Archive Linux ARM64"
         if: runner.os == 'Linux'
         run: |
           mkdir archive_aarch64
-          cp target/aarch64-unknown-linux-gnu/release/dora-coordinator archive_aarch64
-          cp target/aarch64-unknown-linux-gnu/release/dora-daemon archive_aarch64
-          cp target/aarch64-unknown-linux-gnu/release/dora-cli archive_aarch64/dora
+          cp target/aarch64-unknown-linux-gnu/release/dora archive_aarch64/dora
           cd archive_aarch64
           zip -r ../archive_aarch64.zip .
           cd ..
@@ -196,7 +186,6 @@ jobs:
     strategy:
       matrix:
         platform: [macos-12]
-        python-version: ["3.7"]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
 
@@ -219,9 +208,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir archive_aarch64
-          cp target/aarch64-apple-darwin/release/dora-coordinator archive_aarch64
-          cp target/aarch64-apple-darwin/release/dora-daemon archive_aarch64
-          cp target/aarch64-apple-darwin/release/dora-cli archive_aarch64/dora
+          cp target/aarch64-apple-darwin/release/dora archive_aarch64/dora
           cd archive_aarch64
           zip -r ../archive_aarch64.zip .
           cd ..

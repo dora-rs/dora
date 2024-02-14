@@ -15,7 +15,7 @@ if(DORA_ROOT_DIR)
     )
     FetchContent_MakeAvailable(Corrosion)
     list(PREPEND CMAKE_MODULE_PATH ${Corrosion_SOURCE_DIR}/cmake)
-    find_package(Rust 1.70 REQUIRED MODULE)
+    find_package(Rust 1.72 REQUIRED MODULE)
     corrosion_import_crate(MANIFEST_PATH "${DORA_ROOT_DIR}/Cargo.toml"
         CRATES
         dora-node-api-c

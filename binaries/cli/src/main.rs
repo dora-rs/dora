@@ -1,15 +1,22 @@
-use std::path::PathBuf;
+use std::{net::Ipv4Addr, path::PathBuf};
 
 use attach::attach_dataflow;
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
+use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
-    topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId},
+    topics::{
+        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
+        DORA_COORDINATOR_PORT_DEFAULT,
+    },
 };
+use dora_daemon::Daemon;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
+use std::net::SocketAddr;
+use tokio::runtime::Builder;
 use uuid::Uuid;
 
 mod attach;
@@ -56,10 +63,6 @@ enum Command {
     Up {
         #[clap(long)]
         config: Option<PathBuf>,
-        #[clap(long)]
-        coordinator_path: Option<PathBuf>,
-        #[clap(long)]
-        daemon_path: Option<PathBuf>,
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
@@ -87,11 +90,29 @@ enum Command {
     // Planned for future releases:
     // Dashboard,
     /// Show logs of a given dataflow and node.
-    Logs { dataflow: String, node: String },
+    #[command(allow_missing_positional = true)]
+    Logs {
+        dataflow: Option<String>,
+        node: String,
+    },
     // Metrics,
     // Stats,
     // Get,
     // Upgrade,
+    /// Run daemon
+    Daemon {
+        #[clap(long)]
+        machine_id: Option<String>,
+        #[clap(long)]
+        coordinator_addr: Option<SocketAddr>,
+
+        #[clap(long)]
+        run_dataflow: Option<PathBuf>,
+    },
+    /// Run runtime
+    Runtime,
+    /// Run coordinator
+    Coordinator { port: Option<u16> },
 }
 
 #[derive(Debug, clap::Args)]
@@ -127,9 +148,23 @@ fn main() {
 }
 
 fn run() -> eyre::Result<()> {
-    #[cfg(feature = "tracing")]
-    set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
     let args = Args::parse();
+
+    #[cfg(feature = "tracing")]
+    match args.command {
+        Command::Daemon { .. } => {
+            set_up_tracing("dora-daemon").context("failed to set up tracing subscriber")?;
+        }
+        Command::Runtime => {
+            // Do not set the runtime in the cli.
+        }
+        Command::Coordinator { .. } => {
+            set_up_tracing("dora-coordinator").context("failed to set up tracing subscriber")?;
+        }
+        _ => {
+            set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
+        }
+    };
 
     match args.command {
         Command::Check { dataflow } => match dataflow {
@@ -159,21 +194,25 @@ fn run() -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Up {
-            config,
-            coordinator_path,
-            daemon_path,
-        } => up::up(
-            config.as_deref(),
-            coordinator_path.as_deref(),
-            daemon_path.as_deref(),
-        )?,
+        Command::Up { config } => up::up(config.as_deref())?,
+
         Command::Logs { dataflow, node } => {
-            let uuid = Uuid::parse_str(&dataflow).ok();
-            let name = if uuid.is_some() { None } else { Some(dataflow) };
             let mut session =
                 connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
-            logs::logs(&mut *session, uuid, name, node)?
+            let uuids = query_running_dataflows(&mut *session)
+                .wrap_err("failed to query running dataflows")?;
+            if let Some(dataflow) = dataflow {
+                let uuid = Uuid::parse_str(&dataflow).ok();
+                let name = if uuid.is_some() { None } else { Some(dataflow) };
+                logs::logs(&mut *session, uuid, name, node)?
+            } else {
+                let uuid = match &uuids[..] {
+                    [] => bail!("No dataflows are running"),
+                    [uuid] => uuid.clone(),
+                    _ => inquire::Select::new("Choose dataflow to show logs:", uuids).prompt()?,
+                };
+                logs::logs(&mut *session, Some(uuid.uuid), None, node)?
+            }
         }
         Command::Start {
             dataflow,
@@ -227,7 +266,54 @@ fn run() -> eyre::Result<()> {
             }
         }
         Command::Destroy { config } => up::destroy(config.as_deref())?,
-    }
+        Command::Coordinator { port } => {
+            let rt = Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("tokio runtime failed")?;
+            rt.block_on(async {
+                let (_port, task) =
+                    dora_coordinator::start(port, futures::stream::empty::<Event>()).await?;
+                task.await
+            })
+            .context("failed to run dora-coordinator")?
+        }
+        Command::Daemon {
+            coordinator_addr,
+            machine_id,
+            run_dataflow,
+        } => {
+            let rt = Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("tokio runtime failed")?;
+            rt.block_on(async {
+                match run_dataflow {
+                    Some(dataflow_path) => {
+                        tracing::info!("Starting dataflow `{}`", dataflow_path.display());
+                        if let Some(coordinator_addr) = coordinator_addr {
+                            tracing::info!(
+                                "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
+                                coordinator_addr
+                            );
+                        }
+
+                        Daemon::run_dataflow(&dataflow_path).await
+                    }
+                    None => {
+                        let addr = coordinator_addr.unwrap_or_else(|| {
+                            tracing::info!("Starting in local mode");
+                            let localhost = Ipv4Addr::new(127, 0, 0, 1);
+                            (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
+                        });
+                        Daemon::run(addr, machine_id.unwrap_or_default()).await
+                    }
+                }
+            })
+            .context("failed to run dora-daemon")?
+        }
+        Command::Runtime => dora_runtime::main().context("Failed to run dora-runtime")?,
+    };
 
     Ok(())
 }

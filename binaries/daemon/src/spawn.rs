@@ -8,6 +8,7 @@ use dora_core::{
     descriptor::{
         resolve_path, source_is_url, Descriptor, OperatorSource, ResolvedNode, SHELL_SOURCE,
     },
+    get_python_path,
     message::uhlc::HLC,
 };
 use dora_download::download_file;
@@ -81,8 +82,21 @@ pub async fn spawn_node(
                         })?
                     };
 
-                    tracing::info!("spawning {}", resolved_path.display());
-                    let mut cmd = tokio::process::Command::new(&resolved_path);
+                    // If extension is .py, use python to run the script
+                    let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
+                        Some(Some("py")) => {
+                            let python = get_python_path().context("Could not get python path")?;
+                            tracing::info!("spawning: {:?} {}", &python, resolved_path.display());
+                            let mut cmd = tokio::process::Command::new(&python);
+                            cmd.arg(&resolved_path);
+                            cmd
+                        }
+                        _ => {
+                            tracing::info!("spawning: {}", resolved_path.display());
+                            tokio::process::Command::new(&resolved_path)
+                        }
+                    };
+
                     if let Some(args) = &n.args {
                         cmd.args(args.split_ascii_whitespace());
                     }
@@ -120,7 +134,7 @@ pub async fn spawn_node(
                     format!(
                         "failed to run `{}` with args `{}`",
                         n.source,
-                        n.args.as_deref().unwrap_or_default()
+                        n.args.as_deref().unwrap_or_default(),
                     )
                 })?
         }
@@ -137,7 +151,8 @@ pub async fn spawn_node(
 
             let mut command = if has_python_operator && !has_other_operator {
                 // Use python to spawn runtime if there is a python operator
-                let mut command = tokio::process::Command::new("python3");
+                let python = get_python_path().context("Could not find python in daemon")?;
+                let mut command = tokio::process::Command::new(python);
                 command.args([
                     "-c",
                     format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
@@ -147,7 +162,7 @@ pub async fn spawn_node(
                 let mut cmd = tokio::process::Command::new(
                     std::env::current_exe().wrap_err("failed to get current executable path")?,
                 );
-                cmd.arg("--run-dora-runtime");
+                cmd.arg("runtime");
                 cmd
             } else {
                 eyre::bail!("Runtime can not mix Python Operator with other type of operator.");

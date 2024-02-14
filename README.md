@@ -57,9 +57,6 @@ Quickest way:
 
 ```bash
 cargo install dora-cli
-alias dora='dora-cli'
-cargo install dora-coordinator
-cargo install dora-daemon
 pip install dora-rs ## For Python API
 
 dora --help
@@ -72,17 +69,17 @@ For more installation guideline, check out our installation guide here: https://
 1. Install the example python dependencies:
 
 ```bash
-pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/requirements.txt
+pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/requirements.txt
 ```
 
 2. Get some example operators:
 
 ```bash
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/webcam.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/plot.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/utils.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/object_detection.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.0/examples/python-operator-dataflow/dataflow.yml
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/webcam.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/plot.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/utils.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/object_detection.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/dataflow.yml
 ```
 
 3. Start the dataflow
