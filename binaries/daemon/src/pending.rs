@@ -128,11 +128,20 @@ impl PendingNodes {
                 None => Ok(()),
             }
         } else {
+            let node_id_message = if self.exited_before_subscribe.len() == 1 {
+                self.exited_before_subscribe
+                    .iter()
+                    .next()
+                    .map(|node_id| node_id.to_string())
+                    .unwrap_or("<node_id>".to_string())
+            } else {
+                "<node_id>".to_string()
+            };
             Err(format!(
                 "Some nodes exited before subscribing to dora: {:?}\n\n\
                 This is typically happens when an initialization error occurs
                 in the node or operator. To check the output of the failed
-                nodes, run `dora logs {} <node_id>`.",
+                nodes, run `dora logs {} {node_id_message}`.",
                 self.exited_before_subscribe, self.dataflow_id
             ))
         };

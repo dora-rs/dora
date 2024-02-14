@@ -1,4 +1,5 @@
 #![deny(elided_lifetimes_in_paths)] // required for safer-ffi
+#![allow(improper_ctypes_definitions)]
 
 pub use arrow;
 use dora_arrow_convert::{ArrowData, IntoArrow};

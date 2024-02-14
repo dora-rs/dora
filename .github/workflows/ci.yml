@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  RUST_LOG: trace
+  RUST_LOG: INFO
 
 jobs:
   test:
@@ -62,16 +62,10 @@ jobs:
 
       - name: "Check"
         run: cargo check --all
-      - name: "Build"
-        run: cargo build --all
+      - name: "Build  (Without Python node as it is build with maturin)"
+        run: cargo build --all --exclude dora-node-api-python
       - name: "Test"
-        # Remove Windows as there is `pdb` linker issue.
-        # See: https://github.com/dora-rs/dora/pull/359#discussion_r1360268497
-        if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: cargo test --all
-      - name: "Test"
-        if: runner.os == 'Windows'
-        run: cargo test --all --lib
+        run: cargo test --all --exclude dora-ros2-bridge-python
 
   # Run examples as separate job because otherwise we will exhaust the disk
   # space of the GitHub action runners.
@@ -138,21 +132,23 @@ jobs:
 
       # python examples
       - uses: actions/setup-python@v2
-        if: runner.os == 'Linux' || runner.os == 'macOS'
+        if: runner.os != 'Windows'
         with:
           python-version: "3.8"
+      - uses: actions/setup-python@v2
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.10"
       - name: "Python Dataflow example"
-        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-dataflow
       - name: "Python Operator Dataflow example"
-        if: runner.os == 'Linux' || runner.os == 'macOS'
         run: cargo run --example python-operator-dataflow
 
   # ROS2 bridge examples
   ros2-bridge-examples:
     name: "ROS2 Bridge Examples"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -168,6 +164,10 @@ jobs:
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+      - name: "Install pyarrow for testing"
+        run: pip install numpy pyarrow
+      - name: "Test"
+        run: cargo test -p dora-ros2-bridge-python
       - name: "Rust ROS2 Bridge example"
         timeout-minutes: 30
         env:
@@ -176,8 +176,13 @@ jobs:
           source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
           cargo run --example rust-ros2-dataflow --features="ros2-examples"
       - uses: actions/setup-python@v2
+        if: runner.os != 'Windows'
         with:
           python-version: "3.8"
+      - uses: actions/setup-python@v2
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.10"
       - name: "python-ros2-dataflow"
         timeout-minutes: 30
         env:
@@ -235,38 +240,36 @@ jobs:
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
-          cargo install --path binaries/coordinator --locked
-          cargo install --path binaries/daemon --locked
           cargo install --path binaries/cli --locked
       - name: "Test CLI"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
-          dora-cli up
-          dora-cli list
+          dora up
+          dora list
 
           # Test Rust template Project
-          dora-cli new test_rust_project --internal-create-with-path-dependencies
+          dora new test_rust_project --internal-create-with-path-dependencies
           cd test_rust_project
           cargo build --all
-          dora-cli start dataflow.yml --name ci-rust-test
+          dora start dataflow.yml --name ci-rust-test
           sleep 10
-          dora-cli stop --name ci-rust-test
+          dora stop --name ci-rust-test
           cd ..
 
           # Test Python template Project
           pip3 install maturin
           maturin build -m apis/python/node/Cargo.toml
           pip3 install target/wheels/*
-          dora-cli new test_python_project --lang python --internal-create-with-path-dependencies
+          dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
-          dora-cli start dataflow.yml --name ci-python-test
+          dora start dataflow.yml --name ci-python-test
           sleep 10
-          dora-cli stop --name ci-python-test
+          dora stop --name ci-python-test
           cd ..
 
-          dora-cli destroy
+          dora destroy
 
   clippy:
     name: "Clippy"

@@ -13,6 +13,7 @@ pub mod channel;
 mod python;
 mod shared_lib;
 
+#[allow(unused_variables)]
 pub fn run_operator(
     node_id: &NodeId,
     operator_definition: OperatorDefinition,

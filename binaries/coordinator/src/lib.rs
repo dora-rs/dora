@@ -38,36 +38,23 @@ mod listener;
 mod run;
 mod tcp_utils;
 
-#[derive(Debug, Clone, clap::Parser)]
-#[clap(about = "Dora coordinator")]
-pub struct Args {
-    #[clap(long)]
-    pub port: Option<u16>,
-}
-
-pub async fn run(args: Args) -> eyre::Result<()> {
-    let ctrlc_events = set_up_ctrlc_handler()?;
-
-    let (_, task) = start(args, ctrlc_events).await?;
-
-    task.await?;
-
-    Ok(())
-}
-
 pub async fn start(
-    args: Args,
+    port: Option<u16>,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let port = args.port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
+    let port = port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
     let listener = listener::create_listener(port).await?;
     let port = listener
         .local_addr()
         .wrap_err("failed to get local addr of listener")?
         .port();
     let mut tasks = FuturesUnordered::new();
+
+    // Setup ctrl-c handler
+    let ctrlc_events = set_up_ctrlc_handler()?;
+
     let future = async move {
-        start_inner(listener, &tasks, external_events).await?;
+        start_inner(listener, &tasks, (ctrlc_events, external_events).merge()).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -251,8 +238,11 @@ async fn start_inner(
 
                                 // notify all machines that run parts of the dataflow
                                 for machine_id in &dataflow.machines {
-                                    let Some(connection) = daemon_connections.get_mut(machine_id) else {
-                                        tracing::warn!("no daemon connection found for machine `{machine_id}`");
+                                    let Some(connection) = daemon_connections.get_mut(machine_id)
+                                    else {
+                                        tracing::warn!(
+                                            "no daemon connection found for machine `{machine_id}`"
+                                        );
                                         continue;
                                     };
                                     tcp_send(&mut connection.stream, &message)
@@ -601,28 +591,6 @@ struct DaemonConnection {
     last_heartbeat: Instant,
 }
 
-fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
-    let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
-
-    let mut ctrlc_sent = false;
-    ctrlc::set_handler(move || {
-        if ctrlc_sent {
-            tracing::warn!("received second ctrlc signal -> aborting immediately");
-            std::process::abort();
-        } else {
-            tracing::info!("received ctrlc signal");
-            if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                tracing::error!("failed to report ctrl-c event to dora-coordinator");
-            }
-
-            ctrlc_sent = true;
-        }
-    })
-    .wrap_err("failed to set ctrl-c handler")?;
-
-    Ok(ReceiverStream::new(ctrlc_rx))
-}
-
 async fn handle_destroy(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
@@ -884,7 +852,7 @@ async fn destroy_daemons(
         match serde_json::from_slice(&reply_raw)
             .wrap_err("failed to deserialize destroy reply from daemon")?
         {
-            DaemonCoordinatorReply::DestroyResult(result) => result
+            DaemonCoordinatorReply::DestroyResult { result, .. } => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to destroy dataflow")?,
             other => bail!("unexpected reply after sending `destroy`: {other:?}"),
@@ -939,4 +907,26 @@ pub enum DaemonEvent {
         connection: TcpStream,
         listen_socket: SocketAddr,
     },
+}
+
+fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {
+    let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
+
+    let mut ctrlc_sent = false;
+    ctrlc::set_handler(move || {
+        if ctrlc_sent {
+            tracing::warn!("received second ctrlc signal -> aborting immediately");
+            std::process::abort();
+        } else {
+            tracing::info!("received ctrlc signal");
+            if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
+                tracing::error!("failed to report ctrl-c event to dora-coordinator");
+            }
+
+            ctrlc_sent = true;
+        }
+    })
+    .wrap_err("failed to set ctrl-c handler")?;
+
+    Ok(ReceiverStream::new(ctrlc_rx))
 }

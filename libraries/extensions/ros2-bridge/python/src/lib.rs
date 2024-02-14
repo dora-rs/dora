@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
@@ -6,7 +7,7 @@ use std::{
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
-    array::ArrayData,
+    array::{make_array, ArrayData},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
@@ -17,7 +18,7 @@ use pyo3::{
     types::{PyDict, PyList, PyModule},
     PyAny, PyObject, PyResult, Python,
 };
-use typed::{deserialize::TypedDeserializer, for_message, TypeInfo, TypedValue};
+use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
 
 pub mod qos;
 pub mod typed;
@@ -52,6 +53,7 @@ impl Ros2Context {
                 ament_prefix_path_parsed.split(':').map(Path::new).collect()
             }
         };
+
         let packages = dora_ros2_bridge_msg_gen::get_packages(&paths)
             .map_err(|err| eyre!(err))
             .context("failed to parse ROS2 message types")?;
@@ -99,22 +101,24 @@ impl Ros2Node {
         message_type: String,
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
-        let (namespace_name, message_name) = message_type.split_once("::").with_context(|| {
-            format!(
-                "message type must be of form `package::type`, is `{}`",
-                message_type
-            )
-        })?;
+        let (namespace_name, message_name) =
+            match (message_type.split_once("/"), message_type.split_once("::")) {
+                (Some(msg), None) => msg,
+                (None, Some(msg)) => msg,
+                _ => eyre::bail!("Expected message type in the format `namespace/message` or `namespace::message`, such as `std_msgs/UInt8` but got: {}", message_type),
+            };
+
         let message_type_name = ros2_client::MessageTypeName::new(namespace_name, message_name);
         let topic_name = ros2_client::Name::parse(name)
             .map_err(|err| eyre!("failed to parse ROS2 topic name: {err}"))?;
         let topic = self
             .node
             .create_topic(&topic_name, message_type_name, &qos.into())?;
-        let type_info =
-            for_message(&self.messages, namespace_name, message_name).with_context(|| {
-                format!("failed to determine type info for message {namespace_name}/{message_name}")
-            })?;
+        let type_info = TypeInfo {
+            package_name: namespace_name.to_owned().into(),
+            message_name: message_name.to_owned().into(),
+            messages: self.messages.clone(),
+        };
 
         Ok(Ros2Topic { topic, type_info })
     }
@@ -143,7 +147,7 @@ impl Ros2Node {
             .create_subscription(&topic.topic, qos.map(Into::into))?;
         Ok(Ros2Subscription {
             subscription: Some(subscription),
-            deserializer: TypedDeserializer::new(topic.type_info.clone()),
+            deserializer: StructDeserializer::new(Cow::Owned(topic.type_info.clone())),
         })
     }
 }
@@ -175,14 +179,14 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
-    type_info: TypeInfo,
+    type_info: TypeInfo<'static>,
 }
 
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
     publisher: ros2_client::Publisher<TypedValue<'static>>,
-    type_info: TypeInfo,
+    type_info: TypeInfo<'static>,
 }
 
 #[pymethods]
@@ -209,7 +213,7 @@ impl Ros2Publisher {
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
         let typed_value = TypedValue {
-            value: &value,
+            value: &make_array(value),
             type_info: &self.type_info,
         };
 
@@ -224,7 +228,7 @@ impl Ros2Publisher {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Subscription {
-    deserializer: TypedDeserializer,
+    deserializer: StructDeserializer<'static>,
     subscription: Option<ros2_client::Subscription<ArrayData>>,
 }
 
@@ -238,7 +242,7 @@ impl Ros2Subscription {
             .take_seed(self.deserializer.clone())
             .context("failed to take next message from subscription")?;
         let Some((value, _info)) = message else {
-            return Ok(None)
+            return Ok(None);
         };
 
         let message = value.to_pyarrow(py)?;
@@ -263,7 +267,7 @@ impl Ros2Subscription {
 }
 
 pub struct Ros2SubscriptionStream {
-    deserializer: TypedDeserializer,
+    deserializer: StructDeserializer<'static>,
     subscription: ros2_client::Subscription<ArrayData>,
 }
 

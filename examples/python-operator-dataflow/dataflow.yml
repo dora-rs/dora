@@ -21,10 +21,3 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
-  - id: dora-record
-    custom:
-      build: cargo build -p dora-record
-      source: ../../target/debug/dora-record
-      inputs:
-        image: webcam/image
-        bbox: object_detection/bbox

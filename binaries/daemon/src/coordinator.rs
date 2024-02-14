@@ -113,6 +113,12 @@ pub async fn register(
                     tracing::warn!("failed to send reply to coordinator: {err}");
                     continue;
                 };
+                if let DaemonCoordinatorReply::DestroyResult { notify, .. } = reply {
+                    if let Some(notify) = notify {
+                        let _ = notify.send(());
+                    }
+                    break;
+                }
             }
         }
     });
