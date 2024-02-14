@@ -13,7 +13,7 @@ int main()
     for (int i = 0; i < 20; i++)
     {
 
-        auto event = next_event(dora_node.events);
+        auto event = dora_node.events->next();
         auto ty = event_type(event);
 
         if (ty == DoraEventType::AllInputsClosed)
