@@ -34,7 +34,7 @@ typedef struct Vec_uint8 {
 /** <No documentation available> */
 typedef struct DoraResult {
     /** <No documentation available> */
-    Vec_uint8_t error;
+    Vec_uint8_t * error;
 } DoraResult_t;
 
 /** <No documentation available> */

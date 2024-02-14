@@ -98,7 +98,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             let raw = match result.error {
                 Some(error) => {
                     let _ = init_done.send(Err(eyre!(error.to_string())));
-                    bail!("init_operator failed: {}", String::from(error))
+                    bail!("init_operator failed: {}", *error)
                 }
                 None => operator_context,
             };
@@ -126,11 +126,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
 
             let arrow_array = match arrow::ffi::from_ffi(data_array, &schema) {
                 Ok(a) => a,
-                Err(err) => {
-                    return DoraResult {
-                        error: Some(err.to_string().into()),
-                    }
-                }
+                Err(err) => return DoraResult::from_error(err.to_string()),
             };
 
             let total_len = required_data_size(&arrow_array);
@@ -138,11 +134,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
 
             let type_info = match copy_array_into_sample(&mut sample, &arrow_array) {
                 Ok(t) => t,
-                Err(err) => {
-                    return DoraResult {
-                        error: Some(err.to_string().into()),
-                    }
-                }
+                Err(err) => return DoraResult::from_error(err.to_string()),
             };
 
             let event = OperatorEvent::Output {
@@ -157,18 +149,16 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 .blocking_send(event)
                 .map_err(|_| eyre!("failed to send output to runtime"));
 
-            let error = match result {
-                Ok(()) => None,
-                Err(_) => Some(String::from("runtime process closed unexpectedly").into()),
-            };
-
-            DoraResult { error }
+            match result {
+                Ok(()) => DoraResult::SUCCESS,
+                Err(_) => DoraResult::from_error("runtime process closed unexpectedly".into()),
+            }
         });
 
         let reason = loop {
             #[allow(unused_mut)]
             let Ok(mut event) = self.incoming_events.recv() else {
-                break StopReason::InputsClosed
+                break StopReason::InputsClosed;
             };
 
             let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
@@ -261,7 +251,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 )
             };
             match error {
-                Some(error) => bail!("on_input failed: {}", String::from(error)),
+                Some(error) => bail!("on_input failed: {}", *error),
                 None => match status {
                     DoraStatus::Continue => {}
                     DoraStatus::Stop => break StopReason::ExplicitStop,

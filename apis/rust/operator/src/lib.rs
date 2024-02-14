@@ -64,9 +64,6 @@ impl DoraOutputSender<'_> {
                 open_telemetry_context: String::new().into(), // TODO
             },
         });
-        match result.error {
-            None => Ok(()),
-            Some(error) => Err(error.into()),
-        }
+        result.into_result()
     }
 }

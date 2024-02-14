@@ -1,5 +1,5 @@
 use arrow::{
-    array::{make_array, Array, AsArray, PrimitiveArray, StringArray},
+    array::{Array, AsArray, PrimitiveArray, StringArray},
     datatypes::ArrowPrimitiveType,
 };
 use eyre::ContextCompat;
