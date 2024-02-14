@@ -131,7 +131,6 @@ pub struct NamedType(pub String);
 impl NamedType {
     fn type_tokens(&self, package: &str) -> impl ToTokens {
         let package = Ident::new(package, Span::call_site());
-        let namespace = Ident::new("msg", Span::call_site());
         let name = Ident::new(&self.0, Span::call_site());
         let ident = format_ident!("{package}__{name}");
         quote! { #ident }
@@ -174,7 +173,6 @@ pub struct NamespacedType {
 impl NamespacedType {
     fn type_tokens(&self) -> impl ToTokens {
         let package = Ident::new(&self.package, Span::call_site());
-        let namespace = Ident::new(&self.namespace, Span::call_site());
         let name = Ident::new(&self.name, Span::call_site());
         let ident = format_ident!("{package}__{name}");
         quote! { #ident }
