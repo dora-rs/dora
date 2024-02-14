@@ -9,9 +9,7 @@
 
 use std::path::Path;
 
-use proc_macro2::Span;
 use quote::quote;
-use syn::Ident;
 
 pub mod parser;
 pub mod types;
@@ -46,6 +44,7 @@ where
         (
             quote! { #[cxx::bridge] },
             quote! {
+                #[allow(dead_code)]
                 extern "C++" {
                     type CombinedEvents = crate::ffi::CombinedEvents;
                     type CombinedEvent = crate::ffi::CombinedEvent;
