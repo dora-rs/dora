@@ -57,6 +57,7 @@ mod ffi {
 
         fn dora_events_into_combined(events: Box<Events>) -> CombinedEvents;
         fn next(self: &mut Events) -> Box<DoraEvent>;
+        fn next_event(events: &mut Box<Events>) -> Box<DoraEvent>;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
         fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
         fn send_output(
@@ -95,6 +96,10 @@ impl Events {
     fn next(&mut self) -> Box<DoraEvent> {
         Box::new(DoraEvent(self.0.recv()))
     }
+}
+
+fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
+    events.next()
 }
 
 fn dora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
