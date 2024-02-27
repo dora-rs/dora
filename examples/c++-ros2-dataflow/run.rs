@@ -1,22 +1,10 @@
+use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
 use std::{env::consts::EXE_SUFFIX, path::Path};
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::Layer;
-
-#[derive(Debug, Clone, clap::Parser)]
-pub struct Args {
-    #[clap(long)]
-    pub run_dora_runtime: bool,
-}
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let Args { run_dora_runtime } = clap::Parser::parse();
-
-    if run_dora_runtime {
-        return tokio::task::block_in_place(dora_daemon::run_dora_runtime);
-    }
-    set_up_tracing().wrap_err("failed to set up tracing")?;
+    set_up_tracing("c++-ros2-dataflow-exaple").wrap_err("failed to set up tracing")?;
 
     if cfg!(windows) {
         tracing::error!(
@@ -69,7 +57,7 @@ async fn main() -> eyre::Result<()> {
     .await?;
 
     let dataflow = Path::new("dataflow.yml").to_owned();
-    dora_daemon::Daemon::run_dataflow(&dataflow).await?;
+    run_dataflow(&dataflow).await?;
 
     Ok(())
 }
@@ -161,13 +149,17 @@ async fn build_cxx_node(
     Ok(())
 }
 
-fn set_up_tracing() -> eyre::Result<()> {
-    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
-
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_filter(LevelFilter::DEBUG);
-    let subscriber = tracing_subscriber::Registry::default().with(stdout_log);
-    tracing::subscriber::set_global_default(subscriber)
-        .context("failed to set tracing global subscriber")
+async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
+    let cargo = std::env::var("CARGO").unwrap();
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--")
+        .arg("daemon")
+        .arg("--run-dataflow")
+        .arg(dataflow);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
+    };
+    Ok(())
 }
