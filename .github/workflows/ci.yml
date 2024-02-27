@@ -191,6 +191,14 @@ jobs:
           # Reset only the turtlesim instance as it is not destroyed at the end of the previous job
           source /opt/ros/humble/setup.bash && ros2 service call /reset std_srvs/srv/Empty &
           cargo run --example python-ros2-dataflow --features="ros2-examples"
+      - name: "c++-ros2-dataflow"
+        timeout-minutes: 30
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # Reset only the turtlesim instance as it is not destroyed at the end of the previous job
+          source /opt/ros/humble/setup.bash && ros2 service call /reset std_srvs/srv/Empty &
+          cargo run --example cxx-ros2-dataflow --features="ros2-examples"
 
   bench:
     name: "Bench"
