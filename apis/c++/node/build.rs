@@ -42,6 +42,7 @@ fn target_dir() -> PathBuf {
 
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
+    use super::target_dir;
     use std::path::{Component, Path, PathBuf};
 
     pub fn generate() -> PathBuf {
