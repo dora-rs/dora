@@ -14,11 +14,28 @@ crate-type = ["staticlib"]
 [features]
 default = ["tracing"]
 tracing = ["dora-node-api/tracing"]
+ros2-bridge = [
+    "dep:dora-ros2-bridge",
+    "dep:dora-ros2-bridge-msg-gen",
+    "dep:rust-format",
+    "dep:prettyplease",
+    "dep:serde",
+    "dep:serde-big-array",
+]
 
 [dependencies]
 cxx = "1.0.73"
 dora-node-api = { workspace = true }
 eyre = "0.6.8"
+dora-ros2-bridge = { workspace = true, optional = true }
+futures-lite = { version = "2.2" }
+serde = { version = "1.0.164", features = ["derive"], optional = true }
+serde-big-array = { version = "0.5.1", optional = true }
 
 [build-dependencies]
 cxx-build = "1.0.73"
+dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
+rust-format = { version = "0.3.4", features = [
+    "pretty_please",
+], optional = true }
+prettyplease = { version = "0.1", features = ["verbatim"], optional = true }

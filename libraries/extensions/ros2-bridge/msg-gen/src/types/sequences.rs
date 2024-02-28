@@ -41,7 +41,7 @@ pub struct Sequence {
 impl Sequence {
     pub fn type_tokens(&self, package: &str) -> impl ToTokens {
         let inner_type = self.value_type.type_tokens(package);
-        quote! { std::vec::Vec<#inner_type> }
+        quote! { Vec<#inner_type> }
     }
 
     pub fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
@@ -72,7 +72,7 @@ pub struct BoundedSequence {
 impl BoundedSequence {
     pub fn type_tokens(&self, package: &str) -> impl ToTokens {
         let inner_type = self.value_type.type_tokens(package);
-        quote! { std::vec::Vec<#inner_type> }
+        quote! { Vec<#inner_type> }
     }
 
     pub fn raw_type_tokens(&self, package: &str) -> impl ToTokens {

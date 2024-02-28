@@ -27,7 +27,6 @@ members = [
     "libraries/extensions/dora-record",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
-    "libraries/extensions/ros2-bridge/msg-gen-macro",
     "libraries/extensions/ros2-bridge/python",
 ]
 
@@ -59,6 +58,7 @@ dora-runtime = { version = "0.3.2", path = "binaries/runtime" }
 dora-daemon = { version = "0.3.2", path = "binaries/daemon" }
 dora-coordinator = { version = "0.3.2", path = "binaries/coordinator" }
 dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 arrow = "48.0.0"
 arrow-schema = "48.0.0"
@@ -138,3 +138,8 @@ path = "examples/multiple-daemons/run.rs"
 [[example]]
 name = "cmake-dataflow"
 path = "examples/cmake-dataflow/run.rs"
+
+[[example]]
+name = "cxx-ros2-dataflow"
+path = "examples/c++-ros2-dataflow/run.rs"
+required-features = ["ros2-examples"]

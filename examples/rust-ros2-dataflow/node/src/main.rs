@@ -5,10 +5,12 @@ use dora_node_api::{
     DoraNode, Event,
 };
 use dora_ros2_bridge::{
-    geometry_msgs::msg::{Twist, Vector3},
+    messages::{
+        geometry_msgs::msg::{Twist, Vector3},
+        turtlesim::msg::Pose,
+    },
     ros2_client::{self, ros2, NodeOptions},
     rustdds::{self, policy},
-    turtlesim::msg::Pose,
 };
 use eyre::{eyre, Context};
 
