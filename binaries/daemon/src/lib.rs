@@ -20,7 +20,6 @@ use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
-use std::env::temp_dir;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{
@@ -59,6 +58,7 @@ use crate::pending::DataflowStatus;
 
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
+    working_dir: HashMap<DataflowId, PathBuf>,
 
     events_tx: mpsc::Sender<Timestamped<Event>>,
 
@@ -212,6 +212,7 @@ impl Daemon {
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             running: HashMap::new(),
+            working_dir: HashMap::new(),
             events_tx: dora_events_tx,
             coordinator_connection,
             last_coordinator_heartbeat: Instant::now(),
@@ -370,29 +371,43 @@ impl Daemon {
                 dataflow_id,
                 node_id,
             } => {
-                tokio::spawn(async move {
-                    let logs = async {
-                        let log_dir = temp_dir();
+                match self.working_dir.get(&dataflow_id) {
+                    Some(working_dir) => {
+                        let working_dir = working_dir.clone();
+                        tokio::spawn(async move {
+                            let logs = async {
+                                let mut file =
+                                    File::open(log::log_path(&working_dir, &dataflow_id, &node_id))
+                                        .await
+                                        .wrap_err(format!(
+                                            "Could not open log file: {:#?}",
+                                            log::log_path(&working_dir, &dataflow_id, &node_id)
+                                        ))?;
 
-                        let mut file =
-                            File::open(log_dir.join(log::log_path(&dataflow_id, &node_id)))
-                                .await
-                                .wrap_err("Could not open log file")?;
-
-                        let mut contents = vec![];
-                        file.read_to_end(&mut contents)
+                                let mut contents = vec![];
+                                file.read_to_end(&mut contents)
+                                    .await
+                                    .wrap_err("Could not read content of log file")?;
+                                Result::<Vec<u8>, eyre::Report>::Ok(contents)
+                            }
                             .await
-                            .wrap_err("Could not read content of log file")?;
-                        Result::<Vec<u8>, eyre::Report>::Ok(contents)
-                    }
-                    .await
-                    .map_err(|err| format!("{err:?}"));
-                    let _ = reply_tx
-                        .send(Some(DaemonCoordinatorReply::Logs(logs)))
-                        .map_err(|_| {
-                            error!("could not send logs reply from daemon to coordinator")
+                            .map_err(|err| format!("{err:?}"));
+                            let _ = reply_tx
+                                .send(Some(DaemonCoordinatorReply::Logs(logs)))
+                                .map_err(|_| {
+                                    error!("could not send logs reply from daemon to coordinator")
+                                });
                         });
-                });
+                    }
+                    None => {
+                        tracing::warn!("received Logs for unknown dataflow (ID `{dataflow_id}`)");
+                        let _ = reply_tx.send(None).map_err(|_| {
+                            error!(
+                                "could not send `AllNodesReady` reply from daemon to coordinator"
+                            )
+                        });
+                    }
+                }
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::ReloadDataflow {
@@ -516,7 +531,10 @@ impl Daemon {
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
-            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(dataflow),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                self.working_dir.insert(dataflow_id, working_dir.clone());
+                entry.insert(dataflow)
+            }
             std::collections::hash_map::Entry::Occupied(_) => {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }

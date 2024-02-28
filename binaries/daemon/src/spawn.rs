@@ -14,8 +14,8 @@ use dora_core::{
 use dora_download::download_file;
 use eyre::WrapErr;
 use std::{
-    env::{consts::EXE_EXTENSION, temp_dir},
-    path::Path,
+    env::consts::EXE_EXTENSION,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
 };
@@ -207,13 +207,14 @@ pub async fn spawn_node(
         }
     };
 
-    let log_dir = temp_dir();
-
+    let dataflow_dir = PathBuf::from(working_dir.join("out").join(dataflow_id.to_string()));
+    if !dataflow_dir.exists() {
+        std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
+    }
     let (tx, mut rx) = mpsc::channel(10);
-    let mut file =
-        File::create(&log_dir.join(log::log_path(&dataflow_id, &node_id).with_extension("txt")))
-            .await
-            .expect("Failed to create log file");
+    let mut file = File::create(log::log_path(working_dir, &dataflow_id, &node_id))
+        .await
+        .expect("Failed to create log file");
     let mut child_stdout =
         tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"));
 
