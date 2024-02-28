@@ -985,7 +985,11 @@ impl Daemon {
                 };
 
                 let Some(subscribers) = dataflow.mappings.get(&output_id) else {
-                    tracing::warn!("No subscribers found for {:?} in {:?}", output_id, dataflow.mappings);
+                    tracing::warn!(
+                        "No subscribers found for {:?} in {:?}",
+                        output_id,
+                        dataflow.mappings
+                    );
                     return Ok(RunStatus::Continue);
                 };
 

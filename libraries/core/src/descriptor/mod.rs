@@ -10,6 +10,7 @@ use std::{
     fmt,
     path::{Path, PathBuf},
 };
+use tracing::warn;
 pub use visualize::collect_dora_timers;
 
 mod validate;
@@ -165,10 +166,28 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
-    pub fn send_stdout_as(&self) -> Option<&str> {
+    pub fn send_stdout_as(&self) -> Option<String> {
         match &self.kind {
-            CoreNodeKind::Runtime(_) => None, // todo: add support for operator-level stdout capture
-            CoreNodeKind::Custom(n) => n.send_stdout_as.as_deref(),
+            // TODO: Split stdout between operators
+            CoreNodeKind::Runtime(n) => {
+                let count = n
+                    .operators
+                    .iter()
+                    .filter(|op| op.config.send_stdout_as.is_some())
+                    .count();
+                if count == 1 && n.operators.len() > 1 {
+                    warn!("All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator.")
+                } else if count > 1 {
+                    warn!("More than one `send_stdout_as` operators for a runtime node. Selecting the first stdout operator.")
+                }
+                n.operators.iter().find_map(|op| {
+                    op.config
+                        .send_stdout_as
+                        .clone()
+                        .map(|stdout| format!("{}/{}", op.id, stdout))
+                })
+            }
+            CoreNodeKind::Custom(n) => n.send_stdout_as.clone(),
         }
     }
 }
@@ -233,6 +252,8 @@ pub struct OperatorConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_stdout_as: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
