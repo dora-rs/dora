@@ -24,7 +24,7 @@ pub unsafe fn dora_init_operator<O: DoraOperator>() -> DoraInitResult {
 
 pub unsafe fn dora_drop_operator<O>(operator_context: *mut c_void) -> DoraResult {
     let raw: *mut O = operator_context.cast();
-    let _ = unsafe { Box::from_raw(raw) };
+    drop(unsafe { Box::from_raw(raw) });
     DoraResult { error: None }
 }
 
@@ -40,9 +40,7 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
     let event_variant = if let Some(input) = &mut event.input {
         let Some(data_array) = input.data_array.take() else {
             return OnEventResult {
-                result: DoraResult {
-                    error: Some("data already taken".to_string().into()),
-                },
+                result: DoraResult::from_error("data already taken".to_string()),
                 status: DoraStatus::Continue,
             };
         };
@@ -75,9 +73,7 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
             status,
         },
         Err(error) => OnEventResult {
-            result: DoraResult {
-                error: Some(error.into()),
-            },
+            result: DoraResult::from_error(error),
             status: DoraStatus::Stop,
         },
     }

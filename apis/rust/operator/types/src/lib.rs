@@ -15,7 +15,7 @@ use safer_ffi::{
     closure::ArcDynFn1,
     derive_ReprC, ffi_export,
 };
-use std::path::Path;
+use std::{ops::Deref, path::Path};
 
 #[derive_ReprC]
 #[ffi_export]
@@ -44,7 +44,31 @@ pub struct DoraDropOperator {
 #[repr(C)]
 #[derive(Debug)]
 pub struct DoraResult {
-    pub error: Option<safer_ffi::String>,
+    pub error: Option<safer_ffi::boxed::Box<safer_ffi::String>>,
+}
+
+impl DoraResult {
+    pub const SUCCESS: Self = Self { error: None };
+
+    pub fn from_error(error: String) -> Self {
+        Self {
+            error: Some(Box::new(safer_ffi::String::from(error)).into()),
+        }
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref().map(|s| s.deref())
+    }
+
+    pub fn into_result(self) -> Result<(), String> {
+        match self.error {
+            None => Ok(()),
+            Some(error) => {
+                let converted = safer_ffi::boxed::Box_::into(error);
+                Err((*converted).into())
+            }
+        }
+    }
 }
 
 #[derive_ReprC]
@@ -175,7 +199,7 @@ pub unsafe fn dora_send_operator_output(
     match result() {
         Ok(output) => send_output.send_output.call(output),
         Err(error) => DoraResult {
-            error: Some(error.into()),
+            error: Some(Box::new(safer_ffi::String::from(error)).into()),
         },
     }
 }

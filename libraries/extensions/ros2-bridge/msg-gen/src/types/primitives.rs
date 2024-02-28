@@ -131,9 +131,9 @@ pub struct NamedType(pub String);
 impl NamedType {
     fn type_tokens(&self, package: &str) -> impl ToTokens {
         let package = Ident::new(package, Span::call_site());
-        let namespace = Ident::new("msg", Span::call_site());
         let name = Ident::new(&self.0, Span::call_site());
-        quote! { crate::#package::#namespace::#name }
+        let ident = format_ident!("{package}__{name}");
+        quote! { #ident }
     }
 
     fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
@@ -173,9 +173,9 @@ pub struct NamespacedType {
 impl NamespacedType {
     fn type_tokens(&self) -> impl ToTokens {
         let package = Ident::new(&self.package, Span::call_site());
-        let namespace = Ident::new(&self.namespace, Span::call_site());
         let name = Ident::new(&self.name, Span::call_site());
-        quote! { crate::#package::#namespace::#name }
+        let ident = format_ident!("{package}__{name}");
+        quote! { #ident }
     }
 
     fn raw_type_tokens(&self) -> impl ToTokens {
@@ -215,9 +215,9 @@ impl GenericString {
 
     fn type_tokens(self) -> impl ToTokens {
         if self.is_wide() {
-            quote! { crate::_core::string::U16String }
+            quote! { U16String }
         } else {
-            quote! { ::std::string::String }
+            quote! { String }
         }
     }
 
