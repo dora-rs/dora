@@ -23,4 +23,4 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
-        object_detection_logs: object_detection/logs
+        object_detection_stdout: object_detection/stdout
