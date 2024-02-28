@@ -89,7 +89,7 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Write a row of data into the writerr
+/// Write a row of data into the writer
 fn write_event(
     writer: &mut StreamWriter<File>,
     data: Arc<dyn Array>,
