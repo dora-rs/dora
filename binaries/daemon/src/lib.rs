@@ -39,7 +39,7 @@ use tokio::sync::oneshot::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::error;
-use uuid::Uuid;
+use uuid::{NoContext, Timestamp, Uuid};
 
 mod coordinator;
 mod inter_daemon;
@@ -129,7 +129,7 @@ impl Daemon {
         let nodes = descriptor.resolve_aliases_and_set_defaults();
 
         let spawn_command = SpawnDataflowNodes {
-            dataflow_id: Uuid::new_v4(),
+            dataflow_id: Uuid::new_v7(Timestamp::now(NoContext)),
             working_dir,
             nodes,
             machine_listen_ports: BTreeMap::new(),

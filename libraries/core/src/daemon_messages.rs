@@ -11,7 +11,7 @@ use crate::{
 };
 use aligned_vec::{AVec, ConstAlign};
 use dora_message::{uhlc, Metadata};
-use uuid::Uuid;
+use uuid::{NoContext, Timestamp, Uuid};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct NodeConfig {
@@ -178,7 +178,7 @@ pub struct DropToken(Uuid);
 
 impl DropToken {
     pub fn generate() -> Self {
-        Self(Uuid::new_v4())
+        Self(Uuid::new_v7(Timestamp::now(NoContext)))
     }
 }
 
