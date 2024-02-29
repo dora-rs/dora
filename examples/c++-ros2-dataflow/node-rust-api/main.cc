@@ -78,6 +78,9 @@ int main()
         }
     }
 
+    // try to access a constant for testing
+    assert((sensor_msgs::const_NavSatStatus_STATUS_NO_FIX() == -1));
+
     std::cout << "GOODBYE FROM C++ node (using Rust API)" << std::endl;
 
     return 0;
