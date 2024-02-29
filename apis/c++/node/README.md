@@ -179,15 +179,29 @@ The `topic` is the topic you want to subscribe to, created using a `create_topic
 The second argument is the quality of service setting, which can be customized as described above.
 
 The third parameter is the event stream that the received messages should be merged into.
+Multiple subscriptions can be merged into the same event stream.
+
+#### Combined Event Streams
+
+Combined event streams enable the merging of multiple event streams into one.
+The combined stream will then deliver messages from all sources, in order of arrival.
+
 You can create such a event stream from Dora's event stream using the `dora_events_into_combined` function:
 
 ```c++
 auto event_stream = dora_events_into_combined(std::move(dora_node.events));
 ```
 
-Multiple subscriptions can be merged into the same event stream.
+Alternatively, if you don't want to use Dora, you can also create an empty event stream:
 
-#### Receiving Messages from Merged Event Stream
+```c++
+auto event_stream = empty_combined_events();
+```
+
+**Note:** You should only use `empty_combined_events` if you're running your executable independent of Dora.
+Ignoring the events from the `dora_node.events` channel can result in unintended behavior.
+
+#### Receiving Messages from Combined Event Stream
 
 The merged event stream will receive all incoming events of the node, including Dora events and ROS2 messages.
 To wait for the next incoming event, use its `next` method:
