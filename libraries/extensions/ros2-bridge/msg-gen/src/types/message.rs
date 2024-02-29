@@ -108,26 +108,25 @@ impl Constant {
         quote! { pub const #name: #type_ = #value; }
     }
 
-    fn cxx_method_def_token_stream(
-        &self,
-        struct_name: &Ident,
-        package_name: &str,
-    ) -> impl ToTokens {
-        let name = format_ident!("const_{struct_name}_{}", self.name);
-        let cxx_name = format_ident!("const_{}", self.name);
+    fn cxx_method_def_token_stream(&self, struct_name: &str, package_name: &str) -> impl ToTokens {
+        let name = format_ident!("const_{package_name}__{struct_name}_{}", self.name);
+        let cxx_name = format_ident!("const_{struct_name}_{}", self.name);
         let type_ = self.r#type.type_tokens();
         quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_name]
-            pub fn #name (self: &#struct_name) -> #type_;
+            pub fn #name () -> #type_;
         }
     }
 
-    fn cxx_method_impl_token_stream(&self, struct_name: &Ident) -> impl ToTokens {
+    fn cxx_method_impl_token_stream(&self, struct_raw_name: &Ident) -> impl ToTokens {
         let const_name = format_ident!("{}", self.name);
-        let name = format_ident!("const_{struct_name}_{}", self.name);
+        let name = format_ident!("const_{struct_raw_name}_{}", self.name);
         let type_ = self.r#type.type_tokens();
-        quote! { fn #name (self: &ffi::#struct_name) -> #type_ { Self::#const_name }}
+        quote! {
+            #[allow(non_snake_case, dead_code)]
+            fn #name () -> #type_ { ffi::#struct_raw_name::#const_name }
+        }
     }
 }
 
@@ -158,7 +157,7 @@ impl Message {
         let cxx_const_def_inner = self
             .constants
             .iter()
-            .map(|c| c.cxx_method_def_token_stream(&struct_raw_name, package_name));
+            .map(|c| c.cxx_method_def_token_stream(&self.name, package_name));
         let cxx_const_impl_inner = self
             .constants
             .iter()
@@ -197,7 +196,6 @@ impl Message {
                 impl ffi::#struct_raw_name {
                     #(#constants_def_inner)*
 
-                    #(#cxx_const_impl_inner)*
                 }
 
                 impl crate::_core::InternalDefault for ffi::#struct_raw_name {
@@ -214,6 +212,8 @@ impl Message {
                         crate::_core::InternalDefault::_default()
                     }
                 }
+
+                #(#cxx_const_impl_inner)*
             };
 
             (def, impls)
