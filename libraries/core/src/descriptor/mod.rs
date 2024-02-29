@@ -1,7 +1,7 @@
 use crate::config::{
     CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
-use eyre::{bail, Context, Result};
+use eyre::{bail, eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_with_expand_env::with_expand_envs;
 use std::{
@@ -166,7 +166,7 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
-    pub fn send_stdout_as(&self) -> Option<String> {
+    pub fn send_stdout_as(&self) -> Result<Option<String>> {
         match &self.kind {
             // TODO: Split stdout between operators
             CoreNodeKind::Runtime(n) => {
@@ -178,16 +178,16 @@ impl ResolvedNode {
                 if count == 1 && n.operators.len() > 1 {
                     warn!("All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator.")
                 } else if count > 1 {
-                    warn!("More than one `send_stdout_as` operators for a runtime node. Selecting the first stdout operator.")
+                    return Err(eyre!("More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."));
                 }
-                n.operators.iter().find_map(|op| {
+                Ok(n.operators.iter().find_map(|op| {
                     op.config
                         .send_stdout_as
                         .clone()
                         .map(|stdout| format!("{}/{}", op.id, stdout))
-                })
+                }))
             }
-            CoreNodeKind::Custom(n) => n.send_stdout_as.clone(),
+            CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
         }
     }
 }
