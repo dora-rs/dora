@@ -58,7 +58,9 @@ pub async fn spawn_node(
         clock.clone(),
     )
     .await?;
-    let send_stdout_to = node.send_stdout_as();
+    let send_stdout_to = node
+        .send_stdout_as()
+        .context("Could not resolve `send_stdout_as` configuration")?;
 
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
