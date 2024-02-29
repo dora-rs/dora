@@ -12,7 +12,7 @@ This examples requires a sourced ROS2 installation.
   - Install the turtlesim package
   - Start the turtlesim node through `ros2 run turtlesim turtlesim_node`
 
-## Running
+## Running turtlesim example
 
 
 From terminal 1 , sourcing the ROS2 installation and start ROS2 turtlesim window
@@ -21,8 +21,9 @@ source /opt/ros/galactic/setup.bash
 ros2 run turtlesim turtlesim_node
 ```
 
-From terminal 2 from dora folder 
+From terminal 2 from dora folder. Note the source command here is necessary as this allow ROS2 message types to be found and compile dynamically.
 ```
+source /opt/ros/galactic/setup.bash
 cargo run --example cxx-ros2-dataflow --features ros2-examples
 ```
 And you will see the turtle move a few steps.
