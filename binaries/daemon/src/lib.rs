@@ -1,6 +1,5 @@
 use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
-use dora_arrow_convert::{ArrowData, IntoArrow};
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{DataMessage, InterDaemonEvent, Timestamped};
@@ -42,7 +41,7 @@ use tokio::sync::oneshot::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::error;
-use uuid::{Timestamp, Uuid};
+use uuid::Uuid;
 
 mod coordinator;
 mod inter_daemon;
@@ -1199,13 +1198,6 @@ fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
     match &node.kind {
         CoreNodeKind::Custom(n) => n.run_config.inputs.clone(),
         CoreNodeKind::Runtime(n) => runtime_node_inputs(n),
-    }
-}
-
-fn node_outputs(node: &ResolvedNode) -> BTreeSet<DataId> {
-    match &node.kind {
-        CoreNodeKind::Custom(n) => n.run_config.outputs.clone(),
-        CoreNodeKind::Runtime(n) => runtime_node_outputs(n),
     }
 }
 
