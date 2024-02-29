@@ -43,7 +43,10 @@ fn target_dir() -> PathBuf {
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
     use super::target_dir;
-    use std::path::{Component, Path, PathBuf};
+    use std::{
+        io::{BufRead, BufReader},
+        path::{Component, Path, PathBuf},
+    };
 
     pub fn generate() -> PathBuf {
         use rust_format::Formatter;
@@ -118,7 +121,7 @@ mod ros2 {
         std::fs::copy(&header_path, &target_path).unwrap();
         println!("cargo:rerun-if-changed={}", header_path.display());
 
-        let mut node_header =
+        let node_header =
             std::fs::File::open(target_path.with_file_name("dora-node-api.h")).unwrap();
         let mut code_file = std::fs::File::open(&code_path).unwrap();
         println!("cargo:rerun-if-changed={}", code_path.display());
@@ -126,7 +129,17 @@ mod ros2 {
             std::fs::File::create(target_path.with_file_name("dora-ros2-bindings.cc")).unwrap();
 
         // copy both the node header and the code file to prevent import errors
-        std::io::copy(&mut node_header, &mut code_target_file).unwrap();
+        let mut header_reader = {
+            let mut reader = BufReader::new(node_header);
+
+            // read first line to skip `#pragma once`, which is not allowed in main files
+            let mut first_line = String::new();
+            reader.read_line(&mut first_line).unwrap();
+            assert_eq!(first_line.trim(), "#pragma once");
+
+            reader
+        };
+        std::io::copy(&mut header_reader, &mut code_target_file).unwrap();
         std::io::copy(&mut code_file, &mut code_target_file).unwrap();
         code_target_file.flush().unwrap();
     }
