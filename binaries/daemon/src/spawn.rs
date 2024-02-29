@@ -1,5 +1,5 @@
 use crate::{
-    log, node_communication::spawn_listener_loop, node_inputs, node_outputs, runtime_node_inputs,
+    log, node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
     runtime_node_outputs, DoraEvent, Event, NodeExitStatus, OutputId,
 };
 use aligned_vec::{AVec, ConstAlign};
