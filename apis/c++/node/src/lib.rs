@@ -10,7 +10,7 @@ use eyre::bail;
 
 #[cfg(feature = "ros2-bridge")]
 use dora_ros2_bridge::_core;
-use futures_lite::{Stream, StreamExt};
+use futures_lite::{stream, Stream, StreamExt};
 
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
@@ -56,6 +56,7 @@ mod ffi {
         fn init_dora_node() -> Result<DoraNode>;
 
         fn dora_events_into_combined(events: Box<Events>) -> CombinedEvents;
+        fn empty_combined_events() -> CombinedEvents;
         fn next(self: &mut Events) -> Box<DoraEvent>;
         fn next_event(events: &mut Box<Events>) -> Box<DoraEvent>;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
@@ -107,6 +108,15 @@ fn dora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
     ffi::CombinedEvents {
         events: Box::new(MergedEvents {
             events: Some(Box::new(events)),
+            next_id: 1,
+        }),
+    }
+}
+
+fn empty_combined_events() -> ffi::CombinedEvents {
+    ffi::CombinedEvents {
+        events: Box::new(MergedEvents {
+            events: Some(Box::new(stream::empty())),
             next_id: 1,
         }),
     }
