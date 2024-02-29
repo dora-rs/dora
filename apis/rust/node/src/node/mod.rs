@@ -9,7 +9,7 @@ use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    daemon_messages::{DataMessage, DropToken, NodeConfig},
+    daemon_messages::{DataMessage, DataflowId, DropToken, NodeConfig},
     descriptor::Descriptor,
     message::{uhlc, ArrowTypeInfo, Metadata, MetadataParameters},
 };
@@ -33,6 +33,7 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 pub struct DoraNode {
     id: NodeId,
+    dataflow_id: DataflowId,
     node_config: NodeRunConfig,
     control_channel: ControlChannel,
     clock: Arc<uhlc::HLC>,
@@ -89,6 +90,7 @@ impl DoraNode {
 
         let node = Self {
             id: node_id,
+            dataflow_id: dataflow_id,
             node_config: run_config,
             control_channel,
             clock,
@@ -241,6 +243,10 @@ impl DoraNode {
 
     pub fn id(&self) -> &NodeId {
         &self.id
+    }
+
+    pub fn dataflow_id(&self) -> &DataflowId {
+        &self.dataflow_id
     }
 
     pub fn node_config(&self) -> &NodeRunConfig {

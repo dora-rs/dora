@@ -30,7 +30,7 @@ dora-tracing = { workspace = true, optional = true }
 dora-arrow-convert = { workspace = true }
 dora-node-api = { workspace = true }
 serde_yaml = "0.8.23"
-uuid = { version = "1.1.2", features = ["v4"] }
+uuid = { version = "1.7", features = ["v7"] }
 futures = "0.3.25"
 shared-memory-server = { workspace = true }
 bincode = "1.3.3"

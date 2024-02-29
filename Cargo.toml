@@ -13,10 +13,15 @@ members = [
     "binaries/coordinator",
     "binaries/daemon",
     "binaries/runtime",
-    "examples/rust-dataflow/*",
-    "examples/rust-ros2-dataflow/*",
-    "examples/benchmark/*",
-    "examples/multiple-daemons/*",
+    "examples/rust-dataflow/node",
+    "examples/rust-dataflow/operator",
+    "examples/rust-dataflow/sink",
+    "examples/rust-ros2-dataflow/node",
+    "examples/benchmark/node",
+    "examples/benchmark/sink",
+    "examples/multiple-daemons/node",
+    "examples/multiple-daemons/operator",
+    "examples/multiple-daemons/sink",
     "libraries/arrow-convert",
     "libraries/communication-layer/*",
     "libraries/core",
@@ -87,7 +92,7 @@ dora-tracing = { workspace = true }
 dora-download = { workspace = true }
 dunce = "1.0.2"
 serde_yaml = "0.8.23"
-uuid = { version = "1.2.1", features = ["v4", "serde"] }
+uuid = { version = "1.7", features = ["v7", "serde"] }
 tracing = "0.1.36"
 futures = "0.3.25"
 tokio-stream = "0.1.11"

@@ -15,7 +15,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
 };
-use uuid::Uuid;
+use uuid::{NoContext, Timestamp, Uuid};
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
@@ -27,7 +27,7 @@ pub(super) async fn spawn_dataflow(
     dataflow.check(&working_dir)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults();
-    let uuid = Uuid::new_v4();
+    let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
     let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
     let machine_listen_ports = machines
