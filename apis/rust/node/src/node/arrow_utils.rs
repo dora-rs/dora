@@ -20,10 +20,7 @@ fn required_data_size_inner(array: &ArrayData, next_offset: &mut usize) {
     }
 }
 
-pub fn copy_array_into_sample(
-    target_buffer: &mut [u8],
-    arrow_array: &ArrayData,
-) -> eyre::Result<ArrowTypeInfo> {
+pub fn copy_array_into_sample(target_buffer: &mut [u8], arrow_array: &ArrayData) -> ArrowTypeInfo {
     let mut next_offset = 0;
     copy_array_into_sample_inner(target_buffer, &mut next_offset, arrow_array)
 }
@@ -32,7 +29,7 @@ fn copy_array_into_sample_inner(
     target_buffer: &mut [u8],
     next_offset: &mut usize,
     arrow_array: &ArrayData,
-) -> eyre::Result<ArrowTypeInfo> {
+) -> ArrowTypeInfo {
     let mut buffer_offsets = Vec::new();
     let layout = arrow::array::layout(arrow_array.data_type());
     for (buffer, spec) in arrow_array.buffers().iter().zip(&layout.buffers) {
@@ -58,11 +55,11 @@ fn copy_array_into_sample_inner(
 
     let mut child_data = Vec::new();
     for child in arrow_array.child_data() {
-        let child_type_info = copy_array_into_sample_inner(target_buffer, next_offset, child)?;
+        let child_type_info = copy_array_into_sample_inner(target_buffer, next_offset, child);
         child_data.push(child_type_info);
     }
 
-    Ok(ArrowTypeInfo {
+    ArrowTypeInfo {
         data_type: arrow_array.data_type().clone(),
         len: arrow_array.len(),
         null_count: arrow_array.null_count(),
@@ -70,5 +67,5 @@ fn copy_array_into_sample_inner(
         offset: arrow_array.offset(),
         buffer_offsets,
         child_data,
-    })
+    }
 }

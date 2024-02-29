@@ -10,10 +10,12 @@ nodes:
   - id: object_detection
     operator:
       python: object_detection.py
+      send_stdout_as: stdout
       inputs:
         image: webcam/image
       outputs:
         - bbox
+        - stdout
 
   - id: plot
     operator:
@@ -21,3 +23,4 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
+        object_detection_stdout: object_detection/stdout

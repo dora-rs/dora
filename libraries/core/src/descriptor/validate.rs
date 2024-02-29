@@ -93,6 +93,12 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
         };
     }
 
+    // Check that nodes can resolve `send_stdout_as`
+    for node in &nodes {
+        node.send_stdout_as()
+            .context("Could not resolve `send_stdout_as` configuration")?;
+    }
+
     if has_python_operator {
         check_python_runtime()?;
     }
