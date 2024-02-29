@@ -127,7 +127,7 @@ impl Constant {
         let const_name = format_ident!("{}", self.name);
         let name = format_ident!("const_{struct_name}_{}", self.name);
         let type_ = self.r#type.type_tokens();
-        quote! { pub fn #name (self: &ffi::#struct_name) -> #type_ { Self::#const_name }}
+        quote! { fn #name (self: &ffi::#struct_name) -> #type_ { Self::#const_name }}
     }
 }
 
