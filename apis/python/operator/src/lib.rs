@@ -171,7 +171,7 @@ mod tests {
         let size = required_data_size(arrow_array);
         let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, size);
 
-        let info = copy_array_into_sample(&mut sample, arrow_array)?;
+        let info = copy_array_into_sample(&mut sample, arrow_array);
 
         let serialized_deserialized_arrow_array = RawData::Vec(sample)
             .into_arrow_array(&info)

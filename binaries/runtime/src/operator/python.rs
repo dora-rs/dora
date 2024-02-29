@@ -362,7 +362,7 @@ mod callback_impl {
                 let total_len = required_data_size(&arrow_array);
                 let mut sample = allocate_sample(total_len)?;
 
-                let type_info = copy_array_into_sample(&mut sample, &arrow_array)?;
+                let type_info = copy_array_into_sample(&mut sample, &arrow_array);
 
                 (sample, type_info)
             } else {

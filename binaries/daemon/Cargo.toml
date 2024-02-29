@@ -27,6 +27,8 @@ dora-core = { workspace = true }
 flume = "0.10.14"
 dora-download = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
+dora-arrow-convert = { workspace = true }
+dora-node-api = { workspace = true }
 serde_yaml = "0.8.23"
 uuid = { version = "1.1.2", features = ["v4"] }
 futures = "0.3.25"

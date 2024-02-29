@@ -1,7 +1,7 @@
 use crate::config::{
     CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
-use eyre::{bail, Context, Result};
+use eyre::{bail, eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_with_expand_env::with_expand_envs;
 use std::{
@@ -10,6 +10,7 @@ use std::{
     fmt,
     path::{Path, PathBuf},
 };
+use tracing::warn;
 pub use visualize::collect_dora_timers;
 
 mod validate;
@@ -164,6 +165,33 @@ pub struct ResolvedNode {
     pub kind: CoreNodeKind,
 }
 
+impl ResolvedNode {
+    pub fn send_stdout_as(&self) -> Result<Option<String>> {
+        match &self.kind {
+            // TODO: Split stdout between operators
+            CoreNodeKind::Runtime(n) => {
+                let count = n
+                    .operators
+                    .iter()
+                    .filter(|op| op.config.send_stdout_as.is_some())
+                    .count();
+                if count == 1 && n.operators.len() > 1 {
+                    warn!("All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator.")
+                } else if count > 1 {
+                    return Err(eyre!("More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."));
+                }
+                Ok(n.operators.iter().find_map(|op| {
+                    op.config
+                        .send_stdout_as
+                        .clone()
+                        .map(|stdout| format!("{}/{}", op.id, stdout))
+                }))
+            }
+            CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResolvedDeploy {
     pub machine: String,
@@ -224,6 +252,8 @@ pub struct OperatorConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_stdout_as: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -275,6 +305,8 @@ pub struct CustomNode {
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_stdout_as: Option<String>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,

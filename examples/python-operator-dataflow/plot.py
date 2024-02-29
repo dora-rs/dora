@@ -29,6 +29,7 @@ class Operator:
         self.bboxs = []
         self.bounding_box_messages = 0
         self.image_messages = 0
+        self.object_detection_stdout = []
 
     def on_event(
         self,
@@ -69,12 +70,22 @@ class Operator:
             self.image_messages += 1
             print("received " + str(self.image_messages) + " images")
 
+        elif dora_input["id"] == "object_detection_stdout":
+            stdout = dora_input["value"][0].as_py()
+            self.object_detection_stdout += [stdout]
+            ## Only keep last 10 stdout
+            self.object_detection_stdout = self.object_detection_stdout[-10:]
+            return DoraStatus.CONTINUE
+
         elif dora_input["id"] == "bbox" and len(self.image) != 0:
             bboxs = dora_input["value"].to_numpy()
             self.bboxs = np.reshape(bboxs, (-1, 6))
 
             self.bounding_box_messages += 1
             print("received " + str(self.bounding_box_messages) + " bounding boxes")
+            return DoraStatus.CONTINUE
+        else:
+            return DoraStatus.CONTINUE
 
         for bbox in self.bboxs:
             [
@@ -99,6 +110,18 @@ class Operator:
                 (int(max_x), int(max_y)),
                 font,
                 0.75,
+                (0, 255, 0),
+                2,
+                1,
+            )
+
+        for i, log in enumerate(self.object_detection_stdout):
+            cv2.putText(
+                self.image,
+                log,
+                (10, 10 + 20 * i),
+                font,
+                0.5,
                 (0, 255, 0),
                 2,
                 1,
