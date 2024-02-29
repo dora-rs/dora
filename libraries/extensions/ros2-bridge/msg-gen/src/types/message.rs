@@ -107,6 +107,27 @@ impl Constant {
         let value = self.r#type.value_tokens(&self.value);
         quote! { pub const #name: #type_ = #value; }
     }
+
+    fn cxx_method_def_token_stream(&self, struct_name: &str, package_name: &str) -> impl ToTokens {
+        let name = format_ident!("const_{package_name}__{struct_name}_{}", self.name);
+        let cxx_name = format_ident!("const_{struct_name}_{}", self.name);
+        let type_ = self.r#type.type_tokens();
+        quote! {
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_name]
+            pub fn #name () -> #type_;
+        }
+    }
+
+    fn cxx_method_impl_token_stream(&self, struct_raw_name: &Ident) -> impl ToTokens {
+        let const_name = format_ident!("{}", self.name);
+        let name = format_ident!("const_{struct_raw_name}_{}", self.name);
+        let type_ = self.r#type.type_tokens();
+        quote! {
+            #[allow(non_snake_case, dead_code)]
+            fn #name () -> #type_ { ffi::#struct_raw_name::#const_name }
+        }
+    }
 }
 
 /// A message definition
@@ -133,15 +154,29 @@ impl Message {
 
         let rust_type_def_inner = self.members.iter().map(|m| m.rust_type_def(&self.package));
         let constants_def_inner = self.constants.iter().map(|c| c.token_stream());
+        let cxx_const_def_inner = self
+            .constants
+            .iter()
+            .map(|c| c.cxx_method_def_token_stream(&self.name, package_name));
+        let cxx_const_impl_inner = self
+            .constants
+            .iter()
+            .map(|c| c.cxx_method_impl_token_stream(&struct_raw_name));
         let rust_type_default_inner = self.members.iter().map(|m| m.default_value());
 
-        let attributes = if gen_cxx_bridge {
-            quote! {
+        let (attributes, cxx_consts) = if gen_cxx_bridge {
+            let attributes = quote! {
                 #[namespace = #package_name]
                 #[cxx_name = #cxx_name]
-            }
+            };
+            let consts = quote! {
+                extern "Rust" {
+                    #(#cxx_const_def_inner)*
+                }
+            };
+            (attributes, consts)
         } else {
-            quote! {}
+            (quote! {}, quote! {})
         };
 
         if self.members.is_empty() {
@@ -154,8 +189,15 @@ impl Message {
                 pub struct #struct_raw_name {
                     #(#rust_type_def_inner)*
                 }
+
+                #cxx_consts
             };
             let impls = quote! {
+                impl ffi::#struct_raw_name {
+                    #(#constants_def_inner)*
+
+                }
+
                 impl crate::_core::InternalDefault for ffi::#struct_raw_name {
                     fn _default() -> Self {
                         Self {
@@ -170,6 +212,8 @@ impl Message {
                         crate::_core::InternalDefault::_default()
                     }
                 }
+
+                #(#cxx_const_impl_inner)*
             };
 
             (def, impls)
