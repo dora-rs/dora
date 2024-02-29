@@ -242,3 +242,15 @@ else
 }
 ```
 
+### Constants
+
+Some ROS2 message definitions define constants, e.g. to specify the values of an enum-like integer field.
+The Dora ROS2 bridge exposes these constants in the generated bindings as functions.
+
+For example, the `STATUS_NO_FIX` constant of the [`NavSatStatus` message](https://docs.ros.org/en/jade/api/sensor_msgs/html/msg/NavSatStatus.html) can be accessed as follows:
+
+```c++
+assert((sensor_msgs::const_NavSatStatus_STATUS_NO_FIX() == -1));
+```
+
+(Note: Exposing them as C++ constants is not possible because it's [not supported by `cxx` yet](https://github.com/dtolnay/cxx/issues/1051).)
