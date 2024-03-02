@@ -7,23 +7,26 @@ use dora_node_api::{
         },
         buffer::{OffsetBuffer, ScalarBuffer},
         datatypes::{DataType, Field, Schema},
-        ipc::writer::StreamWriter,
         record_batch::RecordBatch,
     },
     DoraNode, Event, Metadata,
 };
 use dora_tracing::telemetry::deserialize_to_hashmap;
 use eyre::{Context, ContextCompat};
-use std::{collections::HashMap, fs::File, path::PathBuf, sync::Arc};
+use parquet::{arrow::AsyncArrowWriter, basic::BrotliLevel, file::properties::WriterProperties};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use tokio::sync::mpsc;
 
-fn main() -> eyre::Result<()> {
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
     let (node, mut events) = DoraNode::init_from_env()?;
     let dataflow_id = node.dataflow_id();
     let mut writers = HashMap::new();
+
     while let Some(event) = events.recv() {
         match event {
             Event::Input { id, data, metadata } => {
-                match writers.get_mut(&id) {
+                match writers.get(&id) {
                     None => {
                         let field_uhlc = Field::new("timestamp_uhlc", DataType::UInt64, false);
                         let field_utc_epoch = Field::new(
@@ -52,46 +55,74 @@ fn main() -> eyre::Result<()> {
                             std::fs::create_dir_all(&dataflow_dir)
                                 .context("could not create dataflow_dir")?;
                         }
-                        let file = std::fs::File::create(dataflow_dir.join(format!("{id}.arrow")))
-                            .context("Couldn't create write file")?;
+                        let file =
+                            tokio::fs::File::create(dataflow_dir.join(format!("{id}.parquet")))
+                                .await
+                                .context("Couldn't create write file")?;
+                        let mut writer = AsyncArrowWriter::try_new(
+                            file,
+                            schema.clone(),
+                            0,
+                            Some(
+                                WriterProperties::builder()
+                                    .set_compression(parquet::basic::Compression::BROTLI(
+                                        BrotliLevel::default(),
+                                    ))
+                                    .build(),
+                            ),
+                        )
+                        .context("Could not create parquet writer")?;
+                        let (tx, mut rx) = mpsc::channel(10);
 
-                        let writer = StreamWriter::try_new(file, &schema).unwrap();
-                        let mut writer = writer;
-                        write_event(&mut writer, data.into(), &metadata, schema.clone())
-                            .context("could not write first record data")?;
-                        writers.insert(id.clone(), (writer, schema));
+                        // Per Input thread
+                        let join_handle = tokio::spawn(async move {
+                            while let Some((data, metadata)) = rx.recv().await {
+                                match write_event(&mut writer, data, &metadata, schema.clone())
+                                    .await
+                                {
+                                    Err(e) => println!(
+                                        "Error writing event data into parquet file: {:?}",
+                                        e
+                                    ),
+                                    _ => (),
+                                };
+                            }
+                            writer.close()
+                        });
+                        writers.insert(id, (tx, join_handle));
                     }
-                    Some((writer, schema)) => {
-                        write_event(writer, data.into(), &metadata, schema.clone())
-                            .context("could not write record data")?;
+                    Some((tx, _)) => {
+                        tx.send((data.into(), metadata))
+                            .await
+                            .context("Could not send event data into writer loop")?;
                     }
                 };
             }
             Event::InputClosed { id } => match writers.remove(&id) {
                 None => {}
-                Some((mut writer, _)) => writer.finish().context("Could not finish arrow file")?,
+                Some(tx) => drop(tx),
             },
             _ => {}
         }
     }
 
-    let result: eyre::Result<Vec<_>> = writers
-        .iter_mut()
-        .map(|(_, (writer, _))| -> eyre::Result<()> {
-            writer
-                .finish()
-                .context("Could not finish writing arrow file")?;
-            Ok(())
-        })
-        .collect();
-    result.context("At least one of the input recorder file writer failed to finish")?;
+    for (id, (tx, join_handle)) in writers {
+        drop(tx);
+        join_handle
+            .await
+            .context("Writer thread failed")?
+            .await
+            .context(format!(
+                "Could not close the Parquet writer for {id} parquet writer"
+            ))?;
+    }
 
     Ok(())
 }
 
 /// Write a row of data into the writer
-fn write_event(
-    writer: &mut StreamWriter<File>,
+async fn write_event(
+    writer: &mut AsyncArrowWriter<tokio::fs::File>,
     data: Arc<dyn Array>,
     metadata: &Metadata,
     schema: Arc<Schema>,
@@ -138,6 +169,7 @@ fn write_event(
     .context("Could not create record batch with the given data")?;
     writer
         .write(&record)
+        .await
         .context("Could not write recordbatch to file")?;
 
     Ok(())
