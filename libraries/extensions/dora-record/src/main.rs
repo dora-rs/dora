@@ -77,17 +77,13 @@ async fn main() -> eyre::Result<()> {
                         // Per Input thread
                         let join_handle = tokio::spawn(async move {
                             while let Some((data, metadata)) = rx.recv().await {
-                                match write_event(&mut writer, data, &metadata, schema.clone())
-                                    .await
+                                if let Err(e) =
+                                    write_event(&mut writer, data, &metadata, schema.clone()).await
                                 {
-                                    Err(e) => println!(
-                                        "Error writing event data into parquet file: {:?}",
-                                        e
-                                    ),
-                                    _ => (),
+                                    println!("Error writing event data into parquet file: {:?}", e)
                                 };
                             }
-                            writer.close()
+                            writer.close().await
                         });
                         writers.insert(id, (tx, join_handle));
                     }
@@ -111,7 +107,6 @@ async fn main() -> eyre::Result<()> {
         join_handle
             .await
             .context("Writer thread failed")?
-            .await
             .context(format!(
                 "Could not close the Parquet writer for {id} parquet writer"
             ))?;
