@@ -180,44 +180,45 @@ impl Message {
         };
 
         if self.members.is_empty() {
-            (quote! {}, quote! {})
-        } else {
-            let def = quote! {
-                #[allow(non_camel_case_types)]
-                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-                #attributes
-                pub struct #struct_raw_name {
-                    #(#rust_type_def_inner)*
-                }
-
-                #cxx_consts
-            };
-            let impls = quote! {
-                impl ffi::#struct_raw_name {
-                    #(#constants_def_inner)*
-
-                }
-
-                impl crate::_core::InternalDefault for ffi::#struct_raw_name {
-                    fn _default() -> Self {
-                        Self {
-                            #(#rust_type_default_inner)*
-                        }
-                    }
-                }
-
-                impl std::default::Default for ffi::#struct_raw_name {
-                    #[inline]
-                    fn default() -> Self {
-                        crate::_core::InternalDefault::_default()
-                    }
-                }
-
-                #(#cxx_const_impl_inner)*
-            };
-
-            (def, impls)
+            (quote! {}, quote! {});
         }
+        let def = quote! {
+            #[allow(non_camel_case_types)]
+            #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+            #attributes
+            pub struct #struct_raw_name {
+                #(#rust_type_def_inner)*
+            }
+
+            #cxx_consts
+        };
+        let impls = quote! {
+            impl ffi::#struct_raw_name {
+                #(#constants_def_inner)*
+
+            }
+
+            impl crate::_core::InternalDefault for ffi::#struct_raw_name {
+                fn _default() -> Self {
+                    Self {
+                        #(#rust_type_default_inner)*
+                    }
+                }
+            }
+
+            impl std::default::Default for ffi::#struct_raw_name {
+                #[inline]
+                fn default() -> Self {
+                    crate::_core::InternalDefault::_default()
+                }
+            }
+
+            impl ros2_client::Message for ffi::#struct_raw_name {}
+
+            #(#cxx_const_impl_inner)*
+        };
+
+        (def, impls)
     }
 
     pub fn topic_def(&self, package_name: &str) -> (impl ToTokens, impl ToTokens) {
@@ -368,18 +369,6 @@ impl Message {
         } else {
             quote! {
                 pub use super::super::ffi::#struct_raw_name as #cxx_name;
-            }
-        }
-    }
-
-    pub fn token_stream_with_mod(&self, gen_cxx_bridge: bool) -> impl ToTokens {
-        let mod_name = format_ident!("_{}", self.name.to_snake_case());
-        let inner = self.token_stream_args(gen_cxx_bridge);
-
-        quote! {
-            pub use #mod_name::*;
-            mod #mod_name {
-                #inner
             }
         }
     }

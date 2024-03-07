@@ -16,17 +16,12 @@ pub trait MessageT: Default + Send + Sync {
     }
 }
 
-pub trait ServiceT: Send {
-    type Request: MessageT;
-    type Response: MessageT;
-}
-
 pub trait ActionT: Send {
     type Goal: MessageT;
     type Result: MessageT;
     type Feedback: MessageT;
-    type SendGoal: ServiceT;
-    type GetResult: ServiceT;
+    type SendGoal;
+    type GetResult;
     type FeedbackMessage: MessageT;
 }
 
