@@ -85,6 +85,9 @@ async fn main() -> eyre::Result<()> {
                             }
                             writer.close().await
                         });
+                        tx.send((data.into(), metadata))
+                            .await
+                            .context("Could not send event data into writer loop")?;
                         writers.insert(id, (tx, join_handle));
                     }
                     Some((tx, _)) => {
