@@ -10,10 +10,7 @@ use dora_ros2_bridge::{
     messages::{
         example_interfaces::service::{AddTwoInts, AddTwoIntsRequest},
         geometry_msgs::msg::{Twist, Vector3},
-        turtlesim::{
-            msg::Pose,
-            service::{Spawn, SpawnRequest},
-        },
+        turtlesim::msg::Pose,
     },
     ros2_client::{self, ros2, NodeOptions},
     rustdds::{self, policy},
@@ -26,6 +23,17 @@ fn main() -> eyre::Result<()> {
     let turtle_vel_publisher = create_vel_publisher(&mut ros_node)?;
     let turtle_pose_reader = create_pose_reader(&mut ros_node)?;
 
+    // spawn a background spinner task that is handles service discovery (and other things)
+    let pool = futures::executor::ThreadPool::new()?;
+    let spinner = ros_node.spinner();
+    pool.spawn(async {
+        if let Err(err) = spinner.spin().await {
+            eprintln!("ros2 spinner failed: {err:?}");
+        }
+    })
+    .context("failed to spawn ros2 spinner")?;
+
+    // create an example service client
     let service_qos = {
         rustdds::QosPolicyBuilder::new()
             .reliability(policy::Reliability::Reliable {
@@ -42,16 +50,7 @@ fn main() -> eyre::Result<()> {
         service_qos.clone(),
     )?;
 
-    let pool = futures::executor::ThreadPool::new()?;
-
-    let spinner = ros_node.spinner();
-    pool.spawn(async {
-        if let Err(err) = spinner.spin().await {
-            eprintln!("ros2 spinner failed: {err:?}");
-        }
-    })
-    .context("failed to spawn ros2 spinner")?;
-
+    // wait until the service server is ready
     println!("wait for add_two_ints service");
     let service_ready = async {
         for _ in 0..10 {
