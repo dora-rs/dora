@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use dora_node_api::{
     self,
     dora_core::config::DataId,
@@ -6,18 +8,69 @@ use dora_node_api::{
 };
 use dora_ros2_bridge::{
     messages::{
+        example_interfaces::service::{AddTwoInts, AddTwoIntsRequest},
         geometry_msgs::msg::{Twist, Vector3},
-        turtlesim::msg::Pose,
+        turtlesim::{
+            msg::Pose,
+            service::{Spawn, SpawnRequest},
+        },
     },
     ros2_client::{self, ros2, NodeOptions},
     rustdds::{self, policy},
 };
 use eyre::{eyre, Context};
+use futures::task::SpawnExt;
 
 fn main() -> eyre::Result<()> {
     let mut ros_node = init_ros_node()?;
     let turtle_vel_publisher = create_vel_publisher(&mut ros_node)?;
     let turtle_pose_reader = create_pose_reader(&mut ros_node)?;
+
+    let service_qos = {
+        rustdds::QosPolicyBuilder::new()
+            .reliability(policy::Reliability::Reliable {
+                max_blocking_time: rustdds::Duration::from_millis(100),
+            })
+            .history(policy::History::KeepLast { depth: 1 })
+            .build()
+    };
+    let add_client = ros_node.create_client::<AddTwoInts>(
+        ros2_client::ServiceMapping::Enhanced,
+        &ros2_client::Name::new("/", "add_two_ints").unwrap(),
+        &ros2_client::ServiceTypeName::new("example_interfaces", "AddTwoInts"),
+        service_qos.clone(),
+        service_qos.clone(),
+    )?;
+
+    let pool = futures::executor::ThreadPool::new()?;
+
+    let spinner = ros_node.spinner();
+    pool.spawn(async {
+        if let Err(err) = spinner.spin().await {
+            eprintln!("ros2 spinner failed: {err:?}");
+        }
+    })
+    .context("failed to spawn ros2 spinner")?;
+
+    println!("wait for add_two_ints service");
+    let service_ready = async {
+        for _ in 0..10 {
+            let ready = add_client.wait_for_service(&ros_node);
+            futures::pin_mut!(ready);
+            let timeout = futures_timer::Delay::new(Duration::from_secs(2));
+            match futures::future::select(ready, timeout).await {
+                futures::future::Either::Left(((), _)) => {
+                    println!("add_two_ints service is ready");
+                    return Ok(());
+                }
+                futures::future::Either::Right(_) => {
+                    println!("timeout while waiting for add_two_ints service, retrying");
+                }
+            }
+        }
+        eyre::bail!("add_to_ints service not available");
+    };
+    futures::executor::block_on(service_ready)?;
 
     let output = DataId::from("pose".to_owned());
 
@@ -53,6 +106,16 @@ fn main() -> eyre::Result<()> {
                         println!("tick {i}, sending {direction:?}");
                         turtle_vel_publisher.publish(direction).unwrap();
                     }
+                    "service_timer" => {
+                        let a = rand::random();
+                        let b = rand::random();
+                        let service_result = add_two_ints_request(&add_client, a, b);
+                        let sum = futures::executor::block_on(service_result)
+                            .context("failed to send service request")?;
+                        if sum != a.wrapping_add(b) {
+                            eyre::bail!("unexpected addition result: expected {}, got {sum}", a + b)
+                        }
+                    }
                     other => eprintln!("Ignoring unexpected input `{other}`"),
                 },
                 Event::Stop => println!("Received manual stop"),
@@ -74,6 +137,31 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+async fn add_two_ints_request(
+    add_client: &ros2_client::Client<AddTwoInts>,
+    a: i64,
+    b: i64,
+) -> eyre::Result<i64> {
+    let request = AddTwoIntsRequest { a, b };
+    println!("sending add request {request:?}");
+    let request_id = add_client.async_send_request(request.clone()).await?;
+    println!("{request_id:?}");
+
+    let response = add_client.async_receive_response(request_id);
+    futures::pin_mut!(response);
+    let timeout = futures_timer::Delay::new(Duration::from_secs(5));
+    match futures::future::select(response, timeout).await {
+        futures::future::Either::Left((Ok(response), _)) => {
+            println!("received response: {response:?}");
+            Ok(response.sum)
+        }
+        futures::future::Either::Left((Err(err), _)) => eyre::bail!(err),
+        futures::future::Either::Right(_) => {
+            eyre::bail!("timeout while waiting for response");
+        }
+    }
 }
 
 fn init_ros_node() -> eyre::Result<ros2_client::Node> {
