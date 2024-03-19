@@ -67,7 +67,7 @@ fn main() -> eyre::Result<()> {
                 }
             }
         }
-        eyre::bail!("add_to_ints service not available");
+        eyre::bail!("add_two_ints service not available");
     };
     futures::executor::block_on(service_ready)?;
 
