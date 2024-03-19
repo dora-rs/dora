@@ -45,10 +45,11 @@ impl Service {
 
     pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens {
         let srv_type = format_ident!("{}", self.name);
-        let req_type = format_ident!("{}_Request", self.name);
-        let req_type_raw = format_ident!("{package_name}__{}", req_type);
-        let res_type = format_ident!("{}_Response", self.name);
-        let res_type_raw = format_ident!("{package_name}__{}", res_type);
+        let req_type_raw = format_ident!("{package_name}__{}_Request", self.name);
+        let res_type_raw = format_ident!("{package_name}__{}_Response", self.name);
+
+        let req_type = format_ident!("{}Request", self.name);
+        let res_type = format_ident!("{}Response", self.name);
 
         let request_type_name = req_type.to_string();
         let response_type_name = res_type.to_string();
