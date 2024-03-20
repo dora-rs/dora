@@ -179,18 +179,42 @@ impl Message {
             (quote! {}, quote! {})
         };
 
-        if self.members.is_empty() {
-            (quote! {}, quote! {});
-        }
-        let def = quote! {
-            #[allow(non_camel_case_types)]
-            #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-            #attributes
-            pub struct #struct_raw_name {
-                #(#rust_type_def_inner)*
-            }
+        let def = if self.members.is_empty() {
+            quote! {
+                #[allow(non_camel_case_types)]
+                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+                #attributes
+                pub struct #struct_raw_name {
+                    #[serde(skip)]
+                    pub(super) _dummy: u8,
+                }
 
-            #cxx_consts
+                #cxx_consts
+            }
+        } else {
+            quote! {
+                #[allow(non_camel_case_types)]
+                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+                #attributes
+                pub struct #struct_raw_name {
+                    #(#rust_type_def_inner)*
+                }
+
+                #cxx_consts
+            }
+        };
+        let default = if self.members.is_empty() {
+            quote! {
+                Self {
+                    _dummy: 0,
+                }
+            }
+        } else {
+            quote! {
+                Self {
+                    #(#rust_type_default_inner)*
+                }
+            }
         };
         let impls = quote! {
             impl ffi::#struct_raw_name {
@@ -200,9 +224,7 @@ impl Message {
 
             impl crate::_core::InternalDefault for ffi::#struct_raw_name {
                 fn _default() -> Self {
-                    Self {
-                        #(#rust_type_default_inner)*
-                    }
+                    #default
                 }
             }
 
