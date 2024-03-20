@@ -27,6 +27,8 @@ where
     let mut message_topic_impls = Vec::new();
     let mut service_defs = Vec::new();
     let mut service_impls = Vec::new();
+    let mut service_creation_defs = Vec::new();
+    let mut service_creation_impls = Vec::new();
     let mut aliases = Vec::new();
     for package in &packages {
         for message in &package.messages {
@@ -44,6 +46,12 @@ where
             let (def, imp) = service.struct_token_stream(&package.name, create_cxx_bridge);
             service_defs.push(def);
             service_impls.push(imp);
+            if create_cxx_bridge {
+                let (service_creation_def, service_creation_impl) =
+                    service.cxx_service_creation_functions(&package.name);
+                service_creation_defs.push(service_creation_def);
+                service_creation_impls.push(service_creation_impl);
+            }
         }
 
         aliases.push(package.aliases_token_stream());
@@ -67,6 +75,7 @@ where
                     fn qos_default() -> Ros2QosPolicies;
 
                     #(#message_topic_defs)*
+                    #(#service_creation_defs)*
                 }
 
                 #[derive(Debug, Clone)]
@@ -235,6 +244,7 @@ where
 
         #cxx_bridge_impls
         #(#message_topic_impls)*
+        #(#service_creation_impls)*
 
 
         #(#service_impls)*

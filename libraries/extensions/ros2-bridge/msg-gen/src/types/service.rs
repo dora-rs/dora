@@ -76,6 +76,47 @@ impl Service {
         }
     }
 
+    pub fn cxx_service_creation_functions(
+        &self,
+        package_name: &str,
+    ) -> (impl ToTokens, impl ToTokens) {
+        let client_name = format_ident!("Client__{package_name}__{}", self.name);
+        let cxx_client_name = format_ident!("Client_{}", self.name);
+        let create_client = format_ident!("new_Client__{package_name}__{}", self.name);
+        let cxx_create_client = format!("create_client_{package_name}_{}", self.name);
+
+        let package = format_ident!("{package_name}");
+        let self_name = format_ident!("{}", self.name);
+        let self_name_str = &self.name;
+
+        let def = quote! {
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_client_name]
+            type #client_name;
+            #[cxx_name = #cxx_create_client]
+            fn #create_client(self: &mut Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies) -> Result<Box<#client_name>>;
+        };
+        let imp = quote! {
+            #[allow(non_camel_case_types)]
+            pub struct #client_name(ros2_client::service::Client< #package :: service :: #self_name >);
+
+            impl Ros2Node {
+                #[allow(non_snake_case)]
+                pub fn #create_client(&mut self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#client_name>> {
+                    let client = self.0.create_client::< #package :: service :: #self_name >(
+                        ros2_client::ServiceMapping::Enhanced,
+                        &ros2_client::Name::new(name_space, base_name).unwrap(),
+                        &ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
+                        qos.clone().into(),
+                        qos.into(),
+                    )?;
+                    Ok(Box::new(#client_name(client)))
+                }
+            }
+        };
+        (def, imp)
+    }
+
     pub fn token_stream_with_mod(&self) -> impl ToTokens {
         let mod_name = format_ident!("_{}", self.name.to_snake_case());
         let inner = self.token_stream();
