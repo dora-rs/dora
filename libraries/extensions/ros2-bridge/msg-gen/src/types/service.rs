@@ -59,7 +59,7 @@ impl Service {
             #[derive(std::fmt::Debug)]
             pub struct #srv_type;
 
-            impl ros2_client::Service for #srv_type {
+            impl crate::ros2_client::Service for #srv_type {
                 type Request = #req_type;
                 type Response = #res_type;
 
