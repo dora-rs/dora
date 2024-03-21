@@ -254,3 +254,68 @@ assert((sensor_msgs::const_NavSatStatus_STATUS_NO_FIX() == -1));
 ```
 
 (Note: Exposing them as C++ constants is not possible because it's [not supported by `cxx` yet](https://github.com/dtolnay/cxx/issues/1051).)
+
+### Service Clients
+
+To create a service client, use one of the `create_client_<TYPE>` functions.
+The `<TYPE>` describes the service type, which specifies the request and response types.
+The Dora ROS2 bridge automatically creates `create_client_<TYPE>` functions for all service types found in the sourced ROS2 environment.
+
+```c++
+auto add_two_ints = node->create_client_example_interfaces_AddTwoInts(
+  "/",
+  "add_two_ints",
+  qos,
+  merged_events
+);
+```
+
+- The first argument is the namespace of the service and the second argument is its name.
+- The third argument is the QoS (quality of service) setting for the service.
+  It can be set to `qos_default()` or adjusted as desired, for example:
+  ```c++
+  auto qos = qos_default();
+  qos.reliable = true;
+  qos.max_blocking_time = 0.1;
+  qos.keep_last = 1;
+  ```
+- The last argument is the [combined event stream](#combined-event-streams) that the received service responses should be merged into.
+
+#### Waiting for the Service
+
+In order to achieve reliable service communication, it is recommended to wait until the service is available before sending requests.
+Use the `wait_for_service()` method for that, e.g.:
+
+```c++
+add_two_ints->wait_for_service(node)
+```
+
+The given `node` must be the node on which the service was created.
+
+#### Sending Requests
+
+To send a request, use the `send_request` method:
+
+```c++
+add_two_ints->send_request(request);
+```
+
+The method sends the request asynchronously without waiting for a response.
+When the response is received, it is automatically sent to the [combined event stream](#combined-event-streams) that was given on client creation.
+
+#### Receiving Responses
+
+See the [_"Receiving Messages from Combined Event Stream"_](#receiving-messages-from-combined-event-stream) section for how to receive events from the combined event stream.
+To check if a received event is a service response, use the `matches` method.
+If it returns `true`, you can use the `downcast` method to convert the event to the correct service response type.
+
+Example:
+
+```c++
+if (add_two_ints->matches(event))
+{
+    auto response = add_two_ints->downcast(std::move(event));
+    std::cout << "Received sum response with value " << response.sum << std::endl;
+    ...
+}
+```
