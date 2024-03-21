@@ -107,22 +107,43 @@ where
                 }
             },
             quote! {
-                struct Ros2Context(ros2_client::Context);
+                struct Ros2Context{
+                    context: ros2_client::Context,
+                    executor: std::sync::Arc<futures::executor::ThreadPool>,
+                }
 
                 fn init_ros2_context() -> eyre::Result<Box<Ros2Context>> {
-                    Ok(Box::new(Ros2Context(ros2_client::Context::new()?)))
+                    Ok(Box::new(Ros2Context{
+                        context: ros2_client::Context::new()?,
+                        executor: std::sync::Arc::new(futures::executor::ThreadPool::new()?),
+                    }))
                 }
 
                 impl Ros2Context {
                     fn new_node(&self, name_space: &str, base_name: &str) -> eyre::Result<Box<Ros2Node>> {
+                        use futures::task::SpawnExt as _;
+                        use eyre::WrapErr as _;
+
                         let name = ros2_client::NodeName::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
                         let options = ros2_client::NodeOptions::new().enable_rosout(true);
-                        let node = self.0.new_node(name, options)?;
-                        Ok(Box::new(Ros2Node(node)))
+                        let mut node = self.context.new_node(name, options)?;
+
+                        let spinner = node.spinner();
+                        self.executor.spawn(async {
+                            if let Err(err) = spinner.spin().await {
+                                eprintln!("ros2 spinner failed: {err:?}");
+                            }
+                        })
+                        .context("failed to spawn ros2 spinner")?;
+
+                        Ok(Box::new(Ros2Node{ node, executor: self.executor.clone(), }))
                     }
                 }
 
-                struct Ros2Node(ros2_client::Node);
+                struct Ros2Node {
+                    node : ros2_client::Node,
+                    executor: std::sync::Arc<futures::executor::ThreadPool>,
+                }
 
                 fn qos_default() -> ffi::Ros2QosPolicies {
                     ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)
