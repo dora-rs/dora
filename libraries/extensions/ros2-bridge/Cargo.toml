@@ -24,6 +24,9 @@ tokio = { version = "1.29.1", features = ["full"], optional = true }
 dora-daemon = { path = "../../../binaries/daemon", optional = true }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+flume = "0.11.0"
+futures = { version = "0.3.21", features = ["thread-pool"] }
+futures-timer = "3.0.3"
 
 [dev-dependencies]
 rand = "0.8.5"

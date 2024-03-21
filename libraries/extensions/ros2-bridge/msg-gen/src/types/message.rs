@@ -1,4 +1,3 @@
-use heck::SnakeCase;
 use quote::{format_ident, quote, ToTokens};
 use syn::Ident;
 
@@ -314,19 +313,19 @@ impl Message {
                 pub fn #create_topic(&self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
                     let name = crate::ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
                     let type_name = crate::ros2_client::MessageTypeName::new(#package_name, #self_name);
-                    let topic = self.0.create_topic(&name, type_name, &qos.into())?;
+                    let topic = self.node.create_topic(&name, type_name, &qos.into())?;
                     Ok(Box::new(#topic_name(topic)))
                 }
 
                 #[allow(non_snake_case)]
                 pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#publisher_name>> {
-                    let publisher = self.0.create_publisher(&topic.0, Some(qos.into()))?;
+                    let publisher = self.node.create_publisher(&topic.0, Some(qos.into()))?;
                     Ok(Box::new(#publisher_name(publisher)))
                 }
 
                 #[allow(non_snake_case)]
                 pub fn #create_subscription(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#subscription_name>> {
-                    let subscription = self.0.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
+                    let subscription = self.node.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
                     let stream = futures_lite::stream::unfold(subscription, |sub| async {
                         let item = sub.async_take().await;
                         let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
