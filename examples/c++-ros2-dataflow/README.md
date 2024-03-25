@@ -12,8 +12,9 @@ This examples requires a sourced ROS2 installation.
   - Install the turtlesim package
   - Start the turtlesim node through `ros2 run turtlesim turtlesim_node`
 
-## Running turtlesim example
+## Running pub/sub example
 
+A ROS2 client to pubish turtlesim ROS2 messages and a DORA node can subscribe and visualize it.
 
 From terminal 1 , sourcing the ROS2 installation and start ROS2 turtlesim window
 ```
@@ -27,3 +28,28 @@ source /opt/ros/galactic/setup.bash
 cargo run --example cxx-ros2-dataflow --features ros2-examples
 ```
 And you will see the turtle move a few steps.
+
+## Running service example
+The current service code example is a service client. To test with service server we can test with either ROS2 demo or ros2-client
+- if using ROS2 demo the the command line is:
+```
+ros2 run demo_nodes_cpp add_two_ints_server
+```
+
+start DORA service client from another terminal
+```
+cargo run --example cxx-ros2-dataflow --features ros2-examples
+```
+
+- if using ros2-client the command line is:
+```
+cargo run --example=ros2_service_server
+```
+
+then start DORA service client from another terminal
+```
+cargo run --example cxx-ros2-dataflow --features ros2-examples
+```
+
+
+
