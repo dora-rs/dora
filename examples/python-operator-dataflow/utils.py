@@ -1,5 +1,28 @@
+import os
+import cv2
+
+
+def put_text(image, text, position, color):
+    cv2.putText(
+        image,
+        text,
+        position,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        color,
+        2,
+        1,
+    )
+
+
+CI = os.environ.get("CI")
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 480
+
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 LABELS = [
-    "ABC",
+    "person",
     "bicycle",
     "car",
     "motorcycle",
