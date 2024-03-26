@@ -9,7 +9,7 @@ use dora_node_api::{
 use eyre::bail;
 
 #[cfg(feature = "ros2-bridge")]
-use dora_ros2_bridge::_core;
+use dora_ros2_bridge::{_core, ros2_client};
 use futures_lite::{stream, Stream, StreamExt};
 
 #[cxx::bridge]

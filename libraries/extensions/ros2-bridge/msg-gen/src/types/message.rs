@@ -179,10 +179,20 @@ impl Message {
             (quote! {}, quote! {})
         };
 
-        if self.members.is_empty() {
-            (quote! {}, quote! {})
+        let def = if self.members.is_empty() {
+            quote! {
+                #[allow(non_camel_case_types)]
+                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+                #attributes
+                pub struct #struct_raw_name {
+                    #[serde(skip)]
+                    pub(super) _dummy: u8,
+                }
+
+                #cxx_consts
+            }
         } else {
-            let def = quote! {
+            quote! {
                 #[allow(non_camel_case_types)]
                 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
                 #attributes
@@ -191,33 +201,46 @@ impl Message {
                 }
 
                 #cxx_consts
-            };
-            let impls = quote! {
-                impl ffi::#struct_raw_name {
-                    #(#constants_def_inner)*
-
+            }
+        };
+        let default = if self.members.is_empty() {
+            quote! {
+                Self {
+                    _dummy: 0,
                 }
-
-                impl crate::_core::InternalDefault for ffi::#struct_raw_name {
-                    fn _default() -> Self {
-                        Self {
-                            #(#rust_type_default_inner)*
-                        }
-                    }
+            }
+        } else {
+            quote! {
+                Self {
+                    #(#rust_type_default_inner)*
                 }
+            }
+        };
+        let impls = quote! {
+            impl ffi::#struct_raw_name {
+                #(#constants_def_inner)*
 
-                impl std::default::Default for ffi::#struct_raw_name {
-                    #[inline]
-                    fn default() -> Self {
-                        crate::_core::InternalDefault::_default()
-                    }
+            }
+
+            impl crate::_core::InternalDefault for ffi::#struct_raw_name {
+                fn _default() -> Self {
+                    #default
                 }
+            }
 
-                #(#cxx_const_impl_inner)*
-            };
+            impl std::default::Default for ffi::#struct_raw_name {
+                #[inline]
+                fn default() -> Self {
+                    crate::_core::InternalDefault::_default()
+                }
+            }
 
-            (def, impls)
-        }
+            impl crate::ros2_client::Message for ffi::#struct_raw_name {}
+
+            #(#cxx_const_impl_inner)*
+        };
+
+        (def, impls)
     }
 
     pub fn topic_def(&self, package_name: &str) -> (impl ToTokens, impl ToTokens) {
@@ -289,8 +312,8 @@ impl Message {
             impl Ros2Node {
                 #[allow(non_snake_case)]
                 pub fn #create_topic(&self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
-                    let name = ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
-                    let type_name = ros2_client::MessageTypeName::new(#package_name, #self_name);
+                    let name = crate::ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
+                    let type_name = crate::ros2_client::MessageTypeName::new(#package_name, #self_name);
                     let topic = self.0.create_topic(&name, type_name, &qos.into())?;
                     Ok(Box::new(#topic_name(topic)))
                 }
@@ -316,7 +339,7 @@ impl Message {
             }
 
             #[allow(non_camel_case_types)]
-            pub struct #publisher_name(ros2_client::Publisher<ffi::#struct_raw_name>);
+            pub struct #publisher_name(crate::ros2_client::Publisher<ffi::#struct_raw_name>);
 
             impl #publisher_name {
                 #[allow(non_snake_case)]
@@ -345,7 +368,7 @@ impl Message {
 
                     match (*event.event).0 {
                         Some(crate::MergedEvent::External(event)) if event.id == self.id  => {
-                            let result = event.event.downcast::<rustdds::dds::result::ReadResult<(ffi::#struct_raw_name, ros2_client::MessageInfo)>>()
+                            let result = event.event.downcast::<rustdds::dds::result::ReadResult<(ffi::#struct_raw_name, crate::ros2_client::MessageInfo)>>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", #struct_raw_name_str))?;
 
                             let (data, _info) = result.with_context(|| format!("failed to receive {} event", #subscription_name_str))?;
@@ -368,18 +391,6 @@ impl Message {
         } else {
             quote! {
                 pub use super::super::ffi::#struct_raw_name as #cxx_name;
-            }
-        }
-    }
-
-    pub fn token_stream_with_mod(&self, gen_cxx_bridge: bool) -> impl ToTokens {
-        let mod_name = format_ident!("_{}", self.name.to_snake_case());
-        let inner = self.token_stream_args(gen_cxx_bridge);
-
-        quote! {
-            pub use #mod_name::*;
-            mod #mod_name {
-                #inner
             }
         }
     }

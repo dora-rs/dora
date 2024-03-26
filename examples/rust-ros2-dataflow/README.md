@@ -11,11 +11,14 @@ This examples requires a sourced ROS2 installation.
 - Follow tasks 1 and 2 of the [ROS2 turtlesim tutorial](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html#id3)
   - Install the turtlesim package
   - Start the turtlesim node through `ros2 run turtlesim turtlesim_node`
+- In a separate terminal, start the `/add_two_ints` service: `ros2 run examples_rclcpp_minimal_service service_main`
 
 ## Running
 
-After sourcing the ROS2 installation and starting the `turtlesim` node, you can run this example to move the turtle in random directions:
+After sourcing the ROS2 installation and starting both the `turtlesim` node and the `/add_two_ints` service, you can run this example to move the turtle in random directions:
 
 ```
 cargo run --example rust-ros2-dataflow --features ros2-examples
 ```
+
+You should see a few random requests in the terminal where you started the `examples_rclcpp_minimal_service`.

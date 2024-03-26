@@ -25,6 +25,8 @@ where
     let mut message_struct_impls = Vec::new();
     let mut message_topic_defs = Vec::new();
     let mut message_topic_impls = Vec::new();
+    let mut service_defs = Vec::new();
+    let mut service_impls = Vec::new();
     let mut aliases = Vec::new();
     for package in &packages {
         for message in &package.messages {
@@ -37,6 +39,13 @@ where
                 message_topic_impls.push(topic_impl);
             }
         }
+
+        for service in &package.services {
+            let (def, imp) = service.struct_token_stream(&package.name, create_cxx_bridge);
+            service_defs.push(def);
+            service_impls.push(imp);
+        }
+
         aliases.push(package.aliases_token_stream());
     }
 
@@ -212,6 +221,7 @@ where
             }
 
             #(#shared_type_defs)*
+            #(#service_defs)*
         }
 
 
@@ -226,6 +236,8 @@ where
         #cxx_bridge_impls
         #(#message_topic_impls)*
 
+
+        #(#service_impls)*
 
         #(#aliases)*
     }
