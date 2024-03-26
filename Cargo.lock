@@ -1051,7 +1051,7 @@ dependencies = [
 name = "communication-layer-pub-sub"
 version = "0.3.2"
 dependencies = [
- "flume",
+ "flume 0.10.14",
  "zenoh",
 ]
 
@@ -1524,7 +1524,7 @@ dependencies = [
  "dora-node-api",
  "dora-tracing",
  "eyre",
- "flume",
+ "flume 0.10.14",
  "futures",
  "futures-concurrency",
  "serde_json",
@@ -1598,7 +1598,7 @@ dependencies = [
  "dora-core",
  "dora-tracing",
  "eyre",
- "flume",
+ "flume 0.10.14",
  "futures",
  "futures-concurrency",
  "futures-timer",
@@ -1646,7 +1646,7 @@ dependencies = [
  "dora-ros2-bridge-python",
  "dora-runtime",
  "eyre",
- "flume",
+ "flume 0.10.14",
  "futures",
  "pyo3",
  "pythonize",
@@ -1696,7 +1696,7 @@ dependencies = [
  "arrow-schema",
  "dora-node-api",
  "eyre",
- "flume",
+ "flume 0.10.14",
  "pyo3",
  "serde_yaml 0.8.26",
 ]
@@ -1730,7 +1730,9 @@ dependencies = [
  "dora-daemon",
  "dora-ros2-bridge-msg-gen",
  "eyre",
+ "flume 0.11.0",
  "futures",
+ "futures-timer",
  "rand",
  "ros2-client",
  "rust-format",
@@ -1785,7 +1787,7 @@ dependencies = [
  "dora-operator-api-types",
  "dora-tracing",
  "eyre",
- "flume",
+ "flume 0.10.14",
  "futures",
  "futures-concurrency",
  "libloading",
@@ -2033,6 +2035,18 @@ dependencies = [
  "futures-sink",
  "nanorand",
  "pin-project",
+ "spin 0.9.8",
+]
+
+[[package]]
+name = "flume"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55ac459de2512911e4b674ce33cf20befaba382d05b62b008afc1c8b57cbf181"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "nanorand",
  "spin 0.9.8",
 ]
 
@@ -6652,7 +6666,7 @@ dependencies = [
  "base64 0.13.1",
  "env_logger",
  "event-listener 2.5.3",
- "flume",
+ "flume 0.10.14",
  "form_urlencoded",
  "futures",
  "git-version",
@@ -6716,7 +6730,7 @@ checksum = "1e256d7aff2c9af765d77efbfae7fcb708d2d7f4e179aa201bff2f81ad7a3845"
 dependencies = [
  "async-std",
  "async-trait",
- "flume",
+ "flume 0.10.14",
  "log",
  "zenoh-core",
  "zenoh-sync",
@@ -6728,7 +6742,7 @@ version = "0.7.0-rc"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bad1ff61abf28c57e8879ec4286fa29becf7e9bf12555df9a7faddff3bc9ea1b"
 dependencies = [
- "flume",
+ "flume 0.10.14",
  "json5",
  "num_cpus",
  "serde",
@@ -6795,7 +6809,7 @@ checksum = "21aab9eeb2aba53e37aae57467ffca1268d209811c5e2f39761aab4c1343bce3"
 dependencies = [
  "async-std",
  "async-trait",
- "flume",
+ "flume 0.10.14",
  "serde",
  "zenoh-buffers",
  "zenoh-cfg-properties",
@@ -6967,7 +6981,7 @@ checksum = "821070b62a55d4c8a22e1e06c939c1f2d94767e660df9fcbea377781f72f59bf"
 dependencies = [
  "async-std",
  "event-listener 2.5.3",
- "flume",
+ "flume 0.10.14",
  "futures",
  "tokio",
  "zenoh-core",
@@ -6983,7 +6997,7 @@ dependencies = [
  "async-global-executor",
  "async-std",
  "async-trait",
- "flume",
+ "flume 0.10.14",
  "log",
  "paste",
  "rand",
