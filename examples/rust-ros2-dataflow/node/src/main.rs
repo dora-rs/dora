@@ -4,7 +4,7 @@ use dora_node_api::{
     self,
     dora_core::config::DataId,
     merged::{MergeExternal, MergedEvent},
-    DoraNode, Event,
+    DoraNode, Event, IntoArrow,
 };
 use dora_ros2_bridge::{
     messages::{
@@ -12,7 +12,7 @@ use dora_ros2_bridge::{
         geometry_msgs::msg::{Twist, Vector3},
         turtlesim::msg::Pose,
     },
-    ros2_client::{self, ros2, NodeOptions},
+    ros2_client::{self, ros2, Client, NodeOptions},
     rustdds::{self, policy},
 };
 use eyre::{eyre, Context};
@@ -33,43 +33,11 @@ fn main() -> eyre::Result<()> {
     })
     .context("failed to spawn ros2 spinner")?;
 
-    // create an example service client
-    let service_qos = {
-        rustdds::QosPolicyBuilder::new()
-            .reliability(policy::Reliability::Reliable {
-                max_blocking_time: rustdds::Duration::from_millis(100),
-            })
-            .history(policy::History::KeepLast { depth: 1 })
-            .build()
-    };
-    let add_client = ros_node.create_client::<AddTwoInts>(
-        ros2_client::ServiceMapping::Enhanced,
-        &ros2_client::Name::new("/", "add_two_ints").unwrap(),
-        &ros2_client::ServiceTypeName::new("example_interfaces", "AddTwoInts"),
-        service_qos.clone(),
-        service_qos.clone(),
-    )?;
+    let add_client = create_add_client(&mut ros_node, "add_two_ints")?;
+    let add_client_custom = create_add_client(&mut ros_node, "add_two_ints_custom")?;
 
-    // wait until the service server is ready
-    println!("wait for add_two_ints service");
-    let service_ready = async {
-        for _ in 0..10 {
-            let ready = add_client.wait_for_service(&ros_node);
-            futures::pin_mut!(ready);
-            let timeout = futures_timer::Delay::new(Duration::from_secs(2));
-            match futures::future::select(ready, timeout).await {
-                futures::future::Either::Left(((), _)) => {
-                    println!("add_two_ints service is ready");
-                    return Ok(());
-                }
-                futures::future::Either::Right(_) => {
-                    println!("timeout while waiting for add_two_ints service, retrying");
-                }
-            }
-        }
-        eyre::bail!("add_two_ints service not available");
-    };
-    futures::executor::block_on(service_ready)?;
+    wait_for_service(&add_client, &mut ros_node, "add_two_ints")?;
+    wait_for_service(&add_client_custom, &mut ros_node, "add_two_ints_custom")?;
 
     let output = DataId::from("pose".to_owned());
 
@@ -114,6 +82,16 @@ fn main() -> eyre::Result<()> {
                         if sum != a.wrapping_add(b) {
                             eyre::bail!("unexpected addition result: expected {}, got {sum}", a + b)
                         }
+
+                        let service_result_custom = add_two_ints_request(&add_client_custom, a, b);
+                        let sum = futures::executor::block_on(service_result_custom)
+                            .context("failed to send custom service request")?;
+                        if sum != a.wrapping_add(b) {
+                            eyre::bail!(
+                                "unexpected addition result from custom service: expected {}, got {sum}",
+                                a + b
+                            )
+                        }
                     }
                     other => eprintln!("Ignoring unexpected input `{other}`"),
                 },
@@ -135,7 +113,64 @@ fn main() -> eyre::Result<()> {
         }
     }
 
+    node.send_output(
+        DataId::from("finished".to_owned()),
+        Default::default(),
+        true.into_arrow(),
+    )
+    .context("failed to send `finished` output")?;
+
     Ok(())
+}
+
+fn wait_for_service(
+    client: &Client<AddTwoInts>,
+    ros_node: &mut ros2_client::Node,
+    service_name: &str,
+) -> Result<(), eyre::Error> {
+    println!("wait for {service_name} service");
+    let service_ready = async {
+        for _ in 0..10 {
+            let ready = client.wait_for_service(&ros_node);
+            futures::pin_mut!(ready);
+            let timeout = futures_timer::Delay::new(Duration::from_secs(2));
+            match futures::future::select(ready, timeout).await {
+                futures::future::Either::Left(((), _)) => {
+                    println!("add_two_ints service is ready");
+                    return Ok(());
+                }
+                futures::future::Either::Right(_) => {
+                    println!("timeout while waiting for {service_name} service, retrying");
+                }
+            }
+        }
+        eyre::bail!("{service_name} service not available");
+    };
+    futures::executor::block_on(service_ready)?;
+    Ok(())
+}
+
+fn create_add_client(
+    ros_node: &mut ros2_client::Node,
+    service_name: &str,
+) -> Result<ros2_client::Client<AddTwoInts>, eyre::Error> {
+    let service_qos = {
+        rustdds::QosPolicyBuilder::new()
+            .reliability(policy::Reliability::Reliable {
+                max_blocking_time: rustdds::Duration::from_millis(100),
+            })
+            .history(policy::History::KeepLast { depth: 1 })
+            .build()
+    };
+    let add_client = ros_node.create_client::<AddTwoInts>(
+        ros2_client::ServiceMapping::Enhanced,
+        &ros2_client::Name::new("/", service_name).unwrap(),
+        &ros2_client::ServiceTypeName::new("example_interfaces", "AddTwoInts"),
+        service_qos.clone(),
+        service_qos.clone(),
+    )?;
+
+    Ok(add_client)
 }
 
 async fn add_two_ints_request(
