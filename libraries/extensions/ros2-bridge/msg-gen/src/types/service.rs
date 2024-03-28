@@ -161,9 +161,6 @@ impl Service {
 
                 #[allow(non_snake_case)]
                 pub fn #create_server(&mut self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#server_name>> {
-                    use futures::StreamExt as _;
-                    use futures::FutureExt as _;
-
                     let server = self.node.create_server::< #package :: service :: #self_name >(
                         ros2_client::ServiceMapping::Enhanced,
                         &ros2_client::Name::new(name_space, base_name).unwrap(),
