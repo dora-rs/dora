@@ -66,7 +66,7 @@ class Operator:
         else:
             print("received unexpected event:", event_type)
 
-        if time.time() - self.start_time < 200 or CI != "true":
+        if time.time() - self.start_time < 20 or CI != "true":
             return DoraStatus.CONTINUE
         else:
             return DoraStatus.STOP

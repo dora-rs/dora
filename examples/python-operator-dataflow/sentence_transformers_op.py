@@ -4,16 +4,8 @@ from sentence_transformers import util
 from dora import DoraStatus
 import os
 import sys
-import inspect
 import torch
 import pyarrow as pa
-
-SHOULD_NOT_BE_INCLUDED = [
-    "utils.py",
-    "sentence_transformers_op.py",
-    "chatgpt_op.py",
-    "llm_op.py",
-]
 
 SHOULD_BE_INCLUDED = [
     "webcam.py",
