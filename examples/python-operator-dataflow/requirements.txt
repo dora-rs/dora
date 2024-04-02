@@ -55,3 +55,4 @@ pylcs
 accelerate
 optimum
 auto-gptq>=0.7.1
+dora-rs==0.3.2
