@@ -7,7 +7,7 @@ fn main() {}
 fn main() {
     use rust_format::Formatter;
     let paths = ament_prefix_paths();
-    let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), false);
+    let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), false).unwrap();
     let generated_string = rust_format::PrettyPlease::default()
         .format_tokens(generated)
         .unwrap();

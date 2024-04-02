@@ -16,7 +16,7 @@ pub mod types;
 
 pub use crate::parser::get_packages;
 
-pub fn gen<P>(paths: &[P], create_cxx_bridge: bool) -> proc_macro2::TokenStream
+pub fn gen<P>(paths: &[P], create_cxx_bridge: bool) -> anyhow::Result<proc_macro2::TokenStream>
 where
     P: AsRef<Path>,
 {
@@ -48,7 +48,7 @@ where
             service_impls.push(imp);
             if create_cxx_bridge {
                 let (service_creation_def, service_creation_impl) =
-                    service.cxx_service_creation_functions(&package.name);
+                    service.cxx_service_creation_functions(&package.name)?;
                 service_creation_defs.push(service_creation_def);
                 service_creation_impls.push(service_creation_impl);
             }
@@ -240,7 +240,7 @@ where
         )
     };
 
-    quote! {
+    let generated = quote! {
         #attributes
         mod ffi {
             #imports_and_functions
@@ -271,5 +271,6 @@ where
         #(#service_impls)*
 
         #(#aliases)*
-    }
+    };
+    Ok(generated)
 }
