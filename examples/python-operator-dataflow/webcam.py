@@ -52,7 +52,9 @@ class Operator:
                         2,
                         1,
                     )
+                else:
                     self.failure_count += 1
+                    return DoraStatus.CONTINUE
 
             send_output(
                 "image",

@@ -33,10 +33,7 @@ The schema for those json are:
 
 The response should look like this: 
 ```json
-
- [
-  {{ "topic": "line", "data": [10, 10, 90, 10] }},
-]
+  {{ "topic": "line", "data": [10, 10, 90, 10] }}
 ```
 
 {user_message}
@@ -83,6 +80,8 @@ def extract_python_code_blocks(text):
         matches = re.findall(pattern, text, re.DOTALL)
         if len(matches) == 0:
             return [text]
+        else:
+            matches = [remove_last_line(matches[0])]
 
     return matches
 
@@ -172,7 +171,6 @@ def replace_code_in_source(source_code, replacement_block: str):
     Replace the best matching block in the source_code with the replacement_block, considering variable block lengths.
     """
     replacement_block = extract_python_code_blocks(replacement_block)[0]
-    replacement_block = remove_last_line(replacement_block)
     start_index, end_index = find_best_match_location(source_code, replacement_block)
     if start_index != -1 and end_index != -1:
         # Replace the best matching part with the replacement block
@@ -232,23 +230,20 @@ class Operator:
             )
             outputs = extract_json_code_blocks(output)[0]
             try:
-                outputs = json.loads(outputs)
-                if not isinstance(outputs, list):
-                    outputs = [outputs]
-                for output in outputs:
-                    if not isinstance(output["data"], list):
-                        output["data"] = [output["data"]]
+                output = json.loads(outputs)
+                if not isinstance(output["data"], list):
+                    output["data"] = [output["data"]]
 
-                    if output["topic"] in [
-                        "line",
-                    ]:
-                        send_output(
-                            output["topic"],
-                            pa.array(output["data"]),
-                            dora_event["metadata"],
-                        )
-                    else:
-                        print("Could not find the topic: {}".format(output["topic"]))
+                if output["topic"] in [
+                    "line",
+                ]:
+                    send_output(
+                        output["topic"],
+                        pa.array(output["data"]),
+                        dora_event["metadata"],
+                    )
+                else:
+                    print("Could not find the topic: {}".format(output["topic"]))
             except:
                 print("Could not parse json")
             # if data is not iterable, put data in a list
@@ -270,7 +265,7 @@ class Operator:
         input_ids = input.input_ids.cuda()
 
         # add attention mask here
-        attention_mask = input["attention_mask"]
+        attention_mask = input["attention_mask"].cuda()
 
         output = model.generate(
             inputs=input_ids,

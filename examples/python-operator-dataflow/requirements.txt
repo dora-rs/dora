@@ -46,8 +46,12 @@ seaborn>=0.11.0
 opencv-python>=4.1.1
 maturin
 
-whisper
+openai-whisper
 sounddevice
 pynput
 sentence-transformers
 transformers
+pylcs
+accelerate
+optimum
+auto-gptq>=0.7.1
