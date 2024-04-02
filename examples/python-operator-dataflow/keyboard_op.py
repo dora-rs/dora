@@ -2,8 +2,6 @@ from pynput import keyboard
 from pynput.keyboard import Key, Events
 import pyarrow as pa
 from dora import Node
-from tkinter import Tk
-import tkinter as tk
 
 
 node = Node()
@@ -30,35 +28,8 @@ with keyboard.Events() as events:
         if event is not None and isinstance(event, Events.Press):
             if hasattr(event.key, "char"):
                 cursor = 0
-                if ctrl and event.key.char == "v":
-                    r = Tk()
-                    r.update()
-                    try:
-                        selection = r.clipboard_get()
-                        r.withdraw()
-                        r.update()
-                    except tk.TclError:
-                        selection = ""
-                    r.destroy()
-                    buffer_text += selection
-                    node.send_output("buffer", pa.array([buffer_text]))
-                elif ctrl and event.key.char == "c":
-                    r = Tk()
-                    r.clipboard_clear()
-                    r.clipboard_append(buffer_text)
-                    r.update()
-                    r.destroy()
-                elif ctrl and event.key.char == "x":
-                    r = Tk()
-                    r.clipboard_clear()
-                    r.clipboard_append(buffer_text)
-                    r.update()
-                    r.destroy()
-                    buffer_text = ""
-                    node.send_output("buffer", pa.array([buffer_text]))
-                else:
-                    buffer_text += event.key.char
-                    node.send_output("buffer", pa.array([buffer_text]))
+                buffer_text += event.key.char
+                node.send_output("buffer", pa.array([buffer_text]))
             else:
                 if event.key == Key.backspace:
                     buffer_text = buffer_text[:-1]

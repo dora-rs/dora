@@ -37,6 +37,24 @@ nodes:
         - ask
         - send
         - change
+      inputs:
+        recording: whisper/text
+
+  - id: microphone
+    operator:
+      python: microphone_op.py
+      inputs:
+        record: keyboard/record
+      outputs:
+        - audio
+
+  - id: whisper
+    operator:
+      python: whisper_op.py
+      inputs:
+        audio: microphone/audio
+      outputs:
+        - text
 
   ## Code Modifier
   - id: vectordb
