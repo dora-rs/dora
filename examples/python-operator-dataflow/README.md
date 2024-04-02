@@ -20,6 +20,7 @@ cargo run --example python-operator-dataflow
 
 ```bash
 conda create -n example_env python=3.11
+conda activate test_env
 pip install -r requirements.txt
 ```
 
