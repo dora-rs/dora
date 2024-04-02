@@ -344,7 +344,7 @@ impl Message {
                 #[allow(non_snake_case)]
                 fn #publish(&mut self, message: ffi::#struct_raw_name) -> eyre::Result<()> {
                     use eyre::Context;
-                    self.0.publish(message).context("publish failed")
+                    self.0.publish(message).context("publish failed").map_err(|e| eyre::eyre!("{e:?}"))
                 }
             }
 
@@ -370,7 +370,7 @@ impl Message {
                             let result = event.event.downcast::<rustdds::dds::result::ReadResult<(ffi::#struct_raw_name, crate::ros2_client::MessageInfo)>>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", #struct_raw_name_str))?;
 
-                            let (data, _info) = result.with_context(|| format!("failed to receive {} event", #subscription_name_str))?;
+                            let (data, _info) = result.with_context(|| format!("failed to receive {} event", #subscription_name_str)).map_err(|e| eyre::eyre!("{e:?}"))?;
                             Ok(data)
                         },
                         _ => eyre::bail!("not a {} event", #subscription_name_str),

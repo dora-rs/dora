@@ -135,7 +135,7 @@ impl Service {
                         &ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
                         qos.clone().into(),
                         qos.into(),
-                    )?;
+                    ).map_err(|e| eyre::eyre!("{e:?}"))?;
                     let (response_tx, response_rx) = flume::bounded(1);
                     let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
                     let id = events.events.merge(Box::pin(stream));
@@ -185,7 +185,9 @@ impl Service {
                     use eyre::WrapErr;
                     use futures::task::SpawnExt as _;
 
-                    let request_id = futures::executor::block_on(self.client.async_send_request(request.clone())).context("failed to send request")?;
+                    let request_id = futures::executor::block_on(self.client.async_send_request(request.clone()))
+                        .context("failed to send request")
+                        .map_err(|e| eyre::eyre!("{e:?}"))?;
                     let client = self.client.clone();
                     let response_tx = self.response_tx.clone();
                     let send_result = async move {
@@ -194,7 +196,7 @@ impl Service {
                             tracing::warn!("failed to send service response");
                         }
                     };
-                    self.executor.spawn(send_result).context("failed to spawn response task")?;
+                    self.executor.spawn(send_result).context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
                     Ok(())
                 }
 
@@ -214,7 +216,8 @@ impl Service {
                             let result = event.event.downcast::<eyre::Result<ffi::#res_type_raw>>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", #res_type_raw_str))?;
 
-                            let data = result.with_context(|| format!("failed to receive {} response", #self_name_str))?;
+                            let data = result.with_context(|| format!("failed to receive {} response", #self_name_str))
+                                .map_err(|e| eyre::eyre!("{e:?}"))?;
                             Ok(data)
                         },
                         _ => eyre::bail!("not a {} response event", #self_name_str),
