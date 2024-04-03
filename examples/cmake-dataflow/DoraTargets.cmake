@@ -70,19 +70,19 @@ else()
         BUILD_COMMAND
             cargo build
             --package dora-node-api-c
-            --target-dir ${CMAKE_CURRENT_BINARY_DIR}
+            --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
             &&
             cargo build
             --package dora-operator-api-c
-            --target-dir ${CMAKE_CURRENT_BINARY_DIR}
+            --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
             &&
             cargo build
             --package dora-node-api-cxx
-            --target-dir ${CMAKE_CURRENT_BINARY_DIR}
+            --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
             &&
             cargo build
             --package dora-operator-api-cxx
-            --target-dir ${CMAKE_CURRENT_BINARY_DIR}
+            --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
         INSTALL_COMMAND ""
     )
     add_custom_command(OUTPUT ${dora_c_include_dir}
@@ -96,7 +96,7 @@ else()
         DEPENDS Dora
     )
     add_custom_command(OUTPUT ${node_bridge} ${dora_cxx_include_dir} ${operator_bridge}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/debug
         DEPENDS Dora
         COMMAND
             mkdir ${dora_cxx_include_dir} -p
@@ -110,7 +110,7 @@ else()
             cp cxxbridge/dora-operator-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-operator-api.h
     )
 
-    set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/debug)
+    set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/debug)
     
     add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
     add_custom_target(Dora_cxx DEPENDS ${node_bridge} ${operator_bridge} ${dora_cxx_include_dir})
