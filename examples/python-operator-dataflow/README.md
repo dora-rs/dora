@@ -13,6 +13,7 @@ The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the fo
 ## Getting started
 
 ```bash
+pip install -r requirements.txt
 cargo run --example python-operator-dataflow
 ```
 
@@ -22,6 +23,7 @@ cargo run --example python-operator-dataflow
 conda create -n example_env python=3.11
 conda activate test_env
 pip install -r requirements.txt
+pip install -r requirements_llm.txt
 ```
 
 ## Run the dataflow
@@ -32,7 +34,7 @@ pip install -r requirements.txt
 dora start dataflow.yml
 ```
 
-- Start the llm dataflow:
+- Start the llm dataflow (Only works on Windows and Linux):
 
 ```bash
 dora start dataflow_llm.yml
