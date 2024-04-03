@@ -55,7 +55,7 @@ async fn main() -> eyre::Result<()> {
         } else if retries > 20 {
             bail!("daemon not connected after {retries} retries");
         } else {
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(500));
             retries += 1
         }
     }
