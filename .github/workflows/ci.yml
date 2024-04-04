@@ -110,12 +110,15 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # general examples
+      - run: cargo install just --locked
+      - name: "Rust Dataflow example"
+        timeout-minutes: 30
+        working-directory: examples/rust-dataflow
+        run: just run
+
       - name: "Build examples"
         timeout-minutes: 30
         run: cargo build --examples
-      - name: "Rust Dataflow example"
-        timeout-minutes: 30
-        run: cargo run --example rust-dataflow
       - name: "Multiple Daemons example"
         timeout-minutes: 30
         run: cargo run --example multiple-daemons

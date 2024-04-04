@@ -102,10 +102,6 @@ name = "c-dataflow"
 path = "examples/c-dataflow/run.rs"
 
 [[example]]
-name = "rust-dataflow"
-path = "examples/rust-dataflow/run.rs"
-
-[[example]]
 name = "rust-ros2-dataflow"
 path = "examples/rust-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]

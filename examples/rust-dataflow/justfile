@@ -1,0 +1,12 @@
+# you can use the installed `dora` command instead of this `cargo run` command
+dora := "cargo run -p dora-cli --"
+
+# build dora and the example nodes/operators
+build:
+    {{ dora }} build dataflow.yml
+
+# build and run the dataflow example
+run: build
+    # The `--run-dataflow` argument is mostly meant for testing. It's recommended
+    # to instead run `dora daemon` in one terminal and `dora start dataflow.yml` in another
+    RUST_LOG=debug {{ dora }} daemon --run-dataflow dataflow.yml
