@@ -96,7 +96,7 @@ else()
         DEPENDS Dora
     )
     add_custom_command(OUTPUT ${node_bridge} ${dora_cxx_include_dir} ${operator_bridge}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/debug
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
         DEPENDS Dora
         COMMAND
             mkdir ${dora_cxx_include_dir} -p
