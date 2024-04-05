@@ -81,7 +81,10 @@ impl Ros2Context {
         let name = ros2_client::NodeName::new(namespace, name)
             .map_err(|err| eyre!("invalid node name: {err}"))?;
         Ok(Ros2Node {
-            node: self.context.new_node(name, options.into())?,
+            node: self
+                .context
+                .new_node(name, options.into())
+                .map_err(|e| eyre::eyre!("failed to create ROS2 node: {e:?}"))?,
             messages: self.messages.clone(),
         })
     }
