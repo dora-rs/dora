@@ -126,9 +126,10 @@ where
 
                         let name = ros2_client::NodeName::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
                         let options = ros2_client::NodeOptions::new().enable_rosout(true);
-                        let mut node = self.context.new_node(name, options)?;
+                        let mut node = self.context.new_node(name, options)
+                            .map_err(|e| eyre::eyre!("failed to create ROS2 node: {e:?}"))?;
 
-                        let spinner = node.spinner();
+                        let spinner = node.spinner().context("failed to create spinner")?;
                         self.executor.spawn(async {
                             if let Err(err) = spinner.spin().await {
                                 eprintln!("ros2 spinner failed: {err:?}");
