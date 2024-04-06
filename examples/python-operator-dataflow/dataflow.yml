@@ -9,8 +9,8 @@ nodes:
 
   - id: object_detection
     operator:
-      python: object_detection.py
       send_stdout_as: stdout
+      python: object_detection.py
       inputs:
         image: webcam/image
       outputs:
@@ -23,4 +23,4 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
-        object_detection_stdout: object_detection/stdout
+        assistant_message: object_detection/stdout

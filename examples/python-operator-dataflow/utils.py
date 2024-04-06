@@ -1,5 +1,5 @@
 LABELS = [
-    "ABC",
+    "person",
     "bicycle",
     "car",
     "motorcycle",

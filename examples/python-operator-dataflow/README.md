@@ -13,21 +13,46 @@ The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the fo
 ## Getting started
 
 ```bash
-cargo run --example python-dataflow 
+pip install -r requirements.txt
+cargo run --example python-operator-dataflow
 ```
 
 ## Installation
 
-To install, you should run the `install.sh` script.
+```bash
+conda create -n example_env python=3.11
+conda activate test_env
+pip install -r requirements.txt
+pip install -r requirements_llm.txt
+```
+
+## Run the dataflow
+
+- Start the object detection dataflow alone:
 
 ```bash
-install.sh
+dora start dataflow.yml
 ```
 
-## Run the dataflow as a standalone
+- Start the llm dataflow (Only works on Windows and Linux):
 
-- Start the `dora-coordinator`:
+```bash
+dora start dataflow_llm.yml
+```
 
+Within the window you can ask question such as:
+
+```bash
+ask how are you
+change bounding box plot to red
+change confidence value to percentage
+change object detection to only detect person
+send 200 200 200 400 to topic line
+record
 ```
-../../target/release/dora-daemon --run-dataflow dataflow.yml
-```
+
+The keyboard, microphone, whisper node, works in a very similar fashion as the object detection dataflow and I'll let you check it out by yourself.
+
+The code modification flow works by first comparing an instruction with a vectordb of operators source code and then feeding the most similar operator to an llm with the instruction for code modification.
+
+The end result is then saved using a file saver.
