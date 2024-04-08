@@ -31,55 +31,109 @@
 
 ---
 
-## Why dora-rs?
+# What is dora-rs?
 
-In 2023, AI is booming! Robotic framework however hasn't changed much in years... This is why we create dora-rs! dora-rs is a new robotic framework that brings modernity into robotic application.
+Dataflow-oriented robotic application (dora-rs) is a framework that makes creation of robotic applications fast and simple.
 
-dora-rs can already show impressive performance, up to 17x speedup compared to ROS2 in Python! This is the result of using our own shared memory server and Apache Arrow to achieve zero copy!
+Building a robotic application can be summed up as bringing together hardwares, algorithms, and AI models, and make them communicate with each others. At dora-rs, we try to:
 
-Those performance improvements make a world of difference for beginners, AI practitioners, and weekend hobbyists who have been limited by the lack of support for Python in this field!
+- make integration of hardware and software easy by supporting Python, C, C++, and also ROS2.
+- make communication low latency by using zero-copy Arrow messages.
 
-But, dora-rs is still experimental and we're still working on many features such as:
+dora-rs is still experimental and you might experience bugs, but we're working very hard to make it stable as possible.
 
-- [dora-ros2-bridge](https://github.com/dora-rs/dora-ros2-bridge) to bridge dora and ros 2!
-- dora-rs for Deep Learning applications, to make it easy to integrate state of the art DL model and hopefully train them within the framework.
+## Performance
 
-Feel free to reach out if you have any questions!
+dora-rs can show impressive performance, up to 17x faster compared to current status quo ROS2 in Python! This is the result of using our own shared memory server and Apache Arrow to achieve zero copy data passing.
 
-<p align="center">
-    <img src="./docs/src/latency.png" width="600">
-    
-</p>
+<a href="https://dora.carsmos.ai/">
+<img src="./docs/src/latency.png" align="center" width="600">
+</a>
+
+> See: https://github.com/dora-rs/dora-benchmark/tree/main for reproduction.
+
+## Dataflow Paradignm
+
+dora-rs implements a dataflow paradigm where tasks are split between nodes isolated as individual processes.
+Each node defines its inputs and outputs to connect with other nodes.
+The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
+
+## Communication
+
+Communication between nodes is handled with shared memory on a same machine and TCP on distributed machines. Our shared memory implementation tracks messages across processes and discards them when obsolete. Shared memory slots are cached to avoid new memory allocation.
+
+## Message Format
+
+Nodes communicate with Apache Arrow Data Format.
+
+[Apache Arrow](https://github.com/apache/arrow-rs) is a universal memory format for flat and hierarchical data. The Arrow memory format supports zero-copy reads for lightning-fast data access without serialization overhead. It defines a C data interface without any build-time or link-time dependency requirement, that means that dora-rs has **no compilation step** beyond the native compiler of your favourite language.
+
+<img align="center" src="https://github.com/dora-rs/dora-rs.github.io/blob/main/static/img/arrow.png?raw=true" width="600">
+
+## Opentelemetry
+
+dora-rs uses Opentelemetry to record all your logs, metrics and traces. This means that the data and telemetry can be linked using a shared abstraction.
+
+[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectable by most backend such as elasticseach, prometheus, Datadog..
+
+Opentelemetry is language independent, backend agnostic, and easily collect distributed data, making it perfect for dora-rs applications.
+
+<img src="https://github.com/dora-rs/dora-rs.github.io/blob/main/static/img/opentelemetry.png?raw=true" align="center" width="600">
+
+## Hot-Reloading
+
+dora-rs implements Hot-Reloading for python which means you can change code at runtime in Python while keeping your state intact.
+
+Using the feature flag: `--attach --hot-reload`, dora-rs watch for code change and reload nodes that has been modified.
+You can check fail-safe mecanism at: https://github.com/dora-rs/dora/pull/239
+
+<a href="http://www.youtube.com/watch?v=NvvTEP8Jak8">
+<img align="center" width="600" alt="demo" src=http://img.youtube.com/vi/NvvTEP8Jak8/0.jpg>
+</a>
+
+## Self-Coding Robot: Code RAG (WIP)
+
+You can easily create a self-coding robot, by combining Hot-reloading with a Retrieval Augmented Generation (RAG) that is going to generate code modification from your prompt.
+See:[examples/python-operator-dataflow](examples/python-operator-dataflow)
+
+<img src="https://github.com/dora-rs/dora-rs.github.io/blob/main/static/img/RAG.svg?raw=true" align="center" width="600">
+
+Self-Coding Robot is just the tip of the iceberg of robotics combined with llm, that we hope to power. There is so much more that we haven't explored yet like:
+
+- [self-debugging](https://arxiv.org/pdf/2304.05128.pdf)
+- [memory](https://github.com/cpacker/MemGPT)
+- [function calling](https://github.com/ShishirPatil/gorilla)
+- ...
 
 ## Installation
 
 Quickest way:
 
 ```bash
-cargo install dora-cli # In case of issues, you can try to add `--locked`
+cargo install dora-cli --locked
 pip install dora-rs # For Python API
 
 dora --help
 ```
 
-For more installation guideline, check out our installation guide here: https://dora.carsmos.ai/docs/guides/Installation/installing
+For more info on installation, check out [our guide](https://dora.carsmos.ai/docs/guides/Installation/installing).
 
 ## Getting Started
 
 1. Install the example python dependencies:
 
 ```bash
-pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/requirements.txt
+pip install -r raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/requirements.txt
 ```
 
 2. Get some example operators:
 
 ```bash
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/webcam.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/plot.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/utils.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/object_detection.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/dataflow.yml
+wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/webcam.py
+wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/plot.py
+wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/utils.py
+wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/object_detection.py
+wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/dataflow.yml
 ```
 
 3. Start the dataflow
@@ -95,9 +149,54 @@ To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
 
 To go further, you can add a yolov8 operator, check out our getting started here: https://dora.carsmos.ai/docs/guides/getting-started/yolov8/
 
+## ROS2 Bridge
+
+- Compilation Free Message passing to ROS 2
+- Automatic conversion ROS 2 Message <-> Arrow Array
+
+```python
+import random
+import pyarrow as pa
+
+# Configuration Boilerplate...
+turtle_twist_writer = ...
+
+## Arrow Based ROS2 Twist Message
+## which does not requires ROS2 import
+message = pa.array([{
+            "linear": {
+                "x": 1,
+            },
+            "angular": {
+                "z": 1
+            },
+        }])
+
+turtle_twist_writer.publish(message)
+```
+
+> You might want to use ChatGPT to write the Arrow Formatting: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
+
+## Hardwares
+
+Cool hardware that we think might be good fit to try out dora-rs 🙋 We are not sponsored by manufacturers:
+
+|                                   | Price | Open Source        | Github                                               | type       | Dora Project                                            |
+| --------------------------------- | ----- | ------------------ | ---------------------------------------------------- | ---------- | ------------------------------------------------------- |
+| DJI Robomaster S1                 | 550$  | SDK                | https://github.com/dji-sdk/RoboMaster-SDK            | Rover      | https://huggingface.co/datasets/dora-rs/dora-robomaster |
+| DJI Robomaster EP Core            | 950$  | SDK                | https://github.com/dji-sdk/RoboMaster-SDK            | Rover, Arm |                                                         |
+| DJI Tello                         | 100$  |                    |                                                      | Drone      |                                                         |
+| BitCraze Crazyflies               | 225$  | Firmware, Lib, SDK | https://github.com/bitcraze                          | Drone      |                                                         |
+| AlexanderKoch-Koch/low_cost_robot | 250$  | Everything         | https://github.com/AlexanderKoch-Koch/low_cost_robot | Arm        |                                                         |
+| xArm 1S                           | 200$  |                    |                                                      | Arm        |                                                         |
+| Wavego                            | 250$  |                    |                                                      | Quadruplet |                                                         |
+| AINex                             | 800$  |                    |                                                      | Humanoid   |                                                         |
+
+> For more: https://docs.google.com/spreadsheets/d/1YYeW2jfOIWDVgdEgqnMvltonHquQ7K8OZCrnJRELL6o/edit#gid=0
+
 ## Documentation
 
-The full documentation is available on our website: https://dora.carsmos.ai
+The full documentation is available on [our website](https://dora.carsmos.ai)
 
 ## Discussions
 
@@ -109,6 +208,23 @@ Our main communication channels are:
 Feel free to reach out on any topic, issues or ideas.
 
 We also have [a contributing guide](CONTRIBUTING.md).
+
+## Support Matrix
+
+|                                   | dora-rs                                                   | Hoped for                                                                                                                       |
+| --------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Tier 1 Support**                | Python, Rust                                              | C, C++, ROS 2                                                                                                                   |
+| **Tier 2 Support**                | C, C++, ROS2                                              |
+| **Hot-reloading**                 | Python                                                    | Rust (https://github.com/orgs/dora-rs/discussions/360)                                                                          |
+| **Message Format**                | Arrow                                                     | Native                                                                                                                          |
+| **Local Communication**           | Shared Memory                                             | Custom Middleware, [zero-copy GPU IPC](https://arrow.apache.org/docs/python/api/cuda.html), intra-process channel communication |
+| **Remote Communication**          | TCP (See: https://github.com/dora-rs/dora/issues/459)     | Custom Middleware, [Zenoh](https://zenoh.io/)                                                                                   |
+| **Metrics, Tracing, and Logging** | Opentelemetry                                             | Native logging libraries into Opentelemetry                                                                                     |
+| **Data archives**                 | Parquet ([dora-record](libraries/extensions/dora-record)) |
+| **Visualization and annotation**  | OpenCV                                                    | [rerun.io](rerun.io)                                                                                                            |
+| **Supported Platforms (x86)**     | Windows, macOS, Linux                                     |
+| **Supported Platforms (ARM)**     | macOS, Linux                                              |
+| **Configuration**                 | YAML                                                      |
 
 ## License
 
