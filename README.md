@@ -123,17 +123,17 @@ For more info on installation, check out [our guide](https://dora.carsmos.ai/doc
 1. Install the example python dependencies:
 
 ```bash
-pip install -r raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/requirements.txt
+pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/requirements.txt
 ```
 
 2. Get some example operators:
 
 ```bash
-wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/webcam.py
-wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/plot.py
-wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/utils.py
-wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/object_detection.py
-wget raw.githubusercontent.com/dora-rs/dora/v0.3.2/examples/python-operator-dataflow/dataflow.yml
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/webcam.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/plot.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/utils.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/object_detection.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/dataflow.yml
 ```
 
 3. Start the dataflow
