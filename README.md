@@ -52,11 +52,48 @@ dora-rs can show impressive performance, up to 17x faster compared to current st
 
 > See: https://github.com/dora-rs/dora-benchmark/tree/main for reproduction.
 
-## Dataflow Paradignm
+## Dataflow Paradigm
 
-dora-rs implements a dataflow paradigm where tasks are split between nodes isolated as individual processes.
+dora-rs implements a declarative dataflow paradigm where tasks are split between nodes isolated as individual processes.
+
 Each node defines its inputs and outputs to connect with other nodes.
+
+```yaml
+nodes:
+  - id: webcam
+    custom:
+      source: webcam.py
+      inputs:
+        tick: dora/timer/millis/50
+      outputs:
+        - image
+
+  - id: object_detection
+    custom:
+      source: object_detection.py
+      inputs:
+        image: webcam/image
+      outputs:
+        - bbox
+
+  - id: plot
+    custom:
+      source: plot.py
+      inputs:
+        image: webcam/image
+        bbox: object_detection/bbox
+```
+
+Nodes can either be:
+
+- custom nodes were dora-rs is embedded as a native libraries.
+- runtime nodes were dora-rs takes care of the main loop and run user-defined operators. This make dora-rs featurefull as we can run features like `hot-reloading`.
+
 The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
+
+<a href="https://dora.carsmos.ai/">
+<img src="https://raw.githubusercontent.com/dora-rs/dora-rs.github.io/main/static/img/overview.svg" align="center" width="600">
+</a>
 
 ## Communication
 
@@ -211,17 +248,17 @@ We also have [a contributing guide](CONTRIBUTING.md).
 
 ## Support Matrix
 
-|                                   | dora-rs                                                   | Hoped for                                                                                                                       |
-| --------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| **Tier 1 Support**                | Python, Rust                                              | C, C++, ROS 2                                                                                                                   |
+|                                   | dora-rs                                                   | Hoped for                                                                                                                                |
+| --------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tier 1 Support**                | Python, Rust                                              | C, C++, ROS 2                                                                                                                            |
 | **Tier 2 Support**                | C, C++, ROS2                                              |
-| **Hot-reloading**                 | Python                                                    | Rust (https://github.com/orgs/dora-rs/discussions/360)                                                                          |
-| **Message Format**                | Arrow                                                     | Native                                                                                                                          |
-| **Local Communication**           | Shared Memory                                             | Custom Middleware, [zero-copy GPU IPC](https://arrow.apache.org/docs/python/api/cuda.html), intra-process channel communication |
-| **Remote Communication**          | TCP (See: https://github.com/dora-rs/dora/issues/459)     | Custom Middleware, [Zenoh](https://zenoh.io/)                                                                                   |
-| **Metrics, Tracing, and Logging** | Opentelemetry                                             | Native logging libraries into Opentelemetry                                                                                     |
+| **Hot-reloading**                 | Python                                                    | Rust (https://github.com/orgs/dora-rs/discussions/360)                                                                                   |
+| **Message Format**                | Arrow                                                     | Native                                                                                                                                   |
+| **Local Communication**           | Shared Memory                                             | Custom Middleware, [zero-copy GPU IPC](https://arrow.apache.org/docs/python/api/cuda.html), intra-process `tokio::channel` communication |
+| **Remote Communication**          | TCP (See: https://github.com/dora-rs/dora/issues/459)     | Custom Middleware, [Zenoh](https://zenoh.io/)                                                                                            |
+| **Metrics, Tracing, and Logging** | Opentelemetry                                             | Native logging libraries into Opentelemetry                                                                                              |
 | **Data archives**                 | Parquet ([dora-record](libraries/extensions/dora-record)) |
-| **Visualization and annotation**  | OpenCV                                                    | [rerun.io](rerun.io)                                                                                                            |
+| **Visualization and annotation**  | OpenCV                                                    | [rerun.io](rerun.io)                                                                                                                     |
 | **Supported Platforms (x86)**     | Windows, macOS, Linux                                     |
 | **Supported Platforms (ARM)**     | macOS, Linux                                              |
 | **Configuration**                 | YAML                                                      |
