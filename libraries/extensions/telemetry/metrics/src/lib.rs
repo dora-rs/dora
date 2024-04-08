@@ -15,14 +15,14 @@ use std::time::Duration;
 use eyre::{Context, Result};
 use opentelemetry::metrics::{self, MeterProvider as _};
 use opentelemetry_otlp::{ExportConfig, WithExportConfig};
-use opentelemetry_sdk::{metrics::MeterProvider, runtime};
+use opentelemetry_sdk::{metrics::SdkMeterProvider, runtime};
 use opentelemetry_system_metrics::init_process_observer;
 /// Init opentelemetry meter
 ///
 /// Use the default Opentelemetry exporter with default config
 /// TODO: Make Opentelemetry configurable
 ///
-pub fn init_metrics() -> metrics::Result<MeterProvider> {
+pub fn init_metrics() -> metrics::Result<SdkMeterProvider> {
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:4317".to_string());
     let export_config = ExportConfig {
@@ -41,7 +41,7 @@ pub fn init_metrics() -> metrics::Result<MeterProvider> {
         .build()
 }
 
-pub fn init_meter_provider(meter_id: String) -> Result<MeterProvider> {
+pub fn init_meter_provider(meter_id: String) -> Result<SdkMeterProvider> {
     let meter_provider = init_metrics().context("Could not create opentelemetry meter")?;
     let meter = meter_provider.meter(meter_id);
     let _ = init_process_observer(meter).context("could not initiale system metrics observer")?;
