@@ -93,7 +93,7 @@ dora start dataflow.yml --attach --hot-reload
 
 To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
 
-To go further, you can add a yolov5 operator, check out our getting started here: https://dora.carsmos.ai/docs/guides/getting-started/yolov5
+To go further, you can add a yolov8 operator, check out our getting started here: https://dora.carsmos.ai/docs/guides/getting-started/yolov8/
 
 ## Documentation
 
