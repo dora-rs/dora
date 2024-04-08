@@ -56,8 +56,8 @@ Feel free to reach out if you have any questions!
 Quickest way:
 
 ```bash
-cargo install dora-cli
-pip install dora-rs ## For Python API
+cargo install dora-cli # In case of issues, you can try to add `--locked`
+pip install dora-rs # For Python API
 
 dora --help
 ```
