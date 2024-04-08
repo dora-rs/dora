@@ -9,8 +9,8 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-opentelemetry = { version = "0.21", features = ["metrics"] }
-opentelemetry-otlp = { version = "0.14.0", features = ["tonic", "metrics"] }
-opentelemetry_sdk = { version = "0.21", features = ["rt-tokio", "metrics"] }
+opentelemetry = { version = "0.22.0", features = ["metrics"] }
+opentelemetry-otlp = { version = "0.15.0", features = ["tonic", "metrics"] }
+opentelemetry_sdk = { version = "0.22.0", features = ["rt-tokio", "metrics"] }
 eyre = "0.6.12"
-opentelemetry-system-metrics = { version = "0.1.6" }
+opentelemetry-system-metrics = { version = "0.1.8" }
