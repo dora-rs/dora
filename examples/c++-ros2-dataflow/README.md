@@ -19,11 +19,13 @@ A ROS2 client to pubish turtlesim ROS2 messages and a DORA node can subscribe an
 From terminal 1 , sourcing the ROS2 installation and start ROS2 turtlesim window
 ```
 source /opt/ros/galactic/setup.bash
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ros2 run turtlesim turtlesim_node
 ```
 
 From terminal 2 from dora folder. Note the source command here is necessary as this allow ROS2 message types to be found and compile dynamically.
 ```
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 source /opt/ros/galactic/setup.bash
 cargo run --example cxx-ros2-dataflow --features ros2-examples
 ```
@@ -33,23 +35,27 @@ And you will see the turtle move a few steps.
 The current service code example is a service client. To test with service server we can test with either ROS2 demo or ros2-client
 - if using ROS2 demo the the command line is:
 ```
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ros2 run demo_nodes_cpp add_two_ints_server
 ```
 
 start DORA service client from another terminal
 ```
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 cargo run --example cxx-ros2-dataflow --features ros2-examples
 ```
 
 - if using ros2-client the command line is:
 ```
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 cargo run --example=ros2_service_server
 ```
 
 then start DORA service client from another terminal
 ```
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 cargo run --example cxx-ros2-dataflow --features ros2-examples
 ```
 
-
+You can also put export RMW_IMPLEMENTATION=rmw_fastrtps_cpp into .bashrc
 
