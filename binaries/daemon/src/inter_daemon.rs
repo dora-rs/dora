@@ -6,6 +6,7 @@ use std::{
     io::ErrorKind,
     net::{Ipv4Addr, SocketAddr},
 };
+use std::env;
 use tokio::net::{TcpListener, TcpStream};
 
 pub struct InterDaemonConnection {
@@ -68,7 +69,8 @@ pub async fn spawn_listener_loop(
     machine_id: String,
     events_tx: flume::Sender<Timestamped<InterDaemonEvent>>,
 ) -> eyre::Result<SocketAddr> {
-    let localhost = Ipv4Addr::new(127, 0, 0, 1);
+    let localhost = env::var("DORA_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let localhost = Ipv4Addr::new(localhost.parse().unwrap());
     let socket = match TcpListener::bind((localhost, 0)).await {
         Ok(socket) => socket,
         Err(err) => {

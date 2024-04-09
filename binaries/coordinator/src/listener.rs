@@ -2,13 +2,15 @@ use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
 use dora_core::{coordinator_messages, daemon_messages::Timestamped, message::uhlc::HLC};
 use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::Ipv4Addr, sync::Arc};
+use std::env;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
 };
 
 pub async fn create_listener(port: u16) -> eyre::Result<TcpListener> {
-    let localhost = Ipv4Addr::new(127, 0, 0, 1);
+    let localhost = env::var("DORA_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let localhost = Ipv4Addr::new(localhost.parse().unwrap());
     let socket = match TcpListener::bind((localhost, port)).await {
         Ok(socket) => socket,
         Err(err) => {
