@@ -1,12 +1,12 @@
 use crate::tcp_utils::{tcp_receive, tcp_send};
 use dora_core::daemon_messages::{InterDaemonEvent, Timestamped};
 use eyre::{Context, ContextCompat};
+use std::env;
 use std::{
     collections::BTreeMap,
     io::ErrorKind,
     net::{Ipv4Addr, SocketAddr},
 };
-use std::env;
 use tokio::net::{TcpListener, TcpStream};
 
 pub struct InterDaemonConnection {

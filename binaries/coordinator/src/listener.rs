@@ -1,8 +1,8 @@
 use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
 use dora_core::{coordinator_messages, daemon_messages::Timestamped, message::uhlc::HLC};
 use eyre::{eyre, Context};
-use std::{io::ErrorKind, net::Ipv4Addr, sync::Arc};
 use std::env;
+use std::{io::ErrorKind, net::Ipv4Addr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
