@@ -64,19 +64,21 @@ pub async fn send_inter_daemon_event(
 
     Ok(())
 }
-
 pub async fn spawn_listener_loop(
     machine_id: String,
     events_tx: flume::Sender<Timestamped<InterDaemonEvent>>,
 ) -> eyre::Result<SocketAddr> {
-    let localhost = env::var("DORA_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let localhost = Ipv4Addr::new(localhost.parse().unwrap());
+    let localhost_str = env::var("DORA_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let localhost = Ipv4Addr::from_str_radix(&localhost_str, 10)
+        .map_err(|_| eyre::eyre!("Invalid IP address: {}", localhost_str))?;
+
     let socket = match TcpListener::bind((localhost, 0)).await {
         Ok(socket) => socket,
         Err(err) => {
-            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
+            return Err(err).wrap_err("failed to create local TCP listener");
         }
     };
+
     let socket_addr = socket
         .local_addr()
         .wrap_err("failed to get local addr of socket")?;

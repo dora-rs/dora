@@ -8,17 +8,22 @@ use tokio::{
     sync::mpsc,
 };
 
+
 pub async fn create_listener(port: u16) -> eyre::Result<TcpListener> {
-    let localhost = env::var("DORA_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let localhost = Ipv4Addr::new(localhost.parse().unwrap());
+    let localhost_str = env::var("DORA_DAEMON_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let localhost = Ipv4Addr::from_str_radix(&localhost_str, 10)
+        .map_err(|_| eyre::eyre!("Invalid IP address: {}", localhost_str))?;
+
     let socket = match TcpListener::bind((localhost, port)).await {
         Ok(socket) => socket,
         Err(err) => {
-            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
+            return Err(err).wrap_err("failed to create local TCP listener");
         }
     };
+
     Ok(socket)
 }
+
 
 pub async fn handle_connection(
     mut connection: TcpStream,
