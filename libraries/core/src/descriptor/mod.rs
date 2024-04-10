@@ -260,8 +260,52 @@ pub struct OperatorConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
     SharedLibrary(String),
-    Python(String),
+    Python(PythonSource),
     Wasm(String),
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    from = "PythonSourceDef",
+    into = "PythonSourceDef"
+)]
+pub struct PythonSource {
+    pub source: String,
+    pub conda_env: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PythonSourceDef {
+    SourceOnly(String),
+    WithOptions {
+        source: String,
+        conda_env: Option<String>,
+    },
+}
+
+impl From<PythonSource> for PythonSourceDef {
+    fn from(input: PythonSource) -> Self {
+        match input {
+            PythonSource {
+                source,
+                conda_env: None,
+            } => Self::SourceOnly(source),
+            PythonSource { source, conda_env } => Self::WithOptions { source, conda_env },
+        }
+    }
+}
+
+impl From<PythonSourceDef> for PythonSource {
+    fn from(value: PythonSourceDef) -> Self {
+        match value {
+            PythonSourceDef::SourceOnly(source) => Self {
+                source,
+                conda_env: None,
+            },
+            PythonSourceDef::WithOptions { source, conda_env } => Self { source, conda_env },
+        }
+    }
 }
 
 pub fn source_is_url(source: &str) -> bool {

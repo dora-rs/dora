@@ -38,10 +38,12 @@ pub fn attach_dataflow(
             CoreNodeKind::Custom(_cn) => (),
             CoreNodeKind::Runtime(rn) => {
                 for op in rn.operators.iter() {
-                    if let dora_core::descriptor::OperatorSource::Python(source) = &op.config.source
+                    if let dora_core::descriptor::OperatorSource::Python(python_source) =
+                        &op.config.source
                     {
-                        let path = resolve_path(source, &working_dir).wrap_err_with(|| {
-                            format!("failed to resolve node source `{}`", source)
+                        let path = resolve_path(&python_source.source, &working_dir)
+                            .wrap_err_with(|| {
+                                format!("failed to resolve node source `{}`", python_source.source)
                         })?;
                         node_path_lookup
                             .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));

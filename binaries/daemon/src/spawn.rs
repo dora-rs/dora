@@ -8,7 +8,8 @@ use dora_core::{
     config::{DataId, NodeRunConfig},
     daemon_messages::{DataMessage, DataflowId, NodeConfig, RuntimeConfig, Timestamped},
     descriptor::{
-        resolve_path, source_is_url, Descriptor, OperatorSource, ResolvedNode, SHELL_SOURCE,
+        resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
+        ResolvedNode, SHELL_SOURCE,
     },
     get_python_path,
     message::uhlc::HLC,
@@ -149,26 +150,62 @@ pub async fn spawn_node(
                 })?
         }
         dora_core::descriptor::CoreNodeKind::Runtime(n) => {
-            let has_python_operator = n
+            let python_operators: Vec<&OperatorDefinition> = n
                 .operators
                 .iter()
-                .any(|x| matches!(x.config.source, OperatorSource::Python { .. }));
+                .filter(|x| matches!(x.config.source, OperatorSource::Python { .. }))
+                .collect();
 
-            let has_other_operator = n
+            let other_operators = n
                 .operators
                 .iter()
                 .any(|x| !matches!(x.config.source, OperatorSource::Python { .. }));
 
-            let mut command = if has_python_operator && !has_other_operator {
+            let mut command = if !python_operators.is_empty() && !other_operators {
                 // Use python to spawn runtime if there is a python operator
-                let python = get_python_path().context("Could not find python in daemon")?;
-                let mut command = tokio::process::Command::new(python);
-                command.args([
-                    "-c",
-                    format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
-                ]);
-                command
-            } else if !has_python_operator && has_other_operator {
+
+                // TODO: Handle multi-operator runtime once sub-interpreter is supported
+                if python_operators.len() > 2 {
+                    eyre::bail!(
+                        "Runtime currently only support one Python Operator.
+                     This is because pyo4 sub-interpreter is not yet available.
+                     See: https://github.com/PyO4/pyo3/issues/576"
+                    );
+                }
+
+                let python_operator = python_operators
+                    .first()
+                    .context("Runtime had no operators definition.")?;
+
+                if let OperatorSource::Python(PythonSource {
+                    source: _,
+                    conda_env: Some(conda_env),
+                }) = &python_operator.config.source
+                {
+                    let conda = which::which("conda").context(
+                        "failed to find `conda`, yet a `conda_env` was defined. Make sure that `conda` is available.",
+                    )?;
+                    let mut command = tokio::process::Command::new(conda);
+                    command.args([
+                        "run",
+                        "-n",
+                        &conda_env,
+                        "python",
+                        "-c",
+                        format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                    ]);
+                    command
+                } else {
+                    let python = get_python_path()
+                        .context("Could not find python path when spawning runtime node")?;
+                    let mut command = tokio::process::Command::new(python);
+                    command.args([
+                        "-c",
+                        format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                    ]);
+                    command
+                }
+            } else if python_operators.is_empty() && other_operators {
                 let mut cmd = tokio::process::Command::new(
                     std::env::current_exe().wrap_err("failed to get current executable path")?,
                 );
