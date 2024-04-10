@@ -143,10 +143,13 @@ jobs:
         run: cargo run --example python-dataflow
       - uses: conda-incubator/setup-miniconda@v2
         with:
-          auto-activate-base: false
+          auto-activate-base: true
+          activate-environment: ""
       - name: "Python Operator Dataflow example"
         shell: bash -l {0}
-        run: cargo run --example python-operator-dataflow
+        run: |
+          conda deactivate 
+          cargo run --example python-operator-dataflow
 
   # ROS2 bridge examples
   ros2-bridge-examples:
