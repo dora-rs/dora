@@ -73,8 +73,13 @@ async fn main() -> eyre::Result<()> {
     .await
     .context("maturin develop failed")?;
 
-    let dataflow = Path::new("dataflow.yml");
-    run_dataflow(dataflow).await?;
+    if std::env::var("CONDA_EXE").is_ok() {
+        let dataflow = Path::new("dataflow.yml");
+        run_dataflow(dataflow).await?;
+    } else {
+        let dataflow = Path::new("dataflow_conda.yml");
+        run_dataflow(dataflow).await?;
+    }
 
     Ok(())
 }

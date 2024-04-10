@@ -44,7 +44,7 @@ pub fn attach_dataflow(
                         let path = resolve_path(&python_source.source, &working_dir)
                             .wrap_err_with(|| {
                                 format!("failed to resolve node source `{}`", python_source.source)
-                        })?;
+                            })?;
                         node_path_lookup
                             .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
                     }

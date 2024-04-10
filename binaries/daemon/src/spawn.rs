@@ -20,7 +20,7 @@ use dora_node_api::{
     arrow_utils::{copy_array_into_sample, required_data_size},
     Metadata,
 };
-use eyre::WrapErr;
+use eyre::{ContextCompat, WrapErr};
 use std::{
     env::consts::EXE_EXTENSION,
     path::{Path, PathBuf},
