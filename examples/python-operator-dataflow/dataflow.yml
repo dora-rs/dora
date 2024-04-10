@@ -19,7 +19,9 @@ nodes:
 
   - id: plot
     operator:
-      python: plot.py
+      python: 
+        source: plot.py
+        conda_env: base
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
