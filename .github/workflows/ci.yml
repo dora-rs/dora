@@ -141,7 +141,11 @@ jobs:
           python-version: "3.10"
       - name: "Python Dataflow example"
         run: cargo run --example python-dataflow
+      - uses: conda-incubator/setup-miniconda@v2
+        with:
+          auto-activate-base: false
       - name: "Python Operator Dataflow example"
+        shell: bash -l {0}
         run: cargo run --example python-operator-dataflow
 
   # ROS2 bridge examples
