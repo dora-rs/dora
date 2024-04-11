@@ -87,7 +87,7 @@ nodes:
 Nodes can either be:
 
 - custom nodes were dora-rs is embedded as a native libraries.
-- runtime nodes were dora-rs takes care of the main loop and run user-defined operators. This make dora-rs featurefull as we can run features like `hot-reloading`.
+- runtime nodes were dora-rs takes care of the main loop and run user-defined operators. This make dora-rs featureful as we can run features like `hot-reloading`.
 
 The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
 
