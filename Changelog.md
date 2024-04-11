@@ -18,7 +18,13 @@
 - Enable ROS2 service calls from C++ nodes by @phil-opp in https://github.com/dora-rs/dora/pull/441
 - Use `Debug` formatting for eyre errors when returning to C++ by @phil-opp in https://github.com/dora-rs/dora/pull/450
 - Fix out-of-tree builds in cmake example by @phil-opp in https://github.com/dora-rs/dora/pull/453
+- Fix broken link in README by @mshr-h in https://github.com/dora-rs/dora/pull/462
+- fix cargo run --example cmake-dataflow compile bugs by @XxChang in https://github.com/dora-rs/dora/pull/460
 - Llm example by @haixuanTao in https://github.com/dora-rs/dora/pull/451
+- Fix meter conflict by @haixuanTao in https://github.com/dora-rs/dora/pull/461
+- Update README.md by @bobd988 in https://github.com/dora-rs/dora/pull/458
+- Refactor `README` by @haixuanTao in https://github.com/dora-rs/dora/pull/463
+- Specify conda env for Python Operators by @haixuanTao in https://github.com/dora-rs/dora/pull/468
 
 ## Minor
 
@@ -28,6 +34,8 @@
 ## New Contributors
 
 - @bobd988 made their first contribution in https://github.com/dora-rs/dora/pull/431
+
+* @mshr-h made their first contribution in https://github.com/dora-rs/dora/pull/462
 
 **Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.2...v0.3.3
 
