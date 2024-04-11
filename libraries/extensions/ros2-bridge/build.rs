@@ -15,9 +15,6 @@ fn main() {
     let target_file = out_dir.join("messages.rs");
     std::fs::write(&target_file, generated_string).unwrap();
     println!("cargo:rustc-env=MESSAGES_PATH={}", target_file.display());
-
-    #[cfg(feature = "cxx-bridge")]
-    let _build = cxx_build::bridge(&target_file);
 }
 
 fn ament_prefix_paths() -> Vec<PathBuf> {
