@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.3.3 (2024-04-08)
+
+## What's Changed
+
+- Metrics refactoring by @haixuanTao in https://github.com/dora-rs/dora/pull/423
+- Add ROS2 bridge support for C++ nodes by @phil-opp in https://github.com/dora-rs/dora/pull/425
+- Provide function to create empty `CombinedEvents` stream by @phil-opp in https://github.com/dora-rs/dora/pull/432
+- Expose ROS2 constants in generated bindings (Rust and C++) by @phil-opp in https://github.com/dora-rs/dora/pull/428
+- Add option to send `stdout` as node/operator output by @haixuanTao in https://github.com/dora-rs/dora/pull/388
+- Fix warning about `#pragma once` in main file by @phil-opp in https://github.com/dora-rs/dora/pull/433
+- Send runs artefacts into a dedicated `out` folder by @haixuanTao in https://github.com/dora-rs/dora/pull/429
+- Create README.md for cxx-ros2-example by @bobd988 in https://github.com/dora-rs/dora/pull/431
+- Use Async Parquet Writer for `dora-record` by @haixuanTao in https://github.com/dora-rs/dora/pull/434
+- Update mio to fix security vulnerability by @phil-opp in https://github.com/dora-rs/dora/pull/440
+- Add initial support for calling ROS2 services from Rust nodes by @phil-opp in https://github.com/dora-rs/dora/pull/439
+- Enable ROS2 service calls from C++ nodes by @phil-opp in https://github.com/dora-rs/dora/pull/441
+- Use `Debug` formatting for eyre errors when returning to C++ by @phil-opp in https://github.com/dora-rs/dora/pull/450
+- Fix out-of-tree builds in cmake example by @phil-opp in https://github.com/dora-rs/dora/pull/453
+- Fix broken link in README by @mshr-h in https://github.com/dora-rs/dora/pull/462
+- fix cargo run --example cmake-dataflow compile bugs by @XxChang in https://github.com/dora-rs/dora/pull/460
+- Llm example by @haixuanTao in https://github.com/dora-rs/dora/pull/451
+- Fix meter conflict by @haixuanTao in https://github.com/dora-rs/dora/pull/461
+- Update README.md by @bobd988 in https://github.com/dora-rs/dora/pull/458
+- Refactor `README` by @haixuanTao in https://github.com/dora-rs/dora/pull/463
+- Specify conda env for Python Operators by @haixuanTao in https://github.com/dora-rs/dora/pull/468
+
+## Minor
+
+- Bump h2 from 0.3.24 to 0.3.26 by @dependabot in https://github.com/dora-rs/dora/pull/456
+- Update `bat` dependency to v0.24 by @phil-opp in https://github.com/dora-rs/dora/pull/424
+
+## New Contributors
+
+- @bobd988 made their first contribution in https://github.com/dora-rs/dora/pull/431
+
+* @mshr-h made their first contribution in https://github.com/dora-rs/dora/pull/462
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.2...v0.3.3
+
 ## v0.3.2 (2024-01-26)
 
 ## Features
