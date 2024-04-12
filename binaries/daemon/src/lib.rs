@@ -77,7 +77,11 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub async fn run(coordinator_addr: SocketAddr, machine_id: String) -> eyre::Result<()> {
+    pub async fn run(
+        coordinator_addr: SocketAddr,
+        machine_id: String,
+        bind_addr: SocketAddr,
+    ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
         let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
@@ -85,7 +89,7 @@ impl Daemon {
         // spawn listen loop
         let (events_tx, events_rx) = flume::bounded(10);
         let listen_socket =
-            inter_daemon::spawn_listener_loop(machine_id.clone(), events_tx).await?;
+            inter_daemon::spawn_listener_loop(bind_addr, machine_id.clone(), events_tx).await?;
         let daemon_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::Daemon(e.inner),
             timestamp: e.timestamp,

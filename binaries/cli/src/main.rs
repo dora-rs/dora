@@ -1,4 +1,7 @@
-use std::{net::Ipv4Addr, path::PathBuf};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+};
 
 use attach::attach_dataflow;
 use clap::Parser;
@@ -103,6 +106,10 @@ enum Command {
     Daemon {
         #[clap(long)]
         machine_id: Option<String>,
+        #[clap(long, default_value_t = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
+        )]
+        bind: SocketAddr,
         #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
 
@@ -280,6 +287,7 @@ fn run() -> eyre::Result<()> {
         }
         Command::Daemon {
             coordinator_addr,
+            bind,
             machine_id,
             run_dataflow,
         } => {
@@ -306,7 +314,7 @@ fn run() -> eyre::Result<()> {
                             let localhost = Ipv4Addr::new(127, 0, 0, 1);
                             (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
                         });
-                        Daemon::run(addr, machine_id.unwrap_or_default()).await
+                        Daemon::run(addr, machine_id.unwrap_or_default(), bind).await
                     }
                 }
             })
