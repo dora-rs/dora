@@ -9,10 +9,7 @@ use dora_core::{
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
     message::uhlc::{self, HLC},
-    topics::{
-        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
-        DORA_COORDINATOR_PORT_DEFAULT,
-    },
+    topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
@@ -39,11 +36,10 @@ mod run;
 mod tcp_utils;
 
 pub async fn start(
-    port: Option<u16>,
+    bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let port = port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
-    let listener = listener::create_listener(port).await?;
+    let listener = listener::create_listener(bind).await?;
     let port = listener
         .local_addr()
         .wrap_err("failed to get local addr of listener")?
