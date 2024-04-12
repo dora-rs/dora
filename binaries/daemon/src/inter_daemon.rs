@@ -1,11 +1,7 @@
 use crate::tcp_utils::{tcp_receive, tcp_send};
 use dora_core::daemon_messages::{InterDaemonEvent, Timestamped};
 use eyre::{Context, ContextCompat};
-use std::{
-    collections::BTreeMap,
-    io::ErrorKind,
-    net::{Ipv4Addr, SocketAddr},
-};
+use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr};
 use tokio::net::{TcpListener, TcpStream};
 
 pub struct InterDaemonConnection {
@@ -65,11 +61,11 @@ pub async fn send_inter_daemon_event(
 }
 
 pub async fn spawn_listener_loop(
+    bind: SocketAddr,
     machine_id: String,
     events_tx: flume::Sender<Timestamped<InterDaemonEvent>>,
 ) -> eyre::Result<SocketAddr> {
-    let localhost = Ipv4Addr::new(127, 0, 0, 1);
-    let socket = match TcpListener::bind((localhost, 0)).await {
+    let socket = match TcpListener::bind(bind).await {
         Ok(socket) => socket,
         Err(err) => {
             return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
