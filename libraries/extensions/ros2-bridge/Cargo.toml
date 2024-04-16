@@ -17,8 +17,8 @@ array-init = "2.1.0"
 serde = { version = "1.0.164", features = ["derive"] }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
-ros2-client = { git = "https://github.com/dora-rs/ros2-client.git", branch = "deserialize-seed-2" }
-rustdds = { git = "https://github.com/dora-rs/RustDDS.git", branch = "deserialize-seed-2" }
+ros2-client = "0.7.1"
+rustdds = "0.10.0"
 eyre = { version = "0.6.8", optional = true }
 tokio = { version = "1.29.1", features = ["full"], optional = true }
 dora-daemon = { path = "../../../binaries/daemon", optional = true }

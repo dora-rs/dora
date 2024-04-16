@@ -25,7 +25,9 @@ fn main() -> eyre::Result<()> {
 
     // spawn a background spinner task that is handles service discovery (and other things)
     let pool = futures::executor::ThreadPool::new()?;
-    let spinner = ros_node.spinner();
+    let spinner = ros_node
+        .spinner()
+        .map_err(|e| eyre::eyre!("failed to create spinner: {e:?}"))?;
     pool.spawn(async {
         if let Err(err) = spinner.spin().await {
             eprintln!("ros2 spinner failed: {err:?}");
@@ -150,7 +152,7 @@ async fn add_two_ints_request(
 
     let response = add_client.async_receive_response(request_id);
     futures::pin_mut!(response);
-    let timeout = futures_timer::Delay::new(Duration::from_secs(5));
+    let timeout = futures_timer::Delay::new(Duration::from_secs(15));
     match futures::future::select(response, timeout).await {
         futures::future::Either::Left((Ok(response), _)) => {
             println!("received response: {response:?}");
@@ -172,7 +174,7 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
                 .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
             NodeOptions::new().enable_rosout(true),
         )
-        .context("failed to create ros2 node")
+        .map_err(|e| eyre::eyre!("failed to create ros2 node: {e:?}"))
 }
 
 fn create_vel_publisher(
