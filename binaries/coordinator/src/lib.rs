@@ -477,6 +477,12 @@ async fn start_inner(
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
                     if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
+                        tracing::warn!(
+                            "no heartbeat message from machine `{machine_id}` since {:?}",
+                            connection.last_heartbeat.elapsed()
+                        )
+                    }
+                    if connection.last_heartbeat.elapsed() > Duration::from_secs(30) {
                         disconnected.insert(machine_id.clone());
                         continue;
                     }
