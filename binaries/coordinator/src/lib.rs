@@ -496,7 +496,7 @@ async fn start_inner(
                     }
                 }
                 if !disconnected.is_empty() {
-                    tracing::info!("Disconnecting daemons that failed watchdog: {disconnected:?}");
+                    tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in disconnected {
                         daemon_connections.remove(&machine_id);
                     }
