@@ -15,8 +15,8 @@ use eyre::{eyre, Context, ContextCompat, Result};
 use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods},
-    types::{PyDict, PyList, PyModule},
-    PyAny, PyObject, PyResult, Python,
+    types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
+    Bound, PyAny, PyObject, PyResult, Python,
 };
 use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
 
@@ -57,7 +57,7 @@ impl Ros2Context {
     pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
         Python::with_gil(|py| -> Result<()> {
             let warnings = py
-                .import("warnings")
+                .import_bound("warnings")
                 .wrap_err("failed to import `warnings` module")?;
             warnings
             .call_method1("warn", ("dora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
@@ -322,8 +322,8 @@ impl Ros2Publisher {
     /// :type data: pyarrow.Array
     /// :rtype: None
     ///
-    pub fn publish(&self, data: &PyAny) -> eyre::Result<()> {
-        let pyarrow = PyModule::import(data.py(), "pyarrow")?;
+    pub fn publish(&self, data: Bound<'_, PyAny>) -> eyre::Result<()> {
+        let pyarrow = PyModule::import_bound(data.py(), "pyarrow")?;
 
         let data = if data.is_instance_of::<PyDict>() {
             // convert to arrow struct scalar
@@ -332,15 +332,15 @@ impl Ros2Publisher {
             data
         };
 
-        let data = if data.is_instance(pyarrow.getattr("StructScalar")?)? {
+        let data = if data.is_instance(&pyarrow.getattr("StructScalar")?)? {
             // convert to arrow array
-            let list = PyList::new(data.py(), [data]);
+            let list = PyList::new_bound(data.py(), [data]);
             pyarrow.getattr("array")?.call1((list,))?
         } else {
             data
         };
 
-        let value = arrow::array::ArrayData::from_pyarrow(data)?;
+        let value = arrow::array::ArrayData::from_pyarrow_bound(&data)?;
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
         let typed_value = TypedValue {
@@ -431,7 +431,7 @@ impl Stream for Ros2SubscriptionStream {
     }
 }
 
-pub fn create_dora_ros2_bridge_module(m: &PyModule) -> PyResult<()> {
+pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ros2Context>()?;
     m.add_class::<Ros2Node>()?;
     m.add_class::<Ros2NodeOptions>()?;

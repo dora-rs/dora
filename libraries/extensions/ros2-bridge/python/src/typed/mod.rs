@@ -37,10 +37,12 @@ mod tests {
     use arrow::pyarrow::ToPyArrow;
 
     use pyo3::types::IntoPyDict;
+    use pyo3::types::PyAnyMethods;
     use pyo3::types::PyDict;
     use pyo3::types::PyList;
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
+    use pyo3::PyNativeType;
     use pyo3::Python;
     use serde::de::DeserializeSeed;
     use serde::Serialize;
@@ -61,13 +63,13 @@ mod tests {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path
-            py.run(
+            py.run_bound(
                 "import sys; sys.path.append(str(path))",
-                Some([("path", path)].into_py_dict(py)),
+                Some(&[("path", path)].into_py_dict_bound(py)),
                 None,
             )?;
 
-            let my_module = PyModule::import(py, "test_utils")?;
+            let my_module = PyModule::import_bound(py, "test_utils")?;
 
             let arrays: &PyList = my_module.getattr("TEST_ARRAYS")?.extract()?;
             for array_wrapper in arrays.iter() {
@@ -77,7 +79,7 @@ mod tests {
                 println!("Checking {}::{}", package_name, message_name);
                 let in_pyarrow = arrays.get_item(2)?;
 
-                let array = arrow::array::ArrayData::from_pyarrow(in_pyarrow)?;
+                let array = arrow::array::ArrayData::from_pyarrow_bound(&in_pyarrow.as_borrowed())?;
                 let type_info = TypeInfo {
                     package_name: package_name.into(),
                     message_name: message_name.clone().into(),
@@ -99,17 +101,17 @@ mod tests {
 
                 let out_pyarrow = out_value.to_pyarrow(py)?;
 
-                let test_utils = PyModule::import(py, "test_utils")?;
-                let context = PyDict::new(py);
+                let test_utils = PyModule::import_bound(py, "test_utils")?;
+                let context = PyDict::new_bound(py);
 
                 context.set_item("test_utils", test_utils)?;
                 context.set_item("in_pyarrow", in_pyarrow)?;
                 context.set_item("out_pyarrow", out_pyarrow)?;
 
                 let _ = py
-                    .eval(
+                    .eval_bound(
                         "test_utils.is_subset(in_pyarrow, out_pyarrow)",
-                        Some(context),
+                        Some(&context),
                         None,
                     )
                     .context("could not check if it is a subset")?;

@@ -12,7 +12,7 @@ use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
 use pyo3::{
     pyclass,
-    types::{IntoPyDict, PyDict},
+    types::{IntoPyDict, PyAnyMethods, PyDict, PyTracebackMethods},
     Py, PyAny, Python,
 };
 use std::{
@@ -23,7 +23,7 @@ use tokio::sync::{mpsc::Sender, oneshot};
 use tracing::{error, field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
-    let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
+    let traceback = Python::with_gil(|py| err.traceback_bound(py).and_then(|t| t.format().ok()));
     if let Some(traceback) = traceback {
         eyre::eyre!("{traceback}\n{err}")
     } else {
@@ -78,7 +78,9 @@ pub fn run(
             let parent_path = parent_path
                 .to_str()
                 .ok_or_else(|| eyre!("module path is not valid utf8"))?;
-            let sys = py.import("sys").wrap_err("failed to import `sys` module")?;
+            let sys = py
+                .import_bound("sys")
+                .wrap_err("failed to import `sys` module")?;
             let sys_path = sys
                 .getattr("path")
                 .wrap_err("failed to import `sys.path` module")?;
@@ -90,14 +92,14 @@ pub fn run(
                 .wrap_err("failed to append module path to python search path")?;
         }
 
-        let module = py.import(module_name).map_err(traceback)?;
+        let module = py.import_bound(module_name).map_err(traceback)?;
         let operator_class = module
             .getattr("Operator")
             .wrap_err("no `Operator` class found in module")?;
 
-        let locals = [("Operator", operator_class)].into_py_dict(py);
+        let locals = [("Operator", operator_class)].into_py_dict_bound(py);
         let operator = py
-            .eval("Operator()", None, Some(locals))
+            .eval_bound("Operator()", None, Some(&locals))
             .map_err(traceback)?;
         operator.setattr(
             "dataflow_descriptor",
@@ -141,11 +143,11 @@ pub fn run(
                         .wrap_err("could not extract operator state as a PyDict")?;
                     // Reload module
                     let module = py
-                        .import(module_name)
+                        .import_bound(module_name)
                         .map_err(traceback)
                         .wrap_err(format!("Could not retrieve {module_name} while reloading"))?;
                     let importlib = py
-                        .import("importlib")
+                        .import_bound("importlib")
                         .wrap_err("failed to import `importlib` module")?;
                     let module = importlib
                         .call_method("reload", (module,), None)
@@ -155,9 +157,9 @@ pub fn run(
                         .wrap_err("no `Operator` class found in module")?;
 
                     // Create a new reloaded operator
-                    let locals = [("Operator", reloaded_operator_class)].into_py_dict(py);
+                    let locals = [("Operator", reloaded_operator_class)].into_py_dict_bound(py);
                     let operator: Py<pyo3::PyAny> = py
-                        .eval("Operator()", None, Some(locals))
+                        .eval_bound("Operator()", None, Some(&locals))
                         .map_err(traceback)
                         .wrap_err("Could not initialize reloaded operator")?
                         .into();
@@ -300,8 +302,8 @@ mod callback_impl {
     use eyre::{eyre, Context, Result};
     use pyo3::{
         pymethods,
-        types::{PyBytes, PyDict},
-        PyObject, Python,
+        types::{PyBytes, PyBytesMethods, PyDict},
+        Bound, PyObject, Python,
     };
     use tokio::sync::oneshot;
     use tracing::{field, span};
@@ -318,7 +320,7 @@ mod callback_impl {
             &mut self,
             output: &str,
             data: PyObject,
-            metadata: Option<&PyDict>,
+            metadata: Option<Bound<'_, PyDict>>,
             py: Python,
         ) -> Result<()> {
             let parameters = pydict_to_metadata(metadata)
@@ -354,12 +356,12 @@ mod callback_impl {
                 }
             };
 
-            let (sample, type_info) = if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
+            let (sample, type_info) = if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
                 let data = py_bytes.as_bytes();
                 let mut sample = allocate_sample(data.len())?;
                 sample.copy_from_slice(data);
                 (sample, ArrowTypeInfo::byte_array(data.len()))
-            } else if let Ok(arrow_array) = ArrayData::from_pyarrow(data.as_ref(py)) {
+            } else if let Ok(arrow_array) = ArrayData::from_pyarrow_bound(data.bind(py)) {
                 let total_len = required_data_size(&arrow_array);
                 let mut sample = allocate_sample(total_len)?;
 
