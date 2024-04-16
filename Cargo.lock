@@ -2582,9 +2582,9 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.12.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb2a33e9c38988ecbda730c85b0fd9ddcdf83c0305ac7fd21c8bb9f57f2f0cc8"
+checksum = "624c5448ba529e74f594c65b7024f31b2de7b64a9b228b8df26796bbb6e32c36"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
@@ -4676,8 +4676,9 @@ dependencies = [
 
 [[package]]
 name = "ros2-client"
-version = "0.7.0"
-source = "git+https://github.com/dora-rs/ros2-client.git?branch=deserialize-seed-2#34196be6fd7c9293d76584fdc5996ff8e11be325"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9bee0c156d235d3d52d217d29b628e56dd8a0be5308acb1925a7d76835ee5bb"
 dependencies = [
  "async-channel 2.1.1",
  "bstr",
@@ -4796,8 +4797,9 @@ dependencies = [
 
 [[package]]
 name = "rustdds"
-version = "0.9.2"
-source = "git+https://github.com/jhelovuo/RustDDS.git?branch=deserialize-with-seed#8b6d8d4db1b382447a4079adabb0d07ea66fe7b8"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2fc6a62fccbe521b5de1bb40c06f4a9b8844337eb218c94577b40c5bae5f584"
 dependencies = [
  "bit-vec",
  "byteorder",
