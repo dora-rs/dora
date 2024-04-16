@@ -35,7 +35,7 @@ async fn main() -> eyre::Result<()> {
 
     let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
     let coordinator_bind = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
         DORA_COORDINATOR_PORT_DEFAULT,
     );
     let (coordinator_addr, coordinator) =
