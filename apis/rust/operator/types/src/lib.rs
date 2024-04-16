@@ -166,7 +166,7 @@ pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 #[ffi_export]
 pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     let data_array = input.data_array.take()?;
-    let data = unsafe {arrow::ffi::from_ffi(data_array, &input.schema).ok()? };
+    let data = unsafe { arrow::ffi::from_ffi(data_array, &input.schema).ok()? };
     let array = ArrowData(arrow::array::make_array(data));
     let bytes: &[u8] = TryFrom::try_from(&array).ok()?;
     Some(bytes.to_owned().into())
