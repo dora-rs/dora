@@ -38,9 +38,10 @@ async fn main() -> eyre::Result<()> {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         DORA_COORDINATOR_PORT_DEFAULT,
     );
-    let (coordinator_addr, coordinator) =
+    let (coordinator_port, coordinator) =
         dora_coordinator::start(coordinator_bind, ReceiverStream::new(coordinator_events_rx))
             .await?;
+    let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
     let daemon_a = run_daemon(coordinator_addr.to_string(), "A".into());
     let daemon_b = run_daemon(coordinator_addr.to_string(), "B".into());
 
