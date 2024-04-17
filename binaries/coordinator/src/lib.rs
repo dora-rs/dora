@@ -38,11 +38,12 @@ mod tcp_utils;
 pub async fn start(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
-) -> Result<(SocketAddr, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let listener = listener::create_listener(bind).await?;
-    let bound_addr = listener
+    let port = listener
         .local_addr()
-        .wrap_err("failed to get local addr of listener")?;
+        .wrap_err("failed to get local addr of listener")?
+        .port();
     let mut tasks = FuturesUnordered::new();
 
     // Setup ctrl-c handler
@@ -60,7 +61,7 @@ pub async fn start(
         tracing::debug!("all spawned tasks finished, exiting..");
         Ok(())
     };
-    Ok((bound_addr, future))
+    Ok((port, future))
 }
 
 // Resolve the dataflow name.
