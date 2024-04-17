@@ -106,10 +106,11 @@ enum Command {
     Daemon {
         #[clap(long)]
         machine_id: Option<String>,
+        /// The IP address and port this daemon will bind to.
         #[clap(long, default_value_t = SocketAddr::new(
             IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
         )]
-        bind: SocketAddr,
+        addr: SocketAddr,
         #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
 
@@ -292,7 +293,7 @@ fn run() -> eyre::Result<()> {
         }
         Command::Daemon {
             coordinator_addr,
-            bind,
+            addr,
             machine_id,
             run_dataflow,
         } => {
@@ -314,12 +315,12 @@ fn run() -> eyre::Result<()> {
                         Daemon::run_dataflow(&dataflow_path).await
                     }
                     None => {
-                        let addr = coordinator_addr.unwrap_or_else(|| {
+                        let coordination_addr = coordinator_addr.unwrap_or_else(|| {
                             tracing::info!("Starting in local mode");
                             let localhost = Ipv4Addr::new(127, 0, 0, 1);
                             (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
                         });
-                        Daemon::run(addr, machine_id.unwrap_or_default(), bind).await
+                        Daemon::run(coordination_addr, machine_id.unwrap_or_default(), addr).await
                     }
                 }
             })
