@@ -52,13 +52,13 @@ pub async fn handle_connection(
             coordinator_messages::CoordinatorRequest::Register {
                 machine_id,
                 dora_version,
-                listen_socket,
+                listen_port,
             } => {
                 let event = DaemonEvent::Register {
                     dora_version,
                     machine_id,
                     connection,
-                    listen_socket,
+                    listen_port,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;

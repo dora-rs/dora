@@ -88,7 +88,7 @@ impl Daemon {
 
         // spawn listen loop
         let (events_tx, events_rx) = flume::bounded(10);
-        let listen_socket =
+        let listen_port =
             inter_daemon::spawn_listener_loop(bind_addr, machine_id.clone(), events_tx).await?;
         let daemon_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::Daemon(e.inner),
@@ -97,7 +97,7 @@ impl Daemon {
 
         // connect to the coordinator
         let coordinator_events =
-            coordinator::register(coordinator_addr, machine_id.clone(), listen_socket, &clock)
+            coordinator::register(coordinator_addr, machine_id.clone(), listen_port, &clock)
                 .await
                 .wrap_err("failed to connect to dora-coordinator")?
                 .map(

@@ -64,23 +64,24 @@ pub async fn spawn_listener_loop(
     bind: SocketAddr,
     machine_id: String,
     events_tx: flume::Sender<Timestamped<InterDaemonEvent>>,
-) -> eyre::Result<SocketAddr> {
+) -> eyre::Result<u16> {
     let socket = match TcpListener::bind(bind).await {
         Ok(socket) => socket,
         Err(err) => {
             return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
         }
     };
-    let socket_addr = socket
+    let listen_port = socket
         .local_addr()
-        .wrap_err("failed to get local addr of socket")?;
+        .wrap_err("failed to get local addr of socket")?
+        .port();
 
     tokio::spawn(async move {
         listener_loop(socket, events_tx).await;
         tracing::debug!("inter-daemon listener loop finished for machine `{machine_id}`");
     });
 
-    Ok(socket_addr)
+    Ok(listen_port)
 }
 
 async fn listener_loop(
