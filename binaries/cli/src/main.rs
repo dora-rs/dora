@@ -124,7 +124,7 @@ enum Command {
         #[clap(long, default_value_t = SocketAddr::new(
             IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), DORA_COORDINATOR_PORT_DEFAULT)
         )]
-        bind: SocketAddr,
+        addr: SocketAddr,
     },
 }
 
@@ -279,14 +279,14 @@ fn run() -> eyre::Result<()> {
             }
         }
         Command::Destroy { config } => up::destroy(config.as_deref())?,
-        Command::Coordinator { bind } => {
+        Command::Coordinator { addr } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
                 let (_port, task) =
-                    dora_coordinator::start(bind, futures::stream::empty::<Event>()).await?;
+                    dora_coordinator::start(addr, futures::stream::empty::<Event>()).await?;
                 task.await
             })
             .context("failed to run dora-coordinator")?
