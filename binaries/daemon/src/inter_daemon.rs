@@ -75,7 +75,6 @@ pub async fn spawn_listener_loop(
         .local_addr()
         .wrap_err("failed to get local addr of socket")?;
 
-    tracing::debug!("inter-daemon listener starting for machine `{machine_id}` on {socket_addr}");
     tokio::spawn(async move {
         listener_loop(socket, events_tx).await;
         tracing::debug!("inter-daemon listener loop finished for machine `{machine_id}`");
