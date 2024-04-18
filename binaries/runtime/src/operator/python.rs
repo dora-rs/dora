@@ -187,17 +187,6 @@ pub fn run(
             let status = Python::with_gil(|py| -> Result<i32> {
                 let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
                 let _ = span.enter();
-                // We need to create a new scoped `GILPool` because the dora-runtime
-                // is currently started through a `start_runtime` wrapper function,
-                // which is annotated with `#[pyfunction]`. This attribute creates an
-                // initial `GILPool` that lasts for the entire lifetime of the `dora-runtime`.
-                // However, we want the `PyBytes` created below to be freed earlier.
-                // creating a new scoped `GILPool` tied to this closure, will free `PyBytes`
-                // at the end of the closure.
-                // See https://github.com/PyO3/pyo3/pull/2864 and
-                // https://github.com/PyO3/pyo3/issues/2853 for more details.
-                let pool = unsafe { py.new_pool() };
-                let py = pool.python();
 
                 // Add metadata context if we have a tracer and
                 // incoming input has some metadata.
