@@ -1,6 +1,8 @@
 //! Enable serialisation and deserialisation of capnproto messages
 //!
 
+#![allow(clippy::missing_safety_doc)]
+
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
 use eyre::Context;

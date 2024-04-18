@@ -1,3 +1,5 @@
+#![allow(clippy::missing_safety_doc)]
+
 use self::channel::ShmemChannel;
 use eyre::{eyre, Context};
 use serde::{Deserialize, Serialize};
