@@ -25,11 +25,11 @@ pub enum ConstantType {
 impl ConstantType {
     pub fn type_tokens(&self) -> impl ToTokens {
         match self {
-            ConstantType::PrimitiveType(t) => {
+            Self::PrimitiveType(t) => {
                 let token = t.type_tokens();
                 quote! { #token }
             }
-            ConstantType::PrimitiveArray(t) => {
+            Self::PrimitiveArray(t) => {
                 let token = t.type_tokens();
                 quote! { #token }
             }
@@ -38,12 +38,12 @@ impl ConstantType {
 
     pub fn value_tokens(&self, values: &[String]) -> impl ToTokens {
         match self {
-            ConstantType::PrimitiveType(t) => {
+            Self::PrimitiveType(t) => {
                 assert_eq!(values.len(), 1);
                 let token = t.value_tokens(&values[0]);
                 quote! { #token }
             }
-            ConstantType::PrimitiveArray(t) => {
+            Self::PrimitiveArray(t) => {
                 assert_eq!(values.len(), t.size);
                 let tokens = values.iter().map(|v| t.value_type.value_tokens(v));
                 quote! { [#(#tokens,)*] }
