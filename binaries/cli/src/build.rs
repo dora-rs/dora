@@ -16,8 +16,8 @@ pub fn build(dataflow: &Path) -> eyre::Result<()> {
 
     let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
 
-    for node in &descriptor.nodes {
-        match &node.kind {
+    for node in descriptor.nodes {
+        match node.kind()? {
             dora_core::descriptor::NodeKind::Runtime(runtime_node) => {
                 for operator in &runtime_node.operators {
                     run_build_command(operator.config.build.as_deref(), working_dir).with_context(

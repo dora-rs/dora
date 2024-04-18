@@ -23,7 +23,7 @@ pub fn attach_dataflow(
     // Generate path hashmap
     let mut node_path_lookup = HashMap::new();
 
-    let nodes = dataflow.resolve_aliases_and_set_defaults();
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
     let working_dir = dataflow_path
         .canonicalize()
