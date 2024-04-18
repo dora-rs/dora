@@ -1,15 +1,14 @@
 use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
 use dora_core::{coordinator_messages, daemon_messages::Timestamped, message::uhlc::HLC};
 use eyre::{eyre, Context};
-use std::{io::ErrorKind, net::Ipv4Addr, sync::Arc};
+use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
 };
 
-pub async fn create_listener(port: u16) -> eyre::Result<TcpListener> {
-    let localhost = Ipv4Addr::new(127, 0, 0, 1);
-    let socket = match TcpListener::bind((localhost, port)).await {
+pub async fn create_listener(bind: SocketAddr) -> eyre::Result<TcpListener> {
+    let socket = match TcpListener::bind(bind).await {
         Ok(socket) => socket,
         Err(err) => {
             return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
@@ -53,13 +52,13 @@ pub async fn handle_connection(
             coordinator_messages::CoordinatorRequest::Register {
                 machine_id,
                 dora_version,
-                listen_socket,
+                listen_port,
             } => {
                 let event = DaemonEvent::Register {
                     dora_version,
                     machine_id,
                     connection,
-                    listen_socket,
+                    listen_port,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;

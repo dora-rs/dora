@@ -1,13 +1,12 @@
 use crate::daemon_messages::DataflowId;
 use eyre::eyre;
-use std::net::SocketAddr;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register {
         dora_version: String,
         machine_id: String,
-        listen_socket: SocketAddr,
+        listen_port: u16,
     },
     Event {
         machine_id: String,

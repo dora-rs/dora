@@ -1,4 +1,7 @@
-use std::{net::Ipv4Addr, path::PathBuf};
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+};
 
 use attach::attach_dataflow;
 use clap::Parser;
@@ -103,6 +106,11 @@ enum Command {
     Daemon {
         #[clap(long)]
         machine_id: Option<String>,
+        /// The IP address and port this daemon will bind to.
+        #[clap(long, default_value_t = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
+        )]
+        addr: SocketAddr,
         #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
 
@@ -112,7 +120,12 @@ enum Command {
     /// Run runtime
     Runtime,
     /// Run coordinator
-    Coordinator { port: Option<u16> },
+    Coordinator {
+        #[clap(long, default_value_t = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), DORA_COORDINATOR_PORT_DEFAULT)
+        )]
+        addr: SocketAddr,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -266,20 +279,21 @@ fn run() -> eyre::Result<()> {
             }
         }
         Command::Destroy { config } => up::destroy(config.as_deref())?,
-        Command::Coordinator { port } => {
+        Command::Coordinator { addr } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
                 let (_port, task) =
-                    dora_coordinator::start(port, futures::stream::empty::<Event>()).await?;
+                    dora_coordinator::start(addr, futures::stream::empty::<Event>()).await?;
                 task.await
             })
             .context("failed to run dora-coordinator")?
         }
         Command::Daemon {
             coordinator_addr,
+            addr,
             machine_id,
             run_dataflow,
         } => {
@@ -301,12 +315,12 @@ fn run() -> eyre::Result<()> {
                         Daemon::run_dataflow(&dataflow_path).await
                     }
                     None => {
-                        let addr = coordinator_addr.unwrap_or_else(|| {
+                        let coordination_addr = coordinator_addr.unwrap_or_else(|| {
                             tracing::info!("Starting in local mode");
                             let localhost = Ipv4Addr::new(127, 0, 0, 1);
                             (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
                         });
-                        Daemon::run(addr, machine_id.unwrap_or_default()).await
+                        Daemon::run(coordination_addr, machine_id.unwrap_or_default(), addr).await
                     }
                 }
             })

@@ -77,15 +77,19 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub async fn run(coordinator_addr: SocketAddr, machine_id: String) -> eyre::Result<()> {
+    pub async fn run(
+        coordinator_addr: SocketAddr,
+        machine_id: String,
+        bind_addr: SocketAddr,
+    ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
         let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
 
         // spawn listen loop
         let (events_tx, events_rx) = flume::bounded(10);
-        let listen_socket =
-            inter_daemon::spawn_listener_loop(machine_id.clone(), events_tx).await?;
+        let listen_port =
+            inter_daemon::spawn_listener_loop(bind_addr, machine_id.clone(), events_tx).await?;
         let daemon_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::Daemon(e.inner),
             timestamp: e.timestamp,
@@ -93,7 +97,7 @@ impl Daemon {
 
         // connect to the coordinator
         let coordinator_events =
-            coordinator::register(coordinator_addr, machine_id.clone(), listen_socket, &clock)
+            coordinator::register(coordinator_addr, machine_id.clone(), listen_port, &clock)
                 .await
                 .wrap_err("failed to connect to dora-coordinator")?
                 .map(

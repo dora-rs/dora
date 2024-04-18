@@ -9,10 +9,7 @@ use dora_core::{
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
     message::uhlc::{self, HLC},
-    topics::{
-        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
-        DORA_COORDINATOR_PORT_DEFAULT,
-    },
+    topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
@@ -39,11 +36,10 @@ mod run;
 mod tcp_utils;
 
 pub async fn start(
-    port: Option<u16>,
+    bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let port = port.unwrap_or(DORA_COORDINATOR_PORT_DEFAULT);
-    let listener = listener::create_listener(port).await?;
+    let listener = listener::create_listener(bind).await?;
     let port = listener
         .local_addr()
         .wrap_err("failed to get local addr of listener")?
@@ -175,29 +171,38 @@ async fn start_inner(
                     machine_id,
                     mut connection,
                     dora_version: daemon_version,
-                    listen_socket,
+                    listen_port,
                 } => {
-                    let coordinator_version = &env!("CARGO_PKG_VERSION");
-                    let reply = if &daemon_version == coordinator_version {
-                        RegisterResult::Ok
+                    let coordinator_version: &&str = &env!("CARGO_PKG_VERSION");
+                    let version_check = if &daemon_version == coordinator_version {
+                        Ok(())
                     } else {
-                        RegisterResult::Err(format!(
+                        Err(format!(
                             "version mismatch: daemon v{daemon_version} is \
-                            not compatible with coordinator v{coordinator_version}"
+                        not compatible with coordinator v{coordinator_version}"
                         ))
                     };
-                    let reply = Timestamped {
-                        inner: reply,
+                    let peer_ip = connection
+                        .peer_addr()
+                        .map(|addr| addr.ip())
+                        .map_err(|err| format!("failed to get peer addr of connection: {err}"));
+                    let register_result = version_check.and(peer_ip);
+
+                    let reply: Timestamped<RegisterResult> = Timestamped {
+                        inner: match &register_result {
+                            Ok(_) => RegisterResult::Ok,
+                            Err(err) => RegisterResult::Err(err.clone()),
+                        },
                         timestamp: clock.new_timestamp(),
                     };
                     let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await;
-                    match (reply.inner, send_result) {
-                        (RegisterResult::Ok, Ok(())) => {
+                    match (register_result, send_result) {
+                        (Ok(ip), Ok(())) => {
                             let previous = daemon_connections.insert(
                                 machine_id.clone(),
                                 DaemonConnection {
                                     stream: connection,
-                                    listen_socket,
+                                    listen_socket: (ip, listen_port).into(),
                                     last_heartbeat: Instant::now(),
                                 },
                             );
@@ -207,10 +212,10 @@ async fn start_inner(
                                 );
                             }
                         }
-                        (RegisterResult::Err(err), _) => {
+                        (Err(err), _) => {
                             tracing::warn!("failed to register daemon connection for machine `{machine_id}`: {err}");
                         }
-                        (RegisterResult::Ok, Err(err)) => {
+                        (Ok(_), Err(err)) => {
                             tracing::warn!("failed to confirm daemon connection for machine `{machine_id}`: {err}");
                         }
                     }
@@ -481,6 +486,12 @@ async fn start_inner(
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in &mut daemon_connections {
                     if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
+                        tracing::warn!(
+                            "no heartbeat message from machine `{machine_id}` since {:?}",
+                            connection.last_heartbeat.elapsed()
+                        )
+                    }
+                    if connection.last_heartbeat.elapsed() > Duration::from_secs(30) {
                         disconnected.insert(machine_id.clone());
                         continue;
                     }
@@ -500,7 +511,7 @@ async fn start_inner(
                     }
                 }
                 if !disconnected.is_empty() {
-                    tracing::info!("Disconnecting daemons that failed watchdog: {disconnected:?}");
+                    tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in disconnected {
                         daemon_connections.remove(&machine_id);
                     }
@@ -905,7 +916,7 @@ pub enum DaemonEvent {
         dora_version: String,
         machine_id: String,
         connection: TcpStream,
-        listen_socket: SocketAddr,
+        listen_port: u16,
     },
 }
 
