@@ -18,6 +18,7 @@ pub trait RequestReplyLayer: Send + Sync {
     type ReplyData;
     type Error;
 
+    #[allow(clippy::type_complexity)]
     fn listen(
         &mut self,
         addr: Self::Address,
@@ -39,6 +40,7 @@ pub trait RequestReplyLayer: Send + Sync {
         Self::Error,
     >;
 
+    #[allow(clippy::type_complexity)]
     fn connect(
         &mut self,
         addr: Self::Address,
@@ -59,6 +61,7 @@ pub trait ListenConnection: Send + Sync {
     type ReplyData;
     type Error;
 
+    #[allow(clippy::type_complexity)]
     fn handle_next(
         &mut self,
         handler: Box<dyn FnOnce(Self::RequestData) -> Result<Self::ReplyData, Self::Error>>,
