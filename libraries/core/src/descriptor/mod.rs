@@ -52,6 +52,7 @@ impl Descriptor {
             // adjust input mappings
             let mut node_kind = node.kind_mut()?;
             let input_mappings: Vec<_> = match &mut node_kind {
+                NodeKindMut::Standard { path: _, inputs } => inputs.values_mut().collect(),
                 NodeKindMut::Runtime(node) => node
                     .operators
                     .iter_mut()
@@ -74,6 +75,17 @@ impl Descriptor {
 
             // resolve nodes
             let kind = match node_kind {
+                NodeKindMut::Standard { path, inputs: _ } => CoreNodeKind::Custom(CustomNode {
+                    source: path.clone(),
+                    args: node.args,
+                    envs: node.envs,
+                    build: node.build,
+                    send_stdout_as: node.send_stdout_as,
+                    run_config: NodeRunConfig {
+                        inputs: node.inputs,
+                        outputs: node.outputs,
+                    },
+                }),
                 NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
                 NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
                 NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
@@ -149,44 +161,45 @@ pub struct Node {
     #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     operators: Option<RuntimeNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     custom: Option<CustomNode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     operator: Option<SingleOperatorDefinition>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envs: Option<BTreeMap<String, EnvValue>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_stdout_as: Option<String>,
+    #[serde(default)]
+    pub inputs: BTreeMap<DataId, Input>,
+    #[serde(default)]
+    pub outputs: BTreeSet<DataId>,
 }
 
 impl Node {
     pub fn kind(&self) -> eyre::Result<NodeKind> {
-        match (&self.operators, &self.custom, &self.operator) {
-            (None, None, None) => {
+        match (&self.path, &self.operators, &self.custom, &self.operator) {
+            (None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `custom` or `operators` field",
+                    "node `{}` requires a `path`, `custom`, or `operators` field",
                     self.id
                 )
             }
-            (None, None, Some(operator)) => Ok(NodeKind::Operator(operator)),
-            (None, Some(custom), None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(_), Some(_)) => {
+            (None, None, None, Some(operator)) => Ok(NodeKind::Operator(operator)),
+            (None, None, Some(custom), None) => Ok(NodeKind::Custom(custom)),
+            (None, Some(runtime), None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None) => Ok(NodeKind::Standard(path)),
+            _ => {
                 eyre::bail!(
-                    "node `{}` has both a `custom` and `operator` field",
-                    self.id
-                )
-            }
-            (Some(runtime), None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(_), None, Some(_)) => {
-                eyre::bail!(
-                    "node `{}` has both a `operators` and `operator` field",
-                    self.id
-                )
-            }
-            (Some(_), Some(_), None) => {
-                eyre::bail!(
-                    "node `{}` has both a `operators` and `custom` field",
-                    self.id
-                )
-            }
-            (Some(_), Some(_), Some(_)) => {
-                eyre::bail!(
-                    "node `{}` has `custom`, `operators` and `operator` field",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators` and `operator` is allowed",
                     self.id
                 )
             }
@@ -195,6 +208,14 @@ impl Node {
 
     fn kind_mut(&mut self) -> eyre::Result<NodeKindMut> {
         match self.kind()? {
+            NodeKind::Standard(_) => self
+                .path
+                .as_ref()
+                .map(|path| NodeKindMut::Standard {
+                    path,
+                    inputs: &mut self.inputs,
+                })
+                .ok_or_eyre("no path"),
             NodeKind::Runtime(_) => self
                 .operators
                 .as_mut()
@@ -216,6 +237,7 @@ impl Node {
 
 #[derive(Debug)]
 pub enum NodeKind<'a> {
+    Standard(&'a String),
     /// Dora runtime node
     Runtime(&'a RuntimeNode),
     Custom(&'a CustomNode),
@@ -224,6 +246,10 @@ pub enum NodeKind<'a> {
 
 #[derive(Debug)]
 enum NodeKindMut<'a> {
+    Standard {
+        path: &'a String,
+        inputs: &'a mut BTreeMap<DataId, Input>,
+    },
     /// Dora runtime node
     Runtime(&'a mut RuntimeNode),
     Custom(&'a mut CustomNode),

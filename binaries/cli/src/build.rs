@@ -18,6 +18,11 @@ pub fn build(dataflow: &Path) -> eyre::Result<()> {
 
     for node in descriptor.nodes {
         match node.kind()? {
+            dora_core::descriptor::NodeKind::Standard(_) => {
+                run_build_command(node.build.as_deref(), working_dir).with_context(|| {
+                    format!("build command failed for standard node `{}`", node.id)
+                })?
+            }
             dora_core::descriptor::NodeKind::Runtime(runtime_node) => {
                 for operator in &runtime_node.operators {
                     run_build_command(operator.config.build.as_deref(), working_dir).with_context(
