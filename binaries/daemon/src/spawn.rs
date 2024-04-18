@@ -254,7 +254,7 @@ pub async fn spawn_node(
         }
     };
 
-    let dataflow_dir = PathBuf::from(working_dir.join("out").join(dataflow_id.to_string()));
+    let dataflow_dir: PathBuf = working_dir.join("out").join(dataflow_id.to_string());
     if !dataflow_dir.exists() {
         std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
     }

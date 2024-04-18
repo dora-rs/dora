@@ -70,8 +70,7 @@ fn start_coordinator() -> eyre::Result<()> {
     let mut cmd =
         Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
     cmd.arg("coordinator");
-    cmd.spawn()
-        .wrap_err_with(|| format!("failed to run `dora coordinator`"))?;
+    cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
 
     println!("started dora coordinator");
 
@@ -82,8 +81,7 @@ fn start_daemon() -> eyre::Result<()> {
     let mut cmd =
         Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
     cmd.arg("daemon");
-    cmd.spawn()
-        .wrap_err_with(|| format!("failed to run `dora daemon`"))?;
+    cmd.spawn().wrap_err("failed to run `dora daemon`")?;
 
     println!("started dora daemon");
 
