@@ -1,3 +1,5 @@
+#![allow(clippy::missing_safety_doc)]
+
 pub use flume;
 pub use futures;
 pub use futures_timer;

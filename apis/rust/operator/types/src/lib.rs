@@ -1,5 +1,6 @@
 #![deny(elided_lifetimes_in_paths)] // required for safer-ffi
 #![allow(improper_ctypes_definitions)]
+#![allow(clippy::missing_safety_doc)]
 
 pub use arrow;
 use dora_arrow_convert::{ArrowData, IntoArrow};
