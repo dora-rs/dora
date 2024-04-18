@@ -24,7 +24,7 @@ pub struct CoordinatorEvent {
 pub async fn register(
     addr: SocketAddr,
     machine_id: String,
-    listen_socket: SocketAddr,
+    listen_port: u16,
     clock: &HLC,
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
     let mut stream = TcpStream::connect(addr)
@@ -37,7 +37,7 @@ pub async fn register(
         inner: CoordinatorRequest::Register {
             dora_version: env!("CARGO_PKG_VERSION").to_owned(),
             machine_id,
-            listen_socket,
+            listen_port,
         },
         timestamp: clock.new_timestamp(),
     })?;
