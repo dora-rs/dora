@@ -1,7 +1,7 @@
 use crate::config::{
     CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{bail, eyre, Context, OptionExt, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with_expand_env::with_expand_envs;
@@ -34,29 +34,31 @@ pub struct Descriptor {
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl Descriptor {
-    pub fn resolve_aliases_and_set_defaults(&self) -> Vec<ResolvedNode> {
+    pub fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<Vec<ResolvedNode>> {
         let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
 
         let single_operator_nodes: HashMap<_, _> = self
             .nodes
             .iter()
-            .filter_map(|n| match &n.kind {
-                NodeKind::Operator(op) => Some((&n.id, op.id.as_ref().unwrap_or(&default_op_id))),
-                _ => None,
+            .filter_map(|n| {
+                n.operator
+                    .as_ref()
+                    .map(|op| (&n.id, op.id.as_ref().unwrap_or(&default_op_id)))
             })
             .collect();
 
         let mut resolved = vec![];
         for mut node in self.nodes.clone() {
             // adjust input mappings
-            let input_mappings: Vec<_> = match &mut node.kind {
-                NodeKind::Runtime(node) => node
+            let mut node_kind = node.kind_mut()?;
+            let input_mappings: Vec<_> = match &mut node_kind {
+                NodeKindMut::Runtime(node) => node
                     .operators
                     .iter_mut()
                     .flat_map(|op| op.config.inputs.values_mut())
                     .collect(),
-                NodeKind::Custom(node) => node.run_config.inputs.values_mut().collect(),
-                NodeKind::Operator(operator) => operator.config.inputs.values_mut().collect(),
+                NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
+                NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
             };
             for mapping in input_mappings
                 .into_iter()
@@ -71,13 +73,13 @@ impl Descriptor {
             }
 
             // resolve nodes
-            let kind = match node.kind {
-                NodeKind::Custom(node) => CoreNodeKind::Custom(node),
-                NodeKind::Runtime(node) => CoreNodeKind::Runtime(node),
-                NodeKind::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
+            let kind = match node_kind {
+                NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
+                NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
+                NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
                     operators: vec![OperatorDefinition {
-                        id: op.id.unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config,
+                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
+                        config: op.config.clone(),
                     }],
                 }),
             };
@@ -92,11 +94,11 @@ impl Descriptor {
             });
         }
 
-        resolved
+        Ok(resolved)
     }
 
     pub fn visualize_as_mermaid(&self) -> eyre::Result<String> {
-        let resolved = self.resolve_aliases_and_set_defaults();
+        let resolved = self.resolve_aliases_and_set_defaults()?;
         let flowchart = visualize::visualize_nodes(&resolved);
 
         Ok(flowchart)
@@ -131,6 +133,7 @@ pub struct Deploy {
 
 /// Dora Node
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Node {
     /// Node identifier
     pub id: NodeId,
@@ -146,18 +149,85 @@ pub struct Node {
     #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
 
-    #[serde(flatten)]
-    pub kind: NodeKind,
+    operators: Option<RuntimeNode>,
+    custom: Option<CustomNode>,
+    operator: Option<SingleOperatorDefinition>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeKind {
+impl Node {
+    pub fn kind(&self) -> eyre::Result<NodeKind> {
+        match (&self.operators, &self.custom, &self.operator) {
+            (None, None, None) => {
+                eyre::bail!(
+                    "node `{}` requires a `custom` or `operators` field",
+                    self.id
+                )
+            }
+            (None, None, Some(operator)) => Ok(NodeKind::Operator(operator)),
+            (None, Some(custom), None) => Ok(NodeKind::Custom(custom)),
+            (None, Some(_), Some(_)) => {
+                eyre::bail!(
+                    "node `{}` has both a `custom` and `operator` field",
+                    self.id
+                )
+            }
+            (Some(runtime), None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(_), None, Some(_)) => {
+                eyre::bail!(
+                    "node `{}` has both a `operators` and `operator` field",
+                    self.id
+                )
+            }
+            (Some(_), Some(_), None) => {
+                eyre::bail!(
+                    "node `{}` has both a `operators` and `custom` field",
+                    self.id
+                )
+            }
+            (Some(_), Some(_), Some(_)) => {
+                eyre::bail!(
+                    "node `{}` has `custom`, `operators` and `operator` field",
+                    self.id
+                )
+            }
+        }
+    }
+
+    fn kind_mut(&mut self) -> eyre::Result<NodeKindMut> {
+        match self.kind()? {
+            NodeKind::Runtime(_) => self
+                .operators
+                .as_mut()
+                .map(NodeKindMut::Runtime)
+                .ok_or_eyre("no operators"),
+            NodeKind::Custom(_) => self
+                .custom
+                .as_mut()
+                .map(NodeKindMut::Custom)
+                .ok_or_eyre("no custom"),
+            NodeKind::Operator(_) => self
+                .operator
+                .as_mut()
+                .map(NodeKindMut::Operator)
+                .ok_or_eyre("no operator"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum NodeKind<'a> {
     /// Dora runtime node
-    #[serde(rename = "operators")]
-    Runtime(RuntimeNode),
-    Custom(CustomNode),
-    Operator(SingleOperatorDefinition),
+    Runtime(&'a RuntimeNode),
+    Custom(&'a CustomNode),
+    Operator(&'a SingleOperatorDefinition),
+}
+
+#[derive(Debug)]
+enum NodeKindMut<'a> {
+    /// Dora runtime node
+    Runtime(&'a mut RuntimeNode),
+    Custom(&'a mut CustomNode),
+    Operator(&'a mut SingleOperatorDefinition),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
