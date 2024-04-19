@@ -1,0 +1,35 @@
+nodes:
+  - id: webcam
+    custom:
+      source: ./webcam.py
+      inputs:
+        tick:
+          source: dora/timer/millis/10
+          queue_size: 1000
+      outputs:
+        - image
+        - text
+      envs:
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
+
+
+  - id: rerun
+    custom:
+      source: dora-rerun
+      inputs:
+        image: webcam/image
+        text: webcam/text
+      envs:
+        IMAGE_WIDTH: 540
+        IMAGE_HEIGHT: 960
+        IMAGE_DEPTH: 3
+
+  - id: matplotlib
+    custom:
+      source: ./plot.py
+      inputs:
+        image: webcam/image
+      envs:
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
