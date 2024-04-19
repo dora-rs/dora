@@ -105,7 +105,7 @@ impl Ros2Node {
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
         let (namespace_name, message_name) =
-            match (message_type.split_once("/"), message_type.split_once("::")) {
+            match (message_type.split_once('/'), message_type.split_once("::")) {
                 (Some(msg), None) => msg,
                 (None, Some(msg)) => msg,
                 _ => eyre::bail!("Expected message type in the format `namespace/message` or `namespace::message`, such as `std_msgs/UInt8` but got: {}", message_type),

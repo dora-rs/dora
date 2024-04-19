@@ -29,6 +29,7 @@ impl U16String {
         Self(widestring::U16String::new())
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(arg: &str) -> U16String {
         Self(widestring::U16String::from_str(arg))
     }

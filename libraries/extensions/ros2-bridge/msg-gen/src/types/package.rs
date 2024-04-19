@@ -126,7 +126,7 @@ impl Package {
         }
     }
 
-    pub fn token_stream(&self, gen_cxx_bridge: bool) -> impl ToTokens {
+    pub fn token_stream(&self, _gen_cxx_bridge: bool) -> impl ToTokens {
         let name = Ident::new(&self.name, Span::call_site());
         let services_block = self.services_block();
         let actions_block = self.actions_block();

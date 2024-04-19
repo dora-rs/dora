@@ -54,9 +54,11 @@ pub fn parse_constant_type(s: &str) -> IResult<&str, ConstantType> {
             opt(delimited(char('['), usize_literal, char(']'))),
             peek(alt((space1, eof))),
         )),
-        |(value_type, size, _)| match size {
-            None => value_type.into(),
-            Some(size) => PrimitiveArray { value_type, size }.into(),
+        |(value_type, size, _)| {
+            size.map_or_else(
+                || value_type.into(),
+                |size| PrimitiveArray { value_type, size }.into(),
+            )
         },
     )(s)
 }

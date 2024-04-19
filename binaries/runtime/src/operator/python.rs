@@ -130,6 +130,7 @@ pub fn run(
             if let Event::Reload { .. } = event {
                 reload = true;
                 // Reloading method
+                #[allow(clippy::blocks_in_conditions)]
                 match Python::with_gil(|py| -> Result<Py<PyAny>> {
                     // Saving current state
                     let current_state = operator
