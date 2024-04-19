@@ -42,8 +42,8 @@ async fn main() -> eyre::Result<()> {
         dora_coordinator::start(coordinator_bind, ReceiverStream::new(coordinator_events_rx))
             .await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
-    let daemon_a = run_daemon(coordinator_addr.to_string(), "A".into());
-    let daemon_b = run_daemon(coordinator_addr.to_string(), "B".into());
+    let daemon_a = run_daemon(coordinator_addr.to_string(), "A");
+    let daemon_b = run_daemon(coordinator_addr.to_string(), "B");
 
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();

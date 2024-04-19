@@ -107,6 +107,7 @@ fn bool_literal(s: &str) -> IResult<&str, bool> {
     ))(s)
 }
 
+#[allow(clippy::type_complexity)]
 pub fn get_string_literal_parser(
     string_type: GenericString,
 ) -> Box<dyn FnMut(&str) -> IResult<&str, String>> {

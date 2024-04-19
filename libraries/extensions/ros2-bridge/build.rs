@@ -17,6 +17,7 @@ fn main() {
     println!("cargo:rustc-env=MESSAGES_PATH={}", target_file.display());
 }
 
+#[cfg(feature = "generate-messages")]
 fn ament_prefix_paths() -> Vec<PathBuf> {
     let ament_prefix_path: String = match std::env::var("AMENT_PREFIX_PATH") {
         Ok(path) => path,

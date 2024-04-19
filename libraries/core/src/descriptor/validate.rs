@@ -53,7 +53,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         OperatorSource::Python(python_source) => {
                             has_python_operator = true;
                             let path = &python_source.source;
-                            if source_is_url(&path) {
+                            if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
                             } else if !working_dir.join(path).exists() {
                                 bail!("no Python library at `{path}`");

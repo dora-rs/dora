@@ -254,7 +254,7 @@ pub async fn spawn_node(
         }
     };
 
-    let dataflow_dir = PathBuf::from(working_dir.join("out").join(dataflow_id.to_string()));
+    let dataflow_dir: PathBuf = working_dir.join("out").join(dataflow_id.to_string());
     if !dataflow_dir.exists() {
         std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
     }
@@ -405,7 +405,12 @@ pub async fn spawn_node(
                 .write_all(message.as_bytes())
                 .await
                 .map_err(|err| error!("Could not log {message} to file due to {err}"));
-            let formatted: String = message.lines().map(|l| format!("      {l}\n")).collect();
+            let formatted = message.lines().fold(String::default(), |mut output, line| {
+                output.push_str("      ");
+                output.push_str(line);
+                output.push('\n');
+                output
+            });
             debug!("{dataflow_id}/{} logged:\n{formatted}", node.id.clone());
             // Make sure that all data has been synced to disk.
             let _ = file

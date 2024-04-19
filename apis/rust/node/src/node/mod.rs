@@ -90,7 +90,7 @@ impl DoraNode {
 
         let node = Self {
             id: node_id,
-            dataflow_id: dataflow_id,
+            dataflow_id,
             node_config: run_config,
             control_channel,
             clock,
