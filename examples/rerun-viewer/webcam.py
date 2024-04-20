@@ -22,9 +22,12 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 start = time.time()
 
 # Run for 20 seconds
-while time.time() - start < 60:
+while time.time() - start < 1000:
     # Wait next dora_input
     event = node.next()
+    if event is None:
+        break
+
     event_type = event["type"]
     if event_type == "INPUT":
         ret, frame = video_capture.read()

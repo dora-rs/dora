@@ -14,15 +14,27 @@ nodes:
         IMAGE_HEIGHT: 540
 
 
+  - id: object_detection
+    custom:
+      source: ./object_detection.py
+      inputs:
+        image: webcam/image
+      outputs:
+        - bbox
+      envs:
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
+
   - id: rerun
     custom:
       source: dora-rerun
       inputs:
         image: webcam/image
         text: webcam/text
+        boxes2d: object_detection/bbox
       envs:
-        IMAGE_WIDTH: 540
-        IMAGE_HEIGHT: 960
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
         IMAGE_DEPTH: 3
 
   - id: matplotlib
@@ -30,6 +42,7 @@ nodes:
       source: ./plot.py
       inputs:
         image: webcam/image
+        bbox: object_detection/bbox
       envs:
         IMAGE_WIDTH: 960
         IMAGE_HEIGHT: 540
