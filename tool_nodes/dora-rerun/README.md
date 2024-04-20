@@ -2,6 +2,8 @@
 
 dora visualization using `rerun`
 
+This nodes is still experimental and format for passing Images, Bounding boxes, and text are probably going to change in the future.
+
 ## Getting Started
 
 ```bash
