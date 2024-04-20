@@ -49,17 +49,17 @@ class Plotter:
             self.bboxs = np.reshape(bboxs, (-1, 6))
         for bbox in self.bboxs:
             [
-                min_x,
-                min_y,
-                max_x,
-                max_y,
+                x,
+                y,
+                w,
+                h,
                 confidence,
                 label,
             ] = bbox
             cv2.rectangle(
                 self.image,
-                (int(min_x), int(min_y)),
-                (int(max_x), int(max_y)),
+                (int(x - w / 2), int(y - h / 2)),
+                (int(x + w / 2), int(y + h / 2)),
                 (0, 255, 0),
                 2,
             )
