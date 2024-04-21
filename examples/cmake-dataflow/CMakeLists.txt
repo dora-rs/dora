@@ -11,12 +11,24 @@ link_directories(${dora_link_dirs})
 add_executable(node_c_api node-c-api/main.cc)
 add_dependencies(node_c_api Dora_c)
 target_include_directories(node_c_api PRIVATE ${dora_c_include_dir})
-target_link_libraries(node_c_api dora_node_api_c)
+target_link_libraries(node_c_api dora_node_api_c
+m
+rt
+dl
+pthread
+pcap	
+)
 
 add_executable(node_rust_api node-rust-api/main.cc ${node_bridge})
 add_dependencies(node_rust_api Dora_cxx)
 target_include_directories(node_rust_api PRIVATE ${dora_cxx_include_dir})
-target_link_libraries(node_rust_api dora_node_api_cxx)
+target_link_libraries(node_rust_api dora_node_api_cxx
+m
+rt
+dl
+pthread
+pcap
+)
 
 add_library(operator_c_api SHARED operator-c-api/operator.cc)
 add_dependencies(operator_c_api Dora_c)
