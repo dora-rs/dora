@@ -5,7 +5,9 @@ use dora_node_api::{
     DoraNode, Event,
 };
 use eyre::{Context, Result};
-use rerun::{external::re_types::ArrowBuffer, TensorBuffer, TensorData, TensorDimension};
+use rerun::{
+    external::re_types::ArrowBuffer, SpawnOptions, TensorBuffer, TensorData, TensorDimension,
+};
 
 fn main() -> Result<()> {
     // `serve()` requires to have a running Tokio runtime in the current context.
@@ -15,8 +17,12 @@ fn main() -> Result<()> {
     let (_node, mut events) =
         DoraNode::init_from_env().context("Could not initialize dora node")?;
 
+    // Limit memory usage
+    let mut options = SpawnOptions::default();
+    options.memory_limit = "25%".into();
+
     let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
-        .spawn()
+        .spawn_opts(&options, None)
         .context("Could not spawn rerun visualization")?;
 
     while let Some(event) = events.recv() {
