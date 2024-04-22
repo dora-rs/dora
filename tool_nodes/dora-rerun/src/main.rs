@@ -19,7 +19,12 @@ fn main() -> Result<()> {
 
     // Limit memory usage
     let mut options = SpawnOptions::default();
-    options.memory_limit = "25%".into();
+
+    let memory_limit = std::env::var("RERUN_MEMORY_LIMIT")
+        .context("Could not read image height")?
+        .parse::<String>()
+        .unwrap_or("25%".into());
+    options.memory_limit = memory_limit;
 
     let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
         .spawn_opts(&options, None)
