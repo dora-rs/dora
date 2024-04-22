@@ -88,6 +88,7 @@ enum Command {
         uuid: Option<Uuid>,
         #[clap(long)]
         name: Option<String>,
+        #[clap(long)]
         #[arg(value_parser = parse)]
         grace_duration: Option<Duration>,
     },
