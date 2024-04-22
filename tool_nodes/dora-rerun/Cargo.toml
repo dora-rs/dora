@@ -1,0 +1,16 @@
+[package]
+name = "dora-rerun"
+version.workspace = true
+edition = "2021"
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dora-node-api = { workspace = true, features = ["tracing"] }
+eyre = "0.6.8"
+tokio = { version = "1.36.0", features = ["rt"] }
+rerun = { version = "0.15.1", features = ["web_viewer", "image"] }
+ndarray = "0.15.6"

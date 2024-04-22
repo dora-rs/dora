@@ -1,0 +1,48 @@
+nodes:
+  - id: webcam
+    custom:
+      source: ./webcam.py
+      inputs:
+        tick:
+          source: dora/timer/millis/10
+          queue_size: 1000
+      outputs:
+        - image
+        - text
+      envs:
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
+
+
+  - id: object_detection
+    custom:
+      source: ./object_detection.py
+      inputs:
+        image: webcam/image
+      outputs:
+        - bbox
+      envs:
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
+
+  - id: rerun
+    custom:
+      source: dora-rerun
+      inputs:
+        image: webcam/image
+        text: webcam/text
+        boxes2d: object_detection/bbox
+      envs:
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
+        IMAGE_DEPTH: 3
+
+  - id: matplotlib
+    custom:
+      source: ./plot.py
+      inputs:
+        image: webcam/image
+        bbox: object_detection/bbox
+      envs:
+        IMAGE_WIDTH: 960
+        IMAGE_HEIGHT: 540
