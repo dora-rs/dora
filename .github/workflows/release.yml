@@ -62,8 +62,9 @@ jobs:
           cargo publish -p dora-daemon --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-          # Publish extension crates
+          # Publish tool nodes
           cargo publish -p dora-record --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo publish -p dora-rerun --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   windows-release:
     name: "Windows Release"
