@@ -42,7 +42,7 @@ pub async fn spawn_node(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     dataflow_descriptor: Descriptor,
     clock: Arc<HLC>,
-) -> eyre::Result<()> {
+) -> eyre::Result<usize> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 
@@ -264,7 +264,7 @@ pub async fn spawn_node(
         .expect("Failed to create log file");
     let mut child_stdout =
         tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"));
-
+    let pid = child.id().unwrap() as usize; // Todo: Manage failure
     let stdout_tx = tx.clone();
 
     // Stdout listener stream
@@ -422,5 +422,5 @@ pub async fn spawn_node(
             .send(())
             .map_err(|_| error!("Could not inform that log file thread finished"));
     });
-    Ok(())
+    Ok(pid)
 }
