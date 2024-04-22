@@ -388,7 +388,10 @@ async fn start_inner(
                                     });
                             let _ = reply_sender.send(reply);
                         }
-                        ControlRequest::Stop { dataflow_uuid } => {
+                        ControlRequest::Stop {
+                            dataflow_uuid,
+                            grace_duration,
+                        } => {
                             stop_dataflow_by_uuid(
                                 &mut running_dataflows,
                                 &dataflow_results,
@@ -396,27 +399,30 @@ async fn start_inner(
                                 &mut daemon_connections,
                                 reply_sender,
                                 clock.new_timestamp(),
+                                grace_duration,
                             )
                             .await?;
                         }
-                        ControlRequest::StopByName { name } => {
-                            match resolve_name(name, &running_dataflows, &archived_dataflows) {
-                                Ok(uuid) => {
-                                    stop_dataflow_by_uuid(
-                                        &mut running_dataflows,
-                                        &dataflow_results,
-                                        uuid,
-                                        &mut daemon_connections,
-                                        reply_sender,
-                                        clock.new_timestamp(),
-                                    )
-                                    .await?
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
+                        ControlRequest::StopByName {
+                            name,
+                            grace_duration,
+                        } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
+                            Ok(uuid) => {
+                                stop_dataflow_by_uuid(
+                                    &mut running_dataflows,
+                                    &dataflow_results,
+                                    uuid,
+                                    &mut daemon_connections,
+                                    reply_sender,
+                                    clock.new_timestamp(),
+                                    grace_duration,
+                                )
+                                .await?
                             }
-                        }
+                            Err(err) => {
+                                let _ = reply_sender.send(Err(err));
+                            }
+                        },
                         ControlRequest::Logs { uuid, name, node } => {
                             let dataflow_uuid = if let Some(uuid) = uuid {
                                 uuid
@@ -548,6 +554,7 @@ async fn stop_dataflow_by_uuid(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     reply_sender: tokio::sync::oneshot::Sender<Result<ControlRequestReply, eyre::ErrReport>>,
     timestamp: uhlc::Timestamp,
+    grace_duration: Option<Duration>,
 ) -> Result<(), eyre::ErrReport> {
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
         if let Some(result) = dataflow_results.get(&dataflow_uuid) {
@@ -561,7 +568,14 @@ async fn stop_dataflow_by_uuid(
         bail!("no known dataflow found with UUID `{dataflow_uuid}`")
     };
     let stop = async {
-        stop_dataflow(dataflow, dataflow_uuid, daemon_connections, timestamp).await?;
+        stop_dataflow(
+            dataflow,
+            dataflow_uuid,
+            daemon_connections,
+            timestamp,
+            grace_duration,
+        )
+        .await?;
         Result::<_, eyre::Report>::Ok(())
     };
     match stop.await {
@@ -623,7 +637,14 @@ async fn handle_destroy(
 ) -> Result<(), eyre::ErrReport> {
     abortable_events.abort();
     for (&uuid, dataflow) in running_dataflows {
-        stop_dataflow(dataflow, uuid, daemon_connections, clock.new_timestamp()).await?;
+        stop_dataflow(
+            dataflow,
+            uuid,
+            daemon_connections,
+            clock.new_timestamp(),
+            None,
+        )
+        .await?;
     }
     destroy_daemons(daemon_connections, clock.new_timestamp()).await?;
     *daemon_events_tx = None;
@@ -685,9 +706,13 @@ async fn stop_dataflow(
     uuid: Uuid,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     timestamp: uhlc::Timestamp,
+    grace_duration: Option<Duration>,
 ) -> eyre::Result<()> {
     let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::StopDataflow { dataflow_id: uuid },
+        inner: DaemonCoordinatorEvent::StopDataflow {
+            dataflow_id: uuid,
+            grace_duration,
+        },
         timestamp,
     })?;
 

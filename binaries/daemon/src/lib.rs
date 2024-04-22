@@ -31,6 +31,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use sysinfo::Pid;
 use tcp_utils::tcp_send;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -39,7 +40,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
-use tracing::error;
+use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
 
 mod coordinator;
@@ -295,7 +296,7 @@ impl Daemon {
                 }
                 Event::CtrlC => {
                     for dataflow in self.running.values_mut() {
-                        dataflow.stop_all(&self.clock).await;
+                        dataflow.stop_all(&self.clock, None).await;
                     }
                 }
             }
@@ -428,18 +429,17 @@ impl Daemon {
                     .map_err(|_| error!("could not send reload reply from daemon to coordinator"));
                 RunStatus::Continue
             }
-            DaemonCoordinatorEvent::StopDataflow { dataflow_id } => {
-                let stop = async {
-                    let dataflow = self
-                        .running
-                        .get_mut(&dataflow_id)
-                        .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-                    dataflow.stop_all(&self.clock).await;
-                    Result::<(), eyre::Report>::Ok(())
-                };
-                let reply = DaemonCoordinatorReply::StopResult(
-                    stop.await.map_err(|err| format!("{err:?}")),
-                );
+            DaemonCoordinatorEvent::StopDataflow {
+                dataflow_id,
+                grace_duration,
+            } => {
+                let dataflow = self
+                    .running
+                    .get_mut(&dataflow_id)
+                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+                //  .stop_all(&self.clock.clone(), grace_duration);
+                dataflow.stop_all(&self.clock, grace_duration).await;
+                let reply = DaemonCoordinatorReply::StopResult(Ok(()));
                 let _ = reply_tx
                     .send(Some(reply))
                     .map_err(|_| error!("could not send stop reply from daemon to coordinator"));
@@ -597,8 +597,10 @@ impl Daemon {
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
-                    Ok(()) => {
-                        dataflow.running_nodes.insert(node_id);
+                    Ok(pid) => {
+                        dataflow
+                            .running_nodes
+                            .insert(node_id.clone(), RunningNode { pid });
                     }
                     Err(err) => {
                         tracing::error!("{err:?}");
@@ -1324,6 +1326,11 @@ fn close_input(
     }
 }
 
+#[derive(Debug, Clone)]
+struct RunningNode {
+    pid: usize,
+}
+
 pub struct RunningDataflow {
     id: Uuid,
     /// Local nodes that are not started yet
@@ -1334,7 +1341,7 @@ pub struct RunningDataflow {
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
-    running_nodes: BTreeSet<NodeId>,
+    running_nodes: BTreeMap<NodeId, RunningNode>,
 
     open_external_mappings: HashMap<OutputId, BTreeMap<String, BTreeSet<InputId>>>,
 
@@ -1360,7 +1367,7 @@ impl RunningDataflow {
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
-            running_nodes: BTreeSet::new(),
+            running_nodes: BTreeMap::new(),
             open_external_mappings: HashMap::new(),
             pending_drop_tokens: HashMap::new(),
             _timer_handles: Vec::new(),
@@ -1422,10 +1429,29 @@ impl RunningDataflow {
         Ok(())
     }
 
-    async fn stop_all(&mut self, clock: &HLC) {
+    async fn stop_all(&mut self, clock: &HLC, grace_duration: Option<Duration>) {
         for (_node_id, channel) in self.subscribe_channels.drain() {
             let _ = send_with_timestamp(&channel, daemon_messages::NodeEvent::Stop, clock);
         }
+
+        let running_nodes = self.running_nodes.clone();
+        tokio::spawn(async move {
+            let duration = grace_duration.unwrap_or(Duration::from_millis(500));
+            tokio::time::sleep(duration).await;
+            let mut system = sysinfo::System::new();
+            system.refresh_processes();
+
+            for (node, node_details) in running_nodes.iter() {
+                if let Some(process) = system.process(Pid::from(node_details.pid.clone())) {
+                    process.kill();
+                    warn!(
+                        "{node} was killed due to not stopping within the {:#?} grace period",
+                        duration
+                    )
+                }
+            }
+        });
+
         self.stop_sent = true;
     }
 

@@ -3,6 +3,7 @@ use std::{
     fmt,
     net::SocketAddr,
     path::PathBuf,
+    time::Duration,
 };
 
 use crate::{
@@ -213,6 +214,7 @@ pub enum DaemonCoordinatorEvent {
     },
     StopDataflow {
         dataflow_id: DataflowId,
+        grace_duration: Option<Duration>,
     },
     ReloadDataflow {
         dataflow_id: DataflowId,
