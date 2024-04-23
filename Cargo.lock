@@ -2572,6 +2572,7 @@ dependencies = [
  "regex",
  "syn 1.0.109",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

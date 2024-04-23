@@ -2,6 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use glob::glob;
+use tracing::warn;
 
 use super::{action::parse_action_file, message::parse_message_file, service::parse_service_file};
 use crate::types::Package;
@@ -9,96 +10,85 @@ use crate::types::Package;
 fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dir: P) -> Result<Vec<Package>> {
     let mut map: HashMap<String, Package> = HashMap::new();
 
-    let pattern = root_dir.as_ref().to_string_lossy().to_string() + "/**/msg/*.msg";
-    for entry in glob(&pattern).expect("Failed to read glob pattern") {
-        match entry {
-            Ok(path) => {
-                let package = path
-                    .parent()
-                    .context("Should have a msg folder")?
-                    .parent()
-                    .context("should have a package folder")?
-                    .file_name()
-                    .context("folder name should exist")?
-                    .to_string_lossy()
-                    .to_string();
-                match map.get_mut(&package) {
-                    Some(p) => {
-                        p.messages.push(parse_message_file(&package, path.clone())?);
+    let ros_formats = vec!["msg", "srv", "action"];
+    for ros_format in ros_formats {
+        let pattern = root_dir.as_ref().to_string_lossy().to_string()
+            + "/**/"
+            + ros_format
+            + "/*."
+            + ros_format;
+        let mut visited_files = vec![];
+        for entry in glob(&pattern).expect("Failed to read glob pattern") {
+            match entry {
+                Ok(path) => {
+                    let file_name = path
+                        .clone()
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string();
+
+                    let package = path
+                        .parent()
+                        .context("Should have a msg folder")?
+                        .parent()
+                        .context("should have a package folder")?
+                        .file_name()
+                        .context("folder name should exist")?
+                        .to_string_lossy()
+                        .to_string();
+
+                    // Hack
+                    if file_name == "libstatistics_collector" {
+                        continue;
+                    } else if visited_files.contains(&(package.clone(), file_name.clone())) {
+                        warn!(
+                        "found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
+                        package, file_name, path
+                    );
+                        continue;
+                    } else {
+                        visited_files.push((package.clone(), file_name.clone()));
                     }
-                    None => {
-                        let mut p = Package::new(package.clone());
-                        p.messages.push(parse_message_file(&package, path.clone())?);
-                        map.insert(package, p);
-                    }
-                };
+
+                    match map.get_mut(&package) {
+                        Some(p) => match ros_format {
+                            "msg" => {
+                                p.messages.push(parse_message_file(&package, path.clone())?);
+                            }
+                            "srv" => {
+                                p.services.push(parse_service_file(&package, path.clone())?);
+                            }
+                            "action" => {
+                                p.actions.push(parse_action_file(&package, path.clone())?);
+                            }
+                            _ => todo!(),
+                        },
+                        None => {
+                            let mut p = Package::new(package.clone());
+                            match ros_format {
+                                "msg" => {
+                                    p.messages.push(parse_message_file(&package, path.clone())?);
+                                }
+                                "srv" => {
+                                    p.services.push(parse_service_file(&package, path.clone())?);
+                                }
+                                "action" => {
+                                    p.actions.push(parse_action_file(&package, path.clone())?);
+                                }
+                                _ => todo!(),
+                            }
+                            map.insert(package, p);
+                        }
+                    };
+                }
+                Err(e) => eprintln!("{:?}", e),
             }
-            Err(e) => eprintln!("{:?}", e),
-        }
-    }
-    let pattern = root_dir.as_ref().to_string_lossy().to_string() + "/**/srv/*.srv";
-    for entry in glob(&pattern).expect("Failed to read glob pattern") {
-        match entry {
-            Ok(path) => {
-                let package = path
-                    .parent()
-                    .context("Should have a msg folder")?
-                    .parent()
-                    .context("should have a package folder")?
-                    .file_name()
-                    .context("folder name should exist")?
-                    .to_string_lossy()
-                    .to_string();
-                match map.get_mut(&package) {
-                    Some(p) => {
-                        p.services.push(parse_service_file(&package, path.clone())?);
-                    }
-                    None => {
-                        let mut p = Package::new(package.clone());
-                        p.services.push(parse_service_file(&package, path.clone())?);
-                        map.insert(package, p);
-                    }
-                };
-            }
-            Err(e) => eprintln!("{:?}", e),
-        }
-    }
-    let pattern = root_dir.as_ref().to_string_lossy().to_string() + "/**/action/*.action";
-    for entry in glob(&pattern).expect("Failed to read glob pattern") {
-        match entry {
-            Ok(path) => {
-                let package = path
-                    .clone()
-                    .parent()
-                    .context("Should have a msg folder")?
-                    .parent()
-                    .context("should have a package folder")?
-                    .file_name()
-                    .context("folder name should exist")?
-                    .to_string_lossy()
-                    .to_string();
-                match map.get_mut(&package) {
-                    Some(p) => {
-                        p.actions.push(
-                            parse_action_file(&package, path.clone())
-                                .context("could not parse action")?,
-                        );
-                    }
-                    None => {
-                        let mut p = Package::new(package.clone());
-                        p.actions.push(
-                            parse_action_file(&package, path.clone())
-                                .context("could not parse message")?,
-                        );
-                        map.insert(package, p);
-                    }
-                };
-            }
-            Err(e) => eprintln!("{:?}", e),
         }
     }
     debug_assert!(
-        map.len() > 0,
+        !map.is_empty(),
         "it seens that no package was generated from your AMENT_PREFIX_PATH directory"
     );
 
