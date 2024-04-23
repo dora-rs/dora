@@ -2564,6 +2564,7 @@ name = "dora-ros2-bridge-msg-gen"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glob",
  "heck 0.3.3",
  "nom",
  "proc-macro2",

@@ -1,94 +1,108 @@
-use std::{
-    fs::{self, File},
-    io::{BufRead, BufReader},
-    path::Path,
-};
+use std::{collections::HashMap, path::Path};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use glob::glob;
 
 use super::{action::parse_action_file, message::parse_message_file, service::parse_service_file};
 use crate::types::Package;
 
-const ROSIDL_INTERFACES: &str = "share/ament_index/resource_index/rosidl_interfaces";
-
-const NAMESPACES: &[&str] = &["msg", "srv", "action"];
-
-fn parse_line(line: &str) -> Option<(&str, &str)> {
-    if !line.ends_with(".idl") {
-        return None;
-    }
-    for &namespace in NAMESPACES {
-        if line.starts_with(&format!("{}/", namespace)) {
-            let name = &line[namespace.len() + 1..line.len() - 4];
-            return Some((namespace, name));
-        }
-    }
-    println!("Unknown type: {:?}", line);
-    None
-}
-
-fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dir: P) -> Result<Vec<Package>> {
-    let dir = root_dir.as_ref().join(ROSIDL_INTERFACES);
-
-    let mut packages = Vec::new();
-
-    let paths = match fs::read_dir(dir) {
-        Ok(paths) => paths,
-        Err(_) => {
-            return Ok(packages);
-        }
-    };
-
-    for path in paths {
-        let path = path?.path();
-        let file_name = path
-            .clone()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        // Hack
-        if file_name == "libstatistics_collector" {
-            continue;
-        }
-
-        let mut package = Package::new(file_name.clone());
-        for line in BufReader::new(File::open(path)?).lines() {
-            match parse_line(&line?) {
-                Some(("msg", v)) => {
-                    let msg = parse_message_file(
-                        &file_name,
-                        root_dir
-                            .as_ref()
-                            .join(format!("share/{}/msg/{}.msg", file_name, v)),
-                    )?;
-                    package.messages.push(msg);
+fn get_ros_msgs_each_package<P: AsRef<Path>>(_root_dir: P) -> Result<Vec<Package>> {
+    let mut map: HashMap<String, Package> = HashMap::new();
+    if let Ok(ament_prefix_path) = std::env::var("AMENT_PREFIX_PATH") {
+        let pattern = ament_prefix_path.clone() + "/**/msg/*.msg";
+        for entry in glob(&pattern).expect("Failed to read glob pattern") {
+            match entry {
+                Ok(path) => {
+                    let package = path
+                        .parent()
+                        .context("Should have a msg folder")?
+                        .parent()
+                        .context("should have a package folder")?
+                        .file_name()
+                        .context("folder name should exist")?
+                        .to_string_lossy()
+                        .to_string();
+                    match map.get_mut(&package) {
+                        Some(p) => {
+                            p.messages.push(parse_message_file(&package, path.clone())?);
+                        }
+                        None => {
+                            let mut p = Package::new(package.clone());
+                            p.messages.push(parse_message_file(&package, path.clone())?);
+                            map.insert(package, p);
+                        }
+                    };
                 }
-                Some(("srv", v)) => {
-                    let srv = parse_service_file(
-                        &file_name,
-                        root_dir
-                            .as_ref()
-                            .join(format!("share/{}/srv/{}.srv", file_name, v)),
-                    )?;
-                    package.services.push(srv);
-                }
-                Some(("action", v)) => {
-                    let action = parse_action_file(
-                        &file_name,
-                        root_dir
-                            .as_ref()
-                            .join(format!("share/{}/action/{}.action", file_name, v)),
-                    )?;
-                    package.actions.push(action);
-                }
-                Some(_) => unreachable!(),
-                None => {}
+                Err(e) => eprintln!("{:?}", e),
             }
         }
-        packages.push(package);
+        let pattern = ament_prefix_path.clone() + "/**/srv/*.srv";
+        for entry in glob(&pattern).expect("Failed to read glob pattern") {
+            match entry {
+                Ok(path) => {
+                    let package = path
+                        .parent()
+                        .context("Should have a msg folder")?
+                        .parent()
+                        .context("should have a package folder")?
+                        .file_name()
+                        .context("folder name should exist")?
+                        .to_string_lossy()
+                        .to_string();
+                    match map.get_mut(&package) {
+                        Some(p) => {
+                            p.services.push(parse_service_file(&package, path.clone())?);
+                        }
+                        None => {
+                            let mut p = Package::new(package.clone());
+                            p.services.push(parse_service_file(&package, path.clone())?);
+                            map.insert(package, p);
+                        }
+                    };
+                }
+                Err(e) => eprintln!("{:?}", e),
+            }
+        }
+        let pattern = ament_prefix_path + "/**/action/*.action";
+        for entry in glob(&pattern).expect("Failed to read glob pattern") {
+            match entry {
+                Ok(path) => {
+                    let package = path
+                        .clone()
+                        .parent()
+                        .context("Should have a msg folder")?
+                        .parent()
+                        .context("should have a package folder")?
+                        .file_name()
+                        .context("folder name should exist")?
+                        .to_string_lossy()
+                        .to_string();
+                    match map.get_mut(&package) {
+                        Some(p) => {
+                            p.actions.push(
+                                parse_action_file(&package, path.clone())
+                                    .context("could not parse action")?,
+                            );
+                        }
+                        None => {
+                            let mut p = Package::new(package.clone());
+                            p.actions.push(
+                                parse_action_file(&package, path.clone())
+                                    .context("could not parse message")?,
+                            );
+                            map.insert(package, p);
+                        }
+                    };
+                }
+                Err(e) => eprintln!("{:?}", e),
+            }
+        }
+        debug_assert!(
+            map.len() > 0,
+            "it seens that no package was generated from your AMENT_PREFIX_PATH directory"
+        );
     }
+    let packages = map.into_values().collect();
     Ok(packages)
 }
 
@@ -109,47 +123,4 @@ where
     packages.dedup_by_key(|p| p.name.clone());
 
     Ok(packages)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_line_msg() {
-        let result = parse_line("msg/TestHoge.idl").unwrap();
-
-        assert_eq!(result.0, "msg");
-        assert_eq!(result.1, "TestHoge");
-    }
-
-    #[test]
-    fn parse_line_srv() {
-        let result = parse_line("srv/TestHoge.idl").unwrap();
-
-        assert_eq!(result.0, "srv");
-        assert_eq!(result.1, "TestHoge");
-    }
-
-    #[test]
-    fn parse_line_action() {
-        let result = parse_line("action/TestHoge.idl").unwrap();
-
-        assert_eq!(result.0, "action");
-        assert_eq!(result.1, "TestHoge");
-    }
-
-    #[test]
-    fn parse_line_wrong_namespace() {
-        assert!(parse_line("test/Test.msg").is_none());
-        assert!(parse_line("test/Test.srv").is_none());
-        assert!(parse_line("test/Test.action").is_none());
-    }
-
-    #[test]
-    fn parse_line_wrong_suffix() {
-        assert!(parse_line("msg/Test.test").is_none());
-        assert!(parse_line("srv/Test.test").is_none());
-        assert!(parse_line("action/Test.test").is_none());
-    }
 }
