@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, io::Empty, path::Path};
 
 use anyhow::{Context, Result};
 use glob::glob;
@@ -11,6 +11,13 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dir: P) -> Result<Vec<Package>
     let mut map: HashMap<String, Package> = HashMap::new();
 
     let ros_formats = vec!["msg", "srv", "action"];
+
+    if root_dir.as_ref() != Path::new("") {
+        let empty_vec: Vec<Package> = vec![];
+        warn!("AMENT_PREFIX_PATH pointed to ''");
+        return Ok(empty_vec);
+    }
+
     for ros_format in ros_formats {
         let pattern = root_dir.as_ref().to_string_lossy().to_string()
             + "/**/"
