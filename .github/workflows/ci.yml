@@ -275,6 +275,8 @@ jobs:
           cd ..
 
           # Test Python template Project
+          python3 -m venv .venv
+          source .venv/bin/activate
           pip3 install maturin
           maturin build -m apis/python/node/Cargo.toml
           pip3 install target/wheels/*
