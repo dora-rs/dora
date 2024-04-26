@@ -1,16 +1,18 @@
 //! Demonstrates the most barebone usage of the Rerun SDK.
 
+use std::env::VarError;
+
 use dora_node_api::{
     arrow::array::{Float32Array, StringArray, UInt8Array},
     DoraNode, Event,
 };
-use eyre::{Context, Result};
+use eyre::{eyre, Context, Result};
 use rerun::{
     external::re_types::ArrowBuffer, SpawnOptions, TensorBuffer, TensorData, TensorDimension,
 };
 
 fn main() -> Result<()> {
-    // `serve()` requires to have a running Tokio runtime in the current context.
+    // rerun `serve()` requires to have a running Tokio runtime in the current context.
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
@@ -20,11 +22,16 @@ fn main() -> Result<()> {
     // Limit memory usage
     let mut options = SpawnOptions::default();
 
-    let memory_limit = std::env::var("RERUN_MEMORY_LIMIT")
-        .context("Could not read image height")
-        .unwrap_or("25%".into())
-        .parse::<String>()
-        .context("Could not parse memory message")?;
+    let memory_limit = match std::env::var("RERUN_MEMORY_LIMIT") {
+        Ok(memory_limit) => memory_limit
+            .parse::<String>()
+            .context("Could not parse RERUN_MEMORY_LIMIT value")?,
+        Err(VarError::NotUnicode(_)) => {
+            return Err(eyre!("RERUN_MEMORY_LIMIT env variable is not unicode"));
+        }
+        Err(VarError::NotPresent) => "25%".to_string(),
+    };
+
     options.memory_limit = memory_limit;
 
     let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
@@ -48,7 +55,10 @@ fn main() -> Result<()> {
                                 id.as_str().to_uppercase()
                             ))?
                             .parse()
-                            .context("Could not parse value of image height env variable")?,
+                            .context(format!(
+                                "Could not parse env {}_HEIGHT",
+                                id.as_str().to_uppercase()
+                            ))?,
                     },
                     TensorDimension {
                         name: Some("width".into()),
@@ -58,7 +68,10 @@ fn main() -> Result<()> {
                                 id.as_str().to_uppercase()
                             ))?
                             .parse()
-                            .context("Could not parse value of image width env variable")?,
+                            .context(format!(
+                                "Could not parse env {}_WIDTH",
+                                id.as_str().to_uppercase()
+                            ))?,
                     },
                     TensorDimension {
                         name: Some("depth".into()),
@@ -68,7 +81,10 @@ fn main() -> Result<()> {
                                 id.as_str().to_uppercase()
                             ))?
                             .parse()
-                            .context("Could not parse value of image depth env variable")?,
+                            .context(format!(
+                                "Could not parse env {}_DEPTH",
+                                id.as_str().to_uppercase()
+                            ))?,
                     },
                 ];
 
