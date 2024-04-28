@@ -279,6 +279,9 @@ jobs:
         run: |
           # Test Python template Project
           python3 -m venv .venv
+          if [ ! -d ".venv/bin" ]; then
+            mv .venv/Scripts .venv/bin    # venv is placed under `Scripts` on Windows
+          fi
           source .venv/bin/activate
           pip3 install maturin
           maturin build -m apis/python/node/Cargo.toml
