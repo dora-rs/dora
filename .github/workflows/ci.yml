@@ -141,7 +141,7 @@ jobs:
           python-version: "3.10"
       - name: "Python Dataflow example"
         run: cargo run --example python-dataflow
-      - uses: conda-incubator/setup-miniconda@v2
+      - uses: conda-incubator/setup-miniconda@v3
         with:
           auto-activate-base: true
           activate-environment: ""
@@ -257,34 +257,42 @@ jobs:
         shell: bash
         run: |
           cargo install --path binaries/cli --locked
-      - name: "Test CLI"
+      - name: "Test CLI (Rust)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
-          dora up
-          dora list
-
           # Test Rust template Project
           dora new test_rust_project --internal-create-with-path-dependencies
           cd test_rust_project
           cargo build --all
+          dora up
+          dora list
           dora start dataflow.yml --name ci-rust-test
           sleep 10
           dora stop --name ci-rust-test
-          cd ..
-
+          dora destroy
+      - name: "Test CLI (Python)"
+        timeout-minutes: 30
+        # fail-fast by using bash shell explictly
+        shell: bash
+        run: |
           # Test Python template Project
+          python3 -m venv .venv
+          if [ ! -d ".venv/bin" ]; then
+            mv .venv/Scripts .venv/bin    # venv is placed under `Scripts` on Windows
+          fi
+          source .venv/bin/activate
           pip3 install maturin
           maturin build -m apis/python/node/Cargo.toml
           pip3 install target/wheels/*
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
+          dora up
+          dora list
           dora start dataflow.yml --name ci-python-test
           sleep 10
           dora stop --name ci-python-test
-          cd ..
-
           dora destroy
 
   clippy:
