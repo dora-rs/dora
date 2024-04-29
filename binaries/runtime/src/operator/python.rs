@@ -224,9 +224,8 @@ pub fn run(
                     .map_err(traceback);
                 match status_enum {
                     Ok(status_enum) => {
-                        let status_val =
-                            Python::with_gil(|py| status_enum.call_method0(py, "value"))
-                                .wrap_err("on_event must have enum return value")?;
+                        let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
+                            .wrap_err("on_event must have enum return value")?;
                         Python::with_gil(|py| status_val.extract(py))
                             .wrap_err("on_event has invalid return value")
                     }
