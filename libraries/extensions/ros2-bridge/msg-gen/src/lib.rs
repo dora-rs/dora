@@ -236,6 +236,7 @@ where
             quote! {},
             quote! {
                 use serde::{Serialize, Deserialize};
+                use widestring;
             },
             quote! {},
         )
