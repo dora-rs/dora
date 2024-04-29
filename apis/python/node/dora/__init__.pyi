@@ -2,37 +2,6 @@ import pyarrow
 import typing
 
 @typing.final
-class DoraStatus:
-    """Dora Status for dora python operators."""
-
-    def __eq__(self, value: typing.Any, /) -> bool:
-        """Return self==value."""
-
-    def __ge__(self, value: typing.Any, /) -> bool:
-        """Return self>=value."""
-
-    def __gt__(self, value: typing.Any, /) -> bool:
-        """Return self>value."""
-
-    def __int__(self, /) -> None:
-        """int(self)"""
-
-    def __le__(self, value: typing.Any, /) -> bool:
-        """Return self<=value."""
-
-    def __lt__(self, value: typing.Any, /) -> bool:
-        """Return self<value."""
-
-    def __ne__(self, value: typing.Any, /) -> bool:
-        """Return self!=value."""
-
-    def __repr__(self, /) -> str:
-        """Return repr(self)."""
-    CONTINUE: DoraStatus = ...
-    STOP: DoraStatus = ...
-    STOP_ALL: DoraStatus = ...
-
-@typing.final
 class Enum:
     """Generic enumeration.
 
@@ -162,7 +131,7 @@ context = Ros2Context()
 ros2_node = ros2_context.new_node(
 "turtle_teleop",
 "/ros2_demo",
-dora.experimental.ros2_bridge.Ros2NodeOptions(rosout=True),
+Ros2NodeOptions(rosout=True),
 )
 ```"""
 
