@@ -1330,7 +1330,7 @@ fn close_input(
 
 #[derive(Debug, Clone)]
 struct RunningNode {
-    pid: usize,
+    pid: u32,
 }
 
 pub struct RunningDataflow {
@@ -1444,7 +1444,7 @@ impl RunningDataflow {
             system.refresh_processes();
 
             for (node, node_details) in running_nodes.iter() {
-                if let Some(process) = system.process(Pid::from(node_details.pid.clone())) {
+                if let Some(process) = system.process(Pid::from(node_details.pid as usize)) {
                     process.kill();
                     warn!(
                         "{node} was killed due to not stopping within the {:#?} grace period",
