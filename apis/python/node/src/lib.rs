@@ -43,6 +43,7 @@ impl Node {
 
     /// `.next()` gives you the next input that the node has received.
     /// It blocks until the next event becomes available.
+    /// You can use timeout in seconds to return if no input is available.
     /// It will return `None` when all senders has been dropped.
     ///
     /// ```python
@@ -58,17 +59,41 @@ impl Node {
     ///            match event["id"]:
     ///                 case "image":
     /// ```
+    /// :type timeout: float, optional
+    /// :rtype: PyEvent
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<PyEvent>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
         Ok(event)
     }
 
+    /// You can iterate over the event stream with a loop
+    ///
+    /// ```python
+    /// for event in node:
+    ///    match event["type"]:
+    ///        case "INPUT":
+    ///            match event["id"]:
+    ///                 case "image":
+    /// ```
+    ///
+    /// :rtype: PyEvent
     pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
         let event = py.allow_threads(|| self.events.recv(None));
         Ok(event)
     }
 
+    /// You can iterate over the event stream with a loop
+    ///
+    /// ```python
+    /// for event in node:
+    ///    match event["type"]:
+    ///        case "INPUT":
+    ///            match event["id"]:
+    ///                 case "image":
+    /// ```
+    ///
+    /// :rtype: PyEvent
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -85,7 +110,10 @@ impl Node {
     /// ```python
     /// node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
     /// ```
-    ///
+    /// :type output_id: str
+    /// :type data: pyarrow.Array
+    /// :type metadata: dict, optional
+    /// :rtype: None
     pub fn send_output(
         &mut self,
         output_id: String,
@@ -113,13 +141,20 @@ impl Node {
         Ok(())
     }
 
-    /// Returns the full dataflow descriptor that this node is part of.
+    // Returns the full dataflow descriptor that this node is part of.
+    //
+    // This method returns the parsed dataflow YAML file.
     ///
-    /// This method returns the parsed dataflow YAML file.
+    /// :rtype: dict
     pub fn dataflow_descriptor(&self, py: Python) -> pythonize::Result<PyObject> {
         pythonize::pythonize(py, self.node.dataflow_descriptor())
     }
 
+    // Merge an external event stream with dora main loop.
+    // This currently only work with ROS2.
+    ///
+    /// :type subscription: Ros2Subscription
+    /// :rtype: None
     pub fn merge_external_events(
         &mut self,
         subscription: &mut Ros2Subscription,
@@ -197,21 +232,42 @@ impl Node {
 }
 
 /// Start a runtime for Operators
+///
+/// :rtype: None
 #[pyfunction]
 pub fn start_runtime() -> eyre::Result<()> {
     dora_runtime::main().wrap_err("Dora Runtime raised an error.")
 }
 
-#[pymodule]
-fn dora(py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
-    m.add_class::<Node>().unwrap();
+/// :rtype: DoraStatus
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[pyclass]
+pub enum DoraStatus {
+    CONTINUE,
+    STOP,
+    STOP_ALL,
+}
 
-    let ros2_bridge = PyModule::new(py, "ros2_bridge")?;
-    dora_ros2_bridge_python::create_dora_ros2_bridge_module(ros2_bridge)?;
-    let experimental = PyModule::new(py, "experimental")?;
-    experimental.add_submodule(ros2_bridge)?;
-    m.add_submodule(experimental)?;
+impl DoraStatus {
+    /// :rtype: int
+    pub fn value(self) -> i32 {
+        match self {
+            DoraStatus::CONTINUE => 0,
+            DoraStatus::STOP => 1,
+            DoraStatus::STOP_ALL => 2,
+        }
+    }
+}
+
+#[pymodule]
+fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
+    dora_ros2_bridge_python::create_dora_ros2_bridge_module(m)?;
+    m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
+    m.add_class::<Node>()?;
+    m.add_class::<PyEvent>()?;
+    m.add_class::<DoraStatus>()?;
+    m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.setattr("__author__", "Dora-rs Authors")?;
 
     Ok(())
 }
