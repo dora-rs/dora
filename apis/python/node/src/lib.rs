@@ -59,6 +59,7 @@ impl Node {
     ///            match event["id"]:
     ///                 case "image":
     /// ```
+    ///
     /// :type timeout: float, optional
     /// :rtype: PyEvent
     #[allow(clippy::should_implement_trait)]
@@ -141,17 +142,17 @@ impl Node {
         Ok(())
     }
 
-    // Returns the full dataflow descriptor that this node is part of.
-    //
-    // This method returns the parsed dataflow YAML file.
+    /// Returns the full dataflow descriptor that this node is part of.
+    ///
+    /// This method returns the parsed dataflow YAML file.
     ///
     /// :rtype: dict
     pub fn dataflow_descriptor(&self, py: Python) -> pythonize::Result<PyObject> {
         pythonize::pythonize(py, self.node.dataflow_descriptor())
     }
 
-    // Merge an external event stream with dora main loop.
-    // This currently only work with ROS2.
+    /// Merge an external event stream with dora main loop.
+    /// This currently only work with ROS2.
     ///
     /// :type subscription: Ros2Subscription
     /// :rtype: None
@@ -239,6 +240,7 @@ pub fn start_runtime() -> eyre::Result<()> {
     dora_runtime::main().wrap_err("Dora Runtime raised an error.")
 }
 
+/// Dora Status for dora python operators.
 /// :rtype: DoraStatus
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[pyclass]
