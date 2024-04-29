@@ -3,13 +3,14 @@ use dora_node_api::{merged::MergedEvent, Event, Metadata, MetadataParameters};
 use eyre::{Context, Result};
 use pyo3::{exceptions::PyLookupError, prelude::*, types::PyDict};
 
-// Dora Event
+/// Dora Event
 #[pyclass]
 pub struct PyEvent {
     event: MergedEvent<PyObject>,
     data: Option<ArrayRef>,
 }
 
+// Dora Event
 #[pymethods]
 impl PyEvent {
     ///

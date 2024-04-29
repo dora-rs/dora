@@ -3,6 +3,7 @@ import typing
 
 @typing.final
 class DoraStatus:
+    """Dora Status for dora python operators."""
 
     def __eq__(self, value: typing.Any, /) -> bool:
         """Return self==value."""
@@ -32,6 +33,13 @@ class DoraStatus:
     STOP_ALL: DoraStatus = ...
 
 @typing.final
+class Enum:
+    """Generic enumeration.
+
+Derive from this class to define new enumerations."""
+    __members__: mappingproxy = ...
+
+@typing.final
 class Node:
     """The custom node API lets you integrate `dora` into your application.
 It allows you to retrieve input and send output in any fashion you want.
@@ -56,9 +64,14 @@ from dora import Node
 node = Node()
 ```"""
 
-    def dataflow_descriptor(self, /) -> dict:...
+    def dataflow_descriptor(self, /) -> dict:
+        """Returns the full dataflow descriptor that this node is part of.
 
-    def merge_external_events(self, /, subscription: Ros2Subscription) -> None:...
+This method returns the parsed dataflow YAML file."""
+
+    def merge_external_events(self, /, subscription: Ros2Subscription) -> None:
+        """Merge an external event stream with dora main loop.
+This currently only work with ROS2."""
 
     def next(self, /, timeout: float=None) -> PyEvent:
         """`.next()` gives you the next input that the node has received.
@@ -102,6 +115,7 @@ node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
 
 @typing.final
 class PyEvent:
+    """Dora Event"""
 
     def inner(self, /):...
 
@@ -123,9 +137,7 @@ You can also use `ros_paths` if you don't want to use env variable.
 
 ```python
 context = Ros2Context()
-```
-
-list of paths to search for ROS2 message types defintion"""
+```"""
 
     def __init__(self, /, ros_paths: List[str]=None) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
@@ -141,9 +153,7 @@ You can also use `ros_paths` if you don't want to use env variable.
 
 ```python
 context = Ros2Context()
-```
-
-list of paths to search for ROS2 message types defintion"""
+```"""
 
     def new_node(self, /, name: str, namespace: str, options: Ros2NodeOptions) -> Ros2Node:
         """Create a new ROS2 node
@@ -154,11 +164,7 @@ ros2_node = ros2_context.new_node(
 "/ros2_demo",
 dora.experimental.ros2_bridge.Ros2NodeOptions(rosout=True),
 )
-```
-
-name of the node
-name of the namespace
-options for the node"""
+```"""
 
 @typing.final
 class Ros2Durability:
@@ -236,18 +242,14 @@ See: https://github.com/jhelovuo/ros2-client/issues/4"""
 
 ```python
 pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
-```
-
-QoS policies for the topic"""
+```"""
 
     def create_subscription(self, /, topic: Ros2Topic, qos: Ros2QosPolicies=None) -> Ros2Subscription:
         """Create a ROS2 subscription
 
 ```python
 pose_reader = ros2_node.create_subscription(turtle_pose_topic)
-```
-
-QoS policies for the topic"""
+```"""
 
     def create_topic(self, /, name: str, message_type: str, qos: Ros2QosPolicies) -> Ros2Topic:
         """Create a ROS2 topic to connect to.
@@ -256,20 +258,14 @@ QoS policies for the topic"""
 turtle_twist_topic = ros2_node.create_topic(
 "/turtle1/cmd_vel", "geometry_msgs/Twist", topic_qos
 )
-```
-
-name of the topic. e.g. "pose"
-message type of the topic. e.g. "std_msgs::UInt8MultiArray"
-QoS policies for the topic"""
+```"""
 
 @typing.final
 class Ros2NodeOptions:
-    """ROS2 Node Options
-enable rosout logging"""
+    """ROS2 Node Options"""
 
     def __init__(self, /, rosout: bool=None) -> None:
-        """ROS2 Node Options
-enable rosout logging"""
+        """ROS2 Node Options"""
 
 @typing.final
 class Ros2Publisher:
@@ -309,8 +305,7 @@ class Ros2Subscription:
 
 @typing.final
 class Ros2Topic:
-    """ROS2 Topic
-enable rosout logging"""
+    """ROS2 Topic"""
 
 def start_runtime() -> None:
     """Start a runtime for Operators"""

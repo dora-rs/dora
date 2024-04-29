@@ -39,7 +39,6 @@ pub mod typed;
 /// ```
 ///
 /// :type ros_paths: List[str], optional
-/// list of paths to search for ROS2 message types defintion
 ///
 #[pyclass]
 pub struct Ros2Context {
@@ -101,11 +100,8 @@ impl Ros2Context {
     /// ```
     ///
     /// :type name: str
-    ///      name of the node
     /// :type namespace: str
-    ///      name of the namespace
     /// :type options: Ros2NodeOptions
-    ///      options for the node
     /// :rtype: Ros2Node
     pub fn new_node(
         &self,
@@ -148,11 +144,8 @@ impl Ros2Node {
     /// ```
     ///
     /// :type name: str
-    ///       name of the topic. e.g. "pose"
     /// :type message_type: str
-    ///       message type of the topic. e.g. "std_msgs::UInt8MultiArray"
     /// :type qos: Ros2QosPolicies
-    ///       QoS policies for the topic
     /// :rtype: Ros2Topic
     pub fn create_topic(
         &self,
@@ -190,7 +183,6 @@ impl Ros2Node {
     ///
     /// :type topic: Ros2Topic
     /// :type qos: Ros2QosPolicies, optional
-    ///       QoS policies for the topic
     /// :rtype: Ros2Publisher
     pub fn create_publisher(
         &mut self,
@@ -214,7 +206,6 @@ impl Ros2Node {
     ///
     /// :type topic: Ros2Topic
     /// :type qos: Ros2QosPolicies, optional
-    ///       QoS policies for the topic
     /// :rtype: Ros2Subscription
     pub fn create_subscription(
         &mut self,
@@ -233,7 +224,6 @@ impl Ros2Node {
 
 /// ROS2 Node Options
 /// :type rosout: bool, optional
-///       enable rosout logging
 ///
 #[derive(Debug, Clone, Default)]
 #[pyclass]
@@ -260,7 +250,6 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 
 /// ROS2 Topic
 /// :type rosout: bool, optional
-///       enable rosout logging
 ///
 #[pyclass]
 #[non_exhaustive]

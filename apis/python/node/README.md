@@ -16,6 +16,6 @@ maturin develop
 Type hinting requires to run a second step
 
 ```bash
-python dora/generate_stubs.py dora dora/__init__.pyi
+python generate_stubs.py dora dora/__init__.pyi
 maturin develop
 ```
