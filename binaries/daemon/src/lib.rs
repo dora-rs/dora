@@ -296,7 +296,7 @@ impl Daemon {
                 }
                 Event::CtrlC => {
                     for dataflow in self.running.values_mut() {
-                        dataflow.stop_all(&self.clock, None, None).await;
+                        dataflow.stop_all(&self.clock, None).await;
                     }
                 }
             }
@@ -438,9 +438,13 @@ impl Daemon {
                     .get_mut(&dataflow_id)
                     .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
                 //  .stop_all(&self.clock.clone(), grace_duration);
-                dataflow
-                    .stop_all(&self.clock, grace_duration, Some(reply_tx))
-                    .await;
+
+                let reply = DaemonCoordinatorReply::StopResult(Ok(()));
+                let _ = reply_tx
+                    .send(Some(reply))
+                    .map_err(|_| error!("could not send stop reply from daemon to coordinator"));
+
+                dataflow.stop_all(&self.clock, grace_duration).await;
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::Destroy => {
@@ -1427,12 +1431,7 @@ impl RunningDataflow {
         Ok(())
     }
 
-    async fn stop_all(
-        &mut self,
-        clock: &HLC,
-        grace_duration: Option<Duration>,
-        reply_tx: Option<Sender<Option<DaemonCoordinatorReply>>>,
-    ) {
+    async fn stop_all(&mut self, clock: &HLC, grace_duration: Option<Duration>) {
         for (_node_id, channel) in self.subscribe_channels.drain() {
             let _ = send_with_timestamp(&channel, daemon_messages::NodeEvent::Stop, clock);
         }
@@ -1452,13 +1451,6 @@ impl RunningDataflow {
                         duration
                     )
                 }
-            }
-
-            let reply = DaemonCoordinatorReply::StopResult(Ok(()));
-            if let Some(tx) = reply_tx {
-                let _ = tx
-                    .send(Some(reply))
-                    .map_err(|_| error!("could not send stop reply from daemon to coordinator"));
             }
         });
         self.stop_sent = true;
