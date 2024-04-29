@@ -236,7 +236,6 @@ where
             quote! {},
             quote! {
                 use serde::{Serialize, Deserialize};
-                use widestring;
             },
             quote! {},
         )
@@ -260,6 +259,12 @@ where
         impl crate::_core::InternalDefault for ffi::U16String {
             fn _default() -> Self {
                 Default::default()
+            }
+        }
+
+        impl ffi::U16String {
+            fn from_str(arg: &str) -> Self {
+                Self { chars: crate::_core::widestring::U16String::from_str(arg).into_vec()}
             }
         }
 
