@@ -1,0 +1,316 @@
+import pyarrow
+import typing
+
+@typing.final
+class DoraStatus:
+
+    def __eq__(self, value: typing.Any, /) -> bool:
+        """Return self==value."""
+
+    def __ge__(self, value: typing.Any, /) -> bool:
+        """Return self>=value."""
+
+    def __gt__(self, value: typing.Any, /) -> bool:
+        """Return self>value."""
+
+    def __int__(self, /) -> None:
+        """int(self)"""
+
+    def __le__(self, value: typing.Any, /) -> bool:
+        """Return self<=value."""
+
+    def __lt__(self, value: typing.Any, /) -> bool:
+        """Return self<value."""
+
+    def __ne__(self, value: typing.Any, /) -> bool:
+        """Return self!=value."""
+
+    def __repr__(self, /) -> str:
+        """Return repr(self)."""
+    CONTINUE: DoraStatus = ...
+    STOP: DoraStatus = ...
+    STOP_ALL: DoraStatus = ...
+
+@typing.final
+class Node:
+    """The custom node API lets you integrate `dora` into your application.
+It allows you to retrieve input and send output in any fashion you want.
+
+Use with:
+
+```python
+from dora import Node
+
+node = Node()
+```"""
+
+    def __init__(self, /) -> None:
+        """The custom node API lets you integrate `dora` into your application.
+It allows you to retrieve input and send output in any fashion you want.
+
+Use with:
+
+```python
+from dora import Node
+
+node = Node()
+```"""
+
+    def dataflow_descriptor(self, /) -> dict:...
+
+    def merge_external_events(self, /, subscription: Ros2Subscription) -> None:...
+
+    def next(self, /, timeout: float=None) -> PyEvent:
+        """`.next()` gives you the next input that the node has received.
+It blocks until the next event becomes available.
+You can use timeout in seconds to return if no input is available.
+It will return `None` when all senders has been dropped.
+
+```python
+event = node.next()
+```
+
+You can also iterate over the event stream with a loop
+
+```python
+for event in node:
+match event["type"]:
+case "INPUT":
+match event["id"]:
+case "image":
+```"""
+
+    def send_output(self, /, output_id: str, data: pyarrow.Array, metadata: dict=None) -> None:
+        """`send_output` send data from the node.
+
+```python
+Args:
+output_id: str,
+data: Bytes|Arrow,
+metadata: Option[Dict],
+```
+
+```python
+node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
+```"""
+
+    def __iter__(self, /) -> typing.Any:
+        """Implement iter(self)."""
+
+    def __next__(self, /) -> typing.Any:
+        """Implement next(self)."""
+
+@typing.final
+class PyEvent:
+
+    def inner(self, /):...
+
+    def __getitem__(self, key: typing.Any, /) -> typing.Any:
+        """Return self[key]."""
+
+@typing.final
+class Ros2Context:
+    """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
+
+By default, Ros2Context will use env `AMENT_PREFIX_PATH` to search for message definition.
+
+AMENT_PREFIX_PATH folder structure should be the following:
+
+- For messages: <namespace>/msg/<name>.msg
+- For services: <namespace>/srv/<name>.srv
+
+You can also use `ros_paths` if you don't want to use env variable.
+
+```python
+context = Ros2Context()
+```
+
+list of paths to search for ROS2 message types defintion"""
+
+    def __init__(self, /, ros_paths: List[str]=None) -> None:
+        """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
+
+By default, Ros2Context will use env `AMENT_PREFIX_PATH` to search for message definition.
+
+AMENT_PREFIX_PATH folder structure should be the following:
+
+- For messages: <namespace>/msg/<name>.msg
+- For services: <namespace>/srv/<name>.srv
+
+You can also use `ros_paths` if you don't want to use env variable.
+
+```python
+context = Ros2Context()
+```
+
+list of paths to search for ROS2 message types defintion"""
+
+    def new_node(self, /, name: str, namespace: str, options: Ros2NodeOptions) -> Ros2Node:
+        """Create a new ROS2 node
+
+```python
+ros2_node = ros2_context.new_node(
+"turtle_teleop",
+"/ros2_demo",
+dora.experimental.ros2_bridge.Ros2NodeOptions(rosout=True),
+)
+```
+
+name of the node
+name of the namespace
+options for the node"""
+
+@typing.final
+class Ros2Durability:
+    """DDS 2.2.3.4 DURABILITY"""
+
+    def __eq__(self, value: typing.Any, /) -> bool:
+        """Return self==value."""
+
+    def __ge__(self, value: typing.Any, /) -> bool:
+        """Return self>=value."""
+
+    def __gt__(self, value: typing.Any, /) -> bool:
+        """Return self>value."""
+
+    def __int__(self, /) -> None:
+        """int(self)"""
+
+    def __le__(self, value: typing.Any, /) -> bool:
+        """Return self<=value."""
+
+    def __lt__(self, value: typing.Any, /) -> bool:
+        """Return self<value."""
+
+    def __ne__(self, value: typing.Any, /) -> bool:
+        """Return self!=value."""
+
+    def __repr__(self, /) -> str:
+        """Return repr(self)."""
+    Persistent: Ros2Durability = ...
+    Transient: Ros2Durability = ...
+    TransientLocal: Ros2Durability = ...
+    Volatile: Ros2Durability = ...
+
+@typing.final
+class Ros2Liveliness:
+    """DDS 2.2.3.11 LIVELINESS"""
+
+    def __eq__(self, value: typing.Any, /) -> bool:
+        """Return self==value."""
+
+    def __ge__(self, value: typing.Any, /) -> bool:
+        """Return self>=value."""
+
+    def __gt__(self, value: typing.Any, /) -> bool:
+        """Return self>value."""
+
+    def __int__(self, /) -> None:
+        """int(self)"""
+
+    def __le__(self, value: typing.Any, /) -> bool:
+        """Return self<=value."""
+
+    def __lt__(self, value: typing.Any, /) -> bool:
+        """Return self<value."""
+
+    def __ne__(self, value: typing.Any, /) -> bool:
+        """Return self!=value."""
+
+    def __repr__(self, /) -> str:
+        """Return repr(self)."""
+    Automatic: Ros2Liveliness = ...
+    ManualByParticipant: Ros2Liveliness = ...
+    ManualByTopic: Ros2Liveliness = ...
+
+@typing.final
+class Ros2Node:
+    """ROS2 Node
+
+Warnings:
+- There's a known issue about ROS2 nodes not being discoverable by ROS2
+See: https://github.com/jhelovuo/ros2-client/issues/4"""
+
+    def create_publisher(self, /, topic: Ros2Topic, qos: Ros2QosPolicies=None) -> Ros2Publisher:
+        """Create a ROS2 publisher
+
+```python
+pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
+```
+
+QoS policies for the topic"""
+
+    def create_subscription(self, /, topic: Ros2Topic, qos: Ros2QosPolicies=None) -> Ros2Subscription:
+        """Create a ROS2 subscription
+
+```python
+pose_reader = ros2_node.create_subscription(turtle_pose_topic)
+```
+
+QoS policies for the topic"""
+
+    def create_topic(self, /, name: str, message_type: str, qos: Ros2QosPolicies) -> Ros2Topic:
+        """Create a ROS2 topic to connect to.
+
+```python
+turtle_twist_topic = ros2_node.create_topic(
+"/turtle1/cmd_vel", "geometry_msgs/Twist", topic_qos
+)
+```
+
+name of the topic. e.g. "pose"
+message type of the topic. e.g. "std_msgs::UInt8MultiArray"
+QoS policies for the topic"""
+
+@typing.final
+class Ros2NodeOptions:
+    """ROS2 Node Options
+enable rosout logging"""
+
+    def __init__(self, /, rosout: bool=None) -> None:
+        """ROS2 Node Options
+enable rosout logging"""
+
+@typing.final
+class Ros2Publisher:
+    """ROS2 Publisher"""
+
+    def publish(self, /, data: pyarrow.Array) -> None:
+        """Publish a message into ROS2 topic.
+
+Remember that the data format should respect the structure of the ROS2 message usinng an arrow Structure.
+
+ex:
+```python
+gripper_command.publish(
+pa.array(
+[
+{
+"name": "gripper",
+"cmd": np.float32(5),
+}
+]
+),
+)
+```"""
+
+@typing.final
+class Ros2QosPolicies:
+    """ROS2 QoS Policy"""
+
+    def __init__(self, /, durability: Ros2Durability=None, liveliness: Ros2Liveliness=None, reliable: bool=None, keep_all: bool=None, lease_duration: float=None, max_blocking_time: float=None, keep_last: int=None) -> Ros2QoSPolicies:
+        """ROS2 QoS Policy"""
+
+@typing.final
+class Ros2Subscription:
+    """ROS2 Subscription"""
+
+    def next(self, /):...
+
+@typing.final
+class Ros2Topic:
+    """ROS2 Topic
+enable rosout logging"""
+
+def start_runtime() -> None:
+    """Start a runtime for Operators"""

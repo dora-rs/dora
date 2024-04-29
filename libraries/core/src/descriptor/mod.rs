@@ -17,6 +17,7 @@ mod validate;
 mod visualize;
 pub const SHELL_SOURCE: &str = "shell";
 
+/// Dataflow description
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
