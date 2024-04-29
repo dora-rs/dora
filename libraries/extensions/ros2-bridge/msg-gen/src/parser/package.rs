@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Empty, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use glob::glob;
@@ -12,7 +12,8 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dir: P) -> Result<Vec<Package>
 
     let ros_formats = vec!["msg", "srv", "action"];
 
-    if root_dir.as_ref() != Path::new("") {
+    // Return empty vector if root_dir is empty
+    if root_dir.as_ref() == Path::new("") {
         let empty_vec: Vec<Package> = vec![];
         warn!("AMENT_PREFIX_PATH pointed to ''");
         return Ok(empty_vec);
