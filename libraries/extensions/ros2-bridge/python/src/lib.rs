@@ -95,7 +95,7 @@ impl Ros2Context {
     /// ros2_node = ros2_context.new_node(
     ///     "turtle_teleop",
     ///     "/ros2_demo",
-    ///     dora.experimental.ros2_bridge.Ros2NodeOptions(rosout=True),
+    ///     Ros2NodeOptions(rosout=True),
     /// )
     /// ```
     ///

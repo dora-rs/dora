@@ -72,6 +72,8 @@ def module_stubs(module: Any) -> ast.Module:
         element_path = [module.__name__, member_name]
         if member_name.startswith("__"):
             pass
+        elif member_name.startswith("DoraStatus"):
+            pass
         elif inspect.isclass(member_value):
             classes.append(
                 class_stubs(member_name, member_value, element_path, types_to_import)
