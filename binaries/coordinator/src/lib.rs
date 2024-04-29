@@ -737,7 +737,7 @@ async fn stop_dataflow(
             other => bail!("unexpected reply after sending stop: {other:?}"),
         }
     }
-    tracing::info!("successfully stopped dataflow `{uuid}`");
+    tracing::info!("successfully send stop dataflow `{uuid}` to all daemons");
 
     Ok(())
 }
