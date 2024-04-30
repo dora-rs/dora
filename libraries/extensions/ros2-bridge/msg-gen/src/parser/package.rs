@@ -26,72 +26,54 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dir: P) -> Result<Vec<Package>
             + "/*."
             + ros_format;
         let mut visited_files = vec![];
-        for entry in glob(&pattern).expect("Failed to read glob pattern") {
-            match entry {
-                Ok(path) => {
-                    let file_name = path
-                        .clone()
-                        .file_name()
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_string();
+        for entry in glob(&pattern).context("Failed to read glob pattern")? {
+            let path = entry.context("Could not glob given path")?;
+            let file_name = path
+                .clone()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
 
-                    let package = path
-                        .parent()
-                        .context("Should have a msg folder")?
-                        .parent()
-                        .context("should have a package folder")?
-                        .file_name()
-                        .context("folder name should exist")?
-                        .to_string_lossy()
-                        .to_string();
+            let package = path
+                .parent()
+                .context("Should have a msg folder")?
+                .parent()
+                .context("should have a package folder")?
+                .file_name()
+                .context("folder name should exist")?
+                .to_string_lossy()
+                .to_string();
 
-                    // Hack
-                    if file_name == "libstatistics_collector" {
-                        continue;
-                    } else if visited_files.contains(&(package.clone(), file_name.clone())) {
-                        warn!(
+            // Hack
+            if file_name == "libstatistics_collector" {
+                continue;
+            } else if visited_files.contains(&(package.clone(), file_name.clone())) {
+                warn!(
                         "found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
                         package, file_name, path
                     );
-                        continue;
-                    } else {
-                        visited_files.push((package.clone(), file_name.clone()));
-                    }
+                continue;
+            } else {
+                visited_files.push((package.clone(), file_name.clone()));
+            }
 
-                    match map.get_mut(&package) {
-                        Some(p) => match ros_format {
-                            "msg" => {
-                                p.messages.push(parse_message_file(&package, path.clone())?);
-                            }
-                            "srv" => {
-                                p.services.push(parse_service_file(&package, path.clone())?);
-                            }
-                            "action" => {
-                                p.actions.push(parse_action_file(&package, path.clone())?);
-                            }
-                            _ => todo!(),
-                        },
-                        None => {
-                            let mut p = Package::new(package.clone());
-                            match ros_format {
-                                "msg" => {
-                                    p.messages.push(parse_message_file(&package, path.clone())?);
-                                }
-                                "srv" => {
-                                    p.services.push(parse_service_file(&package, path.clone())?);
-                                }
-                                "action" => {
-                                    p.actions.push(parse_action_file(&package, path.clone())?);
-                                }
-                                _ => todo!(),
-                            }
-                            map.insert(package, p);
-                        }
-                    };
+            let p = map
+                .entry(package.clone())
+                .or_insert_with(|| Package::new(package.clone()));
+
+            match ros_format {
+                "msg" => {
+                    p.messages.push(parse_message_file(&package, path.clone())?);
                 }
-                Err(e) => eprintln!("{:?}", e),
+                "srv" => {
+                    p.services.push(parse_service_file(&package, path.clone())?);
+                }
+                "action" => {
+                    p.actions.push(parse_action_file(&package, path.clone())?);
+                }
+                _ => todo!(),
             }
         }
     }
