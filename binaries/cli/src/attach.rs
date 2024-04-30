@@ -105,6 +105,7 @@ pub fn attach_dataflow(
             if ctrlc_tx
                 .send(ControlRequest::Stop {
                     dataflow_uuid: dataflow_id,
+                    grace_duration: None,
                 })
                 .is_err()
             {

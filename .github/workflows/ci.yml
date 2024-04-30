@@ -270,7 +270,7 @@ jobs:
           dora list
           dora start dataflow.yml --name ci-rust-test
           sleep 10
-          dora stop --name ci-rust-test
+          dora stop --name ci-rust-test  --grace-duration 5s
           dora destroy
       - name: "Test CLI (Python)"
         timeout-minutes: 30
@@ -292,7 +292,7 @@ jobs:
           dora list
           dora start dataflow.yml --name ci-python-test
           sleep 10
-          dora stop --name ci-python-test
+          dora stop --name ci-python-test  --grace-duration 5s
           dora destroy
 
   clippy:

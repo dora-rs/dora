@@ -1,8 +1,3 @@
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    path::PathBuf,
-};
-
 use attach::attach_dataflow;
 use clap::Parser;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
@@ -17,8 +12,14 @@ use dora_core::{
 use dora_daemon::Daemon;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
+use duration_str::parse;
 use eyre::{bail, Context};
 use std::net::SocketAddr;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+    time::Duration,
+};
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
@@ -87,6 +88,9 @@ enum Command {
         uuid: Option<Uuid>,
         #[clap(long)]
         name: Option<String>,
+        #[clap(long)]
+        #[arg(value_parser = parse)]
+        grace_duration: Option<Duration>,
     },
     /// List running dataflows.
     List,
@@ -269,13 +273,17 @@ fn run() -> eyre::Result<()> {
                 bail!("No dora coordinator seems to be running.");
             }
         },
-        Command::Stop { uuid, name } => {
+        Command::Stop {
+            uuid,
+            name,
+            grace_duration,
+        } => {
             let mut session =
                 connect_to_coordinator().wrap_err("could not connect to dora coordinator")?;
             match (uuid, name) {
-                (Some(uuid), _) => stop_dataflow(uuid, &mut *session)?,
-                (None, Some(name)) => stop_dataflow_by_name(name, &mut *session)?,
-                (None, None) => stop_dataflow_interactive(&mut *session)?,
+                (Some(uuid), _) => stop_dataflow(uuid, grace_duration, &mut *session)?,
+                (None, Some(name)) => stop_dataflow_by_name(name, grace_duration, &mut *session)?,
+                (None, None) => stop_dataflow_interactive(grace_duration, &mut *session)?,
             }
         }
         Command::Destroy { config } => up::destroy(config.as_deref())?,
@@ -361,13 +369,16 @@ fn start_dataflow(
     }
 }
 
-fn stop_dataflow_interactive(session: &mut TcpRequestReplyConnection) -> eyre::Result<()> {
+fn stop_dataflow_interactive(
+    grace_duration: Option<Duration>,
+    session: &mut TcpRequestReplyConnection,
+) -> eyre::Result<()> {
     let uuids = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     if uuids.is_empty() {
         eprintln!("No dataflows are running");
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", uuids).prompt()?;
-        stop_dataflow(selection.uuid, session)?;
+        stop_dataflow(selection.uuid, grace_duration, session)?;
     }
 
     Ok(())
@@ -375,12 +386,14 @@ fn stop_dataflow_interactive(session: &mut TcpRequestReplyConnection) -> eyre::R
 
 fn stop_dataflow(
     uuid: Uuid,
+    grace_duration: Option<Duration>,
     session: &mut TcpRequestReplyConnection,
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
         .request(
             &serde_json::to_vec(&ControlRequest::Stop {
                 dataflow_uuid: uuid,
+                grace_duration,
             })
             .unwrap(),
         )
@@ -398,10 +411,17 @@ fn stop_dataflow(
 
 fn stop_dataflow_by_name(
     name: String,
+    grace_duration: Option<Duration>,
     session: &mut TcpRequestReplyConnection,
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::StopByName { name }).unwrap())
+        .request(
+            &serde_json::to_vec(&ControlRequest::StopByName {
+                name,
+                grace_duration,
+            })
+            .unwrap(),
+        )
         .wrap_err("failed to send dataflow stop_by_name message")?;
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
