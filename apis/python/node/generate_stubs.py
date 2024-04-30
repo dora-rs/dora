@@ -421,6 +421,8 @@ def parse_type_to_ast(
         # TODO: Fix sequence
         if "Ros" in sequence and "2" in sequence:
             sequence = ["".join(sequence)]
+        elif "dora.Ros" in sequence and "2" in sequence:
+            sequence = ["".join(sequence)]
 
         for e in sequence:
             if e == "or":

@@ -61,7 +61,7 @@ impl Node {
     /// ```
     ///
     /// :type timeout: float, optional
-    /// :rtype: PyEvent
+    /// :rtype: dora.PyEvent
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<PyEvent>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
@@ -78,7 +78,7 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// :rtype: PyEvent
+    /// :rtype: dora.PyEvent
     pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
         let event = py.allow_threads(|| self.events.recv(None));
         Ok(event)
@@ -94,7 +94,7 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// :rtype: PyEvent
+    /// :rtype: dora.PyEvent
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -104,13 +104,16 @@ impl Node {
     /// ```python
     /// Args:
     ///    output_id: str,
-    ///    data: Bytes|Arrow,
+    ///    data: pyarrow.Array,
     ///    metadata: Option[Dict],
     /// ```
+    ///
+    /// ex:
     ///
     /// ```python
     /// node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
     /// ```
+    ///
     /// :type output_id: str
     /// :type data: pyarrow.Array
     /// :type metadata: dict, optional
@@ -154,7 +157,7 @@ impl Node {
     /// Merge an external event stream with dora main loop.
     /// This currently only work with ROS2.
     ///
-    /// :type subscription: Ros2Subscription
+    /// :type subscription: dora.Ros2Subscription
     /// :rtype: None
     pub fn merge_external_events(
         &mut self,
@@ -240,34 +243,12 @@ pub fn start_runtime() -> eyre::Result<()> {
     dora_runtime::main().wrap_err("Dora Runtime raised an error.")
 }
 
-/// Dora Status for dora python operators.
-/// :rtype: DoraStatus
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[pyclass]
-pub enum DoraStatus {
-    CONTINUE,
-    STOP,
-    STOP_ALL,
-}
-
-impl DoraStatus {
-    /// :rtype: int
-    pub fn value(self) -> i32 {
-        match self {
-            DoraStatus::CONTINUE => 0,
-            DoraStatus::STOP => 1,
-            DoraStatus::STOP_ALL => 2,
-        }
-    }
-}
-
 #[pymodule]
 fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
     dora_ros2_bridge_python::create_dora_ros2_bridge_module(m)?;
     m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
     m.add_class::<Node>()?;
     m.add_class::<PyEvent>()?;
-    m.add_class::<DoraStatus>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
     m.setattr("__author__", "Dora-rs Authors")?;
 
