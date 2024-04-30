@@ -9,6 +9,8 @@ pip install dora-rs
 
 from enum import Enum
 
+from .dora import *
+
 from .dora import (
     Node,
     PyEvent,
