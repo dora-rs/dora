@@ -248,7 +248,7 @@ where
 
             #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
             pub struct U16String {
-                chars: Vec<u16>,
+                pub chars: Vec<u16>,
             }
 
             #(#shared_type_defs)*
