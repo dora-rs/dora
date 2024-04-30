@@ -7,11 +7,10 @@ nodes:
         tick: dora/timer/millis/10
       outputs:
         - random
-  - id: runtime-node
-    operators:
-      - id: rust-operator
+  - id: rust-operator
+    custom:
         build: cargo build -p rust-dataflow-example-operator
-        shared-library: ../../target/debug/rust_dataflow_example_operator
+        source: ../../target/debug/rust-dataflow-example-operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
@@ -22,11 +21,11 @@ nodes:
       build: cargo build -p rust-dataflow-example-sink
       source: ../../target/debug/rust-dataflow-example-sink
       inputs:
-        message: runtime-node/rust-operator/status
+        message: rust-operator/status
   - id: dora-record
     custom:
       build: cargo build -p dora-record
       source: ../../target/debug/dora-record
       inputs:
-        message: runtime-node/rust-operator/status
+        message: rust-operator/status
         random: rust-node/random

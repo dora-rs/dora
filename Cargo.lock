@@ -7878,7 +7878,11 @@ dependencies = [
 name = "rust-dataflow-example-operator"
 version = "0.3.3"
 dependencies = [
- "dora-operator-api",
+ "dora-node-api",
+ "eyre",
+ "futures",
+ "rand",
+ "tokio",
 ]
 
 [[package]]
