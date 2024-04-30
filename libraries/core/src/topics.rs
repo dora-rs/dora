@@ -3,6 +3,7 @@ use std::{
     fmt::Display,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -38,9 +39,11 @@ pub enum ControlRequest {
     },
     Stop {
         dataflow_uuid: Uuid,
+        grace_duration: Option<Duration>,
     },
     StopByName {
         name: String,
+        grace_duration: Option<Duration>,
     },
     Logs {
         uuid: Option<Uuid>,
