@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import dora as dora
 from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
 
 CHECK_TICK = 50
