@@ -14,7 +14,7 @@ pub struct PyEvent {
 #[pymethods]
 impl PyEvent {
     ///
-    /// :rtype: PyObject
+    /// :rtype: dora.PyObject
     pub fn __getitem__(&self, key: &str, py: Python<'_>) -> PyResult<Option<PyObject>> {
         if key == "kind" {
             let kind = match &self.event {

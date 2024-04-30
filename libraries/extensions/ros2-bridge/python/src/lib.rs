@@ -38,7 +38,7 @@ pub mod typed;
 /// context = Ros2Context()
 /// ```
 ///
-/// :type ros_paths: List[str], optional
+/// :type ros_paths: typing.List[str], optional
 ///
 #[pyclass]
 pub struct Ros2Context {
@@ -101,8 +101,8 @@ impl Ros2Context {
     ///
     /// :type name: str
     /// :type namespace: str
-    /// :type options: Ros2NodeOptions
-    /// :rtype: Ros2Node
+    /// :type options: dora.Ros2NodeOptions
+    /// :rtype: dora.Ros2Node
     pub fn new_node(
         &self,
         name: &str,
@@ -145,8 +145,8 @@ impl Ros2Node {
     ///
     /// :type name: str
     /// :type message_type: str
-    /// :type qos: Ros2QosPolicies
-    /// :rtype: Ros2Topic
+    /// :type qos: dora.Ros2QosPolicies
+    /// :rtype: dora.Ros2Topic
     pub fn create_topic(
         &self,
         name: &str,
@@ -181,9 +181,9 @@ impl Ros2Node {
     /// pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
     /// ```
     ///
-    /// :type topic: Ros2Topic
-    /// :type qos: Ros2QosPolicies, optional
-    /// :rtype: Ros2Publisher
+    /// :type topic: dora.Ros2Topic
+    /// :type qos: dora.Ros2QosPolicies, optional
+    /// :rtype: dora.Ros2Publisher
     pub fn create_publisher(
         &mut self,
         topic: &Ros2Topic,
@@ -204,9 +204,9 @@ impl Ros2Node {
     /// pose_reader = ros2_node.create_subscription(turtle_pose_topic)
     /// ```
     ///
-    /// :type topic: Ros2Topic
-    /// :type qos: Ros2QosPolicies, optional
-    /// :rtype: Ros2Subscription
+    /// :type topic: dora.Ros2Topic
+    /// :type qos: dora.Ros2QosPolicies, optional
+    /// :rtype: dora.Ros2Subscription
     pub fn create_subscription(
         &mut self,
         topic: &Ros2Topic,

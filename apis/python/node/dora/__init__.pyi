@@ -1,3 +1,4 @@
+import dora
 import pyarrow
 import typing
 
@@ -38,11 +39,11 @@ node = Node()
 
 This method returns the parsed dataflow YAML file."""
 
-    def merge_external_events(self, /, subscription: Ros2Subscription) -> None:
+    def merge_external_events(self, /, subscription: dora.Ros2Subscription) -> None:
         """Merge an external event stream with dora main loop.
 This currently only work with ROS2."""
 
-    def next(self, /, timeout: float=None) -> PyEvent:
+    def next(self, /, timeout: float=None) -> dora.PyEvent:
         """`.next()` gives you the next input that the node has received.
 It blocks until the next event becomes available.
 You can use timeout in seconds to return if no input is available.
@@ -62,15 +63,17 @@ match event["id"]:
 case "image":
 ```"""
 
-    def send_output(self, /, output_id: str, data: pyarrow.Array, metadata: dict=None) -> None:
+    def send_output(self, /, output_id: str, data: pyarrow.Array, metadata: typing.Dict[str | str]=None) -> None:
         """`send_output` send data from the node.
 
 ```python
 Args:
 output_id: str,
-data: Bytes|Arrow,
+data: pyarrow.Array,
 metadata: Option[Dict],
 ```
+
+ex:
 
 ```python
 node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
@@ -108,7 +111,7 @@ You can also use `ros_paths` if you don't want to use env variable.
 context = Ros2Context()
 ```"""
 
-    def __init__(self, /, ros_paths: List[str]=None) -> None:
+    def __init__(self, /, ros_paths: typing.List[str]=None) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 
 By default, Ros2Context will use env `AMENT_PREFIX_PATH` to search for message definition.
@@ -124,7 +127,7 @@ You can also use `ros_paths` if you don't want to use env variable.
 context = Ros2Context()
 ```"""
 
-    def new_node(self, /, name: str, namespace: str, options: Ros2NodeOptions) -> Ros2Node:
+    def new_node(self, /, name: str, namespace: str, options: dora.Ros2NodeOptions) -> dora.Ros2Node:
         """Create a new ROS2 node
 
 ```python
@@ -206,21 +209,21 @@ Warnings:
 - There's a known issue about ROS2 nodes not being discoverable by ROS2
 See: https://github.com/jhelovuo/ros2-client/issues/4"""
 
-    def create_publisher(self, /, topic: Ros2Topic, qos: Ros2QosPolicies=None) -> Ros2Publisher:
+    def create_publisher(self, /, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies=None) -> dora.Ros2Publisher:
         """Create a ROS2 publisher
 
 ```python
 pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
 ```"""
 
-    def create_subscription(self, /, topic: Ros2Topic, qos: Ros2QosPolicies=None) -> Ros2Subscription:
+    def create_subscription(self, /, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies=None) -> dora.Ros2Subscription:
         """Create a ROS2 subscription
 
 ```python
 pose_reader = ros2_node.create_subscription(turtle_pose_topic)
 ```"""
 
-    def create_topic(self, /, name: str, message_type: str, qos: Ros2QosPolicies) -> Ros2Topic:
+    def create_topic(self, /, name: str, message_type: str, qos: dora.Ros2QosPolicies) -> dora.Ros2Topic:
         """Create a ROS2 topic to connect to.
 
 ```python
@@ -263,7 +266,7 @@ pa.array(
 class Ros2QosPolicies:
     """ROS2 QoS Policy"""
 
-    def __init__(self, /, durability: Ros2Durability=None, liveliness: Ros2Liveliness=None, reliable: bool=None, keep_all: bool=None, lease_duration: float=None, max_blocking_time: float=None, keep_last: int=None) -> Ros2QoSPolicies:
+    def __init__(self, /, durability: dora.Ros2Durability=None, liveliness: dora.Ros2Liveliness=None, reliable: bool=None, keep_all: bool=None, lease_duration: float=None, max_blocking_time: float=None, keep_last: int=None) -> dora.Ros2QoSPolicies:
         """ROS2 QoS Policy"""
 
 @typing.final
