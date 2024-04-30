@@ -7880,9 +7880,6 @@ version = "0.3.3"
 dependencies = [
  "dora-node-api",
  "eyre",
- "futures",
- "rand",
- "tokio",
 ]
 
 [[package]]
