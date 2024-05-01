@@ -248,7 +248,7 @@ where
 
             #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
             pub struct U16String {
-                chars: Vec<u16>,
+                pub chars: Vec<u16>,
             }
 
             #(#shared_type_defs)*
@@ -259,6 +259,12 @@ where
         impl crate::_core::InternalDefault for ffi::U16String {
             fn _default() -> Self {
                 Default::default()
+            }
+        }
+
+        impl ffi::U16String {
+            fn from_str(arg: &str) -> Self {
+                Self { chars: crate::_core::widestring::U16String::from_str(arg).into_vec()}
             }
         }
 
