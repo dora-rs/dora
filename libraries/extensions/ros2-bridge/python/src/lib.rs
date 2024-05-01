@@ -11,7 +11,7 @@ use arrow::{
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
-use eyre::{eyre, Context, ContextCompat};
+use eyre::{eyre, Context, ContextCompat, Result};
 use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods},
@@ -54,14 +54,16 @@ pub struct Ros2Context {
 impl Ros2Context {
     /// Create a new context
     #[new]
-    pub fn new(py: Python, ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
-        let warnings = py
-            .import("warnings")
-            .wrap_err("failed to import `warnings` module")?;
-        warnings
+    pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
+        Python::with_gil(|py| -> Result<()> {
+            let warnings = py
+                .import("warnings")
+                .wrap_err("failed to import `warnings` module")?;
+            warnings
             .call_method1("warn", ("dora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
             .wrap_err("failed to call `warnings.warn` module")?;
-
+            Ok(())
+        })?;
         let ament_prefix_path = std::env::var("AMENT_PREFIX_PATH");
         let empty = String::new();
 
