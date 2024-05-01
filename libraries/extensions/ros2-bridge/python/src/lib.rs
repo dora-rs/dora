@@ -34,6 +34,10 @@ pub mod typed;
 ///
 /// You can also use `ros_paths` if you don't want to use env variable.
 ///
+/// warning::
+///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///     at any point without it being considered a breaking change.
+///
 /// ```python
 /// context = Ros2Context()
 /// ```
@@ -50,7 +54,14 @@ pub struct Ros2Context {
 impl Ros2Context {
     /// Create a new context
     #[new]
-    pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
+    pub fn new(py: Python, ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
+        let warnings = py
+            .import("warnings")
+            .wrap_err("failed to import `warnings` module")?;
+        warnings
+            .call_method1("warn", ("dora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
+            .wrap_err("failed to call `warnings.warn` module")?;
+
         let ament_prefix_path = std::env::var("AMENT_PREFIX_PATH");
         let empty = String::new();
 
@@ -124,7 +135,6 @@ impl Ros2Context {
 /// ROS2 Node
 ///
 /// Warnings:
-/// - There's a known issue about ROS2 nodes not being discoverable by ROS2
 ///   See: https://github.com/jhelovuo/ros2-client/issues/4
 ///
 #[pyclass]
