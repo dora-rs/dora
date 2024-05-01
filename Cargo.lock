@@ -7875,7 +7875,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-dataflow-example-operator"
+name = "rust-dataflow-example-sink"
 version = "0.3.3"
 dependencies = [
  "dora-node-api",
@@ -7883,7 +7883,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-dataflow-example-sink"
+name = "rust-dataflow-example-status-node"
 version = "0.3.3"
 dependencies = [
  "dora-node-api",

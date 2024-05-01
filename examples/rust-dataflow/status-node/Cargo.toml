@@ -1,5 +1,5 @@
 [package]
-name = "rust-dataflow-example-operator"
+name = "rust-dataflow-example-status-node"
 version.workspace = true
 edition = "2021"
 license.workspace = true
