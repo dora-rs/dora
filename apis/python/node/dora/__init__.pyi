@@ -144,7 +144,11 @@ ros2_node = ros2_context.new_node(
 "/ros2_demo",
 Ros2NodeOptions(rosout=True),
 )
-```"""
+```
+
+warning::
+dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change."""
 
 @typing.final
 class Ros2Durability:
@@ -214,6 +218,8 @@ class Ros2Node:
     """ROS2 Node
 
 warnings::
+- dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change.
 - There's a known issue about ROS2 nodes not being discoverable by ROS2
 See: https://github.com/jhelovuo/ros2-client/issues/4"""
 
@@ -222,14 +228,21 @@ See: https://github.com/jhelovuo/ros2-client/issues/4"""
 
 ```python
 pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
-```"""
+```
+warnings:
+- dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change."""
 
     def create_subscription(self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies=None) -> dora.Ros2Subscription:
         """Create a ROS2 subscription
 
 ```python
 pose_reader = ros2_node.create_subscription(turtle_pose_topic)
-```"""
+```
+
+warnings:
+- dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change."""
 
     def create_topic(self, name: str, message_type: str, qos: dora.Ros2QosPolicies) -> dora.Ros2Topic:
         """Create a ROS2 topic to connect to.
@@ -249,7 +262,11 @@ class Ros2NodeOptions:
 
 @typing.final
 class Ros2Publisher:
-    """ROS2 Publisher"""
+    """ROS2 Publisher
+
+warnings:
+- dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change."""
 
     def publish(self, data: pyarrow.Array) -> None:
         """Publish a message into ROS2 topic.
@@ -279,13 +296,22 @@ class Ros2QosPolicies:
 
 @typing.final
 class Ros2Subscription:
-    """ROS2 Subscription"""
+    """ROS2 Subscription
+
+
+warnings:
+- dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change."""
 
     def next(self):...
 
 @typing.final
 class Ros2Topic:
-    """ROS2 Topic"""
+    """ROS2 Topic
+
+warnings:
+- dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change."""
 
 def start_runtime() -> None:
     """Start a runtime for Operators"""

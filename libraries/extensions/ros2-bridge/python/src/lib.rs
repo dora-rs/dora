@@ -112,6 +112,10 @@ impl Ros2Context {
     /// )
     /// ```
     ///
+    /// warning::
+    ///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    ///     at any point without it being considered a breaking change.
+    ///
     /// :type name: str
     /// :type namespace: str
     /// :type options: dora.Ros2NodeOptions
@@ -137,6 +141,8 @@ impl Ros2Context {
 /// ROS2 Node
 ///
 /// warnings::
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
 /// - There's a known issue about ROS2 nodes not being discoverable by ROS2
 ///   See: https://github.com/jhelovuo/ros2-client/issues/4
 ///
@@ -193,6 +199,9 @@ impl Ros2Node {
     /// ```python
     /// pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
     /// ```
+    /// warnings:
+    /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    ///   at any point without it being considered a breaking change.
     ///
     /// :type topic: dora.Ros2Topic
     /// :type qos: dora.Ros2QosPolicies, optional
@@ -216,6 +225,10 @@ impl Ros2Node {
     /// ```python
     /// pose_reader = ros2_node.create_subscription(turtle_pose_topic)
     /// ```
+    ///
+    /// warnings:
+    /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    ///   at any point without it being considered a breaking change.
     ///
     /// :type topic: dora.Ros2Topic
     /// :type qos: dora.Ros2QosPolicies, optional
@@ -264,6 +277,9 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 /// ROS2 Topic
 /// :type rosout: bool, optional
 ///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Topic {
@@ -272,6 +288,10 @@ pub struct Ros2Topic {
 }
 
 /// ROS2 Publisher
+///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
@@ -338,6 +358,10 @@ impl Ros2Publisher {
 
 /// ROS2 Subscription
 ///
+///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Subscription {
