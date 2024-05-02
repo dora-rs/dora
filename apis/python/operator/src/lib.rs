@@ -3,14 +3,18 @@ use dora_node_api::{merged::MergedEvent, Event, Metadata, MetadataParameters};
 use eyre::{Context, Result};
 use pyo3::{exceptions::PyLookupError, prelude::*, types::PyDict};
 
+/// Dora Event
 #[pyclass]
 pub struct PyEvent {
     event: MergedEvent<PyObject>,
     data: Option<ArrayRef>,
 }
 
+// Dora Event
 #[pymethods]
 impl PyEvent {
+    ///
+    /// :rtype: dora.PyObject
     pub fn __getitem__(&self, key: &str, py: Python<'_>) -> PyResult<Option<PyObject>> {
         if key == "kind" {
             let kind = match &self.event {
@@ -35,7 +39,14 @@ impl PyEvent {
                 };
                 Ok(value)
             }
-            MergedEvent::External(event) => event.call_method1(py, "__getitem__", (key,)).map(Some),
+            MergedEvent::External(event) => {
+                let value = match key {
+                    "value" => event,
+                    _ => todo!(),
+                };
+
+                Ok(Some(value.clone()))
+            }
         }
     }
 
