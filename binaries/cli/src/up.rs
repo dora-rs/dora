@@ -28,6 +28,20 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
 
     if !daemon_running(&mut *session)? {
         start_daemon().wrap_err("failed to start dora-daemon")?;
+
+        // wait a bit until daemon is connected
+        let mut i = 0;
+        const WAIT_S: f32 = 0.1;
+        loop {
+            if daemon_running(&mut *session)? {
+                break;
+            }
+            i += 1;
+            if i > 20 {
+                eyre::bail!("daemon not connected after {}s", WAIT_S * i as f32);
+            }
+            std::thread::sleep(Duration::from_secs_f32(WAIT_S));
+        }
     }
 
     Ok(())
