@@ -14,7 +14,7 @@ members = [
     "binaries/daemon",
     "binaries/runtime",
     "examples/rust-dataflow/node",
-    "examples/rust-dataflow/operator",
+    "examples/rust-dataflow/status-node",
     "examples/rust-dataflow/sink",
     "examples/rust-ros2-dataflow/node",
     "examples/benchmark/node",
