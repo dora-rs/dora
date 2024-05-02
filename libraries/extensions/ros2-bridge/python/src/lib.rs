@@ -136,7 +136,8 @@ impl Ros2Context {
 
 /// ROS2 Node
 ///
-/// Warnings:
+/// warnings::
+/// - There's a known issue about ROS2 nodes not being discoverable by ROS2
 ///   See: https://github.com/jhelovuo/ros2-client/issues/4
 ///
 #[pyclass]
