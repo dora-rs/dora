@@ -6,21 +6,18 @@ use xshell::{cmd, Shell};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let python = get_python_path().context("Could not get python binary")?;
-
     // create a new shell in this folder
     let sh = prepare_shell()?;
 
     // prepare Python virtual environment
-    prepare_venv(&sh, &python)?;
+    prepare_venv(&sh)?;
 
     // build the `dora` binary (you can skip this if you use `cargo install dora-cli`)
     let dora = prepare_dora(&sh)?;
 
     // install/upgrade pip, then install requirements
-    cmd!(sh, "{python} -m pip install --upgrade pip").run()?;
-    let pip = get_pip_path().context("Could not get pip binary")?;
-    cmd!(sh, "{pip} install -r requirements.txt").run()?;
+    cmd!(sh, "python -m pip install --upgrade pip").run()?;
+    cmd!(sh, "pip install -r requirements.txt").run()?;
 
     // build the dora Python package (you can skip this if you installed the Python dora package)
     {
@@ -64,9 +61,10 @@ async fn main() -> eyre::Result<()> {
 ///
 /// You can use the normal `python3 -m venv .venv` + `source .venv/bin/activate`
 /// if you're running bash.
-fn prepare_venv(sh: &Shell, python: &Path) -> eyre::Result<()> {
+fn prepare_venv(sh: &Shell) -> eyre::Result<()> {
+    let python = get_python_path().context("Could not get python binary")?;
     cmd!(sh, "{python} -m venv ../.env").run()?;
-    let venv = sh.current_dir().join("..").join(".env");
+    let venv = sh.current_dir().parent().unwrap().join(".env");
     sh.set_var(
         "VIRTUAL_ENV",
         venv.to_str().context("venv path not valid unicode")?,
