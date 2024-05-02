@@ -11,7 +11,7 @@ use arrow::{
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
-use eyre::{eyre, Context, ContextCompat};
+use eyre::{eyre, Context, ContextCompat, Result};
 use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods},
@@ -23,6 +23,27 @@ use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
 pub mod qos;
 pub mod typed;
 
+/// ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
+///
+/// By default, Ros2Context will use env `AMENT_PREFIX_PATH` to search for message definition.
+///
+/// AMENT_PREFIX_PATH folder structure should be the following:
+///
+/// - For messages: <namespace>/msg/<name>.msg
+/// - For services: <namespace>/srv/<name>.srv
+///
+/// You can also use `ros_paths` if you don't want to use env variable.
+///
+/// warning::
+///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///     at any point without it being considered a breaking change.
+///
+/// ```python
+/// context = Ros2Context()
+/// ```
+///
+/// :type ros_paths: typing.List[str], optional
+///
 #[pyclass]
 pub struct Ros2Context {
     context: ros2_client::Context,
@@ -31,8 +52,18 @@ pub struct Ros2Context {
 
 #[pymethods]
 impl Ros2Context {
+    /// Create a new context
     #[new]
     pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
+        Python::with_gil(|py| -> Result<()> {
+            let warnings = py
+                .import("warnings")
+                .wrap_err("failed to import `warnings` module")?;
+            warnings
+            .call_method1("warn", ("dora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
+            .wrap_err("failed to call `warnings.warn` module")?;
+            Ok(())
+        })?;
         let ament_prefix_path = std::env::var("AMENT_PREFIX_PATH");
         let empty = String::new();
 
@@ -72,6 +103,23 @@ impl Ros2Context {
     }
 
     /// Create a new ROS2 node
+    ///
+    /// ```python
+    /// ros2_node = ros2_context.new_node(
+    ///     "turtle_teleop",
+    ///     "/ros2_demo",
+    ///     Ros2NodeOptions(rosout=True),
+    /// )
+    /// ```
+    ///
+    /// warning::
+    ///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    ///     at any point without it being considered a breaking change.
+    ///
+    /// :type name: str
+    /// :type namespace: str
+    /// :type options: dora.Ros2NodeOptions
+    /// :rtype: dora.Ros2Node
     pub fn new_node(
         &self,
         name: &str,
@@ -90,6 +138,14 @@ impl Ros2Context {
     }
 }
 
+/// ROS2 Node
+///
+/// warnings::
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
+/// - There's a known issue about ROS2 nodes not being discoverable by ROS2
+///   See: https://github.com/jhelovuo/ros2-client/issues/4
+///
 #[pyclass]
 pub struct Ros2Node {
     node: ros2_client::Node,
@@ -98,6 +154,18 @@ pub struct Ros2Node {
 
 #[pymethods]
 impl Ros2Node {
+    /// Create a ROS2 topic to connect to.
+    ///
+    /// ```python
+    /// turtle_twist_topic = ros2_node.create_topic(
+    ///     "/turtle1/cmd_vel", "geometry_msgs/Twist", topic_qos
+    /// )
+    /// ```
+    ///
+    /// :type name: str
+    /// :type message_type: str
+    /// :type qos: dora.Ros2QosPolicies
+    /// :rtype: dora.Ros2Topic
     pub fn create_topic(
         &self,
         name: &str,
@@ -126,6 +194,18 @@ impl Ros2Node {
         Ok(Ros2Topic { topic, type_info })
     }
 
+    /// Create a ROS2 publisher
+    ///
+    /// ```python
+    /// pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
+    /// ```
+    /// warnings:
+    /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    ///   at any point without it being considered a breaking change.
+    ///
+    /// :type topic: dora.Ros2Topic
+    /// :type qos: dora.Ros2QosPolicies, optional
+    /// :rtype: dora.Ros2Publisher
     pub fn create_publisher(
         &mut self,
         topic: &Ros2Topic,
@@ -140,6 +220,19 @@ impl Ros2Node {
         })
     }
 
+    /// Create a ROS2 subscription
+    ///
+    /// ```python
+    /// pose_reader = ros2_node.create_subscription(turtle_pose_topic)
+    /// ```
+    ///
+    /// warnings:
+    /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    ///   at any point without it being considered a breaking change.
+    ///
+    /// :type topic: dora.Ros2Topic
+    /// :type qos: dora.Ros2QosPolicies, optional
+    /// :rtype: dora.Ros2Subscription
     pub fn create_subscription(
         &mut self,
         topic: &Ros2Topic,
@@ -155,6 +248,9 @@ impl Ros2Node {
     }
 }
 
+/// ROS2 Node Options
+/// :type rosout: bool, optional
+///
 #[derive(Debug, Clone, Default)]
 #[pyclass]
 #[non_exhaustive]
@@ -178,6 +274,12 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
     }
 }
 
+/// ROS2 Topic
+/// :type rosout: bool, optional
+///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Topic {
@@ -185,6 +287,11 @@ pub struct Ros2Topic {
     type_info: TypeInfo<'static>,
 }
 
+/// ROS2 Publisher
+///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
@@ -194,6 +301,27 @@ pub struct Ros2Publisher {
 
 #[pymethods]
 impl Ros2Publisher {
+    /// Publish a message into ROS2 topic.
+    ///
+    /// Remember that the data format should respect the structure of the ROS2 message usinng an arrow Structure.
+    ///
+    /// ex:
+    /// ```python
+    /// gripper_command.publish(
+    ///     pa.array(
+    ///         [
+    ///             {
+    ///                 "name": "gripper",
+    ///                 "cmd": np.float32(5),
+    ///             }
+    ///         ]
+    ///     ),
+    /// )
+    /// ```
+    ///
+    /// :type data: pyarrow.Array
+    /// :rtype: None
+    ///
     pub fn publish(&self, data: &PyAny) -> eyre::Result<()> {
         let pyarrow = PyModule::import(data.py(), "pyarrow")?;
 
@@ -228,6 +356,12 @@ impl Ros2Publisher {
     }
 }
 
+/// ROS2 Subscription
+///
+///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Subscription {

@@ -1,8 +1,19 @@
 use ::dora_ros2_bridge::rustdds::{self, policy};
 use pyo3::prelude::{pyclass, pymethods};
 
+/// ROS2 QoS Policy
+///
+/// :type durability: dora.Ros2Durability, optional
+/// :type liveliness: dora.Ros2Liveliness, optional
+/// :type reliable: bool, optional
+/// :type keep_all: bool, optional
+/// :type lease_duration: float, optional
+/// :type max_blocking_time: float, optional
+/// :type keep_last: int, optional
+/// :rtype: dora.Ros2QoSPolicies
+///
 #[derive(Debug, Clone)]
-#[pyclass(get_all, set_all)]
+#[pyclass]
 #[non_exhaustive]
 pub struct Ros2QosPolicies {
     pub durability: Ros2Durability,
@@ -64,6 +75,8 @@ impl From<Ros2QosPolicies> for rustdds::QosPolicies {
 }
 
 /// DDS 2.2.3.4 DURABILITY
+///
+/// :rtype: dora.Ros2Durability
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[pyclass]
 pub enum Ros2Durability {
@@ -73,7 +86,11 @@ pub enum Ros2Durability {
     Persistent,
 }
 
+/// :type value: dora.Ros2Durability
+/// :rtype: dora.Ros2Durability
 impl From<Ros2Durability> for policy::Durability {
+    /// :type value: dora.Ros2Durability
+    /// :rtype: dora.Ros2Durability
     fn from(value: Ros2Durability) -> Self {
         match value {
             Ros2Durability::Volatile => policy::Durability::Volatile,
@@ -85,6 +102,7 @@ impl From<Ros2Durability> for policy::Durability {
 }
 
 /// DDS 2.2.3.11 LIVELINESS
+/// :rtype: dora.Ros2Liveliness
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[pyclass]
 pub enum Ros2Liveliness {
@@ -94,6 +112,8 @@ pub enum Ros2Liveliness {
 }
 
 impl Ros2Liveliness {
+    /// :type lease_duration: float
+    /// :rtype: dora.Ros2Liveliness
     fn convert(self, lease_duration: f64) -> policy::Liveliness {
         let lease_duration = if lease_duration.is_infinite() {
             rustdds::Duration::INFINITE

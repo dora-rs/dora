@@ -1,23 +1,20 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import dora
-from dora import Node
+from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
 
 CHECK_TICK = 50
 
 # Create a ROS2 Context
-ros2_context = dora.experimental.ros2_bridge.Ros2Context()
+ros2_context = Ros2Context()
 ros2_node = ros2_context.new_node(
     "turtle_teleop",
     "/ros2_demo",
-    dora.experimental.ros2_bridge.Ros2NodeOptions(rosout=True),
+    Ros2NodeOptions(rosout=True),
 )
 
 # Define a ROS2 QOS
-topic_qos = dora.experimental.ros2_bridge.Ros2QosPolicies(
-    reliable=True, max_blocking_time=0.1
-)
+topic_qos = Ros2QosPolicies(reliable=True, max_blocking_time=0.1)
 
 # Create a publisher to cmd_vel topic
 turtle_twist_topic = ros2_node.create_topic(
