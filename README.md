@@ -265,15 +265,14 @@ We also have [a contributing guide](CONTRIBUTING.md).
 
 ### Unstable functionality
 
-Some parts of the public API are marked as **unstable**.
-You can recognize this functionality from the warning in the API reference, or from the warning issued when the configuration option `warn_unstable` is active.
+`dora-rs` Ros2 Bridge is marked as **unstable**.
 There are a number of reasons functionality may be marked as unstable:
 
 - We are unsure about the exact API. The name, function signature, or implementation are likely to change in the future.
 - The functionality is not tested extensively yet. Bugs may pop up when used in real-world scenarios.
-- The functionality does not integrate well with the full Polars API. You may find it works in one context but not in another.
+- The functionality does not integrate well with the full dora-rs API. You may find it works in one context but not in another.
 
-Releasing functionality as unstable allows us to gather important feedback from users that use Polars in real-world scenarios.
+Releasing functionality as unstable allows us to gather important feedback from users that use dora-rs in real-world scenarios.
 This helps us fine-tune things before giving it the final stamp of approval.
 Users are only interested in solid, well-tested functionality can avoid this part of the API.
 
