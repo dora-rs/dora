@@ -333,8 +333,9 @@ def arguments_stub(
             )
 
         if param.kind == param.POSITIONAL_ONLY:
-            posonlyargs.append(param_ast)
-            defaults.append(default_ast)
+            args.append(param_ast)
+            # posonlyargs.append(param_ast)
+            # defaults.append(default_ast)
         elif param.kind == param.POSITIONAL_OR_KEYWORD:
             args.append(param_ast)
             defaults.append(default_ast)
