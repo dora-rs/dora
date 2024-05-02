@@ -1,3 +1,4 @@
+#[cfg(feature = "generate-messages")]
 use std::path::PathBuf;
 
 #[cfg(not(feature = "generate-messages"))]

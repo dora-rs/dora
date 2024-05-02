@@ -1,13 +1,12 @@
 [package]
-name = "rust-dataflow-example-operator"
+name = "rust-dataflow-example-status-node"
 version.workspace = true
 edition = "2021"
 license.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[lib]
-crate-type = ["cdylib"]
 
 [dependencies]
-dora-operator-api = { workspace = true }
+dora-node-api = { workspace = true, features = ["tracing"] }
+eyre = "0.6.8"
