@@ -63,7 +63,7 @@ match event["id"]:
 case "image":
 ```"""
 
-    def send_output(self, /, output_id: str, data: pyarrow.Array, metadata: typing.Dict[str | str]=None) -> None:
+    def send_output(self, /, output_id: str, data: pyarrow.Array, metadata: dict=None) -> None:
         """`send_output` send data from the node.
 
 ```python
@@ -107,6 +107,10 @@ AMENT_PREFIX_PATH folder structure should be the following:
 
 You can also use `ros_paths` if you don't want to use env variable.
 
+warning::
+dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change.
+
 ```python
 context = Ros2Context()
 ```"""
@@ -122,6 +126,10 @@ AMENT_PREFIX_PATH folder structure should be the following:
 - For services: <namespace>/srv/<name>.srv
 
 You can also use `ros_paths` if you don't want to use env variable.
+
+warning::
+dora Ros2 bridge functionality is considered **unstable**. It may be changed
+at any point without it being considered a breaking change.
 
 ```python
 context = Ros2Context()
@@ -205,7 +213,7 @@ class Ros2Liveliness:
 class Ros2Node:
     """ROS2 Node
 
-Warnings:
+warnings::
 - There's a known issue about ROS2 nodes not being discoverable by ROS2
 See: https://github.com/jhelovuo/ros2-client/issues/4"""
 
