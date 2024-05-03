@@ -14,7 +14,7 @@ use dora_daemon::Daemon;
 use dora_tracing::set_up_tracing;
 use duration_str::parse;
 use eyre::{bail, Context};
-use std::net::SocketAddr;
+use std::{collections::BTreeSet, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
@@ -102,6 +102,8 @@ enum Command {
         dataflow: Option<String>,
         node: String,
     },
+    #[clap(hide = true)]
+    ConnectedMachines,
     // Metrics,
     // Stats,
     // Get,
@@ -269,6 +271,12 @@ fn run() -> eyre::Result<()> {
         }
         Command::List => match connect_to_coordinator() {
             Ok(mut session) => list(&mut *session)?,
+            Err(_) => {
+                bail!("No dora coordinator seems to be running.");
+            }
+        },
+        Command::ConnectedMachines => match connect_to_coordinator() {
+            Ok(mut session) => connected_machines(&mut *session)?,
             Err(_) => {
                 bail!("No dora coordinator seems to be running.");
             }
@@ -461,6 +469,37 @@ fn query_running_dataflows(
         ControlRequestReply::DataflowList { dataflows } => dataflows,
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected list dataflow reply: {other:?}"),
+    };
+
+    Ok(ids)
+}
+
+fn connected_machines(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> {
+    let machines = query_connected_machines(session)?;
+
+    if machines.is_empty() {
+        eprintln!("No machines are connected");
+    } else {
+        for id in machines {
+            println!("{id}");
+        }
+    }
+
+    Ok(())
+}
+
+fn query_connected_machines(
+    session: &mut TcpRequestReplyConnection,
+) -> eyre::Result<BTreeSet<String>> {
+    let reply_raw = session
+        .request(&serde_json::to_vec(&ControlRequest::ConnectedMachines).unwrap())
+        .wrap_err("failed to send connected machines message")?;
+    let reply: ControlRequestReply =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    let ids = match reply {
+        ControlRequestReply::ConnectedMachines(ids) => ids,
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected connected machines reply: {other:?}"),
     };
 
     Ok(ids)
