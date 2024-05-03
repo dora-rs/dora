@@ -1,4 +1,4 @@
-use dora_core::{get_pip_path, get_python_path};
+use dora_core::get_python_path;
 use dora_download::download_file;
 use eyre::{ContextCompat, WrapErr};
 use std::path::{Path, PathBuf};
