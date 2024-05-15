@@ -2306,6 +2306,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde-with-expand-env",
+ "serde_json",
  "serde_yaml 0.9.30",
  "tokio",
  "tracing",
@@ -2523,8 +2524,6 @@ dependencies = [
  "dora-tracing",
  "eyre",
  "parquet",
- "schemars",
- "serde_json",
  "tokio",
 ]
 
