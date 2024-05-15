@@ -245,8 +245,25 @@ pub fn format_duration(interval: Duration) -> FormattedDuration {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeRunConfig {
+    /// Inputs for the nodes as a map from input ID to input configuration
+    ///
+    /// e.g.
+    ///
+    /// inputs:
+    ///
+    ///   example_input: example_node/example_output1
+    ///
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
+    /// Outputs as a list of outputs.
+    ///
+    /// e.g.
+    ///
+    /// outputs:
+    ///
+    ///  - output_1
+    ///
+    ///  - output_2
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 }
