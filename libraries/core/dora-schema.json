@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Descriptor",
+  "title": "dora-rs specification",
   "description": "Dataflow description",
   "type": "object",
   "required": [
