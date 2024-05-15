@@ -2,6 +2,7 @@ use crate::config::{
     CommunicationConfig, DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId,
 };
 use eyre::{bail, eyre, Context, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with_expand_env::with_expand_envs;
 use std::{
@@ -12,19 +13,16 @@ use std::{
 };
 use tracing::warn;
 pub use visualize::collect_dora_timers;
-
 mod validate;
 mod visualize;
 pub const SHELL_SOURCE: &str = "shell";
 
 /// Dataflow description
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
     #[serde(default)]
     pub communication: CommunicationConfig,
-    // deprecated
-    pub daemon_config: Option<serde_yaml::Value>,
     #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
     pub nodes: Vec<Node>,
@@ -122,13 +120,13 @@ impl Descriptor {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Node {
     pub id: NodeId,
     pub name: Option<String>,
@@ -142,7 +140,7 @@ pub struct Node {
     pub kind: NodeKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeKind {
     /// Dora runtime node
@@ -217,20 +215,20 @@ pub enum CoreNodeKind {
     Custom(CustomNode),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RuntimeNode {
     pub operators: Vec<OperatorDefinition>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorDefinition {
     pub id: OperatorId,
     #[serde(flatten)]
     pub config: OperatorConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct SingleOperatorDefinition {
     /// ID is optional if there is only a single operator.
     pub id: Option<OperatorId>,
@@ -238,7 +236,7 @@ pub struct SingleOperatorDefinition {
     pub config: OperatorConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorConfig {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -257,14 +255,14 @@ pub struct OperatorConfig {
     pub send_stdout_as: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
     SharedLibrary(String),
     Python(PythonSource),
     Wasm(String),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     deny_unknown_fields,
     from = "PythonSourceDef",
@@ -275,7 +273,7 @@ pub struct PythonSource {
     pub conda_env: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PythonSourceDef {
     SourceOnly(String),
@@ -342,7 +340,7 @@ pub struct PythonOperatorConfig {
     pub outputs: BTreeSet<DataId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -357,7 +355,7 @@ pub struct CustomNode {
     pub run_config: NodeRunConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
     #[serde(deserialize_with = "with_expand_envs")]

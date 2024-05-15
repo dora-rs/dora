@@ -1,4 +1,5 @@
 use once_cell::sync::OnceCell;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Borrow,
@@ -9,7 +10,9 @@ use std::{
     time::Duration,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub struct NodeId(String);
 
 impl FromStr for NodeId {
@@ -32,7 +35,9 @@ impl std::fmt::Display for NodeId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub struct OperatorId(String);
 
 impl FromStr for OperatorId {
@@ -61,7 +66,9 @@ impl AsRef<str> for OperatorId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub struct DataId(String);
 
 impl From<DataId> for String {
@@ -114,7 +121,7 @@ impl Borrow<str> for DataId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub enum InputMapping {
     Timer { interval: Duration },
     User(UserInputMapping),
@@ -214,7 +221,7 @@ impl<'de> Deserialize<'de> for InputMapping {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub struct UserInputMapping {
     pub source: NodeId,
     pub output: DataId,
@@ -236,7 +243,7 @@ pub fn format_duration(interval: Duration) -> FormattedDuration {
     FormattedDuration(interval)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeRunConfig {
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
@@ -244,7 +251,7 @@ pub struct NodeRunConfig {
     pub outputs: BTreeSet<DataId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, from = "InputDef", into = "InputDef")]
 pub struct Input {
     pub mapping: InputMapping,
@@ -294,7 +301,7 @@ impl From<InputDef> for Input {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
 pub struct CommunicationConfig {
     // see https://github.com/dtolnay/serde-yaml/issues/298
@@ -303,16 +310,15 @@ pub struct CommunicationConfig {
         with = "serde_yaml::with::singleton_map",
         rename = "_unstable_local"
     )]
+    #[schemars(with = "String")]
     pub local: LocalCommunicationConfig,
     #[serde(
         default,
         with = "serde_yaml::with::singleton_map",
         rename = "_unstable_remote"
     )]
+    #[schemars(with = "String")]
     pub remote: RemoteCommunicationConfig,
-
-    // deprecated
-    pub zenoh: Option<serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
