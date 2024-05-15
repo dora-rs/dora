@@ -126,13 +126,19 @@ pub struct Deploy {
     pub machine: Option<String>,
 }
 
+/// Dora Node
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Node {
+    /// Node identifier
     pub id: NodeId,
+    /// Node name
     pub name: Option<String>,
+    /// Description of the node
     pub description: Option<String>,
+    /// Environment variables
     pub env: Option<BTreeMap<String, EnvValue>>,
 
+    /// Unstable machine deployment configuration
     #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
 
@@ -342,12 +348,25 @@ pub struct PythonOperatorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
+    /// Path of the source code
+    ///
+    /// If you want to use a specific `conda` environment.
+    /// Provide the python path within the source.
+    ///
+    /// source: /home/peter/miniconda3/bin/python
+    ///
+    /// args: some_node.py
+    ///
+    /// Source can match any executable in PATH.
     pub source: String,
+    /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
+    /// Environment variables for the custom nodes
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    /// Send stdout and stderr to another node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 
