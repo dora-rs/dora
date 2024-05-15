@@ -25,6 +25,7 @@ fn main() -> () {
           }",
         "true",
     );
+    let raw_schema = raw_schema.replace("Descriptor", "dora-rs specification");
 
     // Get the Cargo root manifest directory
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set");
