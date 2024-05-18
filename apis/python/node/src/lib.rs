@@ -154,6 +154,13 @@ impl Node {
         pythonize::pythonize(py, self.node.dataflow_descriptor())
     }
 
+    /// Returns the dataflow id.
+    ///
+    /// :rtype: str
+    pub fn dataflow_id(&self) -> String {
+        self.node.dataflow_id().to_string()
+    }
+
     /// Merge an external event stream with dora main loop.
     /// This currently only work with ROS2.
     ///
