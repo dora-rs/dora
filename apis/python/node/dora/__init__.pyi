@@ -39,6 +39,9 @@ node = Node()
 
 This method returns the parsed dataflow YAML file."""
 
+    def dataflow_id(self) -> str:
+        """Returns the dataflow id."""
+
     def merge_external_events(self, subscription: dora.Ros2Subscription) -> None:
         """Merge an external event stream with dora main loop.
 This currently only work with ROS2."""
