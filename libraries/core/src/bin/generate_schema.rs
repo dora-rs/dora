@@ -7,6 +7,11 @@ fn main() -> () {
     let schema = schema_for!(Descriptor);
     let raw_schema =
         serde_json::to_string_pretty(&schema).expect("Could not serialize schema to json");
+
+    // Add additional properties to True, as #[derive(transparent)] of enums are not well handled.
+    //
+    // 'OneOf' such as Custom Nodes, Operators and Single Operators overwrite property values of the initial struct `Nodes`.`
+    // which make the original properties such as `id` and `name` not validated by IDE extensions.
     let raw_schema = raw_schema.replace(
         "\"additionalProperties\": false",
         "\"additionalProperties\": true",
@@ -25,7 +30,6 @@ fn main() -> () {
           }",
         "true",
     );
-    let raw_schema = raw_schema.replace("Descriptor", "dora-rs specification");
 
     // Get the Cargo root manifest directory
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set");
