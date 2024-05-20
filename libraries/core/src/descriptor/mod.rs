@@ -20,9 +20,12 @@ pub const SHELL_SOURCE: &str = "shell";
 /// Dataflow description
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "dora-rs specification")]
 pub struct Descriptor {
+    #[schemars(skip)]
     #[serde(default)]
     pub communication: CommunicationConfig,
+    #[schemars(skip)]
     #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
     pub nodes: Vec<Node>,
@@ -139,6 +142,7 @@ pub struct Node {
     pub env: Option<BTreeMap<String, EnvValue>>,
 
     /// Unstable machine deployment configuration
+    #[schemars(skip)]
     #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
 
@@ -266,6 +270,7 @@ pub struct OperatorConfig {
 pub enum OperatorSource {
     SharedLibrary(String),
     Python(PythonSource),
+    #[schemars(skip)]
     Wasm(String),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
