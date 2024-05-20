@@ -1,6 +1,7 @@
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 
+#[derive(Debug)]
 pub enum MergedEvent<E> {
     Dora(super::Event),
     External(E),

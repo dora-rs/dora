@@ -5,6 +5,7 @@ use pyo3::{exceptions::PyLookupError, prelude::*, types::PyDict};
 
 /// Dora Event
 #[pyclass]
+#[derive(Debug)]
 pub struct PyEvent {
     event: MergedEvent<PyObject>,
     data: Option<ArrayRef>,
@@ -55,6 +56,10 @@ impl PyEvent {
             MergedEvent::Dora(_) => None,
             MergedEvent::External(event) => Some(event),
         }
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        Ok(format!("{:#?}", &self.event))
     }
 }
 
