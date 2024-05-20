@@ -7,27 +7,6 @@
     "nodes"
   ],
   "properties": {
-    "_unstable_deploy": {
-      "default": {
-        "machine": null
-      },
-      "allOf": [
-        {
-          "$ref": "#/definitions/Deploy"
-        }
-      ]
-    },
-    "communication": {
-      "default": {
-        "_unstable_local": "Tcp",
-        "_unstable_remote": "tcp"
-      },
-      "allOf": [
-        {
-          "$ref": "#/definitions/CommunicationConfig"
-        }
-      ]
-    },
     "nodes": {
       "type": "array",
       "items": {
@@ -37,20 +16,6 @@
   },
   "additionalProperties": true,
   "definitions": {
-    "CommunicationConfig": {
-      "type": "object",
-      "properties": {
-        "_unstable_local": {
-          "default": "Tcp",
-          "type": "string"
-        },
-        "_unstable_remote": {
-          "default": "tcp",
-          "type": "string"
-        }
-      },
-      "additionalProperties": true
-    },
     "CustomNode": {
       "type": "object",
       "required": [
@@ -81,7 +46,7 @@
           }
         },
         "inputs": {
-          "description": "Inputs for the nodes as a map from input ID to input configuration\n\ne.g.\n\ninputs:\n\nexample_input: example_node/example_output1",
+          "description": "Inputs for the nodes as a map from input ID to `<node_id>/<output_id>`.\n\ne.g.\n\ninputs:\n\nexample_input: example_node/example_output1",
           "default": {},
           "type": "object",
           "additionalProperties": true
@@ -110,18 +75,6 @@
     },
     "DataId": {
       "type": "string"
-    },
-    "Deploy": {
-      "type": "object",
-      "properties": {
-        "machine": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "additionalProperties": true
     },
     "Duration": {
       "type": "object",
@@ -262,17 +215,6 @@
         "id"
       ],
       "properties": {
-        "_unstable_deploy": {
-          "description": "Unstable machine deployment configuration",
-          "default": {
-            "machine": null
-          },
-          "allOf": [
-            {
-              "$ref": "#/definitions/Deploy"
-            }
-          ]
-        },
         "description": {
           "description": "Description of the node",
           "type": [
@@ -332,18 +274,6 @@
           ],
           "properties": {
             
-          },
-          "additionalProperties": true
-        },
-        {
-          "type": "object",
-          "required": [
-            "wasm"
-          ],
-          "properties": {
-            "wasm": {
-              "type": "string"
-            }
           },
           "additionalProperties": true
         }
@@ -437,18 +367,6 @@
           ],
           "properties": {
             
-          },
-          "additionalProperties": true
-        },
-        {
-          "type": "object",
-          "required": [
-            "wasm"
-          ],
-          "properties": {
-            "wasm": {
-              "type": "string"
-            }
           },
           "additionalProperties": true
         }
