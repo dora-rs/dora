@@ -1,0 +1,441 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "dora-rs specification",
+  "description": "Dataflow description",
+  "type": "object",
+  "required": [
+    "nodes"
+  ],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Node"
+      }
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "CustomNode": {
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "args": {
+          "description": "Args for the executable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "envs": {
+          "description": "Environment variables for the custom nodes",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/EnvValue"
+          }
+        },
+        "inputs": {
+          "description": "Inputs for the nodes as a map from input ID to `<node_id>/<output_id>`.\n\ne.g.\n\ninputs:\n\nexample_input: example_node/example_output1",
+          "default": {},
+          "type": "object",
+          "additionalProperties": true
+        },
+        "outputs": {
+          "description": "Outputs as a list of outputs.\n\ne.g.\n\noutputs:\n\n- output_1\n\n- output_2",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DataId"
+          },
+          "uniqueItems": true
+        },
+        "send_stdout_as": {
+          "description": "Send stdout and stderr to another node",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Path of the source code\n\nIf you want to use a specific `conda` environment. Provide the python path within the source.\n\nsource: /home/peter/miniconda3/bin/python\n\nargs: some_node.py\n\nSource can match any executable in PATH.",
+          "type": "string"
+        }
+      }
+    },
+    "DataId": {
+      "type": "string"
+    },
+    "Duration": {
+      "type": "object",
+      "required": [
+        "nanos",
+        "secs"
+      ],
+      "properties": {
+        "nanos": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "secs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "EnvValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "Input": {
+      "type": "object",
+      "required": [
+        "mapping"
+      ],
+      "properties": {
+        "mapping": {
+          "$ref": "#/definitions/InputMapping"
+        },
+        "queue_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": true
+    },
+    "InputMapping": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "Timer"
+          ],
+          "properties": {
+            "Timer": {
+              "type": "object",
+              "required": [
+                "interval"
+              ],
+              "properties": {
+                "interval": {
+                  "$ref": "#/definitions/Duration"
+                }
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "User"
+          ],
+          "properties": {
+            "User": {
+              "$ref": "#/definitions/UserInputMapping"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "Node": {
+      "description": "Dora Node",
+      "type": "object",
+      "oneOf": [
+        {
+          "description": "Dora runtime node",
+          "type": "object",
+          "required": [
+            "operators"
+          ],
+          "properties": {
+            "operators": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/OperatorDefinition"
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "custom"
+          ],
+          "properties": {
+            "custom": {
+              "$ref": "#/definitions/CustomNode"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "operator"
+          ],
+          "properties": {
+            "operator": {
+              "$ref": "#/definitions/SingleOperatorDefinition"
+            }
+          },
+          "additionalProperties": true
+        }
+      ],
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "description": {
+          "description": "Description of the node",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "description": "Environment variables",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/EnvValue"
+          }
+        },
+        "id": {
+          "description": "Node identifier",
+          "allOf": [
+            {
+              "$ref": "#/definitions/NodeId"
+            }
+          ]
+        },
+        "name": {
+          "description": "Node name",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "NodeId": {
+      "type": "string"
+    },
+    "OperatorDefinition": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "shared-library"
+          ],
+          "properties": {
+            "shared-library": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "python"
+          ],
+          "properties": {
+            
+          },
+          "additionalProperties": true
+        }
+      ],
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "build": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/definitions/OperatorId"
+        },
+        "inputs": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": true
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outputs": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DataId"
+          },
+          "uniqueItems": true
+        },
+        "send_stdout_as": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "OperatorId": {
+      "type": "string"
+    },
+    "PythonSource": {
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "conda_env": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "SingleOperatorDefinition": {
+      "type": "object",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "shared-library"
+          ],
+          "properties": {
+            "shared-library": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "python"
+          ],
+          "properties": {
+            
+          },
+          "additionalProperties": true
+        }
+      ],
+      "properties": {
+        "build": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "ID is optional if there is only a single operator.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OperatorId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputs": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": true
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outputs": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DataId"
+          },
+          "uniqueItems": true
+        },
+        "send_stdout_as": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "UserInputMapping": {
+      "type": "object",
+      "required": [
+        "output",
+        "source"
+      ],
+      "properties": {
+        "output": {
+          "$ref": "#/definitions/DataId"
+        },
+        "source": {
+          "$ref": "#/definitions/NodeId"
+        }
+      }
+    }
+  }
+}

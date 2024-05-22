@@ -20,3 +20,5 @@ tracing = "0.1"
 serde-with-expand-env = "1.1.0"
 tokio = { version = "1.24.1", features = ["fs", "process", "sync"] }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
+schemars = "0.8.19"
+serde_json = "1.0.117"

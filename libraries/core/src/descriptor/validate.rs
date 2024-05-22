@@ -13,13 +13,6 @@ use super::{resolve_path, Descriptor, SHELL_SOURCE};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
-    if dataflow.daemon_config.is_some() {
-        tracing::warn!("ignoring deprecated `daemon_config` key in dataflow config");
-    }
-    if dataflow.communication.zenoh.is_some() {
-        tracing::warn!("ignoring deprecated `communication.zenoh` key in dataflow config");
-    }
-
     let nodes = dataflow.resolve_aliases_and_set_defaults();
     let mut has_python_operator = false;
 
