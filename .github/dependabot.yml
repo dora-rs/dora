@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    versioning-strategy: "lockfile-only"
+    allow:
+      - dependency-type: "all"
+    groups:
+      version-updates:
+        patterns:
+          - "*"
+    schedule:
+      interval: "weekly"
