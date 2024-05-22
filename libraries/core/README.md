@@ -24,7 +24,7 @@ We can pass the JSON Schema to VSCode [`redhat.vscode-yaml`](https://marketplace
 
 ```json
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/dora-rs/dora/json-schemas/libraries/core/dora-schema.json": "/*"
+    "https://raw.githubusercontent.com/dora-rs/dora/main/libraries/core/dora-schema.json": "/*"
   },
 ```
 
