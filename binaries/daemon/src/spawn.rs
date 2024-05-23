@@ -131,7 +131,13 @@ pub async fn spawn_node(
             );
             // Injecting the env variable defined in the `yaml` into
             // the node runtime.
+            if let Some(envs) = node.env {
+                for (key, value) in envs {
+                    command.env(key, value.to_string());
+                }
+            }
             if let Some(envs) = n.envs {
+                // node has some inner env variables -> add them too
                 for (key, value) in envs {
                     command.env(key, value.to_string());
                 }
