@@ -272,16 +272,29 @@ pub async fn spawn_node(
         let mut buffer = String::new();
         let mut finished = false;
         while !finished {
+            let mut raw = Vec::new();
             finished = match child_stdout
-                .read_line(&mut buffer)
+                .read_until(b'\n', &mut raw)
                 .await
-                .wrap_err("failed to read stdout line from spawned node")
+                .wrap_err_with(|| format!("failed to read stdout line from spawned node {node_id}"))
             {
                 Ok(0) => true,
                 Ok(_) => false,
                 Err(err) => {
                     tracing::warn!("{err:?}");
-                    true
+                    false
+                }
+            };
+
+            match String::from_utf8(raw) {
+                Ok(s) => buffer.push_str(&s),
+                Err(err) => {
+                    let lossy = String::from_utf8_lossy(err.as_bytes());
+                    tracing::warn!(
+                        "stdout not valid UTF-8 string (node {node_id}): {}: {lossy}",
+                        err.utf8_error()
+                    );
+                    buffer.push_str(&lossy)
                 }
             };
 
@@ -319,16 +332,29 @@ pub async fn spawn_node(
         let mut buffer = String::new();
         let mut finished = false;
         while !finished {
+            let mut raw = Vec::new();
             finished = match child_stderr
-                .read_line(&mut buffer)
+                .read_until(b'\n', &mut raw)
                 .await
-                .wrap_err("failed to read stderr line from spawned node")
+                .wrap_err_with(|| format!("failed to read stderr line from spawned node {node_id}"))
             {
                 Ok(0) => true,
                 Ok(_) => false,
                 Err(err) => {
                     tracing::warn!("{err:?}");
                     true
+                }
+            };
+
+            match String::from_utf8(raw) {
+                Ok(s) => buffer.push_str(&s),
+                Err(err) => {
+                    let lossy = String::from_utf8_lossy(err.as_bytes());
+                    tracing::warn!(
+                        "stderr not valid UTF-8 string (node {node_id}): {}: {lossy}",
+                        err.utf8_error()
+                    );
+                    buffer.push_str(&lossy)
                 }
             };
 
