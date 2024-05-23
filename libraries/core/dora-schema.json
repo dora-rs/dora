@@ -36,7 +36,7 @@
           ]
         },
         "envs": {
-          "description": "Environment variables for the custom nodes",
+          "description": "Environment variables for the custom nodes\n\nDeprecated, use outer-level `env` field instead.",
           "type": [
             "object",
             "null"
@@ -46,13 +46,13 @@
           }
         },
         "inputs": {
-          "description": "Inputs for the nodes as a map from input ID to `<node_id>/<output_id>`.\n\ne.g.\n\ninputs:\n\nexample_input: example_node/example_output1",
+          "description": "Inputs for the nodes as a map from input ID to `node_id/output_id`.\n\ne.g.\n\ninputs:\n\nexample_input: example_node/example_output1",
           "default": {},
           "type": "object",
           "additionalProperties": true
         },
         "outputs": {
-          "description": "Outputs as a list of outputs.\n\ne.g.\n\noutputs:\n\n- output_1\n\n- output_2",
+          "description": "List of output IDs.\n\ne.g.\n\noutputs:\n\n- output_1\n\n- output_2",
           "default": [],
           "type": "array",
           "items": {
@@ -169,52 +169,32 @@
     "Node": {
       "description": "Dora Node",
       "type": "object",
-      "oneOf": [
-        {
-          "description": "Dora runtime node",
-          "type": "object",
-          "required": [
-            "operators"
-          ],
-          "properties": {
-            "operators": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/OperatorDefinition"
-              }
-            }
-          },
-          "additionalProperties": true
-        },
-        {
-          "type": "object",
-          "required": [
-            "custom"
-          ],
-          "properties": {
-            "custom": {
-              "$ref": "#/definitions/CustomNode"
-            }
-          },
-          "additionalProperties": true
-        },
-        {
-          "type": "object",
-          "required": [
-            "operator"
-          ],
-          "properties": {
-            "operator": {
-              "$ref": "#/definitions/SingleOperatorDefinition"
-            }
-          },
-          "additionalProperties": true
-        }
-      ],
       "required": [
         "id"
       ],
       "properties": {
+        "args": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "build": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "custom": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CustomNode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "description": {
           "description": "Description of the node",
           "type": [
@@ -240,14 +220,59 @@
             }
           ]
         },
+        "inputs": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": true
+        },
         "name": {
           "description": "Node name",
           "type": [
             "string",
             "null"
           ]
+        },
+        "operator": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SingleOperatorDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operators": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/OperatorDefinition"
+          }
+        },
+        "outputs": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DataId"
+          },
+          "uniqueItems": true
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "send_stdout_as": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
-      }
+      },
+      "additionalProperties": true
     },
     "NodeId": {
       "type": "string"
