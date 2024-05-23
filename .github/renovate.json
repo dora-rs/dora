@@ -5,6 +5,14 @@
     ":semanticCommitTypeAll(chore)"
   ],
   "rangeStrategy": "update-lockfile",
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "lockFileMaintenance"
+      ],
+      "groupName": "Update Cargo.lock"
+    }
+  ],
   "schedule": [
     "on monday"
   ]
