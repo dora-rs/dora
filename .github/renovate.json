@@ -1,6 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    ":semanticCommitTypeAll(chore)"
+  ],
+  "rangeStrategy": "update-lockfile",
+  "schedule": [
+    "on monday"
   ]
 }
