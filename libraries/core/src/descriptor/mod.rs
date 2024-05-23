@@ -78,13 +78,13 @@ impl Descriptor {
                 NodeKindMut::Standard { path, inputs: _ } => CoreNodeKind::Custom(CustomNode {
                     source: path.clone(),
                     args: node.args,
-                    envs: node.envs,
                     build: node.build,
                     send_stdout_as: node.send_stdout_as,
                     run_config: NodeRunConfig {
                         inputs: node.inputs,
                         outputs: node.outputs,
                     },
+                    envs: None,
                 }),
                 NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
                 NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
@@ -172,8 +172,6 @@ pub struct Node {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -464,6 +462,8 @@ pub struct CustomNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
     /// Environment variables for the custom nodes
+    ///
+    /// Deprecated, use outer-level `env` field instead.
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
