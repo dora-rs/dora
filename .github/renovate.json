@@ -4,7 +4,7 @@
     "config:recommended",
     ":semanticCommitTypeAll(chore)"
   ],
-  "rangeStrategy": "update-lockfile",
+  "rangeStrategy": "in-range-only",
   "packageRules": [
     {
       "matchUpdateTypes": [
