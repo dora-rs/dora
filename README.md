@@ -3,13 +3,13 @@
 </p>
 
 <h2 align="center">
-  <a href="https://dora.carsmos.ai">Website</a>
+  <a href="https://www.dora-rs.ai">Website</a>
   |
-  <a href="https://dora.carsmos.ai/docs/api/python-api">Python API</a>
+  <a href="https://www.dora-rs.ai/docs/api/python-api">Python API</a>
   -
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
   |
-  <a href="https://dora.carsmos.ai/docs/guides/">Guide</a>
+  <a href="https://www.dora-rs.ai/docs/guides/">Guide</a>
   |
   <a href="https://discord.gg/6eMGGutkfE">Discord</a>
 </h2>
@@ -46,7 +46,7 @@ dora-rs is still experimental and you might experience bugs, but we're working v
 
 dora-rs can show impressive performance, up to 17x faster compared to current status quo ROS2 in Python! This is the result of using our own shared memory server and Apache Arrow to achieve zero copy data passing.
 
-<a href="https://dora.carsmos.ai/">
+<a href="https://www.dora-rs.ai/">
 <img src="./docs/src/latency.png" align="center" width="600">
 </a>
 
@@ -91,7 +91,7 @@ Nodes can either be:
 
 The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
 
-<a href="https://dora.carsmos.ai/">
+<a href="https://www.dora-rs.ai/">
 <img src="https://raw.githubusercontent.com/dora-rs/dora-rs.github.io/main/static/img/overview.svg" align="center" width="600">
 </a>
 
@@ -153,24 +153,24 @@ pip install dora-rs # For Python API
 dora --help
 ```
 
-For more info on installation, check out [our guide](https://dora.carsmos.ai/docs/guides/Installation/installing).
+For more info on installation, check out [our guide](https://www.dora-rs.ai/docs/guides/Installation/installing).
 
 ## Getting Started
 
 1. Install the example python dependencies:
 
 ```bash
-pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/requirements.txt
+pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.4/examples/python-operator-dataflow/requirements.txt
 ```
 
 2. Get some example operators:
 
 ```bash
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/webcam.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/plot.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/utils.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/object_detection.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.3/examples/python-operator-dataflow/dataflow.yml
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.4/examples/python-operator-dataflow/webcam.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.4/examples/python-operator-dataflow/plot.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.4/examples/python-operator-dataflow/utils.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.4/examples/python-operator-dataflow/object_detection.py
+wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.4/examples/python-operator-dataflow/dataflow.yml
 ```
 
 3. Start the dataflow
@@ -184,7 +184,7 @@ dora start dataflow.yml --attach --hot-reload
 
 To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
 
-To go further, you can add a yolov8 operator, check out our getting started here: https://dora.carsmos.ai/docs/guides/getting-started/yolov8/
+To go further, you can add a yolov8 operator, check out our getting started here: https://www.dora-rs.ai/docs/guides/getting-started/yolov8/
 
 ## ROS2 Bridge
 
@@ -233,7 +233,7 @@ Cool hardware that we think might be good fit to try out dora-rs 🙋 We are not
 
 ## Documentation
 
-The full documentation is available on [our website](https://dora.carsmos.ai)
+The full documentation is available on [our website](https://www.dora-rs.ai)
 
 ## Discussions
 

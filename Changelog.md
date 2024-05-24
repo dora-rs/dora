@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.3.4 (2024-05-17)
+
+## What's Changed
+
+- Remove `cxx_build` call, which is no longer used by @phil-opp in https://github.com/dora-rs/dora/pull/470
+- Update `ros2-client` to latest version by @phil-opp in https://github.com/dora-rs/dora/pull/457
+- Configurable bind addrs by @Michael-J-Ward in https://github.com/dora-rs/dora/pull/471
+- Simple warning fixes by @Michael-J-Ward in https://github.com/dora-rs/dora/pull/477
+- Adding `dora-rerun` as a visualization tool by @haixuanTao in https://github.com/dora-rs/dora/pull/479
+- Fix Clippy and RERUN_MEMORY_LIMIT env variable default by @haixuanTao in https://github.com/dora-rs/dora/pull/490
+- Fix CI build errors by @phil-opp in https://github.com/dora-rs/dora/pull/491
+- Use `resolver = 2` for in workspace in Rust template by @phil-opp in https://github.com/dora-rs/dora/pull/492
+- Add grace duration and kill process by @haixuanTao in https://github.com/dora-rs/dora/pull/487
+- Simplify parsing of `AMENT_PREFIX_PATH` by @haixuanTao in https://github.com/dora-rs/dora/pull/489
+- Convert rust example to node by @Michael-J-Ward in https://github.com/dora-rs/dora/pull/494
+- Adding python IDE typing by @haixuanTao in https://github.com/dora-rs/dora/pull/493
+- Fix: Wait until dora daemon is connected to coordinator on `dora up` by @phil-opp in https://github.com/dora-rs/dora/pull/496
+
+## New Contributors
+
+- @Michael-J-Ward made their first contribution in https://github.com/dora-rs/dora/pull/471
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.3...v0.3.4
+
 ## v0.3.3 (2024-04-08)
 
 ## What's Changed
