@@ -1,46 +1,43 @@
-use dora_tracing::set_up_tracing;
-use eyre::{bail, Context};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use xshell::{cmd, Shell};
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    set_up_tracing("benchmark-runner").wrap_err("failed to set up tracing subscriber")?;
+fn main() -> eyre::Result<()> {
+    // create a new shell in this folder
+    let sh = prepare_shell()?;
+    // build the `dora` binary (you can skip this if you use `cargo install dora-cli`)
+    let dora = prepare_dora_optimized(&sh)?;
 
+    // build the dataflow using `dora build`
+    cmd!(sh, "{dora} build dataflow.yml").run()?;
+
+    // start up the dora daemon and coordinator
+    cmd!(sh, "{dora} up").run()?;
+
+    // start running the dataflow.yml
+    cmd!(sh, "{dora} start dataflow.yml --attach").run()?;
+
+    // stop the dora daemon and coordinator again
+    cmd!(sh, "{dora} destroy").run()?;
+
+    Ok(())
+}
+
+/// Prepares a shell and set the working directory to the parent folder of this file.
+///
+/// You can use your system shell instead (e.g. `bash`);
+fn prepare_shell() -> Result<Shell, eyre::Error> {
+    let sh = Shell::new()?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    std::env::set_current_dir(root.join(file!()).parent().unwrap())
-        .wrap_err("failed to set working dir")?;
-
-    let dataflow = Path::new("dataflow.yml");
-    build_dataflow(dataflow).await?;
-
-    run_dataflow(dataflow).await?;
-
-    Ok(())
+    sh.change_dir(root.join(file!()).parent().unwrap());
+    Ok(sh)
 }
 
-async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--").arg("build").arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to build dataflow");
-    };
-    Ok(())
-}
-
-async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--")
-        .arg("daemon")
-        .arg("--run-dataflow")
-        .arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
-    };
-    Ok(())
+/// Build the `dora` command-line executable from this repo.
+///
+/// You can skip this step and run `cargo install dora-cli --locked` instead.
+fn prepare_dora_optimized(sh: &Shell) -> eyre::Result<PathBuf> {
+    cmd!(sh, "cargo build --package dora-cli --release").run()?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dora = root.join("target").join("release").join("dora");
+    Ok(dora)
 }
