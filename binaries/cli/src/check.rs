@@ -1,11 +1,15 @@
 use crate::connect_to_coordinator;
 use communication_layer_request_reply::TcpRequestReplyConnection;
+use dora_core::topics::control_socket_addr;
 use dora_core::topics::{ControlRequest, ControlRequestReply};
 use eyre::{bail, Context};
-use std::io::{IsTerminal, Write};
+use std::{
+    io::{IsTerminal, Write},
+    net::SocketAddr,
+};
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
-pub fn check_environment() -> eyre::Result<()> {
+pub fn check_environment(coordinator_addr: Option<SocketAddr>) -> eyre::Result<()> {
     let mut error_occured = false;
 
     let color_choice = if std::io::stdout().is_terminal() {
@@ -17,7 +21,8 @@ pub fn check_environment() -> eyre::Result<()> {
 
     // check whether coordinator is running
     write!(stdout, "Dora Coordinator: ")?;
-    let mut session = match connect_to_coordinator() {
+    let coordination_addr = coordinator_addr.unwrap_or_else(|| control_socket_addr());
+    let mut session = match connect_to_coordinator(coordination_addr) {
         Ok(session) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
             writeln!(stdout, "ok")?;
