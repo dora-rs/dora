@@ -3,8 +3,7 @@ use eyre::{Context, ContextCompat};
 use std::path::{Path, PathBuf};
 use xshell::{cmd, Shell};
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
     set_up_tracing("cmake-dataflow-runner").wrap_err("failed to set up tracing")?;
 
     if cfg!(windows) {
