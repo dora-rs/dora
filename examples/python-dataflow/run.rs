@@ -1,11 +1,10 @@
 use dora_core::get_python_path;
-use dora_download::download_file;
+use dora_download::download_file_sync;
 use eyre::{ContextCompat, WrapErr};
 use std::path::{Path, PathBuf};
 use xshell::{cmd, Shell};
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
     // create a new shell in this folder
     let sh = prepare_shell()?;
 
@@ -29,11 +28,10 @@ async fn main() -> eyre::Result<()> {
         cmd!(sh, "maturin develop").run()?;
     }
 
-    download_file(
+    download_file_sync(
         "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
         Path::new("yolov8n.pt"),
     )
-    .await
     .context("Could not download weights.")?;
 
     // start up the dora daemon and coordinator
