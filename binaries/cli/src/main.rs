@@ -68,12 +68,14 @@ enum Command {
     Up {
         #[clap(long)]
         config: Option<PathBuf>,
+        #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
         #[clap(long)]
         config: Option<PathBuf>,
+        #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
     },
     /// Start the given dataflow path. Attach a name to the running dataflow by using --name.
@@ -96,10 +98,12 @@ enum Command {
         #[clap(long)]
         #[arg(value_parser = parse)]
         grace_duration: Option<Duration>,
+        #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
     },
     /// List running dataflows.
     List {
+        #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
     },
     // Planned for future releases:
@@ -109,6 +113,7 @@ enum Command {
     Logs {
         dataflow: Option<String>,
         node: String,
+        #[clap(long)]
         coordinator_addr: Option<SocketAddr>,
     },
     // Metrics,
@@ -234,8 +239,7 @@ fn run() -> eyre::Result<()> {
             node,
             coordinator_addr,
         } => {
-            let coordination_addr = coordinator_addr.unwrap_or_else(|| control_socket_addr());
-            let mut session = connect_to_coordinator(coordination_addr)
+            let mut session = connect_to_coordinator(coordinator_addr)
                 .wrap_err("failed to connect to dora coordinator")?;
             let uuids = query_running_dataflows(&mut *session)
                 .wrap_err("failed to query running dataflows")?;
@@ -271,8 +275,7 @@ fn run() -> eyre::Result<()> {
                 .check(&working_dir)
                 .wrap_err("Could not validate yaml")?;
 
-            let coordination_addr = coordinator_addr.unwrap_or_else(|| control_socket_addr());
-            let mut session = connect_to_coordinator(coordination_addr)
+            let mut session = connect_to_coordinator(coordinator_addr)
                 .wrap_err("failed to connect to dora coordinator")?;
             let dataflow_id = start_dataflow(
                 dataflow_descriptor.clone(),
@@ -291,23 +294,19 @@ fn run() -> eyre::Result<()> {
                 )?
             }
         }
-        Command::List { coordinator_addr } => {
-            let coordination_addr = coordinator_addr.unwrap_or_else(|| control_socket_addr());
-            match connect_to_coordinator(coordination_addr) {
-                Ok(mut session) => list(&mut *session)?,
-                Err(_) => {
-                    bail!("No dora coordinator seems to be running.");
-                }
+        Command::List { coordinator_addr } => match connect_to_coordinator(coordinator_addr) {
+            Ok(mut session) => list(&mut *session)?,
+            Err(_) => {
+                bail!("No dora coordinator seems to be running.");
             }
-        }
+        },
         Command::Stop {
             uuid,
             name,
             grace_duration,
             coordinator_addr,
         } => {
-            let coordination_addr = coordinator_addr.unwrap_or_else(|| control_socket_addr());
-            let mut session = connect_to_coordinator(coordination_addr)
+            let mut session = connect_to_coordinator(coordinator_addr)
                 .wrap_err("could not connect to dora coordinator")?;
             match (uuid, name) {
                 (Some(uuid), _) => stop_dataflow(uuid, grace_duration, &mut *session)?,
@@ -499,7 +498,8 @@ fn query_running_dataflows(
 }
 
 fn connect_to_coordinator(
-    coordinator_addr: SocketAddr,
+    coordinator_addr: Option<SocketAddr>,
 ) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    TcpLayer::new().connect(coordinator_addr)
+    let coordination_addr = coordinator_addr.unwrap_or_else(control_socket_addr);
+    TcpLayer::new().connect(coordination_addr)
 }
