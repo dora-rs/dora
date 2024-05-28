@@ -1,186 +1,178 @@
-use dora_tracing::set_up_tracing;
-use eyre::{bail, Context};
-use std::{
-    env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
-    path::Path,
-};
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX};
+use std::path::{Path, PathBuf};
+use xshell::{cmd, Shell};
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    set_up_tracing("c-dataflow-runner").wrap_err("failed to set up tracing")?;
-
+fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    std::env::set_current_dir(root.join(file!()).parent().unwrap())
-        .wrap_err("failed to set working dir")?;
 
-    tokio::fs::create_dir_all("build").await?;
+    // create a new shell in this folder
+    let sh = prepare_shell()?;
+    // build the `dora` binary (you can skip this if you use `cargo install dora-cli`)
+    let dora = prepare_dora(&sh)?;
 
-    build_package("dora-node-api-c").await?;
-    build_c_node(root, "node.c", "c_node").await?;
-    build_c_node(root, "sink.c", "c_sink").await?;
+    cmd!(sh, "cargo build --package dora-node-api-c").run()?;
+    cmd!(sh, "cargo build --package dora-operator-api-c").run()?;
 
-    build_package("dora-operator-api-c").await?;
-    build_c_operator(root).await?;
+    sh.create_dir("build")?;
+    let target_debug = root.join("target").join("debug");
 
-    let dataflow = Path::new("dataflow.yml").to_owned();
-    run_dataflow(&dataflow).await?;
+    // compile nodes
+    let args: &[&str] = if cfg!(target_os = "linux") {
+        &["-l", "m", "-l", "rt", "-l", "dl", "-pthread"]
+    } else if cfg!(target_os = "windows") {
+        &[
+            "-ladvapi32",
+            "-luserenv",
+            "-lkernel32",
+            "-lws2_32",
+            "-lbcrypt",
+            "-lncrypt",
+            "-lschannel",
+            "-lntdll",
+            "-liphlpapi",
+            "-lcfgmgr32",
+            "-lcredui",
+            "-lcrypt32",
+            "-lcryptnet",
+            "-lfwpuclnt",
+            "-lgdi32",
+            "-lmsimg32",
+            "-lmswsock",
+            "-lole32",
+            "-loleaut32",
+            "-lopengl32",
+            "-lsecur32",
+            "-lshell32",
+            "-lsynchronization",
+            "-luser32",
+            "-lwinspool",
+            "-Wl,-nodefaultlib:libcmt",
+            "-D_DLL",
+            "-lmsvcrt",
+        ]
+    } else if cfg!(target_os = "macos") {
+        &[
+            "-framework",
+            "CoreServices",
+            "-framework",
+            "Security",
+            "-l",
+            "System",
+            "-l",
+            "resolv",
+            "-l",
+            "pthread",
+            "-l",
+            "c",
+            "-l",
+            "m",
+        ]
+    } else {
+        panic!("unsupported target platform")
+    };
+    cmd!(
+        sh,
+        "clang node.c -l dora_node_api_c {args...} -L {target_debug} --output build/c_node{EXE_SUFFIX}"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "clang sink.c -l dora_node_api_c {args...} -L {target_debug} --output build/c_sink{EXE_SUFFIX}"
+    )
+    .run()?;
+
+    // compile operator
+    let operator_args: &[&str] = if cfg!(unix) { &["-fPIC"] } else { &[] };
+    cmd!(
+        sh,
+        "clang -c operator.c -o build/operator.o -fdeclspec {operator_args...}"
+    )
+    .run()?;
+    // link operator
+    let operator_link_args: &[&str] = if cfg!(target_os = "windows") {
+        &[
+            "-ladvapi32",
+            "-luserenv",
+            "-lkernel32",
+            "-lws2_32",
+            "-lbcrypt",
+            "-lncrypt",
+            "-lschannel",
+            "-lntdll",
+            "-liphlpapi",
+            "-lcfgmgr32",
+            "-lcredui",
+            "-lcrypt32",
+            "-lcryptnet",
+            "-lfwpuclnt",
+            "-lgdi32",
+            "-lmsimg32",
+            "-lmswsock",
+            "-lole32",
+            "-loleaut32",
+            "-lopengl32",
+            "-lsecur32",
+            "-lshell32",
+            "-lsynchronization",
+            "-luser32",
+            "-lwinspool",
+            "-Wl,-nodefaultlib:libcmt",
+            "-D_DLL",
+            "-lmsvcrt",
+        ]
+    } else if cfg!(target_os = "macos") {
+        &[
+            "-framework",
+            "CoreServices",
+            "-framework",
+            "Security",
+            "-l",
+            "System",
+            "-l",
+            "resolv",
+            "-l",
+            "pthread",
+            "-l",
+            "c",
+            "-l",
+            "m",
+        ]
+    } else {
+        &[]
+    };
+    cmd!(
+        sh,
+        "clang -shared build/operator.o -L {target_debug} -l dora_operator_api_c {operator_link_args...} -o build/{DLL_PREFIX}operator{DLL_SUFFIX}"
+    ).run()?;
+
+    // start up the dora daemon and coordinator
+    cmd!(sh, "{dora} up").run()?;
+
+    // start running the dataflow.yml
+    cmd!(sh, "{dora} start dataflow.yml --attach").run()?;
+
+    // stop the dora daemon and coordinator again
+    cmd!(sh, "{dora} destroy").run()?;
 
     Ok(())
 }
 
-async fn build_package(package: &str) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("build");
-    cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
-        bail!("failed to build {package}");
-    };
-    Ok(())
+/// Prepares a shell and set the working directory to the parent folder of this file.
+///
+/// You can use your system shell instead (e.g. `bash`);
+fn prepare_shell() -> Result<Shell, eyre::Error> {
+    let sh = Shell::new()?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    sh.change_dir(root.join(file!()).parent().unwrap());
+    Ok(sh)
 }
 
-async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--")
-        .arg("daemon")
-        .arg("--run-dataflow")
-        .arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
-    };
-    Ok(())
-}
-
-async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<()> {
-    let mut clang = tokio::process::Command::new("clang");
-    clang.arg(name);
-    clang.arg("-l").arg("dora_node_api_c");
-    #[cfg(target_os = "linux")]
-    {
-        clang.arg("-l").arg("m");
-        clang.arg("-l").arg("rt");
-        clang.arg("-l").arg("dl");
-        clang.arg("-pthread");
-    }
-    #[cfg(target_os = "windows")]
-    {
-        clang.arg("-ladvapi32");
-        clang.arg("-luserenv");
-        clang.arg("-lkernel32");
-        clang.arg("-lws2_32");
-        clang.arg("-lbcrypt");
-        clang.arg("-lncrypt");
-        clang.arg("-lschannel");
-        clang.arg("-lntdll");
-        clang.arg("-liphlpapi");
-
-        clang.arg("-lcfgmgr32");
-        clang.arg("-lcredui");
-        clang.arg("-lcrypt32");
-        clang.arg("-lcryptnet");
-        clang.arg("-lfwpuclnt");
-        clang.arg("-lgdi32");
-        clang.arg("-lmsimg32");
-        clang.arg("-lmswsock");
-        clang.arg("-lole32");
-        clang.arg("-loleaut32");
-        clang.arg("-lopengl32");
-        clang.arg("-lsecur32");
-        clang.arg("-lshell32");
-        clang.arg("-lsynchronization");
-        clang.arg("-luser32");
-        clang.arg("-lwinspool");
-
-        clang.arg("-Wl,-nodefaultlib:libcmt");
-        clang.arg("-D_DLL");
-        clang.arg("-lmsvcrt");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        clang.arg("-framework").arg("CoreServices");
-        clang.arg("-framework").arg("Security");
-        clang.arg("-l").arg("System");
-        clang.arg("-l").arg("resolv");
-        clang.arg("-l").arg("pthread");
-        clang.arg("-l").arg("c");
-        clang.arg("-l").arg("m");
-    }
-    clang.arg("-L").arg(root.join("target").join("debug"));
-    clang
-        .arg("--output")
-        .arg(Path::new("build").join(format!("{out_name}{EXE_SUFFIX}")));
-    if !clang.status().await?.success() {
-        bail!("failed to compile c node");
-    };
-    Ok(())
-}
-
-async fn build_c_operator(root: &Path) -> eyre::Result<()> {
-    let mut compile = tokio::process::Command::new("clang");
-    compile.arg("-c").arg("operator.c");
-    compile.arg("-o").arg("build/operator.o");
-    compile.arg("-fdeclspec");
-    #[cfg(unix)]
-    compile.arg("-fPIC");
-    if !compile.status().await?.success() {
-        bail!("failed to compile c operator");
-    };
-
-    let mut link = tokio::process::Command::new("clang");
-    link.arg("-shared").arg("build/operator.o");
-    link.arg("-L").arg(root.join("target").join("debug"));
-    link.arg("-l").arg("dora_operator_api_c");
-    #[cfg(target_os = "windows")]
-    {
-        link.arg("-ladvapi32");
-        link.arg("-luserenv");
-        link.arg("-lkernel32");
-        link.arg("-lws2_32");
-        link.arg("-lbcrypt");
-        link.arg("-lncrypt");
-        link.arg("-lschannel");
-        link.arg("-lntdll");
-        link.arg("-liphlpapi");
-
-        link.arg("-lcfgmgr32");
-        link.arg("-lcredui");
-        link.arg("-lcrypt32");
-        link.arg("-lcryptnet");
-        link.arg("-lfwpuclnt");
-        link.arg("-lgdi32");
-        link.arg("-lmsimg32");
-        link.arg("-lmswsock");
-        link.arg("-lole32");
-        link.arg("-loleaut32");
-        link.arg("-lopengl32");
-        link.arg("-lsecur32");
-        link.arg("-lshell32");
-        link.arg("-lsynchronization");
-        link.arg("-luser32");
-        link.arg("-lwinspool");
-
-        link.arg("-Wl,-nodefaultlib:libcmt");
-        link.arg("-D_DLL");
-        link.arg("-lmsvcrt");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        link.arg("-framework").arg("CoreServices");
-        link.arg("-framework").arg("Security");
-        link.arg("-l").arg("System");
-        link.arg("-l").arg("resolv");
-        link.arg("-l").arg("pthread");
-        link.arg("-l").arg("c");
-        link.arg("-l").arg("m");
-    }
-    link.arg("-o")
-        .arg(Path::new("build").join(format!("{DLL_PREFIX}operator{DLL_SUFFIX}")));
-    if !link.status().await?.success() {
-        bail!("failed to link c operator");
-    };
-
-    Ok(())
+/// Build the `dora` command-line executable from this repo.
+///
+/// You can skip this step and run `cargo install dora-cli --locked` instead.
+fn prepare_dora(sh: &Shell) -> eyre::Result<PathBuf> {
+    cmd!(sh, "cargo build --package dora-cli").run()?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dora = root.join("target").join("debug").join("dora");
+    Ok(dora)
 }
