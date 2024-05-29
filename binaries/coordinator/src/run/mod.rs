@@ -26,7 +26,7 @@ pub(super) async fn spawn_dataflow(
 ) -> eyre::Result<SpawnedDataflow> {
     dataflow.check(&working_dir)?;
 
-    let nodes = dataflow.resolve_aliases_and_set_defaults();
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
     let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
