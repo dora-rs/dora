@@ -290,6 +290,7 @@ jobs:
           sleep 10
           dora stop --name ci-rust-test  --grace-duration 5s
           dora destroy
+          
       - name: "Test CLI (Python)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly

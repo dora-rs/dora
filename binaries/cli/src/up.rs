@@ -1,21 +1,19 @@
 use crate::{check::daemon_running, connect_to_coordinator};
 use dora_core::topics::ControlRequest;
 use eyre::Context;
-use std::{fs, path::Path, process::Command, time::Duration};
-
+use std::{fs, net::IpAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
+pub(crate) fn up(config_path: Option<&Path>, coordinator_addr: Option<IpAddr>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
-
-    let mut session = match connect_to_coordinator() {
+    let mut session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
         Err(_) => {
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
             loop {
-                match connect_to_coordinator() {
+                match connect_to_coordinator(coordinator_addr) {
                     Ok(session) => break session,
                     Err(_) => {
                         // sleep a bit until the coordinator accepts connections
@@ -47,10 +45,12 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     Ok(())
 }
 
-pub(crate) fn destroy(config_path: Option<&Path>) -> Result<(), eyre::ErrReport> {
+pub(crate) fn destroy(
+    config_path: Option<&Path>,
+    coordinator_addr: Option<IpAddr>,
+) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
-
-    match connect_to_coordinator() {
+    match connect_to_coordinator(coordinator_addr) {
         Ok(mut session) => {
             // send destroy command to dora-coordinator
             session
