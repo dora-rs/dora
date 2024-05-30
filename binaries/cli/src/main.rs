@@ -45,6 +45,7 @@ enum Command {
     Check {
         #[clap(long)]
         dataflow: Option<PathBuf>,
+        #[clap(long)]
         coordinator_addr: Option<IpAddr>,
     },
     /// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
