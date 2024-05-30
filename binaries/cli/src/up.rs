@@ -1,13 +1,13 @@
 use crate::{check::daemon_running, connect_to_coordinator};
 use dora_core::topics::ControlRequest;
 use eyre::Context;
-use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
+use std::{fs, net::IpAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
 pub(crate) fn up(
     config_path: Option<&Path>,
-    coordinator_addr: Option<SocketAddr>,
+    coordinator_addr: Option<IpAddr>,
 ) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let mut session = match connect_to_coordinator(coordinator_addr) {
@@ -50,7 +50,7 @@ pub(crate) fn up(
 
 pub(crate) fn destroy(
     config_path: Option<&Path>,
-    coordinator_addr: Option<SocketAddr>,
+    coordinator_addr: Option<IpAddr>,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
     match connect_to_coordinator(coordinator_addr) {
