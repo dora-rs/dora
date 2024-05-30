@@ -5,6 +5,13 @@ use std::path::Path;
 use tokio::io::AsyncWriteExt;
 use tracing::info;
 
+pub fn download_file_sync<T>(url: T, target_path: &Path) -> Result<(), eyre::ErrReport>
+where
+    T: reqwest::IntoUrl + std::fmt::Display + Copy,
+{
+    tokio::runtime::Runtime::new()?.block_on(download_file(url, target_path))
+}
+
 pub async fn download_file<T>(url: T, target_path: &Path) -> Result<(), eyre::ErrReport>
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,

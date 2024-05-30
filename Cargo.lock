@@ -2352,10 +2352,9 @@ dependencies = [
  "eyre",
  "futures",
  "serde_yaml 0.8.26",
- "tokio",
- "tokio-stream",
  "tracing",
  "uuid",
+ "xshell",
 ]
 
 [[package]]

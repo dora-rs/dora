@@ -86,7 +86,6 @@ ros2-examples = []
 
 [dev-dependencies]
 eyre = "0.6.8"
-tokio = "1.24.2"
 dora-coordinator = { workspace = true }
 dora-core = { workspace = true }
 dora-tracing = { workspace = true }
@@ -96,7 +95,7 @@ serde_yaml = "0.8.23"
 uuid = { version = "1.7", features = ["v7", "serde"] }
 tracing = "0.1.36"
 futures = "0.3.25"
-tokio-stream = "0.1.11"
+xshell = "0.2.6"
 
 [[example]]
 name = "c-dataflow"
