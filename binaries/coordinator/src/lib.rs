@@ -9,7 +9,7 @@ use dora_core::{
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
     message::uhlc::{self, HLC},
-    topics::{control_socket_addr, ControlRequest, ControlRequestReply, DataflowId},
+    topics::{ControlRequest, ControlRequestReply, DataflowId},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
@@ -22,11 +22,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::mpsc,
-    task::JoinHandle,
-};
+use tokio::{net::TcpStream, sync::mpsc, task::JoinHandle};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use uuid::Uuid;
 
@@ -37,6 +33,7 @@ mod tcp_utils;
 
 pub async fn start(
     bind: SocketAddr,
+    bind_control: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let listener = listener::create_listener(bind).await?;
@@ -44,13 +41,30 @@ pub async fn start(
         .local_addr()
         .wrap_err("failed to get local addr of listener")?
         .port();
+    let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
+        c.map(Event::NewDaemonConnection)
+            .wrap_err("failed to open connection")
+            .unwrap_or_else(Event::DaemonConnectError)
+    });
+
     let mut tasks = FuturesUnordered::new();
+    let control_events = control::control_events(bind_control, &tasks)
+        .await
+        .wrap_err("failed to create control events")?;
 
     // Setup ctrl-c handler
     let ctrlc_events = set_up_ctrlc_handler()?;
 
+    let events = (
+        external_events,
+        new_daemon_connections,
+        control_events,
+        ctrlc_events,
+    )
+        .merge();
+
     let future = async move {
-        start_inner(listener, &tasks, (ctrlc_events, external_events).merge()).await?;
+        start_inner(events, &tasks).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -100,40 +114,22 @@ fn resolve_name(
 }
 
 async fn start_inner(
-    listener: TcpListener,
+    events: impl Stream<Item = Event> + Unpin,
     tasks: &FuturesUnordered<JoinHandle<()>>,
-    external_events: impl Stream<Item = Event> + Unpin,
 ) -> eyre::Result<()> {
     let clock = Arc::new(HLC::default());
-
-    let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
-        c.map(Event::NewDaemonConnection)
-            .wrap_err("failed to open connection")
-            .unwrap_or_else(Event::DaemonConnectError)
-    });
 
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
     let mut daemon_events_tx = Some(daemon_events_tx);
     let daemon_events = ReceiverStream::new(daemon_events);
-
-    let control_events = control::control_events(control_socket_addr(), tasks)
-        .await
-        .wrap_err("failed to create control events")?;
 
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
     // events that should be aborted on `dora destroy`
-    let (abortable_events, abort_handle) = futures::stream::abortable(
-        (
-            control_events,
-            new_daemon_connections,
-            external_events,
-            daemon_heartbeat_interval,
-        )
-            .merge(),
-    );
+    let (abortable_events, abort_handle) =
+        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
     let mut events = (abortable_events, daemon_events).merge();
 

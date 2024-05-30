@@ -5,8 +5,8 @@ use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
-        DORA_COORDINATOR_PORT_CONTROL, DORA_COORDINATOR_PORT_DEFAULT,
+        ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        DORA_COORDINATOR_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
@@ -140,10 +140,18 @@ enum Command {
     Runtime,
     /// Run coordinator
     Coordinator {
-        #[clap(long, default_value_t = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), DORA_COORDINATOR_PORT_DEFAULT)
-        )]
-        addr: SocketAddr,
+        /// Network interface to bind to for daemon communication
+        #[clap(long, default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
+        interface: IpAddr,
+        /// Port number to bind to for daemon communication
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
+        port: u16,
+        /// Network interface to bind to for control communication
+        #[clap(long, default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
+        control_interface: IpAddr,
+        /// Port number to bind to for control communication
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        control_port: u16,
     },
 }
 
@@ -319,14 +327,22 @@ fn run() -> eyre::Result<()> {
             config,
             coordinator_addr,
         } => up::destroy(config.as_deref(), coordinator_addr)?,
-        Command::Coordinator { addr } => {
+        Command::Coordinator {
+            interface,
+            port,
+            control_interface,
+            control_port,
+        } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
-                let (_port, task) =
-                    dora_coordinator::start(addr, futures::stream::empty::<Event>()).await?;
+                let bind = SocketAddr::new(interface, port);
+                let bind_control = SocketAddr::new(control_interface, control_port);
+                let (port, task) =
+                    dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
+                        .await?;
                 task.await
             })
             .context("failed to run dora-coordinator")?
@@ -504,9 +520,12 @@ fn connect_to_coordinator(
     if let Some(coordinator_addr) = coordinator_addr {
         TcpLayer::new().connect(SocketAddr::new(
             coordinator_addr,
-            DORA_COORDINATOR_PORT_CONTROL,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
         ))
     } else {
-        TcpLayer::new().connect(control_socket_addr())
+        TcpLayer::new().connect(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        ))
     }
 }
