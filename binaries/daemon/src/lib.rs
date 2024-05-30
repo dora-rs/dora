@@ -15,7 +15,7 @@ use dora_core::{
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 
-use eyre::{bail, eyre, Context, ContextCompat};
+use eyre::{bail, eyre, Context, ContextCompat, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
@@ -1050,6 +1050,23 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
+                let logs = match self.working_dir.get(&dataflow_id) {
+                    Some(working_dir) => {
+                        let logs = get_log(working_dir, dataflow_id, node_id.clone())
+                            .await
+                            .context(
+                                "could not get logs data for the result of the spawned node",
+                            )?;
+                        let logs = String::from_utf8(logs).context("logs are not valid UTF-8")?;
+                        let lines: Vec<_> = logs.split('\n').map(|line| line.to_string()).collect();
+                        // Only keep last 20 lines of logs.
+                        let lines = lines.into_iter().rev().take(20).collect::<Vec<_>>();
+
+                        lines.join("\n")
+                    }
+                    None => "".to_string(),
+                };
+
                 let node_error = match exit_status {
                     NodeExitStatus::Success => {
                         tracing::info!("node {dataflow_id}/{node_id} finished successfully");
@@ -1058,9 +1075,9 @@ impl Daemon {
                     NodeExitStatus::IoError(err) => {
                         let err = eyre!(err).wrap_err(format!(
                             "
-    I/O error while waiting for node `{dataflow_id}/{node_id}. 
-
-    Check logs using: dora logs {dataflow_id} {node_id}
+    I/O error while waiting for node `{dataflow_id}/{node_id}.
+    
+    {logs}
                             "
                         ));
                         tracing::error!("{err:?}");
@@ -1071,7 +1088,7 @@ impl Daemon {
                             "
     {dataflow_id}/{node_id} failed with exit code {code}.
 
-    Check logs using: dora logs {dataflow_id} {node_id}
+    {logs}
                             "
                         );
                         tracing::error!("{err}");
@@ -1099,7 +1116,7 @@ impl Daemon {
                             "
     {dataflow_id}/{node_id} failed with signal `{signal}`
 
-    Check logs using: dora logs {dataflow_id} {node_id}
+    {logs}
                             "
                         );
                         tracing::error!("{err}");
@@ -1110,7 +1127,7 @@ impl Daemon {
                             "
     {dataflow_id}/{node_id} failed with unknown exit code
     
-    Check logs using: dora logs {dataflow_id} {node_id}
+    {logs}
                             "
                         );
                         tracing::error!("{err}");
@@ -1653,4 +1670,20 @@ fn set_up_ctrlc_handler(
     .wrap_err("failed to set ctrl-c handler")?;
 
     Ok(ReceiverStream::new(ctrlc_rx))
+}
+
+async fn get_log(working_dir: &Path, dataflow_id: Uuid, node_id: NodeId) -> Result<Vec<u8>> {
+    let mut file = File::open(log::log_path(&working_dir, &dataflow_id, &node_id))
+        .await
+        .wrap_err(format!(
+            "Could not open log file: {:#?}",
+            log::log_path(&working_dir, &dataflow_id, &node_id)
+        ))?;
+
+    let mut contents = vec![];
+    file.read_to_end(&mut contents)
+        .await
+        .wrap_err("Could not read content of log file")?;
+
+    Ok(contents)
 }
