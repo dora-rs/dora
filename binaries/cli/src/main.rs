@@ -5,7 +5,8 @@ use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL, DORA_COORDINATOR_PORT_DEFAULT
+        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
+        DORA_COORDINATOR_PORT_CONTROL, DORA_COORDINATOR_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
@@ -500,7 +501,10 @@ fn connect_to_coordinator(
     coordinator_addr: Option<IpAddr>,
 ) -> std::io::Result<Box<TcpRequestReplyConnection>> {
     if let Some(coordinator_addr) = coordinator_addr {
-        TcpLayer::new().connect(SocketAddr::new(coordinator_addr, DORA_COORDINATOR_PORT_CONTROL))
+        TcpLayer::new().connect(SocketAddr::new(
+            coordinator_addr,
+            DORA_COORDINATOR_PORT_CONTROL,
+        ))
     } else {
         TcpLayer::new().connect(control_socket_addr())
     }
