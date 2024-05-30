@@ -5,10 +5,7 @@ use std::{fs, net::IpAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(
-    config_path: Option<&Path>,
-    coordinator_addr: Option<IpAddr>,
-) -> eyre::Result<()> {
+pub(crate) fn up(config_path: Option<&Path>, coordinator_addr: Option<IpAddr>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let mut session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
