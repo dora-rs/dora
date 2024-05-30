@@ -4,11 +4,11 @@ use dora_core::topics::{ControlRequest, ControlRequestReply};
 use eyre::{bail, Context};
 use std::{
     io::{IsTerminal, Write},
-    net::IpAddr,
+    net::SocketAddr,
 };
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
-pub fn check_environment(coordinator_addr: IpAddr) -> eyre::Result<()> {
+pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     let mut error_occured = false;
 
     let color_choice = if std::io::stdout().is_terminal() {
