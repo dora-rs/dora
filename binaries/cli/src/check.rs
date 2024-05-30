@@ -8,7 +8,7 @@ use std::{
 };
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
-pub fn check_environment(coordinator_addr: Option<IpAddr>) -> eyre::Result<()> {
+pub fn check_environment(coordinator_addr: IpAddr) -> eyre::Result<()> {
     let mut error_occured = false;
 
     let color_choice = if std::io::stdout().is_terminal() {
