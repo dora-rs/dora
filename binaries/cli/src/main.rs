@@ -5,8 +5,7 @@ use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
-        DORA_COORDINATOR_PORT_DEFAULT,
+        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL, DORA_COORDINATOR_PORT_DEFAULT
     },
 };
 use dora_daemon::Daemon;
@@ -45,7 +44,7 @@ enum Command {
     Check {
         #[clap(long)]
         dataflow: Option<PathBuf>,
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_addr: Option<IpAddr>,
     },
     /// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
     Graph {
@@ -69,14 +68,14 @@ enum Command {
         #[clap(long)]
         config: Option<PathBuf>,
         #[clap(long)]
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_addr: Option<IpAddr>,
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
         #[clap(long)]
         config: Option<PathBuf>,
         #[clap(long)]
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_addr: Option<IpAddr>,
     },
     /// Start the given dataflow path. Attach a name to the running dataflow by using --name.
     Start {
@@ -84,7 +83,7 @@ enum Command {
         #[clap(long)]
         name: Option<String>,
         #[clap(long)]
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_addr: Option<IpAddr>,
         #[clap(long, action)]
         attach: bool,
         #[clap(long, action)]
@@ -99,12 +98,12 @@ enum Command {
         #[arg(value_parser = parse)]
         grace_duration: Option<Duration>,
         #[clap(long)]
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_addr: Option<IpAddr>,
     },
     /// List running dataflows.
     List {
         #[clap(long)]
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_addr: Option<IpAddr>,
     },
     // Planned for future releases:
     // Dashboard,
@@ -114,7 +113,7 @@ enum Command {
         dataflow: Option<String>,
         node: String,
         #[clap(long)]
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_addr: Option<IpAddr>,
     },
     // Metrics,
     // Stats,
@@ -498,8 +497,11 @@ fn query_running_dataflows(
 }
 
 fn connect_to_coordinator(
-    coordinator_addr: Option<SocketAddr>,
+    coordinator_addr: Option<IpAddr>,
 ) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    let coordination_addr = coordinator_addr.unwrap_or_else(control_socket_addr);
-    TcpLayer::new().connect(coordination_addr)
+    if let Some(coordinator_addr) = coordinator_addr {
+        TcpLayer::new().connect(SocketAddr::new(coordinator_addr, DORA_COORDINATOR_PORT_CONTROL))
+    } else {
+        TcpLayer::new().connect(control_socket_addr())
+    }
 }
