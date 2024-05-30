@@ -1,10 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    fmt::Display,
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::BTreeSet, fmt::Display, path::PathBuf, time::Duration};
 use uuid::Uuid;
 
 use crate::{
@@ -13,16 +7,9 @@ use crate::{
 };
 
 pub const DORA_COORDINATOR_PORT_DEFAULT: u16 = 0xD02A;
-pub const DORA_COORDINATOR_PORT_CONTROL: u16 = 0x177C;
+pub const DORA_COORDINATOR_PORT_CONTROL_DEFAULT: u16 = 0x177C;
 
 pub const MANUAL_STOP: &str = "dora/stop";
-
-pub fn control_socket_addr() -> SocketAddr {
-    SocketAddr::new(
-        Ipv4Addr::new(127, 0, 0, 1).into(),
-        DORA_COORDINATOR_PORT_CONTROL,
-    )
-}
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
