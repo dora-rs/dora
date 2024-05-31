@@ -78,17 +78,11 @@ enum Command {
         #[clap(hide = true, long)]
         internal_create_with_path_dependencies: bool,
     },
-    /// Spawn a coordinator and a daemon.
+    /// Spawn coordinator and daemon in local mode (with default config)
     Up {
         /// Use a custom configuration
         #[clap(long, hide = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         config: Option<PathBuf>,
-        /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
-        coordinator_addr: IpAddr,
-        /// Port number of the coordinator control server
-        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-        coordinator_port: u16,
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
@@ -295,15 +289,8 @@ fn run() -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Up {
-            config,
-            coordinator_addr,
-            coordinator_port,
-        } => {
-            up::up(
-                config.as_deref(),
-                (coordinator_addr, coordinator_port).into(),
-            )?;
+        Command::Up { config } => {
+            up::up(config.as_deref())?;
         }
         Command::Logs {
             dataflow,
