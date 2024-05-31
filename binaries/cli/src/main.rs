@@ -31,6 +31,9 @@ mod logs;
 mod template;
 mod up;
 
+const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+
 #[derive(Debug, clap::Parser)]
 #[clap(version)]
 struct Args {
@@ -47,7 +50,7 @@ enum Command {
         #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: Option<PathBuf>,
         /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
@@ -90,7 +93,7 @@ enum Command {
         #[clap(long, hide = true)]
         config: Option<PathBuf>,
         /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
@@ -105,7 +108,7 @@ enum Command {
         #[clap(long)]
         name: Option<String>,
         /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
@@ -129,7 +132,7 @@ enum Command {
         #[arg(value_parser = parse)]
         grace_duration: Option<Duration>,
         /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
@@ -138,7 +141,7 @@ enum Command {
     /// List running dataflows.
     List {
         /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
@@ -156,7 +159,7 @@ enum Command {
         #[clap(value_name = "NAME")]
         node: String,
         /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
@@ -172,12 +175,10 @@ enum Command {
         #[clap(long)]
         machine_id: Option<String>,
         /// The IP address and port this daemon will bind to.
-        #[clap(long, default_value_t = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
-        )]
+        #[clap(long, default_value_t = SocketAddr::new(LISTEN_WILDCARD, 0))]
         addr: SocketAddr,
         /// Address and port number of the dora coordinator
-        #[clap(long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), DORA_COORDINATOR_PORT_DEFAULT))]
+        #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
         coordinator_addr: SocketAddr,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
@@ -187,13 +188,13 @@ enum Command {
     /// Run coordinator
     Coordinator {
         /// Network interface to bind to for daemon communication
-        #[clap(long, default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
+        #[clap(long, default_value_t = LISTEN_WILDCARD)]
         interface: IpAddr,
         /// Port number to bind to for daemon communication
         #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
         port: u16,
         /// Network interface to bind to for control communication
-        #[clap(long, default_value_t = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))]
+        #[clap(long, default_value_t = LISTEN_WILDCARD)]
         control_interface: IpAddr,
         /// Port number to bind to for control communication
         #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
@@ -417,12 +418,11 @@ fn run() -> eyre::Result<()> {
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
-            let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
             rt.block_on(async {
                 match run_dataflow {
                     Some(dataflow_path) => {
                         tracing::info!("Starting dataflow `{}`", dataflow_path.display());
-                        if coordinator_addr != SocketAddr::new(localhost, DORA_COORDINATOR_PORT_DEFAULT){
+                        if coordinator_addr != SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT){
                             tracing::info!(
                                 "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
                                 coordinator_addr
@@ -432,7 +432,7 @@ fn run() -> eyre::Result<()> {
                         Daemon::run_dataflow(&dataflow_path).await
                     }
                     None => {
-                        if coordinator_addr.ip() == localhost {
+                        if coordinator_addr.ip() == LOCALHOST {
                             tracing::info!("Starting in local mode");
                         }
                         Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), addr).await
