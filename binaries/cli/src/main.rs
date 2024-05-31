@@ -43,7 +43,8 @@ struct Args {
 enum Command {
     /// Check if the coordinator and the daemon is running.
     Check {
-        #[clap(long)]
+        /// Path to the dataflow descriptor file (enables additional checks)
+        #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: Option<PathBuf>,
         /// Address of the dora coordinator
         #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
@@ -54,14 +55,22 @@ enum Command {
     },
     /// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
     Graph {
+        /// Path to the dataflow descriptor file
+        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: PathBuf,
+        /// Visualize the dataflow as a Mermaid diagram (instead of HTML)
         #[clap(long, action)]
         mermaid: bool,
+        /// Open the HTML visualization in the browser
         #[clap(long, action)]
         open: bool,
     },
     /// Run build commands provided in the given dataflow.
-    Build { dataflow: PathBuf },
+    Build {
+        /// Path to the dataflow descriptor file
+        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+        dataflow: PathBuf,
+    },
     /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
@@ -71,7 +80,8 @@ enum Command {
     },
     /// Spawn a coordinator and a daemon.
     Up {
-        #[clap(long)]
+        /// Use a custom configuration
+        #[clap(long, hide = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         config: Option<PathBuf>,
         /// Address of the dora coordinator
         #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
@@ -82,7 +92,8 @@ enum Command {
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
-        #[clap(long)]
+        /// Use a custom configuration
+        #[clap(long, hide = true)]
         config: Option<PathBuf>,
         /// Address of the dora coordinator
         #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
@@ -93,7 +104,10 @@ enum Command {
     },
     /// Start the given dataflow path. Attach a name to the running dataflow by using --name.
     Start {
+        /// Path to the dataflow descriptor file
+        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: PathBuf,
+        /// Assign a name to the dataflow
         #[clap(long)]
         name: Option<String>,
         /// Address of the dora coordinator
@@ -102,17 +116,22 @@ enum Command {
         /// Port number of the coordinator control server
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
         coordinator_port: u16,
+        /// Attach to the dataflow and wait for its completion
         #[clap(long, action)]
         attach: bool,
+        /// Enable hot reloading (Python only)
         #[clap(long, action)]
         hot_reload: bool,
     },
     /// Stop the given dataflow UUID. If no id is provided, you will be able to choose between the running dataflows.
     Stop {
+        /// UUID of the dataflow that should be stopped
         uuid: Option<Uuid>,
+        /// Name of the dataflow that should be stopped
         #[clap(long)]
         name: Option<String>,
-        #[clap(long)]
+        /// Kill the dataflow if it doesn't stop after the given duration
+        #[clap(long, value_name = "DURATION")]
         #[arg(value_parser = parse)]
         grace_duration: Option<Duration>,
         /// Address of the dora coordinator
@@ -136,7 +155,11 @@ enum Command {
     /// Show logs of a given dataflow and node.
     #[command(allow_missing_positional = true)]
     Logs {
+        /// Identifier of the dataflow
+        #[clap(value_name = "UUID_OR_NAME")]
         dataflow: Option<String>,
+        /// Show logs for the given node
+        #[clap(value_name = "NAME")]
         node: String,
         /// Address of the dora coordinator
         #[clap(long, value_name = "IP", default_value_t = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))]
@@ -151,6 +174,7 @@ enum Command {
     // Upgrade,
     /// Run daemon
     Daemon {
+        /// Unique identifier for the machine (required for distributed dataflows)
         #[clap(long)]
         machine_id: Option<String>,
         /// The IP address and port this daemon will bind to.
@@ -161,7 +185,7 @@ enum Command {
         /// Address and port number of the dora coordinator
         #[clap(long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), DORA_COORDINATOR_PORT_DEFAULT))]
         coordinator_addr: SocketAddr,
-        #[clap(long)]
+        #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
     },
     /// Run runtime
@@ -185,11 +209,16 @@ enum Command {
 
 #[derive(Debug, clap::Args)]
 pub struct CommandNew {
+    /// The entity that should be created
     #[clap(long, value_enum, default_value_t = Kind::Dataflow)]
     kind: Kind,
+    /// The programming language that should be used
     #[clap(long, value_enum, default_value_t = Lang::Rust)]
     lang: Lang,
+    /// Desired name of the entity
     name: String,
+    /// Where to create the entity
+    #[clap(hide = true)]
     path: Option<PathBuf>,
 }
 
