@@ -340,7 +340,7 @@ async fn start_inner(
             }) => {
                 let status = ControlRequestReply::Error("not supported yet".to_owned());
                 let _ = reply_sender.send(Ok(status));
-            }
+            },
             Event::Control(event) | Event::ExternalControl(event) => match event {
                 ControlEvent::IncomingRequest {
                     request,
