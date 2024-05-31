@@ -1,23 +1,13 @@
-use crate::{check::daemon_running, connect_to_coordinator};
+use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
 use dora_core::topics::{ControlRequest, DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use eyre::Context;
-use std::{
-    fs,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::Path,
-    process::Command,
-    time::Duration,
-};
+use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
 pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    let coordinator_addr = (
-        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-    )
-        .into();
+    let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
     let mut session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
         Err(_) => {
