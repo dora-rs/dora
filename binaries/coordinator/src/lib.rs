@@ -329,7 +329,18 @@ async fn start_inner(
                     }
                 }
             },
-
+            Event::ExternalControl(ControlEvent::IncomingRequest {
+                request:
+                    ControlRequest::Start {
+                        dataflow: _,
+                        name: _,
+                        local_working_dir: _,
+                    },
+                reply_sender,
+            }) => {
+                let status = ControlRequestReply::Error("not supported yet".to_owned());
+                let _ = reply_sender.send(Ok(status));
+            }
             Event::Control(event) | Event::ExternalControl(event) => match event {
                 ControlEvent::IncomingRequest {
                     request,
