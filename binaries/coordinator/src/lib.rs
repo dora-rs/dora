@@ -3,6 +3,7 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
 };
 pub use control::ControlEvent;
+use control::{ExternalControlSocket, InnerControlSocket};
 use dora_core::{
     config::{NodeId, OperatorId},
     coordinator_messages::RegisterResult,
@@ -38,6 +39,7 @@ mod tcp_utils;
 pub async fn start(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
+    external_control_socket: Option<SocketAddr>,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let listener = listener::create_listener(bind).await?;
     let port = listener
@@ -46,11 +48,23 @@ pub async fn start(
         .port();
     let mut tasks = FuturesUnordered::new();
 
+    let external_control_events = if let Some(control_socket) = external_control_socket {
+        Some(control::control_events::<ExternalControlSocket>(control_socket, &tasks)
+            .await
+            .wrap_err("failed to create external control events")?)
+    } else {
+        None
+    };
+
     // Setup ctrl-c handler
     let ctrlc_events = set_up_ctrlc_handler()?;
 
     let future = async move {
-        start_inner(listener, &tasks, (ctrlc_events, external_events).merge()).await?;
+        if let Some(external_control_events) = external_control_events {
+            start_inner(listener, &tasks, (ctrlc_events, external_events, external_control_events).merge()).await?;
+        } else {
+            start_inner(listener, &tasks, (ctrlc_events, external_events).merge()).await?;
+        }
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -116,7 +130,7 @@ async fn start_inner(
     let mut daemon_events_tx = Some(daemon_events_tx);
     let daemon_events = ReceiverStream::new(daemon_events);
 
-    let control_events = control::control_events(control_socket_addr(), tasks)
+    let control_events = control::control_events::<InnerControlSocket>(control_socket_addr(), tasks)
         .await
         .wrap_err("failed to create control events")?;
 
@@ -308,7 +322,7 @@ async fn start_inner(
                 }
             },
 
-            Event::Control(event) => match event {
+            Event::Control(event) | Event::ExternalControl(event) => match event {
                 ControlEvent::IncomingRequest {
                     request,
                     reply_sender,
@@ -919,6 +933,7 @@ pub enum Event {
     DaemonHeartbeat { machine_id: String },
     Dataflow { uuid: Uuid, event: DataflowEvent },
     Control(ControlEvent),
+    ExternalControl(ControlEvent),
     Daemon(DaemonEvent),
     DaemonHeartbeatInterval,
     CtrlC,

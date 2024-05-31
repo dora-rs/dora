@@ -358,13 +358,8 @@ fn run() -> eyre::Result<()> {
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
-                let extern_events = if let Some(_listen_addr) = listen_addr {
-                    futures::stream::empty::<Event>()
-                } else {
-                    futures::stream::empty::<Event>()
-                };
                 let (_port, task) =
-                    dora_coordinator::start(addr, extern_events).await?;
+                    dora_coordinator::start(addr, futures::stream::empty::<Event>(), listen_addr).await?;
                 task.await
             })
             .context("failed to run dora-coordinator")?
