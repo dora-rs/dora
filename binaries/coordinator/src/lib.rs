@@ -49,9 +49,11 @@ pub async fn start(
     let mut tasks = FuturesUnordered::new();
 
     let external_control_events = if let Some(control_socket) = external_control_socket {
-        Some(control::control_events::<ExternalControlSocket>(control_socket, &tasks)
-            .await
-            .wrap_err("failed to create external control events")?)
+        Some(
+            control::control_events::<ExternalControlSocket>(control_socket, &tasks)
+                .await
+                .wrap_err("failed to create external control events")?,
+        )
     } else {
         None
     };
@@ -61,7 +63,12 @@ pub async fn start(
 
     let future = async move {
         if let Some(external_control_events) = external_control_events {
-            start_inner(listener, &tasks, (ctrlc_events, external_events, external_control_events).merge()).await?;
+            start_inner(
+                listener,
+                &tasks,
+                (ctrlc_events, external_events, external_control_events).merge(),
+            )
+            .await?;
         } else {
             start_inner(listener, &tasks, (ctrlc_events, external_events).merge()).await?;
         }
@@ -130,9 +137,10 @@ async fn start_inner(
     let mut daemon_events_tx = Some(daemon_events_tx);
     let daemon_events = ReceiverStream::new(daemon_events);
 
-    let control_events = control::control_events::<InnerControlSocket>(control_socket_addr(), tasks)
-        .await
-        .wrap_err("failed to create control events")?;
+    let control_events =
+        control::control_events::<InnerControlSocket>(control_socket_addr(), tasks)
+            .await
+            .wrap_err("failed to create control events")?;
 
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))

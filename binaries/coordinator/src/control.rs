@@ -13,7 +13,10 @@ use futures_concurrency::future::Race;
 use std::{io::ErrorKind, net::SocketAddr};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc::{self, Receiver}, oneshot},
+    sync::{
+        mpsc::{self, Receiver},
+        oneshot,
+    },
     task::JoinHandle,
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -39,7 +42,7 @@ impl ControlRequestSource for ExternalControlSocket {
 pub(crate) async fn control_events<T>(
     control_listen_addr: SocketAddr,
     tasks: &FuturesUnordered<JoinHandle<()>>,
-) -> eyre::Result<impl Stream<Item = Event>> 
+) -> eyre::Result<impl Stream<Item = Event>>
 where
     T: ControlRequestSource,
 {
@@ -50,7 +53,7 @@ where
     tasks.push(tokio::spawn(async move {
         while let Some(()) = finish_rx.recv().await {}
     }));
-    
+
     T::source(rx)
 }
 

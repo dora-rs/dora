@@ -171,7 +171,7 @@ enum Command {
         )]
         addr: SocketAddr,
         #[clap(long)]
-        listen_addr: Option<SocketAddr>
+        listen_addr: Option<SocketAddr>,
     },
 }
 
@@ -352,14 +352,15 @@ fn run() -> eyre::Result<()> {
             config,
             coordinator_addr,
         } => up::destroy(config.as_deref(), coordinator_addr)?,
-        Command::Coordinator { addr , listen_addr} => {
+        Command::Coordinator { addr, listen_addr } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
                 let (_port, task) =
-                    dora_coordinator::start(addr, futures::stream::empty::<Event>(), listen_addr).await?;
+                    dora_coordinator::start(addr, futures::stream::empty::<Event>(), listen_addr)
+                        .await?;
                 task.await
             })
             .context("failed to run dora-coordinator")?
