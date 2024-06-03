@@ -13,15 +13,39 @@ use futures_concurrency::future::Race;
 use std::{io::ErrorKind, net::SocketAddr};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot},
+    sync::{
+        mpsc::{self, Receiver},
+        oneshot,
+    },
     task::JoinHandle,
 };
 use tokio_stream::wrappers::ReceiverStream;
 
-pub(crate) async fn control_events(
+pub trait ControlRequestSource {
+    fn source(rx: Receiver<ControlEvent>) -> eyre::Result<impl Stream<Item = Event>>;
+}
+
+pub(crate) struct InnerControlSocket;
+impl ControlRequestSource for InnerControlSocket {
+    fn source(rx: Receiver<ControlEvent>) -> eyre::Result<impl Stream<Item = Event>> {
+        Ok(ReceiverStream::new(rx).map(Event::Control))
+    }
+}
+
+pub(crate) struct ExternalControlSocket;
+impl ControlRequestSource for ExternalControlSocket {
+    fn source(rx: Receiver<ControlEvent>) -> eyre::Result<impl Stream<Item = Event>> {
+        Ok(ReceiverStream::new(rx).map(Event::ExternalControl))
+    }
+}
+
+pub(crate) async fn control_events<T>(
     control_listen_addr: SocketAddr,
     tasks: &FuturesUnordered<JoinHandle<()>>,
-) -> eyre::Result<impl Stream<Item = Event>> {
+) -> eyre::Result<impl Stream<Item = Event>>
+where
+    T: ControlRequestSource,
+{
     let (tx, rx) = mpsc::channel(10);
 
     let (finish_tx, mut finish_rx) = mpsc::channel(1);
@@ -30,7 +54,7 @@ pub(crate) async fn control_events(
         while let Some(()) = finish_rx.recv().await {}
     }));
 
-    Ok(ReceiverStream::new(rx).map(Event::Control))
+    T::source(rx)
 }
 
 async fn listen(
