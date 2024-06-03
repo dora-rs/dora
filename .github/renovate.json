@@ -7,7 +7,12 @@
   "rangeStrategy": "in-range-only",
   "packageRules": [
     {
-      "groupName": "Update Dependencies"
+      "matchUpdateTypes": [
+        "lockFileMaintenance",
+        "patch",
+        "minor"
+      ],
+      "groupName": "Update Cargo.lock"
     }
   ],
   "schedule": [
