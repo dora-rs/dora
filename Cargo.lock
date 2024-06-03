@@ -5606,6 +5606,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b69a91d4893e713e06f724597ad630f1fa76057a5e1026c0ca67054a9032a76"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "once_cell",
+ "pin-project-lite",
+ "thiserror",
+]
+
+[[package]]
 name = "opentelemetry-jaeger"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5670,14 +5684,14 @@ checksum = "f9ab5bd6c42fb9349dcf28af2ba9a0667f697f9bdcca045d39f2cec5543e2910"
 
 [[package]]
 name = "opentelemetry-system-metrics"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dca748d4fe59e208f6c71bde86573d326f98ed29696d31dbf7d2454b8f1af2d"
+checksum = "0d4b02ba3fc9a6e17b9c6f892f3963224e126a5424360f3fc0fc24c90b109ba5"
 dependencies = [
  "eyre",
  "indexmap 1.9.3",
  "nvml-wrapper",
- "opentelemetry 0.22.0",
+ "opentelemetry 0.23.0",
  "sysinfo 0.29.11",
  "tracing",
 ]
@@ -9559,7 +9573,7 @@ version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
- "cfg-if 1.0.0",
+ "cfg-if 0.1.10",
  "static_assertions",
 ]
 
