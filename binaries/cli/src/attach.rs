@@ -60,25 +60,27 @@ pub fn attach_dataflow(
         let hash = node_path_lookup.clone();
         let paths = hash.keys();
         let notifier = move |event| {
-            if let Ok(NotifyEvent {
-                paths,
-                kind: EventKind::Modify(ModifyKind::Data(_data)),
-                ..
-            }) = event
-            {
-                for path in paths {
-                    if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
-                        watcher_tx
-                            .send(ControlRequest::Reload {
-                                dataflow_id: *dataflow_id,
-                                node_id: node_id.clone(),
-                                operator_id: operator_id.clone(),
-                            })
-                            .context("Could not send reload request to the cli loop")
-                            .unwrap();
+            if let Ok(NotifyEvent { paths, kind, .. }) = event {
+                match kind {
+                    EventKind::Modify(ModifyKind::Data(_))
+                    | EventKind::Modify(ModifyKind::Metadata(_)) => {
+                        for path in paths {
+                            if let Some((dataflow_id, node_id, operator_id)) =
+                                node_path_lookup.get(&path)
+                            {
+                                watcher_tx
+                                    .send(ControlRequest::Reload {
+                                        dataflow_id: *dataflow_id,
+                                        node_id: node_id.clone(),
+                                        operator_id: operator_id.clone(),
+                                    })
+                                    .context("Could not send reload request to the cli loop")
+                                    .unwrap();
+                            }
+                        }
                     }
+                    _ => {} // TODO: Manage different file event
                 }
-                // TODO: Manage different file event
             }
         };
 
