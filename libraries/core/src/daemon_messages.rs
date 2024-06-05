@@ -160,6 +160,16 @@ pub enum NodeEvent {
         id: DataId,
     },
     AllInputsClosed,
+    DroppedInputs {
+        reason: InputDropReason,
+        number: usize,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum InputDropReason {
+    QueueSize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

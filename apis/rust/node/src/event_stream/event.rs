@@ -2,6 +2,7 @@ use std::{ptr::NonNull, sync::Arc};
 
 use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::{ArrowData, IntoArrow};
+pub use dora_core::daemon_messages::InputDropReason;
 use dora_core::{
     config::{DataId, OperatorId},
     message::{ArrowTypeInfo, BufferOffset, Metadata},
@@ -25,6 +26,10 @@ pub enum Event {
         id: DataId,
     },
     Error(String),
+    DroppedInputs {
+        reason: InputDropReason,
+        number: usize,
+    },
 }
 
 pub enum RawData {

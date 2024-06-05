@@ -175,6 +175,9 @@ impl EventStream {
                     tracing::error!("{err:?}");
                     Event::Error(err.wrap_err("internal error").to_string())
                 }
+                NodeEvent::DroppedInputs { reason, number } => {
+                    Event::DroppedInputs { reason, number }
+                }
             },
 
             EventItem::FatalError(err) => {
