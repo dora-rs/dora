@@ -1,7 +1,7 @@
 use crate::{
     adjust_shared_library_path,
     config::{DataId, Input, InputMapping, OperatorId, UserInputMapping},
-    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
+    descriptor::{self, source_is_url, source_to_path, CoreNodeKind, OperatorSource},
     get_python_path,
 };
 
@@ -19,15 +19,24 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
     // check that nodes and operators exist
     for node in &nodes {
         match &node.kind {
-            descriptor::CoreNodeKind::Custom(node) => match node.source.as_str() {
+            descriptor::CoreNodeKind::Custom(custom) => match custom.source.as_str() {
                 SHELL_SOURCE => (),
                 source => {
                     if source_is_url(source) {
                         info!("{source} is a URL."); // TODO: Implement url check.
-                    } else {
+                    } else if node.deploy.machine.is_empty() {
                         resolve_path(source, working_dir)
                             .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
-                    };
+                    } else {
+                        let path = source_to_path(source);
+                        if path.is_relative() {
+                            eyre::bail!(
+                                "paths of remote nodes must be absolute (node `{}`)",
+                                node.id
+                            );
+                        }
+                        info!("skipping path check for remote node `{}`", node.id);
+                    }
                 }
             },
             descriptor::CoreNodeKind::Runtime(node) => {
