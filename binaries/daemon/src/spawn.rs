@@ -443,7 +443,7 @@ pub async fn spawn_node(
                 output.push('\n');
                 output
             });
-            debug!("{dataflow_id}/{} logged:\n{formatted}", node.id.clone());
+            tracing::trace!("{dataflow_id}/{} logged:\n{formatted}", node.id.clone());
             // Make sure that all data has been synced to disk.
             let _ = file
                 .sync_all()
