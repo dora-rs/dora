@@ -12,7 +12,11 @@ use tracing::info;
 use super::{resolve_path, Descriptor, SHELL_SOURCE};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path, remote_daemon_id: Option<&[&str]>) -> eyre::Result<()> {
+pub fn check_dataflow(
+    dataflow: &Descriptor,
+    working_dir: &Path,
+    remote_daemon_id: Option<&[&str]>,
+) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
 
