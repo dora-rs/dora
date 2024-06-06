@@ -191,6 +191,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     id: input_id,
                     metadata,
                     data,
+                    ..
                 } => {
                     let (data_array, schema) = arrow::ffi::to_ffi(&data.to_data())?;
 

@@ -20,7 +20,9 @@ fn main() -> eyre::Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, metadata, data } => {
+            Event::Input {
+                id, metadata, data, ..
+            } => {
                 // check if new size bracket
                 let data_len = data.len();
                 if data_len != current_size {

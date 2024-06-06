@@ -136,7 +136,12 @@ impl EventStream {
                 NodeEvent::Stop => Event::Stop,
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
-                NodeEvent::Input { id, metadata, data } => {
+                NodeEvent::Input {
+                    id,
+                    metadata,
+                    data,
+                    dropped,
+                } => {
                     let data = match data {
                         None => Ok(None),
                         Some(daemon_messages::DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
@@ -164,6 +169,7 @@ impl EventStream {
                             id,
                             metadata,
                             data: data.into(),
+                            dropped,
                         },
                         Err(err) => Event::Error(format!("{err:?}")),
                     }

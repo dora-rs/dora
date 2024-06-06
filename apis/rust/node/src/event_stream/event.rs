@@ -16,15 +16,31 @@ pub enum Event {
     Reload {
         operator_id: Option<OperatorId>,
     },
+    #[non_exhaustive]
     Input {
         id: DataId,
         metadata: Metadata,
         data: ArrowData,
+        /// Number of dropped inputs of this ID.
+        ///
+        /// Specifies the number of inputs of this ID that were dropped _before_ this input.
+        dropped: usize,
     },
     InputClosed {
         id: DataId,
     },
     Error(String),
+}
+
+impl Event {
+    pub fn new_input(id: DataId, metadata: Metadata, data: ArrowData) -> Event {
+        Event::Input {
+            id,
+            metadata,
+            data,
+            dropped: 0,
+        }
+    }
 }
 
 pub enum RawData {

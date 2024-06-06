@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 id,
                 metadata,
                 data: _,
+                ..
             } => match id.as_str() {
                 other => eprintln!("Received input `{other}`"),
             },

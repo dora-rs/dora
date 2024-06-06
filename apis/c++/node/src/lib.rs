@@ -142,6 +142,7 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
         id,
         metadata: _,
         data,
+        ..
     }) = event.0
     else {
         bail!("not an input event");

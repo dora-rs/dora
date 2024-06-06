@@ -43,6 +43,7 @@ fn main() -> Result<()> {
             id,
             data,
             metadata: _,
+            ..
         } = event
         {
             if id.as_str().contains("image") {

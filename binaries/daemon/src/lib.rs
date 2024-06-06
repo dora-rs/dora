@@ -984,6 +984,7 @@ impl Daemon {
                             id: input_id.clone(),
                             metadata: metadata.clone(),
                             data: None,
+                            dropped: 0,
                         },
                         &self.clock,
                     );
@@ -1031,6 +1032,7 @@ impl Daemon {
                             id: input_id.clone(),
                             metadata: metadata.clone(),
                             data: Some(message.clone()),
+                            dropped: 0,
                         },
                         &self.clock,
                     );
@@ -1162,6 +1164,7 @@ async fn send_output_to_local_receivers(
                 id: input_id.clone(),
                 metadata: metadata.clone(),
                 data: data.clone(),
+                dropped: 0,
             };
             match channel.send(Timestamped {
                 inner: item,

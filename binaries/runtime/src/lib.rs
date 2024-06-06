@@ -248,7 +248,9 @@ async fn run(
             RuntimeEvent::Event(Event::Reload { operator_id: None }) => {
                 tracing::warn!("Reloading runtime nodes is not supported");
             }
-            RuntimeEvent::Event(Event::Input { id, metadata, data }) => {
+            RuntimeEvent::Event(Event::Input {
+                id, metadata, data, ..
+            }) => {
                 let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
                     tracing::warn!("received non-operator input {id}");
                     continue;
@@ -261,11 +263,7 @@ async fn run(
                 };
 
                 if let Err(err) = operator_channel
-                    .send_async(Event::Input {
-                        id: input_id.clone(),
-                        metadata,
-                        data,
-                    })
+                    .send_async(Event::new_input(input_id.clone(), metadata, data))
                     .await
                     .wrap_err_with(|| {
                         format!("failed to send input `{input_id}` to operator `{operator_id}`")

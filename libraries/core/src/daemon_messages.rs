@@ -155,6 +155,10 @@ pub enum NodeEvent {
         id: DataId,
         metadata: Metadata,
         data: Option<DataMessage>,
+        /// Number of dropped inputs of this ID.
+        ///
+        /// Specifies the number of inputs of this ID that were dropped _before_ this input.
+        dropped: usize,
     },
     InputClosed {
         id: DataId,
