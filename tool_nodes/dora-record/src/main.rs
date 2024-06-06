@@ -25,7 +25,12 @@ async fn main() -> eyre::Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, data, metadata } => {
+            Event::Input {
+                id,
+                data,
+                metadata,
+                dropped,
+            } => {
                 match writers.get(&id) {
                     None => {
                         let field_uhlc = Field::new("timestamp_uhlc", DataType::UInt64, false);

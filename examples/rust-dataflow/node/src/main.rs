@@ -18,6 +18,7 @@ fn main() -> eyre::Result<()> {
                 id,
                 metadata,
                 data: _,
+                dropped,
             } => match id.as_str() {
                 "tick" => {
                     let random: u64 = rand::random();

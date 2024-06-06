@@ -10,6 +10,7 @@ fn main() -> eyre::Result<()> {
                 id,
                 metadata: _,
                 data,
+                dropped,
             } => match id.as_str() {
                 "message" => {
                     let received_string: &str =

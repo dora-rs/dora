@@ -248,7 +248,12 @@ async fn run(
             RuntimeEvent::Event(Event::Reload { operator_id: None }) => {
                 tracing::warn!("Reloading runtime nodes is not supported");
             }
-            RuntimeEvent::Event(Event::Input { id, metadata, data }) => {
+            RuntimeEvent::Event(Event::Input {
+                id,
+                metadata,
+                data,
+                dropped,
+            }) => {
                 let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
                     tracing::warn!("received non-operator input {id}");
                     continue;
@@ -265,6 +270,7 @@ async fn run(
                         id: input_id.clone(),
                         metadata,
                         data,
+                        dropped,
                     })
                     .await
                     .wrap_err_with(|| {
