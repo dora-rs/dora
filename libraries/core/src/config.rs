@@ -35,6 +35,12 @@ impl std::fmt::Display for NodeId {
     }
 }
 
+impl AsRef<str> for NodeId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]

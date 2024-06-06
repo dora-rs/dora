@@ -325,7 +325,10 @@ impl Listener {
         self.report_drop_tokens(drop_tokens).await?;
 
         if dropped > 0 {
-            tracing::debug!("dropped {dropped} inputs because event queue was too full");
+            tracing::debug!(
+                "dropped {dropped} inputs of node `{}` because event queue was too full",
+                self.node_id
+            );
         }
         Ok(())
     }
