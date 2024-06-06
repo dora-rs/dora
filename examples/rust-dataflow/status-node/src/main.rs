@@ -10,7 +10,9 @@ fn main() -> eyre::Result<()> {
     let mut ticks = 0;
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, metadata, data } => match id.as_ref() {
+            Event::Input {
+                id, metadata, data, ..
+            } => match id.as_ref() {
                 "tick" => {
                     ticks += 1;
                 }

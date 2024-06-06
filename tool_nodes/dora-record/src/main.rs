@@ -26,10 +26,7 @@ async fn main() -> eyre::Result<()> {
     while let Some(event) = events.recv() {
         match event {
             Event::Input {
-                id,
-                data,
-                metadata,
-                dropped,
+                id, data, metadata, ..
             } => {
                 match writers.get(&id) {
                     None => {

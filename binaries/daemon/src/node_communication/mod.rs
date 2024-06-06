@@ -315,10 +315,7 @@ impl Listener {
             };
             match queue_size_remaining.get_mut(id) {
                 Some(0) => {
-                    self.dropped_inputs
-                        .entry(id.clone())
-                        .or_default()
-                        .saturating_add(*dropped + 1);
+                    *self.dropped_inputs.entry(id.clone()).or_default() += *dropped + 1;
 
                     if let Some(drop_token) = data.as_ref().and_then(|d| d.drop_token()) {
                         drop_tokens.push(drop_token);
