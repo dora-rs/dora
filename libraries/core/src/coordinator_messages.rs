@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::daemon_messages::DataflowId;
 use eyre::eyre;
 
@@ -7,6 +9,7 @@ pub enum CoordinatorRequest {
         dora_version: String,
         machine_id: String,
         listen_port: u16,
+        working_dir: PathBuf,
     },
     Event {
         machine_id: String,

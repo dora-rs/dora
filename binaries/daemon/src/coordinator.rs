@@ -8,7 +8,7 @@ use dora_core::{
     message::uhlc::HLC,
 };
 use eyre::{eyre, Context};
-use std::{io::ErrorKind, net::SocketAddr};
+use std::{io::ErrorKind, net::SocketAddr, path::PathBuf};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
@@ -26,6 +26,7 @@ pub async fn register(
     machine_id: String,
     listen_port: u16,
     clock: &HLC,
+    working_dir:PathBuf, 
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
     let mut stream = TcpStream::connect(addr)
         .await
@@ -38,6 +39,7 @@ pub async fn register(
             dora_version: env!("CARGO_PKG_VERSION").to_owned(),
             machine_id,
             listen_port,
+            working_dir,
         },
         timestamp: clock.new_timestamp(),
     })?;

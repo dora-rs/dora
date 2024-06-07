@@ -141,6 +141,7 @@ async fn start_inner(
     let mut dataflow_results: HashMap<Uuid, BTreeMap<String, Result<(), String>>> = HashMap::new();
     let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
+    let mut daemon_working_dirs: HashMap<String, PathBuf> = HashMap::new();
 
     while let Some(event) = events.next().await {
         if event.log() {
@@ -172,6 +173,7 @@ async fn start_inner(
                     mut connection,
                     dora_version: daemon_version,
                     listen_port,
+                    working_dir,
                 } => {
                     let coordinator_version: &&str = &env!("CARGO_PKG_VERSION");
                     let version_check = if &daemon_version == coordinator_version {
@@ -211,9 +213,10 @@ async fn start_inner(
                                     "closing previous connection `{machine_id}` on new register"
                                 );
                             }
+                            daemon_working_dirs.insert(machine_id.clone(), working_dir.clone());
                         }
                         (Err(err), _) => {
-                            tracing::warn!("failed to register daemon connection for machine `{machine_id}`: {err}");
+                            tracing::warn!("failed to register daemon connection and daemon working_dir for machine `{machine_id}`: {err}");
                         }
                         (Ok(_), Err(err)) => {
                             tracing::warn!("failed to confirm daemon connection for machine `{machine_id}`: {err}");
@@ -320,7 +323,6 @@ async fn start_inner(
                             local_working_dir,
                         } => {
                             let name = name.or_else(|| names::Generator::default().next());
-
                             let inner = async {
                                 if let Some(name) = name.as_deref() {
                                     // check that name is unique
@@ -333,10 +335,10 @@ async fn start_inner(
                                 }
                                 let dataflow = start_dataflow(
                                     dataflow,
-                                    local_working_dir,
                                     name,
                                     &mut daemon_connections,
                                     &clock,
+                                    &mut daemon_working_dirs,
                                 )
                                 .await?;
                                 Ok(dataflow)
@@ -854,16 +856,16 @@ async fn retrieve_logs(
 
 async fn start_dataflow(
     dataflow: Descriptor,
-    working_dir: PathBuf,
     name: Option<String>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
+    daemon_working_dirs: &mut HashMap<String, PathBuf>,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
         machines,
         nodes,
-    } = spawn_dataflow(dataflow, working_dir, daemon_connections, clock).await?;
+    } = spawn_dataflow(dataflow, daemon_connections, clock, daemon_working_dirs).await?;
     Ok(RunningDataflow {
         uuid,
         name,
@@ -954,6 +956,7 @@ pub enum DaemonEvent {
         machine_id: String,
         connection: TcpStream,
         listen_port: u16,
+        working_dir: PathBuf,
     },
 }
 

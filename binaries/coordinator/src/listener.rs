@@ -53,12 +53,14 @@ pub async fn handle_connection(
                 machine_id,
                 dora_version,
                 listen_port,
+                working_dir,
             } => {
                 let event = DaemonEvent::Register {
                     dora_version,
                     machine_id,
                     connection,
                     listen_port,
+                    working_dir,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;

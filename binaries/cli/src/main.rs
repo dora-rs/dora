@@ -37,7 +37,6 @@ struct Args {
     #[clap(subcommand)]
     command: Command,
 }
-
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 enum Command {
@@ -120,6 +119,11 @@ enum Command {
 
         #[clap(long)]
         run_dataflow: Option<PathBuf>,
+
+        #[clap(long, default_value = ".")]
+        working_dir: PathBuf,
+
+
     },
     /// Run runtime
     Runtime,
@@ -192,7 +196,10 @@ fn run() -> eyre::Result<()> {
                     .parent()
                     .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                     .to_owned();
-                Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
+                let dataflow_descriptor = Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
+                if dataflow_descriptor.deploy.machine.is_none() {
+                    dataflow_descriptor.check(&working_dir).wrap_err("could not validate yaml dataflow");
+                }
                 check::check_environment()?
             }
             None => check::check_environment()?,
@@ -245,9 +252,12 @@ fn run() -> eyre::Result<()> {
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            dataflow_descriptor
-                .check(&working_dir)
-                .wrap_err("Could not validate yaml")?;
+            if dataflow_descriptor.deploy.machine.is_none() { // TODO: 根据 node 的 machine 的个数来判断
+                dataflow_descriptor
+                    .check(&working_dir)
+                    .wrap_err("Could not validate yaml")?;
+
+            }
             let mut session =
                 connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
             let dataflow_id = start_dataflow(
@@ -304,6 +314,7 @@ fn run() -> eyre::Result<()> {
             addr,
             machine_id,
             run_dataflow,
+            working_dir,
         } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
@@ -328,7 +339,7 @@ fn run() -> eyre::Result<()> {
                             let localhost = Ipv4Addr::new(127, 0, 0, 1);
                             (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
                         });
-                        Daemon::run(coordination_addr, machine_id.unwrap_or_default(), addr).await
+                        Daemon::run(coordination_addr, machine_id.unwrap_or_default(), addr, working_dir).await
                     }
                 }
             })
