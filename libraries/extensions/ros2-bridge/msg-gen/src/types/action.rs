@@ -150,7 +150,7 @@ impl Action {
         let feedback_type = format_ident!("{}_Feedback", self.name);
         let send_goal_type = format_ident!("{}_SendGoal", self.name);
         let get_result_type = format_ident!("{}_GetResult", self.name);
-        let feeback_message_type = format_ident!("{}_FeedbackMessage", self.name);
+        let feedback_message_type = format_ident!("{}_FeedbackMessage", self.name);
 
         let goal_body = self.goal.token_stream();
         let result_body = self.result.token_stream();
@@ -180,7 +180,7 @@ impl Action {
                 type Feedback = #feedback_type;
                 type SendGoal = #send_goal_type;
                 type GetResult = #get_result_type;
-                type FeedbackMessage = #feeback_message_type;
+                type FeedbackMessage = #feedback_message_type;
 
             }
 

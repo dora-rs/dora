@@ -14,7 +14,7 @@ This examples requires a sourced ROS2 installation.
 
 ## Running pub/sub example
 
-A ROS2 client to pubish turtlesim ROS2 messages and a DORA node can subscribe and visualize it.
+A ROS2 client to publish turtlesim ROS2 messages and a DORA node can subscribe and visualize it.
 
 From terminal 1 , sourcing the ROS2 installation and start ROS2 turtlesim window
 ```
