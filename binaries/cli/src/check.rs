@@ -9,7 +9,7 @@ use std::{
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
 pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
-    let mut error_occured = false;
+    let mut error_occurred = false;
 
     let color_choice = if std::io::stdout().is_terminal() {
         ColorChoice::Auto
@@ -29,7 +29,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
         Err(_) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
             writeln!(stdout, "not running")?;
-            error_occured = true;
+            error_occurred = true;
             None
         }
     };
@@ -49,13 +49,13 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     } else {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
         writeln!(stdout, "not running")?;
-        error_occured = true;
+        error_occurred = true;
     }
     let _ = stdout.reset();
 
     writeln!(stdout)?;
 
-    if error_occured {
+    if error_occurred {
         bail!("Environment check failed.");
     }
 

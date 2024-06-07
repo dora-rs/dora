@@ -1,4 +1,4 @@
-# Mulitple levels of nested messages
+# Multiple levels of nested messages
 Arrays[3] array_of_arrays
 BoundedSequences[3] array_of_bounded_sequences
 UnboundedSequences[3] array_of_unbounded_sequences

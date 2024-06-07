@@ -140,7 +140,7 @@
 - Use read_line instead of next_line in stderr by @haixuanTao in https://github.com/dora-rs/dora/pull/325
 - Add a `rust-ros2-dataflow` example using the dora-ros2-bridge by @phil-opp in https://github.com/dora-rs/dora/pull/324
 - Removing patchelf by @haixuanTao in https://github.com/dora-rs/dora/pull/333
-- Improving python example readibility by @haixuanTao in https://github.com/dora-rs/dora/pull/334
+- Improving python example readability by @haixuanTao in https://github.com/dora-rs/dora/pull/334
 - Use `serde_bytes` to serialize `Vec<u8>` by @haixuanTao in https://github.com/dora-rs/dora/pull/336
 - Adding support for `Arrow List(*)` for Python by @haixuanTao in https://github.com/dora-rs/dora/pull/337
 - Bump rustls-webpki from 0.100.1 to 0.100.2 by @dependabot in https://github.com/dora-rs/dora/pull/340

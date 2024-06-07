@@ -92,7 +92,7 @@ impl PendingNodes {
         let external_error = if success {
             None
         } else {
-            Some("some nodes failed to initalize on remote machines".to_string())
+            Some("some nodes failed to initialize on remote machines".to_string())
         };
         self.answer_subscribe_requests(external_error).await;
 

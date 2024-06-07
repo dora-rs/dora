@@ -122,7 +122,7 @@ Opentelemetry is language independent, backend agnostic, and easily collect dist
 dora-rs implements Hot-Reloading for python which means you can change code at runtime in Python while keeping your state intact.
 
 Using the feature flag: `--attach --hot-reload`, dora-rs watch for code change and reload nodes that has been modified.
-You can check fail-safe mecanism at: https://github.com/dora-rs/dora/pull/239
+You can check fail-safe mechanism at: https://github.com/dora-rs/dora/pull/239
 
 <a href="http://www.youtube.com/watch?v=NvvTEP8Jak8">
 <img align="center" width="600" alt="demo" src=http://img.youtube.com/vi/NvvTEP8Jak8/0.jpg>

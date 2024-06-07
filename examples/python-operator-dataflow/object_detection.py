@@ -14,7 +14,7 @@ model = YOLO("yolov8n.pt")
 
 class Operator:
     """
-    Infering object from images
+    Inferring object from images
     """
 
     def on_event(

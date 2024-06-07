@@ -60,12 +60,12 @@ mod test {
 
     #[test]
     fn parse_member_name_should_fail_if_starting_with_underscore() {
-        assert!(member_name("_invalid_indentifier").is_err());
+        assert!(member_name("_invalid_identifier").is_err());
     }
 
     #[test]
     fn parse_member_name_should_fail_if_starting_with_number() {
-        assert!(member_name("0invalid_indentifier").is_err());
+        assert!(member_name("0invalid_identifier").is_err());
     }
 
     #[test]
