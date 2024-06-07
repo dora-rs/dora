@@ -251,7 +251,7 @@ pub fn start_runtime() -> eyre::Result<()> {
 }
 
 #[pymodule]
-fn dora(py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     dora_ros2_bridge_python::create_dora_ros2_bridge_module(&m)?;
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
