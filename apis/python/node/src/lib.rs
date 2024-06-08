@@ -122,17 +122,17 @@ impl Node {
         &mut self,
         output_id: String,
         data: PyObject,
-        metadata: Option<&PyDict>,
+        metadata: Option<Bound<'_, PyDict>>,
         py: Python,
     ) -> eyre::Result<()> {
         let parameters = pydict_to_metadata(metadata)?;
 
-        if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
+        if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
             let data = py_bytes.as_bytes();
             self.node
                 .send_output_bytes(output_id.into(), parameters, data.len(), data)
                 .wrap_err("failed to send output")?;
-        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
             self.node.send_output(
                 output_id.into(),
                 parameters,
@@ -251,9 +251,10 @@ pub fn start_runtime() -> eyre::Result<()> {
 }
 
 #[pymodule]
-fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
-    dora_ros2_bridge_python::create_dora_ros2_bridge_module(m)?;
-    m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
+fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+    dora_ros2_bridge_python::create_dora_ros2_bridge_module(&m)?;
+
+    m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_class::<Node>()?;
     m.add_class::<PyEvent>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
