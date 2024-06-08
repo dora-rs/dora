@@ -8,7 +8,7 @@ use dora_core::daemon_messages::{
 use dora_core::descriptor::runtime_node_inputs;
 use dora_core::message::uhlc::{self, HLC};
 use dora_core::message::{ArrowTypeInfo, Metadata, MetadataParameters};
-use dora_core::topics::{DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT, LOCALHOST};
+use dora_core::topics::LOCALHOST;
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
@@ -87,7 +87,8 @@ impl Daemon {
     pub async fn run(
         coordinator_addr: SocketAddr,
         machine_id: String,
-        bind_addr: SocketAddr,
+        inter_daemon_addr: SocketAddr,
+        dynamic_node_port: u16,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
@@ -96,7 +97,8 @@ impl Daemon {
         // spawn inter daemon listen loop
         let (events_tx, events_rx) = flume::bounded(10);
         let listen_port =
-            inter_daemon::spawn_listener_loop(bind_addr, machine_id.clone(), events_tx).await?;
+            inter_daemon::spawn_listener_loop(inter_daemon_addr, machine_id.clone(), events_tx)
+                .await?;
         let daemon_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::Daemon(e.inner),
             timestamp: e.timestamp,
@@ -119,11 +121,12 @@ impl Daemon {
 
         // Spawn dynamic node listener loop
         let (events_tx, events_rx) = flume::bounded(10);
-        let dynamic_node_address =
-            SocketAddr::new(LOCALHOST, DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT); // TODO: Make this config
-        let _listen_port =
-            dynamic_node::spawn_listener_loop(dynamic_node_address, machine_id.clone(), events_tx)
-                .await?;
+        let _listen_port = dynamic_node::spawn_listener_loop(
+            (LOCALHOST, dynamic_node_port).into(),
+            machine_id.clone(),
+            events_tx,
+        )
+        .await?;
         let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::DynamicNode(e.inner),
             timestamp: e.timestamp,
