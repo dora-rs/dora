@@ -14,4 +14,4 @@ dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
 chrono = "0.4.31"
 dora-tracing = { workspace = true }
-parquet = { version = "48.0.0", features = ["async"] }
+parquet = { version = "52", features = ["async"] }

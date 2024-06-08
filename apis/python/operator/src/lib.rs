@@ -1,7 +1,7 @@
 use arrow::{array::ArrayRef, pyarrow::ToPyArrow};
 use dora_node_api::{merged::MergedEvent, Event, Metadata, MetadataParameters};
 use eyre::{Context, Result};
-use pyo3::{exceptions::PyLookupError, prelude::*, types::PyDict};
+use pyo3::{exceptions::PyLookupError, prelude::*, pybacked::PyBackedStr, types::PyDict};
 
 /// Dora Event
 #[pyclass]
@@ -126,11 +126,15 @@ impl From<MergedEvent<PyObject>> for PyEvent {
     }
 }
 
-pub fn pydict_to_metadata(dict: Option<&PyDict>) -> Result<MetadataParameters> {
+pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataParameters> {
     let mut default_metadata = MetadataParameters::default();
     if let Some(metadata) = dict {
         for (key, value) in metadata.iter() {
-            match key.extract::<&str>().context("Parsing metadata keys")? {
+            match key
+                .extract::<PyBackedStr>()
+                .context("Parsing metadata keys")?
+                .as_ref()
+            {
                 "watermark" => {
                     default_metadata.watermark =
                         value.extract().context("parsing watermark failed")?;
@@ -140,7 +144,7 @@ pub fn pydict_to_metadata(dict: Option<&PyDict>) -> Result<MetadataParameters> {
                         value.extract().context("parsing deadline failed")?;
                 }
                 "open_telemetry_context" => {
-                    let otel_context: &str = value
+                    let otel_context: PyBackedStr = value
                         .extract()
                         .context("parsing open telemetry context failed")?;
                     default_metadata.open_telemetry_context = otel_context.to_string();
@@ -152,8 +156,8 @@ pub fn pydict_to_metadata(dict: Option<&PyDict>) -> Result<MetadataParameters> {
     Ok(default_metadata)
 }
 
-pub fn metadata_to_pydict<'a>(metadata: &'a Metadata, py: Python<'a>) -> &'a PyDict {
-    let dict = PyDict::new(py);
+pub fn metadata_to_pydict<'a>(metadata: &'a Metadata, py: Python<'a>) -> pyo3::Bound<'a, PyDict> {
+    let dict = PyDict::new_bound(py);
     dict.set_item(
         "open_telemetry_context",
         &metadata.parameters.open_telemetry_context,
