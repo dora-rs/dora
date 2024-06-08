@@ -16,7 +16,7 @@ cargo install --git https://github.com/dora-rs/dora dora-rerun
 dora start dataflow.yml --attach
 ```
 
-You will see two visualizations. One from matplotlib and one from rerun for comparaison.
+You will see two visualizations. One from matplotlib and one from rerun for comparison.
 
 ## CI/CD
 

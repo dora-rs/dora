@@ -13,7 +13,7 @@ MODEL_NAME_OR_PATH = "TheBloke/deepseek-coder-6.7B-instruct-GPTQ"
 
 CODE_MODIFIER_TEMPLATE = """
 ### Instruction
-Respond with the small modified code only. No explaination.
+Respond with the small modified code only. No explanation.
 
 ```python
 {code}
@@ -27,7 +27,7 @@ Respond with the small modified code only. No explaination.
 
 MESSAGE_SENDER_TEMPLATE = """
 ### Instruction
-You're a json expert. Format your response as a json with a topic and a data field in a ```json block.  No explaination needed. No code needed.
+You're a json expert. Format your response as a json with a topic and a data field in a ```json block.  No explanation needed. No code needed.
 The schema for those json are:
 - line: Int[4]
 

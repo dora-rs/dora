@@ -41,7 +41,7 @@ OnEventResult_t dora_on_event(
 
             int data_alloc_size = 10;
             void *out_data = malloc(data_alloc_size);
-            // TODO intialize out_data
+            // TODO initialize out_data
 
             Output_t output = {.id = {
                                    .ptr = (uint8_t *)out_id_heap,
