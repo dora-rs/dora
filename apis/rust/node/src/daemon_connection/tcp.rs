@@ -5,13 +5,21 @@ use std::{
     net::TcpStream,
 };
 
+enum Serializer {
+    Bincode,
+    SerdeJson,
+}
 pub fn request(
     connection: &mut TcpStream,
     request: &Timestamped<DaemonRequest>,
 ) -> eyre::Result<DaemonReply> {
     send_message(connection, request)?;
-    if request.inner.expects_tcp_reply() {
-        receive_reply(connection)
+    if request.inner.expects_tcp_bincode_reply() {
+        receive_reply(connection, Serializer::Bincode)
+            .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
+    // Use serde json for message with variable length
+    } else if request.inner.expects_tcp_json_reply() {
+        receive_reply(connection, Serializer::SerdeJson)
             .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
     } else {
         Ok(DaemonReply::Empty)
@@ -27,7 +35,10 @@ fn send_message(
     Ok(())
 }
 
-fn receive_reply(connection: &mut TcpStream) -> eyre::Result<Option<DaemonReply>> {
+fn receive_reply(
+    connection: &mut TcpStream,
+    serializer: Serializer,
+) -> eyre::Result<Option<DaemonReply>> {
     let raw = match tcp_receive(connection) {
         Ok(raw) => raw,
         Err(err) => match err.kind() {
@@ -43,9 +54,14 @@ fn receive_reply(connection: &mut TcpStream) -> eyre::Result<Option<DaemonReply>
             }
         },
     };
-    bincode::deserialize(&raw)
-        .wrap_err("failed to deserialize DaemonReply")
-        .map(Some)
+    match serializer {
+        Serializer::Bincode => bincode::deserialize(&raw)
+            .wrap_err("failed to deserialize DaemonReply")
+            .map(Some),
+        Serializer::SerdeJson => serde_json::from_slice(&raw)
+            .wrap_err("failed to deserialize DaemonReply")
+            .map(Some),
+    }
 }
 
 fn tcp_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::Result<()> {

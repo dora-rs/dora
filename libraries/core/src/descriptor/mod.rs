@@ -16,6 +16,7 @@ pub use visualize::collect_dora_timers;
 mod validate;
 mod visualize;
 pub const SHELL_SOURCE: &str = "shell";
+pub const DYNAMIC_SOURCE: &str = "dynamic";
 
 /// Dataflow description
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -317,6 +318,52 @@ pub enum CoreNodeKind {
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
     Custom(CustomNode),
+}
+
+pub fn runtime_node_inputs(n: &RuntimeNode) -> BTreeMap<DataId, Input> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator.config.inputs.iter().map(|(input_id, mapping)| {
+                (
+                    DataId::from(format!("{}/{input_id}", operator.id)),
+                    mapping.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn runtime_node_outputs(n: &RuntimeNode) -> BTreeSet<DataId> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator
+                .config
+                .outputs
+                .iter()
+                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
+        })
+        .collect()
+}
+
+impl CoreNodeKind {
+    pub fn run_config(&self) -> NodeRunConfig {
+        match self {
+            CoreNodeKind::Runtime(n) => NodeRunConfig {
+                inputs: runtime_node_inputs(n),
+                outputs: runtime_node_outputs(n),
+            },
+            CoreNodeKind::Custom(n) => n.run_config.clone(),
+        }
+    }
+
+    pub fn dynamic(&self) -> bool {
+        match self {
+            CoreNodeKind::Runtime(_n) => false,
+            CoreNodeKind::Custom(n) => n.source == DYNAMIC_SOURCE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

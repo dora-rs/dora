@@ -14,13 +14,14 @@ use aligned_vec::{AVec, ConstAlign};
 use dora_message::{uhlc, Metadata};
 use uuid::{NoContext, Timestamp, Uuid};
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeConfig {
     pub dataflow_id: DataflowId,
     pub node_id: NodeId,
     pub run_config: NodeRunConfig,
     pub daemon_communication: DaemonCommunication,
     pub dataflow_descriptor: Descriptor,
+    pub dynamic: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -68,13 +69,18 @@ pub enum DaemonRequest {
     SubscribeDrop,
     NextFinishedDropTokens,
     EventStreamDropped,
+    NodeConfig {
+        node_id: NodeId,
+    },
 }
 
 impl DaemonRequest {
-    pub fn expects_tcp_reply(&self) -> bool {
+    pub fn expects_tcp_bincode_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::SendMessage { .. } | DaemonRequest::ReportDropTokens { .. } => false,
+            DaemonRequest::SendMessage { .. }
+            | DaemonRequest::NodeConfig { .. }
+            | DaemonRequest::ReportDropTokens { .. } => false,
             DaemonRequest::Register { .. }
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
@@ -83,6 +89,23 @@ impl DaemonRequest {
             | DaemonRequest::SubscribeDrop
             | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::EventStreamDropped => true,
+        }
+    }
+
+    pub fn expects_tcp_json_reply(&self) -> bool {
+        #[allow(clippy::match_like_matches_macro)]
+        match self {
+            DaemonRequest::NodeConfig { .. } => true,
+            DaemonRequest::Register { .. }
+            | DaemonRequest::Subscribe
+            | DaemonRequest::CloseOutputs(_)
+            | DaemonRequest::OutputsDone
+            | DaemonRequest::NextEvent { .. }
+            | DaemonRequest::SubscribeDrop
+            | DaemonRequest::NextFinishedDropTokens
+            | DaemonRequest::ReportDropTokens { .. }
+            | DaemonRequest::SendMessage { .. }
+            | DaemonRequest::EventStreamDropped => false,
         }
     }
 }
@@ -136,6 +159,7 @@ pub enum DaemonReply {
     PreparedMessage { shared_memory_id: SharedMemoryId },
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
+    NodeConfig { result: Result<NodeConfig, String> },
     Empty,
 }
 
@@ -227,6 +251,11 @@ pub enum DaemonCoordinatorEvent {
     },
     Destroy,
     Heartbeat,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum DynamicNodeEvent {
+    NodeConfig { node_id: NodeId },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
