@@ -1,4 +1,4 @@
-use crate::EventStream;
+use crate::{daemon_connection::DaemonChannel, EventStream};
 
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
@@ -9,10 +9,12 @@ use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    daemon_messages::{DataMessage, DataflowId, DropToken, NodeConfig},
+    daemon_messages::{DaemonRequest, DataMessage, DataflowId, DropToken, NodeConfig, Timestamped},
     descriptor::Descriptor,
     message::{uhlc, ArrowTypeInfo, Metadata, MetadataParameters},
+    topics::{DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT, LOCALHOST},
 };
+
 use eyre::{bail, WrapErr};
 use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
@@ -43,6 +45,7 @@ pub struct DoraNode {
     cache: VecDeque<ShmemHandle>,
 
     dataflow_descriptor: Descriptor,
+    dynamic: bool,
 }
 
 impl DoraNode {
@@ -66,6 +69,50 @@ impl DoraNode {
         Self::init(node_config)
     }
 
+    /// Initiate a node from a dataflow id and a node id.
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_node_api::dora_core::config::NodeId;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_node_id(NodeId::from("plot".to_string())).expect("Could not init node plot");
+    /// ```
+    ///
+    pub fn init_from_node_id(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
+        // Make sure that the node is initialized outside of dora start.
+        if let Ok(node_config_string) = std::env::var("DORA_NODE_CONFIG") {
+            let node_config: NodeConfig = serde_yaml::from_str(&node_config_string)
+                .context("failed to deserialize operator config")?;
+            assert!(
+                node_config.node_id == node_id,
+                "Node id within the yaml description and the node_id does not match. Please either run this node in either dynamic mode or change or remove `node_id` specification in the code."
+            );
+            return Self::init(node_config);
+        }
+
+        let daemon_address = (LOCALHOST, DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT).into();
+
+        let mut channel =
+            DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
+        let clock = Arc::new(uhlc::HLC::default());
+
+        let reply = channel
+            .request(&Timestamped {
+                inner: DaemonRequest::NodeConfig { node_id },
+                timestamp: clock.new_timestamp(),
+            })
+            .wrap_err("failed to request node config from daemon")?;
+        match reply {
+            dora_core::daemon_messages::DaemonReply::NodeConfig {
+                result: Ok(node_config),
+            } => Self::init(node_config),
+            dora_core::daemon_messages::DaemonReply::NodeConfig { result: Err(error) } => {
+                bail!("failed to get node config from daemon: {error}")
+            }
+            _ => bail!("unexpected reply from daemon"),
+        }
+    }
+
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
         let NodeConfig {
@@ -74,8 +121,8 @@ impl DoraNode {
             run_config,
             daemon_communication,
             dataflow_descriptor,
+            dynamic,
         } = node_config;
-
         let clock = Arc::new(uhlc::HLC::default());
 
         let event_stream =
@@ -91,13 +138,13 @@ impl DoraNode {
         let node = Self {
             id: node_id,
             dataflow_id,
-            node_config: run_config,
+            node_config: run_config.clone(),
             control_channel,
             clock,
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
-
+            dynamic,
             dataflow_descriptor,
         };
         Ok((node, event_stream))
@@ -335,16 +382,18 @@ impl Drop for DoraNode {
     #[tracing::instrument(skip(self), fields(self.id = %self.id), level = "trace")]
     fn drop(&mut self) {
         // close all outputs first to notify subscribers as early as possible
-        if let Err(err) = self
-            .control_channel
-            .report_closed_outputs(
-                std::mem::take(&mut self.node_config.outputs)
-                    .into_iter()
-                    .collect(),
-            )
-            .context("failed to close outputs on drop")
-        {
-            tracing::warn!("{err:?}")
+        if !self.dynamic {
+            if let Err(err) = self
+                .control_channel
+                .report_closed_outputs(
+                    std::mem::take(&mut self.node_config.outputs)
+                        .into_iter()
+                        .collect(),
+                )
+                .context("failed to close outputs on drop")
+            {
+                tracing::warn!("{err:?}")
+            }
         }
 
         while !self.sent_out_shared_memory.is_empty() {

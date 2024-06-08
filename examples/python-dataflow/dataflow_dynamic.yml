@@ -1,0 +1,25 @@
+nodes:
+  - id: webcam
+    custom:
+      source: ./webcam.py
+      inputs:
+        tick:
+          source: dora/timer/millis/50
+          queue_size: 1000
+      outputs:
+        - image
+
+  - id: object_detection
+    custom:
+      source: ./object_detection.py
+      inputs:
+        image: webcam/image
+      outputs:
+        - bbox
+
+  - id: plot
+    custom:
+      source: dynamic
+      inputs:
+        image: webcam/image
+        bbox: object_detection/bbox
