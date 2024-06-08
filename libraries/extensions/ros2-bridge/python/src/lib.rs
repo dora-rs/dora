@@ -303,7 +303,7 @@ pub struct Ros2Publisher {
 impl Ros2Publisher {
     /// Publish a message into ROS2 topic.
     ///
-    /// Remember that the data format should respect the structure of the ROS2 message usinng an arrow Structure.
+    /// Remember that the data format should respect the structure of the ROS2 message using an arrow Structure.
     ///
     /// ex:
     /// ```python

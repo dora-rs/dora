@@ -2,7 +2,7 @@
 name = "dora-operator-api-c"
 version.workspace = true
 edition = "2021"
-description = "C API implemetation for Dora Operator"
+description = "C API implementation for Dora Operator"
 documentation.workspace = true
 license.workspace = true
 

@@ -5,7 +5,7 @@ from dora import DoraStatus
 
 class Operator:
     """
-    Infering object from images
+    Inferring object from images
     """
 
     def __init__(self):
