@@ -655,7 +655,7 @@ async fn send_heartbeat_message(
         inner: DaemonCoordinatorEvent::Heartbeat,
         timestamp,
     })
-    .unwrap();
+    .context("Could not serialize heartbeat message")?;
 
     tcp_send(connection, &message)
         .await

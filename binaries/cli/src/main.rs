@@ -6,7 +6,7 @@ use dora_core::{
     descriptor::Descriptor,
     topics::{
         ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-        DORA_COORDINATOR_PORT_DEFAULT,
+        DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
@@ -174,9 +174,12 @@ enum Command {
         /// Unique identifier for the machine (required for distributed dataflows)
         #[clap(long)]
         machine_id: Option<String>,
-        /// The IP address and port this daemon will bind to.
+        /// The inter daemon IP address and port this daemon will bind to.
         #[clap(long, default_value_t = SocketAddr::new(LISTEN_WILDCARD, 0))]
         addr: SocketAddr,
+        /// The dynamic node port this daemon will bind to.
+        #[clap(long, default_value_t = DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT)]
+        dynamic_node_port: u16,
         /// Address and port number of the dora coordinator
         #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
         coordinator_addr: SocketAddr,
@@ -376,7 +379,7 @@ fn run() -> eyre::Result<()> {
             match (uuid, name) {
                 (Some(uuid), _) => stop_dataflow(uuid, grace_duration, &mut *session)?,
                 (None, Some(name)) => stop_dataflow_by_name(name, grace_duration, &mut *session)?,
-                (None, None) => stop_dataflow_interactive(grace_duration, &mut *session)?,
+                (None, None) => stop_dataflow_dynamic(grace_duration, &mut *session)?,
             }
         }
         Command::Destroy {
@@ -411,6 +414,7 @@ fn run() -> eyre::Result<()> {
         Command::Daemon {
             coordinator_addr,
             addr,
+            dynamic_node_port,
             machine_id,
             run_dataflow,
         } => {
@@ -435,7 +439,7 @@ fn run() -> eyre::Result<()> {
                         if coordinator_addr.ip() == LOCALHOST {
                             tracing::info!("Starting in local mode");
                         }
-                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), addr).await
+                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), addr, dynamic_node_port).await
                     }
                 }
             })
@@ -476,7 +480,7 @@ fn start_dataflow(
     }
 }
 
-fn stop_dataflow_interactive(
+fn stop_dataflow_dynamic(
     grace_duration: Option<Duration>,
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<()> {

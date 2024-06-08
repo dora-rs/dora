@@ -270,7 +270,9 @@ pub async fn spawn_node(
         .expect("Failed to create log file");
     let mut child_stdout =
         tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"));
-    let pid = child.id().unwrap();
+    let pid = child.id().context(
+        "Could not get the pid for the just spawned node and indicate that there is an error",
+    )?;
     let running_node = RunningNode {
         pid: Some(pid),
         node_config,
