@@ -318,15 +318,9 @@ jobs:
           dora start dataflow.yml --name ci-python-test
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
-          cd ..
-          if [ ! -d "examples/.env/bin" ]; then # Reuse Example venv
-            mv examples/.env/Scripts examples/.env/bin    # venv is placed under `Scripts` on Windows
-          fi
-          source examples/.env/bin/activate
-          dora destroy # Restart the daemon with the current virtual environment 
-          dora up 
-          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic
-          python examples/python-dataflow/plot_dynamic.py
+          pip install -r ../examples/python-dataflow/requirements.txt --cache-dir=.
+          dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic
+          python ../examples/python-dataflow/plot_dynamic.py
           sleep 5
           dora stop --name ci-python-test  --grace-duration 5s
           dora destroy
