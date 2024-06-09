@@ -62,6 +62,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::pending::DataflowStatus;
 
+type DataflowsErrors = BTreeMap<Uuid, BTreeMap<NodeId, JoinHandle<Result<Option<Report>>>>>;
+
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
     working_dir: HashMap<DataflowId, PathBuf>,
@@ -75,8 +77,8 @@ pub struct Daemon {
 
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
-    /// used to record dataflow results when `exit_when_done` is used
-    dataflow_errors: BTreeMap<Uuid, BTreeMap<NodeId, JoinHandle<Result<Option<eyre::Report>>>>>,
+    /// Holds futures containing logs of errors
+    dataflow_errors: DataflowsErrors,
 
     clock: Arc<uhlc::HLC>,
 }
@@ -185,7 +187,7 @@ impl Daemon {
 
         let (dataflow_errors, ()) = future::try_join(run_result, spawn_result).await?;
 
-        for (_id, errors) in dataflow_errors.into_iter() {
+        if let Some((_id, errors)) = dataflow_errors.into_iter().next() {
             bail!(pretty_string_dataflow_errors(errors)
                 .await
                 .context("could not print error")?)
@@ -249,12 +251,7 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<
-        BTreeMap<
-            Uuid,
-            BTreeMap<NodeId, tokio::task::JoinHandle<std::result::Result<Option<Report>, Report>>>,
-        >,
-    > {
+    ) -> Result<DataflowsErrors> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
@@ -1689,11 +1686,11 @@ fn set_up_ctrlc_handler(
 }
 
 async fn get_log(working_dir: &Path, dataflow_id: Uuid, node_id: NodeId) -> Result<Vec<u8>> {
-    let mut file = File::open(log::log_path(&working_dir, &dataflow_id, &node_id))
+    let mut file = File::open(log::log_path(working_dir, &dataflow_id, &node_id))
         .await
         .wrap_err(format!(
             "Could not open log file: {:#?}",
-            log::log_path(&working_dir, &dataflow_id, &node_id)
+            log::log_path(working_dir, &dataflow_id, &node_id)
         ))?;
 
     let mut contents = vec![];
