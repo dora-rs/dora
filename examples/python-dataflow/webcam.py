@@ -8,7 +8,11 @@ import cv2
 
 from dora import Node
 
-node = Node()
+try:
+    node = Node()
+except RuntimeError as e:
+    print("Could not initiate node with error: ", e)
+    exit(0)
 
 CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", 0))
 CAMERA_WIDTH = 640

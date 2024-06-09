@@ -19,7 +19,10 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let (node, mut events) = DoraNode::init_from_env()?;
+    let Ok((node, mut events)) = DoraNode::init_from_env() else {
+        println!("Could not initiate dora node");
+        return Ok(());
+    };
     let dataflow_id = node.dataflow_id();
     let mut writers = HashMap::new();
 

@@ -5,7 +5,10 @@ fn main() -> eyre::Result<()> {
     println!("hello");
 
     let status_output = DataId::from("status".to_owned());
-    let (mut node, mut events) = DoraNode::init_from_env()?;
+    let Ok((mut node, mut events)) = DoraNode::init_from_env() else {
+        println!("Could not initiate dora node");
+        return Ok(());
+    };
 
     let mut ticks = 0;
     while let Some(event) = events.recv() {

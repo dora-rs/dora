@@ -5,7 +5,10 @@ fn main() -> eyre::Result<()> {
 
     let output = DataId::from("random".to_owned());
 
-    let (mut node, mut events) = DoraNode::init_from_env()?;
+    let Ok((mut node, mut events)) = DoraNode::init_from_env() else {
+        println!("Could not initiate dora node");
+        return Ok(());
+    };
 
     for i in 0..100 {
         let event = match events.recv() {

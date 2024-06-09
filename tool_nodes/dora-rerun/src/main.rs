@@ -16,8 +16,10 @@ fn main() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
-    let (_node, mut events) =
-        DoraNode::init_from_env().context("Could not initialize dora node")?;
+    let Ok((_node, mut events)) = DoraNode::init_from_env() else {
+        println!("Could not initiate dora node");
+        return Ok(());
+    };
 
     // Limit memory usage
     let mut options = SpawnOptions::default();

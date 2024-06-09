@@ -2,7 +2,10 @@ use dora_node_api::{self, DoraNode, Event};
 use eyre::{bail, Context};
 
 fn main() -> eyre::Result<()> {
-    let (_node, mut events) = DoraNode::init_from_env()?;
+    let Ok((_node, mut events)) = DoraNode::init_from_env() else {
+        println!("Could not initiate dora node");
+        return Ok(());
+    };
 
     while let Some(event) = events.recv() {
         match event {

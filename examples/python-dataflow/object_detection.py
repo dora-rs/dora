@@ -10,7 +10,12 @@ import pyarrow as pa
 
 model = YOLO("yolov8n.pt")
 
-node = Node()
+try:
+    node = Node()
+except RuntimeError as e:
+    print("Dataflow initialization failed: ", e)
+    exit(0)
+
 
 for event in node:
     event_type = event["type"]
