@@ -77,7 +77,7 @@ impl PendingNodes {
         clock: &HLC,
     ) -> eyre::Result<()> {
         if self.local_nodes.remove(node_id) {
-            tracing::warn!("node `{node_id}` exited before initializing dora connection");
+            tracing::info!("node `{node_id}` exited before initializing dora connection");
             self.exited_before_subscribe.insert(node_id.clone());
             self.update_dataflow_status(coordinator_connection, clock)
                 .await?;

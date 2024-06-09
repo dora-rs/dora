@@ -15,10 +15,11 @@ use dora_core::{
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 
-use eyre::{bail, eyre, Context, ContextCompat, Result};
+use eyre::{bail, eyre, Context, ContextCompat, Report, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
+use log::pretty_string_dataflow_errors;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
 use std::sync::Arc;
@@ -39,6 +40,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
@@ -50,6 +52,8 @@ mod node_communication;
 mod pending;
 mod spawn;
 mod tcp_utils;
+
+const LINE_OF_LOGS_SHOWN: usize = 10;
 
 #[cfg(feature = "telemetry")]
 use dora_tracing::telemetry::serialize_context;
@@ -72,7 +76,7 @@ pub struct Daemon {
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     /// used to record dataflow results when `exit_when_done` is used
-    dataflow_errors: BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>,
+    dataflow_errors: BTreeMap<Uuid, BTreeMap<NodeId, JoinHandle<Result<Option<eyre::Report>>>>>,
 
     clock: Arc<uhlc::HLC>,
 }
@@ -181,18 +185,12 @@ impl Daemon {
 
         let (dataflow_errors, ()) = future::try_join(run_result, spawn_result).await?;
 
-        if dataflow_errors.is_empty() {
-            Ok(())
-        } else {
-            let mut output = "some nodes failed:".to_owned();
-            for (dataflow, node_errors) in dataflow_errors {
-                for (node, error) in node_errors {
-                    use std::fmt::Write;
-                    write!(&mut output, "\n  - {dataflow}/{node}: {error}").unwrap();
-                }
-            }
-            bail!("{output}");
+        for (_id, errors) in dataflow_errors.into_iter() {
+            bail!(pretty_string_dataflow_errors(errors)
+                .await
+                .context("could not print error")?)
         }
+        Ok(())
     }
 
     async fn run_general(
@@ -201,7 +199,12 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
+    ) -> eyre::Result<
+        BTreeMap<
+            Uuid,
+            BTreeMap<NodeId, tokio::task::JoinHandle<std::result::Result<Option<Report>, Report>>>,
+        >,
+    > {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
@@ -246,7 +249,12 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
+    ) -> eyre::Result<
+        BTreeMap<
+            Uuid,
+            BTreeMap<NodeId, tokio::task::JoinHandle<std::result::Result<Option<Report>, Report>>>,
+        >,
+    > {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
@@ -921,22 +929,18 @@ impl Daemon {
 
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
-            let result = match self.dataflow_errors.get(&dataflow.id) {
-                None => Ok(()),
-                Some(errors) => {
-                    let mut output = "some nodes failed:".to_owned();
-                    for (node, error) in errors {
-                        use std::fmt::Write;
-                        write!(&mut output, "\n  - {node}: {error}").unwrap();
-                    }
-                    Err(output)
-                }
-            };
             tracing::info!(
                 "Dataflow `{dataflow_id}` finished on machine `{}`",
                 self.machine_id
             );
             if let Some(connection) = &mut self.coordinator_connection {
+                let errors = self.dataflow_errors.remove(&dataflow.id);
+                let result = match errors {
+                    None => Ok(()),
+                    Some(errors) => Err(pretty_string_dataflow_errors(errors)
+                        .await
+                        .context("could not stringify node errors")?),
+                };
                 let msg = serde_json::to_vec(&Timestamped {
                     inner: CoordinatorRequest::Event {
                         machine_id: self.machine_id.clone(),
@@ -1050,96 +1054,108 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
-                let logs = match self.working_dir.get(&dataflow_id) {
-                    Some(working_dir) => {
-                        let logs = get_log(working_dir, dataflow_id, node_id.clone())
-                            .await
-                            .context(
-                                "could not get logs data for the result of the spawned node",
-                            )?;
-                        let logs = String::from_utf8(logs).context("logs are not valid UTF-8")?;
-                        let lines: Vec<_> = logs.split('\n').map(|line| line.to_string()).collect();
-                        // Only keep last 20 lines of logs.
-                        let lines = lines.into_iter().rev().take(20).collect::<Vec<_>>();
-
-                        lines.join("\n")
-                    }
-                    None => "".to_string(),
-                };
-
-                let node_error = match exit_status {
-                    NodeExitStatus::Success => {
-                        tracing::info!("node {dataflow_id}/{node_id} finished successfully");
-                        None
-                    }
-                    NodeExitStatus::IoError(err) => {
-                        let err = eyre!(err).wrap_err(format!(
-                            "
-    I/O error while waiting for node `{dataflow_id}/{node_id}.
-    
-    {logs}
-                            "
-                        ));
-                        tracing::error!("{err:?}");
-                        Some(err)
-                    }
-                    NodeExitStatus::ExitCode(code) => {
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with exit code {code}.
-
-    {logs}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
-                    NodeExitStatus::Signal(signal) => {
-                        let signal: Cow<_> = match signal {
-                            1 => "SIGHUP".into(),
-                            2 => "SIGINT".into(),
-                            3 => "SIGQUIT".into(),
-                            4 => "SIGILL".into(),
-                            6 => "SIGABRT".into(),
-                            8 => "SIGFPE".into(),
-                            9 => "SIGKILL".into(),
-                            11 => "SIGSEGV".into(),
-                            13 => "SIGPIPE".into(),
-                            14 => "SIGALRM".into(),
-                            15 => "SIGTERM".into(),
-                            22 => "SIGABRT".into(),
-                            23 => "NSIG".into(),
-
-                            other => other.to_string().into(),
+                let working_dir = self.working_dir.get(&dataflow_id).cloned();
+                let success = matches!(exit_status, NodeExitStatus::Success);
+                let node_error = {
+                    let node_id = node_id.clone();
+                    tokio::spawn(async move {
+                        let logs = match working_dir {
+                            Some(working_dir) => {
+                                let logs = get_log(&working_dir, dataflow_id, node_id.clone())
+                                .await
+                                .context(
+                                    "could not get logs data for the result of the spawned node",
+                                )?;
+                                let logs =
+                                    String::from_utf8(logs).context("logs are not valid UTF-8")?;
+                                let mut lines: Vec<_> = logs.split('\n').collect();
+                                // Only keep last 10 lines of logs.
+                                if lines.len() > LINE_OF_LOGS_SHOWN {
+                                    let mut end_lines: Vec<_> =
+                                        lines.drain((lines.len() - LINE_OF_LOGS_SHOWN)..).collect();
+                                    end_lines.push("More logs at");
+                                    let log_cmd = format!("  dora logs {dataflow_id} {node_id}");
+                                    end_lines.push(&log_cmd);
+                                    end_lines.join("\n")
+                                } else {
+                                    lines.join("\n")
+                                }
+                            }
+                            None => "Could not find log file".to_string(),
                         };
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with signal `{signal}`
 
-    {logs}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
-                    NodeExitStatus::Unknown => {
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with unknown exit code
+                        let node_error = match exit_status {
+                            NodeExitStatus::Success => {
+                                tracing::info!("{dataflow_id}/{node_id} finished successfully");
+                                None
+                            }
+                            NodeExitStatus::IoError(err) => {
+                                let err = eyre!(err).wrap_err(format!(
+                            "{dataflow_id}/{node_id} exited due to I/O error with last logs:
     
-    {logs}
-                            "
+{logs}
+"
+                        ));
+                                tracing::error!("{err:?}");
+                                Some(err)
+                            }
+                            NodeExitStatus::ExitCode(code) => {
+                                let err = eyre!(
+                                "{dataflow_id}/{node_id} exited with code {code} with last logs:
+    
+{logs}
+"
+                            );
+                                tracing::error!("{err}");
+                                Some(err)
+                            }
+                            NodeExitStatus::Signal(signal) => {
+                                let signal: Cow<_> = match signal {
+                                    1 => "SIGHUP".into(),
+                                    2 => "SIGINT".into(),
+                                    3 => "SIGQUIT".into(),
+                                    4 => "SIGILL".into(),
+                                    6 => "SIGABRT".into(),
+                                    8 => "SIGFPE".into(),
+                                    9 => "SIGKILL".into(),
+                                    11 => "SIGSEGV".into(),
+                                    13 => "SIGPIPE".into(),
+                                    14 => "SIGALRM".into(),
+                                    15 => "SIGTERM".into(),
+                                    22 => "SIGABRT".into(),
+                                    23 => "NSIG".into(),
+
+                                    other => other.to_string().into(),
+                                };
+                                let err = eyre!(
+                                    "{dataflow_id}/{node_id} exited with `{signal}` with last logs:
+    
+{logs}
+"
+                                );
+                                tracing::error!("{err}");
+                                Some(err)
+                            }
+                            NodeExitStatus::Unknown => {
+                                let err = eyre!(
+                            "{dataflow_id}/{node_id} exited with unknown exit code with 1ast logs:
+    
+{logs}
+"
                         );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
+                                tracing::error!("{err}");
+                                Some(err)
+                            }
+                        };
+                        Ok::<Option<Report>, Report>(node_error)
+                    })
                 };
 
-                if let Some(err) = node_error {
+                if !success {
                     self.dataflow_errors
                         .entry(dataflow_id)
                         .or_default()
-                        .insert(node_id.clone(), err);
+                        .insert(node_id.clone(), node_error);
                 }
 
                 self.handle_node_stop(dataflow_id, &node_id).await?;

@@ -364,14 +364,6 @@ pub async fn spawn_node(
                 }
             };
 
-            if buffer.starts_with("Traceback (most recent call last):") {
-                if !finished {
-                    continue;
-                } else {
-                    tracing::error!("{dataflow_id}/{}: \n{buffer}", node_id);
-                }
-            }
-
             // send the buffered lines
             let lines = std::mem::take(&mut buffer);
             let sent = stderr_tx.send(lines.clone()).await;

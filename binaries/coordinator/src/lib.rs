@@ -612,7 +612,7 @@ fn dataflow_result(
     if errors.is_empty() {
         Ok(())
     } else {
-        let mut formatted = format!("errors occurred in dataflow {dataflow_uuid}:\n");
+        let mut formatted = format!("{dataflow_uuid} failed on:\n");
         formatted.push_str(&errors.join("\n"));
         Err(formatted)
     }
