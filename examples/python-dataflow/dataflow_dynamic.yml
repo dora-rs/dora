@@ -9,17 +9,8 @@ nodes:
       outputs:
         - image
 
-  - id: object_detection
-    custom:
-      source: ./object_detection.py
-      inputs:
-        image: webcam/image
-      outputs:
-        - bbox
-
   - id: plot
     custom:
       source: dynamic
       inputs:
         image: webcam/image
-        bbox: object_detection/bbox
