@@ -13,7 +13,7 @@ use dora_daemon::Daemon;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 use duration_str::parse;
-use eyre::{bail, Context};
+use eyre::{bail, Context, Result};
 use std::net::SocketAddr;
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -232,11 +232,13 @@ enum Lang {
     Cxx,
 }
 
-fn main() {
+fn main() -> Result<()> {
+    simple_eyre::install()?;
     if let Err(err) = run() {
         eprintln!("{err:#}");
         std::process::exit(1);
     }
+    Ok(())
 }
 
 fn run() -> eyre::Result<()> {

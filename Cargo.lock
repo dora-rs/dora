@@ -2268,6 +2268,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
+ "simple-eyre",
  "termcolor",
  "tokio",
  "tokio-stream",
@@ -8704,6 +8705,16 @@ checksum = "e041bb827d1bfca18f213411d51b665309f1afb37a04a5d1464530e13779fc0f"
 dependencies = [
  "console",
  "similar",
+]
+
+[[package]]
+name = "simple-eyre"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b561532e8ffe7ecf09108c4f662896a9ec3eac4999eba84015ec3dcb8cc630a"
+dependencies = [
+ "eyre",
+ "indenter",
 ]
 
 [[package]]

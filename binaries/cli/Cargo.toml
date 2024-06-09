@@ -19,6 +19,7 @@ tracing = ["dep:dora-tracing"]
 [dependencies]
 clap = { version = "4.0.3", features = ["derive"] }
 eyre = "0.6.8"
+simple-eyre = "0.3"
 dora-core = { workspace = true }
 dora-node-api-c = { workspace = true }
 dora-operator-api-c = { workspace = true }
