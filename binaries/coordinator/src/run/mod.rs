@@ -1,7 +1,4 @@
-use crate::{
-    tcp_utils::{tcp_receive, tcp_send},
-    DaemonConnection,
-};
+use crate::{tcp_utils::{tcp_receive, tcp_send}, DaemonConnection};
 
 use dora_core::{
     daemon_messages::{
@@ -16,6 +13,7 @@ use std::{
     path::PathBuf,
 };
 use uuid::{NoContext, Timestamp, Uuid};
+const DEFAULT_WORKING_DIR: &str = "/tmp";
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
@@ -50,19 +48,21 @@ pub(super) async fn spawn_dataflow(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
 
-    let spawn_command = SpawnDataflowNodes {
-        dataflow_id: uuid,
-        working_dir,
-        nodes: nodes.clone(),
-        machine_listen_ports,
-        dataflow_descriptor: dataflow,
-    };
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::Spawn(spawn_command),
-        timestamp: clock.new_timestamp(),
-    })?;
-
+    
     for machine in &machines {
+        let working_dir = find_working_dir(daemon_connections, machine, working_dir.clone());
+        
+        let spawn_command = SpawnDataflowNodes {
+            dataflow_id: uuid,
+            working_dir,
+            nodes: nodes.clone(),
+            machine_listen_ports: machine_listen_ports.clone(),
+            dataflow_descriptor: dataflow.clone(),
+        };
+        let message = serde_json::to_vec(&Timestamped {
+            inner: DaemonCoordinatorEvent::Spawn(spawn_command),
+            timestamp: clock.new_timestamp(),
+        })?;
         tracing::trace!("Spawning dataflow `{uuid}` on machine `{machine}`");
         spawn_dataflow_on_machine(daemon_connections, machine, &message)
             .await
@@ -76,6 +76,15 @@ pub(super) async fn spawn_dataflow(
         machines,
         nodes,
     })
+}
+
+fn find_working_dir(daemon_connections: &mut HashMap<String, DaemonConnection>, machine: &str, working_dir: PathBuf) -> PathBuf {
+    if daemon_connections.get_mut(machine).unwrap().listen_socket.ip().is_loopback() {
+        working_dir
+    } else {
+        PathBuf::from(DEFAULT_WORKING_DIR)
+    }
+
 }
 
 async fn spawn_dataflow_on_machine(

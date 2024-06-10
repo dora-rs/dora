@@ -137,6 +137,7 @@ async fn start_inner(
     let mut dataflow_results: HashMap<Uuid, BTreeMap<String, Result<(), String>>> = HashMap::new();
     let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
+    let mut daemon_working_dirs: HashMap<String, PathBuf> = HashMap::new();
 
     while let Some(event) = events.next().await {
         if event.log() {
@@ -207,6 +208,17 @@ async fn start_inner(
                                     "closing previous connection `{machine_id}` on new register"
                                 );
                             }
+                            if ip.is_loopback() {
+                                daemon_working_dirs.insert(
+                                    machine_id.clone(),
+                                    PathBuf::from("/tmp/"), //TODO: Register Daemon working directory
+                                );
+                            } else {
+                                daemon_working_dirs.insert(
+                                    machine_id.clone(),
+                                    PathBuf::from("/tmp/"), //TODO: Register Daemon working directory
+                                );
+                            } 
                         }
                         (Err(err), _) => {
                             tracing::warn!("failed to register daemon connection for machine `{machine_id}`: {err}");
