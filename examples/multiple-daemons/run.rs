@@ -214,7 +214,7 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
 async fn run_daemon(
     coordinator: String,
     machine_id: &str,
-    dynamic_node_port: u16,
+    local_listen_port: u16,
 ) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
@@ -227,7 +227,7 @@ async fn run_daemon(
         .arg("--coordinator-addr")
         .arg(coordinator)
         .arg("--dynamic-node-port")
-        .arg(dynamic_node_port.to_string());
+        .arg(local_listen_port.to_string());
     if !cmd.status().await?.success() {
         bail!("failed to run dataflow");
     };

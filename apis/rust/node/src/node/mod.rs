@@ -12,7 +12,7 @@ use dora_core::{
     daemon_messages::{DaemonRequest, DataMessage, DataflowId, DropToken, NodeConfig, Timestamped},
     descriptor::Descriptor,
     message::{uhlc, ArrowTypeInfo, Metadata, MetadataParameters},
-    topics::{DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT, LOCALHOST},
+    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
 };
 
 use eyre::{bail, WrapErr};
@@ -90,7 +90,7 @@ impl DoraNode {
             return Self::init(node_config);
         }
 
-        let daemon_address = (LOCALHOST, DORA_DAEMON_DYNAMIC_NODE_PORT_DEFAULT).into();
+        let daemon_address = (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
 
         let mut channel =
             DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
