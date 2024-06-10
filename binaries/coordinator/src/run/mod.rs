@@ -40,7 +40,7 @@ pub(super) async fn spawn_dataflow(
 
     
     for machine in &machines {
-        let working_dir = find_working_dir(daemon_connections, machine, working_dir.clone());
+        let working_dir = PathBuf::from(DEFAULT_WORKING_DIR);
         
         let spawn_command = SpawnDataflowNodes {
             dataflow_id: uuid,
@@ -68,14 +68,6 @@ pub(super) async fn spawn_dataflow(
     })
 }
 
-fn find_working_dir(daemon_connections: &mut HashMap<String, DaemonConnection>, machine: &str, working_dir: PathBuf) -> PathBuf {
-    if daemon_connections.get_mut(machine).unwrap().listen_socket.ip().is_loopback() {
-        working_dir
-    } else {
-        PathBuf::from(DEFAULT_WORKING_DIR)
-    }
-
-}
 
 async fn spawn_dataflow_on_machine(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
