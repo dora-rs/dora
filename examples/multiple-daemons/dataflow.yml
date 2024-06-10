@@ -4,7 +4,7 @@ nodes:
       machine: A
     custom:
       build: cargo build -p multiple-daemons-example-node
-      source: ../../target/debug/multiple-daemons-example-node
+      source: /home/runner/work/dora/dora/target/debug/multiple-daemons-example-node
       inputs:
         tick: dora/timer/millis/10
       outputs:
@@ -15,7 +15,7 @@ nodes:
     operators:
       - id: rust-operator
         build: cargo build -p multiple-daemons-example-operator
-        shared-library: ../../target/debug/multiple_daemons_example_operator
+        shared-library: /home/runner/work/dora/dora/target/debug/multiple_daemons_example_operator
         inputs:
           tick: dora/timer/millis/100
           random: rust-node/random
@@ -26,6 +26,6 @@ nodes:
       machine: B
     custom:
       build: cargo build -p multiple-daemons-example-sink
-      source: ../../target/debug/multiple-daemons-example-sink
+      source: /home/runner/work/dora/dora/target/debug/multiple-daemons-example-sink
       inputs:
         message: runtime-node/rust-operator/status

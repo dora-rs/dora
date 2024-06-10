@@ -133,11 +133,8 @@ impl Descriptor {
     }
 
     pub fn check(&self, working_dir: &Path) -> eyre::Result<()> {
-
-        validate::check_dataflow(self, working_dir)
-            .wrap_err("Dataflow could not be validated.")
+        validate::check_dataflow(self, working_dir).wrap_err("Dataflow could not be validated.")
     }
-
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -434,12 +431,11 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
 }
 pub fn source_to_path(source: &str) -> PathBuf {
     let path = Path::new(&source);
-    let path = if path.extension().is_none() {
+    if path.extension().is_none() {
         path.with_extension(EXE_EXTENSION)
     } else {
         path.to_owned()
-    };
-    path
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

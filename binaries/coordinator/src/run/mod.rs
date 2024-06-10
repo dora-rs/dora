@@ -1,4 +1,7 @@
-use crate::{tcp_utils::{tcp_receive, tcp_send}, DaemonConnection};
+use crate::{
+    tcp_utils::{tcp_receive, tcp_send},
+    DaemonConnection,
+};
 
 use dora_core::{
     daemon_messages::{
@@ -37,22 +40,24 @@ pub(super) async fn spawn_dataflow(
                 .map(|c| (m.clone(), c.listen_socket))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
+    let working_dir = if machines.len() > 1 {
+        PathBuf::from(DEFAULT_WORKING_DIR)
+    } else {
+        working_dir
+    };
+    let spawn_command = SpawnDataflowNodes {
+        dataflow_id: uuid,
+        working_dir,
+        nodes: nodes.clone(),
+        machine_listen_ports,
+        dataflow_descriptor: dataflow,
+    };
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::Spawn(spawn_command),
+        timestamp: clock.new_timestamp(),
+    })?;
 
-    
     for machine in &machines {
-        let working_dir = PathBuf::from(DEFAULT_WORKING_DIR);
-        
-        let spawn_command = SpawnDataflowNodes {
-            dataflow_id: uuid,
-            working_dir,
-            nodes: nodes.clone(),
-            machine_listen_ports: machine_listen_ports.clone(),
-            dataflow_descriptor: dataflow.clone(),
-        };
-        let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::Spawn(spawn_command),
-            timestamp: clock.new_timestamp(),
-        })?;
         tracing::trace!("Spawning dataflow `{uuid}` on machine `{machine}`");
         spawn_dataflow_on_machine(daemon_connections, machine, &message)
             .await
@@ -67,7 +72,6 @@ pub(super) async fn spawn_dataflow(
         nodes,
     })
 }
-
 
 async fn spawn_dataflow_on_machine(
     daemon_connections: &mut HashMap<String, DaemonConnection>,

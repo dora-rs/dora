@@ -8,7 +8,8 @@ use dora_core::{
     config::{DataId, NodeRunConfig},
     daemon_messages::{DataMessage, DataflowId, NodeConfig, RuntimeConfig, Timestamped},
     descriptor::{
-        resolve_path, source_is_url, source_to_path, Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode, SHELL_SOURCE
+        resolve_path, source_is_url, source_to_path, Descriptor, OperatorDefinition,
+        OperatorSource, PythonSource, ResolvedNode, SHELL_SOURCE,
     },
     get_python_path,
     message::uhlc::HLC,
@@ -88,9 +89,9 @@ pub async fn spawn_node(
                         target_path.clone()
                     } else {
                         let path = source_to_path(source);
-                        if path.is_absolute(){
+                        if path.is_absolute() {
                             path
-                        } else{
+                        } else {
                             resolve_path(source, working_dir).wrap_err_with(|| {
                                 format!("failed to resolve node source `{}`", source)
                             })?
