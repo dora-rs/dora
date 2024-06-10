@@ -45,7 +45,6 @@ pub struct DoraNode {
     cache: VecDeque<ShmemHandle>,
 
     dataflow_descriptor: Descriptor,
-    dynamic: bool,
 }
 
 impl DoraNode {
@@ -121,7 +120,7 @@ impl DoraNode {
             run_config,
             daemon_communication,
             dataflow_descriptor,
-            dynamic,
+            dynamic: _,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
 
@@ -144,7 +143,6 @@ impl DoraNode {
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
-            dynamic,
             dataflow_descriptor,
         };
         Ok((node, event_stream))
@@ -382,18 +380,16 @@ impl Drop for DoraNode {
     #[tracing::instrument(skip(self), fields(self.id = %self.id), level = "trace")]
     fn drop(&mut self) {
         // close all outputs first to notify subscribers as early as possible
-        if !self.dynamic {
-            if let Err(err) = self
-                .control_channel
-                .report_closed_outputs(
-                    std::mem::take(&mut self.node_config.outputs)
-                        .into_iter()
-                        .collect(),
-                )
-                .context("failed to close outputs on drop")
-            {
-                tracing::warn!("{err:?}")
-            }
+        if let Err(err) = self
+            .control_channel
+            .report_closed_outputs(
+                std::mem::take(&mut self.node_config.outputs)
+                    .into_iter()
+                    .collect(),
+            )
+            .context("failed to close outputs on drop")
+        {
+            tracing::warn!("{err:?}")
         }
 
         while !self.sent_out_shared_memory.is_empty() {
