@@ -31,7 +31,7 @@ pub async fn spawn_listener_loop(
 
     tokio::spawn(async move {
         listener_loop(socket, events_tx).await;
-        tracing::debug!("Dynamic node listener loop finished for machine `{machine_id}`");
+        tracing::debug!("Local listener loop finished for machine `{machine_id}`");
     });
 
     Ok(listen_port)
@@ -100,7 +100,7 @@ async fn handle_connection_loop(
                         }
                     };
                     if let Err(err) = tcp_send(&mut connection, &serialized).await {
-                        tracing::warn!("failed to send reply to dynamic node: {err}");
+                        tracing::warn!("failed to send reply: {err}");
                         continue;
                     };
                 }
@@ -111,7 +111,7 @@ async fn handle_connection_loop(
                 break;
             }
             _ => tracing::warn!(
-                "Unexpected Daemon Request that is not yet by Additional dynamic node controls"
+                "Unexpected Daemon Request that is not yet by Additional local listener controls"
             ),
         }
     }
@@ -128,11 +128,11 @@ async fn receive_message(
             | ErrorKind::ConnectionReset => return Ok(None),
             _other => {
                 return Err(err)
-                    .context("unexpected I/O error while trying to receive DynamicNodeEvent")
+                    .context("unexpected I/O error while trying to receive DaemonRequest")
             }
         },
     };
     bincode::deserialize(&raw)
-        .wrap_err("failed to deserialize DynamicNodeEvent")
+        .wrap_err("failed to deserialize DaemonRequest")
         .map(Some)
 }

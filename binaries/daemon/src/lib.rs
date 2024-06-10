@@ -19,11 +19,11 @@ use dora_core::{
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 
-use dynamic_node::DynamicNodeEventWrapper;
 use eyre::{bail, eyre, Context, ContextCompat, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
+use local_listener::DynamicNodeEventWrapper;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
 use std::sync::Arc;
@@ -49,8 +49,8 @@ use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
 
 mod coordinator;
-mod dynamic_node;
 mod inter_daemon;
+mod local_listener;
 mod log;
 mod node_communication;
 mod pending;
@@ -88,7 +88,7 @@ impl Daemon {
         coordinator_addr: SocketAddr,
         machine_id: String,
         inter_daemon_addr: SocketAddr,
-        dynamic_node_port: u16,
+        local_listen_port: u16,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
@@ -119,10 +119,10 @@ impl Daemon {
                     },
                 );
 
-        // Spawn dynamic node listener loop
+        // Spawn local listener loop
         let (events_tx, events_rx) = flume::bounded(10);
-        let _listen_port = dynamic_node::spawn_listener_loop(
-            (LOCALHOST, dynamic_node_port).into(),
+        let _listen_port = local_listener::spawn_listener_loop(
+            (LOCALHOST, local_listen_port).into(),
             machine_id.clone(),
             events_tx,
         )
