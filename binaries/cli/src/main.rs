@@ -379,7 +379,7 @@ fn run() -> eyre::Result<()> {
             match (uuid, name) {
                 (Some(uuid), _) => stop_dataflow(uuid, grace_duration, &mut *session)?,
                 (None, Some(name)) => stop_dataflow_by_name(name, grace_duration, &mut *session)?,
-                (None, None) => stop_dataflow_dynamic(grace_duration, &mut *session)?,
+                (None, None) => stop_dataflow_interactive(grace_duration, &mut *session)?,
             }
         }
         Command::Destroy {
@@ -480,7 +480,7 @@ fn start_dataflow(
     }
 }
 
-fn stop_dataflow_dynamic(
+fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<()> {
