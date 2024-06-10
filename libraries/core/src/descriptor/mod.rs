@@ -9,7 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
     fmt,
-    path::{self, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 use tracing::warn;
 pub use visualize::collect_dora_timers;
@@ -133,18 +133,11 @@ impl Descriptor {
     }
 
     pub fn check(&self, working_dir: &Path) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, None)
+
+        validate::check_dataflow(self, working_dir)
             .wrap_err("Dataflow could not be validated.")
     }
 
-    pub fn check_in_daemon(
-        &self,
-        working_dir: &Path,
-        remote_machine_id: &[&str],
-    ) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, Some(remote_machine_id))
-            .wrap_err("Dataflow could not be validated.")
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
