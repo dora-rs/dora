@@ -5,7 +5,7 @@ use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        control_socket_addr, ControlRequest, ControlRequestReply, DataflowId,
+        ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
         DORA_COORDINATOR_PORT_DEFAULT,
     },
 };
@@ -31,6 +31,9 @@ mod logs;
 mod template;
 mod up;
 
+const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+
 #[derive(Debug, clap::Parser)]
 #[clap(version)]
 struct Args {
@@ -42,19 +45,34 @@ struct Args {
 enum Command {
     /// Check if the coordinator and the daemon is running.
     Check {
-        #[clap(long)]
+        /// Path to the dataflow descriptor file (enables additional checks)
+        #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: Option<PathBuf>,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
     },
     /// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
     Graph {
+        /// Path to the dataflow descriptor file
+        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: PathBuf,
+        /// Visualize the dataflow as a Mermaid diagram (instead of HTML)
         #[clap(long, action)]
         mermaid: bool,
+        /// Open the HTML visualization in the browser
         #[clap(long, action)]
         open: bool,
     },
     /// Run build commands provided in the given dataflow.
-    Build { dataflow: PathBuf },
+    Build {
+        /// Path to the dataflow descriptor file
+        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+        dataflow: PathBuf,
+    },
     /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
@@ -62,44 +80,89 @@ enum Command {
         #[clap(hide = true, long)]
         internal_create_with_path_dependencies: bool,
     },
-    /// Spawn a coordinator and a daemon.
+    /// Spawn coordinator and daemon in local mode (with default config)
     Up {
-        #[clap(long)]
+        /// Use a custom configuration
+        #[clap(long, hide = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         config: Option<PathBuf>,
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
-        #[clap(long)]
+        /// Use a custom configuration
+        #[clap(long, hide = true)]
         config: Option<PathBuf>,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
     },
     /// Start the given dataflow path. Attach a name to the running dataflow by using --name.
     Start {
+        /// Path to the dataflow descriptor file
+        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: PathBuf,
+        /// Assign a name to the dataflow
         #[clap(long)]
         name: Option<String>,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+        /// Attach to the dataflow and wait for its completion
         #[clap(long, action)]
         attach: bool,
+        /// Enable hot reloading (Python only)
         #[clap(long, action)]
         hot_reload: bool,
     },
     /// Stop the given dataflow UUID. If no id is provided, you will be able to choose between the running dataflows.
     Stop {
+        /// UUID of the dataflow that should be stopped
         uuid: Option<Uuid>,
+        /// Name of the dataflow that should be stopped
         #[clap(long)]
         name: Option<String>,
-        #[clap(long)]
+        /// Kill the dataflow if it doesn't stop after the given duration
+        #[clap(long, value_name = "DURATION")]
         #[arg(value_parser = parse)]
         grace_duration: Option<Duration>,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
     },
     /// List running dataflows.
-    List,
+    List {
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+    },
     // Planned for future releases:
     // Dashboard,
     /// Show logs of a given dataflow and node.
     #[command(allow_missing_positional = true)]
     Logs {
+        /// Identifier of the dataflow
+        #[clap(value_name = "UUID_OR_NAME")]
         dataflow: Option<String>,
+        /// Show logs for the given node
+        #[clap(value_name = "NAME")]
         node: String,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
     },
     // Metrics,
     // Stats,
@@ -107,17 +170,16 @@ enum Command {
     // Upgrade,
     /// Run daemon
     Daemon {
+        /// Unique identifier for the machine (required for distributed dataflows)
         #[clap(long)]
         machine_id: Option<String>,
         /// The IP address and port this daemon will bind to.
-        #[clap(long, default_value_t = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
-        )]
+        #[clap(long, default_value_t = SocketAddr::new(LISTEN_WILDCARD, 0))]
         addr: SocketAddr,
-        #[clap(long)]
-        coordinator_addr: Option<SocketAddr>,
-
-        #[clap(long)]
+        /// Address and port number of the dora coordinator
+        #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
+        coordinator_addr: SocketAddr,
+        #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
 
         #[clap(long, default_value = ".")]
@@ -129,20 +191,33 @@ enum Command {
     Runtime,
     /// Run coordinator
     Coordinator {
-        #[clap(long, default_value_t = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), DORA_COORDINATOR_PORT_DEFAULT)
-        )]
-        addr: SocketAddr,
+        /// Network interface to bind to for daemon communication
+        #[clap(long, default_value_t = LISTEN_WILDCARD)]
+        interface: IpAddr,
+        /// Port number to bind to for daemon communication
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
+        port: u16,
+        /// Network interface to bind to for control communication
+        #[clap(long, default_value_t = LISTEN_WILDCARD)]
+        control_interface: IpAddr,
+        /// Port number to bind to for control communication
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        control_port: u16,
     },
 }
 
 #[derive(Debug, clap::Args)]
 pub struct CommandNew {
+    /// The entity that should be created
     #[clap(long, value_enum, default_value_t = Kind::Dataflow)]
     kind: Kind,
+    /// The programming language that should be used
     #[clap(long, value_enum, default_value_t = Lang::Rust)]
     lang: Lang,
+    /// Desired name of the entity
     name: String,
+    /// Where to create the entity
+    #[clap(hide = true)]
     path: Option<PathBuf>,
 }
 
@@ -188,7 +263,11 @@ fn run() -> eyre::Result<()> {
     };
 
     match args.command {
-        Command::Check { dataflow } => match dataflow {
+        Command::Check {
+            dataflow,
+            coordinator_addr,
+            coordinator_port,
+        } => match dataflow {
             Some(dataflow) => {
                 let working_dir = dataflow
                     .canonicalize()
@@ -196,13 +275,10 @@ fn run() -> eyre::Result<()> {
                     .parent()
                     .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                     .to_owned();
-                let dataflow_descriptor = Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
-                if dataflow_descriptor.deploy.machine.is_none() {
-                    dataflow_descriptor.check(&working_dir).wrap_err("could not validate yaml dataflow");
-                }
-                check::check_environment()?
+                Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
+                check::check_environment((coordinator_addr, coordinator_port).into())?
             }
-            None => check::check_environment()?,
+            None => check::check_environment((coordinator_addr, coordinator_port).into())?,
         },
         Command::Graph {
             dataflow,
@@ -218,11 +294,17 @@ fn run() -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Up { config } => up::up(config.as_deref())?,
-
-        Command::Logs { dataflow, node } => {
-            let mut session =
-                connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
+        Command::Up { config } => {
+            up::up(config.as_deref())?;
+        }
+        Command::Logs {
+            dataflow,
+            node,
+            coordinator_addr,
+            coordinator_port,
+        } => {
+            let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+                .wrap_err("failed to connect to dora coordinator")?;
             let uuids = query_running_dataflows(&mut *session)
                 .wrap_err("failed to query running dataflows")?;
             if let Some(dataflow) = dataflow {
@@ -241,6 +323,8 @@ fn run() -> eyre::Result<()> {
         Command::Start {
             dataflow,
             name,
+            coordinator_addr,
+            coordinator_port,
             attach,
             hot_reload,
         } => {
@@ -252,14 +336,12 @@ fn run() -> eyre::Result<()> {
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            if dataflow_descriptor.deploy.machine.is_none() { // TODO: 根据 node 的 machine 的个数来判断
-                dataflow_descriptor
-                    .check(&working_dir)
-                    .wrap_err("Could not validate yaml")?;
+            dataflow_descriptor
+                .check(&working_dir)
+                .wrap_err("Could not validate yaml")?;
 
-            }
-            let mut session =
-                connect_to_coordinator().wrap_err("failed to connect to dora coordinator")?;
+            let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+                .wrap_err("failed to connect to dora coordinator")?;
             let dataflow_id = start_dataflow(
                 dataflow_descriptor.clone(),
                 name,
@@ -277,7 +359,10 @@ fn run() -> eyre::Result<()> {
                 )?
             }
         }
-        Command::List => match connect_to_coordinator() {
+        Command::List {
+            coordinator_addr,
+            coordinator_port,
+        } => match connect_to_coordinator((coordinator_addr, coordinator_port).into()) {
             Ok(mut session) => list(&mut *session)?,
             Err(_) => {
                 bail!("No dora coordinator seems to be running.");
@@ -287,24 +372,42 @@ fn run() -> eyre::Result<()> {
             uuid,
             name,
             grace_duration,
+            coordinator_addr,
+            coordinator_port,
         } => {
-            let mut session =
-                connect_to_coordinator().wrap_err("could not connect to dora coordinator")?;
+            let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+                .wrap_err("could not connect to dora coordinator")?;
             match (uuid, name) {
                 (Some(uuid), _) => stop_dataflow(uuid, grace_duration, &mut *session)?,
                 (None, Some(name)) => stop_dataflow_by_name(name, grace_duration, &mut *session)?,
                 (None, None) => stop_dataflow_interactive(grace_duration, &mut *session)?,
             }
         }
-        Command::Destroy { config } => up::destroy(config.as_deref())?,
-        Command::Coordinator { addr } => {
+        Command::Destroy {
+            config,
+            coordinator_addr,
+            coordinator_port,
+        } => up::destroy(
+            config.as_deref(),
+            (coordinator_addr, coordinator_port).into(),
+        )?,
+        Command::Coordinator {
+            interface,
+            port,
+            control_interface,
+            control_port,
+        } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
             rt.block_on(async {
-                let (_port, task) =
-                    dora_coordinator::start(addr, futures::stream::empty::<Event>()).await?;
+                let bind = SocketAddr::new(interface, port);
+                let bind_control = SocketAddr::new(control_interface, control_port);
+                let (port, task) =
+                    dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
+                        .await?;
+                println!("Listening for incoming daemon connection on {port}");
                 task.await
             })
             .context("failed to run dora-coordinator")?
@@ -324,7 +427,7 @@ fn run() -> eyre::Result<()> {
                 match run_dataflow {
                     Some(dataflow_path) => {
                         tracing::info!("Starting dataflow `{}`", dataflow_path.display());
-                        if let Some(coordinator_addr) = coordinator_addr {
+                        if coordinator_addr != SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT){
                             tracing::info!(
                                 "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
                                 coordinator_addr
@@ -334,12 +437,10 @@ fn run() -> eyre::Result<()> {
                         Daemon::run_dataflow(&dataflow_path).await
                     }
                     None => {
-                        let coordination_addr = coordinator_addr.unwrap_or_else(|| {
+                        if coordinator_addr.ip() == LOCALHOST {
                             tracing::info!("Starting in local mode");
-                            let localhost = Ipv4Addr::new(127, 0, 0, 1);
-                            (localhost, DORA_COORDINATOR_PORT_DEFAULT).into()
-                        });
-                        Daemon::run(coordination_addr, machine_id.unwrap_or_default(), addr, working_dir).await
+                        }
+                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), addr, working_dir).await
                     }
                 }
             })
@@ -477,6 +578,8 @@ fn query_running_dataflows(
     Ok(ids)
 }
 
-fn connect_to_coordinator() -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    TcpLayer::new().connect(control_socket_addr())
+fn connect_to_coordinator(
+    coordinator_addr: SocketAddr,
+) -> std::io::Result<Box<TcpRequestReplyConnection>> {
+    TcpLayer::new().connect(coordinator_addr)
 }

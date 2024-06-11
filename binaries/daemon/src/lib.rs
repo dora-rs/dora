@@ -133,7 +133,7 @@ impl Daemon {
 
         let descriptor = Descriptor::read(dataflow_path).await?;
         descriptor.check(&working_dir)?;
-        let nodes = descriptor.resolve_aliases_and_set_defaults();
+        let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
         let spawn_command = SpawnDataflowNodes {
             dataflow_id: Uuid::new_v7(Timestamp::now(NoContext)),

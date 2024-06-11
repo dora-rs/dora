@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommitTypeAll(chore)"
+  ],
+  "rangeStrategy": "in-range-only",
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "lockFileMaintenance",
+        "patch",
+        "minor"
+      ],
+      "groupName": "dependencies"
+    }
+  ],
+  "schedule": [
+    "on monday"
+  ]
+}
