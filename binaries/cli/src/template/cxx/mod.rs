@@ -13,7 +13,7 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     } = args;
 
     match kind {
-        crate::Kind::Operator => create_operator(name, path),
+        crate::Kind::Operator => { bail!("Operators are going to be depreciated, please don't use it") },
         crate::Kind::CustomNode => create_custom_node(name, path),
         crate::Kind::Dataflow => create_dataflow(name, path),
     }
