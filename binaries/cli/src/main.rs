@@ -336,9 +336,9 @@ fn run() -> eyre::Result<()> {
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            dataflow_descriptor
-                .check(&working_dir)
-                .wrap_err("Could not validate yaml")?;
+            //dataflow_descriptor
+            //    .check(&working_dir)
+            //    .wrap_err("Could not validate yaml")?;
 
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
@@ -419,6 +419,10 @@ fn run() -> eyre::Result<()> {
             run_dataflow,
             working_dir,
         } => {
+            let working_dir = working_dir
+            .canonicalize()
+            .context("failed to canonicalize working dir path")?
+            .to_owned();
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()

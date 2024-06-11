@@ -16,13 +16,15 @@ use std::{
     path::PathBuf,
 };
 use uuid::{NoContext, Timestamp, Uuid};
+const DEFAULT_WORKING_DIR: &str = "/tmp";
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
     dataflow: Descriptor,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
-    daemon_working_dirs: &mut HashMap<String, PathBuf>, 
+    working_dir: PathBuf,
+    daemon_working_dirs: &mut HashMap<String, PathBuf>,
 ) -> eyre::Result<SpawnedDataflow> {
     //dataflow.check(&working_dir)?;
 
@@ -39,27 +41,46 @@ pub(super) async fn spawn_dataflow(
                 .map(|c| (m.clone(), c.listen_socket))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    
-    for machine in &machines {
-        let working_dir = daemon_working_dirs
-        .get_mut(machine)
-        .wrap_err_with(|| format!("no daemon working_dir for machine `{machine}`"))?;
+    if machines.len() > 1 {
+        for machine in &machines {
+            let working_dir = daemon_working_dirs.get(machine).ok_or_else(|| eyre!("no daemon working dir for machine `{machine}`"))?.to_owned();
+            println!("Working dir: {:?}", working_dir);
+            let spawn_command = SpawnDataflowNodes {
+                dataflow_id: uuid,
+                working_dir: working_dir,
+                nodes: nodes.clone(),
+                machine_listen_ports: machine_listen_ports.clone(),
+                dataflow_descriptor: dataflow.clone(),
+            };
+            let message = serde_json::to_vec(&Timestamped {
+                inner: DaemonCoordinatorEvent::Spawn(spawn_command),
+                timestamp: clock.new_timestamp(),
+            })?;
+            spawn_dataflow_on_machine(daemon_connections, machine, &message)
+                .await
+                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine}`"))?;
+        }
+        
+    } else {
         let spawn_command = SpawnDataflowNodes {
             dataflow_id: uuid,
-            working_dir: working_dir.clone(), 
+            working_dir: working_dir,
             nodes: nodes.clone(),
-            machine_listen_ports: machine_listen_ports.clone(),
-            dataflow_descriptor: dataflow.to_owned(),
+            machine_listen_ports,
+            dataflow_descriptor: dataflow,
         };
         let message = serde_json::to_vec(&Timestamped {
             inner: DaemonCoordinatorEvent::Spawn(spawn_command),
             timestamp: clock.new_timestamp(),
         })?;
-        tracing::trace!("Spawning dataflow `{uuid}` on machine `{machine}`");
-        spawn_dataflow_on_machine(daemon_connections, machine, &message)
-            .await
-            .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine}`"))?;
+        for machine in &machines {
+            tracing::trace!("Spawning dataflow `{uuid}` on machine `{machine}`");
+            spawn_dataflow_on_machine(daemon_connections, machine, &message)
+                .await
+                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine}`"))?;
+        }
     }
+    
 
     tracing::info!("successfully spawned dataflow `{uuid}`");
 
