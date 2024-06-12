@@ -29,7 +29,9 @@ pub fn check_dataflow(
                     if source_is_url(source) {
                         info!("{source} is a URL."); // TODO: Implement url check.
                     } else if let Some(remote_daemon_id) = remote_daemon_id {
-                        if remote_daemon_id.contains(&node.deploy.machine.as_str()) || remote_daemon_id.contains(&String::default().as_str()) {
+                        if remote_daemon_id.contains(&node.deploy.machine.as_str())
+                            || remote_daemon_id.contains(&String::default().as_str())
+                        {
                             let path = Path::new(&source);
                             let path = if path.extension().is_none() {
                                 path.with_extension(EXE_EXTENSION)
