@@ -1,7 +1,11 @@
 [package]
 name = "python_special_method_derive"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
+
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
 
 [dependencies]
 syn = "1.0"
