@@ -8,7 +8,6 @@ syn = "1.0"
 quote = "1.0"
 proc-macro2 = "1.0"
 quote_into = "0.2.0"
-pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
 
 [lib]
 proc-macro = true

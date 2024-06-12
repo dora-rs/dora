@@ -2144,7 +2144,6 @@ name = "derive"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
- "pyo3",
  "quote",
  "quote_into",
  "syn 1.0.109",
@@ -2457,6 +2456,7 @@ name = "dora-node-api-python"
 version = "0.3.4"
 dependencies = [
  "arrow",
+ "derive",
  "dora-node-api",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
