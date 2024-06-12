@@ -6556,7 +6556,7 @@ dependencies = [
 
 [[package]]
 name = "python_special_method_derive"
-version = "0.1.0"
+version = "0.3.4"
 dependencies = [
  "proc-macro2",
  "pyo3",
