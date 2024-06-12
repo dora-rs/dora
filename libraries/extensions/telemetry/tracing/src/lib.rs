@@ -14,11 +14,21 @@ use tracing_subscriber::Registry;
 pub mod telemetry;
 
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
+    set_up_tracing_opts(name, true)
+}
+
+pub fn set_up_tracing_opts(name: &str, stdout: bool) -> eyre::Result<()> {
+    let stdout_filter = if stdout {
+        LevelFilter::TRACE
+    } else {
+        LevelFilter::OFF
+    };
     // Filter log using `RUST_LOG`. More useful for CLI.
-    let filter = EnvFilter::from_default_env().or(LevelFilter::WARN);
+    let env_filter = EnvFilter::from_default_env().or(LevelFilter::WARN);
     let stdout_log = tracing_subscriber::fmt::layer()
         .pretty()
-        .with_filter(filter);
+        .with_filter(stdout_filter)
+        .with_filter(env_filter);
 
     let registry = Registry::default().with(stdout_log);
     if let Some(endpoint) = std::env::var_os("DORA_JAEGER_TRACING") {
