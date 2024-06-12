@@ -34,7 +34,7 @@ members = [
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
-    "derive",
+    "python_special_method_derive",
 ]
 
 [workspace.package]
@@ -67,12 +67,12 @@ dora-coordinator = { version = "0.3.4", path = "binaries/coordinator" }
 dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-derive = { path = "derive" }
+python_special_method_derive = { path = "python_special_method_derive" }
 arrow = { version = "52" }
 arrow-schema = { version = "52" }
 arrow-data = { version = "52" }
 arrow-array = { version = "52" }
-pyo3 = "0.21"
+pyo3 = { version = "0.21", workspace = true, features = ["eyre", "abi3-py37", "multiple-pymethods"] }
 pythonize = "0.21"
 
 [package]

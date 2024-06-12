@@ -24,7 +24,7 @@ use pyo3::types::{PyBytes, PyDict};
 /// ```
 ///
 #[pyclass]
-#[derive(derive::DirHelper)]
+#[derive(python_special_method_derive::DirHelper)]
 pub struct Node {
     events: Events,
     node: DoraNode,
@@ -197,13 +197,6 @@ impl Node {
         self.events = Events::Merged(events.merge_external_send(Box::pin(stream)));
 
         Ok(())
-    }
-
-    // TODO: We should only list fields which are at least readableby Python users, right?
-
-    /// Get a list of the fields of this Node.
-    pub fn __dir__(&self) -> Vec<String> {
-        self.fields()
     }
 }
 

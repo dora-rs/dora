@@ -2140,16 +2140,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "quote_into",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2456,7 +2446,6 @@ name = "dora-node-api-python"
 version = "0.3.4"
 dependencies = [
  "arrow",
- "derive",
  "dora-node-api",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
@@ -2465,6 +2454,7 @@ dependencies = [
  "flume 0.10.14",
  "futures",
  "pyo3",
+ "python_special_method_derive",
  "pythonize",
  "serde_yaml 0.8.26",
 ]
@@ -6507,6 +6497,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "eyre",
  "indoc",
+ "inventory",
  "libc",
  "memoffset 0.9.1",
  "parking_lot",
@@ -6561,6 +6552,17 @@ dependencies = [
  "pyo3-build-config",
  "quote",
  "syn 2.0.65",
+]
+
+[[package]]
+name = "python_special_method_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "pyo3",
+ "quote",
+ "quote_into",
+ "syn 1.0.109",
 ]
 
 [[package]]

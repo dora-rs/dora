@@ -5,6 +5,8 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
+// TODO: We should only list fields which are at least readableby Python users, right?
+
 /// Add a `fields` method to the struct.
 ///
 /// Because we cannot have multiple `#[pymethods]` impls, this macro
@@ -37,8 +39,9 @@ pub fn dir_helper_derive(input: TokenStream) -> TokenStream {
                         }
                     }];);
                     quote! {
+                        #[pyo3::pymethods]
                         impl #name {
-                            pub fn fields(&self) -> Vec<String> {
+                            pub fn __dir__(&self) -> Vec<String> {
                                 let mut names = Vec::new();
                                 #assigner
                                 names
@@ -49,8 +52,9 @@ pub fn dir_helper_derive(input: TokenStream) -> TokenStream {
                 Fields::Unit => {
                     // If the struct has no fields
                     quote! {
+                        #[pyo3::pymethods]
                         impl #name {
-                            pub fn fields(&self) -> Vec<String> {
+                            pub fn __dir__(&self) -> Vec<String> {
                                 Vec::new()
                             }
                         }
