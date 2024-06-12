@@ -12,6 +12,7 @@ use dora_core::{
 use dora_daemon::Daemon;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
+use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
 use std::net::SocketAddr;
@@ -182,6 +183,9 @@ enum Command {
         coordinator_addr: SocketAddr,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
+        /// Suppresses all log output to stdout.
+        #[clap(long)]
+        quiet: bool,
     },
     /// Run runtime
     Runtime,
@@ -199,6 +203,9 @@ enum Command {
         /// Port number to bind to for control communication
         #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
         control_port: u16,
+        /// Suppresses all log output to stdout.
+        #[clap(long)]
+        quiet: bool,
     },
 }
 
@@ -244,14 +251,16 @@ fn run() -> eyre::Result<()> {
 
     #[cfg(feature = "tracing")]
     match args.command {
-        Command::Daemon { .. } => {
-            set_up_tracing("dora-daemon").context("failed to set up tracing subscriber")?;
+        Command::Daemon { quiet, .. } => {
+            set_up_tracing_opts("dora-daemon", !quiet)
+                .context("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
             // Do not set the runtime in the cli.
         }
-        Command::Coordinator { .. } => {
-            set_up_tracing("dora-coordinator").context("failed to set up tracing subscriber")?;
+        Command::Coordinator { quiet, .. } => {
+            set_up_tracing_opts("dora-coordinator", !quiet)
+                .context("failed to set up tracing subscriber")?;
         }
         _ => {
             set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
@@ -392,6 +401,7 @@ fn run() -> eyre::Result<()> {
             port,
             control_interface,
             control_port,
+            quiet,
         } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
@@ -403,7 +413,9 @@ fn run() -> eyre::Result<()> {
                 let (port, task) =
                     dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
                         .await?;
-                println!("Listening for incoming daemon connection on {port}");
+                if !quiet {
+                    println!("Listening for incoming daemon connection on {port}");
+                }
                 task.await
             })
             .context("failed to run dora-coordinator")?
@@ -413,6 +425,7 @@ fn run() -> eyre::Result<()> {
             addr,
             machine_id,
             run_dataflow,
+            quiet: _,
         } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
