@@ -333,11 +333,7 @@ fn run() -> eyre::Result<()> {
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
             if !coordinator_addr.is_loopback() {
-                // use empty string to indicate that all nodes should be
-                // referred to as remote node, such that all paths are
-                // checked as absolute, the machine id of remote daemon
-                // should not be empty string.
-                dataflow_descriptor.check_in_daemon(&working_dir, &[&String::default()])?;
+                dataflow_descriptor.check_in_daemon(&working_dir, &vec![], true)?;
             } else {
                 dataflow_descriptor
                     .check(&working_dir)

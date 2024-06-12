@@ -16,10 +16,11 @@ pub fn check_dataflow(
     dataflow: &Descriptor,
     working_dir: &Path,
     remote_daemon_id: Option<&[&str]>,
+    coordinator_is_remote: bool,
 ) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
-
+    
     // check that nodes and operators exist
     for node in &nodes {
         match &node.kind {
@@ -30,7 +31,7 @@ pub fn check_dataflow(
                         info!("{source} is a URL."); // TODO: Implement url check.
                     } else if let Some(remote_daemon_id) = remote_daemon_id {
                         if remote_daemon_id.contains(&node.deploy.machine.as_str())
-                            || remote_daemon_id.contains(&String::default().as_str())
+                            || coordinator_is_remote
                         {
                             let path = Path::new(&source);
                             let path = if path.extension().is_none() {

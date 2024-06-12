@@ -34,7 +34,7 @@ pub(super) async fn spawn_dataflow(
             }
         })
         .collect();
-    dataflow.check_in_daemon(&working_dir, &remote_machine_id)?;
+    dataflow.check_in_daemon(&working_dir, &remote_machine_id, false)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
