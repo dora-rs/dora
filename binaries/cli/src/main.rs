@@ -252,14 +252,14 @@ fn run() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     match args.command {
         Command::Daemon { quiet, .. } => {
-            set_up_tracing_opts("dora-daemon", !quiet)
+            set_up_tracing_opts("dora-daemon", !quiet, true)
                 .context("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
             // Do not set the runtime in the cli.
         }
         Command::Coordinator { quiet, .. } => {
-            set_up_tracing_opts("dora-coordinator", !quiet)
+            set_up_tracing_opts("dora-coordinator", !quiet, true)
                 .context("failed to set up tracing subscriber")?;
         }
         _ => {
