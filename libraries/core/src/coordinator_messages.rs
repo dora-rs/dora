@@ -1,4 +1,4 @@
-use crate::daemon_messages::DataflowId;
+use crate::{daemon_messages::DataflowId, topics::DataflowDaemonResult};
 use eyre::eyre;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -22,7 +22,7 @@ pub enum DaemonEvent {
     },
     AllNodesFinished {
         dataflow_id: DataflowId,
-        result: Result<(), String>,
+        result: DataflowDaemonResult,
     },
     Heartbeat,
 }

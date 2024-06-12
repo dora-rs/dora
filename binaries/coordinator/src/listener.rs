@@ -1,6 +1,6 @@
 use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
 use dora_core::{coordinator_messages, daemon_messages::Timestamped, message::uhlc::HLC};
-use eyre::{eyre, Context};
+use eyre::Context;
 use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -85,10 +85,7 @@ pub async fn handle_connection(
                 } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
-                        event: DataflowEvent::DataflowFinishedOnMachine {
-                            machine_id,
-                            result: result.map_err(|e| eyre!(e)),
-                        },
+                        event: DataflowEvent::DataflowFinishedOnMachine { machine_id, result },
                     };
                     if events_tx.send(event).await.is_err() {
                         break;
