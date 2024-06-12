@@ -133,9 +133,11 @@ pub fn attach_dataflow(
             ControlRequestReply::DataflowStarted { uuid: _ } => (),
             ControlRequestReply::DataflowStopped { uuid, result } => {
                 info!("dataflow {uuid} stopped");
-                break result
-                    .map_err(|err| eyre::eyre!(err))
-                    .wrap_err("dataflow failed");
+                break if result.is_ok() {
+                    Ok(())
+                } else {
+                    Err(eyre::eyre!("dataflow failed: {}", result.root_error()))
+                };
             }
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")

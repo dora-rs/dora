@@ -5,6 +5,9 @@ use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{DataMessage, InterDaemonEvent, Timestamped};
 use dora_core::message::uhlc::{self, HLC};
 use dora_core::message::{ArrowTypeInfo, Metadata, MetadataParameters};
+use dora_core::topics::{
+    DataflowDaemonResult, DataflowResult, NodeError, NodeErrorCause, NodeExitStatus,
+};
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
@@ -24,9 +27,7 @@ use shared_memory_server::ShmemConf;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
-    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
@@ -72,7 +73,7 @@ pub struct Daemon {
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     /// used to record dataflow results when `exit_when_done` is used
-    dataflow_errors: BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>,
+    dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
 
     clock: Arc<uhlc::HLC>,
 }
@@ -122,7 +123,7 @@ impl Daemon {
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
+    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canoncialize dataflow path")?
@@ -134,8 +135,9 @@ impl Daemon {
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
+        let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
         let spawn_command = SpawnDataflowNodes {
-            dataflow_id: Uuid::new_v7(Timestamp::now(NoContext)),
+            dataflow_id,
             working_dir,
             nodes,
             machine_listen_ports: BTreeMap::new(),
@@ -165,7 +167,7 @@ impl Daemon {
             None,
             "".to_string(),
             Some(exit_when_done),
-            clock,
+            clock.clone(),
         );
 
         let spawn_result = reply_rx
@@ -179,20 +181,15 @@ impl Daemon {
                 }
             });
 
-        let (dataflow_errors, ()) = future::try_join(run_result, spawn_result).await?;
+        let (mut dataflow_results, ()) = future::try_join(run_result, spawn_result).await?;
 
-        if dataflow_errors.is_empty() {
-            Ok(())
-        } else {
-            let mut output = "some nodes failed:".to_owned();
-            for (dataflow, node_errors) in dataflow_errors {
-                for (node, error) in node_errors {
-                    use std::fmt::Write;
-                    write!(&mut output, "\n  - {dataflow}/{node}: {error}").unwrap();
-                }
-            }
-            bail!("{output}");
-        }
+        Ok(DataflowResult {
+            uuid: dataflow_id,
+            timestamp: clock.new_timestamp(),
+            node_results: dataflow_results
+                .remove(&dataflow_id)
+                .context("no node results for dataflow_id")?,
+        })
     }
 
     async fn run_general(
@@ -201,7 +198,7 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
+    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
@@ -225,7 +222,7 @@ impl Daemon {
             inter_daemon_connections: BTreeMap::new(),
             machine_id,
             exit_when_done,
-            dataflow_errors: BTreeMap::new(),
+            dataflow_node_results: BTreeMap::new(),
             clock,
         };
 
@@ -246,7 +243,7 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
+    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
@@ -302,7 +299,7 @@ impl Daemon {
             }
         }
 
-        Ok(self.dataflow_errors)
+        Ok(self.dataflow_node_results)
     }
 
     async fn handle_coordinator_event(
@@ -921,17 +918,15 @@ impl Daemon {
 
         dataflow.running_nodes.remove(node_id);
         if dataflow.running_nodes.is_empty() {
-            let result = match self.dataflow_errors.get(&dataflow.id) {
-                None => Ok(()),
-                Some(errors) => {
-                    let mut output = "some nodes failed:".to_owned();
-                    for (node, error) in errors {
-                        use std::fmt::Write;
-                        write!(&mut output, "\n  - {node}: {error}").unwrap();
-                    }
-                    Err(output)
-                }
+            let result = DataflowDaemonResult {
+                timestamp: self.clock.new_timestamp(),
+                node_results: self
+                    .dataflow_node_results
+                    .get(&dataflow.id)
+                    .context("failed to get dataflow node results")?
+                    .clone(),
             };
+
             tracing::info!(
                 "Dataflow `{dataflow_id}` finished on machine `{}`",
                 self.machine_id
@@ -1050,80 +1045,25 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
-                let node_error = match exit_status {
+                let node_result = match exit_status {
                     NodeExitStatus::Success => {
                         tracing::info!("node {dataflow_id}/{node_id} finished successfully");
-                        None
+                        Ok(())
                     }
-                    NodeExitStatus::IoError(err) => {
-                        let err = eyre!(err).wrap_err(format!(
-                            "
-    I/O error while waiting for node `{dataflow_id}/{node_id}. 
-
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        ));
-                        tracing::error!("{err:?}");
-                        Some(err)
-                    }
-                    NodeExitStatus::ExitCode(code) => {
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with exit code {code}.
-
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
-                    NodeExitStatus::Signal(signal) => {
-                        let signal: Cow<_> = match signal {
-                            1 => "SIGHUP".into(),
-                            2 => "SIGINT".into(),
-                            3 => "SIGQUIT".into(),
-                            4 => "SIGILL".into(),
-                            6 => "SIGABRT".into(),
-                            8 => "SIGFPE".into(),
-                            9 => "SIGKILL".into(),
-                            11 => "SIGSEGV".into(),
-                            13 => "SIGPIPE".into(),
-                            14 => "SIGALRM".into(),
-                            15 => "SIGTERM".into(),
-                            22 => "SIGABRT".into(),
-                            23 => "NSIG".into(),
-
-                            other => other.to_string().into(),
-                        };
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with signal `{signal}`
-
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
-                    NodeExitStatus::Unknown => {
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with unknown exit code
-    
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
+                    exit_status => Err(NodeError {
+                        timestamp: self.clock.new_timestamp(),
+                        cause: NodeErrorCause::Other {
+                            // TODO: load from file
+                            stderr: String::new(),
+                        },
+                        exit_status,
+                    }),
                 };
 
-                if let Some(err) = node_error {
-                    self.dataflow_errors
-                        .entry(dataflow_id)
-                        .or_default()
-                        .insert(node_id.clone(), err);
-                }
+                self.dataflow_node_results
+                    .entry(dataflow_id)
+                    .or_default()
+                    .insert(node_id.clone(), node_result);
 
                 self.handle_node_stop(dataflow_id, &node_id).await?;
 
@@ -1573,39 +1513,6 @@ pub enum DoraEvent {
         node_id: NodeId,
         exit_status: NodeExitStatus,
     },
-}
-
-#[derive(Debug)]
-pub enum NodeExitStatus {
-    Success,
-    IoError(io::Error),
-    ExitCode(i32),
-    Signal(i32),
-    Unknown,
-}
-
-impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
-    fn from(result: Result<std::process::ExitStatus, io::Error>) -> Self {
-        match result {
-            Ok(status) => {
-                if status.success() {
-                    NodeExitStatus::Success
-                } else if let Some(code) = status.code() {
-                    Self::ExitCode(code)
-                } else {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::process::ExitStatusExt;
-                        if let Some(signal) = status.signal() {
-                            return Self::Signal(signal);
-                        }
-                    }
-                    Self::Unknown
-                }
-            }
-            Err(err) => Self::IoError(err),
-        }
-    }
 }
 
 #[must_use]
