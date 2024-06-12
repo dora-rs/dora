@@ -1,5 +1,5 @@
 [package]
-name = "derive"
+name = "python_special_method_derive"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,6 +8,7 @@ syn = "1.0"
 quote = "1.0"
 proc-macro2 = "1.0"
 quote_into = "0.2.0"
+pyo3.workspace = true
 
 [lib]
 proc-macro = true

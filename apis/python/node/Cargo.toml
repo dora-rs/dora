@@ -16,7 +16,7 @@ telemetry = ["dora-runtime/telemetry"]
 [dependencies]
 dora-node-api = { workspace = true }
 dora-operator-api-python = { workspace = true }
-pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
+pyo3.workspace = true
 eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
@@ -25,7 +25,7 @@ arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"
 dora-ros2-bridge-python = { workspace = true }
-derive = { workspace = true }
+python_special_method_derive = { workspace = true }
 
 [lib]
 name = "dora"
