@@ -94,7 +94,7 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: false
+          large-packages: true
           docker-images: true
           swap-storage: false
       - name: Free disk Space (Windows)
@@ -140,10 +140,7 @@ jobs:
         with:
           python-version: "3.10"
       - name: "Python Dataflow example"
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          cargo run --example python-dataflow
+        run: cargo run --example python-dataflow
       - uses: conda-incubator/setup-miniconda@v3
         with:
           auto-activate-base: true
