@@ -1,11 +1,13 @@
-//! Derive macros for dora
+//! Derive macros to help with Python
 
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
-// TODO: We should only list fields which are at least readableby Python users, right?
+// TODO: We should only list fields which are at least readable by Python users.
+// This would require either reading the visibility modifier (easier) or checking
+// the `pyo3` getter
 
 /// Add a `fields` method to the struct.
 ///
