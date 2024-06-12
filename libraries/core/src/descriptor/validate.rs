@@ -20,7 +20,7 @@ pub fn check_dataflow(
 ) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
-    
+
     // check that nodes and operators exist
     for node in &nodes {
         match &node.kind {

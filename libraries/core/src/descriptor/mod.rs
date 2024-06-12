@@ -143,8 +143,13 @@ impl Descriptor {
         remote_machine_id: &[&str],
         coordinator_is_remote: bool,
     ) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, Some(remote_machine_id), coordinator_is_remote)
-            .wrap_err("Dataflow could not be validated.")
+        validate::check_dataflow(
+            self,
+            working_dir,
+            Some(remote_machine_id),
+            coordinator_is_remote,
+        )
+        .wrap_err("Dataflow could not be validated.")
     }
 }
 
