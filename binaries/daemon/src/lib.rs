@@ -678,17 +678,21 @@ impl Daemon {
                         .running
                         .iter()
                         .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
-                        .map(|(_id, dataflow)| -> Result<NodeConfig> {
-                            Ok(dataflow
+                        .map(|(id, dataflow)| -> Result<NodeConfig> {
+                            let node_config = dataflow
                                 .running_nodes
                                 .get(&node_id)
                                 .context("no node with ID `{node_id}` within the given dataflow")?
                                 .node_config
-                                .clone())
+                                .clone();
+                            if !node_config.dynamic {
+                                bail!("node with ID `{node_id}` in {id} is not dynamic");
+                            }
+                            Ok(node_config)
                         })
                         .next()
                         .context("no node with ID `{node_id}`")?
-                        .context("failed to get node config within given dataflow")?,
+                        .context("failed to get dynamic node config within given dataflow")?,
                     0 => {
                         let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
                             result: Err("no node with ID `{node_id}`".to_string()),

@@ -35,9 +35,10 @@ impl Node {
     #[new]
     pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
         let (node, events) = if let Some(node_id) = node_id {
-            DoraNode::init_from_node_id(NodeId::from(node_id))?
+            DoraNode::init_flexible(NodeId::from(node_id))
+                .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
         } else {
-            DoraNode::init_from_env()?
+            DoraNode::init_from_env().context("Couldn not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
         };
 
         Ok(Node {
