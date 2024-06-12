@@ -1,33 +1,56 @@
 use pyo3::pyclass;
-use python_special_method_derive::DirHelper;
+use python_special_method_derive::{DirHelper, StrReprHelper};
 
 #[pyclass]
-#[derive(DirHelper)]
+#[derive(DirHelper, StrReprHelper)]
 #[allow(dead_code)]
 struct WithFields {
-    hello: (),
     dora: u32,
     my: String,
     name: f32,
 }
 
 #[test]
-fn test_with_fields() {
-    let fields = WithFields {
-        hello: (),
+fn test_with_dir() {
+    let dir = WithFields {
         dora: 0,
         my: "".to_string(),
         name: 0.0,
     }
     .__dir__();
     assert_eq!(
-        vec![
-            "hello".to_string(),
-            "dora".to_string(),
-            "my".to_string(),
-            "name".to_string()
-        ],
-        fields
+        vec!["dora".to_string(), "my".to_string(), "name".to_string()],
+        dir
+    );
+}
+
+#[test]
+fn test_with_str() {
+    let res = WithFields {
+        dora: 299792458,
+        my: "Hello world".to_string(),
+        name: 3.14159,
+    }
+    .__str__();
+    // TOOD: Is this a good __str__ output? How can we better show it or should they be different?
+    assert_eq!(
+        "WithFields(dora: `299792458`, my: `Hello world`, name: `3.14159`)",
+        &res
+    );
+}
+
+#[test]
+fn test_with_repr() {
+    let res = WithFields {
+        dora: 299792458,
+        my: "Hello world".to_string(),
+        name: 3.14159,
+    }
+    .__repr__();
+    // TOOD: Is this a good __repr__ output? How can we better show it or should they be different?
+    assert_eq!(
+        "WithFields(dora: 299792458, my: \"Hello world\", name: 3.14159)",
+        &res
     );
 }
 
