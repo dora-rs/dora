@@ -4,6 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const NODE_PY: &str = include_str!("node/node-template.py");
+const TALKER_PY: &str = include_str!("talker/talker-template.py");
+const LISTENER_PY: &str = include_str!("listener/listener-template.py");
+
 pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     let crate::CommandNew {
         kind,
@@ -14,11 +18,13 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
 
     match kind {
         crate::Kind::Operator => { bail!("Operators are going to be depreciated, please don't use it") },
-        crate::Kind::CustomNode => create_custom_node(name, path),
+        crate::Kind::CustomNode => create_custom_node(name, path, NODE_PY),
         crate::Kind::Dataflow => create_dataflow(name, path),
     }
 }
 
+#[deprecated(since = "0.3.4")]
+#[allow(unused)]
 fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const OPERATOR_PY: &str = include_str!("operator/operator-template.py");
 
@@ -44,16 +50,14 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
     Ok(())
 }
-fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
-    const NODE_PY: &str = include_str!("node/node-template.py");
-
+fn create_custom_node(name: String, path: Option<PathBuf>, template_scripts: &str) -> Result<(), eyre::ErrReport> {
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
     fs::create_dir(root)
         .with_context(|| format!("failed to create directory `{}`", root.display()))?;
 
     let node_path = root.join(format!("{name}.py"));
-    fs::write(&node_path, NODE_PY)
+    fs::write(&node_path, template_scripts)
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
 
     println!(
@@ -84,9 +88,9 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     fs::write(&dataflow_yml_path, dataflow_yml)
         .with_context(|| format!("failed to write `{}`", dataflow_yml_path.display()))?;
 
-    create_operator("op_1".into(), Some(root.join("op_1")))?;
-    create_operator("op_2".into(), Some(root.join("op_2")))?;
-    create_custom_node("node_1".into(), Some(root.join("node_1")))?;
+    create_custom_node("talker_1".into(), Some(root.join("talker_1")), TALKER_PY)?;
+    create_custom_node("talker_2".into(), Some(root.join("talker_2")), TALKER_PY)?;
+    create_custom_node("listener_1".into(), Some(root.join("listener_1")), LISTENER_PY)?;
 
     println!(
         "Created new yaml dataflow `{name}` at {}",
