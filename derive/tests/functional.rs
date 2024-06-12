@@ -1,8 +1,6 @@
 use derive::DirHelper;
-use pyo3::pyclass;
 
 #[derive(DirHelper)]
-#[pyclass]
 #[allow(dead_code)]
 struct WithFields {
     hello: (),
@@ -19,7 +17,7 @@ fn test_with_fields() {
         my: "".to_string(),
         name: 0.0,
     }
-    .__dir__();
+    .fields();
     assert_eq!(
         vec![
             "hello".to_string(),
@@ -32,12 +30,11 @@ fn test_with_fields() {
 }
 
 #[derive(DirHelper)]
-#[pyclass]
 #[allow(dead_code)]
 struct UnitNoFields;
 
 #[test]
 fn test_no_fields() {
-    let fields: Vec<String> = UnitNoFields.__dir__();
+    let fields: Vec<String> = UnitNoFields.fields();
     assert_eq!(Vec::<String>::new(), fields);
 }

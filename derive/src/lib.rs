@@ -1,9 +1,15 @@
+//! Derive macros for dora
+
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
-/// Add a Python `__dir__`` method to the struct.
+/// Add a `fields` method to the struct.
+/// 
+/// Because we cannot have multiple `#[pymethods]` impls, this macro
+/// produces a function called `fields` which should be called from the
+/// PyO3 impl.
 #[proc_macro_derive(DirHelper)]
 pub fn dir_helper_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -31,9 +37,8 @@ pub fn dir_helper_derive(input: TokenStream) -> TokenStream {
                         }
                     }];);
                     quote! {
-                        #[pyo3::prelude::pymethods]
                         impl #name {
-                            pub fn __dir__(&self) -> Vec<String> {
+                            pub fn fields(&self) -> Vec<String> {
                                 let mut names = Vec::new();
                                 #assigner
                                 names
@@ -44,9 +49,8 @@ pub fn dir_helper_derive(input: TokenStream) -> TokenStream {
                 Fields::Unit => {
                     // If the struct has no fields
                     quote! {
-                        #[pyo3::prelude::pymethods]
                         impl #name {
-                            pub fn __dir__(&self) -> Vec<String> {
+                            pub fn fields(&self) -> Vec<String> {
                                 Vec::new()
                             }
                         }
