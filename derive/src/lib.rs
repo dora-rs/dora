@@ -6,7 +6,7 @@ use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Fields};
 
 /// Add a `fields` method to the struct.
-/// 
+///
 /// Because we cannot have multiple `#[pymethods]` impls, this macro
 /// produces a function called `fields` which should be called from the
 /// PyO3 impl.

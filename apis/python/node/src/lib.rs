@@ -200,8 +200,8 @@ impl Node {
     }
 
     // TODO: We should only list fields which are at least readableby Python users, right?
-    
-    /// Get a list of the fields of this Node. 
+
+    /// Get a list of the fields of this Node.
     pub fn __dir__(&self) -> Vec<String> {
         self.fields()
     }
