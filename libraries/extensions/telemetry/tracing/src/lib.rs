@@ -26,7 +26,7 @@ pub fn set_up_tracing_opts(name: &str, stdout: bool, file: bool) -> eyre::Result
         // Filter log using `RUST_LOG`. More useful for CLI.
         let env_filter = EnvFilter::from_default_env().or(LevelFilter::WARN);
         let layer = tracing_subscriber::fmt::layer()
-            .pretty()
+            .compact()
             .with_filter(env_filter);
         layers.push(layer.boxed());
     }
