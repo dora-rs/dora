@@ -333,7 +333,7 @@ fn run() -> eyre::Result<()> {
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
             if !coordinator_addr.is_loopback() {
-                dataflow_descriptor.check_in_daemon(&working_dir, &vec![], true)?;
+                dataflow_descriptor.check_in_daemon(&working_dir, &[], true)?;
             } else {
                 dataflow_descriptor
                     .check(&working_dir)
