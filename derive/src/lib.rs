@@ -1,0 +1,74 @@
+extern crate proc_macro;
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, Data, DeriveInput, Fields};
+
+/// Add a Python `__dir__`` method to the struct.
+#[proc_macro_derive(DirHelper)]
+pub fn dir_helper_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // Get the name of the struct
+    let name = &input.ident;
+
+    // Generate code to match the struct's fields
+    let expanded = match input.data {
+        Data::Struct(data) => {
+            match data.fields {
+                Fields::Named(fields) => {
+                    // If the struct has named fields extract their names
+                    let field_names = fields
+                        .named
+                        .iter()
+                        .map(|f| f.ident.as_ref().unwrap())
+                        .collect::<Vec<_>>();
+
+                    // Prepare an array where the elements are expressions that prepare the field vec
+                    let mut assigner = proc_macro2::TokenStream::new();
+                    quote_into::quote_into!(assigner += [#{
+                        for name in field_names {
+                            quote_into::quote_into!(assigner += (names.push(stringify!(#name).to_string())),)
+                        }
+                    }];);
+                    quote! {
+                        #[pyo3::prelude::pymethods]
+                        impl #name {
+                            pub fn __dir__(&self) -> Vec<String> {
+                                let mut names = Vec::new();
+                                #assigner
+                                names
+                            }
+                        }
+                    }
+                }
+                Fields::Unit => {
+                    // If the struct has no fields
+                    quote! {
+                        #[pyo3::prelude::pymethods]
+                        impl #name {
+                            pub fn __dir__(&self) -> Vec<String> {
+                                Vec::new()
+                            }
+                        }
+                    }
+                }
+                Fields::Unnamed(_) => {
+                    quote! {
+                        compile_error!("Unnamed fields for struct are not supported for DirHelper derive.");
+                    }
+                }
+            }
+        }
+        Data::Enum(_) => {
+            quote! {
+                compile_error!("Enums are not supported for DirHelper derive");
+            }
+        }
+        Data::Union(_) => {
+            quote! {
+                compile_error!("Unions are not supported for DirHelper derive");
+            }
+        }
+    };
+    TokenStream::from(expanded)
+}
