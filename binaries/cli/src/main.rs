@@ -332,9 +332,13 @@ fn run() -> eyre::Result<()> {
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            dataflow_descriptor
-                .check(&working_dir)
-                .wrap_err("Could not validate yaml")?;
+            if !coordinator_addr.is_loopback() {
+                dataflow_descriptor.check_in_daemon(&working_dir, &[], true)?;
+            } else {
+                dataflow_descriptor
+                    .check(&working_dir)
+                    .wrap_err("Could not validate yaml")?;
+            }
 
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
