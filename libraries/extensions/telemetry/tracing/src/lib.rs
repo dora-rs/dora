@@ -16,10 +16,10 @@ use tracing_subscriber::Registry;
 pub mod telemetry;
 
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
-    set_up_tracing_opts(name, true, false)
+    set_up_tracing_opts(name, true, None)
 }
 
-pub fn set_up_tracing_opts(name: &str, stdout: bool, file: bool) -> eyre::Result<()> {
+pub fn set_up_tracing_opts(name: &str, stdout: bool, filename: Option<&str>) -> eyre::Result<()> {
     let mut layers = Vec::new();
 
     if stdout {
@@ -31,10 +31,10 @@ pub fn set_up_tracing_opts(name: &str, stdout: bool, file: bool) -> eyre::Result
         layers.push(layer.boxed());
     }
 
-    if file {
+    if let Some(filename) = filename {
         let out_dir = Path::new("out");
         std::fs::create_dir_all(out_dir).context("failed to create `out` directory")?;
-        let path = out_dir.join(format!("{name}.txt"));
+        let path = out_dir.join(filename).with_extension("txt");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
