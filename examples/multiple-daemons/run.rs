@@ -226,7 +226,7 @@ async fn run_daemon(
         .arg(machine_id)
         .arg("--coordinator-addr")
         .arg(coordinator)
-        .arg("--dynamic-node-port")
+        .arg("--local-listen-port")
         .arg(local_listen_port.to_string());
     if !cmd.status().await?.success() {
         bail!("failed to run dataflow");
