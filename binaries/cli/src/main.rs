@@ -335,7 +335,8 @@ fn run() -> eyre::Result<()> {
             if !coordinator_addr.is_loopback() {
                 // use empty string to indicate that all nodes should be
                 // referred to as remote node, such that all paths are
-                // checked as absolute
+                // checked as absolute, the machine id of remote daemon
+                // should not be empty string.
                 dataflow_descriptor.check_in_daemon(&working_dir, &[&String::default()])?;
             } else {
                 dataflow_descriptor
