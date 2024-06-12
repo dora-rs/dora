@@ -4,6 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const MAIN_RS: &str = include_str!("node/main-template.rs");
+const TALKER_RS: &str = include_str!("talker/main-template.rs");
+const LISTENER_RS: &str = include_str!("listener/main-template.rs");
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
     let crate::CommandNew {
@@ -15,7 +19,7 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
 
     match kind {
         crate::Kind::Operator => { bail!("Operators are going to be depreciated, please don't use it") },
-        crate::Kind::CustomNode => create_custom_node(name, path, use_path_deps),
+        crate::Kind::CustomNode => create_custom_node(name, path, use_path_deps, MAIN_RS),
         crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
@@ -49,9 +53,9 @@ fn create_dataflow(
     fs::write(&cargo_toml_path, cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
 
-    create_operator("op_1".into(), Some(root.join("op_1")), use_path_deps)?;
-    create_operator("op_2".into(), Some(root.join("op_2")), use_path_deps)?;
-    create_custom_node("node_1".into(), Some(root.join("node_1")), use_path_deps)?;
+    create_custom_node("talker_1".into(), Some(root.join("talker_1")), use_path_deps, TALKER_RS)?;
+    create_custom_node("talker_2".into(), Some(root.join("talker_2")), use_path_deps, TALKER_RS)?;
+    create_custom_node("listener_1".into(), Some(root.join("listener_1")), use_path_deps, LISTENER_RS)?;
 
     println!(
         "Created new Rust dataflow at `{name}` at {}",
@@ -61,6 +65,8 @@ fn create_dataflow(
     Ok(())
 }
 
+#[deprecated(since = "0.3.4")]
+#[allow(unused)]
 fn create_operator(
     name: String,
     path: Option<PathBuf>,
@@ -119,9 +125,9 @@ fn create_custom_node(
     name: String,
     path: Option<PathBuf>,
     use_path_deps: bool,
+    template_scripts: &str,
 ) -> Result<(), eyre::ErrReport> {
     const CARGO_TOML: &str = include_str!("node/Cargo-template.toml");
-    const MAIN_RS: &str = include_str!("node/main-template.rs");
 
     if name.contains('/') {
         bail!("node name must not contain `/` separators");
@@ -151,7 +157,7 @@ fn create_custom_node(
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
 
     let main_rs_path = src.join("main.rs");
-    fs::write(&main_rs_path, MAIN_RS)
+    fs::write(&main_rs_path, template_scripts)
         .with_context(|| format!("failed to write `{}`", main_rs_path.display()))?;
 
     println!(

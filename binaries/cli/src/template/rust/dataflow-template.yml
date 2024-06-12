@@ -1,26 +1,26 @@
 nodes:
-  - id: op_1
-    operator:
-      build: cargo build -p op_1
-      shared-library: target/debug/op_1
+  - id: talker_1
+    custom:
+      build: cargo build -p talker_1
+      source: target/debug/talker_1
       inputs:
         tick: dora/timer/millis/100
       outputs:
-        - some-output
-  - id: op_2
-    operator:
-      build: cargo build -p op_2
-      shared-library: target/debug/op_2
+        - speech
+  - id: talker_2
+    custom:
+      build: cargo build -p talker_2
+      source: target/debug/talker_2
       inputs:
         tick: dora/timer/secs/2
       outputs:
-        - some-output
+        - speech
 
-  - id: custom-node_1
+  - id: listener_1
     custom:
-      build: cargo build -p node_1
-      source: target/debug/node_1
+      build: cargo build -p listener_1
+      source: target/debug/listener_1
       inputs:
         tick: dora/timer/secs/1
-        input-1: op_1/some-output
-        input-2: op_2/some-output
+        input-1: talker_1/speech
+        input-2: talker_2/speech
