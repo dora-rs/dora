@@ -34,7 +34,7 @@ fn test_with_str() {
     .__str__();
     // TODO: Is this a good __str__ output? How can we better show it or should they be different?
     assert_eq!(
-        "WithFields(dora: `299792458`, my: `Hello world`, name: `3.14159`)",
+        "WithFields(dora=`299792458`, my=`Hello world`, name=`3.14159`)",
         &res
     );
 }
@@ -49,7 +49,7 @@ fn test_with_repr() {
     .__repr__();
     // TODO: Is this a good __repr__ output? How can we better show it or should they be different?
     assert_eq!(
-        "WithFields(dora: 299792458, my: \"Hello world\", name: 3.14159)",
+        "WithFields(dora=299792458, my=\"Hello world\", name=3.14159)",
         &res
     );
 }
