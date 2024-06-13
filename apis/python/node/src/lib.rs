@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DoraNode, EventStream};
 use dora_operator_api_python::{pydict_to_metadata, PyEvent};
@@ -32,8 +33,13 @@ pub struct Node {
 #[pymethods]
 impl Node {
     #[new]
-    pub fn new() -> eyre::Result<Self> {
-        let (node, events) = DoraNode::init_from_env()?;
+    pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
+        let (node, events) = if let Some(node_id) = node_id {
+            DoraNode::init_flexible(NodeId::from(node_id))
+                .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
+        } else {
+            DoraNode::init_from_env().context("Couldn not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
+        };
 
         Ok(Node {
             events: Events::Dora(events),
@@ -122,17 +128,17 @@ impl Node {
         &mut self,
         output_id: String,
         data: PyObject,
-        metadata: Option<&PyDict>,
+        metadata: Option<Bound<'_, PyDict>>,
         py: Python,
     ) -> eyre::Result<()> {
         let parameters = pydict_to_metadata(metadata)?;
 
-        if let Ok(py_bytes) = data.downcast::<PyBytes>(py) {
+        if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
             let data = py_bytes.as_bytes();
             self.node
                 .send_output_bytes(output_id.into(), parameters, data.len(), data)
                 .wrap_err("failed to send output")?;
-        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow(data.as_ref(py)) {
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
             self.node.send_output(
                 output_id.into(),
                 parameters,
@@ -251,9 +257,10 @@ pub fn start_runtime() -> eyre::Result<()> {
 }
 
 #[pymodule]
-fn dora(_py: Python, m: &PyModule) -> PyResult<()> {
-    dora_ros2_bridge_python::create_dora_ros2_bridge_module(m)?;
-    m.add_function(wrap_pyfunction!(start_runtime, m)?)?;
+fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+    dora_ros2_bridge_python::create_dora_ros2_bridge_module(&m)?;
+
+    m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_class::<Node>()?;
     m.add_class::<PyEvent>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;

@@ -16,6 +16,7 @@ members = [
     "examples/rust-dataflow/node",
     "examples/rust-dataflow/status-node",
     "examples/rust-dataflow/sink",
+    "examples/rust-dataflow/sink-dynamic",
     "examples/rust-ros2-dataflow/node",
     "examples/benchmark/node",
     "examples/benchmark/sink",
@@ -66,12 +67,12 @@ dora-coordinator = { version = "0.3.4", path = "binaries/coordinator" }
 dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-arrow = "48.0.0"
-arrow-schema = "48.0.0"
-arrow-data = "48.0.0"
-arrow-array = "48.0.0"
-pyo3 = "0.20.0"
-pythonize = "0.20.0"
+arrow = { version = "52" }
+arrow-schema = { version = "52" }
+arrow-data = { version = "52" }
+arrow-array = { version = "52" }
+pyo3 = "0.21"
+pythonize = "0.21"
 
 [package]
 name = "dora-examples"

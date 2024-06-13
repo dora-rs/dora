@@ -8,7 +8,7 @@ See also [c++-example](https://github.com/dora-rs/dora/blob/main/examples/c%2B%2
 
 To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all required build steps and then starts the dataflow. Use the following command to run it: `cargo run --example cmake-dataflow`.
 
-## Out-of-tree complie
+## Out-of-tree compile
 
 This example also can be ran in a separate root directory.
 ```

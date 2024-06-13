@@ -52,8 +52,8 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
     let coordinator_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), coordinator_port);
-    let daemon_a = run_daemon(coordinator_addr.to_string(), "A");
-    let daemon_b = run_daemon(coordinator_addr.to_string(), "B");
+    let daemon_a = run_daemon(coordinator_addr.to_string(), "A", 9843); // Random port
+    let daemon_b = run_daemon(coordinator_addr.to_string(), "B", 9842);
 
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
@@ -211,7 +211,11 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
+async fn run_daemon(
+    coordinator: String,
+    machine_id: &str,
+    local_listen_port: u16,
+) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
@@ -221,7 +225,9 @@ async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
         .arg("--machine-id")
         .arg(machine_id)
         .arg("--coordinator-addr")
-        .arg(coordinator);
+        .arg(coordinator)
+        .arg("--local-listen-port")
+        .arg(local_listen_port.to_string());
     if !cmd.status().await?.success() {
         bail!("failed to run dataflow");
     };
