@@ -1,0 +1,31 @@
+nodes:
+  - id: rust-node
+    custom:
+      build: cargo build -p rust-dataflow-example-node
+      source: ../../target/debug/rust-dataflow-example-node
+      inputs:
+        tick: dora/timer/millis/100
+      outputs:
+        - random
+  - id: rust-status-node
+    custom:
+      build: cargo build -p rust-dataflow-example-status-node
+      source: ../../target/debug/rust-dataflow-example-status-node
+      inputs:
+        tick: dora/timer/millis/100
+        random: rust-node/random
+      outputs:
+        - status
+  - id: rust-sink-dynamic
+    custom:
+      build: cargo build -p rust-dataflow-example-sink-dynamic
+      source: dynamic
+      inputs:
+        message: rust-status-node/status
+  - id: dora-record
+    custom:
+      build: cargo build -p dora-record
+      source: ../../target/debug/dora-record
+      inputs:
+        message: rust-status-node/status
+        random: rust-node/random
