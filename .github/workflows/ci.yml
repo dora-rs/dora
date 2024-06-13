@@ -318,6 +318,7 @@ jobs:
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
         shell: bash
+        runs-on: ubuntu-latest
         run: |
           # Test C template Project
           dora new test_c_project --lang c
@@ -330,6 +331,25 @@ jobs:
           dora start dataflow.yml --name ci-c-test
           sleep 10
           dora stop --name ci-c-test  --grace-duration 5s
+          dora destroy
+      
+      - name: "Test CLI (C++)"
+        timeout-minutes: 30
+        # fail-fast by using bash shell explictly
+        shell: bash
+        runs-on: ubuntu-latest
+        run: |
+          # Test C++ template Project
+          dora new test_cxx_project --lang c++
+          cd test_cxx_project
+          dora up
+          dora list
+          cmake -B build
+          cmake --build build
+          cmake --install build
+          dora start dataflow.yml --name ci-cxx-test
+          sleep 10
+          dora stop --name ci-cxx-test  --grace-duration 5s
           dora destroy
   clippy:
     name: "Clippy"
