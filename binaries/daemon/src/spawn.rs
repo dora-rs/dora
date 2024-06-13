@@ -9,7 +9,7 @@ use dora_core::{
     daemon_messages::{DataMessage, DataflowId, NodeConfig, RuntimeConfig, Timestamped},
     descriptor::{
         resolve_path, source_is_url, source_to_path, Descriptor, OperatorDefinition,
-        OperatorSource, PythonSource, ResolvedNode, SHELL_SOURCE,
+        OperatorSource, PythonSource, ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE,
     },
     get_python_path,
     message::uhlc::HLC,

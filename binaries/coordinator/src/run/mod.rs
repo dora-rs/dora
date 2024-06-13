@@ -17,7 +17,6 @@ use std::{
 };
 use uuid::{NoContext, Timestamp, Uuid};
 
-
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
     dataflow: Descriptor,
@@ -25,17 +24,7 @@ pub(super) async fn spawn_dataflow(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
 ) -> eyre::Result<SpawnedDataflow> {
-    let remote_machine_id: Vec<_> = daemon_connections
-        .iter()
-        .filter_map(|(id, c)| {
-            if !c.listen_socket.ip().is_loopback() {
-                Some(id.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-    dataflow.check_in_daemon(&working_dir, &remote_machine_id, false)?;
+    dataflow.check(&working_dir)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
@@ -52,7 +41,9 @@ pub(super) async fn spawn_dataflow(
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let working_dir = if machines.len() > 1 {
         dirs::home_dir()
-            .ok_or_else(|| eyre!("could not create working directory for multiple-daemons dataflow!"))
+            .ok_or_else(|| {
+                eyre!("could not create working directory for multiple-daemons dataflow!")
+            })
             .map(|home| home)?
     } else {
         working_dir

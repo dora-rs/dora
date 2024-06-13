@@ -134,23 +134,7 @@ impl Descriptor {
     }
 
     pub fn check(&self, working_dir: &Path) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, None, false)
-            .wrap_err("Dataflow could not be validated.")
-    }
-
-    pub fn check_in_daemon(
-        &self,
-        working_dir: &Path,
-        remote_machine_id: &[&str],
-        coordinator_is_remote: bool,
-    ) -> eyre::Result<()> {
-        validate::check_dataflow(
-            self,
-            working_dir,
-            Some(remote_machine_id),
-            coordinator_is_remote,
-        )
-        .wrap_err("Dataflow could not be validated.")
+        validate::check_dataflow(self, working_dir).wrap_err("Dataflow could not be validated.")
     }
 }
 

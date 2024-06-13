@@ -1,7 +1,7 @@
 use crate::{
     adjust_shared_library_path,
     config::{DataId, Input, InputMapping, OperatorId, UserInputMapping},
-    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource, EXE_EXTENSION},
+    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
     get_python_path,
 };
 
@@ -11,14 +11,10 @@ use std::{path::Path, process::Command};
 use tracing::info;
 
 use super::{resolve_path, source_to_path, Descriptor, DYNAMIC_SOURCE, SHELL_SOURCE};
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn check_dataflow(
-    dataflow: &Descriptor,
-    working_dir: &Path,
-    remote_daemon_id: Option<&[&str]>,
-    coordinator_is_remote: bool,
-) -> eyre::Result<()> {
+pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
     let is_local = nodes
