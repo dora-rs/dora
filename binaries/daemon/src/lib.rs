@@ -654,7 +654,8 @@ impl Daemon {
                             )
                             .await?;
                         match status {
-                            DataflowStatus::AllNodesReady => {
+                            DataflowStatus::AllNodesReady { cascading_errors } => {
+                                dataflow.cascading_errors.extend(cascading_errors);
                                 tracing::info!(
                                     "all nodes are ready, starting dataflow `{dataflow_id}`"
                                 );
@@ -1050,14 +1051,22 @@ impl Daemon {
                         tracing::info!("node {dataflow_id}/{node_id} finished successfully");
                         Ok(())
                     }
-                    exit_status => Err(NodeError {
-                        timestamp: self.clock.new_timestamp(),
-                        cause: NodeErrorCause::Other {
-                            // TODO: load from file
-                            stderr: String::new(),
-                        },
-                        exit_status,
-                    }),
+                    exit_status => {
+                        let cause = match self.running.get_mut(&dataflow_id) {
+                            Some(dataflow) if dataflow.cascading_errors.contains(&node_id) => {
+                                NodeErrorCause::Cascading
+                            }
+                            _ => NodeErrorCause::Other {
+                                // TODO: load from file
+                                stderr: String::new(),
+                            },
+                        };
+                        Err(NodeError {
+                            timestamp: self.clock.new_timestamp(),
+                            cause,
+                            exit_status,
+                        })
+                    }
                 };
 
                 self.dataflow_node_results
@@ -1297,6 +1306,8 @@ pub struct RunningDataflow {
     ///
     /// TODO: replace this with a constant once `BTreeSet::new` is `const` on stable.
     empty_set: BTreeSet<DataId>,
+
+    cascading_errors: BTreeSet<NodeId>,
 }
 
 impl RunningDataflow {
@@ -1315,6 +1326,7 @@ impl RunningDataflow {
             _timer_handles: Vec::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
+            cascading_errors: BTreeSet::new(),
         }
     }
 

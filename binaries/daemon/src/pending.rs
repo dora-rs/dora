@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use dora_core::{
     config::NodeId,
@@ -113,15 +113,18 @@ impl PendingNodes {
                 }
                 Ok(DataflowStatus::Pending)
             } else {
-                self.answer_subscribe_requests(None).await;
-                Ok(DataflowStatus::AllNodesReady)
+                let cascading_errors = self.answer_subscribe_requests(None).await;
+                Ok(DataflowStatus::AllNodesReady { cascading_errors })
             }
         } else {
             Ok(DataflowStatus::Pending)
         }
     }
 
-    async fn answer_subscribe_requests(&mut self, external_error: Option<String>) {
+    async fn answer_subscribe_requests(
+        &mut self,
+        external_error: Option<String>,
+    ) -> BTreeSet<NodeId> {
         let result = if self.exited_before_subscribe.is_empty() {
             match external_error {
                 Some(err) => Err(err),
@@ -147,9 +150,14 @@ impl PendingNodes {
         };
         // answer all subscribe requests
         let subscribe_replies = std::mem::take(&mut self.waiting_subscribers);
-        for reply_sender in subscribe_replies.into_values() {
+        let mut cascading_errors = BTreeSet::new();
+        for (node_id, reply_sender) in subscribe_replies.into_iter() {
+            if result.is_err() {
+                cascading_errors.insert(node_id);
+            }
             let _ = reply_sender.send(DaemonReply::Result(result.clone()));
         }
+        cascading_errors
     }
 
     async fn report_nodes_ready(
@@ -182,6 +190,6 @@ impl PendingNodes {
 }
 
 pub enum DataflowStatus {
-    AllNodesReady,
+    AllNodesReady { cascading_errors: BTreeSet<NodeId> },
     Pending,
 }
