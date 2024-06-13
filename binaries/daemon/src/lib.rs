@@ -379,7 +379,10 @@ impl Daemon {
                     Some(dataflow) => {
                         dataflow
                             .pending_nodes
-                            .handle_external_all_nodes_ready(success)
+                            .handle_external_all_nodes_ready(
+                                success,
+                                &mut dataflow.cascading_errors,
+                            )
                             .await?;
                         if success {
                             tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
@@ -633,6 +636,7 @@ impl Daemon {
                                 &node_id,
                                 &mut self.coordinator_connection,
                                 &self.clock,
+                                &mut dataflow.cascading_errors,
                             )
                             .await?;
                     }
@@ -739,11 +743,11 @@ impl Daemon {
                                 reply_sender,
                                 &mut self.coordinator_connection,
                                 &self.clock,
+                                &mut dataflow.cascading_errors,
                             )
                             .await?;
                         match status {
-                            DataflowStatus::AllNodesReady { cascading_errors } => {
-                                dataflow.cascading_errors.extend(cascading_errors);
+                            DataflowStatus::AllNodesReady => {
                                 tracing::info!(
                                     "all nodes are ready, starting dataflow `{dataflow_id}`"
                                 );
@@ -994,7 +998,12 @@ impl Daemon {
 
         dataflow
             .pending_nodes
-            .handle_node_stop(node_id, &mut self.coordinator_connection, &self.clock)
+            .handle_node_stop(
+                node_id,
+                &mut self.coordinator_connection,
+                &self.clock,
+                &mut dataflow.cascading_errors,
+            )
             .await?;
 
         Self::handle_outputs_done(
