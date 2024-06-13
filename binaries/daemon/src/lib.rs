@@ -2,9 +2,13 @@ use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
-use dora_core::daemon_messages::{DataMessage, InterDaemonEvent, Timestamped};
+use dora_core::daemon_messages::{
+    DataMessage, DynamicNodeEvent, InterDaemonEvent, NodeConfig, Timestamped,
+};
+use dora_core::descriptor::runtime_node_inputs;
 use dora_core::message::uhlc::{self, HLC};
 use dora_core::message::{ArrowTypeInfo, Metadata, MetadataParameters};
+use dora_core::topics::LOCALHOST;
 use dora_core::topics::{
     DataflowDaemonResult, DataflowResult, NodeError, NodeErrorCause, NodeExitStatus,
 };
@@ -18,10 +22,11 @@ use dora_core::{
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 
-use eyre::{bail, eyre, Context, ContextCompat};
+use eyre::{bail, eyre, Context, ContextCompat, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
+use local_listener::DynamicNodeEventWrapper;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
 use std::sync::Arc;
@@ -46,6 +51,7 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 mod coordinator;
 mod inter_daemon;
+mod local_listener;
 mod log;
 mod node_communication;
 mod pending;
@@ -82,16 +88,18 @@ impl Daemon {
     pub async fn run(
         coordinator_addr: SocketAddr,
         machine_id: String,
-        bind_addr: SocketAddr,
+        inter_daemon_addr: SocketAddr,
+        local_listen_port: u16,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
         let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
 
-        // spawn listen loop
+        // spawn inter daemon listen loop
         let (events_tx, events_rx) = flume::bounded(10);
         let listen_port =
-            inter_daemon::spawn_listener_loop(bind_addr, machine_id.clone(), events_tx).await?;
+            inter_daemon::spawn_listener_loop(inter_daemon_addr, machine_id.clone(), events_tx)
+                .await?;
         let daemon_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::Daemon(e.inner),
             timestamp: e.timestamp,
@@ -112,8 +120,26 @@ impl Daemon {
                     },
                 );
 
+        // Spawn local listener loop
+        let (events_tx, events_rx) = flume::bounded(10);
+        let _listen_port = local_listener::spawn_listener_loop(
+            (LOCALHOST, local_listen_port).into(),
+            machine_id.clone(),
+            events_tx,
+        )
+        .await?;
+        let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
+            inner: Event::DynamicNode(e.inner),
+            timestamp: e.timestamp,
+        });
         Self::run_general(
-            (coordinator_events, ctrlc_events, daemon_events).merge(),
+            (
+                coordinator_events,
+                ctrlc_events,
+                daemon_events,
+                dynamic_node_events,
+            )
+                .merge(),
             Some(coordinator_addr),
             machine_id,
             None,
@@ -273,6 +299,7 @@ impl Daemon {
                     RunStatus::Continue => {}
                     RunStatus::Exit => break,
                 },
+                Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
                 Event::HeartbeatInterval => {
                     if let Some(connection) = &mut self.coordinator_connection {
                         let msg = serde_json::to_vec(&Timestamped {
@@ -434,7 +461,6 @@ impl Daemon {
                     .running
                     .get_mut(&dataflow_id)
                     .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-                //  .stop_all(&self.clock.clone(), grace_duration);
 
                 let reply = DaemonCoordinatorReply::StopResult(Ok(()));
                 let _ = reply_tx
@@ -596,10 +622,8 @@ impl Daemon {
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
-                    Ok(pid) => {
-                        dataflow
-                            .running_nodes
-                            .insert(node_id.clone(), RunningNode { pid });
+                    Ok(running_node) => {
+                        dataflow.running_nodes.insert(node_id, running_node);
                     }
                     Err(err) => {
                         tracing::error!("{err:?}");
@@ -619,6 +643,70 @@ impl Daemon {
         }
 
         Ok(())
+    }
+
+    async fn handle_dynamic_node_event(
+        &mut self,
+        event: DynamicNodeEventWrapper,
+    ) -> eyre::Result<()> {
+        match event {
+            DynamicNodeEventWrapper {
+                event: DynamicNodeEvent::NodeConfig { node_id },
+                reply_tx,
+            } => {
+                let number_node_id = self
+                    .running
+                    .iter()
+                    .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
+                    .count();
+
+                let node_config = match number_node_id {
+                    2.. => {
+                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
+                            result: Err(format!(
+                                "multiple dataflows contains dynamic node id {}. Please only have one running dataflow with the specified node id if you want to use dynamic node",
+                                node_id
+                            )
+                            .to_string()),
+                        }));
+                        return Ok(());
+                    }
+                    1 => self
+                        .running
+                        .iter()
+                        .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
+                        .map(|(id, dataflow)| -> Result<NodeConfig> {
+                            let node_config = dataflow
+                                .running_nodes
+                                .get(&node_id)
+                                .context("no node with ID `{node_id}` within the given dataflow")?
+                                .node_config
+                                .clone();
+                            if !node_config.dynamic {
+                                bail!("node with ID `{node_id}` in {id} is not dynamic");
+                            }
+                            Ok(node_config)
+                        })
+                        .next()
+                        .context("no node with ID `{node_id}`")?
+                        .context("failed to get dynamic node config within given dataflow")?,
+                    0 => {
+                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
+                            result: Err("no node with ID `{node_id}`".to_string()),
+                        }));
+                        return Ok(());
+                    }
+                };
+
+                let reply = DaemonReply::NodeConfig {
+                    result: Ok(node_config),
+                };
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send node info reply from daemon to coordinator")
+                });
+                Ok(())
+            }
+        }
     }
 
     async fn handle_node_event(
@@ -918,7 +1006,11 @@ impl Daemon {
         .await?;
 
         dataflow.running_nodes.remove(node_id);
-        if dataflow.running_nodes.is_empty() {
+        if dataflow
+            .running_nodes
+            .iter()
+            .all(|(_id, n)| n.node_config.dynamic)
+        {
             let result = DataflowDaemonResult {
                 timestamp: self.clock.new_timestamp(),
                 node_results: self
@@ -1176,33 +1268,6 @@ fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
     }
 }
 
-fn runtime_node_inputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeMap<DataId, Input> {
-    n.operators
-        .iter()
-        .flat_map(|operator| {
-            operator.config.inputs.iter().map(|(input_id, mapping)| {
-                (
-                    DataId::from(format!("{}/{input_id}", operator.id)),
-                    mapping.clone(),
-                )
-            })
-        })
-        .collect()
-}
-
-fn runtime_node_outputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeSet<DataId> {
-    n.operators
-        .iter()
-        .flat_map(|operator| {
-            operator
-                .config
-                .outputs
-                .iter()
-                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
-        })
-        .collect()
-}
-
 async fn send_input_closed_events<F>(
     dataflow: &mut RunningDataflow,
     inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
@@ -1279,7 +1344,8 @@ fn close_input(
 
 #[derive(Debug, Clone)]
 struct RunningNode {
-    pid: u32,
+    pid: Option<u32>,
+    node_config: NodeConfig,
 }
 
 pub struct RunningDataflow {
@@ -1396,12 +1462,14 @@ impl RunningDataflow {
             system.refresh_processes();
 
             for (node, node_details) in running_nodes.iter() {
-                if let Some(process) = system.process(Pid::from(node_details.pid as usize)) {
-                    process.kill();
-                    warn!(
-                        "{node} was killed due to not stopping within the {:#?} grace period",
-                        duration
-                    )
+                if let Some(pid) = node_details.pid {
+                    if let Some(process) = system.process(Pid::from(pid as usize)) {
+                        process.kill();
+                        warn!(
+                            "{node} was killed due to not stopping within the {:#?} grace period",
+                            duration
+                        )
+                    }
                 }
             }
         });
@@ -1467,6 +1535,7 @@ pub enum Event {
     Coordinator(CoordinatorEvent),
     Daemon(InterDaemonEvent),
     Dora(DoraEvent),
+    DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
     CtrlC,
 }
