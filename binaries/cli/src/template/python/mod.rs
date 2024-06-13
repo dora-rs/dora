@@ -17,7 +17,9 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     } = args;
 
     match kind {
-        crate::Kind::Operator => { bail!("Operators are going to be depreciated, please don't use it") },
+        crate::Kind::Operator => {
+            bail!("Operators are going to be depreciated, please don't use it")
+        }
         crate::Kind::CustomNode => create_custom_node(name, path, NODE_PY),
         crate::Kind::Dataflow => create_dataflow(name, path),
     }
@@ -50,7 +52,11 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
     Ok(())
 }
-fn create_custom_node(name: String, path: Option<PathBuf>, template_scripts: &str) -> Result<(), eyre::ErrReport> {
+fn create_custom_node(
+    name: String,
+    path: Option<PathBuf>,
+    template_scripts: &str,
+) -> Result<(), eyre::ErrReport> {
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
     fs::create_dir(root)
@@ -90,7 +96,11 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
 
     create_custom_node("talker_1".into(), Some(root.join("talker_1")), TALKER_PY)?;
     create_custom_node("talker_2".into(), Some(root.join("talker_2")), TALKER_PY)?;
-    create_custom_node("listener_1".into(), Some(root.join("listener_1")), LISTENER_PY)?;
+    create_custom_node(
+        "listener_1".into(),
+        Some(root.join("listener_1")),
+        LISTENER_PY,
+    )?;
 
     println!(
         "Created new yaml dataflow `{name}` at {}",

@@ -18,7 +18,9 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::Operator => { bail!("Operators are going to be depreciated, please don't use it") },
+        crate::Kind::Operator => {
+            bail!("Operators are going to be depreciated, please don't use it")
+        }
         crate::Kind::CustomNode => create_custom_node(name, path, use_path_deps, MAIN_RS),
         crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
@@ -53,9 +55,24 @@ fn create_dataflow(
     fs::write(&cargo_toml_path, cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
 
-    create_custom_node("talker_1".into(), Some(root.join("talker_1")), use_path_deps, TALKER_RS)?;
-    create_custom_node("talker_2".into(), Some(root.join("talker_2")), use_path_deps, TALKER_RS)?;
-    create_custom_node("listener_1".into(), Some(root.join("listener_1")), use_path_deps, LISTENER_RS)?;
+    create_custom_node(
+        "talker_1".into(),
+        Some(root.join("talker_1")),
+        use_path_deps,
+        TALKER_RS,
+    )?;
+    create_custom_node(
+        "talker_2".into(),
+        Some(root.join("talker_2")),
+        use_path_deps,
+        TALKER_RS,
+    )?;
+    create_custom_node(
+        "listener_1".into(),
+        Some(root.join("listener_1")),
+        use_path_deps,
+        LISTENER_RS,
+    )?;
 
     println!(
         "Created new Rust dataflow at `{name}` at {}",
