@@ -56,6 +56,13 @@ pub enum ControlRequest {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowList {
+    pub active: Vec<DataflowId>,
+    pub finished: Vec<DataflowId>,
+    pub failed: Vec<DataflowId>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
@@ -70,9 +77,7 @@ pub enum ControlRequestReply {
         result: Result<(), String>,
     },
 
-    DataflowList {
-        dataflows: Vec<DataflowId>,
-    },
+    DataflowList(DataflowList),
     DestroyOk,
     DaemonConnected(bool),
     ConnectedMachines(BTreeSet<String>),

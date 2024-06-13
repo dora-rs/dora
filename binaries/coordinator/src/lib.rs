@@ -9,7 +9,7 @@ use dora_core::{
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
     message::uhlc::{self, HLC},
-    topics::{ControlRequest, ControlRequestReply, DataflowId},
+    topics::{ControlRequest, ControlRequestReply, DataflowId, DataflowList},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
@@ -458,15 +458,30 @@ async fn start_inner(
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
-                            let reply = Ok(ControlRequestReply::DataflowList {
-                                dataflows: dataflows
+                            let mut finished = Vec::new();
+                            let mut failed = Vec::new();
+                            for (&uuid, results) in &dataflow_results {
+                                let name =
+                                    archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
+                                let id = DataflowId { uuid, name };
+                                if results.values().all(|r| r.is_ok()) {
+                                    finished.push(id);
+                                } else {
+                                    failed.push(id);
+                                }
+                            }
+
+                            let reply = Ok(ControlRequestReply::DataflowList(DataflowList {
+                                active: dataflows
                                     .into_iter()
                                     .map(|d| DataflowId {
                                         uuid: d.uuid,
                                         name: d.name.clone(),
                                     })
                                     .collect(),
-                            });
+                                finished,
+                                failed,
+                            }));
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DaemonConnected => {

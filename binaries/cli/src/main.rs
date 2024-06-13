@@ -5,7 +5,7 @@ use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        ControlRequest, ControlRequestReply, DataflowList, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
         DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
@@ -321,17 +321,18 @@ fn run() -> eyre::Result<()> {
         } => {
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-            let uuids = query_running_dataflows(&mut *session)
+            let list = query_running_dataflows(&mut *session)
                 .wrap_err("failed to query running dataflows")?;
             if let Some(dataflow) = dataflow {
                 let uuid = Uuid::parse_str(&dataflow).ok();
                 let name = if uuid.is_some() { None } else { Some(dataflow) };
                 logs::logs(&mut *session, uuid, name, node)?
             } else {
-                let uuid = match &uuids[..] {
+                let uuid = match &list.active[..] {
                     [] => bail!("No dataflows are running"),
                     [uuid] => uuid.clone(),
-                    _ => inquire::Select::new("Choose dataflow to show logs:", uuids).prompt()?,
+                    _ => inquire::Select::new("Choose dataflow to show logs:", list.active)
+                        .prompt()?,
                 };
                 logs::logs(&mut *session, Some(uuid.uuid), None, node)?
             }
@@ -509,11 +510,11 @@ fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<()> {
-    let uuids = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
-    if uuids.is_empty() {
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    if list.active.is_empty() {
         eprintln!("No dataflows are running");
     } else {
-        let selection = inquire::Select::new("Choose dataflow to stop:", uuids).prompt()?;
+        let selection = inquire::Select::new("Choose dataflow to stop:", list.active).prompt()?;
         stop_dataflow(selection.uuid, grace_duration, session)?;
     }
 
@@ -571,13 +572,27 @@ fn stop_dataflow_by_name(
 }
 
 fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> {
-    let ids = query_running_dataflows(session)?;
+    let list = query_running_dataflows(session)?;
 
-    if ids.is_empty() {
+    if list.active.is_empty() {
         eprintln!("No dataflows are running");
     } else {
         println!("Running dataflows:");
-        for id in ids {
+        for id in list.active {
+            println!("- {id}");
+        }
+    }
+
+    if !list.failed.is_empty() {
+        println!("Failed dataflows:");
+        for id in list.failed {
+            println!("- {id}");
+        }
+    }
+
+    if !list.finished.is_empty() {
+        println!("Finished dataflows:");
+        for id in list.finished {
             println!("- {id}");
         }
     }
@@ -587,14 +602,14 @@ fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> 
 
 fn query_running_dataflows(
     session: &mut TcpRequestReplyConnection,
-) -> Result<Vec<DataflowId>, eyre::ErrReport> {
+) -> Result<DataflowList, eyre::ErrReport> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send list message")?;
     let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     let ids = match reply {
-        ControlRequestReply::DataflowList { dataflows } => dataflows,
+        ControlRequestReply::DataflowList(list) => list,
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected list dataflow reply: {other:?}"),
     };
