@@ -16,12 +16,12 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
-    let is_multiple = nodes
+    let is_local = nodes
         .iter()
         .map(|n| &n.deploy.machine)
         .collect::<HashSet<_>>()
         .len()
-        > 1;
+        <= 1;
 
     // check that nodes and operators exist
     for node in &nodes {
@@ -31,7 +31,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                 source => {
                     if source_is_url(source) {
                         info!("{source} is a URL."); // TODO: Implement url check.
-                    } else if !is_multiple {
+                    } else if is_local {
                         resolve_path(source, working_dir)
                             .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
                     } else {
@@ -52,7 +52,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !is_multiple {
+                            } else if is_local {
                                 let path = adjust_shared_library_path(Path::new(&path))?;
                                 if !working_dir.join(&path).exists() {
                                     bail!("no shared library at `{}`", path.display());
@@ -76,7 +76,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                             let path = &python_source.source;
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !is_multiple {
+                            } else if is_local {
                                 if !working_dir.join(path).exists() {
                                     bail!("no Python library at `{path}`");
                                 }
@@ -97,7 +97,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !is_multiple {
+                            } else if is_local {
                                 if !working_dir.join(path).exists() {
                                     bail!("no WASM library at `{path}`");
                                 }

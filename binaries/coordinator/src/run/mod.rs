@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
 };
 use uuid::{NoContext, Timestamp, Uuid};
-const DEFAULT_WORKING_DIR: &str = "/tmp";
+
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
@@ -41,7 +41,9 @@ pub(super) async fn spawn_dataflow(
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let working_dir = if machines.len() > 1 {
-        PathBuf::from(DEFAULT_WORKING_DIR)
+        dirs::home_dir()
+            .ok_or_else(|| eyre!("could not create working directory for multiple-daemons dataflow!"))
+            .map(|home| home)?
     } else {
         working_dir
     };
