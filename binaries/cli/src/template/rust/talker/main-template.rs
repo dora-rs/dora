@@ -11,10 +11,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                 metadata,
                 data: _,
             } => match id.as_str() {
-                _other => {
+                "tick" => {
                     node.send_output(DataId::from("speech".to_owned()), metadata.parameters, String::from("Hello World!").into_arrow())?;
-                    eprintln!("Node received `{id}`");
+                    println!("Node received `{id}`");
                 },
+                _ => {}
             },
             _ => {}
         }
