@@ -17,7 +17,9 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     } = args;
 
     match kind {
-        crate::Kind::Operator => { bail!("Operators are going to be depreciated, please don't use it") },
+        crate::Kind::Operator => {
+            bail!("Operators are going to be depreciated, please don't use it")
+        }
         crate::Kind::CustomNode => create_custom_node(name, path, NODE),
         crate::Kind::Dataflow => create_dataflow(name, path),
     }
@@ -102,7 +104,11 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     Ok(())
 }
 
-fn create_custom_node(name: String, path: Option<PathBuf>, template_scripts: &str) -> Result<(), eyre::ErrReport> {
+fn create_custom_node(
+    name: String,
+    path: Option<PathBuf>,
+    template_scripts: &str,
+) -> Result<(), eyre::ErrReport> {
     if name.contains('/') {
         bail!("node name must not contain `/` separators");
     }
