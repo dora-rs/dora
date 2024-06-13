@@ -61,12 +61,13 @@ impl PendingNodes {
         reply_sender: oneshot::Sender<DaemonReply>,
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
+        cascading_errors: &mut BTreeSet<NodeId>,
     ) -> eyre::Result<DataflowStatus> {
         self.waiting_subscribers
             .insert(node_id.clone(), reply_sender);
         self.local_nodes.remove(&node_id);
 
-        self.update_dataflow_status(coordinator_connection, clock)
+        self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
             .await
     }
 
@@ -75,17 +76,22 @@ impl PendingNodes {
         node_id: &NodeId,
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
+        cascading_errors: &mut BTreeSet<NodeId>,
     ) -> eyre::Result<()> {
         if self.local_nodes.remove(node_id) {
             tracing::warn!("node `{node_id}` exited before initializing dora connection");
             self.exited_before_subscribe.insert(node_id.clone());
-            self.update_dataflow_status(coordinator_connection, clock)
+            self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
                 .await?;
         }
         Ok(())
     }
 
-    pub async fn handle_external_all_nodes_ready(&mut self, success: bool) -> eyre::Result<()> {
+    pub async fn handle_external_all_nodes_ready(
+        &mut self,
+        success: bool,
+        cascading_errors: &mut BTreeSet<NodeId>,
+    ) -> eyre::Result<()> {
         if !self.local_nodes.is_empty() {
             bail!("received external `all_nodes_ready` event before local nodes were ready");
         }
@@ -94,7 +100,8 @@ impl PendingNodes {
         } else {
             Some("some nodes failed to initialize on remote machines".to_string())
         };
-        self.answer_subscribe_requests(external_error).await;
+        self.answer_subscribe_requests(external_error, cascading_errors)
+            .await;
 
         Ok(())
     }
@@ -103,6 +110,7 @@ impl PendingNodes {
         &mut self,
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
+        cascading_errors: &mut BTreeSet<NodeId>,
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
@@ -113,8 +121,8 @@ impl PendingNodes {
                 }
                 Ok(DataflowStatus::Pending)
             } else {
-                let cascading_errors = self.answer_subscribe_requests(None).await;
-                Ok(DataflowStatus::AllNodesReady { cascading_errors })
+                self.answer_subscribe_requests(None, cascading_errors).await;
+                Ok(DataflowStatus::AllNodesReady)
             }
         } else {
             Ok(DataflowStatus::Pending)
@@ -124,7 +132,8 @@ impl PendingNodes {
     async fn answer_subscribe_requests(
         &mut self,
         external_error: Option<String>,
-    ) -> BTreeSet<NodeId> {
+        cascading_errors: &mut BTreeSet<NodeId>,
+    ) {
         let result = if self.exited_before_subscribe.is_empty() {
             match external_error {
                 Some(err) => Err(err),
@@ -150,14 +159,12 @@ impl PendingNodes {
         };
         // answer all subscribe requests
         let subscribe_replies = std::mem::take(&mut self.waiting_subscribers);
-        let mut cascading_errors = BTreeSet::new();
         for (node_id, reply_sender) in subscribe_replies.into_iter() {
             if result.is_err() {
                 cascading_errors.insert(node_id);
             }
             let _ = reply_sender.send(DaemonReply::Result(result.clone()));
         }
-        cascading_errors
     }
 
     async fn report_nodes_ready(
@@ -190,6 +197,6 @@ impl PendingNodes {
 }
 
 pub enum DataflowStatus {
-    AllNodesReady { cascading_errors: BTreeSet<NodeId> },
+    AllNodesReady,
     Pending,
 }
