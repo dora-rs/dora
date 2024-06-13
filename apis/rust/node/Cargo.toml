@@ -26,6 +26,7 @@ futures-concurrency = "7.3.0"
 futures-timer = "3.0.2"
 dora-arrow-convert = { workspace = true }
 aligned-vec = "0.5.0"
+serde_json = "1.0.86"
 
 [dev-dependencies]
 tokio = { version = "1.24.2", features = ["rt"] }

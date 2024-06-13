@@ -1,4 +1,4 @@
-use crate::EventStream;
+use crate::{daemon_connection::DaemonChannel, EventStream};
 
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
@@ -9,10 +9,12 @@ use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    daemon_messages::{DataMessage, DataflowId, DropToken, NodeConfig},
+    daemon_messages::{DaemonRequest, DataMessage, DataflowId, DropToken, NodeConfig, Timestamped},
     descriptor::Descriptor,
     message::{uhlc, ArrowTypeInfo, Metadata, MetadataParameters},
+    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
 };
+
 use eyre::{bail, WrapErr};
 use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
@@ -21,6 +23,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tracing::info;
 
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
@@ -56,14 +59,58 @@ impl DoraNode {
     ///
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
         let node_config: NodeConfig = {
-            let raw = std::env::var("DORA_NODE_CONFIG")
-                .wrap_err("env variable DORA_NODE_CONFIG must be set")?;
+            let raw = std::env::var("DORA_NODE_CONFIG").wrap_err(
+                "env variable DORA_NODE_CONFIG must be set. Are you sure your using `dora start`?",
+            )?;
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
         #[cfg(feature = "tracing")]
         set_up_tracing(&node_config.node_id.to_string())
             .context("failed to set up tracing subscriber")?;
         Self::init(node_config)
+    }
+
+    /// Initiate a node from a dataflow id and a node id.
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_node_api::dora_core::config::NodeId;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_node_id(NodeId::from("plot".to_string())).expect("Could not init node plot");
+    /// ```
+    ///
+    pub fn init_from_node_id(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
+        // Make sure that the node is initialized outside of dora start.
+        let daemon_address = (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
+
+        let mut channel =
+            DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
+        let clock = Arc::new(uhlc::HLC::default());
+
+        let reply = channel
+            .request(&Timestamped {
+                inner: DaemonRequest::NodeConfig { node_id },
+                timestamp: clock.new_timestamp(),
+            })
+            .wrap_err("failed to request node config from daemon")?;
+        match reply {
+            dora_core::daemon_messages::DaemonReply::NodeConfig {
+                result: Ok(node_config),
+            } => Self::init(node_config),
+            dora_core::daemon_messages::DaemonReply::NodeConfig { result: Err(error) } => {
+                bail!("failed to get node config from daemon: {error}")
+            }
+            _ => bail!("unexpected reply from daemon"),
+        }
+    }
+
+    pub fn init_flexible(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
+        if std::env::var("DORA_NODE_CONFIG").is_ok() {
+            info!("Skipping {node_id} specified within the node initialization in favor of `DORA_NODE_CONFIG` specified by `dora start`");
+            Self::init_from_env()
+        } else {
+            Self::init_from_node_id(node_id)
+        }
     }
 
     #[tracing::instrument]
@@ -74,8 +121,8 @@ impl DoraNode {
             run_config,
             daemon_communication,
             dataflow_descriptor,
+            dynamic: _,
         } = node_config;
-
         let clock = Arc::new(uhlc::HLC::default());
 
         let event_stream =
@@ -91,13 +138,12 @@ impl DoraNode {
         let node = Self {
             id: node_id,
             dataflow_id,
-            node_config: run_config,
+            node_config: run_config.clone(),
             control_channel,
             clock,
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
-
             dataflow_descriptor,
         };
         Ok((node, event_stream))

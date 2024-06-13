@@ -6,6 +6,7 @@ use dora_core::{
         Timestamped,
     },
     message::uhlc,
+    topics::LOCALHOST,
 };
 use eyre::{eyre, Context};
 use futures::{future, task, Future};
@@ -13,7 +14,6 @@ use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
-    net::Ipv4Addr,
     sync::Arc,
     task::Poll,
 };
@@ -39,8 +39,7 @@ pub async fn spawn_listener_loop(
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         LocalCommunicationConfig::Tcp => {
-            let localhost = Ipv4Addr::new(127, 0, 0, 1);
-            let socket = match TcpListener::bind((localhost, 0)).await {
+            let socket = match TcpListener::bind((LOCALHOST, 0)).await {
                 Ok(socket) => socket,
                 Err(err) => {
                     return Err(
@@ -346,6 +345,12 @@ impl Listener {
         match message.inner {
             DaemonRequest::Register { .. } => {
                 let reply = DaemonReply::Result(Err("unexpected register message".into()));
+                self.send_reply(reply, connection)
+                    .await
+                    .wrap_err("failed to send register reply")?;
+            }
+            DaemonRequest::NodeConfig { .. } => {
+                let reply = DaemonReply::Result(Err("unexpected node config message".into()));
                 self.send_reply(reply, connection)
                     .await
                     .wrap_err("failed to send register reply")?;
