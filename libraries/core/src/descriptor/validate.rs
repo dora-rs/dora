@@ -9,7 +9,7 @@ use eyre::{bail, eyre, Context};
 use std::{path::Path, process::Command};
 use tracing::info;
 
-use super::{resolve_path, Descriptor, SHELL_SOURCE};
+use super::{resolve_path, Descriptor, DYNAMIC_SOURCE, SHELL_SOURCE};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_dataflow(
@@ -26,6 +26,7 @@ pub fn check_dataflow(
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom) => match custom.source.as_str() {
                 SHELL_SOURCE => (),
+                DYNAMIC_SOURCE => (),
                 source => {
                     if source_is_url(source) {
                         info!("{source} is a URL."); // TODO: Implement url check.

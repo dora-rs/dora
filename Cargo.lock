@@ -2407,6 +2407,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "futures-timer",
+ "serde_json",
  "serde_yaml 0.8.26",
  "shared-memory-server",
  "shared_memory_extended",
@@ -8068,6 +8069,14 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-sink"
+version = "0.3.4"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "rust-dataflow-example-sink-dynamic"
 version = "0.3.4"
 dependencies = [
  "dora-node-api",

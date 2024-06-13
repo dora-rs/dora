@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DoraNode, EventStream};
 use dora_operator_api_python::{pydict_to_metadata, PyEvent};
@@ -32,8 +33,13 @@ pub struct Node {
 #[pymethods]
 impl Node {
     #[new]
-    pub fn new() -> eyre::Result<Self> {
-        let (node, events) = DoraNode::init_from_env()?;
+    pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
+        let (node, events) = if let Some(node_id) = node_id {
+            DoraNode::init_flexible(NodeId::from(node_id))
+                .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
+        } else {
+            DoraNode::init_from_env().context("Couldn not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
+        };
 
         Ok(Node {
             events: Events::Dora(events),
