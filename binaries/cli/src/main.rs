@@ -6,12 +6,13 @@ use dora_core::{
     descriptor::Descriptor,
     topics::{
         ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-        DORA_COORDINATOR_PORT_DEFAULT,
+        DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
+use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
 use std::net::SocketAddr;
@@ -174,14 +175,20 @@ enum Command {
         /// Unique identifier for the machine (required for distributed dataflows)
         #[clap(long)]
         machine_id: Option<String>,
-        /// The IP address and port this daemon will bind to.
+        /// The inter daemon IP address and port this daemon will bind to.
         #[clap(long, default_value_t = SocketAddr::new(LISTEN_WILDCARD, 0))]
-        addr: SocketAddr,
+        inter_daemon_addr: SocketAddr,
+        /// Local listen port for event such as dynamic node.
+        #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
+        local_listen_port: u16,
         /// Address and port number of the dora coordinator
         #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
         coordinator_addr: SocketAddr,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
+        /// Suppresses all log output to stdout.
+        #[clap(long)]
+        quiet: bool,
     },
     /// Run runtime
     Runtime,
@@ -199,6 +206,9 @@ enum Command {
         /// Port number to bind to for control communication
         #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
         control_port: u16,
+        /// Suppresses all log output to stdout.
+        #[clap(long)]
+        quiet: bool,
     },
 }
 
@@ -243,15 +253,25 @@ fn run() -> eyre::Result<()> {
     let args = Args::parse();
 
     #[cfg(feature = "tracing")]
-    match args.command {
-        Command::Daemon { .. } => {
-            set_up_tracing("dora-daemon").context("failed to set up tracing subscriber")?;
+    match &args.command {
+        Command::Daemon {
+            quiet, machine_id, ..
+        } => {
+            let name = "dora-daemon";
+            let filename = machine_id
+                .as_ref()
+                .map(|id| format!("{name}-{id}"))
+                .unwrap_or(name.to_string());
+            set_up_tracing_opts(name, !quiet, Some(&filename))
+                .context("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
             // Do not set the runtime in the cli.
         }
-        Command::Coordinator { .. } => {
-            set_up_tracing("dora-coordinator").context("failed to set up tracing subscriber")?;
+        Command::Coordinator { quiet, .. } => {
+            let name = "dora-coordinator";
+            set_up_tracing_opts(name, !quiet, Some(name))
+                .context("failed to set up tracing subscriber")?;
         }
         _ => {
             set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
@@ -332,9 +352,13 @@ fn run() -> eyre::Result<()> {
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            dataflow_descriptor
-                .check(&working_dir)
-                .wrap_err("Could not validate yaml")?;
+            if !coordinator_addr.is_loopback() {
+                dataflow_descriptor.check_in_daemon(&working_dir, &[], true)?;
+            } else {
+                dataflow_descriptor
+                    .check(&working_dir)
+                    .wrap_err("Could not validate yaml")?;
+            }
 
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
@@ -392,6 +416,7 @@ fn run() -> eyre::Result<()> {
             port,
             control_interface,
             control_port,
+            quiet,
         } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
@@ -403,16 +428,20 @@ fn run() -> eyre::Result<()> {
                 let (port, task) =
                     dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
                         .await?;
-                println!("Listening for incoming daemon connection on {port}");
+                if !quiet {
+                    println!("Listening for incoming daemon connection on {port}");
+                }
                 task.await
             })
             .context("failed to run dora-coordinator")?
         }
         Command::Daemon {
             coordinator_addr,
-            addr,
+            inter_daemon_addr,
+            local_listen_port,
             machine_id,
             run_dataflow,
+            quiet: _,
         } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
@@ -435,7 +464,7 @@ fn run() -> eyre::Result<()> {
                         if coordinator_addr.ip() == LOCALHOST {
                             tracing::info!("Starting in local mode");
                         }
-                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), addr).await
+                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
                     }
                 }
             })
