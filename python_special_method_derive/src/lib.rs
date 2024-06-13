@@ -168,11 +168,11 @@ fn generate_fmt_impl_for_struct(
                 Some(ident) => {
                     if debug {
                         quote! {
-                            write!(f, "{}: {:?}{}", stringify!(#ident), self.#ident, #postfix)?;
+                            write!(f, "{}={:?}{}", stringify!(#ident), self.#ident, #postfix)?;
                         }
                     } else {
                         quote! {
-                            write!(f, "{}: `{}`{}", stringify!(#ident), self.#ident, #postfix)?;
+                            write!(f, "{}=`{}`{}", stringify!(#ident), self.#ident, #postfix)?;
                         }
                     }
                 }
@@ -180,9 +180,9 @@ fn generate_fmt_impl_for_struct(
                     // If the field doesn't have a name, we generate a name based on its index
                     let index = syn::Index::from(i);
                     if debug {
-                        quote! { write!(f, "{}: `{:?}`{}", stringify!(#index), self.#index, #postfix)?; }
+                        quote! { write!(f, "{}=`{:?}`{}", stringify!(#index), self.#index, #postfix)?; }
                     } else {
-                        quote! { write!(f, "{}: `{}`{}", stringify!(#index), self.#index, #postfix)?; }
+                        quote! { write!(f, "{}=`{}`{}", stringify!(#index), self.#index, #postfix)?; }
                     }
                 }
             }
@@ -216,7 +216,7 @@ fn generate_fmt_impl_for_enum(
                         let field_name = field.ident.as_ref().unwrap();
                         let postfix = if i + 1 < n_variants { ", " } else { "" };
                         quote! {
-                            write!(f, "{}: `{:?}`{}", stringify!(#field_name), self.#field_name, #postfix)?;
+                            write!(f, "{}=`{:?}`{}", stringify!(#field_name), self.#field_name, #postfix)?;
                         }
                     });
                     quote! {
