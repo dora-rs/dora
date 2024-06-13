@@ -6,6 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const NODE: &str = include_str!("node/node-template.c");
+const TALKER: &str = include_str!("talker/talker-template.c");
+const LISTENER: &str = include_str!("listener/listener-template.c");
+
 pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     let crate::CommandNew {
         kind,
@@ -18,7 +22,7 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
         crate::Kind::Operator => {
             bail!("Operators are going to be depreciated, please don't use it")
         }
-        crate::Kind::CustomNode => create_custom_node(name, path),
+        crate::Kind::CustomNode => create_custom_node(name, path, NODE),
         crate::Kind::Dataflow => create_dataflow(name, path),
     }
 }
@@ -43,9 +47,10 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     fs::write(&dataflow_yml_path, dataflow_yml)
         .with_context(|| format!("failed to write `{}`", dataflow_yml_path.display()))?;
 
-    create_operator("op_1".into(), Some(root.join("op_1")))?;
-    create_operator("op_2".into(), Some(root.join("op_2")))?;
-    create_custom_node("node_1".into(), Some(root.join("node_1")))?;
+    create_custom_node("talker_1".into(), Some(root.join("talker_1")), TALKER)?;
+    create_custom_node("talker_2".into(), Some(root.join("talker_2")), TALKER)?;
+    create_custom_node("listener_1".into(), Some(root.join("listener_1")), LISTENER)?;
+    create_cmakefile(root.to_path_buf())?;
 
     println!(
         "Created new C dataflow at `{name}` at {}",
@@ -55,6 +60,8 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     Ok(())
 }
 
+#[deprecated(since = "0.3.4")]
+#[allow(unused)]
 fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const OPERATOR: &str = include_str!("operator/operator-template.c");
 
@@ -93,9 +100,22 @@ fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     Ok(())
 }
 
-fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
-    const NODE: &str = include_str!("node/node-template.c");
+fn create_cmakefile(root: PathBuf) -> Result<(), eyre::ErrReport> {
+    const CMAKEFILE: &str = include_str!("cmake-template.txt");
 
+    let cmake_path = root.join("CMakeLists.txt");
+    fs::write(&cmake_path, CMAKEFILE)
+        .with_context(|| format!("failed to write `{}`", cmake_path.display()))?;
+
+    println!("Created new CMakeLists.txt at {}", cmake_path.display());
+    Ok(())
+}
+
+fn create_custom_node(
+    name: String,
+    path: Option<PathBuf>,
+    template_scripts: &str,
+) -> Result<(), eyre::ErrReport> {
     if name.contains('/') {
         bail!("node name must not contain `/` separators");
     }
@@ -109,7 +129,7 @@ fn create_custom_node(name: String, path: Option<PathBuf>) -> Result<(), eyre::E
         .with_context(|| format!("failed to create directory `{}`", root.display()))?;
 
     let node_path = root.join("node.c");
-    fs::write(&node_path, NODE)
+    fs::write(&node_path, template_scripts)
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
     let header_path = root.join("node_api.h");
     fs::write(&header_path, HEADER_NODE_API)

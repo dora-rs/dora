@@ -1,24 +1,22 @@
 nodes:
-  - id: op_1
-    operator:
-      shared-library: build/op_1
-      inputs:
-        foo: dora/timer/millis/100
-      outputs:
-        - bar
-  - id: op_2
-    operator:
-      shared-library: build/op_2
-      inputs:
-        foo: dora/timer/secs/2
-      outputs:
-        - bar
-
-  - id: custom-node_1
+  - id: talker_1
     custom:
-      source: build/node_1
+      source: bin/talker_1
       inputs:
-        input-1: op_1/bar
-        input-2: op_2/bar
+        tick: dora/timer/millis/100
       outputs:
-        - foo
+        - speech
+  - id: talker_2
+    custom:
+      source: bin/talker_2
+      inputs:
+        tick: dora/timer/secs/2
+      outputs:
+        - speech
+
+  - id: listener_1
+    custom:
+      source: bin/listener_1
+      inputs:
+        input-1: talker_1/speech
+        input-2: talker_2/speech
