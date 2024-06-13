@@ -321,7 +321,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # Test C template Project
-          dora new test_c_project --lang c
+          dora new test_c_project --lang c --internal-create-with-path-dependencies
           cd test_c_project
           dora up
           dora list
@@ -340,7 +340,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # Test C++ template Project
-          dora new test_cxx_project --lang c++
+          dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
           cd test_cxx_project
           dora up
           dora list

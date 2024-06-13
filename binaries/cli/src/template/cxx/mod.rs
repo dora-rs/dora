@@ -8,7 +8,7 @@ const NODE: &str = include_str!("node-template.cc");
 const TALKER: &str = include_str!("talker-template.cc");
 const LISTENER: &str = include_str!("listener-template.cc");
 
-pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
+pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
     let crate::CommandNew {
         kind,
         lang: _,
@@ -21,11 +21,15 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
             bail!("Operators are going to be depreciated, please don't use it")
         }
         crate::Kind::CustomNode => create_custom_node(name, path, NODE),
-        crate::Kind::Dataflow => create_dataflow(name, path),
+        crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
 
-fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+fn create_dataflow(
+    name: String,
+    path: Option<PathBuf>,
+    use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
 
     if name.contains('/') {
@@ -48,7 +52,7 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     create_custom_node("talker_1".into(), Some(root.join("talker_1")), TALKER)?;
     create_custom_node("talker_2".into(), Some(root.join("talker_2")), TALKER)?;
     create_custom_node("listener_1".into(), Some(root.join("listener_1")), LISTENER)?;
-    create_cmakefile(root.to_path_buf())?;
+    create_cmakefile(root.to_path_buf(), use_path_deps)?;
 
     println!(
         "Created new C++ dataflow at `{name}` at {}",
@@ -58,11 +62,19 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     Ok(())
 }
 
-fn create_cmakefile(root: PathBuf) -> Result<(), eyre::ErrReport> {
+fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrReport> {
     const CMAKEFILE: &str = include_str!("cmake-template.txt");
 
+    let cmake_file = if use_path_deps {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace_dir = manifest_dir.parent().unwrap().parent().unwrap();
+        CMAKEFILE.replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
+    } else {
+        CMAKEFILE.replace("__DORA_PATH__", "")
+    };
+
     let cmake_path = root.join("CMakeLists.txt");
-    fs::write(&cmake_path, CMAKEFILE)
+    fs::write(&cmake_path, cmake_file)
         .with_context(|| format!("failed to write `{}`", cmake_path.display()))?;
 
     println!("Created new CMakeLists.txt at {}", cmake_path.display());
