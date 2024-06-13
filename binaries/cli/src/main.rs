@@ -6,7 +6,7 @@ use dora_core::{
     descriptor::Descriptor,
     topics::{
         ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-        DORA_COORDINATOR_PORT_DEFAULT,
+        DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
@@ -175,9 +175,12 @@ enum Command {
         /// Unique identifier for the machine (required for distributed dataflows)
         #[clap(long)]
         machine_id: Option<String>,
-        /// The IP address and port this daemon will bind to.
+        /// The inter daemon IP address and port this daemon will bind to.
         #[clap(long, default_value_t = SocketAddr::new(LISTEN_WILDCARD, 0))]
-        addr: SocketAddr,
+        inter_daemon_addr: SocketAddr,
+        /// Local listen port for event such as dynamic node.
+        #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
+        local_listen_port: u16,
         /// Address and port number of the dora coordinator
         #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
         coordinator_addr: SocketAddr,
@@ -434,7 +437,8 @@ fn run() -> eyre::Result<()> {
         }
         Command::Daemon {
             coordinator_addr,
-            addr,
+            inter_daemon_addr,
+            local_listen_port,
             machine_id,
             run_dataflow,
             quiet: _,
@@ -460,7 +464,7 @@ fn run() -> eyre::Result<()> {
                         if coordinator_addr.ip() == LOCALHOST {
                             tracing::info!("Starting in local mode");
                         }
-                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), addr).await
+                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
                     }
                 }
             })
