@@ -318,7 +318,7 @@ jobs:
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
         shell: bash
-        runs-on: ubuntu-latest
+        if: runner.os == 'Linux'
         run: |
           # Test C template Project
           dora new test_c_project --lang c
@@ -337,7 +337,7 @@ jobs:
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
         shell: bash
-        runs-on: ubuntu-latest
+        if: runner.os == 'Linux'
         run: |
           # Test C++ template Project
           dora new test_cxx_project --lang c++
@@ -351,6 +351,7 @@ jobs:
           sleep 10
           dora stop --name ci-cxx-test  --grace-duration 5s
           dora destroy
+
   clippy:
     name: "Clippy"
     runs-on: ubuntu-latest
