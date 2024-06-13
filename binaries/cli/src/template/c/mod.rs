@@ -1,6 +1,6 @@
 use dora_node_api_c::HEADER_NODE_API;
 use dora_operator_api_c::{HEADER_OPERATOR_API, HEADER_OPERATOR_TYPES};
-use eyre::{bail, Context};
+use eyre::{bail, Context, ContextCompat};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -109,7 +109,11 @@ fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrR
 
     let cmake_file = if use_path_deps {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_dir = manifest_dir.parent().context("Could not get manifest parent folder")?.parent().context("Could not get manifest grandparent folder")?;
+        let workspace_dir = manifest_dir
+            .parent()
+            .context("Could not get manifest parent folder")?
+            .parent()
+            .context("Could not get manifest grandparent folder")?;
         CMAKEFILE.replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
     } else {
         CMAKEFILE.replace("__DORA_PATH__", "")
