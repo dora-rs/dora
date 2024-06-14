@@ -124,7 +124,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 ..Default::default()
             };
 
-            let arrow_array = match arrow::ffi::from_ffi(data_array, &schema) {
+            let arrow_array = match unsafe { arrow::ffi::from_ffi(data_array, &schema) } {
                 Ok(a) => a,
                 Err(err) => return DoraResult::from_error(err.to_string()),
             };

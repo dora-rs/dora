@@ -26,7 +26,7 @@ fn parse_service_string(pkg_name: &str, srv_name: &str, service_string: &str) ->
     let service_blocks: Vec<_> = re.split(service_string).collect();
     if service_blocks.len() != 2 {
         return Err(RclMsgError::InvalidServiceSpecification(format!(
-            "Expect one '---' seperator in {}/{} service definition, but get {}",
+            "Expect one '---' separator in {}/{} service definition, but get {}",
             pkg_name,
             srv_name,
             service_blocks.len() - 1

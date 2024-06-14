@@ -103,7 +103,7 @@ fn resolve_name(
         } else if let [uuid] = archived_uuids.as_slice() {
             Ok(*uuid)
         } else {
-            // TOOD: Index the archived dataflows in order to return logs based on the index.
+            // TODO: Index the archived dataflows in order to return logs based on the index.
             bail!("multiple archived dataflows found with name `{name}`, Please provide the UUID instead.");
         }
     } else if let [uuid] = uuids.as_slice() {
@@ -658,7 +658,7 @@ async fn send_heartbeat_message(
         inner: DaemonCoordinatorEvent::Heartbeat,
         timestamp,
     })
-    .unwrap();
+    .context("Could not serialize heartbeat message")?;
 
     tcp_send(connection, &message)
         .await

@@ -16,6 +16,7 @@ pub use visualize::collect_dora_timers;
 mod validate;
 mod visualize;
 pub const SHELL_SOURCE: &str = "shell";
+pub const DYNAMIC_SOURCE: &str = "dynamic";
 
 /// Dataflow description
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -319,6 +320,52 @@ pub enum CoreNodeKind {
     Custom(CustomNode),
 }
 
+pub fn runtime_node_inputs(n: &RuntimeNode) -> BTreeMap<DataId, Input> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator.config.inputs.iter().map(|(input_id, mapping)| {
+                (
+                    DataId::from(format!("{}/{input_id}", operator.id)),
+                    mapping.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn runtime_node_outputs(n: &RuntimeNode) -> BTreeSet<DataId> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator
+                .config
+                .outputs
+                .iter()
+                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
+        })
+        .collect()
+}
+
+impl CoreNodeKind {
+    pub fn run_config(&self) -> NodeRunConfig {
+        match self {
+            CoreNodeKind::Runtime(n) => NodeRunConfig {
+                inputs: runtime_node_inputs(n),
+                outputs: runtime_node_outputs(n),
+            },
+            CoreNodeKind::Custom(n) => n.run_config.clone(),
+        }
+    }
+
+    pub fn dynamic(&self) -> bool {
+        match self {
+            CoreNodeKind::Runtime(_n) => false,
+            CoreNodeKind::Custom(n) => n.source == DYNAMIC_SOURCE,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RuntimeNode {
@@ -417,12 +464,7 @@ pub fn source_is_url(source: &str) -> bool {
 }
 
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
-    let path = Path::new(&source);
-    let path = if path.extension().is_none() {
-        path.with_extension(EXE_EXTENSION)
-    } else {
-        path.to_owned()
-    };
+    let path = source_to_path(source);
 
     // Search path within current working directory
     if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
@@ -432,6 +474,14 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         Ok(abs_path)
     } else {
         bail!("Could not find source path {}", path.display())
+    }
+}
+pub fn source_to_path(source: &str) -> PathBuf {
+    let path = Path::new(&source);
+    if path.extension().is_none() {
+        path.with_extension(EXE_EXTENSION)
+    } else {
+        path.to_owned()
     }
 }
 

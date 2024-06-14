@@ -4,6 +4,8 @@ nodes:
       machine: A
     custom:
       build: cargo build -p multiple-daemons-example-node
+      # The path is for CI, replace it with your source absolute path here
+      #source: /home/runner/work/dora/dora/target/debug/multiple-daemons-example-node
       source: ../../target/debug/multiple-daemons-example-node
       inputs:
         tick: dora/timer/millis/10
@@ -15,6 +17,7 @@ nodes:
     operators:
       - id: rust-operator
         build: cargo build -p multiple-daemons-example-operator
+        # The path is for CI, replace it with your source absolute path here
         shared-library: ../../target/debug/multiple_daemons_example_operator
         inputs:
           tick: dora/timer/millis/100
@@ -26,6 +29,7 @@ nodes:
       machine: B
     custom:
       build: cargo build -p multiple-daemons-example-sink
+      # The path is for CI, replace it with your source absolute path here
       source: ../../target/debug/multiple-daemons-example-sink
       inputs:
         message: runtime-node/rust-operator/status
