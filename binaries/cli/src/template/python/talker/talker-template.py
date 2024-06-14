@@ -3,7 +3,7 @@ import pyarrow as pa
 
 node = Node()
 
-for event in node.next():
+for event in node:
     if event["type"] == "INPUT":
         print(
             f"""Node received:
