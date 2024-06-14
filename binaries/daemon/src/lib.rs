@@ -154,13 +154,13 @@ impl Daemon {
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
-        let working_dir = dataflow_path
-            .canonicalize()
-            .context("failed to canoncialize dataflow path")?
-            .parent()
-            .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-            .to_owned();
+    pub async fn run_dataflow(dataflow_path: &Path, working_dir: PathBuf) -> eyre::Result<()> {
+        // let working_dir = dataflow_path
+        //     .canonicalize()
+        //     .context("failed to canoncialize dataflow path")?
+        //     .parent()
+        //     .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
+        //     .to_owned();
 
         let descriptor = Descriptor::read(dataflow_path).await?;
         descriptor.check(&working_dir)?;

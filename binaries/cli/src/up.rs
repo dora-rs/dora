@@ -1,8 +1,8 @@
 use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
 use dora_core::topics::{ControlRequest, DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use eyre::Context;
-use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 use std::path::PathBuf;
+use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 

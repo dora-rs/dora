@@ -314,9 +314,9 @@ fn run() -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Up { 
+        Command::Up {
             config,
-            working_dir
+            working_dir,
         } => {
             up::up(config.as_deref(), working_dir)?;
         }
@@ -466,7 +466,7 @@ fn run() -> eyre::Result<()> {
                             );
                         }
 
-                        Daemon::run_dataflow(&working_dir).await
+                        Daemon::run_dataflow(&dataflow_path, working_dir).await
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {
