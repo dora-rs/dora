@@ -32,7 +32,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
-use tracing::{debug, error};
+use tracing::error;
 
 /// clock is required for generating timestamps when dropping messages early because queue is full
 pub async fn spawn_node(
