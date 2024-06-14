@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let message: &str = (&data).try_into()?;
                     println!("I heard: {message} from {id}");
                 }
-                other => eprintln!("Received input `{other}`"),
+                other => println!("Received input `{other}`"),
             },
             _ => {}
         }

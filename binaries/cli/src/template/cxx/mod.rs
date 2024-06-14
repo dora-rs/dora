@@ -17,9 +17,6 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::Operator => {
-            bail!("Operators are going to be depreciated, please don't use it")
-        }
         crate::Kind::CustomNode => create_custom_node(name, path, NODE),
         crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
@@ -82,41 +79,6 @@ fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrR
         .with_context(|| format!("failed to write `{}`", cmake_path.display()))?;
 
     println!("Created new CMakeLists.txt at {}", cmake_path.display());
-    Ok(())
-}
-
-#[deprecated(since = "0.3.4")]
-#[allow(unused)]
-fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
-    const OPERATOR: &str = include_str!("operator-template.cc");
-    const HEADER: &str = include_str!("operator-template.h");
-
-    if name.contains('/') {
-        bail!("operator name must not contain `/` separators");
-    }
-    if !name.is_ascii() {
-        bail!("operator name must be ASCII");
-    }
-
-    // create directories
-    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
-    fs::create_dir(root)
-        .with_context(|| format!("failed to create directory `{}`", root.display()))?;
-
-    let operator_path = root.join("operator.cc");
-    fs::write(&operator_path, OPERATOR)
-        .with_context(|| format!("failed to write `{}`", operator_path.display()))?;
-    let header_path = root.join("operator.h");
-    fs::write(&header_path, HEADER)
-        .with_context(|| format!("failed to write `{}`", header_path.display()))?;
-
-    // TODO: Makefile?
-
-    println!(
-        "Created new C++ operator `{name}` at {}",
-        Path::new(".").join(root).display()
-    );
-
     Ok(())
 }
 

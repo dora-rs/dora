@@ -230,7 +230,6 @@ pub struct CommandNew {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Kind {
     Dataflow,
-    Operator,
     CustomNode,
 }
 
