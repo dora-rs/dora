@@ -464,7 +464,12 @@ pub fn source_is_url(source: &str) -> bool {
 }
 
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
-    let path = source_to_path(source);
+    let path = Path::new(&source);
+    let path = if path.extension().is_none() {
+        path.with_extension(EXE_EXTENSION)
+    } else {
+        path.to_owned()
+    };
 
     // Search path within current working directory
     if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
@@ -474,14 +479,6 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         Ok(abs_path)
     } else {
         bail!("Could not find source path {}", path.display())
-    }
-}
-pub fn source_to_path(source: &str) -> PathBuf {
-    let path = Path::new(&source);
-    if path.extension().is_none() {
-        path.with_extension(EXE_EXTENSION)
-    } else {
-        path.to_owned()
     }
 }
 

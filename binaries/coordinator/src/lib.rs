@@ -863,7 +863,14 @@ async fn start_dataflow(
         uuid,
         machines,
         nodes,
-    } = spawn_dataflow(dataflow, daemon_connections, clock, local_working_dir, daemon_working_dirs).await?;
+    } = spawn_dataflow(
+        dataflow,
+        daemon_connections,
+        clock,
+        local_working_dir,
+        daemon_working_dirs,
+    )
+    .await?;
     Ok(RunningDataflow {
         uuid,
         name,

@@ -106,19 +106,24 @@ impl Daemon {
         });
 
         // connect to the coordinator
-        let coordinator_events =
-            coordinator::register(coordinator_addr, machine_id.clone(), listen_port, &clock, working_dir.clone())
-                .await
-                .wrap_err("failed to connect to dora-coordinator")?
-                .map(
-                    |Timestamped {
-                         inner: event,
-                         timestamp,
-                     }| Timestamped {
-                        inner: Event::Coordinator(event),
-                        timestamp,
-                    },
-                );
+        let coordinator_events = coordinator::register(
+            coordinator_addr,
+            machine_id.clone(),
+            listen_port,
+            &clock,
+            working_dir.clone(),
+        )
+        .await
+        .wrap_err("failed to connect to dora-coordinator")?
+        .map(
+            |Timestamped {
+                 inner: event,
+                 timestamp,
+             }| Timestamped {
+                inner: Event::Coordinator(event),
+                timestamp,
+            },
+        );
 
         // Spawn local listener loop
         let (events_tx, events_rx) = flume::bounded(10);
@@ -344,7 +349,7 @@ impl Daemon {
                 working_dir,
                 nodes,
                 machine_listen_ports,
-                dataflow_descriptor, 
+                dataflow_descriptor,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}

@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::{path::Path, process::Command};
 use tracing::info;
 
-use super::{resolve_path, source_to_path, Descriptor, DYNAMIC_SOURCE, SHELL_SOURCE};
+use super::{resolve_path, Descriptor, DYNAMIC_SOURCE, SHELL_SOURCE};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -37,14 +37,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         resolve_path(source, working_dir)
                             .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
                     } else {
-                        let path = source_to_path(source);
-                        if path.is_relative() {
-                            eyre::bail!(
-                                "paths of remote nodes must be absolute (node `{}`)",
-                                node.id
-                            );
-                        }
-                        info!("skipping path check for remote node `{}`", node.id);
+                        info!("skipping path exist check for remote node `{}`", node.id);
                     }
                 }
             },
@@ -60,15 +53,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                                     bail!("no shared library at `{}`", path.display());
                                 }
                             } else {
-                                let path = source_to_path(path);
-                                if path.is_relative() {
-                                    eyre::bail!(
-                                        "paths of operator must be absolute (operator `{}`)",
-                                        operator_definition.id
-                                    );
-                                }
                                 info!(
-                                    "skipping path check for remote operator `{}`",
+                                    "skipping path exist check for remote operator `{}`",
                                     operator_definition.id
                                 );
                             }
@@ -83,15 +69,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                                     bail!("no Python library at `{path}`");
                                 }
                             } else {
-                                let path = source_to_path(path);
-                                if path.is_relative() {
-                                    eyre::bail!(
-                                        "paths of python operator must be absolute (operator `{}`)",
-                                        operator_definition.id
-                                    );
-                                }
                                 info!(
-                                    "skipping path check for remote python operator `{}`",
+                                    "skipping path exist check for remote python operator `{}`",
                                     operator_definition.id
                                 );
                             }
@@ -104,15 +83,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                                     bail!("no WASM library at `{path}`");
                                 }
                             } else {
-                                let path = source_to_path(path);
-                                if path.is_relative() {
-                                    eyre::bail!(
-                                        "paths of Wasm operator must be absolute (operator `{}`)",
-                                        operator_definition.id
-                                    );
-                                }
                                 info!(
-                                    "skipping path check for remote Wasm operator `{}`",
+                                    "skipping path exist check for remote Wasm operator `{}`",
                                     operator_definition.id
                                 );
                             }

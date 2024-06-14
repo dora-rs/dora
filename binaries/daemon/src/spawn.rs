@@ -8,8 +8,8 @@ use dora_core::{
     config::DataId,
     daemon_messages::{DataMessage, DataflowId, NodeConfig, RuntimeConfig, Timestamped},
     descriptor::{
-        resolve_path, source_is_url, source_to_path, Descriptor, OperatorDefinition,
-        OperatorSource, PythonSource, ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE,
+        resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
+        ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE,
     },
     get_python_path,
     message::uhlc::HLC,
@@ -103,14 +103,9 @@ pub async fn spawn_node(
                             .wrap_err("failed to download custom node")?;
                         target_path.clone()
                     } else {
-                        let path = source_to_path(source);
-                        if path.is_absolute() {
-                            path
-                        } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("failed to resolve node source `{}`", source)
-                            })?
-                        }
+                        resolve_path(source, working_dir).wrap_err_with(|| {
+                            format!("failed to resolve node source `{}`", source)
+                        })?
                     };
 
                     // If extension is .py, use python to run the script

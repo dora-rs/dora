@@ -26,7 +26,7 @@ pub async fn register(
     machine_id: String,
     listen_port: u16,
     clock: &HLC,
-    working_dir:PathBuf, 
+    working_dir: PathBuf,
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
     let mut stream = TcpStream::connect(addr)
         .await
