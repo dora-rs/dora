@@ -290,6 +290,8 @@ jobs:
           sleep 10
           dora stop --name ci-rust-test  --grace-duration 5s
           cd ..
+          dora destroy
+          dora up --working-dir ./example/rust-dataflow
           dora build examples/rust-dataflow/dataflow_dynamic.yml
           dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic
           cargo run -p rust-dataflow-example-sink-dynamic

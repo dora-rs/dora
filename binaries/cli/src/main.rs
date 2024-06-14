@@ -86,6 +86,8 @@ enum Command {
         /// Use a custom configuration
         #[clap(long, hide = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         config: Option<PathBuf>,
+        #[clap(long, default_value = ".")]
+        working_dir: PathBuf,
     },
     /// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
     Destroy {
@@ -312,8 +314,11 @@ fn run() -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Up { config } => {
-            up::up(config.as_deref())?;
+        Command::Up { 
+            config,
+            working_dir
+        } => {
+            up::up(config.as_deref(), working_dir)?;
         }
         Command::Logs {
             dataflow,
@@ -461,7 +466,7 @@ fn run() -> eyre::Result<()> {
                             );
                         }
 
-                        Daemon::run_dataflow(&dataflow_path).await
+                        Daemon::run_dataflow(&working_dir).await
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {

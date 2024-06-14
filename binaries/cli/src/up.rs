@@ -2,10 +2,11 @@ use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
 use dora_core::topics::{ControlRequest, DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use eyre::Context;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
+use std::path::PathBuf;
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
+pub(crate) fn up(config_path: Option<&Path>, working_dir: PathBuf) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
     let mut session = match connect_to_coordinator(coordinator_addr) {
@@ -26,7 +27,7 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     };
 
     if !daemon_running(&mut *session)? {
-        start_daemon().wrap_err("failed to start dora-daemon")?;
+        start_daemon(working_dir).wrap_err("failed to start dora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
@@ -93,11 +94,12 @@ fn start_coordinator() -> eyre::Result<()> {
     Ok(())
 }
 
-fn start_daemon() -> eyre::Result<()> {
+fn start_daemon(working_dir: PathBuf) -> eyre::Result<()> {
     let mut cmd =
         Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
     cmd.arg("daemon");
     cmd.arg("--quiet");
+    cmd.arg("--working-dir").arg(working_dir);
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
 
     println!("started dora daemon");
