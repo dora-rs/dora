@@ -18,9 +18,6 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::Operator => {
-            bail!("Operators are going to be depreciated, please don't use it")
-        }
         crate::Kind::CustomNode => create_custom_node(name, path, use_path_deps, MAIN_RS),
         crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
@@ -76,62 +73,6 @@ fn create_dataflow(
 
     println!(
         "Created new Rust dataflow at `{name}` at {}",
-        Path::new(".").join(root).display()
-    );
-
-    Ok(())
-}
-
-#[deprecated(since = "0.3.4")]
-#[allow(unused)]
-fn create_operator(
-    name: String,
-    path: Option<PathBuf>,
-    use_path_deps: bool,
-) -> Result<(), eyre::ErrReport> {
-    const CARGO_TOML: &str = include_str!("operator/Cargo-template.toml");
-    const LIB_RS: &str = include_str!("operator/lib-template.rs");
-
-    if name.contains('/') {
-        bail!("operator name must not contain `/` separators");
-    }
-    if name.contains('-') {
-        bail!(
-            "operator name must not contain `-` separators as 
-        it get replaced by `_` as a static library."
-        );
-    }
-    if !name.is_ascii() {
-        bail!("operator name must be ASCII");
-    }
-
-    // create directories
-    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
-    fs::create_dir(root)
-        .with_context(|| format!("failed to create directory `{}`", root.display()))?;
-    let src = root.join("src");
-    fs::create_dir(&src)
-        .with_context(|| format!("failed to create directory `{}`", src.display()))?;
-
-    let dep = if use_path_deps {
-        r#"dora-operator-api = { path = "../../apis/rust/operator" }"#.to_string()
-    } else {
-        format!(r#"dora-operator-api = "{VERSION}""#)
-    };
-    let cargo_toml = CARGO_TOML
-        .replace("___name___", &name)
-        .replace("dora-operator-api = {}", &dep);
-
-    let cargo_toml_path = root.join("Cargo.toml");
-    fs::write(&cargo_toml_path, cargo_toml)
-        .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;
-
-    let lib_rs_path = src.join("lib.rs");
-    fs::write(&lib_rs_path, LIB_RS)
-        .with_context(|| format!("failed to write `{}`", lib_rs_path.display()))?;
-
-    println!(
-        "Created new Rust operator `{name}` at {}",
         Path::new(".").join(root).display()
     );
 

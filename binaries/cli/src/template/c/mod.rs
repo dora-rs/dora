@@ -1,5 +1,4 @@
 use dora_node_api_c::HEADER_NODE_API;
-use dora_operator_api_c::{HEADER_OPERATOR_API, HEADER_OPERATOR_TYPES};
 use eyre::{bail, Context, ContextCompat};
 use std::{
     fs,
@@ -19,9 +18,6 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::Operator => {
-            bail!("Operators are going to be depreciated, please don't use it")
-        }
         crate::Kind::CustomNode => create_custom_node(name, path, NODE),
         crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
@@ -58,46 +54,6 @@ fn create_dataflow(
 
     println!(
         "Created new C dataflow at `{name}` at {}",
-        Path::new(".").join(root).display()
-    );
-
-    Ok(())
-}
-
-#[deprecated(since = "0.3.4")]
-#[allow(unused)]
-fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
-    const OPERATOR: &str = include_str!("operator/operator-template.c");
-
-    if name.contains('/') {
-        bail!("operator name must not contain `/` separators");
-    }
-    if name.contains('-') {
-        bail!("operator name must not contain `-` separators");
-    }
-    if !name.is_ascii() {
-        bail!("operator name must be ASCII");
-    }
-
-    // create directories
-    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
-    fs::create_dir(root)
-        .with_context(|| format!("failed to create directory `{}`", root.display()))?;
-
-    let operator_path = root.join("operator.c");
-    fs::write(&operator_path, OPERATOR)
-        .with_context(|| format!("failed to write `{}`", operator_path.display()))?;
-    let header_api_path = root.join("operator_api.h");
-    let header_type_path = root.join("operator_types.h");
-    fs::write(&header_api_path, HEADER_OPERATOR_API)
-        .with_context(|| format!("failed to write `{}`", header_api_path.display()))?;
-    fs::write(&header_type_path, HEADER_OPERATOR_TYPES)
-        .with_context(|| format!("failed to write `{}`", header_type_path.display()))?;
-
-    // TODO: Makefile?
-
-    println!(
-        "Created new C operator `{name}` at {}",
         Path::new(".").join(root).display()
     );
 

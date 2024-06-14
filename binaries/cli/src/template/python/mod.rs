@@ -17,41 +17,11 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     } = args;
 
     match kind {
-        crate::Kind::Operator => {
-            bail!("Operators are going to be depreciated, please don't use it")
-        }
         crate::Kind::CustomNode => create_custom_node(name, path, NODE_PY),
         crate::Kind::Dataflow => create_dataflow(name, path),
     }
 }
 
-#[deprecated(since = "0.3.4")]
-#[allow(unused)]
-fn create_operator(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
-    const OPERATOR_PY: &str = include_str!("operator/operator-template.py");
-
-    if name.contains('/') {
-        bail!("Operator name must not contain `/` separators");
-    }
-    if name.contains('.') {
-        bail!("Operator name must not contain `.` to not be confused for an extension");
-    }
-    // create directories
-    let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
-    fs::create_dir(root)
-        .with_context(|| format!("failed to create directory `{}`", root.display()))?;
-
-    let operator_path = root.join(format!("{name}.py"));
-    fs::write(&operator_path, OPERATOR_PY)
-        .with_context(|| format!("failed to write `{}`", operator_path.display()))?;
-
-    println!(
-        "Created new Python operator `{name}` at {}",
-        Path::new(".").join(root).display()
-    );
-
-    Ok(())
-}
 fn create_custom_node(
     name: String,
     path: Option<PathBuf>,

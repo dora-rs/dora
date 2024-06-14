@@ -3,12 +3,12 @@ import pyarrow as pa
 
 node = Node()
 
-event = node.next()
-if event["type"] == "INPUT":
-    print(
-        f"""Node received:
-    id: {event["id"]},
-    value: {event["value"]},
-    metadata: {event["metadata"]}"""
-    )
-    node.send_output("speech", pa.array(["Hello World"]))
+for event in node.next():
+    if event["type"] == "INPUT":
+        print(
+            f"""Node received:
+        id: {event["id"]},
+        value: {event["value"]},
+        metadata: {event["metadata"]}"""
+        )
+        node.send_output("speech", pa.array(["Hello World"]))
