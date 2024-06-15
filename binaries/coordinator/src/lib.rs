@@ -594,19 +594,6 @@ async fn stop_dataflow_by_uuid(
     Ok(())
 }
 
-fn format_error(machine: &str, err: &str) -> String {
-    let mut error = err
-        .lines()
-        .fold(format!("- machine `{machine}`:\n"), |mut output, line| {
-            output.push_str("    ");
-            output.push_str(line);
-            output.push('\n');
-            output
-        });
-    error.push('\n');
-    error
-}
-
 fn dataflow_result(
     results: &BTreeMap<String, DataflowDaemonResult>,
     dataflow_uuid: Uuid,
@@ -982,22 +969,4 @@ fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> 
     .wrap_err("failed to set ctrl-c handler")?;
 
     Ok(ReceiverStream::new(ctrlc_rx))
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_format_error() {
-        let machine = "machine A";
-        let err = "foo\nbar\nbuzz";
-
-        // old method
-        let old_error = {
-            #[allow(clippy::format_collect)]
-            let err: String = err.lines().map(|line| format!("    {line}\n")).collect();
-            format!("- machine `{machine}`:\n{err}\n")
-        };
-        let new_error = super::format_error(machine, err);
-        assert_eq!(old_error, new_error)
-    }
 }
