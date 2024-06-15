@@ -373,18 +373,19 @@ impl Daemon {
             }
             DaemonCoordinatorEvent::AllNodesReady {
                 dataflow_id,
-                success,
+                exited_before_subscribe,
             } => {
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
+                        let ready = exited_before_subscribe.is_empty();
                         dataflow
                             .pending_nodes
                             .handle_external_all_nodes_ready(
-                                success,
-                                &mut dataflow.cascading_errors,
+                                exited_before_subscribe,
+                                &mut dataflow.cascading_error_causes,
                             )
                             .await?;
-                        if success {
+                        if ready {
                             tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
                             dataflow.start(&self.events_tx, &self.clock).await?;
                         }
@@ -636,7 +637,7 @@ impl Daemon {
                                 &node_id,
                                 &mut self.coordinator_connection,
                                 &self.clock,
-                                &mut dataflow.cascading_errors,
+                                &mut dataflow.cascading_error_causes,
                             )
                             .await?;
                     }
@@ -743,7 +744,7 @@ impl Daemon {
                                 reply_sender,
                                 &mut self.coordinator_connection,
                                 &self.clock,
-                                &mut dataflow.cascading_errors,
+                                &mut dataflow.cascading_error_causes,
                             )
                             .await?;
                         match status {
@@ -1002,7 +1003,7 @@ impl Daemon {
                 node_id,
                 &mut self.coordinator_connection,
                 &self.clock,
-                &mut dataflow.cascading_errors,
+                &mut dataflow.cascading_error_causes,
             )
             .await?;
 
@@ -1153,11 +1154,20 @@ impl Daemon {
                         Ok(())
                     }
                     exit_status => {
-                        let cause = match self.running.get_mut(&dataflow_id) {
-                            Some(dataflow) if dataflow.cascading_errors.contains(&node_id) => {
-                                NodeErrorCause::Cascading
+                        let caused_by_node = self
+                            .running
+                            .get_mut(&dataflow_id)
+                            .and_then(|dataflow| {
+                                dataflow.cascading_error_causes.error_caused_by(&node_id)
+                            })
+                            .cloned();
+
+                        let cause = match caused_by_node {
+                            Some(caused_by_node) => {
+                                tracing::info!("marking `{node_id}` as cascading error caused by `{caused_by_node}`");
+                                NodeErrorCause::Cascading { caused_by_node }
                             }
-                            _ => NodeErrorCause::Other {
+                            None => NodeErrorCause::Other {
                                 // TODO: load from file
                                 stderr: String::new(),
                             },
@@ -1382,7 +1392,8 @@ pub struct RunningDataflow {
     /// TODO: replace this with a constant once `BTreeSet::new` is `const` on stable.
     empty_set: BTreeSet<DataId>,
 
-    cascading_errors: BTreeSet<NodeId>,
+    /// Contains the node that caused the error for nodes that experienced a cascading error.
+    cascading_error_causes: CascadingErrorCauses,
 }
 
 impl RunningDataflow {
@@ -1401,7 +1412,7 @@ impl RunningDataflow {
             _timer_handles: Vec::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
-            cascading_errors: BTreeSet::new(),
+            cascading_error_causes: Default::default(),
         }
     }
 
@@ -1650,4 +1661,24 @@ fn set_up_ctrlc_handler(
     .wrap_err("failed to set ctrl-c handler")?;
 
     Ok(ReceiverStream::new(ctrlc_rx))
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CascadingErrorCauses {
+    caused_by: BTreeMap<NodeId, NodeId>,
+}
+
+impl CascadingErrorCauses {
+    pub fn experienced_cascading_error(&self, node: &NodeId) -> bool {
+        self.caused_by.contains_key(node)
+    }
+
+    /// Return the ID of the node that caused a cascading error for the given node, if any.
+    pub fn error_caused_by(&self, node: &NodeId) -> Option<&NodeId> {
+        self.caused_by.get(node)
+    }
+
+    pub fn report_cascading_error(&mut self, causing_node: NodeId, affected_node: NodeId) {
+        self.caused_by.entry(affected_node).or_insert(causing_node);
+    }
 }

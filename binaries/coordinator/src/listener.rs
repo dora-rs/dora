@@ -66,13 +66,13 @@ pub async fn handle_connection(
             coordinator_messages::CoordinatorRequest::Event { machine_id, event } => match event {
                 coordinator_messages::DaemonEvent::AllNodesReady {
                     dataflow_id,
-                    success,
+                    exited_before_subscribe,
                 } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
                         event: DataflowEvent::ReadyOnMachine {
                             machine_id,
-                            success,
+                            exited_before_subscribe,
                         },
                     };
                     if events_tx.send(event).await.is_err() {
