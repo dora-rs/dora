@@ -223,18 +223,22 @@ async fn start_inner(
             Event::Dataflow { uuid, event } => match event {
                 DataflowEvent::ReadyOnMachine {
                     machine_id,
-                    success,
+                    exited_before_subscribe,
                 } => {
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
                             dataflow.pending_machines.remove(&machine_id);
-                            dataflow.init_success &= success;
+                            dataflow
+                                .exited_before_subscribe
+                                .extend(exited_before_subscribe);
                             if dataflow.pending_machines.is_empty() {
                                 let message = serde_json::to_vec(&Timestamped {
                                     inner: DaemonCoordinatorEvent::AllNodesReady {
                                         dataflow_id: uuid,
-                                        success: dataflow.init_success,
+                                        exited_before_subscribe: dataflow
+                                            .exited_before_subscribe
+                                            .clone(),
                                     },
                                     timestamp: clock.new_timestamp(),
                                 })
@@ -674,7 +678,7 @@ struct RunningDataflow {
     machines: BTreeSet<String>,
     /// IDs of machines that are waiting until all nodes are started.
     pending_machines: BTreeSet<String>,
-    init_success: bool,
+    exited_before_subscribe: Vec<NodeId>,
     nodes: Vec<ResolvedNode>,
 
     reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -873,7 +877,7 @@ async fn start_dataflow(
         } else {
             BTreeSet::new()
         },
-        init_success: true,
+        exited_before_subscribe: Default::default(),
         machines,
         nodes,
         reply_senders: Vec::new(),
@@ -944,7 +948,7 @@ pub enum DataflowEvent {
     },
     ReadyOnMachine {
         machine_id: String,
-        success: bool,
+        exited_before_subscribe: Vec<NodeId>,
     },
 }
 

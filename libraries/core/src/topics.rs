@@ -125,7 +125,7 @@ impl std::fmt::Display for RootError<'_> {
 
         let mut non_cascading: Vec<_> = failed
             .clone()
-            .filter(|(_, e)| !matches!(e.cause, NodeErrorCause::Cascading))
+            .filter(|(_, e)| !matches!(e.cause, NodeErrorCause::Cascading { .. }))
             .collect();
         non_cascading.sort_by_key(|(_, e)| e.timestamp);
         // try to print earliest non-cascading error
@@ -194,14 +194,27 @@ impl std::fmt::Display for NodeError {
                 write!(f, "exited because of signal {signal_str}")
             }
             NodeExitStatus::Unknown => write!(f, "unknown exit status"),
+        }?;
+
+        match &self.cause {
+            NodeErrorCause::Cascading { caused_by_node } => write!(
+                f,
+                "\n\nThis error occurred because node `{caused_by_node}` exited before connecting to dora."
+            )?,
+            NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
+            NodeErrorCause::Other { stderr } => write!(f, "\n\nStderr output:\n{stderr}\n")?,
         }
+
+        Ok(())
     }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum NodeErrorCause {
     /// Node failed because another node failed before,
-    Cascading,
+    Cascading {
+        caused_by_node: NodeId,
+    },
     Other {
         stderr: String,
     },

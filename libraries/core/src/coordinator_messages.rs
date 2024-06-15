@@ -1,4 +1,4 @@
-use crate::{daemon_messages::DataflowId, topics::DataflowDaemonResult};
+use crate::{config::NodeId, daemon_messages::DataflowId, topics::DataflowDaemonResult};
 use eyre::eyre;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -18,7 +18,7 @@ pub enum CoordinatorRequest {
 pub enum DaemonEvent {
     AllNodesReady {
         dataflow_id: DataflowId,
-        success: bool,
+        exited_before_subscribe: Vec<NodeId>,
     },
     AllNodesFinished {
         dataflow_id: DataflowId,
