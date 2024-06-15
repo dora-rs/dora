@@ -1,5 +1,6 @@
 use dora_message::uhlc;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fmt::Display,
     net::{IpAddr, Ipv4Addr},
@@ -129,15 +130,13 @@ impl std::fmt::Display for RootError<'_> {
         non_cascading.sort_by_key(|(_, e)| e.timestamp);
         // try to print earliest non-cascading error
         if let Some((id, err)) = non_cascading.first() {
-            // TODO: better error formatting
-            write!(f, "Node `{id}` failed: {err:?}")?;
+            write!(f, "Node `{id}` failed: {err}")?;
         } else {
             // no non-cascading errors -> print earliest cascading
             let mut all: Vec<_> = failed.collect();
             all.sort_by_key(|(_, e)| e.timestamp);
             if let Some((id, err)) = all.first() {
-                // TODO: better error formatting
-                write!(f, "Node `{id}` failed: {err:?}")?;
+                write!(f, "Node `{id}` failed: {err}")?;
             } else {
                 write!(f, "unknown error")?;
             }
@@ -167,6 +166,36 @@ pub struct NodeError {
     pub timestamp: uhlc::Timestamp,
     pub cause: NodeErrorCause,
     pub exit_status: NodeExitStatus,
+}
+
+impl std::fmt::Display for NodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.exit_status {
+            NodeExitStatus::Success => write!(f, "<success>"),
+            NodeExitStatus::IoError(err) => write!(f, "I/O error while reading exit status: {err}"),
+            NodeExitStatus::ExitCode(code) => write!(f, "exited with code: {code}"),
+            NodeExitStatus::Signal(signal) => {
+                let signal_str: Cow<_> = match signal {
+                    1 => "SIGHUP".into(),
+                    2 => "SIGINT".into(),
+                    3 => "SIGQUIT".into(),
+                    4 => "SIGILL".into(),
+                    6 => "SIGABRT".into(),
+                    8 => "SIGFPE".into(),
+                    9 => "SIGKILL".into(),
+                    11 => "SIGSEGV".into(),
+                    13 => "SIGPIPE".into(),
+                    14 => "SIGALRM".into(),
+                    15 => "SIGTERM".into(),
+                    22 => "SIGABRT".into(),
+                    23 => "NSIG".into(),
+                    other => other.to_string().into(),
+                };
+                write!(f, "exited because of signal {signal_str}")
+            }
+            NodeExitStatus::Unknown => write!(f, "unknown exit status"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
