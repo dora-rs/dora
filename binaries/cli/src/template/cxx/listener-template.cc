@@ -23,7 +23,8 @@ int main()
         {
             auto input = event_as_input(std::move(event));
             auto input_id = input.id;
-            std::cout << "I heard from " << std::string(input_id) << std::endl;
+            auto message = std::string(reinterpret_cast<const char*>(input.data.data()), input.data.size());
+            std::cout << "I heard " << message << " from " << std::string(input_id) << std::endl;
         } 
         else {
             std::cerr << "Unknown event type " << static_cast<int>(ty) << std::endl;
