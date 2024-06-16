@@ -69,9 +69,16 @@ impl Node {
     /// :type timeout: float, optional
     /// :rtype: dora.PyEvent
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<PyEvent>> {
+    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
-        Ok(event)
+        if let Some(event) = event {
+            let dict = event
+                .to_py_dict_bound(py)
+                .context("Could not convert event into a dictionnary")?;
+            Ok(Some(dict))
+        } else {
+            Ok(None)
+        }
     }
 
     /// You can iterate over the event stream with a loop
@@ -84,10 +91,11 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
+    /// Default behaviour is to timeout after 2 seconds.
+    ///
     /// :rtype: dora.PyEvent
-    pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
-        let event = py.allow_threads(|| self.events.recv(None));
-        Ok(event)
+    pub fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
+        self.next(py, Some(2.0))
     }
 
     /// You can iterate over the event stream with a loop
@@ -262,7 +270,6 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_class::<Node>()?;
-    m.add_class::<PyEvent>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
     m.setattr("__author__", "Dora-rs Authors")?;
 
