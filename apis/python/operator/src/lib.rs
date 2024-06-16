@@ -19,16 +19,15 @@ impl PyEvent {
     pub fn to_py_dict_bound(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut pydict = HashMap::new();
         match &self.event {
+            MergedEvent::Dora(_) => pydict.insert("kind", "dora".to_object(py)),
+            MergedEvent::External(_) => pydict.insert("kind", "external".to_object(py)),
+        };
+        match &self.event {
             MergedEvent::Dora(event) => {
                 if let Some(id) = Self::id(event) {
                     pydict.insert("id", id.into_py(py));
                 }
                 pydict.insert("type", Self::ty(event).to_object(py));
-
-                match &self.event {
-                    MergedEvent::Dora(_) => pydict.insert("kind", "dora".to_object(py)),
-                    MergedEvent::External(_) => pydict.insert("kind", "external".to_object(py)),
-                };
 
                 if let Some(value) = self.value(py)? {
                     pydict.insert("value", value);
