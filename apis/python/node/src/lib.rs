@@ -24,6 +24,7 @@ use pyo3::types::{PyBytes, PyDict};
 /// node = Node()
 /// ```
 ///
+/// :type node_id: str, optional
 #[pyclass]
 pub struct Node {
     events: Events,
@@ -67,14 +68,14 @@ impl Node {
     /// ```
     ///
     /// :type timeout: float, optional
-    /// :rtype: dora.PyEvent
+    /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
         if let Some(event) = event {
             let dict = event
                 .to_py_dict_bound(py)
-                .context("Could not convert event into a dictionnary")?;
+                .context("Could not convert event into a dict")?;
             Ok(Some(dict))
         } else {
             Ok(None)
@@ -93,7 +94,7 @@ impl Node {
     ///
     /// Default behaviour is to timeout after 2 seconds.
     ///
-    /// :rtype: dora.PyEvent
+    /// :rtype: dict
     pub fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
         self.next(py, Some(2.0))
     }
@@ -108,7 +109,7 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// :rtype: dora.PyEvent
+    /// :rtype: dict
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
