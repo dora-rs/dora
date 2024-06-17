@@ -141,11 +141,9 @@ impl PendingNodes {
 
         let result = match &node_exited_before_subscribe {
             Some(causing_node) => Err(format!(
-                "Some nodes exited before subscribing to dora: {:?}\n\n\
-                This is typically happens when an initialization error occurs
-                in the node or operator. To check the output of the causing
-                node, run `dora logs {} {causing_node}`.",
-                self.exited_before_subscribe, self.dataflow_id
+                "Node {causing_node} exited before initializing dora. For \
+                more information, run `dora logs {} {causing_node}`.",
+                self.dataflow_id
             )),
             None => Ok(()),
         };
