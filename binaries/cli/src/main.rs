@@ -15,6 +15,7 @@ use dora_tracing::set_up_tracing;
 use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
+use formatting::FormatDataflowError;
 use std::net::SocketAddr;
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -27,6 +28,7 @@ use uuid::Uuid;
 mod attach;
 mod build;
 mod check;
+mod formatting;
 mod graph;
 mod logs;
 mod template;
@@ -462,7 +464,7 @@ fn run() -> eyre::Result<()> {
                         if result.is_ok() {
                             Ok(())
                         } else {
-                            eyre::bail!("dataflow failed: {}", result.root_error())
+                            eyre::bail!("dataflow failed: {}", FormatDataflowError(&result))
                         }
                     }
                     None => {
@@ -546,7 +548,10 @@ fn stop_dataflow(
             if result.is_ok() {
                 Ok(())
             } else {
-                Err(eyre::eyre!("dataflow failed: {}", result.root_error()))
+                Err(eyre::eyre!(
+                    "dataflow failed: {}",
+                    FormatDataflowError(&result)
+                ))
             }
         }
         ControlRequestReply::Error(err) => bail!("{err}"),
@@ -575,7 +580,10 @@ fn stop_dataflow_by_name(
             if result.is_ok() {
                 Ok(())
             } else {
-                Err(eyre::eyre!("dataflow failed: {}", result.root_error()))
+                Err(eyre::eyre!(
+                    "dataflow failed: {}",
+                    FormatDataflowError(&result)
+                ))
             }
         }
         ControlRequestReply::Error(err) => bail!("{err}"),
