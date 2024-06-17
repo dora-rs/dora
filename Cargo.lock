@@ -2320,6 +2320,7 @@ dependencies = [
  "aligned-vec",
  "async-trait",
  "bincode",
+ "crossbeam",
  "ctrlc",
  "dora-arrow-convert",
  "dora-core",
