@@ -209,7 +209,7 @@ pub fn run(
                 }
 
                 let py_event = PyEvent::from(event)
-                    .to_py_dict_bound(py)
+                    .to_py_dict(py)
                     .context("Could not convert event to pydict bound")?;
 
                 let status_enum = operator

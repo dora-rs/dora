@@ -16,7 +16,7 @@ pub struct PyEvent {
 }
 
 impl PyEvent {
-    pub fn to_py_dict_bound(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+    pub fn to_py_dict(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut pydict = HashMap::new();
         match &self.event {
             MergedEvent::Dora(_) => pydict.insert("kind", "dora".to_object(py)),
