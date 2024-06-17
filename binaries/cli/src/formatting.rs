@@ -17,26 +17,29 @@ impl std::fmt::Display for FormatDataflowError<'_> {
             .collect();
         non_cascading.sort_by_key(|(_, e)| e.timestamp);
         // try to print earliest non-cascading error
-        if !non_cascading.is_empty() {
+        let hidden = if !non_cascading.is_empty() {
+            let printed = non_cascading.len();
             for (id, err) in non_cascading {
                 writeln!(f, "Node `{id}` failed: {err}")?;
             }
+            total_failed - printed
         } else {
             // no non-cascading errors -> print earliest cascading
             let mut all: Vec<_> = failed.collect();
             all.sort_by_key(|(_, e)| e.timestamp);
             if let Some((id, err)) = all.first() {
                 write!(f, "Node `{id}` failed: {err}")?;
+                total_failed - 1
             } else {
                 write!(f, "unknown error")?;
+                0
             }
-        }
+        };
 
-        if total_failed > 1 {
+        if hidden > 1 {
             write!(
                 f,
-                "\n\nThere are {} more errors. Check the `out/{}` folder for full details.",
-                total_failed - 1,
+                "\n\nThere are {hidden} consequential errors. Check the `out/{}` folder for full details.",
                 self.0.uuid
             )?;
         }
