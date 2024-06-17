@@ -3,6 +3,7 @@ use crate::{
     OutputId, RunningNode,
 };
 use aligned_vec::{AVec, ConstAlign};
+use crossbeam::queue::ArrayQueue;
 use dora_arrow_convert::IntoArrow;
 use dora_core::{
     config::DataId,
@@ -42,6 +43,7 @@ pub async fn spawn_node(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     dataflow_descriptor: Descriptor,
     clock: Arc<HLC>,
+    node_stderr_most_recent: Arc<ArrayQueue<String>>,
 ) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -358,17 +360,21 @@ pub async fn spawn_node(
                 }
             };
 
-            match String::from_utf8(raw) {
-                Ok(s) => buffer.push_str(&s),
+            let new = match String::from_utf8(raw) {
+                Ok(s) => s,
                 Err(err) => {
                     let lossy = String::from_utf8_lossy(err.as_bytes());
                     tracing::warn!(
                         "stderr not valid UTF-8 string (node {node_id}): {}: {lossy}",
                         err.utf8_error()
                     );
-                    buffer.push_str(&lossy)
+                    lossy.into_owned()
                 }
             };
+
+            buffer.push_str(&new);
+
+            node_stderr_most_recent.force_push(new);
 
             if buffer.starts_with("Traceback (most recent call last):") {
                 if !finished {

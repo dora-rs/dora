@@ -1,5 +1,6 @@
 use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
+use crossbeam::queue::ArrayQueue;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
 use dora_core::daemon_messages::{
@@ -64,6 +65,8 @@ use dora_tracing::telemetry::serialize_context;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::pending::DataflowStatus;
+
+const STDERR_LOG_LINES: usize = 10;
 
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
@@ -615,6 +618,11 @@ impl Daemon {
                 dataflow.pending_nodes.insert(node.id.clone());
 
                 let node_id = node.id.clone();
+                let node_stderr_most_recent = dataflow
+                    .node_stderr_most_recent
+                    .entry(node.id.clone())
+                    .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES)))
+                    .clone();
                 match spawn::spawn_node(
                     dataflow_id,
                     &working_dir,
@@ -622,6 +630,7 @@ impl Daemon {
                     self.events_tx.clone(),
                     dataflow_descriptor.clone(),
                     self.clock.clone(),
+                    node_stderr_most_recent,
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
@@ -1154,9 +1163,8 @@ impl Daemon {
                         Ok(())
                     }
                     exit_status => {
-                        let caused_by_node = self
-                            .running
-                            .get_mut(&dataflow_id)
+                        let dataflow = self.running.get(&dataflow_id);
+                        let caused_by_node = dataflow
                             .and_then(|dataflow| {
                                 dataflow.cascading_error_causes.error_caused_by(&node_id)
                             })
@@ -1168,8 +1176,16 @@ impl Daemon {
                                 NodeErrorCause::Cascading { caused_by_node }
                             }
                             None => NodeErrorCause::Other {
-                                // TODO: load from file
-                                stderr: String::new(),
+                                stderr: dataflow
+                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                    .map(|queue| {
+                                        let mut s = String::new();
+                                        while let Some(line) = queue.pop() {
+                                            s += &line;
+                                        }
+                                        s
+                                    })
+                                    .unwrap_or_default(),
                             },
                         };
                         Err(NodeError {
@@ -1394,6 +1410,8 @@ pub struct RunningDataflow {
 
     /// Contains the node that caused the error for nodes that experienced a cascading error.
     cascading_error_causes: CascadingErrorCauses,
+
+    node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
 }
 
 impl RunningDataflow {
@@ -1413,6 +1431,7 @@ impl RunningDataflow {
             stop_sent: false,
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
+            node_stderr_most_recent: BTreeMap::new(),
         }
     }
 
