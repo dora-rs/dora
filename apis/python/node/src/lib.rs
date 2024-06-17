@@ -74,7 +74,7 @@ impl Node {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
         if let Some(event) = event {
             let dict = event
-                .to_py_dict_bound(py)
+                .to_py_dict(py)
                 .context("Could not convert event into a dict")?;
             Ok(Some(dict))
         } else {
@@ -96,7 +96,7 @@ impl Node {
     ///
     /// :rtype: dict
     pub fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
-        self.next(py, Some(2.0))
+        self.next(py, None)
     }
 
     /// You can iterate over the event stream with a loop
