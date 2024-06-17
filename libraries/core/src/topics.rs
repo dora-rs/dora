@@ -202,7 +202,10 @@ impl std::fmt::Display for NodeError {
                 "\n\nThis error occurred because node `{caused_by_node}` exited before connecting to dora."
             )?,
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
-            NodeErrorCause::Other { stderr } => write!(f, "\n\nStderr output:\n{stderr}\n")?,
+            NodeErrorCause::Other { stderr } => {
+                let line: &str = "---------------------------------------------------------------------------------";
+                write!(f, "\n\nStderr output:\n{line}\n{stderr}\n[...]\n{line}\n")?
+            },
         }
 
         Ok(())
