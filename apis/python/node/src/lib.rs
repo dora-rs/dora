@@ -24,6 +24,7 @@ use pyo3::types::{PyBytes, PyDict};
 /// node = Node()
 /// ```
 ///
+/// :type node_id: str, optional
 #[pyclass]
 pub struct Node {
     events: Events,
@@ -67,11 +68,18 @@ impl Node {
     /// ```
     ///
     /// :type timeout: float, optional
-    /// :rtype: dora.PyEvent
+    /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<PyEvent>> {
+    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
-        Ok(event)
+        if let Some(event) = event {
+            let dict = event
+                .to_py_dict(py)
+                .context("Could not convert event into a dict")?;
+            Ok(Some(dict))
+        } else {
+            Ok(None)
+        }
     }
 
     /// You can iterate over the event stream with a loop
@@ -84,10 +92,11 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// :rtype: dora.PyEvent
-    pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
-        let event = py.allow_threads(|| self.events.recv(None));
-        Ok(event)
+    /// Default behaviour is to timeout after 2 seconds.
+    ///
+    /// :rtype: dict
+    pub fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
+        self.next(py, None)
     }
 
     /// You can iterate over the event stream with a loop
@@ -100,7 +109,7 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// :rtype: dora.PyEvent
+    /// :rtype: dict
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -262,7 +271,6 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_class::<Node>()?;
-    m.add_class::<PyEvent>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
     m.setattr("__author__", "Dora-rs Authors")?;
 
