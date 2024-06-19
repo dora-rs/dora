@@ -51,7 +51,7 @@ mod ros2 {
     pub fn generate() -> PathBuf {
         use rust_format::Formatter;
         let paths = ament_prefix_paths();
-        let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), true);
+        let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), true).unwrap();
         let generated_string = rust_format::PrettyPlease::default()
             .format_tokens(generated)
             .unwrap();
@@ -81,6 +81,8 @@ mod ros2 {
             }
         };
         println!("cargo:rerun-if-env-changed=AMENT_PREFIX_PATH");
+        println!("cargo:rerun-if-env-changed=RMW_IMPLEMENTATION");
+        println!("cargo:rerun-if-env-changed=ROS_DISTRO");
 
         let paths: Vec<_> = ament_prefix_path.split(':').map(PathBuf::from).collect();
         for path in &paths {

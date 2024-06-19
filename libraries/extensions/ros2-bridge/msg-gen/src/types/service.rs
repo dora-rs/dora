@@ -79,7 +79,7 @@ impl Service {
     pub fn cxx_service_creation_functions(
         &self,
         package_name: &str,
-    ) -> (impl ToTokens, impl ToTokens) {
+    ) -> anyhow::Result<(impl ToTokens, impl ToTokens)> {
         let client_name = format_ident!("Client__{package_name}__{}", self.name);
         let cxx_client_name = format_ident!("Client_{}", self.name);
         let create_client = format_ident!("new_Client__{package_name}__{}", self.name);
@@ -101,6 +101,32 @@ impl Service {
         let cxx_matches = format_ident!("matches");
         let downcast = format_ident!("downcast__{package_name}__{}", self.name);
         let cxx_downcast = format_ident!("downcast");
+
+        let ros_service_mapping = {
+            let enhanced = format_ident!("Enhanced");
+            let cyclone = format_ident!("Cyclone");
+            match std::env::var("RMW_IMPLEMENTATION") {
+                Ok(middleware) => match middleware.as_str() {
+                    "rmw_fastrtps_cpp" => enhanced,
+                    "rmw_cyclonedds_cpp" => cyclone,
+                    other => anyhow::bail!("unsupported RMW_IMPLEMENTATION `{other}`"),
+                },
+                Err(std::env::VarError::NotPresent) => match std::env::var("ROS_DISTRO") {
+                    Ok(distro) => match distro.as_str() {
+                        "humble" | "iron" => enhanced,
+                        "galactic" => cyclone,
+                        other => anyhow::bail!("unsupported ROS_DISTRO `{other}`"),
+                    },
+                    Err(std::env::VarError::NotPresent) => anyhow::bail!("no ROS_DISTRO set"),
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        anyhow::bail!("ROS_DISTRO is not valid unicode")
+                    }
+                },
+                Err(std::env::VarError::NotUnicode(other)) => {
+                    anyhow::bail!("RMW_IMPLEMENTATION is not valid unicode `{:?}`", other)
+                }
+            }
+        };
 
         let def = quote! {
             #[namespace = #package_name]
@@ -130,7 +156,7 @@ impl Service {
                     use futures::StreamExt as _;
 
                     let client = self.node.create_client::< #package :: service :: #self_name >(
-                        ros2_client::ServiceMapping::Enhanced,
+                        ros2_client::ServiceMapping:: #ros_service_mapping,
                         &ros2_client::Name::new(name_space, base_name).unwrap(),
                         &ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
                         qos.clone().into(),
@@ -225,7 +251,7 @@ impl Service {
                 }
             }
         };
-        (def, imp)
+        Ok((def, imp))
     }
 
     pub fn token_stream_with_mod(&self) -> impl ToTokens {
