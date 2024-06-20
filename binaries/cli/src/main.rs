@@ -15,12 +15,13 @@ use dora_tracing::set_up_tracing;
 use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
-use std::net::SocketAddr;
+use std::{io::Write, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
     time::Duration,
 };
+use tabwriter::TabWriter;
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
@@ -574,28 +575,45 @@ fn stop_dataflow_by_name(
 fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> {
     let list = query_running_dataflows(session)?;
 
-    if list.active.is_empty() {
-        eprintln!("No dataflows are running");
-    } else {
-        println!("Running dataflows:");
-        for id in list.active {
-            println!("- {id}");
-        }
+    let mut tw = TabWriter::new(vec![]);
+    tw.write_all(b"UUID\tName\tStatus\n")?;
+
+    for id in list.active {
+        tw.write_all(
+            format!(
+                "{}\t{}\trunning\n",
+                id.uuid,
+                id.name.as_deref().unwrap_or_default()
+            )
+            .as_bytes(),
+        )?;
     }
 
-    if !list.failed.is_empty() {
-        println!("Failed dataflows:");
-        for id in list.failed {
-            println!("- {id}");
-        }
+    for id in list.failed {
+        tw.write_all(
+            format!(
+                "{}\t{}\tFAILED\n",
+                id.uuid,
+                id.name.as_deref().unwrap_or_default()
+            )
+            .as_bytes(),
+        )?;
     }
 
-    if !list.finished.is_empty() {
-        println!("Finished dataflows:");
-        for id in list.finished {
-            println!("- {id}");
-        }
+    for id in list.finished {
+        tw.write_all(
+            format!(
+                "{}\t{}\tfinished\n",
+                id.uuid,
+                id.name.as_deref().unwrap_or_default()
+            )
+            .as_bytes(),
+        )?;
     }
+
+    tw.flush()?;
+    let formatted = String::from_utf8(tw.into_inner()?)?;
+    println!("{formatted}");
 
     Ok(())
 }
