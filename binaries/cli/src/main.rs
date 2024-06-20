@@ -329,11 +329,11 @@ fn run() -> eyre::Result<()> {
                 let name = if uuid.is_some() { None } else { Some(dataflow) };
                 logs::logs(&mut *session, uuid, name, node)?
             } else {
-                let uuid = match &list.active[..] {
+                let active = list.get_active();
+                let uuid = match &active[..] {
                     [] => bail!("No dataflows are running"),
                     [uuid] => uuid.clone(),
-                    _ => inquire::Select::new("Choose dataflow to show logs:", list.active)
-                        .prompt()?,
+                    _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
                 };
                 logs::logs(&mut *session, Some(uuid.uuid), None, node)?
             }
@@ -512,10 +512,11 @@ fn stop_dataflow_interactive(
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<()> {
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
-    if list.active.is_empty() {
+    let active = list.get_active();
+    if active.is_empty() {
         eprintln!("No dataflows are running");
     } else {
-        let selection = inquire::Select::new("Choose dataflow to stop:", list.active).prompt()?;
+        let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;
         stop_dataflow(selection.uuid, grace_duration, session)?;
     }
 
@@ -577,50 +578,25 @@ fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> 
 
     let mut tw = TabWriter::new(vec![]);
     tw.write_all(b"UUID\tName\tStatus\n")?;
-
-    for id in list.active {
-        tw.write_all(
-            format!(
-                "{}\t{}\trunning\n",
-                id.uuid,
-                id.name.as_deref().unwrap_or_default()
-            )
-            .as_bytes(),
-        )?;
+    for entry in list.0 {
+        let uuid = entry.id.uuid;
+        let name = entry.id.name.unwrap_or_default();
+        let status = match entry.status {
+            dora_core::topics::DataflowStatus::Running => "running",
+            dora_core::topics::DataflowStatus::Finished => "finished",
+            dora_core::topics::DataflowStatus::Failed => "FAILED",
+        };
+        tw.write_all(format!("{uuid}\t{name}\t{status}\n").as_bytes())?;
     }
-
-    for id in list.failed {
-        tw.write_all(
-            format!(
-                "{}\t{}\tFAILED\n",
-                id.uuid,
-                id.name.as_deref().unwrap_or_default()
-            )
-            .as_bytes(),
-        )?;
-    }
-
-    for id in list.finished {
-        tw.write_all(
-            format!(
-                "{}\t{}\tfinished\n",
-                id.uuid,
-                id.name.as_deref().unwrap_or_default()
-            )
-            .as_bytes(),
-        )?;
-    }
-
     tw.flush()?;
     let formatted = String::from_utf8(tw.into_inner()?)?;
+
     println!("{formatted}");
 
     Ok(())
 }
 
-fn query_running_dataflows(
-    session: &mut TcpRequestReplyConnection,
-) -> Result<DataflowList, eyre::ErrReport> {
+fn query_running_dataflows(session: &mut TcpRequestReplyConnection) -> eyre::Result<DataflowList> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send list message")?;
