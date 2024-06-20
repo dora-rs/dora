@@ -18,6 +18,7 @@ use pyo3::{
     types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
     Bound, PyAny, PyObject, PyResult, Python,
 };
+use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
 
 pub mod qos;
@@ -45,6 +46,7 @@ pub mod typed;
 /// :type ros_paths: typing.List[str], optional
 ///
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 pub struct Ros2Context {
     context: ros2_client::Context,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
@@ -147,6 +149,7 @@ impl Ros2Context {
 ///   See: https://github.com/jhelovuo/ros2-client/issues/4
 ///
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 pub struct Ros2Node {
     node: ros2_client::Node,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
@@ -251,7 +254,7 @@ impl Ros2Node {
 /// ROS2 Node Options
 /// :type rosout: bool, optional
 ///
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default, Str, Repr, Dir, Dict)]
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2NodeOptions {
@@ -281,6 +284,7 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
@@ -293,6 +297,7 @@ pub struct Ros2Topic {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Publisher {
     publisher: ros2_client::Publisher<TypedValue<'static>>,
@@ -363,6 +368,7 @@ impl Ros2Publisher {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Subscription {
     deserializer: StructDeserializer<'static>,
