@@ -582,9 +582,9 @@ fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> 
         let uuid = entry.id.uuid;
         let name = entry.id.name.unwrap_or_default();
         let status = match entry.status {
-            dora_core::topics::DataflowStatus::Running => "running",
-            dora_core::topics::DataflowStatus::Finished => "finished",
-            dora_core::topics::DataflowStatus::Failed => "FAILED",
+            dora_core::topics::DataflowStatus::Running => "Running",
+            dora_core::topics::DataflowStatus::Finished => "Succeeded",
+            dora_core::topics::DataflowStatus::Failed => "Failed",
         };
         tw.write_all(format!("{uuid}\t{name}\t{status}\n").as_bytes())?;
     }
