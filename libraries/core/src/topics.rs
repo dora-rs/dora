@@ -56,10 +56,29 @@ pub enum ControlRequest {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct DataflowList {
-    pub active: Vec<DataflowId>,
-    pub finished: Vec<DataflowId>,
-    pub failed: Vec<DataflowId>,
+pub struct DataflowList(pub Vec<DataflowListEntry>);
+
+impl DataflowList {
+    pub fn get_active(&self) -> Vec<DataflowId> {
+        self.0
+            .iter()
+            .filter(|d| d.status == DataflowStatus::Running)
+            .map(|d| d.id.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowListEntry {
+    pub id: DataflowId,
+    pub status: DataflowStatus,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub enum DataflowStatus {
+    Running,
+    Finished,
+    Failed,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
