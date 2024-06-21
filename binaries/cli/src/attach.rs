@@ -139,7 +139,7 @@ pub fn attach_dataflow(
                     Ok(())
                 } else {
                     Err(eyre::eyre!(
-                        "dataflow failed: {}",
+                        "Dataflow {uuid} failed:\n {}",
                         FormatDataflowError(&result)
                     ))
                 };
