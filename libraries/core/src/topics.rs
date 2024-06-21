@@ -157,7 +157,7 @@ impl std::fmt::Display for NodeError {
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
                 let line: &str = "---------------------------------------------------------------------------------\n";
-                write!(f, "with stderr output:\n{line}[...]\n{stderr}{line}")?
+                write!(f, " with stderr output:\n{line}[...]\n{stderr}{line}")?
             },
         }
 
