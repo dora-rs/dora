@@ -460,7 +460,7 @@ fn run() -> eyre::Result<()> {
                         }
 
                         let result = Daemon::run_dataflow(&dataflow_path).await?;
-                        handle_dataflow_result(result)
+                        handle_dataflow_result(result, None)
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {
@@ -539,20 +539,29 @@ fn stop_dataflow(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => handle_dataflow_result(result),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }
 }
 
-fn handle_dataflow_result(result: dora_core::topics::DataflowResult) -> Result<(), eyre::Error> {
+fn handle_dataflow_result(
+    result: dora_core::topics::DataflowResult,
+    uuid: Option<Uuid>,
+) -> Result<(), eyre::Error> {
     if result.is_ok() {
         Ok(())
     } else {
-        Err(eyre::eyre!(
-            "dataflow failed: {}",
-            FormatDataflowError(&result)
-        ))
+        Err(match uuid {
+            Some(uuid) => {
+                eyre::eyre!("Dataflow {uuid} failed:\n{}", FormatDataflowError(&result))
+            }
+            None => {
+                eyre::eyre!("Dataflow failed:\n{}", FormatDataflowError(&result))
+            }
+        })
     }
 }
 
@@ -573,7 +582,9 @@ fn stop_dataflow_by_name(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => handle_dataflow_result(result),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }

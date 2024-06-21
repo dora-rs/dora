@@ -11,7 +11,7 @@ use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::formatting::FormatDataflowError;
+use crate::handle_dataflow_result;
 
 pub fn attach_dataflow(
     dataflow: Descriptor,
@@ -135,14 +135,7 @@ pub fn attach_dataflow(
             ControlRequestReply::DataflowStarted { uuid: _ } => (),
             ControlRequestReply::DataflowStopped { uuid, result } => {
                 info!("dataflow {uuid} stopped");
-                break if result.is_ok() {
-                    Ok(())
-                } else {
-                    Err(eyre::eyre!(
-                        "Dataflow {uuid} failed:\n {}",
-                        FormatDataflowError(&result)
-                    ))
-                };
+                break handle_dataflow_result(result, Some(uuid));
             }
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
