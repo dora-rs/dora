@@ -75,7 +75,7 @@ enum Command {
         #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: PathBuf,
     },
-    /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
+    /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
         args: CommandNew,
@@ -230,7 +230,6 @@ pub struct CommandNew {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Kind {
     Dataflow,
-    Operator,
     CustomNode,
 }
 
