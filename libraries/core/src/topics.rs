@@ -126,7 +126,7 @@ impl std::fmt::Display for NodeError {
         match &self.exit_status {
             NodeExitStatus::Success => write!(f, "<success>"),
             NodeExitStatus::IoError(err) => write!(f, "I/O error while reading exit status: {err}"),
-            NodeExitStatus::ExitCode(code) => write!(f, "exited with code: {code}"),
+            NodeExitStatus::ExitCode(code) => write!(f, "exited with code {code}"),
             NodeExitStatus::Signal(signal) => {
                 let signal_str: Cow<_> = match signal {
                     1 => "SIGHUP".into(),
@@ -156,8 +156,8 @@ impl std::fmt::Display for NodeError {
             )?,
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
-                let line: &str = "---------------------------------------------------------------------------------";
-                write!(f, "\n\nStderr output:\n{line}\n[...]\n{stderr}\n{line}\n")?
+                let line: &str = "---------------------------------------------------------------------------------\n";
+                write!(f, "with stderr output:\n{line}[...]\n{stderr}{line}")?
             },
         }
 
