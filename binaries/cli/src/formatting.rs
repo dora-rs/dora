@@ -4,6 +4,7 @@ pub struct FormatDataflowError<'a>(pub &'a DataflowResult);
 
 impl std::fmt::Display for FormatDataflowError<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f)?;
         let failed = self
             .0
             .node_results
