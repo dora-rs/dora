@@ -361,7 +361,8 @@ fn run() -> eyre::Result<()> {
                     .wrap_err("Could not validate yaml")?;
             }
 
-            let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+            let coordinator_socket = (coordinator_addr, coordinator_port).into();
+            let mut session = connect_to_coordinator(coordinator_socket)
                 .wrap_err("failed to connect to dora coordinator")?;
             let dataflow_id = start_dataflow(
                 dataflow_descriptor.clone(),
@@ -377,6 +378,7 @@ fn run() -> eyre::Result<()> {
                     dataflow_id,
                     &mut *session,
                     hot_reload,
+                    coordinator_socket,
                 )?
             }
         }

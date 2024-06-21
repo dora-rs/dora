@@ -97,6 +97,12 @@ pub async fn handle_connection(
                         break;
                     }
                 }
+                coordinator_messages::DaemonEvent::Log(message) => {
+                    let event = Event::Log(message);
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
             },
         };
     }

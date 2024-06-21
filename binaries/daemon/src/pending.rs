@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use dora_core::{
     config::NodeId,
-    coordinator_messages::{CoordinatorRequest, DaemonEvent},
+    coordinator_messages::{CoordinatorRequest, DaemonEvent, Level, LogMessage},
     daemon_messages::{DaemonReply, DataflowId, Timestamped},
     message::uhlc::{Timestamp, HLC},
 };
@@ -77,14 +77,24 @@ impl PendingNodes {
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Vec<LogMessage>> {
+        let mut log = Vec::new();
         if self.local_nodes.remove(node_id) {
-            tracing::warn!("node `{node_id}` exited before initializing dora connection");
+            log.push(LogMessage {
+                dataflow_id: self.dataflow_id,
+                node_id: Some(node_id.clone()),
+                level: Level::Warn,
+                target: "exit".into(),
+                module_path: None,
+                file: None,
+                line: None,
+                message: "node exited before initializing dora connection".into(),
+            });
             self.exited_before_subscribe.push(node_id.clone());
             self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
                 .await?;
         }
-        Ok(())
+        Ok(log)
     }
 
     pub async fn handle_external_all_nodes_ready(

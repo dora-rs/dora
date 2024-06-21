@@ -5,7 +5,7 @@ use crate::{
 pub use control::ControlEvent;
 use dora_core::{
     config::{NodeId, OperatorId},
-    coordinator_messages::RegisterResult,
+    coordinator_messages::{LogMessage, RegisterResult},
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
     message::uhlc::{self, HLC},
@@ -16,6 +16,7 @@ use dora_core::{
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
+use log_subscriber::LogSubscriber;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -30,6 +31,7 @@ use uuid::Uuid;
 
 mod control;
 mod listener;
+mod log_subscriber;
 mod run;
 mod tcp_utils;
 
@@ -488,9 +490,25 @@ async fn start_inner(
                             ));
                             let _ = reply_sender.send(reply);
                         }
+                        ControlRequest::LogSubscribe { .. } => {
+                            let _ = reply_sender.send(Err(eyre::eyre!(
+                                "LogSubscribe request should be handled separately"
+                            )));
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
+                ControlEvent::LogSubscribe {
+                    dataflow_id,
+                    level,
+                    connection,
+                } => {
+                    if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                        dataflow
+                            .log_subscribers
+                            .push(LogSubscriber::new(level, connection));
+                    }
+                }
             },
             Event::DaemonHeartbeatInterval => {
                 let mut disconnected = BTreeSet::new();
@@ -541,6 +559,13 @@ async fn start_inner(
             Event::DaemonHeartbeat { machine_id } => {
                 if let Some(connection) = daemon_connections.get_mut(&machine_id) {
                     connection.last_heartbeat = Instant::now();
+                }
+            }
+            Event::Log(message) => {
+                if let Some(dataflow) = running_dataflows.get_mut(&message.dataflow_id) {
+                    for subscriber in &mut dataflow.log_subscribers {
+                        subscriber.send_message(&message).await?;
+                    }
                 }
             }
         }
@@ -669,6 +694,8 @@ struct RunningDataflow {
     nodes: Vec<ResolvedNode>,
 
     reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+
+    log_subscribers: Vec<LogSubscriber>,
 }
 
 struct ArchivedDataflow {
@@ -868,6 +895,7 @@ async fn start_dataflow(
         machines,
         nodes,
         reply_senders: Vec::new(),
+        log_subscribers: Vec::new(),
     })
 }
 
@@ -914,6 +942,7 @@ pub enum Event {
     Daemon(DaemonEvent),
     DaemonHeartbeatInterval,
     CtrlC,
+    Log(LogMessage),
 }
 
 impl Event {

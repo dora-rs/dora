@@ -1688,6 +1688,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
 
 [[package]]
+name = "colored"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbf2150cce219b664a8a70df7a1f933836724b503f8a413af9365b4dcc4d90b8"
+dependencies = [
+ "lazy_static",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "com"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2251,6 +2261,7 @@ version = "0.3.4"
 dependencies = [
  "bat",
  "clap 4.5.7",
+ "colored",
  "communication-layer-request-reply",
  "ctrlc",
  "dora-coordinator",
@@ -2264,6 +2275,7 @@ dependencies = [
  "eyre",
  "futures",
  "inquire",
+ "log",
  "notify 5.2.0",
  "serde",
  "serde_json",
@@ -2286,6 +2298,7 @@ dependencies = [
  "eyre",
  "futures",
  "futures-concurrency",
+ "log",
  "names",
  "serde_json",
  "tokio",
@@ -2301,6 +2314,7 @@ dependencies = [
  "aligned-vec",
  "dora-message",
  "eyre",
+ "log",
  "once_cell",
  "schemars",
  "serde",
@@ -4690,6 +4704,7 @@ version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90ed8c1e510134f979dbc4f070f87d4313098b704861a105fe34231c70a3901c"
 dependencies = [
+ "serde",
  "value-bag",
 ]
 
@@ -9605,7 +9620,7 @@ version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
- "cfg-if 0.1.10",
+ "cfg-if 1.0.0",
  "static_assertions",
 ]
 
