@@ -55,6 +55,10 @@ pub enum ControlRequest {
     List,
     DaemonConnected,
     ConnectedMachines,
+    LogSubscribe {
+        dataflow_id: Uuid,
+        level: log::Level,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
