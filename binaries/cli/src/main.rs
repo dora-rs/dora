@@ -460,11 +460,7 @@ fn run() -> eyre::Result<()> {
                         }
 
                         let result = Daemon::run_dataflow(&dataflow_path).await?;
-                        if result.is_ok() {
-                            Ok(())
-                        } else {
-                            eyre::bail!("dataflow failed: {}", FormatDataflowError(&result))
-                        }
+                        handle_dataflow_result(result)
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {
@@ -543,18 +539,20 @@ fn stop_dataflow(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => {
-            if result.is_ok() {
-                Ok(())
-            } else {
-                Err(eyre::eyre!(
-                    "dataflow failed: {}",
-                    FormatDataflowError(&result)
-                ))
-            }
-        }
+        ControlRequestReply::DataflowStopped { uuid: _, result } => handle_dataflow_result(result),
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
+    }
+}
+
+fn handle_dataflow_result(result: dora_core::topics::DataflowResult) -> Result<(), eyre::Error> {
+    if result.is_ok() {
+        Ok(())
+    } else {
+        Err(eyre::eyre!(
+            "dataflow failed: {}",
+            FormatDataflowError(&result)
+        ))
     }
 }
 
@@ -575,16 +573,7 @@ fn stop_dataflow_by_name(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => {
-            if result.is_ok() {
-                Ok(())
-            } else {
-                Err(eyre::eyre!(
-                    "dataflow failed: {}",
-                    FormatDataflowError(&result)
-                ))
-            }
-        }
+        ControlRequestReply::DataflowStopped { uuid: _, result } => handle_dataflow_result(result),
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }
