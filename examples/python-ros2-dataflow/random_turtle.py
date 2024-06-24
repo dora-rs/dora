@@ -55,11 +55,11 @@ for i in range(500):
 
         # ROS2 Event
     elif event_kind == "external":
-        pose = event.inner()[0].as_py()
+        pose = event["value"][0].as_py()
         min_x = min([min_x, pose["x"]])
         max_x = max([max_x, pose["x"]])
         min_y = min([min_y, pose["y"]])
         max_y = max([max_y, pose["y"]])
-        dora_node.send_output("turtle_pose", event.inner())
+        dora_node.send_output("turtle_pose", event["value"])
 
 assert max_x - min_x > 1 or max_y - min_y > 1, "no turtle movement"
