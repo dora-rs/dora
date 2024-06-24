@@ -1,15 +1,15 @@
 use crate::{
-    log, node_communication::spawn_listener_loop, node_inputs, runtime_node_inputs,
-    runtime_node_outputs, DoraEvent, Event, NodeExitStatus, OutputId,
+    log, node_communication::spawn_listener_loop, node_inputs, DoraEvent, Event, NodeExitStatus,
+    OutputId, RunningNode,
 };
 use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::IntoArrow;
 use dora_core::{
-    config::{DataId, NodeRunConfig},
+    config::DataId,
     daemon_messages::{DataMessage, DataflowId, NodeConfig, RuntimeConfig, Timestamped},
     descriptor::{
         resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
-        ResolvedNode, SHELL_SOURCE,
+        ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE,
     },
     get_python_path,
     message::uhlc::HLC,
@@ -32,7 +32,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
-use tracing::{debug, error};
+use tracing::error;
 
 /// clock is required for generating timestamps when dropping messages early because queue is full
 pub async fn spawn_node(
@@ -42,7 +42,7 @@ pub async fn spawn_node(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     dataflow_descriptor: Descriptor,
     clock: Arc<HLC>,
-) -> eyre::Result<u32> {
+) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
 
@@ -63,9 +63,24 @@ pub async fn spawn_node(
         .send_stdout_as()
         .context("Could not resolve `send_stdout_as` configuration")?;
 
+    let node_config = NodeConfig {
+        dataflow_id,
+        node_id: node_id.clone(),
+        run_config: node.kind.run_config(),
+        daemon_communication,
+        dataflow_descriptor,
+        dynamic: node.kind.dynamic(),
+    };
+
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
             let mut command = match n.source.as_str() {
+                DYNAMIC_SOURCE => {
+                    return Ok(RunningNode {
+                        pid: None,
+                        node_config,
+                    });
+                }
                 SHELL_SOURCE => {
                     if cfg!(target_os = "windows") {
                         let mut cmd = tokio::process::Command::new("cmd");
@@ -117,17 +132,11 @@ pub async fn spawn_node(
 
             command.current_dir(working_dir);
             command.stdin(Stdio::null());
-            let node_config = NodeConfig {
-                dataflow_id,
-                node_id: node_id.clone(),
-                run_config: n.run_config.clone(),
-                daemon_communication,
-                dataflow_descriptor,
-            };
 
             command.env(
                 "DORA_NODE_CONFIG",
-                serde_yaml::to_string(&node_config).wrap_err("failed to serialize node config")?,
+                serde_yaml::to_string(&node_config.clone())
+                    .wrap_err("failed to serialize node config")?,
             );
             // Injecting the env variable defined in the `yaml` into
             // the node runtime.
@@ -223,16 +232,7 @@ pub async fn spawn_node(
             command.current_dir(working_dir);
 
             let runtime_config = RuntimeConfig {
-                node: NodeConfig {
-                    dataflow_id,
-                    node_id: node_id.clone(),
-                    run_config: NodeRunConfig {
-                        inputs: runtime_node_inputs(&n),
-                        outputs: runtime_node_outputs(&n),
-                    },
-                    daemon_communication,
-                    dataflow_descriptor,
-                },
+                node: node_config.clone(),
                 operators: n.operators,
             };
             command.env(
@@ -270,7 +270,13 @@ pub async fn spawn_node(
         .expect("Failed to create log file");
     let mut child_stdout =
         tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"));
-    let pid = child.id().unwrap();
+    let pid = child.id().context(
+        "Could not get the pid for the just spawned node and indicate that there is an error",
+    )?;
+    let running_node = RunningNode {
+        pid: Some(pid),
+        node_config,
+    };
     let stdout_tx = tx.clone();
 
     // Stdout listener stream
@@ -454,5 +460,5 @@ pub async fn spawn_node(
             .send(())
             .map_err(|_| error!("Could not inform that log file thread finished"));
     });
-    Ok(pid)
+    Ok(running_node)
 }

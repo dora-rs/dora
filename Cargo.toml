@@ -16,6 +16,7 @@ members = [
     "examples/rust-dataflow/node",
     "examples/rust-dataflow/status-node",
     "examples/rust-dataflow/sink",
+    "examples/rust-dataflow/sink-dynamic",
     "examples/rust-ros2-dataflow/node",
     "examples/benchmark/node",
     "examples/benchmark/sink",

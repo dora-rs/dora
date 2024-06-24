@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DoraNode, EventStream};
 use dora_operator_api_python::{pydict_to_metadata, PyEvent};
@@ -24,6 +25,7 @@ use pyo3_special_method_derive::DirHelper;
 /// node = Node()
 /// ```
 ///
+/// :type node_id: str, optional
 #[pyclass]
 #[derive(DirHelper)]
 pub struct Node {
@@ -34,8 +36,13 @@ pub struct Node {
 #[pymethods]
 impl Node {
     #[new]
-    pub fn new() -> eyre::Result<Self> {
-        let (node, events) = DoraNode::init_from_env()?;
+    pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
+        let (node, events) = if let Some(node_id) = node_id {
+            DoraNode::init_flexible(NodeId::from(node_id))
+                .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
+        } else {
+            DoraNode::init_from_env().context("Couldn not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
+        };
 
         Ok(Node {
             events: Events::Dora(events),
@@ -63,11 +70,18 @@ impl Node {
     /// ```
     ///
     /// :type timeout: float, optional
-    /// :rtype: dora.PyEvent
+    /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<PyEvent>> {
+    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
-        Ok(event)
+        if let Some(event) = event {
+            let dict = event
+                .to_py_dict(py)
+                .context("Could not convert event into a dict")?;
+            Ok(Some(dict))
+        } else {
+            Ok(None)
+        }
     }
 
     /// You can iterate over the event stream with a loop
@@ -80,10 +94,11 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// :rtype: dora.PyEvent
-    pub fn __next__(&mut self, py: Python) -> PyResult<Option<PyEvent>> {
-        let event = py.allow_threads(|| self.events.recv(None));
-        Ok(event)
+    /// Default behaviour is to timeout after 2 seconds.
+    ///
+    /// :rtype: dict
+    pub fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
+        self.next(py, None)
     }
 
     /// You can iterate over the event stream with a loop
@@ -96,7 +111,7 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// :rtype: dora.PyEvent
+    /// :rtype: dict
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -258,7 +273,6 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_class::<Node>()?;
-    m.add_class::<PyEvent>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
     m.setattr("__author__", "Dora-rs Authors")?;
 

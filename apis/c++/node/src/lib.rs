@@ -1,8 +1,8 @@
-use std::any::Any;
+use std::{any::Any, vec};
 
 use dora_node_api::{
     self,
-    arrow::array::{AsArray, BinaryArray},
+    arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
     Event, EventStream,
 };
@@ -138,18 +138,26 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
 }
 
 fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
-    let Some(Event::Input {
-        id,
-        metadata: _,
-        data,
-    }) = event.0
-    else {
+    let Some(Event::Input { id, metadata, data }) = event.0 else {
         bail!("not an input event");
     };
-    let data: Option<&BinaryArray> = data.as_binary_opt();
+    let data = match metadata.type_info.data_type {
+        dora_node_api::arrow::datatypes::DataType::UInt8 => {
+            let array: &UInt8Array = data.as_primitive();
+            array.values().to_vec()
+        }
+        dora_node_api::arrow::datatypes::DataType::Null => {
+            vec![]
+        }
+        _ => {
+            todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8. 
+                The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
+        }
+    };
+
     Ok(ffi::DoraInput {
         id: id.into(),
-        data: data.map(|d| d.value(0).to_owned()).unwrap_or_default(),
+        data,
     })
 }
 
