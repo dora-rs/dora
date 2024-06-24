@@ -2322,6 +2322,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "ctrlc",
+ "dirs 5.0.1",
  "dora-arrow-convert",
  "dora-core",
  "dora-download",

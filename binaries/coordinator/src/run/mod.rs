@@ -24,7 +24,7 @@ pub(super) async fn spawn_dataflow(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
 ) -> eyre::Result<SpawnedDataflow> {
-    dataflow.check(&working_dir)?;
+    //dataflow.check(&working_dir)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
@@ -39,15 +39,6 @@ pub(super) async fn spawn_dataflow(
                 .map(|c| (m.clone(), c.listen_socket))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    let working_dir = if machines.len() > 1 {
-        dirs::home_dir()
-            .ok_or_else(|| {
-                eyre!("could not create working directory for multiple-daemons dataflow!")
-            })
-            .map(|home| home)?
-    } else {
-        working_dir
-    };
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
         working_dir,

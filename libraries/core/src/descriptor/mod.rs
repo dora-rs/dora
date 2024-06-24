@@ -142,6 +142,8 @@ impl Descriptor {
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
+    pub local: Option<bool>,
+    pub working_dir: Option<String>,
 }
 
 /// Dora Node
@@ -299,6 +301,8 @@ impl ResolvedNode {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResolvedDeploy {
     pub machine: String,
+    pub local: bool,
+    pub working_dir: Option<String>,
 }
 impl ResolvedDeploy {
     fn new(deploy: Deploy, descriptor: &Descriptor) -> Self {
@@ -307,7 +311,11 @@ impl ResolvedDeploy {
             Some(m) => m,
             None => default_machine.to_owned(),
         };
-        Self { machine }
+        Self { 
+            machine,
+            local: deploy.local.unwrap_or(true),
+            working_dir: deploy.working_dir.clone(),
+        }
     }
 }
 

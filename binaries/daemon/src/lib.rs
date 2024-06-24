@@ -572,7 +572,7 @@ impl Daemon {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
         };
-
+        let mut working_dir = working_dir;
         for node in nodes {
             let local = node.deploy.machine == self.machine_id;
 
@@ -614,6 +614,17 @@ impl Daemon {
                 dataflow.pending_nodes.insert(node.id.clone());
 
                 let node_id = node.id.clone();
+                match &node.deploy.working_dir {
+                    Some(local_working_dir) => {
+                        working_dir = PathBuf::from(local_working_dir);
+                    }
+                    None => {
+                        if !node.deploy.local {
+                            working_dir = dirs::home_dir().wrap_err("failed to get home dir and change working dir")?;
+                        }
+                        tracing::debug!("As you don't specify working_dir in remote machine, change the home dir as working dir: {working_dir:?}");
+                }
+            }
                 match spawn::spawn_node(
                     dataflow_id,
                     &working_dir,
