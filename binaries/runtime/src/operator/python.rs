@@ -208,7 +208,9 @@ pub fn run(
                     metadata.parameters.open_telemetry_context = string_cx;
                 }
 
-                let py_event = PyEvent::from(event);
+                let py_event = PyEvent::from(event)
+                    .to_py_dict(py)
+                    .context("Could not convert event to pydict bound")?;
 
                 let status_enum = operator
                     .call_method1(py, "on_event", (py_event, send_output.clone()))

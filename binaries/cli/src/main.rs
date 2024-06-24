@@ -15,6 +15,7 @@ use dora_tracing::set_up_tracing;
 use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
+use formatting::FormatDataflowError;
 use std::{io::Write, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -28,6 +29,7 @@ use uuid::Uuid;
 mod attach;
 mod build;
 mod check;
+mod formatting;
 mod graph;
 mod logs;
 mod template;
@@ -76,7 +78,7 @@ enum Command {
         #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: PathBuf,
     },
-    /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
+    /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
         args: CommandNew,
@@ -118,6 +120,9 @@ enum Command {
         /// Attach to the dataflow and wait for its completion
         #[clap(long, action)]
         attach: bool,
+        /// Run the dataflow in background
+        #[clap(long, action)]
+        detach: bool,
         /// Enable hot reloading (Python only)
         #[clap(long, action)]
         hot_reload: bool,
@@ -231,7 +236,6 @@ pub struct CommandNew {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Kind {
     Dataflow,
-    Operator,
     CustomNode,
 }
 
@@ -344,6 +348,7 @@ fn run() -> eyre::Result<()> {
             coordinator_addr,
             coordinator_port,
             attach,
+            detach,
             hot_reload,
         } => {
             let dataflow_descriptor =
@@ -370,6 +375,16 @@ fn run() -> eyre::Result<()> {
                 working_dir,
                 &mut *session,
             )?;
+
+            let attach = match (attach, detach) {
+                (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
+                (true, false) => true,
+                (false, true) => false,
+                (false, false) => {
+                    println!("attaching to dataflow (use `--detach` to run in background)");
+                    true
+                }
+            };
 
             if attach {
                 attach_dataflow(
@@ -460,7 +475,8 @@ fn run() -> eyre::Result<()> {
                             );
                         }
 
-                        Daemon::run_dataflow(&dataflow_path).await
+                        let result = Daemon::run_dataflow(&dataflow_path).await?;
+                        handle_dataflow_result(result, None)
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {
@@ -540,11 +556,29 @@ fn stop_dataflow(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => result
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err("dataflow failed"),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
+    }
+}
+
+fn handle_dataflow_result(
+    result: dora_core::topics::DataflowResult,
+    uuid: Option<Uuid>,
+) -> Result<(), eyre::Error> {
+    if result.is_ok() {
+        Ok(())
+    } else {
+        Err(match uuid {
+            Some(uuid) => {
+                eyre::eyre!("Dataflow {uuid} failed:\n{}", FormatDataflowError(&result))
+            }
+            None => {
+                eyre::eyre!("Dataflow failed:\n{}", FormatDataflowError(&result))
+            }
+        })
     }
 }
 
@@ -565,9 +599,9 @@ fn stop_dataflow_by_name(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => result
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err("dataflow failed"),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }

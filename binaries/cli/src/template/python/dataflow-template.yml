@@ -1,23 +1,22 @@
 nodes:
-  - id: op_1
-    operator:
-      python: op_1/op_1.py
+  - id: talker_1
+    custom:
+      source: talker_1/talker_1.py
       inputs:
         tick: dora/timer/millis/100
       outputs:
-        - some-output
-  - id: op_2
-    operator:
-      python: op_2/op_2.py
+        - speech
+  - id: talker_2
+    custom:
+      source: talker_2/talker_2.py
       inputs:
         tick: dora/timer/secs/2
       outputs:
-        - some-output
+        - speech
 
-  - id: custom-node_1
+  - id: listener_1
     custom:
-      source: ./node_1/node_1.py
+      source: listener_1/listener_1.py
       inputs:
-        tick: dora/timer/secs/1
-        input-1: op_1/some-output
-        input-2: op_2/some-output
+        speech-1: talker_1/speech
+        speech-2: talker_2/speech
