@@ -31,7 +31,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                             .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
                     } else {
                         match &node.deploy.working_dir {
-                            Some(_working_dir) => {}, 
+                            Some(_working_dir) => {}
                             None => {
                                 let path = source_to_path(source);
                                 if path.is_relative() {
@@ -59,7 +59,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                                 }
                             } else {
                                 match &node.deploy.working_dir {
-                                    Some(_working_dir) => {}, 
+                                    Some(_working_dir) => {}
                                     None => {
                                         let path = source_to_path(path);
                                         if path.is_relative() {
@@ -87,7 +87,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                                 has_python_operator = true;
                             } else {
                                 match &node.deploy.working_dir {
-                                    Some(_working_dir) => {}, 
+                                    Some(_working_dir) => {}
                                     None => {
                                         let path = source_to_path(path);
                                         if path.is_relative() {
@@ -113,7 +113,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                                 }
                             } else {
                                 match &node.deploy.working_dir {
-                                    Some(_working_dir) => {}, 
+                                    Some(_working_dir) => {}
                                     None => {
                                         let path = source_to_path(path);
                                         if path.is_relative() {
@@ -132,7 +132,7 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         }
                     }
                 }
-            },
+            }
         }
     }
 

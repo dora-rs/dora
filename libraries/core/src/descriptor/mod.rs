@@ -311,7 +311,7 @@ impl ResolvedDeploy {
             Some(m) => m,
             None => default_machine.to_owned(),
         };
-        Self { 
+        Self {
             machine,
             local: deploy.local.unwrap_or(true),
             working_dir: deploy.working_dir.clone(),
