@@ -144,16 +144,17 @@ impl std::fmt::Display for NodeError {
                     23 => "NSIG".into(),
                     other => other.to_string().into(),
                 };
-                write!(f, "exited because of signal {signal_str}")
+                if matches!(self.cause, NodeErrorCause::GraceDuration) {
+                    write!(f, "node was killed by dora because it didn't react to a stop message in time ({signal_str})")
+                } else {
+                    write!(f, "exited because of signal {signal_str}")
+                }
             }
             NodeExitStatus::Unknown => write!(f, "unknown exit status"),
         }?;
 
         match &self.cause {
-            NodeErrorCause::GraceDuration => write!(
-                f,
-                "\n\nThe node was killed by dora because it didn't react to a stop message in time."
-            )?,
+            NodeErrorCause::GraceDuration => {}, // handled above
             NodeErrorCause::Cascading { caused_by_node } => write!(
                 f,
                 "\n\nThis error occurred because node `{caused_by_node}` exited before connecting to dora."
