@@ -140,6 +140,12 @@ pub struct DataflowDaemonResult {
     pub node_results: BTreeMap<NodeId, Result<(), NodeError>>,
 }
 
+impl DataflowDaemonResult {
+    pub fn is_ok(&self) -> bool {
+        self.node_results.values().all(|r| r.is_ok())
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeError {
     pub timestamp: uhlc::Timestamp,
