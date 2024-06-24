@@ -130,7 +130,7 @@ pub fn attach_dataflow(
         let result: ControlRequestReply =
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
-            ControlRequestReply::DataflowStarted { uuid: _ } => (),
+            ControlRequestReply::DataflowStarted { id: _ } => (),
             ControlRequestReply::DataflowStopped { uuid, result } => {
                 info!("dataflow {uuid} stopped");
                 break result

@@ -339,15 +339,22 @@ async fn start_inner(
                             };
                             let reply = inner.await.map(|dataflow| {
                                 let uuid = dataflow.uuid;
+                                let id = DataflowId {
+                                    uuid,
+                                    name: dataflow.name.clone(),
+                                };
                                 running_dataflows.insert(uuid, dataflow);
-                                ControlRequestReply::DataflowStarted { uuid }
+                                ControlRequestReply::DataflowStarted { id }
                             });
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Check { dataflow_uuid } => {
                             let status = match &running_dataflows.get(&dataflow_uuid) {
-                                Some(_) => ControlRequestReply::DataflowStarted {
-                                    uuid: dataflow_uuid,
+                                Some(dataflow) => ControlRequestReply::DataflowStarted {
+                                    id: DataflowId {
+                                        uuid: dataflow_uuid,
+                                        name: dataflow.name.clone(),
+                                    },
                                 },
                                 None => ControlRequestReply::DataflowStopped {
                                     uuid: dataflow_uuid,
