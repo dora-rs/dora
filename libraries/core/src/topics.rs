@@ -58,13 +58,39 @@ pub enum ControlRequest {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowList(pub Vec<DataflowListEntry>);
+
+impl DataflowList {
+    pub fn get_active(&self) -> Vec<DataflowId> {
+        self.0
+            .iter()
+            .filter(|d| d.status == DataflowStatus::Running)
+            .map(|d| d.id.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowListEntry {
+    pub id: DataflowId,
+    pub status: DataflowStatus,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub enum DataflowStatus {
+    Running,
+    Finished,
+    Failed,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowStarted { uuid: Uuid },
     DataflowReloaded { uuid: Uuid },
     DataflowStopped { uuid: Uuid, result: DataflowResult },
-    DataflowList { dataflows: Vec<DataflowId> },
+    DataflowList(DataflowList),
     DestroyOk,
     DaemonConnected(bool),
     ConnectedMachines(BTreeSet<String>),
@@ -112,6 +138,12 @@ impl DataflowResult {
 pub struct DataflowDaemonResult {
     pub timestamp: uhlc::Timestamp,
     pub node_results: BTreeMap<NodeId, Result<(), NodeError>>,
+}
+
+impl DataflowDaemonResult {
+    pub fn is_ok(&self) -> bool {
+        self.node_results.values().all(|r| r.is_ok())
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
