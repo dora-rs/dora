@@ -15,7 +15,7 @@ nodes:
     _unstable_deploy:
       machine: B
       local: false
-      working_dir: /home/miyamo/dora/examples/multiple-daemons
+      working_dir: /Users/runner/work/dora/dora/examples/multiple-daemons
     operators:
       - id: rust-operator
         build: cargo build -p multiple-daemons-example-operator
