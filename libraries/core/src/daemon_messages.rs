@@ -234,7 +234,7 @@ pub enum DaemonCoordinatorEvent {
     Spawn(SpawnDataflowNodes),
     AllNodesReady {
         dataflow_id: DataflowId,
-        success: bool,
+        exited_before_subscribe: Vec<NodeId>,
     },
     StopDataflow {
         dataflow_id: DataflowId,

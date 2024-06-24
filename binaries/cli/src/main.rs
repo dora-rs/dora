@@ -15,6 +15,7 @@ use dora_tracing::set_up_tracing;
 use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
+use formatting::FormatDataflowError;
 use std::net::SocketAddr;
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -27,6 +28,7 @@ use uuid::Uuid;
 mod attach;
 mod build;
 mod check;
+mod formatting;
 mod graph;
 mod logs;
 mod template;
@@ -457,7 +459,8 @@ fn run() -> eyre::Result<()> {
                             );
                         }
 
-                        Daemon::run_dataflow(&dataflow_path).await
+                        let result = Daemon::run_dataflow(&dataflow_path).await?;
+                        handle_dataflow_result(result, None)
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {
@@ -536,11 +539,29 @@ fn stop_dataflow(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => result
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err("dataflow failed"),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
+    }
+}
+
+fn handle_dataflow_result(
+    result: dora_core::topics::DataflowResult,
+    uuid: Option<Uuid>,
+) -> Result<(), eyre::Error> {
+    if result.is_ok() {
+        Ok(())
+    } else {
+        Err(match uuid {
+            Some(uuid) => {
+                eyre::eyre!("Dataflow {uuid} failed:\n{}", FormatDataflowError(&result))
+            }
+            None => {
+                eyre::eyre!("Dataflow failed:\n{}", FormatDataflowError(&result))
+            }
+        })
     }
 }
 
@@ -561,9 +582,9 @@ fn stop_dataflow_by_name(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => result
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err("dataflow failed"),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }

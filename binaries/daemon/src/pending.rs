@@ -9,7 +9,7 @@ use dora_core::{
 use eyre::{bail, Context};
 use tokio::{net::TcpStream, sync::oneshot};
 
-use crate::tcp_utils::tcp_send;
+use crate::{tcp_utils::tcp_send, CascadingErrorCauses};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
@@ -28,7 +28,7 @@ pub struct PendingNodes {
     ///
     /// If this list is non-empty, we should not start the dataflow at all. Instead,
     /// we report an error to the other nodes.
-    exited_before_subscribe: HashSet<NodeId>,
+    exited_before_subscribe: Vec<NodeId>,
 
     /// Whether the local init result was already reported to the coordinator.
     reported_init_to_coordinator: bool,
@@ -42,7 +42,7 @@ impl PendingNodes {
             local_nodes: HashSet::new(),
             external_nodes: false,
             waiting_subscribers: HashMap::new(),
-            exited_before_subscribe: HashSet::new(),
+            exited_before_subscribe: Default::default(),
             reported_init_to_coordinator: false,
         }
     }
@@ -61,12 +61,13 @@ impl PendingNodes {
         reply_sender: oneshot::Sender<DaemonReply>,
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
+        cascading_errors: &mut CascadingErrorCauses,
     ) -> eyre::Result<DataflowStatus> {
         self.waiting_subscribers
             .insert(node_id.clone(), reply_sender);
         self.local_nodes.remove(&node_id);
 
-        self.update_dataflow_status(coordinator_connection, clock)
+        self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
             .await
     }
 
@@ -75,26 +76,28 @@ impl PendingNodes {
         node_id: &NodeId,
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
+        cascading_errors: &mut CascadingErrorCauses,
     ) -> eyre::Result<()> {
         if self.local_nodes.remove(node_id) {
             tracing::warn!("node `{node_id}` exited before initializing dora connection");
-            self.exited_before_subscribe.insert(node_id.clone());
-            self.update_dataflow_status(coordinator_connection, clock)
+            self.exited_before_subscribe.push(node_id.clone());
+            self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
                 .await?;
         }
         Ok(())
     }
 
-    pub async fn handle_external_all_nodes_ready(&mut self, success: bool) -> eyre::Result<()> {
+    pub async fn handle_external_all_nodes_ready(
+        &mut self,
+        exited_before_subscribe: Vec<NodeId>,
+        cascading_errors: &mut CascadingErrorCauses,
+    ) -> eyre::Result<()> {
         if !self.local_nodes.is_empty() {
             bail!("received external `all_nodes_ready` event before local nodes were ready");
         }
-        let external_error = if success {
-            None
-        } else {
-            Some("some nodes failed to initialize on remote machines".to_string())
-        };
-        self.answer_subscribe_requests(external_error).await;
+
+        self.answer_subscribe_requests(exited_before_subscribe, cascading_errors)
+            .await;
 
         Ok(())
     }
@@ -103,6 +106,7 @@ impl PendingNodes {
         &mut self,
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
+        cascading_errors: &mut CascadingErrorCauses,
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
@@ -113,7 +117,8 @@ impl PendingNodes {
                 }
                 Ok(DataflowStatus::Pending)
             } else {
-                self.answer_subscribe_requests(None).await;
+                self.answer_subscribe_requests(Vec::new(), cascading_errors)
+                    .await;
                 Ok(DataflowStatus::AllNodesReady)
             }
         } else {
@@ -121,33 +126,34 @@ impl PendingNodes {
         }
     }
 
-    async fn answer_subscribe_requests(&mut self, external_error: Option<String>) {
-        let result = if self.exited_before_subscribe.is_empty() {
-            match external_error {
-                Some(err) => Err(err),
-                None => Ok(()),
-            }
-        } else {
-            let node_id_message = if self.exited_before_subscribe.len() == 1 {
-                self.exited_before_subscribe
-                    .iter()
-                    .next()
-                    .map(|node_id| node_id.to_string())
-                    .unwrap_or("<node_id>".to_string())
-            } else {
-                "<node_id>".to_string()
-            };
-            Err(format!(
-                "Some nodes exited before subscribing to dora: {:?}\n\n\
-                This is typically happens when an initialization error occurs
-                in the node or operator. To check the output of the failed
-                nodes, run `dora logs {} {node_id_message}`.",
-                self.exited_before_subscribe, self.dataflow_id
-            ))
+    async fn answer_subscribe_requests(
+        &mut self,
+        exited_before_subscribe_external: Vec<NodeId>,
+        cascading_errors: &mut CascadingErrorCauses,
+    ) {
+        let node_exited_before_subscribe = match self.exited_before_subscribe.as_slice() {
+            [first, ..] => Some(first),
+            [] => match exited_before_subscribe_external.as_slice() {
+                [first, ..] => Some(first),
+                [] => None,
+            },
         };
+
+        let result = match &node_exited_before_subscribe {
+            Some(causing_node) => Err(format!(
+                "Node {causing_node} exited before initializing dora. For \
+                more information, run `dora logs {} {causing_node}`.",
+                self.dataflow_id
+            )),
+            None => Ok(()),
+        };
+
         // answer all subscribe requests
         let subscribe_replies = std::mem::take(&mut self.waiting_subscribers);
-        for reply_sender in subscribe_replies.into_values() {
+        for (node_id, reply_sender) in subscribe_replies.into_iter() {
+            if let Some(causing_node) = node_exited_before_subscribe {
+                cascading_errors.report_cascading_error(causing_node.clone(), node_id.clone());
+            }
             let _ = reply_sender.send(DaemonReply::Result(result.clone()));
         }
     }
@@ -161,15 +167,17 @@ impl PendingNodes {
             bail!("no coordinator connection to send AllNodesReady");
         };
 
-        let success = self.exited_before_subscribe.is_empty();
-        tracing::info!("all local nodes are ready (success = {success}), waiting for remote nodes");
+        tracing::info!(
+            "all local nodes are ready (exit before subscribe: {:?}), waiting for remote nodes",
+            self.exited_before_subscribe
+        );
 
         let msg = serde_json::to_vec(&Timestamped {
             inner: CoordinatorRequest::Event {
                 machine_id: self.machine_id.clone(),
                 event: DaemonEvent::AllNodesReady {
                     dataflow_id: self.dataflow_id,
-                    success,
+                    exited_before_subscribe: self.exited_before_subscribe.clone(),
                 },
             },
             timestamp,
