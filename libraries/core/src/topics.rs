@@ -150,6 +150,10 @@ impl std::fmt::Display for NodeError {
         }?;
 
         match &self.cause {
+            NodeErrorCause::GraceDuration => write!(
+                f,
+                "\n\nThe node was killed by dora because it didn't react to a stop message in time."
+            )?,
             NodeErrorCause::Cascading { caused_by_node } => write!(
                 f,
                 "\n\nThis error occurred because node `{caused_by_node}` exited before connecting to dora."
@@ -167,6 +171,8 @@ impl std::fmt::Display for NodeError {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum NodeErrorCause {
+    /// Node was killed because it didn't react to a stop message in time.
+    GraceDuration,
     /// Node failed because another node failed before,
     Cascading {
         caused_by_node: NodeId,
