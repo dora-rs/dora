@@ -2,8 +2,8 @@ use dora_coordinator::{ControlEvent, Event};
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        ControlRequest, ControlRequestReply, DataflowId, DataflowList,
-        DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT,
+        ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        DORA_COORDINATOR_PORT_DEFAULT,
     },
 };
 use dora_tracing::set_up_tracing;
@@ -176,7 +176,7 @@ async fn running_dataflows(coordinator_events_tx: &Sender<Event>) -> eyre::Resul
         .await?;
     let result = reply.await??;
     let dataflows = match result {
-        ControlRequestReply::DataflowList(DataflowList { active, .. }) => active,
+        ControlRequestReply::DataflowList(list) => list.get_active(),
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     };
