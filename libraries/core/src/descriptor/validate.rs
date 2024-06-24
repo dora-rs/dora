@@ -1,7 +1,7 @@
 use crate::{
     adjust_shared_library_path,
     config::{DataId, Input, InputMapping, OperatorId, UserInputMapping},
-    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource, EXE_EXTENSION},
+    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
     get_python_path,
 };
 
@@ -9,15 +9,11 @@ use eyre::{bail, eyre, Context};
 use std::{path::Path, process::Command};
 use tracing::info;
 
-use super::{resolve_path, Descriptor, DYNAMIC_SOURCE, SHELL_SOURCE};
+use super::{resolve_path, source_to_path, Descriptor, DYNAMIC_SOURCE, SHELL_SOURCE};
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub fn check_dataflow(
-    dataflow: &Descriptor,
-    working_dir: &Path,
-    remote_daemon_id: Option<&[&str]>,
-    coordinator_is_remote: bool,
-) -> eyre::Result<()> {
+pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
 
@@ -30,61 +26,108 @@ pub fn check_dataflow(
                 source => {
                     if source_is_url(source) {
                         info!("{source} is a URL."); // TODO: Implement url check.
-                    } else if let Some(remote_daemon_id) = remote_daemon_id {
-                        if remote_daemon_id.contains(&node.deploy.machine.as_str())
-                            || coordinator_is_remote
-                        {
-                            let path = Path::new(&source);
-                            let path = if path.extension().is_none() {
-                                path.with_extension(EXE_EXTENSION)
-                            } else {
-                                path.to_owned()
-                            };
-                            if path.is_relative() {
-                                eyre::bail!(
-                                    "paths of remote nodes must be absolute (node `{}`)",
-                                    node.id
-                                );
-                            }
-                            info!("skipping path check for remote node `{}`", node.id);
-                        } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{}`", source)
-                            })?;
-                        }
-                    } else {
+                    } else if node.deploy.local {
                         resolve_path(source, working_dir)
                             .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
-                    };
+                    } else {
+                        match &node.deploy.working_dir {
+                            Some(_working_dir) => {}
+                            None => {
+                                let path = source_to_path(source);
+                                if path.is_relative() {
+                                    eyre::bail!(
+                                        "paths of remote nodes must be absolute (node `{}`) unless you specify a working_dir for remote machine",
+                                        node.id
+                                    );
+                                }
+                                info!("skipping path check for remote node `{}`", node.id);
+                            }
+                        }
+                    }
                 }
             },
-            descriptor::CoreNodeKind::Runtime(node) => {
-                for operator_definition in &node.operators {
+            descriptor::CoreNodeKind::Runtime(runtime) => {
+                for operator_definition in &runtime.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else {
+                            } else if node.deploy.local {
                                 let path = adjust_shared_library_path(Path::new(&path))?;
                                 if !working_dir.join(&path).exists() {
                                     bail!("no shared library at `{}`", path.display());
                                 }
+                            } else {
+                                match &node.deploy.working_dir {
+                                    Some(_working_dir) => {}
+                                    None => {
+                                        let path = source_to_path(path);
+                                        if path.is_relative() {
+                                            eyre::bail!(
+                                                "paths of operator must be absolute (operator `{}`) unless you specify a working_dir for remote machine",
+                                                operator_definition.id
+                                            );
+                                        }
+                                        info!(
+                                            "skipping path check for remote operator `{}`",
+                                            operator_definition.id
+                                        );
+                                    }
+                                }
                             }
                         }
                         OperatorSource::Python(python_source) => {
-                            has_python_operator = true;
                             let path = &python_source.source;
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !working_dir.join(path).exists() {
-                                bail!("no Python library at `{path}`");
+                            } else if node.deploy.local {
+                                if !working_dir.join(path).exists() {
+                                    bail!("no Python library at `{path}`");
+                                }
+                                has_python_operator = true;
+                            } else {
+                                match &node.deploy.working_dir {
+                                    Some(_working_dir) => {}
+                                    None => {
+                                        let path = source_to_path(path);
+                                        if path.is_relative() {
+                                            eyre::bail!(
+                                                "paths of python operator must be absolute (operator `{}`) unless you specify a working_dir for remote machine",
+                                                operator_definition.id
+                                            );
+                                        }
+                                        info!(
+                                            "skipping path check for remote python operator `{}`",
+                                            operator_definition.id
+                                        );
+                                    }
+                                }
                             }
                         }
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !working_dir.join(path).exists() {
-                                bail!("no WASM library at `{path}`");
+                            } else if node.deploy.local {
+                                if !working_dir.join(path).exists() {
+                                    bail!("no WASM library at `{path}`");
+                                }
+                            } else {
+                                match &node.deploy.working_dir {
+                                    Some(_working_dir) => {}
+                                    None => {
+                                        let path = source_to_path(path);
+                                        if path.is_relative() {
+                                            eyre::bail!(
+                                                "paths of Wasm operator must be absolute (operator `{}`) unless you specify a working_dir for remote machine",
+                                                operator_definition.id
+                                            );
+                                        }
+                                        info!(
+                                            "skipping path check for remote Wasm operator `{}`",
+                                            operator_definition.id
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

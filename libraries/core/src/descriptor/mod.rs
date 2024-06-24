@@ -134,23 +134,7 @@ impl Descriptor {
     }
 
     pub fn check(&self, working_dir: &Path) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, None, false)
-            .wrap_err("Dataflow could not be validated.")
-    }
-
-    pub fn check_in_daemon(
-        &self,
-        working_dir: &Path,
-        remote_machine_id: &[&str],
-        coordinator_is_remote: bool,
-    ) -> eyre::Result<()> {
-        validate::check_dataflow(
-            self,
-            working_dir,
-            Some(remote_machine_id),
-            coordinator_is_remote,
-        )
-        .wrap_err("Dataflow could not be validated.")
+        validate::check_dataflow(self, working_dir).wrap_err("Dataflow could not be validated.")
     }
 }
 
@@ -158,6 +142,8 @@ impl Descriptor {
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
+    pub local: Option<bool>,
+    pub working_dir: Option<String>,
 }
 
 /// Dora Node
@@ -315,6 +301,8 @@ impl ResolvedNode {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResolvedDeploy {
     pub machine: String,
+    pub local: bool,
+    pub working_dir: Option<String>,
 }
 impl ResolvedDeploy {
     fn new(deploy: Deploy, descriptor: &Descriptor) -> Self {
@@ -323,7 +311,11 @@ impl ResolvedDeploy {
             Some(m) => m,
             None => default_machine.to_owned(),
         };
-        Self { machine }
+        Self {
+            machine,
+            local: deploy.local.unwrap_or(true),
+            working_dir: deploy.working_dir.clone(),
+        }
     }
 }
 
@@ -480,12 +472,7 @@ pub fn source_is_url(source: &str) -> bool {
 }
 
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
-    let path = Path::new(&source);
-    let path = if path.extension().is_none() {
-        path.with_extension(EXE_EXTENSION)
-    } else {
-        path.to_owned()
-    };
+    let path = source_to_path(source);
 
     // Search path within current working directory
     if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
@@ -495,6 +482,14 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         Ok(abs_path)
     } else {
         bail!("Could not find source path {}", path.display())
+    }
+}
+pub fn source_to_path(source: &str) -> PathBuf {
+    let path = Path::new(&source);
+    if path.extension().is_none() {
+        path.with_extension(EXE_EXTENSION)
+    } else {
+        path.to_owned()
     }
 }
 

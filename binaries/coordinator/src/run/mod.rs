@@ -24,17 +24,7 @@ pub(super) async fn spawn_dataflow(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
 ) -> eyre::Result<SpawnedDataflow> {
-    let remote_machine_id: Vec<_> = daemon_connections
-        .iter()
-        .filter_map(|(id, c)| {
-            if !c.listen_socket.ip().is_loopback() {
-                Some(id.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-    dataflow.check_in_daemon(&working_dir, &remote_machine_id, false)?;
+    //dataflow.check(&working_dir)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
@@ -49,7 +39,6 @@ pub(super) async fn spawn_dataflow(
                 .map(|c| (m.clone(), c.listen_socket))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
         working_dir,

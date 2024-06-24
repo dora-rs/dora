@@ -348,7 +348,16 @@ impl Daemon {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
-                for (machine_id, socket) in machine_listen_ports {
+                for (machine_id, mut socket) in machine_listen_ports {
+                    if socket.ip().is_loopback() {
+                        if let Some(ref coordinator_socket) = self.coordinator_connection {
+                            let new_ip = coordinator_socket
+                                .peer_addr()
+                                .wrap_err("failed to get peer address of coordinator")?
+                                .ip();
+                            socket = SocketAddr::new(new_ip, socket.port());
+                        }
+                    }
                     match self.inter_daemon_connections.entry(machine_id) {
                         std::collections::btree_map::Entry::Vacant(entry) => {
                             entry.insert(InterDaemonConnection::new(socket));
@@ -572,7 +581,7 @@ impl Daemon {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
         };
-
+        let mut working_dir = working_dir;
         for node in nodes {
             let local = node.deploy.machine == self.machine_id;
 
@@ -614,6 +623,18 @@ impl Daemon {
                 dataflow.pending_nodes.insert(node.id.clone());
 
                 let node_id = node.id.clone();
+                match &node.deploy.working_dir {
+                    Some(local_working_dir) => {
+                        working_dir = PathBuf::from(local_working_dir);
+                    }
+                    None => {
+                        if !node.deploy.local {
+                            working_dir = dirs::home_dir()
+                                .wrap_err("failed to get home dir and change working dir")?;
+                        }
+                        tracing::debug!("As you don't specify working_dir in remote machine, change the home dir as working dir: {working_dir:?}");
+                    }
+                }
                 match spawn::spawn_node(
                     dataflow_id,
                     &working_dir,
