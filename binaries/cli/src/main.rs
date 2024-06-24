@@ -119,6 +119,9 @@ enum Command {
         /// Attach to the dataflow and wait for its completion
         #[clap(long, action)]
         attach: bool,
+        /// Run the dataflow in background
+        #[clap(long, action)]
+        detach: bool,
         /// Enable hot reloading (Python only)
         #[clap(long, action)]
         hot_reload: bool,
@@ -343,6 +346,7 @@ fn run() -> eyre::Result<()> {
             coordinator_addr,
             coordinator_port,
             attach,
+            detach,
             hot_reload,
         } => {
             let dataflow_descriptor =
@@ -369,6 +373,16 @@ fn run() -> eyre::Result<()> {
                 working_dir,
                 &mut *session,
             )?;
+
+            let attach = match (attach, detach) {
+                (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
+                (true, false) => true,
+                (false, true) => false,
+                (false, false) => {
+                    println!("attaching to dataflow (use `--detach` to run in background)");
+                    true
+                }
+            };
 
             if attach {
                 attach_dataflow(
