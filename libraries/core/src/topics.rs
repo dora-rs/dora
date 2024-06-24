@@ -60,7 +60,7 @@ pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowStarted {
-        uuid: Uuid,
+        id: DataflowId,
     },
     DataflowReloaded {
         uuid: Uuid,

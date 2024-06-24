@@ -368,11 +368,13 @@ fn run() -> eyre::Result<()> {
                 &mut *session,
             )?;
 
+            println!("Started dataflow {dataflow_id}");
+
             if attach {
                 attach_dataflow(
                     dataflow_descriptor,
                     dataflow,
-                    dataflow_id,
+                    dataflow_id.uuid,
                     &mut *session,
                     hot_reload,
                 )?
@@ -480,7 +482,7 @@ fn start_dataflow(
     name: Option<String>,
     local_working_dir: PathBuf,
     session: &mut TcpRequestReplyConnection,
-) -> Result<Uuid, eyre::ErrReport> {
+) -> eyre::Result<DataflowId> {
     let reply_raw = session
         .request(
             &serde_json::to_vec(&ControlRequest::Start {
@@ -495,10 +497,7 @@ fn start_dataflow(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStarted { uuid } => {
-            eprintln!("{uuid}");
-            Ok(uuid)
-        }
+        ControlRequestReply::DataflowStarted { id } => Ok(id),
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     }
