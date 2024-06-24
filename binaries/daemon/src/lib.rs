@@ -1183,7 +1183,11 @@ impl Daemon {
                                 stderr: dataflow
                                     .and_then(|d| d.node_stderr_most_recent.get(&node_id))
                                     .map(|queue| {
-                                        let mut s = String::new();
+                                        let mut s = if queue.is_full() {
+                                            "[...]".into()
+                                        } else {
+                                            String::new()
+                                        };
                                         while let Some(line) = queue.pop() {
                                             s += &line;
                                         }
