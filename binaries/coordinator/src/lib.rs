@@ -10,7 +10,8 @@ use dora_core::{
     descriptor::{Descriptor, ResolvedNode},
     message::uhlc::{self, HLC},
     topics::{
-        ControlRequest, ControlRequestReply, DataflowDaemonResult, DataflowId, DataflowResult,
+        ControlRequest, ControlRequestReply, DataflowDaemonResult, DataflowId, DataflowListEntry,
+        DataflowResult,
     },
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
@@ -466,15 +467,31 @@ async fn start_inner(
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
-                            let reply = Ok(ControlRequestReply::DataflowList {
-                                dataflows: dataflows
-                                    .into_iter()
-                                    .map(|d| DataflowId {
-                                        uuid: d.uuid,
-                                        name: d.name.clone(),
-                                    })
-                                    .collect(),
+                            let running = dataflows.into_iter().map(|d| DataflowListEntry {
+                                id: DataflowId {
+                                    uuid: d.uuid,
+                                    name: d.name.clone(),
+                                },
+                                status: dora_core::topics::DataflowStatus::Running,
                             });
+                            let finished_failed =
+                                dataflow_results.iter().map(|(&uuid, results)| {
+                                    let name =
+                                        archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
+                                    let id = DataflowId { uuid, name };
+                                    let status = if results.values().all(|r| r.is_ok()) {
+                                        dora_core::topics::DataflowStatus::Finished
+                                    } else {
+                                        dora_core::topics::DataflowStatus::Failed
+                                    };
+                                    DataflowListEntry { id, status }
+                                });
+
+                            let reply = Ok(ControlRequestReply::DataflowList(
+                                dora_core::topics::DataflowList(
+                                    running.chain(finished_failed).collect(),
+                                ),
+                            ));
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DaemonConnected => {
