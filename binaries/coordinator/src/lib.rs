@@ -9,7 +9,10 @@ use dora_core::{
     daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
     message::uhlc::{self, HLC},
-    topics::{ControlRequest, ControlRequestReply, DataflowId},
+    topics::{
+        ControlRequest, ControlRequestReply, DataflowDaemonResult, DataflowId, DataflowListEntry,
+        DataflowResult,
+    },
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
@@ -134,7 +137,8 @@ async fn start_inner(
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
-    let mut dataflow_results: HashMap<Uuid, BTreeMap<String, Result<(), String>>> = HashMap::new();
+    let mut dataflow_results: HashMap<Uuid, BTreeMap<String, DataflowDaemonResult>> =
+        HashMap::new();
     let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections: HashMap<_, DaemonConnection> = HashMap::new();
 
@@ -220,18 +224,22 @@ async fn start_inner(
             Event::Dataflow { uuid, event } => match event {
                 DataflowEvent::ReadyOnMachine {
                     machine_id,
-                    success,
+                    exited_before_subscribe,
                 } => {
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
                             dataflow.pending_machines.remove(&machine_id);
-                            dataflow.init_success &= success;
+                            dataflow
+                                .exited_before_subscribe
+                                .extend(exited_before_subscribe);
                             if dataflow.pending_machines.is_empty() {
                                 let message = serde_json::to_vec(&Timestamped {
                                     inner: DaemonCoordinatorEvent::AllNodesReady {
                                         dataflow_id: uuid,
-                                        success: dataflow.init_success,
+                                        exited_before_subscribe: dataflow
+                                            .exited_before_subscribe
+                                            .clone(),
                                     },
                                     timestamp: clock.new_timestamp(),
                                 })
@@ -271,26 +279,20 @@ async fn start_inner(
                                     .insert(uuid, ArchivedDataflow::from(entry.get()));
                             }
                             entry.get_mut().machines.remove(&machine_id);
-                            match &result {
-                                Ok(()) => {
-                                    tracing::info!("dataflow `{uuid}` finished successfully on machine `{machine_id}`");
-                                }
-                                Err(err) => {
-                                    tracing::error!("{err:?}");
-                                }
-                            }
                             dataflow_results
                                 .entry(uuid)
                                 .or_default()
-                                .insert(machine_id, result.map_err(|err| format!("{err:?}")));
+                                .insert(machine_id, result);
                             if entry.get_mut().machines.is_empty() {
                                 let finished_dataflow = entry.remove();
                                 let reply = ControlRequestReply::DataflowStopped {
                                     uuid,
                                     result: dataflow_results
                                         .get(&uuid)
-                                        .map(|r| dataflow_result(r, uuid))
-                                        .unwrap_or(Ok(())),
+                                        .map(|r| dataflow_result(r, uuid, &clock))
+                                        .unwrap_or_else(|| {
+                                            DataflowResult::ok_empty(uuid, clock.new_timestamp())
+                                        }),
                                 };
                                 for sender in finished_dataflow.reply_senders {
                                     let _ = sender.send(Ok(reply.clone()));
@@ -353,8 +355,13 @@ async fn start_inner(
                                     uuid: dataflow_uuid,
                                     result: dataflow_results
                                         .get(&dataflow_uuid)
-                                        .map(|r| dataflow_result(r, dataflow_uuid))
-                                        .unwrap_or(Ok(())),
+                                        .map(|r| dataflow_result(r, dataflow_uuid, &clock))
+                                        .unwrap_or_else(|| {
+                                            DataflowResult::ok_empty(
+                                                dataflow_uuid,
+                                                clock.new_timestamp(),
+                                            )
+                                        }),
                                 },
                             };
                             let _ = reply_sender.send(Ok(status));
@@ -396,6 +403,7 @@ async fn start_inner(
                                 reply_sender,
                                 clock.new_timestamp(),
                                 grace_duration,
+                                &clock,
                             )
                             .await?;
                         }
@@ -412,6 +420,7 @@ async fn start_inner(
                                     reply_sender,
                                     clock.new_timestamp(),
                                     grace_duration,
+                                    &clock,
                                 )
                                 .await?
                             }
@@ -458,15 +467,31 @@ async fn start_inner(
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
-                            let reply = Ok(ControlRequestReply::DataflowList {
-                                dataflows: dataflows
-                                    .into_iter()
-                                    .map(|d| DataflowId {
-                                        uuid: d.uuid,
-                                        name: d.name.clone(),
-                                    })
-                                    .collect(),
+                            let running = dataflows.into_iter().map(|d| DataflowListEntry {
+                                id: DataflowId {
+                                    uuid: d.uuid,
+                                    name: d.name.clone(),
+                                },
+                                status: dora_core::topics::DataflowStatus::Running,
                             });
+                            let finished_failed =
+                                dataflow_results.iter().map(|(&uuid, results)| {
+                                    let name =
+                                        archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
+                                    let id = DataflowId { uuid, name };
+                                    let status = if results.values().all(|r| r.is_ok()) {
+                                        dora_core::topics::DataflowStatus::Finished
+                                    } else {
+                                        dora_core::topics::DataflowStatus::Failed
+                                    };
+                                    DataflowListEntry { id, status }
+                                });
+
+                            let reply = Ok(ControlRequestReply::DataflowList(
+                                dora_core::topics::DataflowList(
+                                    running.chain(finished_failed).collect(),
+                                ),
+                            ));
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DaemonConnected => {
@@ -545,18 +570,19 @@ async fn start_inner(
 
 async fn stop_dataflow_by_uuid(
     running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
-    dataflow_results: &HashMap<Uuid, BTreeMap<String, Result<(), String>>>,
+    dataflow_results: &HashMap<Uuid, BTreeMap<String, DataflowDaemonResult>>,
     dataflow_uuid: Uuid,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     reply_sender: tokio::sync::oneshot::Sender<Result<ControlRequestReply, eyre::ErrReport>>,
     timestamp: uhlc::Timestamp,
     grace_duration: Option<Duration>,
+    clock: &uhlc::HLC,
 ) -> Result<(), eyre::ErrReport> {
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
         if let Some(result) = dataflow_results.get(&dataflow_uuid) {
             let reply = ControlRequestReply::DataflowStopped {
                 uuid: dataflow_uuid,
-                result: dataflow_result(result, dataflow_uuid),
+                result: dataflow_result(result, dataflow_uuid, clock),
             };
             let _ = reply_sender.send(Ok(reply));
             return Ok(());
@@ -585,36 +611,23 @@ async fn stop_dataflow_by_uuid(
     Ok(())
 }
 
-fn format_error(machine: &str, err: &str) -> String {
-    let mut error = err
-        .lines()
-        .fold(format!("- machine `{machine}`:\n"), |mut output, line| {
-            output.push_str("    ");
-            output.push_str(line);
-            output.push('\n');
-            output
-        });
-    error.push('\n');
-    error
-}
-
 fn dataflow_result(
-    results: &BTreeMap<String, Result<(), String>>,
+    results: &BTreeMap<String, DataflowDaemonResult>,
     dataflow_uuid: Uuid,
-) -> Result<(), String> {
-    let mut errors = Vec::new();
-    for (machine, result) in results {
-        if let Err(err) = result {
-            errors.push(format_error(machine, err));
+    clock: &uhlc::HLC,
+) -> DataflowResult {
+    let mut node_results = BTreeMap::new();
+    for (_machine, result) in results {
+        node_results.extend(result.node_results.clone());
+        if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
+            tracing::warn!("failed to update HLC: {err}");
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        let mut formatted = format!("errors occurred in dataflow {dataflow_uuid}:\n");
-        formatted.push_str(&errors.join("\n"));
-        Err(formatted)
+    DataflowResult {
+        uuid: dataflow_uuid,
+        timestamp: clock.new_timestamp(),
+        node_results,
     }
 }
 
@@ -669,7 +682,7 @@ struct RunningDataflow {
     machines: BTreeSet<String>,
     /// IDs of machines that are waiting until all nodes are started.
     pending_machines: BTreeSet<String>,
-    init_success: bool,
+    exited_before_subscribe: Vec<NodeId>,
     nodes: Vec<ResolvedNode>,
 
     reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -868,7 +881,7 @@ async fn start_dataflow(
         } else {
             BTreeSet::new()
         },
-        init_success: true,
+        exited_before_subscribe: Default::default(),
         machines,
         nodes,
         reply_senders: Vec::new(),
@@ -935,11 +948,11 @@ impl Event {
 pub enum DataflowEvent {
     DataflowFinishedOnMachine {
         machine_id: String,
-        result: eyre::Result<()>,
+        result: DataflowDaemonResult,
     },
     ReadyOnMachine {
         machine_id: String,
-        success: bool,
+        exited_before_subscribe: Vec<NodeId>,
     },
 }
 
@@ -973,22 +986,4 @@ fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> 
     .wrap_err("failed to set ctrl-c handler")?;
 
     Ok(ReceiverStream::new(ctrlc_rx))
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_format_error() {
-        let machine = "machine A";
-        let err = "foo\nbar\nbuzz";
-
-        // old method
-        let old_error = {
-            #[allow(clippy::format_collect)]
-            let err: String = err.lines().map(|line| format!("    {line}\n")).collect();
-            format!("- machine `{machine}`:\n{err}\n")
-        };
-        let new_error = super::format_error(machine, err);
-        assert_eq!(old_error, new_error)
-    }
 }
