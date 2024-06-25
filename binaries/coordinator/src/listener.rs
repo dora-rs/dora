@@ -1,6 +1,6 @@
 use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
 use dora_core::{coordinator_messages, daemon_messages::Timestamped, message::uhlc::HLC};
-use eyre::{eyre, Context};
+use eyre::Context;
 use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -66,13 +66,13 @@ pub async fn handle_connection(
             coordinator_messages::CoordinatorRequest::Event { machine_id, event } => match event {
                 coordinator_messages::DaemonEvent::AllNodesReady {
                     dataflow_id,
-                    success,
+                    exited_before_subscribe,
                 } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
                         event: DataflowEvent::ReadyOnMachine {
                             machine_id,
-                            success,
+                            exited_before_subscribe,
                         },
                     };
                     if events_tx.send(event).await.is_err() {
@@ -85,10 +85,7 @@ pub async fn handle_connection(
                 } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
-                        event: DataflowEvent::DataflowFinishedOnMachine {
-                            machine_id,
-                            result: result.map_err(|e| eyre!(e)),
-                        },
+                        event: DataflowEvent::DataflowFinishedOnMachine { machine_id, result },
                     };
                     if events_tx.send(event).await.is_err() {
                         break;
