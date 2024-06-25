@@ -2589,6 +2589,7 @@ dependencies = [
  "eyre",
  "futures",
  "pyo3",
+ "pyo3_special_method_derive",
  "serde",
  "serde_assert",
 ]
@@ -6558,9 +6559,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3_special_method_derive"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba8f52c03a4a510534a6cea6a44e3872a7287392e7c9b8ffe9a9409d736f10a"
+checksum = "e831c9f620de245243f105f2d764c59c32a853bd1c9fb34504116e0d6d094fad"
 dependencies = [
  "proc-macro2",
  "pyo3",

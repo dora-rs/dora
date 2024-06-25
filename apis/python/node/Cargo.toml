@@ -25,7 +25,7 @@ arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"
 dora-ros2-bridge-python = { workspace = true }
-pyo3_special_method_derive = "0.1.0"
+pyo3_special_method_derive = "0.2.1"
 
 [lib]
 name = "dora"
