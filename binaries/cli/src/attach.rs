@@ -169,15 +169,19 @@ pub fn attach_dataflow(
                 let level = match level {
                     log::Level::Error => "ERROR".red(),
                     log::Level::Warn => "WARN ".yellow(),
+                    log::Level::Info => "INFO ".green(),
                     other => format!("{other:5}").normal(),
                 };
-                let target = target.dimmed();
                 let node = match node_id {
-                    Some(node_id) => format!("{node_id} ").normal(),
+                    Some(node_id) => format!(" {node_id}").bold(),
+                    None => "".normal(),
+                };
+                let target = match target {
+                    Some(target) => format!(" {target}").dimmed(),
                     None => "".normal(),
                 };
 
-                println!("{level} {node}{target}: {message}");
+                println!("{level}{node}{target}: {message}");
                 continue;
             }
             Ok(AttachEvent::Log(Err(err))) => {

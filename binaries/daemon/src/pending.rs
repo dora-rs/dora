@@ -84,7 +84,7 @@ impl PendingNodes {
                 dataflow_id: self.dataflow_id,
                 node_id: Some(node_id.clone()),
                 level: Level::Warn,
-                target: "exit".into(),
+                target: None,
                 module_path: None,
                 file: None,
                 line: None,
