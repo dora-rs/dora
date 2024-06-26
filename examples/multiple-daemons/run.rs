@@ -176,7 +176,7 @@ async fn running_dataflows(coordinator_events_tx: &Sender<Event>) -> eyre::Resul
         .await?;
     let result = reply.await??;
     let dataflows = match result {
-        ControlRequestReply::DataflowList { dataflows } => dataflows,
+        ControlRequestReply::DataflowList(list) => list.get_active(),
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     };
