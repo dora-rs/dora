@@ -573,10 +573,7 @@ impl Daemon {
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                self.working_dir.insert(dataflow_id, working_dir.clone());
-                entry.insert(dataflow)
-            }
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(dataflow),
             std::collections::hash_map::Entry::Occupied(_) => {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
@@ -633,6 +630,19 @@ impl Daemon {
                                 .wrap_err("failed to get home dir and change working dir")?;
                         }
                         tracing::debug!("As you don't specify working_dir in remote machine, change the home dir as working dir: {working_dir:?}");
+                    }
+                }
+                match self.working_dir.entry(dataflow_id) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(working_dir.clone());
+                    }
+                    std::collections::hash_map::Entry::Occupied(entry) => {
+                        tracing::info!(
+                            "working_dir for dataflow {} in daemon {} already exists: {:?}",
+                            dataflow_id,
+                            node.deploy.machine,
+                            entry.get()
+                        );
                     }
                 }
                 match spawn::spawn_node(
