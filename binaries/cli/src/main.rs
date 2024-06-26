@@ -1,5 +1,6 @@
 use attach::attach_dataflow;
 use clap::Parser;
+use colored::Colorize;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_coordinator::Event;
 use dora_core::{
@@ -245,6 +246,7 @@ enum Lang {
 
 fn main() {
     if let Err(err) = run() {
+        eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:#}");
         std::process::exit(1);
     }

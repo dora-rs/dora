@@ -664,7 +664,7 @@ impl Daemon {
                             dataflow_id,
                             node_id: Some(node_id.clone()),
                             level: Level::Error,
-                            target: "spawn".into(),
+                            target: None,
                             module_path: None,
                             file: None,
                             line: None,
@@ -1244,7 +1244,7 @@ impl Daemon {
                     } else {
                         Level::Error
                     },
-                    target: "exit".into(),
+                    target: None,
                     module_path: None,
                     file: None,
                     line: None,

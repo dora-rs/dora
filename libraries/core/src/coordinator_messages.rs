@@ -21,7 +21,7 @@ pub struct LogMessage {
     pub dataflow_id: DataflowId,
     pub node_id: Option<NodeId>,
     pub level: log::Level,
-    pub target: String,
+    pub target: Option<String>,
     pub module_path: Option<String>,
     pub file: Option<String>,
     pub line: Option<u32>,
