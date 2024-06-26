@@ -62,13 +62,39 @@ pub enum ControlRequest {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowList(pub Vec<DataflowListEntry>);
+
+impl DataflowList {
+    pub fn get_active(&self) -> Vec<DataflowId> {
+        self.0
+            .iter()
+            .filter(|d| d.status == DataflowStatus::Running)
+            .map(|d| d.id.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowListEntry {
+    pub id: DataflowId,
+    pub status: DataflowStatus,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub enum DataflowStatus {
+    Running,
+    Finished,
+    Failed,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowStarted { uuid: Uuid },
     DataflowReloaded { uuid: Uuid },
     DataflowStopped { uuid: Uuid, result: DataflowResult },
-    DataflowList { dataflows: Vec<DataflowId> },
+    DataflowList(DataflowList),
     DestroyOk,
     DaemonConnected(bool),
     ConnectedMachines(BTreeSet<String>),
@@ -118,6 +144,12 @@ pub struct DataflowDaemonResult {
     pub node_results: BTreeMap<NodeId, Result<(), NodeError>>,
 }
 
+impl DataflowDaemonResult {
+    pub fn is_ok(&self) -> bool {
+        self.node_results.values().all(|r| r.is_ok())
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeError {
     pub timestamp: uhlc::Timestamp,
@@ -148,12 +180,17 @@ impl std::fmt::Display for NodeError {
                     23 => "NSIG".into(),
                     other => other.to_string().into(),
                 };
-                write!(f, "exited because of signal {signal_str}")
+                if matches!(self.cause, NodeErrorCause::GraceDuration) {
+                    write!(f, "node was killed by dora because it didn't react to a stop message in time ({signal_str})")
+                } else {
+                    write!(f, "exited because of signal {signal_str}")
+                }
             }
             NodeExitStatus::Unknown => write!(f, "unknown exit status"),
         }?;
 
         match &self.cause {
+            NodeErrorCause::GraceDuration => {}, // handled above
             NodeErrorCause::Cascading { caused_by_node } => write!(
                 f,
                 "\n\nThis error occurred because node `{caused_by_node}` exited before connecting to dora."
@@ -161,7 +198,7 @@ impl std::fmt::Display for NodeError {
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
                 let line: &str = "---------------------------------------------------------------------------------\n";
-                write!(f, "with stderr output:\n{line}[...]\n{stderr}{line}")?
+                write!(f, " with stderr output:\n{line}{stderr}{line}")?
             },
         }
 
@@ -171,6 +208,8 @@ impl std::fmt::Display for NodeError {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum NodeErrorCause {
+    /// Node was killed because it didn't react to a stop message in time.
+    GraceDuration,
     /// Node failed because another node failed before,
     Cascading {
         caused_by_node: NodeId,
