@@ -71,7 +71,7 @@ arrow = { version = "52" }
 arrow-schema = { version = "52" }
 arrow-data = { version = "52" }
 arrow-array = { version = "52" }
-pyo3 = "0.21"
+pyo3 = { version = "0.21", features = ["eyre", "abi3-py37", "multiple-pymethods"] }
 pythonize = "0.21"
 
 [package]
