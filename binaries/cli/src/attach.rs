@@ -157,13 +157,13 @@ pub fn attach_dataflow(
             Ok(AttachEvent::Control(control_request)) => control_request,
             Ok(AttachEvent::Log(Ok(log_message))) => {
                 let LogMessage {
-                    dataflow_id,
+                    dataflow_id: _,
                     node_id,
                     level,
                     target,
-                    module_path,
-                    file,
-                    line,
+                    module_path: _,
+                    file: _,
+                    line: _,
                     message,
                 } = log_message;
                 let level = match level {
