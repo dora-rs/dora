@@ -279,6 +279,12 @@ fn run() -> eyre::Result<()> {
         }
     };
 
+    let log_level = env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .build()
+        .filter();
+
     match args.command {
         Command::Check {
             dataflow,
@@ -379,6 +385,7 @@ fn run() -> eyre::Result<()> {
                     &mut *session,
                     hot_reload,
                     coordinator_socket,
+                    log_level,
                 )?
             }
         }

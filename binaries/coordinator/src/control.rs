@@ -176,7 +176,7 @@ pub enum ControlEvent {
     },
     LogSubscribe {
         dataflow_id: Uuid,
-        level: log::Level,
+        level: log::LevelFilter,
         connection: TcpStream,
     },
     Error(eyre::Report),

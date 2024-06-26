@@ -3,12 +3,12 @@ use dora_core::coordinator_messages::LogMessage;
 use crate::tcp_utils::tcp_send;
 
 pub struct LogSubscriber {
-    pub level: log::Level,
+    pub level: log::LevelFilter,
     connection: tokio::net::TcpStream,
 }
 
 impl LogSubscriber {
-    pub fn new(level: log::Level, connection: tokio::net::TcpStream) -> Self {
+    pub fn new(level: log::LevelFilter, connection: tokio::net::TcpStream) -> Self {
         Self { level, connection }
     }
 
