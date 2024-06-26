@@ -581,7 +581,12 @@ async fn start_inner(
             Event::Log(message) => {
                 if let Some(dataflow) = running_dataflows.get_mut(&message.dataflow_id) {
                     for subscriber in &mut dataflow.log_subscribers {
-                        if subscriber.send_message(&message).await.is_err() {
+                        let send_result = tokio::time::timeout(
+                            Duration::from_millis(100),
+                            subscriber.send_message(&message),
+                        );
+
+                        if send_result.await.is_err() {
                             subscriber.close();
                         }
                     }
