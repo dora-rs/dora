@@ -24,8 +24,6 @@ pub(super) async fn spawn_dataflow(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
 ) -> eyre::Result<SpawnedDataflow> {
-    //dataflow.check(&working_dir)?;
-
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
