@@ -581,8 +581,11 @@ async fn start_inner(
             Event::Log(message) => {
                 if let Some(dataflow) = running_dataflows.get_mut(&message.dataflow_id) {
                     for subscriber in &mut dataflow.log_subscribers {
-                        subscriber.send_message(&message).await?;
+                        if subscriber.send_message(&message).await.is_err() {
+                            subscriber.close();
+                        }
                     }
+                    dataflow.log_subscribers.retain(|s| !s.is_closed());
                 }
             }
         }
