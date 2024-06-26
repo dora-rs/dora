@@ -25,6 +25,7 @@ pub fn attach_dataflow(
     session: &mut TcpRequestReplyConnection,
     hot_reload: bool,
     coordinator_socket: SocketAddr,
+    log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, rx) = mpsc::sync_channel(2);
 
@@ -129,11 +130,13 @@ pub fn attach_dataflow(
         stream: TcpStream::connect(coordinator_socket)
             .wrap_err("failed to connect to dora coordinator")?,
     };
-    let level = log::Level::Warn;
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe { dataflow_id, level })
-                .wrap_err("failed to serialize message")?,
+            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+                dataflow_id,
+                level: log_level,
+            })
+            .wrap_err("failed to serialize message")?,
         )
         .wrap_err("failed to send log subscribe request to coordinator")?;
     std::thread::spawn(move || {

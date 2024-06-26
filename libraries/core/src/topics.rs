@@ -57,7 +57,7 @@ pub enum ControlRequest {
     ConnectedMachines,
     LogSubscribe {
         dataflow_id: Uuid,
-        level: log::Level,
+        level: log::LevelFilter,
     },
 }
 
