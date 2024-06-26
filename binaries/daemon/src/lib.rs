@@ -87,6 +87,8 @@ pub struct Daemon {
     clock: Arc<uhlc::HLC>,
 }
 
+type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
+
 impl Daemon {
     pub async fn run(
         coordinator_addr: SocketAddr,
@@ -227,7 +229,7 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
+    ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
@@ -272,7 +274,7 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
+    ) -> eyre::Result<DaemonRunResult> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {

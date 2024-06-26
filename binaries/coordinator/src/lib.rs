@@ -601,6 +601,7 @@ async fn start_inner(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stop_dataflow_by_uuid(
     running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
     dataflow_results: &HashMap<Uuid, BTreeMap<String, DataflowDaemonResult>>,
