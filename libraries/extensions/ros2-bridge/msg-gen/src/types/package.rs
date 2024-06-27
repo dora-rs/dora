@@ -103,7 +103,7 @@ impl Package {
             quote! {
                 //empty msg
             }
-         } else {
+        } else {
             let items = self
                 .actions
                 .iter()
@@ -114,7 +114,7 @@ impl Package {
                     #(#items)*
                 }  // action
             }
-         }
+        }
     }
 
     fn actions_block(&self) -> impl ToTokens {

@@ -24,11 +24,14 @@ impl Action {
         &self,
         package_name: &str,
         gen_cxx_bridge: bool,
-    )-> (impl ToTokens, impl ToTokens) {
-
-        let (goal_def, goal_impl) = self.goal.struct_token_stream(package_name,gen_cxx_bridge);
-        let (result_def, result_impl) = self.result.struct_token_stream(package_name,gen_cxx_bridge);
-        let (feedback_def, feedback_impl) = self.feedback.struct_token_stream(package_name,gen_cxx_bridge);
+    ) -> (impl ToTokens, impl ToTokens) {
+        let (goal_def, goal_impl) = self.goal.struct_token_stream(package_name, gen_cxx_bridge);
+        let (result_def, result_impl) = self
+            .result
+            .struct_token_stream(package_name, gen_cxx_bridge);
+        let (feedback_def, feedback_impl) = self
+            .feedback
+            .struct_token_stream(package_name, gen_cxx_bridge);
 
         let def = quote! {
             #goal_def
@@ -41,7 +44,7 @@ impl Action {
             #result_impl
             #feedback_impl
         };
-        
+
         (def, impls)
     }
 
@@ -57,7 +60,7 @@ impl Action {
 
         let goal_type_name = goal_type.to_string();
         let result_type_name = result_type.to_string();
-        let feedback_type_name = feedback_type.to_string(); 
+        let feedback_type_name = feedback_type.to_string();
 
         quote! {
             #[allow(non_camel_case_types)]
@@ -85,7 +88,7 @@ impl Action {
             pub use super::super::ffi::#goal_type_raw as #goal_type;
             pub use super::super::ffi::#result_type_raw as #result_type;
             pub use super::super::ffi::#feedback_type_raw as #feedback_type;
-            
+
         }
     }
 
@@ -226,7 +229,6 @@ impl Action {
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
         let result_type_raw = format_ident!("{package_name}__{}_Result", self.name);
 
-
         let result_type_raw_str = result_type_raw.to_string();
 
         let def = quote! {
@@ -273,14 +275,14 @@ impl Action {
                         stream_id: id,
                     }))
                 }
-            }       
+            }
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
                 client: std::sync::Arc<ros2_client::action::ActionClient< #package :: action :: #self_name>>,
                 response_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#result_type_raw>>>,
                 executor: std::sync::Arc<futures::executor::ThreadPool>,
-                stream_id: u32, 
+                stream_id: u32,
             }
 
             impl #client_name {
@@ -335,11 +337,10 @@ impl Action {
                                     Ok(status) => println!("Status update: {:?}", status),
                                     Err(e) => eprintln!("Error receiving status update: {:?}", e),
                                 }
-                            }).await;   
+                            }).await;
                         }
                     };
 
-                    // spawner.spawn_local(status_handle).context("failed to spawn status task")?;
                     self.executor.spawn(status_handle).context("failed to spawn status task")?;
 
                     let request_result_handle = {
@@ -371,7 +372,7 @@ impl Action {
                         _ => false
                     }
                 }
-                
+
                 #[allow(non_snake_case)]
                 fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<()> {
                     use eyre::WrapErr;
@@ -390,7 +391,7 @@ impl Action {
                     }
                 }
             }
-        };        
+        };
         (def, imp)
     }
 
@@ -482,7 +483,7 @@ impl Action {
                 }
             }
         }
-    }   
+    }
 }
 
 fn goal_id_type() -> Member {
