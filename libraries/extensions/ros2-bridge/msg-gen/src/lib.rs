@@ -60,7 +60,6 @@ where
             }
         }
 
-
         for action in &package.actions {
             let (def, imp) = action.struct_token_stream(&package.name, create_cxx_bridge);
             action_defs.push(def);
