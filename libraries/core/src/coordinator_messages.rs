@@ -1,5 +1,6 @@
 use crate::{config::NodeId, daemon_messages::DataflowId, topics::DataflowDaemonResult};
 use eyre::eyre;
+pub use log::Level;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
@@ -15,6 +16,19 @@ pub enum CoordinatorRequest {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[must_use]
+pub struct LogMessage {
+    pub dataflow_id: DataflowId,
+    pub node_id: Option<NodeId>,
+    pub level: log::Level,
+    pub target: Option<String>,
+    pub module_path: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub message: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum DaemonEvent {
     AllNodesReady {
         dataflow_id: DataflowId,
@@ -25,6 +39,7 @@ pub enum DaemonEvent {
         result: DataflowDaemonResult,
     },
     Heartbeat,
+    Log(LogMessage),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

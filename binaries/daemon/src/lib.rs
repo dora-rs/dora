@@ -2,7 +2,7 @@ use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
 use dora_core::config::{Input, OperatorId};
-use dora_core::coordinator_messages::CoordinatorRequest;
+use dora_core::coordinator_messages::{CoordinatorRequest, Level, LogMessage};
 use dora_core::daemon_messages::{
     DataMessage, DynamicNodeEvent, InterDaemonEvent, NodeConfig, Timestamped,
 };
@@ -86,6 +86,8 @@ pub struct Daemon {
 
     clock: Arc<uhlc::HLC>,
 }
+
+type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
 impl Daemon {
     pub async fn run(
@@ -227,7 +229,7 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
+    ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
@@ -272,7 +274,7 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
+    ) -> eyre::Result<DaemonRunResult> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
@@ -330,6 +332,26 @@ impl Daemon {
         }
 
         Ok(self.dataflow_node_results)
+    }
+
+    async fn send_log_message(&mut self, message: LogMessage) -> eyre::Result<()> {
+        if let Some(connection) = &mut self.coordinator_connection {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    machine_id: self.machine_id.clone(),
+                    event: DaemonEvent::Log(message),
+                },
+                timestamp: self.clock.new_timestamp(),
+            })?;
+            tcp_send(connection, &msg)
+                .await
+                .wrap_err("failed to send watchdog message to dora-coordinator")?;
+
+            if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
+                bail!("lost connection to coordinator")
+            }
+        }
+        Ok(())
     }
 
     async fn handle_coordinator_event(
@@ -577,6 +599,7 @@ impl Daemon {
             }
         };
 
+        let mut log_messages = Vec::new();
         for node in nodes {
             let local = node.deploy.machine == self.machine_id;
 
@@ -639,8 +662,17 @@ impl Daemon {
                         dataflow.running_nodes.insert(node_id, running_node);
                     }
                     Err(err) => {
-                        tracing::error!("{err:?}");
-                        dataflow
+                        log_messages.push(LogMessage {
+                            dataflow_id,
+                            node_id: Some(node_id.clone()),
+                            level: Level::Error,
+                            target: None,
+                            module_path: None,
+                            file: None,
+                            line: None,
+                            message: format!("{err:?}"),
+                        });
+                        let messages = dataflow
                             .pending_nodes
                             .handle_node_stop(
                                 &node_id,
@@ -649,11 +681,16 @@ impl Daemon {
                                 &mut dataflow.cascading_error_causes,
                             )
                             .await?;
+                        log_messages.extend(messages);
                     }
                 }
             } else {
                 dataflow.pending_nodes.set_external_nodes(true);
             }
+        }
+
+        for log_message in log_messages {
+            self.send_log_message(log_message).await?;
         }
 
         Ok(())
@@ -1006,7 +1043,7 @@ impl Daemon {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        dataflow
+        let log_messages = dataflow
             .pending_nodes
             .handle_node_stop(
                 node_id,
@@ -1060,6 +1097,11 @@ impl Daemon {
             }
             self.running.remove(&dataflow_id);
         }
+
+        for log_message in log_messages {
+            self.send_log_message(log_message).await?;
+        }
+
         Ok(())
     }
 
@@ -1203,6 +1245,25 @@ impl Daemon {
                         })
                     }
                 };
+
+                self.send_log_message(LogMessage {
+                    dataflow_id,
+                    node_id: Some(node_id.clone()),
+                    level: if node_result.is_ok() {
+                        Level::Info
+                    } else {
+                        Level::Error
+                    },
+                    target: None,
+                    module_path: None,
+                    file: None,
+                    line: None,
+                    message: match &node_result {
+                        Ok(()) => "node finished successfully".to_string(),
+                        Err(err) => format!("{err}"),
+                    },
+                })
+                .await?;
 
                 self.dataflow_node_results
                     .entry(dataflow_id)

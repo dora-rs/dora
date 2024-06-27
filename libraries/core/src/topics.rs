@@ -55,6 +55,10 @@ pub enum ControlRequest {
     List,
     DaemonConnected,
     ConnectedMachines,
+    LogSubscribe {
+        dataflow_id: Uuid,
+        level: log::LevelFilter,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -189,7 +193,7 @@ impl std::fmt::Display for NodeError {
             NodeErrorCause::GraceDuration => {}, // handled above
             NodeErrorCause::Cascading { caused_by_node } => write!(
                 f,
-                "\n\nThis error occurred because node `{caused_by_node}` exited before connecting to dora."
+                ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
             )?,
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {

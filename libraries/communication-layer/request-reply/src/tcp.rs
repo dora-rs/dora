@@ -94,8 +94,8 @@ impl RequestReplyLayer for TcpLayer {
     }
 }
 
-struct TcpConnection {
-    stream: TcpStream,
+pub struct TcpConnection {
+    pub stream: TcpStream,
 }
 
 impl ListenConnection for TcpConnection {
@@ -128,14 +128,14 @@ impl RequestReplyConnection for TcpConnection {
 }
 
 impl TcpConnection {
-    fn send(&mut self, request: &[u8]) -> std::io::Result<()> {
+    pub fn send(&mut self, request: &[u8]) -> std::io::Result<()> {
         let len_raw = (request.len() as u64).to_le_bytes();
         self.stream.write_all(&len_raw)?;
         self.stream.write_all(request)?;
         Ok(())
     }
 
-    fn receive(&mut self) -> std::io::Result<Vec<u8>> {
+    pub fn receive(&mut self) -> std::io::Result<Vec<u8>> {
         let reply_len = {
             let mut raw = [0; 8];
             self.stream.read_exact(&mut raw)?;
