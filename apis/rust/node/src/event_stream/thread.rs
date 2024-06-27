@@ -220,14 +220,14 @@ fn report_remaining_drop_tokens(
 
         let mut still_pending = Vec::new();
         for (token, rx, since, _) in pending_drop_tokens.drain(..) {
-            match rx.recv_timeout(Duration::from_millis(100)) {
+            match rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(()) => return Err(eyre!("Node API should not send anything on ACK channel")),
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     // the event was dropped -> add the drop token to the list
                     drop_tokens.push(token);
                 }
                 Err(flume::RecvTimeoutError::Timeout) => {
-                    let duration = Duration::from_secs(1);
+                    let duration = Duration::from_millis(200);
                     if since.elapsed() > duration {
                         tracing::warn!(
                             "timeout: node finished, but token {token:?} was still not \
