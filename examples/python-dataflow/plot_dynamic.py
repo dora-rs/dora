@@ -1,97 +1,71 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
-from dora import Node
-from dora import DoraStatus
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
-from utils import LABELS
+
+from dora import Node
 
 CI = os.environ.get("CI")
 
-font = cv2.FONT_HERSHEY_SIMPLEX
+IMAGE_WIDTH = int(os.getenv("IMAGE_WIDTH", "640"))
+IMAGE_HEIGHT = int(os.getenv("IMAGE_HEIGHT", "480"))
+
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
+@dataclass
 class Plotter:
-    """
-    Plot image and bounding box
-    """
-
-    def __init__(self):
-        self.image = []
-        self.bboxs = []
-
-    def on_input(
-        self,
-        dora_input,
-    ) -> DoraStatus:
-        """
-        Put image and bounding box on cv2 window.
-
-        Args:
-            dora_input["id"] (str): Id of the dora_input declared in the yaml configuration
-            dora_input["value"] (arrow array): message of the dora_input
-        """
-        if dora_input["id"] == "image":
-            frame = dora_input["value"].to_numpy()
-            frame = cv2.imdecode(frame, -1)
-            self.image = frame
-
-        elif dora_input["id"] == "bbox" and len(self.image) != 0:
-            bboxs = dora_input["value"].to_numpy()
-            self.bboxs = np.reshape(bboxs, (-1, 6))
-        for bbox in self.bboxs:
-            [
-                min_x,
-                min_y,
-                max_x,
-                max_y,
-                confidence,
-                label,
-            ] = bbox
-            cv2.rectangle(
-                self.image,
-                (int(min_x), int(min_y)),
-                (int(max_x), int(max_y)),
-                (0, 255, 0),
-                2,
-            )
-
-            cv2.putText(
-                self.image,
-                LABELS[int(label)] + f", {confidence:0.2f}",
-                (int(max_x), int(max_y)),
-                font,
-                0.75,
-                (0, 255, 0),
-                2,
-                1,
-            )
-
-        if CI != "true":
-            cv2.imshow("frame", self.image)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                return DoraStatus.STOP
-
-        return DoraStatus.CONTINUE
+    frame: np.array = np.array([])
+    bboxes: np.array = np.array([])
 
 
-plotter = Plotter()
+if __name__ == "__main__":
+    plotter = Plotter()
+    node = Node("plot")
 
-node = Node("plot")
+    for event in node:
+        event_type = event["type"]
+        if event_type == "INPUT":
+            if event["id"] == "image":
+                frame = event["value"].to_numpy()
+                frame = (
+                    event["value"].to_numpy().reshape((IMAGE_HEIGHT, IMAGE_WIDTH, 3))
+                )
+                plotter.frame = frame
 
-for event in node:
-    event_type = event["type"]
-    if event_type == "INPUT":
-        status = plotter.on_input(event)
-        if status == DoraStatus.CONTINUE:
-            pass
-        elif status == DoraStatus.STOP:
-            print("plotter returned stop status")
-            break
-    elif event_type == "STOP":
-        print("received stop")
-    else:
-        print("received unexpected event:", event_type)
+            elif event["id"] == "bbox" and len(plotter.frame) != 0:
+                bboxs = event["value"].to_numpy()
+                plotter.bboxes = np.reshape(bboxs, (-1, 6))
+            for bbox in plotter.bboxs:
+                [
+                    min_x,
+                    min_y,
+                    max_x,
+                    max_y,
+                    confidence,
+                    label,
+                ] = bbox
+                cv2.rectangle(
+                    plotter.frame,
+                    (int(min_x), int(min_y)),
+                    (int(max_x), int(max_y)),
+                    (0, 255, 0),
+                    2,
+                )
+
+                cv2.putText(
+                    plotter.frame,
+                    LABELS[int(label)] + f", {confidence:0.2f}",
+                    (int(max_x), int(max_y)),
+                    FONT,
+                    0.75,
+                    (0, 255, 0),
+                    2,
+                    1,
+                )
+
+            if CI != "true":
+                cv2.imshow("frame", plotter.frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
