@@ -1681,6 +1681,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b6a852b24ab71dffc585bcb46eaf7959d175cb865a7152e35b348d1b2960422"
 
 [[package]]
+name = "colored"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbf2150cce219b664a8a70df7a1f933836724b503f8a413af9365b4dcc4d90b8"
+dependencies = [
+ "lazy_static",
+ "windows-sys 0.48.0",
+]
+
+[[package]]
 name = "com"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2254,6 +2264,7 @@ version = "0.3.4"
 dependencies = [
  "bat",
  "clap 4.5.7",
+ "colored",
  "communication-layer-request-reply",
  "ctrlc",
  "dora-coordinator",
@@ -2264,9 +2275,11 @@ dependencies = [
  "dora-runtime",
  "dora-tracing",
  "duration-str",
+ "env_logger 0.11.3",
  "eyre",
  "futures",
  "inquire",
+ "log",
  "notify 5.2.0",
  "serde",
  "serde_json",
@@ -2290,6 +2303,7 @@ dependencies = [
  "eyre",
  "futures",
  "futures-concurrency",
+ "log",
  "names",
  "serde_json",
  "tokio",
@@ -2305,6 +2319,7 @@ dependencies = [
  "aligned-vec",
  "dora-message",
  "eyre",
+ "log",
  "once_cell",
  "schemars",
  "serde",
@@ -2963,6 +2978,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a009aa4810eb158359dda09d0c87378e4bbb89b5a801f016885a4707ba24f7ea"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
 name = "env_logger"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2973,6 +2998,19 @@ dependencies = [
  "log",
  "regex",
  "termcolor",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b35839ba51819680ba087cd351788c9a3c476841207e0b8cee0b04722343b9"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "humantime",
+ "log",
 ]
 
 [[package]]
@@ -4685,6 +4723,7 @@ version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90ed8c1e510134f979dbc4f070f87d4313098b704861a105fe34231c70a3901c"
 dependencies = [
+ "serde",
  "value-bag",
 ]
 
@@ -7029,7 +7068,7 @@ version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35056426bb497a2bd30ec54f1aac35f32c6b0f2cd64fd833509ebb1e4be19f11"
 dependencies = [
- "env_logger",
+ "env_logger 0.10.2",
  "js-sys",
  "log",
  "log-once",
@@ -7963,7 +8002,7 @@ checksum = "6978682653fc699d484b92d0ee75e25b73fdf9b0e50d62b67707d6bcd7f4cc96"
 dependencies = [
  "anyhow",
  "document-features",
- "env_logger",
+ "env_logger 0.10.2",
  "itertools 0.12.1",
  "log",
  "puffin",
@@ -11079,7 +11118,7 @@ dependencies = [
  "async-std",
  "async-trait",
  "base64 0.13.1",
- "env_logger",
+ "env_logger 0.10.2",
  "event-listener 2.5.3",
  "flume 0.10.14",
  "form_urlencoded",

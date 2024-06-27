@@ -17,6 +17,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_stream::wrappers::ReceiverStream;
+use uuid::Uuid;
 
 pub(crate) async fn control_events(
     control_listen_addr: SocketAddr,
@@ -99,14 +100,27 @@ async fn handle_requests(
             },
         };
 
-        let result =
-            match serde_json::from_slice(&raw).wrap_err("failed to deserialize incoming message") {
-                Ok(request) => handle_request(request, &tx).await,
-                Err(err) => Err(err),
-            };
+        let request =
+            serde_json::from_slice(&raw).wrap_err("failed to deserialize incoming message");
+
+        if let Ok(ControlRequest::LogSubscribe { dataflow_id, level }) = request {
+            let _ = tx
+                .send(ControlEvent::LogSubscribe {
+                    dataflow_id,
+                    level,
+                    connection,
+                })
+                .await;
+            break;
+        }
+
+        let result = match request {
+            Ok(request) => handle_request(request, &tx).await,
+            Err(err) => Err(err),
+        };
 
         let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err}")));
-        let serialized =
+        let serialized: Vec<u8> =
             match serde_json::to_vec(&reply).wrap_err("failed to serialize ControlRequestReply") {
                 Ok(s) => s,
                 Err(err) => {
@@ -159,6 +173,11 @@ pub enum ControlEvent {
     IncomingRequest {
         request: ControlRequest,
         reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+    },
+    LogSubscribe {
+        dataflow_id: Uuid,
+        level: log::LevelFilter,
+        connection: TcpStream,
     },
     Error(eyre::Report),
 }

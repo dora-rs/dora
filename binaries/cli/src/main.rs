@@ -1,5 +1,6 @@
 use attach::attach_dataflow;
 use clap::Parser;
+use colored::Colorize;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_coordinator::Event;
 use dora_core::{
@@ -249,6 +250,7 @@ enum Lang {
 
 fn main() {
     if let Err(err) = run() {
+        eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:#}");
         std::process::exit(1);
     }
@@ -282,6 +284,12 @@ fn run() -> eyre::Result<()> {
             set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
         }
     };
+
+    let log_level = env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .build()
+        .filter();
 
     match args.command {
         Command::Check {
@@ -367,7 +375,8 @@ fn run() -> eyre::Result<()> {
                     .wrap_err("Could not validate yaml")?;
             }
 
-            let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+            let coordinator_socket = (coordinator_addr, coordinator_port).into();
+            let mut session = connect_to_coordinator(coordinator_socket)
                 .wrap_err("failed to connect to dora coordinator")?;
             let dataflow_id = start_dataflow(
                 dataflow_descriptor.clone(),
@@ -393,6 +402,8 @@ fn run() -> eyre::Result<()> {
                     dataflow_id,
                     &mut *session,
                     hot_reload,
+                    coordinator_socket,
+                    log_level,
                 )?
             }
         }
