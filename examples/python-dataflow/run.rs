@@ -51,21 +51,6 @@ async fn main() -> eyre::Result<()> {
     }
 
     run(
-        get_python_path().context("Could not get pip binary")?,
-        &["-m", "pip", "install", "--upgrade", "pip"],
-        None,
-    )
-    .await
-    .context("failed to install pip")?;
-    run(
-        get_pip_path().context("Could not get pip binary")?,
-        &["install", "-r", "requirements.txt"],
-        None,
-    )
-    .await
-    .context("pip install failed")?;
-
-    run(
         "maturin",
         &["develop"],
         Some(&root.join("apis").join("python").join("node")),

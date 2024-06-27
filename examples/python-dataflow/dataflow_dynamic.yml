@@ -1,16 +1,15 @@
 nodes:
   - id: webcam
-    custom:
-      source: ./webcam.py
-      inputs:
-        tick:
-          source: dora/timer/millis/50
-          queue_size: 1000
-      outputs:
-        - image
+    build: pip install -r ../../nodes_hub/opencv-webcam/requirements.txt
+    path: ../../nodes_hub/opencv-webcam/webcam.py
+    inputs:
+      tick:
+        source: dora/timer/millis/50
+        queue_size: 1000
+    outputs:
+      - image
 
   - id: plot
-    custom:
-      source: dynamic
-      inputs:
-        image: webcam/image
+    path: dynamic
+    inputs:
+      image: webcam/image
