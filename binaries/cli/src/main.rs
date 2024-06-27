@@ -5,27 +5,31 @@ use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-        DORA_COORDINATOR_PORT_DEFAULT,
+        ControlRequest, ControlRequestReply, DataflowList, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
+use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
-use std::net::SocketAddr;
+use formatting::FormatDataflowError;
+use std::{io::Write, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
     time::Duration,
 };
+use tabwriter::TabWriter;
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
 mod attach;
 mod build;
 mod check;
+mod formatting;
 mod graph;
 mod logs;
 mod template;
@@ -74,7 +78,7 @@ enum Command {
         #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         dataflow: PathBuf,
     },
-    /// Generate a new project, node or operator. Choose the language between Rust, Python, C or C++.
+    /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
         args: CommandNew,
@@ -116,6 +120,9 @@ enum Command {
         /// Attach to the dataflow and wait for its completion
         #[clap(long, action)]
         attach: bool,
+        /// Run the dataflow in background
+        #[clap(long, action)]
+        detach: bool,
         /// Enable hot reloading (Python only)
         #[clap(long, action)]
         hot_reload: bool,
@@ -174,14 +181,20 @@ enum Command {
         /// Unique identifier for the machine (required for distributed dataflows)
         #[clap(long)]
         machine_id: Option<String>,
-        /// The IP address and port this daemon will bind to.
+        /// The inter daemon IP address and port this daemon will bind to.
         #[clap(long, default_value_t = SocketAddr::new(LISTEN_WILDCARD, 0))]
-        addr: SocketAddr,
+        inter_daemon_addr: SocketAddr,
+        /// Local listen port for event such as dynamic node.
+        #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
+        local_listen_port: u16,
         /// Address and port number of the dora coordinator
         #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
         coordinator_addr: SocketAddr,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
+        /// Suppresses all log output to stdout.
+        #[clap(long)]
+        quiet: bool,
     },
     /// Run runtime
     Runtime,
@@ -199,6 +212,9 @@ enum Command {
         /// Port number to bind to for control communication
         #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
         control_port: u16,
+        /// Suppresses all log output to stdout.
+        #[clap(long)]
+        quiet: bool,
     },
 }
 
@@ -220,7 +236,6 @@ pub struct CommandNew {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Kind {
     Dataflow,
-    Operator,
     CustomNode,
 }
 
@@ -243,15 +258,25 @@ fn run() -> eyre::Result<()> {
     let args = Args::parse();
 
     #[cfg(feature = "tracing")]
-    match args.command {
-        Command::Daemon { .. } => {
-            set_up_tracing("dora-daemon").context("failed to set up tracing subscriber")?;
+    match &args.command {
+        Command::Daemon {
+            quiet, machine_id, ..
+        } => {
+            let name = "dora-daemon";
+            let filename = machine_id
+                .as_ref()
+                .map(|id| format!("{name}-{id}"))
+                .unwrap_or(name.to_string());
+            set_up_tracing_opts(name, !quiet, Some(&filename))
+                .context("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
             // Do not set the runtime in the cli.
         }
-        Command::Coordinator { .. } => {
-            set_up_tracing("dora-coordinator").context("failed to set up tracing subscriber")?;
+        Command::Coordinator { quiet, .. } => {
+            let name = "dora-coordinator";
+            set_up_tracing_opts(name, !quiet, Some(name))
+                .context("failed to set up tracing subscriber")?;
         }
         _ => {
             set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
@@ -301,17 +326,18 @@ fn run() -> eyre::Result<()> {
         } => {
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-            let uuids = query_running_dataflows(&mut *session)
+            let list = query_running_dataflows(&mut *session)
                 .wrap_err("failed to query running dataflows")?;
             if let Some(dataflow) = dataflow {
                 let uuid = Uuid::parse_str(&dataflow).ok();
                 let name = if uuid.is_some() { None } else { Some(dataflow) };
                 logs::logs(&mut *session, uuid, name, node)?
             } else {
-                let uuid = match &uuids[..] {
+                let active = list.get_active();
+                let uuid = match &active[..] {
                     [] => bail!("No dataflows are running"),
                     [uuid] => uuid.clone(),
-                    _ => inquire::Select::new("Choose dataflow to show logs:", uuids).prompt()?,
+                    _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
                 };
                 logs::logs(&mut *session, Some(uuid.uuid), None, node)?
             }
@@ -322,6 +348,7 @@ fn run() -> eyre::Result<()> {
             coordinator_addr,
             coordinator_port,
             attach,
+            detach,
             hot_reload,
         } => {
             let dataflow_descriptor =
@@ -332,9 +359,13 @@ fn run() -> eyre::Result<()> {
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            dataflow_descriptor
-                .check(&working_dir)
-                .wrap_err("Could not validate yaml")?;
+            if !coordinator_addr.is_loopback() {
+                dataflow_descriptor.check_in_daemon(&working_dir, &[], true)?;
+            } else {
+                dataflow_descriptor
+                    .check(&working_dir)
+                    .wrap_err("Could not validate yaml")?;
+            }
 
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
@@ -344,6 +375,16 @@ fn run() -> eyre::Result<()> {
                 working_dir,
                 &mut *session,
             )?;
+
+            let attach = match (attach, detach) {
+                (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
+                (true, false) => true,
+                (false, true) => false,
+                (false, false) => {
+                    println!("attaching to dataflow (use `--detach` to run in background)");
+                    true
+                }
+            };
 
             if attach {
                 attach_dataflow(
@@ -392,6 +433,7 @@ fn run() -> eyre::Result<()> {
             port,
             control_interface,
             control_port,
+            quiet,
         } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
@@ -403,16 +445,20 @@ fn run() -> eyre::Result<()> {
                 let (port, task) =
                     dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
                         .await?;
-                println!("Listening for incoming daemon connection on {port}");
+                if !quiet {
+                    println!("Listening for incoming daemon connection on {port}");
+                }
                 task.await
             })
             .context("failed to run dora-coordinator")?
         }
         Command::Daemon {
             coordinator_addr,
-            addr,
+            inter_daemon_addr,
+            local_listen_port,
             machine_id,
             run_dataflow,
+            quiet: _,
         } => {
             let rt = Builder::new_multi_thread()
                 .enable_all()
@@ -429,13 +475,14 @@ fn run() -> eyre::Result<()> {
                             );
                         }
 
-                        Daemon::run_dataflow(&dataflow_path).await
+                        let result = Daemon::run_dataflow(&dataflow_path).await?;
+                        handle_dataflow_result(result, None)
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {
                             tracing::info!("Starting in local mode");
                         }
-                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), addr).await
+                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
                     }
                 }
             })
@@ -480,11 +527,12 @@ fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<()> {
-    let uuids = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
-    if uuids.is_empty() {
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let active = list.get_active();
+    if active.is_empty() {
         eprintln!("No dataflows are running");
     } else {
-        let selection = inquire::Select::new("Choose dataflow to stop:", uuids).prompt()?;
+        let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;
         stop_dataflow(selection.uuid, grace_duration, session)?;
     }
 
@@ -508,11 +556,29 @@ fn stop_dataflow(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => result
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err("dataflow failed"),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
+    }
+}
+
+fn handle_dataflow_result(
+    result: dora_core::topics::DataflowResult,
+    uuid: Option<Uuid>,
+) -> Result<(), eyre::Error> {
+    if result.is_ok() {
+        Ok(())
+    } else {
+        Err(match uuid {
+            Some(uuid) => {
+                eyre::eyre!("Dataflow {uuid} failed:\n{}", FormatDataflowError(&result))
+            }
+            None => {
+                eyre::eyre!("Dataflow failed:\n{}", FormatDataflowError(&result))
+            }
+        })
     }
 }
 
@@ -533,39 +599,45 @@ fn stop_dataflow_by_name(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowStopped { uuid: _, result } => result
-            .map_err(|err| eyre::eyre!(err))
-            .wrap_err("dataflow failed"),
+        ControlRequestReply::DataflowStopped { uuid, result } => {
+            handle_dataflow_result(result, Some(uuid))
+        }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
     }
 }
 
 fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> {
-    let ids = query_running_dataflows(session)?;
+    let list = query_running_dataflows(session)?;
 
-    if ids.is_empty() {
-        eprintln!("No dataflows are running");
-    } else {
-        println!("Running dataflows:");
-        for id in ids {
-            println!("- {id}");
-        }
+    let mut tw = TabWriter::new(vec![]);
+    tw.write_all(b"UUID\tName\tStatus\n")?;
+    for entry in list.0 {
+        let uuid = entry.id.uuid;
+        let name = entry.id.name.unwrap_or_default();
+        let status = match entry.status {
+            dora_core::topics::DataflowStatus::Running => "Running",
+            dora_core::topics::DataflowStatus::Finished => "Succeeded",
+            dora_core::topics::DataflowStatus::Failed => "Failed",
+        };
+        tw.write_all(format!("{uuid}\t{name}\t{status}\n").as_bytes())?;
     }
+    tw.flush()?;
+    let formatted = String::from_utf8(tw.into_inner()?)?;
+
+    println!("{formatted}");
 
     Ok(())
 }
 
-fn query_running_dataflows(
-    session: &mut TcpRequestReplyConnection,
-) -> Result<Vec<DataflowId>, eyre::ErrReport> {
+fn query_running_dataflows(session: &mut TcpRequestReplyConnection) -> eyre::Result<DataflowList> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send list message")?;
     let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     let ids = match reply {
-        ControlRequestReply::DataflowList { dataflows } => dataflows,
+        ControlRequestReply::DataflowList(list) => list,
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected list dataflow reply: {other:?}"),
     };

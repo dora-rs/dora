@@ -1,10 +1,18 @@
 use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
+use crossbeam::queue::ArrayQueue;
 use dora_core::config::{Input, OperatorId};
 use dora_core::coordinator_messages::CoordinatorRequest;
-use dora_core::daemon_messages::{DataMessage, InterDaemonEvent, Timestamped};
+use dora_core::daemon_messages::{
+    DataMessage, DynamicNodeEvent, InterDaemonEvent, NodeConfig, Timestamped,
+};
+use dora_core::descriptor::runtime_node_inputs;
 use dora_core::message::uhlc::{self, HLC};
 use dora_core::message::{ArrowTypeInfo, Metadata, MetadataParameters};
+use dora_core::topics::LOCALHOST;
+use dora_core::topics::{
+    DataflowDaemonResult, DataflowResult, NodeError, NodeErrorCause, NodeExitStatus,
+};
 use dora_core::{
     config::{DataId, InputMapping, NodeId},
     coordinator_messages::DaemonEvent,
@@ -15,18 +23,17 @@ use dora_core::{
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 
-use eyre::{bail, eyre, Context, ContextCompat};
+use eyre::{bail, eyre, Context, ContextCompat, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
 use inter_daemon::InterDaemonConnection;
+use local_listener::DynamicNodeEventWrapper;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
-    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
@@ -45,6 +52,7 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 mod coordinator;
 mod inter_daemon;
+mod local_listener;
 mod log;
 mod node_communication;
 mod pending;
@@ -57,6 +65,8 @@ use dora_tracing::telemetry::serialize_context;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::pending::DataflowStatus;
+
+const STDERR_LOG_LINES: usize = 10;
 
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
@@ -72,7 +82,7 @@ pub struct Daemon {
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     /// used to record dataflow results when `exit_when_done` is used
-    dataflow_errors: BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>,
+    dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
 
     clock: Arc<uhlc::HLC>,
 }
@@ -81,16 +91,18 @@ impl Daemon {
     pub async fn run(
         coordinator_addr: SocketAddr,
         machine_id: String,
-        bind_addr: SocketAddr,
+        inter_daemon_addr: SocketAddr,
+        local_listen_port: u16,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
         let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
 
-        // spawn listen loop
+        // spawn inter daemon listen loop
         let (events_tx, events_rx) = flume::bounded(10);
         let listen_port =
-            inter_daemon::spawn_listener_loop(bind_addr, machine_id.clone(), events_tx).await?;
+            inter_daemon::spawn_listener_loop(inter_daemon_addr, machine_id.clone(), events_tx)
+                .await?;
         let daemon_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::Daemon(e.inner),
             timestamp: e.timestamp,
@@ -111,8 +123,26 @@ impl Daemon {
                     },
                 );
 
+        // Spawn local listener loop
+        let (events_tx, events_rx) = flume::bounded(10);
+        let _listen_port = local_listener::spawn_listener_loop(
+            (LOCALHOST, local_listen_port).into(),
+            machine_id.clone(),
+            events_tx,
+        )
+        .await?;
+        let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
+            inner: Event::DynamicNode(e.inner),
+            timestamp: e.timestamp,
+        });
         Self::run_general(
-            (coordinator_events, ctrlc_events, daemon_events).merge(),
+            (
+                coordinator_events,
+                ctrlc_events,
+                daemon_events,
+                dynamic_node_events,
+            )
+                .merge(),
             Some(coordinator_addr),
             machine_id,
             None,
@@ -122,7 +152,7 @@ impl Daemon {
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<()> {
+    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canoncialize dataflow path")?
@@ -134,8 +164,9 @@ impl Daemon {
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
+        let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
         let spawn_command = SpawnDataflowNodes {
-            dataflow_id: Uuid::new_v7(Timestamp::now(NoContext)),
+            dataflow_id,
             working_dir,
             nodes,
             machine_listen_ports: BTreeMap::new(),
@@ -165,7 +196,7 @@ impl Daemon {
             None,
             "".to_string(),
             Some(exit_when_done),
-            clock,
+            clock.clone(),
         );
 
         let spawn_result = reply_rx
@@ -179,20 +210,15 @@ impl Daemon {
                 }
             });
 
-        let (dataflow_errors, ()) = future::try_join(run_result, spawn_result).await?;
+        let (mut dataflow_results, ()) = future::try_join(run_result, spawn_result).await?;
 
-        if dataflow_errors.is_empty() {
-            Ok(())
-        } else {
-            let mut output = "some nodes failed:".to_owned();
-            for (dataflow, node_errors) in dataflow_errors {
-                for (node, error) in node_errors {
-                    use std::fmt::Write;
-                    write!(&mut output, "\n  - {dataflow}/{node}: {error}").unwrap();
-                }
-            }
-            bail!("{output}");
-        }
+        Ok(DataflowResult {
+            uuid: dataflow_id,
+            timestamp: clock.new_timestamp(),
+            node_results: dataflow_results
+                .remove(&dataflow_id)
+                .context("no node results for dataflow_id")?,
+        })
     }
 
     async fn run_general(
@@ -201,7 +227,7 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
+    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
@@ -225,7 +251,7 @@ impl Daemon {
             inter_daemon_connections: BTreeMap::new(),
             machine_id,
             exit_when_done,
-            dataflow_errors: BTreeMap::new(),
+            dataflow_node_results: BTreeMap::new(),
             clock,
         };
 
@@ -246,7 +272,7 @@ impl Daemon {
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, eyre::Report>>> {
+    ) -> eyre::Result<BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>> {
         let mut events = incoming_events;
 
         while let Some(event) = events.next().await {
@@ -276,6 +302,7 @@ impl Daemon {
                     RunStatus::Continue => {}
                     RunStatus::Exit => break,
                 },
+                Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
                 Event::HeartbeatInterval => {
                     if let Some(connection) = &mut self.coordinator_connection {
                         let msg = serde_json::to_vec(&Timestamped {
@@ -302,7 +329,7 @@ impl Daemon {
             }
         }
 
-        Ok(self.dataflow_errors)
+        Ok(self.dataflow_node_results)
     }
 
     async fn handle_coordinator_event(
@@ -349,15 +376,19 @@ impl Daemon {
             }
             DaemonCoordinatorEvent::AllNodesReady {
                 dataflow_id,
-                success,
+                exited_before_subscribe,
             } => {
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
+                        let ready = exited_before_subscribe.is_empty();
                         dataflow
                             .pending_nodes
-                            .handle_external_all_nodes_ready(success)
+                            .handle_external_all_nodes_ready(
+                                exited_before_subscribe,
+                                &mut dataflow.cascading_error_causes,
+                            )
                             .await?;
-                        if success {
+                        if ready {
                             tracing::info!("coordinator reported that all nodes are ready, starting dataflow `{dataflow_id}`");
                             dataflow.start(&self.events_tx, &self.clock).await?;
                         }
@@ -437,7 +468,6 @@ impl Daemon {
                     .running
                     .get_mut(&dataflow_id)
                     .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-                //  .stop_all(&self.clock.clone(), grace_duration);
 
                 let reply = DaemonCoordinatorReply::StopResult(Ok(()));
                 let _ = reply_tx
@@ -588,6 +618,11 @@ impl Daemon {
                 dataflow.pending_nodes.insert(node.id.clone());
 
                 let node_id = node.id.clone();
+                let node_stderr_most_recent = dataflow
+                    .node_stderr_most_recent
+                    .entry(node.id.clone())
+                    .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES)))
+                    .clone();
                 match spawn::spawn_node(
                     dataflow_id,
                     &working_dir,
@@ -595,14 +630,13 @@ impl Daemon {
                     self.events_tx.clone(),
                     dataflow_descriptor.clone(),
                     self.clock.clone(),
+                    node_stderr_most_recent,
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
-                    Ok(pid) => {
-                        dataflow
-                            .running_nodes
-                            .insert(node_id.clone(), RunningNode { pid });
+                    Ok(running_node) => {
+                        dataflow.running_nodes.insert(node_id, running_node);
                     }
                     Err(err) => {
                         tracing::error!("{err:?}");
@@ -612,6 +646,7 @@ impl Daemon {
                                 &node_id,
                                 &mut self.coordinator_connection,
                                 &self.clock,
+                                &mut dataflow.cascading_error_causes,
                             )
                             .await?;
                     }
@@ -622,6 +657,70 @@ impl Daemon {
         }
 
         Ok(())
+    }
+
+    async fn handle_dynamic_node_event(
+        &mut self,
+        event: DynamicNodeEventWrapper,
+    ) -> eyre::Result<()> {
+        match event {
+            DynamicNodeEventWrapper {
+                event: DynamicNodeEvent::NodeConfig { node_id },
+                reply_tx,
+            } => {
+                let number_node_id = self
+                    .running
+                    .iter()
+                    .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
+                    .count();
+
+                let node_config = match number_node_id {
+                    2.. => {
+                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
+                            result: Err(format!(
+                                "multiple dataflows contains dynamic node id {}. Please only have one running dataflow with the specified node id if you want to use dynamic node",
+                                node_id
+                            )
+                            .to_string()),
+                        }));
+                        return Ok(());
+                    }
+                    1 => self
+                        .running
+                        .iter()
+                        .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
+                        .map(|(id, dataflow)| -> Result<NodeConfig> {
+                            let node_config = dataflow
+                                .running_nodes
+                                .get(&node_id)
+                                .context("no node with ID `{node_id}` within the given dataflow")?
+                                .node_config
+                                .clone();
+                            if !node_config.dynamic {
+                                bail!("node with ID `{node_id}` in {id} is not dynamic");
+                            }
+                            Ok(node_config)
+                        })
+                        .next()
+                        .context("no node with ID `{node_id}`")?
+                        .context("failed to get dynamic node config within given dataflow")?,
+                    0 => {
+                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
+                            result: Err("no node with ID `{node_id}`".to_string()),
+                        }));
+                        return Ok(());
+                    }
+                };
+
+                let reply = DaemonReply::NodeConfig {
+                    result: Ok(node_config),
+                };
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send node info reply from daemon to coordinator")
+                });
+                Ok(())
+            }
+        }
     }
 
     async fn handle_node_event(
@@ -654,6 +753,7 @@ impl Daemon {
                                 reply_sender,
                                 &mut self.coordinator_connection,
                                 &self.clock,
+                                &mut dataflow.cascading_error_causes,
                             )
                             .await?;
                         match status {
@@ -908,7 +1008,12 @@ impl Daemon {
 
         dataflow
             .pending_nodes
-            .handle_node_stop(node_id, &mut self.coordinator_connection, &self.clock)
+            .handle_node_stop(
+                node_id,
+                &mut self.coordinator_connection,
+                &self.clock,
+                &mut dataflow.cascading_error_causes,
+            )
             .await?;
 
         Self::handle_outputs_done(
@@ -920,18 +1025,20 @@ impl Daemon {
         .await?;
 
         dataflow.running_nodes.remove(node_id);
-        if dataflow.running_nodes.is_empty() {
-            let result = match self.dataflow_errors.get(&dataflow.id) {
-                None => Ok(()),
-                Some(errors) => {
-                    let mut output = "some nodes failed:".to_owned();
-                    for (node, error) in errors {
-                        use std::fmt::Write;
-                        write!(&mut output, "\n  - {node}: {error}").unwrap();
-                    }
-                    Err(output)
-                }
+        if dataflow
+            .running_nodes
+            .iter()
+            .all(|(_id, n)| n.node_config.dynamic)
+        {
+            let result = DataflowDaemonResult {
+                timestamp: self.clock.new_timestamp(),
+                node_results: self
+                    .dataflow_node_results
+                    .get(&dataflow.id)
+                    .context("failed to get dataflow node results")?
+                    .clone(),
             };
+
             tracing::info!(
                 "Dataflow `{dataflow_id}` finished on machine `{}`",
                 self.machine_id
@@ -1050,80 +1157,57 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
-                let node_error = match exit_status {
+                let node_result = match exit_status {
                     NodeExitStatus::Success => {
                         tracing::info!("node {dataflow_id}/{node_id} finished successfully");
-                        None
+                        Ok(())
                     }
-                    NodeExitStatus::IoError(err) => {
-                        let err = eyre!(err).wrap_err(format!(
-                            "
-    I/O error while waiting for node `{dataflow_id}/{node_id}. 
+                    exit_status => {
+                        let dataflow = self.running.get(&dataflow_id);
+                        let caused_by_node = dataflow
+                            .and_then(|dataflow| {
+                                dataflow.cascading_error_causes.error_caused_by(&node_id)
+                            })
+                            .cloned();
+                        let grace_duration_kill = dataflow
+                            .map(|d| d.grace_duration_kills.contains(&node_id))
+                            .unwrap_or_default();
 
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        ));
-                        tracing::error!("{err:?}");
-                        Some(err)
-                    }
-                    NodeExitStatus::ExitCode(code) => {
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with exit code {code}.
-
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
-                    NodeExitStatus::Signal(signal) => {
-                        let signal: Cow<_> = match signal {
-                            1 => "SIGHUP".into(),
-                            2 => "SIGINT".into(),
-                            3 => "SIGQUIT".into(),
-                            4 => "SIGILL".into(),
-                            6 => "SIGABRT".into(),
-                            8 => "SIGFPE".into(),
-                            9 => "SIGKILL".into(),
-                            11 => "SIGSEGV".into(),
-                            13 => "SIGPIPE".into(),
-                            14 => "SIGALRM".into(),
-                            15 => "SIGTERM".into(),
-                            22 => "SIGABRT".into(),
-                            23 => "NSIG".into(),
-
-                            other => other.to_string().into(),
+                        let cause = match caused_by_node {
+                            Some(caused_by_node) => {
+                                tracing::info!("marking `{node_id}` as cascading error caused by `{caused_by_node}`");
+                                NodeErrorCause::Cascading { caused_by_node }
+                            }
+                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
+                            None => NodeErrorCause::Other {
+                                stderr: dataflow
+                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                    .map(|queue| {
+                                        let mut s = if queue.is_full() {
+                                            "[...]".into()
+                                        } else {
+                                            String::new()
+                                        };
+                                        while let Some(line) = queue.pop() {
+                                            s += &line;
+                                        }
+                                        s
+                                    })
+                                    .unwrap_or_default(),
+                            },
                         };
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with signal `{signal}`
-
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
-                    }
-                    NodeExitStatus::Unknown => {
-                        let err = eyre!(
-                            "
-    {dataflow_id}/{node_id} failed with unknown exit code
-    
-    Check logs using: dora logs {dataflow_id} {node_id}
-                            "
-                        );
-                        tracing::error!("{err}");
-                        Some(err)
+                        Err(NodeError {
+                            timestamp: self.clock.new_timestamp(),
+                            cause,
+                            exit_status,
+                        })
                     }
                 };
 
-                if let Some(err) = node_error {
-                    self.dataflow_errors
-                        .entry(dataflow_id)
-                        .or_default()
-                        .insert(node_id.clone(), err);
-                }
+                self.dataflow_node_results
+                    .entry(dataflow_id)
+                    .or_default()
+                    .insert(node_id.clone(), node_result);
 
                 self.handle_node_stop(dataflow_id, &node_id).await?;
 
@@ -1227,33 +1311,6 @@ fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
     }
 }
 
-fn runtime_node_inputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeMap<DataId, Input> {
-    n.operators
-        .iter()
-        .flat_map(|operator| {
-            operator.config.inputs.iter().map(|(input_id, mapping)| {
-                (
-                    DataId::from(format!("{}/{input_id}", operator.id)),
-                    mapping.clone(),
-                )
-            })
-        })
-        .collect()
-}
-
-fn runtime_node_outputs(n: &dora_core::descriptor::RuntimeNode) -> BTreeSet<DataId> {
-    n.operators
-        .iter()
-        .flat_map(|operator| {
-            operator
-                .config
-                .outputs
-                .iter()
-                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
-        })
-        .collect()
-}
-
 async fn send_input_closed_events<F>(
     dataflow: &mut RunningDataflow,
     inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
@@ -1330,7 +1387,8 @@ fn close_input(
 
 #[derive(Debug, Clone)]
 struct RunningNode {
-    pid: u32,
+    pid: Option<u32>,
+    node_config: NodeConfig,
 }
 
 pub struct RunningDataflow {
@@ -1357,6 +1415,12 @@ pub struct RunningDataflow {
     ///
     /// TODO: replace this with a constant once `BTreeSet::new` is `const` on stable.
     empty_set: BTreeSet<DataId>,
+
+    /// Contains the node that caused the error for nodes that experienced a cascading error.
+    cascading_error_causes: CascadingErrorCauses,
+    grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
+
+    node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
 }
 
 impl RunningDataflow {
@@ -1375,6 +1439,9 @@ impl RunningDataflow {
             _timer_handles: Vec::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
+            cascading_error_causes: Default::default(),
+            grace_duration_kills: Default::default(),
+            node_stderr_most_recent: BTreeMap::new(),
         }
     }
 
@@ -1437,6 +1504,7 @@ impl RunningDataflow {
         }
 
         let running_nodes = self.running_nodes.clone();
+        let grace_duration_kills = self.grace_duration_kills.clone();
         tokio::spawn(async move {
             let duration = grace_duration.unwrap_or(Duration::from_millis(500));
             tokio::time::sleep(duration).await;
@@ -1444,12 +1512,15 @@ impl RunningDataflow {
             system.refresh_processes();
 
             for (node, node_details) in running_nodes.iter() {
-                if let Some(process) = system.process(Pid::from(node_details.pid as usize)) {
-                    process.kill();
-                    warn!(
-                        "{node} was killed due to not stopping within the {:#?} grace period",
-                        duration
-                    )
+                if let Some(pid) = node_details.pid {
+                    if let Some(process) = system.process(Pid::from(pid as usize)) {
+                        grace_duration_kills.insert(node.clone());
+                        process.kill();
+                        warn!(
+                            "{node} was killed due to not stopping within the {:#?} grace period",
+                            duration
+                        )
+                    }
                 }
             }
         });
@@ -1515,6 +1586,7 @@ pub enum Event {
     Coordinator(CoordinatorEvent),
     Daemon(InterDaemonEvent),
     Dora(DoraEvent),
+    DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
     CtrlC,
 }
@@ -1575,39 +1647,6 @@ pub enum DoraEvent {
     },
 }
 
-#[derive(Debug)]
-pub enum NodeExitStatus {
-    Success,
-    IoError(io::Error),
-    ExitCode(i32),
-    Signal(i32),
-    Unknown,
-}
-
-impl From<Result<std::process::ExitStatus, io::Error>> for NodeExitStatus {
-    fn from(result: Result<std::process::ExitStatus, io::Error>) -> Self {
-        match result {
-            Ok(status) => {
-                if status.success() {
-                    NodeExitStatus::Success
-                } else if let Some(code) = status.code() {
-                    Self::ExitCode(code)
-                } else {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::process::ExitStatusExt;
-                        if let Some(signal) = status.signal() {
-                            return Self::Signal(signal);
-                        }
-                    }
-                    Self::Unknown
-                }
-            }
-            Err(err) => Self::IoError(err),
-        }
-    }
-}
-
 #[must_use]
 enum RunStatus {
     Continue,
@@ -1653,4 +1692,24 @@ fn set_up_ctrlc_handler(
     .wrap_err("failed to set ctrl-c handler")?;
 
     Ok(ReceiverStream::new(ctrlc_rx))
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CascadingErrorCauses {
+    caused_by: BTreeMap<NodeId, NodeId>,
+}
+
+impl CascadingErrorCauses {
+    pub fn experienced_cascading_error(&self, node: &NodeId) -> bool {
+        self.caused_by.contains_key(node)
+    }
+
+    /// Return the ID of the node that caused a cascading error for the given node, if any.
+    pub fn error_caused_by(&self, node: &NodeId) -> Option<&NodeId> {
+        self.caused_by.get(node)
+    }
+
+    pub fn report_cascading_error(&mut self, causing_node: NodeId, affected_node: NodeId) {
+        self.caused_by.entry(affected_node).or_insert(causing_node);
+    }
 }

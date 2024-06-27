@@ -1,5 +1,6 @@
 use ::dora_ros2_bridge::rustdds::{self, policy};
 use pyo3::prelude::{pyclass, pymethods};
+use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 
 /// ROS2 QoS Policy
 ///
@@ -12,7 +13,7 @@ use pyo3::prelude::{pyclass, pymethods};
 /// :type keep_last: int, optional
 /// :rtype: dora.Ros2QoSPolicies
 ///
-#[derive(Debug, Clone)]
+#[derive(Clone, Str, Repr, Dir, Dict)]
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2QosPolicies {
@@ -77,7 +78,7 @@ impl From<Ros2QosPolicies> for rustdds::QosPolicies {
 /// DDS 2.2.3.4 DURABILITY
 ///
 /// :rtype: dora.Ros2Durability
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Str, Repr, Dir, Dict)]
 #[pyclass]
 pub enum Ros2Durability {
     Volatile,
@@ -103,7 +104,7 @@ impl From<Ros2Durability> for policy::Durability {
 
 /// DDS 2.2.3.11 LIVELINESS
 /// :rtype: dora.Ros2Liveliness
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Str, Repr, Dir, Dict)]
 #[pyclass]
 pub enum Ros2Liveliness {
     Automatic,

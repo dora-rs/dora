@@ -22,7 +22,7 @@ from dora import Node
 node = Node()
 ```"""
 
-    def __init__(self) -> None:
+    def __init__(self, node_id: str=None) -> None:
         """The custom node API lets you integrate `dora` into your application.
 It allows you to retrieve input and send output in any fashion you want.
 
@@ -46,7 +46,7 @@ This method returns the parsed dataflow YAML file."""
         """Merge an external event stream with dora main loop.
 This currently only work with ROS2."""
 
-    def next(self, timeout: float=None) -> dora.PyEvent:
+    def next(self, timeout: float=None) -> dict:
         """`.next()` gives you the next input that the node has received.
 It blocks until the next event becomes available.
 You can use timeout in seconds to return if no input is available.
@@ -87,15 +87,6 @@ node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
 
     def __next__(self) -> typing.Any:
         """Implement next(self)."""
-
-@typing.final
-class PyEvent:
-    """Dora Event"""
-
-    def inner(self):...
-
-    def __getitem__(self, key: typing.Any) -> typing.Any:
-        """Return self[key]."""
 
 @typing.final
 class Ros2Context:
@@ -274,7 +265,7 @@ at any point without it being considered a breaking change."""
     def publish(self, data: pyarrow.Array) -> None:
         """Publish a message into ROS2 topic.
 
-Remember that the data format should respect the structure of the ROS2 message usinng an arrow Structure.
+Remember that the data format should respect the structure of the ROS2 message using an arrow Structure.
 
 ex:
 ```python
