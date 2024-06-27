@@ -62,7 +62,6 @@ async fn main() -> eyre::Result<()> {
                         let mut writer = AsyncArrowWriter::try_new(
                             file,
                             schema.clone(),
-                            0,
                             Some(
                                 WriterProperties::builder()
                                     .set_compression(parquet::basic::Compression::BROTLI(

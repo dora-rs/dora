@@ -44,7 +44,7 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
                 status: DoraStatus::Continue,
             };
         };
-        let data = arrow::ffi::from_ffi(data_array, &input.schema);
+        let data = unsafe { arrow::ffi::from_ffi(data_array, &input.schema) };
 
         match data {
             Ok(data) => Event::Input {

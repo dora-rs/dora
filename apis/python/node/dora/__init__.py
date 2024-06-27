@@ -13,7 +13,6 @@ from .dora import *
 
 from .dora import (
     Node,
-    PyEvent,
     Ros2Context,
     Ros2Node,
     Ros2NodeOptions,

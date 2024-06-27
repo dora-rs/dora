@@ -4,7 +4,7 @@ use std::{env::consts::EXE_SUFFIX, path::Path};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing("c++-ros2-dataflow-exaple").wrap_err("failed to set up tracing")?;
+    set_up_tracing("c++-ros2-dataflow-example").wrap_err("failed to set up tracing")?;
 
     if cfg!(windows) {
         tracing::error!(

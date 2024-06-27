@@ -42,3 +42,4 @@ tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
 futures = "0.3.21"
 duration-str = "0.5"
+tabwriter = "1.4.0"

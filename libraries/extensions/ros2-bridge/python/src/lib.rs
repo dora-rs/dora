@@ -15,9 +15,10 @@ use eyre::{eyre, Context, ContextCompat, Result};
 use futures::{Stream, StreamExt};
 use pyo3::{
     prelude::{pyclass, pymethods},
-    types::{PyDict, PyList, PyModule},
-    PyAny, PyObject, PyResult, Python,
+    types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
+    Bound, PyAny, PyObject, PyResult, Python,
 };
+use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
 
 pub mod qos;
@@ -45,6 +46,7 @@ pub mod typed;
 /// :type ros_paths: typing.List[str], optional
 ///
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 pub struct Ros2Context {
     context: ros2_client::Context,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
@@ -57,7 +59,7 @@ impl Ros2Context {
     pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
         Python::with_gil(|py| -> Result<()> {
             let warnings = py
-                .import("warnings")
+                .import_bound("warnings")
                 .wrap_err("failed to import `warnings` module")?;
             warnings
             .call_method1("warn", ("dora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
@@ -147,6 +149,7 @@ impl Ros2Context {
 ///   See: https://github.com/jhelovuo/ros2-client/issues/4
 ///
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 pub struct Ros2Node {
     node: ros2_client::Node,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
@@ -251,7 +254,7 @@ impl Ros2Node {
 /// ROS2 Node Options
 /// :type rosout: bool, optional
 ///
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default, Str, Repr, Dir, Dict)]
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2NodeOptions {
@@ -281,6 +284,7 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
@@ -293,6 +297,7 @@ pub struct Ros2Topic {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Publisher {
     publisher: ros2_client::Publisher<TypedValue<'static>>,
@@ -303,7 +308,7 @@ pub struct Ros2Publisher {
 impl Ros2Publisher {
     /// Publish a message into ROS2 topic.
     ///
-    /// Remember that the data format should respect the structure of the ROS2 message usinng an arrow Structure.
+    /// Remember that the data format should respect the structure of the ROS2 message using an arrow Structure.
     ///
     /// ex:
     /// ```python
@@ -322,8 +327,8 @@ impl Ros2Publisher {
     /// :type data: pyarrow.Array
     /// :rtype: None
     ///
-    pub fn publish(&self, data: &PyAny) -> eyre::Result<()> {
-        let pyarrow = PyModule::import(data.py(), "pyarrow")?;
+    pub fn publish(&self, data: Bound<'_, PyAny>) -> eyre::Result<()> {
+        let pyarrow = PyModule::import_bound(data.py(), "pyarrow")?;
 
         let data = if data.is_instance_of::<PyDict>() {
             // convert to arrow struct scalar
@@ -332,15 +337,15 @@ impl Ros2Publisher {
             data
         };
 
-        let data = if data.is_instance(pyarrow.getattr("StructScalar")?)? {
+        let data = if data.is_instance(&pyarrow.getattr("StructScalar")?)? {
             // convert to arrow array
-            let list = PyList::new(data.py(), [data]);
+            let list = PyList::new_bound(data.py(), [data]);
             pyarrow.getattr("array")?.call1((list,))?
         } else {
             data
         };
 
-        let value = arrow::array::ArrayData::from_pyarrow(data)?;
+        let value = arrow::array::ArrayData::from_pyarrow_bound(&data)?;
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
         let typed_value = TypedValue {
@@ -363,6 +368,7 @@ impl Ros2Publisher {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Subscription {
     deserializer: StructDeserializer<'static>,
@@ -431,7 +437,7 @@ impl Stream for Ros2SubscriptionStream {
     }
 }
 
-pub fn create_dora_ros2_bridge_module(m: &PyModule) -> PyResult<()> {
+pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ros2Context>()?;
     m.add_class::<Ros2Node>()?;
     m.add_class::<Ros2NodeOptions>()?;
