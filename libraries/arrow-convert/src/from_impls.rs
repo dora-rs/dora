@@ -107,6 +107,25 @@ impl TryFrom<&ArrowData> for i64 {
     }
 }
 
+impl TryFrom<&ArrowData> for f32 {
+    type Error = eyre::Report;
+    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+        let array = value
+            .as_primitive_opt::<arrow::datatypes::Float32Type>()
+            .context("not a primitive Float32Type array")?;
+        extract_single_primitive(array)
+    }
+}
+impl TryFrom<&ArrowData> for f64 {
+    type Error = eyre::Report;
+    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+        let array = value
+            .as_primitive_opt::<arrow::datatypes::Float64Type>()
+            .context("not a primitive Float64Type array")?;
+        extract_single_primitive(array)
+    }
+}
+
 impl<'a> TryFrom<&'a ArrowData> for &'a str {
     type Error = eyre::Report;
     fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
