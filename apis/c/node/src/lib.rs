@@ -196,12 +196,10 @@ pub unsafe extern "C" fn read_dora_input_data(
 }
 
 /// Reads out the timestamp of the given input event from metadata.
-/// 
+///
 /// Return `0` if the given event is not an input event.
 #[no_mangle]
-pub unsafe extern "C" fn read_dora_input_data_timestamp(
-    event: *const (),
-) -> core::ffi::c_ulonglong {
+pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ffi::c_ulonglong {
     let event: &Event = unsafe { &*event.cast() };
     match event {
         Event::Input { metadata, .. } => metadata.timestamp().get_time().as_u64(),
