@@ -12,6 +12,7 @@ on:
   release:
     types:
       - "published"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -38,6 +39,14 @@ jobs:
           sccache: "true"
           manylinux: auto
           working-directory: apis/python/node
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --zig
+          sccache: "true"
+          working-directory: apis/python/node
+          manylinux: musllinux_1_2
       - name: Upload wheels
         uses: actions/upload-artifact@v3
         with:

@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.3.5 (2024-07-03)
+
+## What's Changed
+
+- chore: Support RISCV64 by @LyonRust in https://github.com/dora-rs/dora/pull/505
+- Json schemas for VSCode YAML Support by @haixuanTao in https://github.com/dora-rs/dora/pull/497
+- Pretty Print Rust object when called from Python print by @haixuanTao in https://github.com/dora-rs/dora/pull/503
+- Fix `Cargo.lock` by @phil-opp in https://github.com/dora-rs/dora/pull/506
+- Use dependabot for automatic lockfile updates by @phil-opp in https://github.com/dora-rs/dora/pull/507
+- Run cargo update by @phil-opp in https://github.com/dora-rs/dora/pull/508
+- Allow top-level fields in node declaration by @phil-opp in https://github.com/dora-rs/dora/pull/478
+- Configure Renovate by @renovate in https://github.com/dora-rs/dora/pull/509
+- Make non-UTF8 stdout/stderr from nodes non-fatal by @phil-opp in https://github.com/dora-rs/dora/pull/510
+- Make dora cli connect to remote coordinator by @Gege-Wang in https://github.com/dora-rs/dora/pull/513
+- Provide help messages for CLI by @phil-opp in https://github.com/dora-rs/dora/pull/519
+- Renovate: group all dependency updates in single PR by @phil-opp in https://github.com/dora-rs/dora/pull/524
+- chore(deps): update dependencies by @renovate in https://github.com/dora-rs/dora/pull/529
+- Improve coordinator port config by @phil-opp in https://github.com/dora-rs/dora/pull/520
+- Fix some typos and add automatic typos check to CI by @EricLBuehler in https://github.com/dora-rs/dora/pull/539
+- Update Pyo3 bounds by @Michael-J-Ward in https://github.com/dora-rs/dora/pull/472
+- chore(deps): update dependencies by @renovate in https://github.com/dora-rs/dora/pull/543
+- Small logging improvements by @phil-opp in https://github.com/dora-rs/dora/pull/537
+- Refuse relative path for remote in coordinator by @XxChang in https://github.com/dora-rs/dora/pull/538
+- chore(deps): update rust crate clap to v4.5.7 by @renovate in https://github.com/dora-rs/dora/pull/546
+- Add `--quiet` flag to daemon and coordinator by @phil-opp in https://github.com/dora-rs/dora/pull/548
+- Implement file-based logging in daemon and coordinator by @phil-opp in https://github.com/dora-rs/dora/pull/549
+- Spawn daemon and coordinator in quiet mode on `dora up` by @phil-opp in https://github.com/dora-rs/dora/pull/550
+- Run dynamic node by @haixuanTao in https://github.com/dora-rs/dora/pull/517
+- Update dora new by @XxChang in https://github.com/dora-rs/dora/pull/553
+- fix event_as_input bug by @XxChang in https://github.com/dora-rs/dora/pull/556
+- Transform custom PyEvent into standard python dictionary for easier d… by @haixuanTao in https://github.com/dora-rs/dora/pull/557
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/558
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/560
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/563
+- Print only first node error and report more metadata in dataflow results by @phil-opp in https://github.com/dora-rs/dora/pull/552
+- Make `dora start` attach by default, add `--detach` to opt-out by @phil-opp in https://github.com/dora-rs/dora/pull/561
+- List failed and finished dataflows in `dora list` by @phil-opp in https://github.com/dora-rs/dora/pull/554
+- Ignore-quicker-pending-drop-token by @haixuanTao in https://github.com/dora-rs/dora/pull/568
+- Increasing grace duration to 2 seconds so that drop token get well returned in https://github.com/dora-rs/dora/pull/576
+
+## New Contributors
+
+- @LyonRust made their first contribution in https://github.com/dora-rs/dora/pull/505
+- @renovate made their first contribution in https://github.com/dora-rs/dora/pull/509
+- @Gege-Wang made their first contribution in https://github.com/dora-rs/dora/pull/513
+- @EricLBuehler made their first contribution in https://github.com/dora-rs/dora/pull/539
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.4...v0.3.5
+
 ## v0.3.4 (2024-05-17)
 
 ## What's Changed
