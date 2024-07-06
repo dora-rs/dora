@@ -53,6 +53,13 @@ jobs:
         with:
           name: wheels-linux-${{ matrix.platform.target }}
           path: apis/python/node/dist
+      - name: Upload to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: apis/python/node/dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -85,6 +92,13 @@ jobs:
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
           path: apis/python/node/dist
+      - name: Upload to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: apis/python/node/dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
 
   musleabi:
     runs-on: ubuntu-latest
@@ -119,6 +133,13 @@ jobs:
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
           path: apis/python/node/dist
+      - name: Upload to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: apis/python/node/dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -147,6 +168,13 @@ jobs:
         with:
           name: wheels-windows-${{ matrix.platform.target }}
           path: apis/python/node/dist
+      - name: Upload to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: apis/python/node/dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
@@ -174,6 +202,13 @@ jobs:
         with:
           name: wheels-macos-${{ matrix.platform.target }}
           path: apis/python/node/dist
+      - name: Upload to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: apis/python/node/dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
 
   sdist:
     runs-on: ubuntu-latest
