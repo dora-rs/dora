@@ -83,12 +83,59 @@ jobs:
           cargo publish -p dora-record --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-rerun --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  unix:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-20.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-20.04
+            target: i686-unknown-linux-gnu
+          - runner: ubuntu-20.04
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-20.04
+            target: aarch64-unknown-linux-musl
+          - runner: ubuntu-20.04
+            target: armv7-unknown-linux-musleabihf
+          - runner: macos-12
+            target: aarch64-apple-darwin
+          - runner: macos-12
+            target: x86_64-apple-darwin
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v3
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - name: "Add toolchains"
+        run: rustup target add ${{ matrix.platform.target }}
+      - name: "Build"
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --release --target  ${{ matrix.platform.target }} -p dora-cli
+      - name: "Archive Linux"
+        run: |
+          zip -r  ${{ matrix.platform.target }}.zip target/ ${{ matrix.platform.target }}/release
+      - name: "Upload asset"
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ${{ matrix.platform.target }}.zip
+          asset_name: dora-${{ github.ref_name }}-${{ matrix.platform.target }}.zip
+          asset_content_type: application/zip
+
   windows-release:
     name: "Windows Release"
 
     strategy:
       matrix:
-        platform: [windows-2022]
+        platform:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+
       fail-fast: false
     runs-on: ${{ matrix.platform }}
 
@@ -116,128 +163,5 @@ jobs:
         with:
           upload_url: ${{ github.event.release.upload_url }}
           asset_path: archive.zip
-          asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
-          asset_content_type: application/zip
-
-  unix-release:
-    name: "Unix Release"
-
-    strategy:
-      matrix:
-        platform: [macos-12, ubuntu-20.04]
-      fail-fast: false
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: r7kamura/rust-problem-matchers@v1.1.0
-
-      - name: "Build binaries"
-        timeout-minutes: 60
-        run: "cargo build --release -p dora-cli"
-
-      - name: "Create Archive (Unix)"
-        if: runner.os == 'Linux' || runner.os == 'macOS'
-        run: |
-          mkdir archive
-          cp target/release/dora archive/dora
-          cd archive
-          zip -r ../archive.zip .
-          cd ..
-
-      - name: "Upload release asset"
-        uses: actions/upload-release-asset@v1.0.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive.zip
-          asset_name: dora-${{ github.ref_name }}-x86_64-${{ runner.os }}.zip
-          asset_content_type: application/zip
-
-  linux-arm-release:
-    name: "Linux ARM Release"
-
-    strategy:
-      matrix:
-        platform: [ubuntu-20.04]
-      fail-fast: false
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: r7kamura/rust-problem-matchers@v1.1.0
-
-      - name: "Build Linux ARM64"
-        if: runner.os == 'Linux'
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --release --target aarch64-unknown-linux-gnu -p dora-cli
-
-      - name: "Archive Linux ARM64"
-        if: runner.os == 'Linux'
-        run: |
-          mkdir archive_aarch64
-          cp target/aarch64-unknown-linux-gnu/release/dora archive_aarch64/dora
-          cd archive_aarch64
-          zip -r ../archive_aarch64.zip .
-          cd ..
-
-      - name: "Upload Linux ARM64 asset"
-        if: runner.os == 'Linux'
-        uses: actions/upload-release-asset@v1.0.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive_aarch64.zip
-          asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
-          asset_content_type: application/zip
-
-  mac-arm-release:
-    name: "MacOS ARM Release"
-
-    strategy:
-      matrix:
-        platform: [macos-12]
-      fail-fast: false
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: r7kamura/rust-problem-matchers@v1.1.0
-      - name: "Add macOS ARM64 toolchains"
-        if: runner.os == 'macOS'
-        run: rustup target add aarch64-apple-darwin
-
-      - name: "Build macOS ARM64"
-        if: runner.os == 'macOS'
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target aarch64-apple-darwin -p dora-coordinator -p dora-cli -p dora-daemon
-
-      - name: "Archive macOS ARM64"
-        if: runner.os == 'macOS'
-        run: |
-          mkdir archive_aarch64
-          cp target/aarch64-apple-darwin/release/dora archive_aarch64/dora
-          cd archive_aarch64
-          zip -r ../archive_aarch64.zip .
-          cd ..
-
-      - name: "Upload macOS ARM64 asset"
-        if: runner.os == 'macOS'
-        uses: actions/upload-release-asset@v1.0.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive_aarch64.zip
-          asset_name: dora-${{ github.ref_name }}-aarch64-${{ runner.os }}.zip
+          asset_name: dora-${{ github.ref_name }}-${{ matrix.platform.target }}.zip
           asset_content_type: application/zip
