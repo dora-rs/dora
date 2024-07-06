@@ -137,7 +137,7 @@ jobs:
             target: x86_64-pc-windows-msvc
 
       fail-fast: false
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.platform.runner }}
 
     steps:
       - uses: actions/checkout@v3
