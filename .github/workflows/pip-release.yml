@@ -126,7 +126,9 @@ jobs:
       matrix:
         platform:
           - runner: windows-latest
-            target: x86_64
+            target: x86
+          - runner: windows-latest
+            target: x64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
