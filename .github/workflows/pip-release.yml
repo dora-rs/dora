@@ -147,8 +147,6 @@ jobs:
       matrix:
         platform:
           - runner: windows-latest
-            target: x86
-          - runner: windows-latest
             target: x64
     steps:
       - uses: actions/checkout@v4
