@@ -235,4 +235,4 @@ jobs:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_PASS }}
         with:
           command: upload
-          args: --non-interactive --skip-existing *
+          args: --non-interactive --skip-existing wheels-*/*
