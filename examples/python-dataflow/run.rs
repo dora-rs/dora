@@ -1,4 +1,4 @@
-use dora_core::{get_pip_path, get_python_path, run};
+use dora_core::{get_python_path, run};
 use dora_tracing::set_up_tracing;
 use eyre::{bail, ContextCompat, WrapErr};
 use std::path::Path;
@@ -51,6 +51,14 @@ async fn main() -> eyre::Result<()> {
     }
 
     run(
+        "pip",
+        &["install", "maturin"],
+        Some (venv),
+    )
+    .await
+    .context("pip install maturin failed")?;
+
+    run(
         "maturin",
         &["develop"],
         Some(&root.join("apis").join("python").join("node")),
@@ -66,6 +74,16 @@ async fn main() -> eyre::Result<()> {
 
 async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
+
+    // First build the dataflow (install requirements)
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--").arg("build").arg(dataflow);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
+    };
+
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
