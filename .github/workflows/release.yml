@@ -115,7 +115,7 @@ jobs:
           command: build
           args: --release --target  ${{ matrix.platform.target }} -p dora-cli
       - name: "Archive"
-        run: zip -r ${{ matrix.platform.target }}.zip target/${{ matrix.platform.target }}/release/dora
+        run: zip  -j -r ${{ matrix.platform.target }}.zip target/${{ matrix.platform.target }}/release/dora
 
       - name: "Upload asset"
         uses: actions/upload-release-asset@v1.0.1
