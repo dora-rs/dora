@@ -318,14 +318,15 @@ jobs:
           cd test_python_project
           dora up
           dora list
+          dora build dataflow.yml
           dora start dataflow.yml --name ci-python-test --detach
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
-          pip install "numpy<2.0.0" opencv-python
+          dora build ../examples/python-dataflow/dataflow_dynamic.yml
           dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
-          python ../examples/python-dataflow/plot_dynamic.py
+          ultralytics-yolo --name object-detection
           sleep 5
-          dora stop --name ci-python-test  --grace-duration 5s
+          dora stop --name ci-python-dynamic  --grace-duration 5s
           dora destroy
 
       - name: "Test CLI (C)"
