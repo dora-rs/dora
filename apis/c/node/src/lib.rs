@@ -122,8 +122,8 @@ pub enum EventType {
 /// freed yet. The returned `out_ptr` must not be used after
 /// freeing the `event`, since it points directly into the event's
 /// memory.
-/// 
-/// Note: `Out_ptr` is not a null-terminated string. The length of the string 
+///
+/// Note: `Out_ptr` is not a null-terminated string. The length of the string
 /// is given by `out_len`.
 #[no_mangle]
 pub unsafe extern "C" fn read_dora_input_id(
