@@ -117,13 +117,13 @@ pub enum EventType {
 ///
 /// ## Safety
 ///
-/// The `event` argument must be a dora event received through
+/// - The `event` argument must be a dora event received through
 /// [`dora_next_event`]. The event must be still valid, i.e., not
 /// freed yet. The returned `out_ptr` must not be used after
 /// freeing the `event`, since it points directly into the event's
 /// memory.
 ///
-/// Note: `Out_ptr` is not a null-terminated string. The length of the string
+/// - Note: `Out_ptr` is not a null-terminated string. The length of the string
 /// is given by `out_len`.
 #[no_mangle]
 pub unsafe extern "C" fn read_dora_input_id(
