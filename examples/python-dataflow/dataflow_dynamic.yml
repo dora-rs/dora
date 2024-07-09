@@ -1,15 +1,44 @@
 nodes:
-  - id: webcam
-    build: pip install -r ../../nodes_hub/opencv-webcam/requirements.txt
-    path: ../../nodes_hub/opencv-webcam/webcam.py
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
     inputs:
-      tick:
-        source: dora/timer/millis/50
-        queue_size: 1000
+      tick: plot/tick
+
     outputs:
       - image
 
-  - id: plot
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: object-detection
+    build: pip install ../../node-hub/ultralytics-yolo
     path: dynamic
     inputs:
-      image: webcam/image
+      image:
+        source: camera/image
+        queue_size: 1
+
+    outputs:
+      - bbox
+    env:
+      MODEL: yolov5n.pt
+
+  - id: plot
+    build: pip install ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+
+      bbox: object-detection/bbox
+
+      tick:
+        source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
+        queue_size: 1
+
+    outputs:
+      - tick
