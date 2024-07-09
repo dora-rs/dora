@@ -114,11 +114,8 @@ jobs:
           use-cross: true
           command: build
           args: --release --target  ${{ matrix.platform.target }} -p dora-cli
-      - name: "Archive Linux"
-        run: |
-          mkdir ${{ matrix.platform.target }}
-          cp target/${{ matrix.platform.target }}/release/dora ${{ matrix.platform.target }}/dora
-          zip -r ${{ matrix.platform.target }}.zip ${{ matrix.platform.target }}
+      - name: "Archive"
+        run: zip -r ${{ matrix.platform.target }}.zip target/${{ matrix.platform.target }}/release/dora
 
       - name: "Upload asset"
         uses: actions/upload-release-asset@v1.0.1
@@ -154,10 +151,7 @@ jobs:
       - name: Create Archive (Windows)
         if: runner.os == 'Windows'
         shell: powershell
-        run: |
-          New-Item -Path archive -ItemType Directory
-          Copy-Item target/release/dora.exe -Destination archive/dora.exe
-          Compress-Archive -Path archive\* -DestinationPath archive.zip
+        run: Compress-Archive -Path target/release/dora.exe -DestinationPath archive.zip
 
       - name: "Upload release asset"
         uses: actions/upload-release-asset@v1.0.1
