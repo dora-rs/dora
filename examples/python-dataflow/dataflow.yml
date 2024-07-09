@@ -1,7 +1,7 @@
 nodes:
   - id: webcam
-    build: pip install -r ../../nodes_hub/opencv-video-capture/requirements.txt
-    path: ../../nodes_hub/opencv-video-capture/video_capture.py
+    build: pip install -r ../../node-hub/opencv-video-capture/requirements.txt
+    path: ../../node-hub/opencv-video-capture/video_capture.py
     inputs:
       tick: dora/timer/millis/50
     outputs:
@@ -10,16 +10,31 @@ nodes:
       DURATION: 100
 
   - id: object_detection
-    build: pip install -r ../../nodes_hub/ultralytics-yolo/requirements.txt
-    path: ../../nodes_hub/ultralytics-yolo/yolo.py
+    build: pip install -r ../../node-hub/ultralytics-yolo/requirements.txt
+    path: ../../node-hub/ultralytics-yolo/yolo.py
     inputs:
       image: webcam/image
     outputs:
       - bbox
 
   - id: plot
-    build: pip install -r ../../nodes_hub/opencv-plot/requirements.txt
-    path: ../../nodes_hub/opencv-plot/plot.py
+    build: pip install -r ../../node-hub/opencv-plot/requirements.txt
+    path: ../../node-hub/opencv-plot/plot.py
     inputs:
       image: webcam/image
       bbox: object_detection/bbox
+
+  """
+  - id: plot
+    build: pip install ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image: camera/image
+
+      tick:
+        source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
+        queue_size: 1
+
+    outputs:
+      - tick
+  """

@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "opencv-plot"
+version = "0.1"
+authors = [
+    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
+    "Enzo Le Van <dev@enzo-le-van.fr>"
+]
+description = "Dora Node for plotting text and bbox on image with OpenCV"
+readme = "README.md"
+
+packages = [# With poetry you're obliged to add at least one file...
+    { include = "main.py", to = "opencv_plot" }
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+dora-rs = "^0.3.5"
+numpy = "2.0.0"
+pyarrow = "16.1.0"
+opencv-python = "^4.10.0.84"
+
+[tool.poetry.scripts]
+opencv-plot = "opencv_plot.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

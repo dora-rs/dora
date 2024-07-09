@@ -1,0 +1,25 @@
+nodes:
+  - id: plot
+    build: pip install ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image: camera/image
+
+      tick:
+        source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
+        queue_size: 1
+
+    outputs:
+      - tick
+
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: plot/tick
+
+    outputs:
+      - image
+
+    env:
+      CAMERA_ID: 0

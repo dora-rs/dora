@@ -1,7 +1,7 @@
 nodes:
   - id: webcam
-    build: pip install -r ../../nodes_hub/opencv-webcam/requirements.txt
-    path: ../../nodes_hub/opencv-webcam/webcam.py
+    build: pip install -r ../../node-hub/opencv-webcam/requirements.txt
+    path: ../../node-hub/opencv-webcam/webcam.py
     inputs:
       tick:
         source: dora/timer/millis/50
