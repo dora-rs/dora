@@ -5,12 +5,11 @@ import cv2
 import numpy as np
 import pyarrow as pa
 
-from dataclasses import dataclass
 from dora import Node
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the width and height of the image.
+    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
         description="OpenCV Video Capture: This node is used to capture video from a camera.")
 

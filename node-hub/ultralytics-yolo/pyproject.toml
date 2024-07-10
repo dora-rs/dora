@@ -1,15 +1,15 @@
 [tool.poetry]
-name = "opencv-video-capture"
+name = "ultralytics-yolo"
 version = "0.1"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>"
 ]
-description = "Dora Node for capturing video with OpenCV"
+description = "Dora Node for object detection with Ultralytics YOLOv8"
 readme = "README.md"
 
 packages = [
-    { include = "main.py", to = "opencv_video_capture" }
+    { include = "main.py", to = "ultralytics_yolo" }
 ]
 
 [tool.poetry.dependencies]
@@ -17,10 +17,10 @@ python = "^3.11"
 dora-rs = "^0.3.5"
 numpy = "1.26.4"
 pyarrow = "16.1.0"
-opencv-python = "^4.10.0.84"
+ultralytics = "8.2.52"
 
 [tool.poetry.scripts]
-opencv-video-capture = "opencv_video_capture.main:main"
+ultralytics-yolo = "ultralytics_yolo.main:main"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

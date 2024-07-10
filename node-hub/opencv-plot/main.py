@@ -10,9 +10,13 @@ from dora import Node
 
 class Plot:
     frame: np.array = np.array([])
-    bboxes: np.array = np.array([[]])
-    conf: np.array = np.array([])
-    label: np.array = np.array([])
+
+    bboxes: {} = {
+        "bbox": np.array([]),
+        "conf": np.array([]),
+        "names": np.array([]),
+    }
+
     text: {} = {
         "text": "",
         "font_scale": np.float32(0.0),
@@ -26,7 +30,7 @@ class Plot:
 
 
 def plot_frame(plot, ci_enabled):
-    for bbox in zip(plot.bboxes, plot.conf, plot.label):
+    for bbox in zip(plot.bboxes["bbox"], plot.bboxes["conf"], plot.bboxes["names"]):
         [
             [min_x, min_y, max_x, max_y],
             confidence,
@@ -45,11 +49,12 @@ def plot_frame(plot, ci_enabled):
             f"{label}, {confidence:0.2f}",
             (int(max_x) - 120, int(max_y) - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            2.0,
+            0.5,
             (0, 255, 0),
-            2,
+            1,
             1,
         )
+
     cv2.putText(
         plot.frame,
         plot.text["text"],
@@ -75,7 +80,7 @@ def plot_frame(plot, ci_enabled):
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the width and height of the image.
+    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
         description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image.")
 
@@ -138,13 +143,12 @@ def main():
                     break
 
             elif event_id == "bbox":
-                bboxes = event["value"][0]["bbox"].values.to_numpy()
-                conf = event["value"][0]["conf"].values.to_numpy()
-                label = event["value"][0]["names"].values.to_pylist()
-
-                plot.bboxes = np.reshape(bboxes, (-1, 4))
-                plot.conf = conf
-                plot.label = label
+                arrow_bbox = event["value"][0]
+                plot.bboxes = {
+                    "bbox": arrow_bbox["bbox"].values.to_numpy().reshape(-1, 4),
+                    "conf": arrow_bbox["conf"].values.to_numpy(),
+                    "names": arrow_bbox["names"].values.to_pylist(),
+                }
 
                 if plot_frame(plot, ci_enabled):
                     break

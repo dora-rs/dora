@@ -8,7 +8,7 @@ The structure of the node hub is as follows (please use the same structure if yo
 
 ```
 node-hub/
-└── a-node/
+└── your-node/
     ├── main.py
     ├── README.mdr
     └── pyproject.toml
@@ -34,7 +34,7 @@ authors = ["[Pseudo/Name] <[email]>"]
 description = "Dora Node for []"
 readme = "README.md"
 
-packages = [# With poetry you're obliged to add at least one file...
+packages = [
     { include = "main.py", to = "[name of the node with '_' to replace spaces]" }
 ]
 
@@ -66,7 +66,7 @@ authors = [
 description = "Dora Node for plotting data with OpenCV"
 readme = "README.md"
 
-packages = [# With poetry you're obliged to add at least one file...
+packages = [
     { include = "main.py", to = "opencv_plot" }
 ]
 
