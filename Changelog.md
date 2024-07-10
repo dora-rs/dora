@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.5 (2024-06-26)
+## v0.3.5 (2024-07-03)
 
 ## What's Changed
 
@@ -37,6 +37,8 @@
 - Print only first node error and report more metadata in dataflow results by @phil-opp in https://github.com/dora-rs/dora/pull/552
 - Make `dora start` attach by default, add `--detach` to opt-out by @phil-opp in https://github.com/dora-rs/dora/pull/561
 - List failed and finished dataflows in `dora list` by @phil-opp in https://github.com/dora-rs/dora/pull/554
+- Ignore-quicker-pending-drop-token by @haixuanTao in https://github.com/dora-rs/dora/pull/568
+- Increasing grace duration to 2 seconds so that drop token get well returned in https://github.com/dora-rs/dora/pull/576
 
 ## New Contributors
 
