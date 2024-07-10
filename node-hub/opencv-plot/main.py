@@ -13,10 +13,19 @@ class Plot:
     bboxes: np.array = np.array([[]])
     conf: np.array = np.array([])
     label: np.array = np.array([])
-    text: str = ""
+    text: {} = {
+        "text": "",
+        "font_scale": np.float32(0.0),
+        "color": (np.uint8(0), np.uint8(0), np.uint8(0)),
+        "thickness": np.uint32(0),
+        "position": (np.uint32(0), np.uint32(0)),
+    }
+
+    width: np.uint32 = None
+    height: np.uint32 = None
 
 
-def plot_frame(frame, plot, ci_enabled):
+def plot_frame(plot, ci_enabled):
     for bbox in zip(plot.bboxes, plot.conf, plot.label):
         [
             [min_x, min_y, max_x, max_y],
@@ -36,31 +45,31 @@ def plot_frame(frame, plot, ci_enabled):
             f"{label}, {confidence:0.2f}",
             (int(max_x) - 120, int(max_y) - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
+            2.0,
             (0, 255, 0),
             2,
             1,
         )
-
-    width = frame.shape[1]
-    height = frame.shape[0]
-
-    # place plot.text at the bottom center of the frame
     cv2.putText(
-        frame,
-        plot.text,
-        (int(width / 2) - 120, int(height) - 10),
+        plot.frame,
+        plot.text["text"],
+        (int(plot.text["position"][0]), int(plot.text["position"][1])),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (0, 255, 0),
-        2,
+        float(plot.text["font_scale"]),
+        (int(plot.text["color"][0]), int(plot.text["color"][1]), int(plot.text["color"][2])),
+        int(plot.text["thickness"]),
         1,
     )
 
+    if plot.width is not None and plot.height is not None:
+        plot.frame = cv2.resize(plot.frame, (plot.width, plot.height))
+
     if not ci_enabled:
-        cv2.imshow("Dora Node: opencv-plot", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            return True
+        if len(plot.frame.shape) >= 3:
+            cv2.imshow("Dora Node: opencv-plot", plot.frame)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                return True
 
     return False
 
@@ -72,21 +81,21 @@ def main():
 
     parser.add_argument("--name", type=str, required=False, help="The name of the node in the dataflow.",
                         default="opencv-plot")
-    parser.add_argument("--image-width", type=int, required=False, help="The width of the image.", default=640)
-    parser.add_argument("--image-height", type=int, required=False, help="The height of the image.", default=480)
+    parser.add_argument("--plot-width", type=int, required=False, help="The width of the plot.", default=None)
+    parser.add_argument("--plot-height", type=int, required=False, help="The height of the plot.", default=None)
 
     args = parser.parse_args()
 
-    image_width = os.getenv("IMAGE_WIDTH", args.image_width)
-    image_height = os.getenv("IMAGE_HEIGHT", args.image_height)
+    plot_width = os.getenv("PLOT_WIDTH", args.plot_width)
+    plot_height = os.getenv("PLOT_HEIGHT", args.plot_height)
 
-    if image_width is not None:
-        if isinstance(image_width, str) and image_width.isnumeric():
-            image_width = int(image_width)
+    if plot_width is not None:
+        if isinstance(plot_width, str) and plot_width.isnumeric():
+            plot_width = int(plot_width)
 
-    if image_height is not None:
-        if isinstance(image_height, str) and image_height.isnumeric():
-            image_height = int(image_height)
+    if plot_height is not None:
+        if isinstance(plot_height, str) and plot_height.isnumeric():
+            plot_height = int(plot_height)
 
     # check if the code is running in a CI environment (e.g. GitHub Actions) (parse to bool)
     ci_enabled = os.getenv("CI", False)
@@ -95,6 +104,9 @@ def main():
 
     node = Node(args.name)  # provide the name to connect to the dataflow if dynamic node
     plot = Plot()
+
+    plot.width = plot_width
+    plot.height = plot_height
 
     pa.array([])  # initialize pyarrow array
 
@@ -112,9 +124,17 @@ def main():
                 )
 
             elif event_id == "image":
-                plot.frame = event["value"].to_numpy().reshape((image_height, image_width, 3)).copy()
+                arrow_image = event["value"][0]
+                image = {
+                    "width": np.uint32(arrow_image["width"].as_py()),
+                    "height": np.uint32(arrow_image["height"].as_py()),
+                    "channels": np.uint8(arrow_image["channels"].as_py()),
+                    "data": arrow_image["data"].values.to_numpy().astype(np.uint8)
+                }
 
-                if plot_frame(plot.frame, plot, ci_enabled):
+                plot.frame = np.reshape(image["data"], (image["height"], image["width"], image["channels"]))
+
+                if plot_frame(plot, ci_enabled):
                     break
 
             elif event_id == "bbox":
@@ -126,13 +146,23 @@ def main():
                 plot.conf = conf
                 plot.label = label
 
-                if plot_frame(plot.frame, plot, ci_enabled):
+                if plot_frame(plot, ci_enabled):
                     break
 
             elif event_id == "text":
-                plot.text = event["value"][0].as_py()
+                arrow_text = event["value"][0]
+                plot.text = {
+                    "text": arrow_text["text"].as_py(),
+                    "font_scale": np.float32(arrow_text["font_scale"].as_py()),
+                    "color": (np.uint8(arrow_text["color"].as_py()[0]),
+                              np.uint8(arrow_text["color"].as_py()[1]),
+                              np.uint8(arrow_text["color"].as_py()[2])),
+                    "thickness": np.uint32(arrow_text["thickness"].as_py()),
+                    "position": (np.uint32(arrow_text["position"].as_py()[0]),
+                                 np.uint32(arrow_text["position"].as_py()[1]))
+                }
 
-                if plot_frame(plot.frame, plot, ci_enabled):
+                if plot_frame(plot, ci_enabled):
                     break
 
         elif event_type == "STOP":

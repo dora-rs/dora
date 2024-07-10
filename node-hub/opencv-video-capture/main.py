@@ -16,29 +16,34 @@ def main():
 
     parser.add_argument("--name", type=str, required=False, help="The name of the node in the dataflow.",
                         default="opencv-video-capture")
-    parser.add_argument("--camera-id", type=int, required=False, help="The index of the camera.", default=0)
-    parser.add_argument("--camera-width", type=int, required=False, help="The width of the camera.", default=640)
-    parser.add_argument("--camera-height", type=int, required=False, help="The height of the camera.", default=480)
+    parser.add_argument("--path", type=int, required=False,
+                        help="The path of the device to capture (e.g. /dev/video1, or an index like 0, 1...", default=0)
+    parser.add_argument("--image-width", type=int, required=False,
+                        help="The width of the image output. Default is the camera width.", default=None)
+    parser.add_argument("--image-height", type=int, required=False,
+                        help="The height of the camera. Default is the camera height.", default=None)
 
     args = parser.parse_args()
 
-    camera_id = os.getenv("CAMERA_ID", args.camera_id)
+    video_capture_path = os.getenv("CAPTURE_PATH", args.path)
 
-    if isinstance(camera_id, str) and camera_id.isnumeric():
-        camera_id = int(camera_id)
+    if isinstance(video_capture_path, str) and video_capture_path.isnumeric():
+        video_capture_path = int(video_capture_path)
 
-    camera_width = os.getenv("CAMERA_WIDTH", args.camera_width)
-    camera_height = os.getenv("CAMERA_HEIGHT", args.camera_height)
+    print(type(video_capture_path))
 
-    if camera_width is not None:
-        if isinstance(camera_width, str) and camera_width.isnumeric():
-            camera_width = int(camera_width)
+    image_width = os.getenv("IMAGE_WIDTH", args.image_width)
+    image_height = os.getenv("IMAGE_HEIGHT", args.image_height)
 
-    if camera_height is not None:
-        if isinstance(camera_height, str) and camera_height.isnumeric():
-            camera_height = int(camera_height)
+    if image_width is not None:
+        if isinstance(image_width, str) and image_width.isnumeric():
+            image_width = int(image_width)
 
-    video_capture = cv2.VideoCapture(camera_id)
+    if image_height is not None:
+        if isinstance(image_height, str) and image_height.isnumeric():
+            image_height = int(image_height)
+
+    video_capture = cv2.VideoCapture(video_capture_path)
     node = Node(args.name)
 
     pa.array([])  # initialize pyarrow array
@@ -53,25 +58,33 @@ def main():
                 ret, frame = video_capture.read()
 
                 # resize the frame
-                frame = cv2.resize(frame, (camera_width, camera_height))
+                if image_width is not None and image_height is not None:
+                    frame = cv2.resize(frame, (image_width, image_height))
 
                 if not ret:
                     frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     cv2.putText(
                         frame,
-                        "No Webcam was found at index %d" % camera_id,
+                        f'Error: Could not read frame from camera at path {video_capture_path}.',
                         (int(30), int(30)),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.75,
+                        0.50,
                         (255, 255, 255),
-                        2,
+                        1,
                         1,
                     )
 
+                image = {
+                    "width": np.uint32(frame.shape[1]),
+                    "height": np.uint32(frame.shape[0]),
+                    "channels": np.uint8(frame.shape[2]),
+                    "data": frame.ravel()
+                }
+
                 node.send_output(
                     "image",
-                    pa.array(frame.ravel()),
-                    event["metadata"],
+                    pa.array([image]),
+                    event["metadata"]
                 )
 
         elif event_type == "STOP":

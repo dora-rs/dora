@@ -11,6 +11,9 @@ nodes:
 
     outputs:
       - tick
+    env:
+      #PLOT_WIDTH: 640
+      #PLOT_HEIGHT: 480
 
   - id: camera
     build: pip install ../../node-hub/opencv-video-capture
@@ -22,4 +25,6 @@ nodes:
       - image
 
     env:
-      CAMERA_ID: 0
+      CAPTURE_PATH: 0
+      #IMAGE_WIDTH: 640
+      #IMAGE_HEIGHT: 480
