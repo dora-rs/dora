@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use dora_core::{
     config::NodeId,
@@ -95,6 +95,24 @@ impl PendingNodes {
                 .await?;
         }
         Ok(log)
+    }
+
+    pub async fn handle_dataflow_stop(
+        &mut self,
+        coordinator_connection: &mut Option<TcpStream>,
+        clock: &HLC,
+        cascading_errors: &mut CascadingErrorCauses,
+        dynamic_nodes: &BTreeSet<NodeId>,
+    ) -> eyre::Result<Vec<LogMessage>> {
+        // remove all local dynamic nodes that are not yet started
+        for node_id in dynamic_nodes {
+            if self.local_nodes.remove(node_id) {
+                self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
+                    .await?;
+            }
+        }
+
+        Ok(Vec::new())
     }
 
     pub async fn handle_external_all_nodes_ready(
