@@ -132,7 +132,7 @@ jobs:
       - name: "Unix Domain example"
         if: runner.os == 'Linux'
         run: |
-          sed -i '1i communication:\r\n\t_unstable_local:\r\n\t\tUnixDomain' examples/rust-dataflow/dataflow.yml
+          sed -i '1i communication:\r\n\t_unstable_local:\r\n\t\tUnixDomain\r\n\r\n' examples/rust-dataflow/dataflow.yml
           cargo run --example rust-dataflow
 
 
