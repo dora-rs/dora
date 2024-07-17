@@ -7,13 +7,10 @@ This examples shows how to create and connect dora nodes in Python.
 The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the following three nodes:
 
 - a webcam node, that connects to your webcam and feed the dataflow with webcam frame as jpeg compressed bytearray.
-- an object detection node, that apply Yolo v5 on the webcam image. The model is imported from Pytorch Hub. The output
-  is the bounding box of each object detected, the confidence and the associated label. You can have more info
-  here: https://pytorch.org/hub/ultralytics_yolov5/
-- a window plotting node, that will retrieve the webcam image and the Yolov5 bounding box and join the two together.
+- a window plotting node, that will retrieve the webcam image and plot it.
 
 The same dataflow is implemented for a `dynamic-node` in [`dataflow_dynamic.yml`](./dataflow_dynamic.yml). It contains
-the same nodes as the previous dataflow, but the object detection node is a dynamic node. See the next section for more
+the same nodes as the previous dataflow, but the plot node is a dynamic node. See the next section for more
 information on how to start such a dataflow.
 
 ## Getting started
@@ -40,5 +37,5 @@ dora start ./dataflow.yml (or dora start ./dataflow_dynamic.yml)
 
 ```bash
 # activate your virtual environment in another terminal
-python ultralytics-yolo --name object-detection --model yolov5n.pt
+python opencv-plot --name plot
 ```

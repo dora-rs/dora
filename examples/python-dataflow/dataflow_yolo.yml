@@ -13,6 +13,19 @@ nodes:
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
 
+  - id: object-detection
+    build: pip install ../../node-hub/ultralytics-yolo
+    path: ultralytics-yolo
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+
+    outputs:
+      - bbox
+    env:
+      MODEL: yolov5n.pt
+
   - id: plot
     build: pip install ../../node-hub/opencv-plot
     path: opencv-plot
@@ -20,6 +33,8 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
+
+      bbox: object-detection/bbox
 
       tick:
         source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph

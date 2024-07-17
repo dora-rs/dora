@@ -50,13 +50,9 @@ async fn main() -> eyre::Result<()> {
         );
     }
 
-    run(
-        "pip",
-        &["install", "maturin"],
-        Some (venv),
-    )
-    .await
-    .context("pip install maturin failed")?;
+    run("pip", &["install", "maturin"], Some(venv))
+        .await
+        .context("pip install maturin failed")?;
 
     run(
         "maturin",
