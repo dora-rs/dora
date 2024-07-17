@@ -17,13 +17,7 @@ class Plot:
         "names": np.array([]),
     }
 
-    text: {} = {
-        "text": "",
-        "font_scale": np.float32(0.0),
-        "color": (np.uint8(0), np.uint8(0), np.uint8(0)),
-        "thickness": np.uint32(0),
-        "position": (np.uint32(0), np.uint32(0)),
-    }
+    text: str = ""
 
     width: np.uint32 = None
     height: np.uint32 = None
@@ -57,12 +51,12 @@ def plot_frame(plot, ci_enabled):
 
     cv2.putText(
         plot.frame,
-        plot.text["text"],
-        (int(plot.text["position"][0]), int(plot.text["position"][1])),
+        plot.text,
+        (20, 20),
         cv2.FONT_HERSHEY_SIMPLEX,
-        float(plot.text["font_scale"]),
-        (int(plot.text["color"][0]), int(plot.text["color"][1]), int(plot.text["color"][2])),
-        int(plot.text["thickness"]),
+        0.5,
+        (255, 255, 255),
+        1,
         1,
     )
 
@@ -122,6 +116,9 @@ def main():
             event_id = event["id"]
 
             if event_id == "tick":
+                if ci_enabled:
+                    break
+
                 node.send_output(
                     "tick",
                     pa.array([]),
@@ -154,23 +151,11 @@ def main():
                     break
 
             elif event_id == "text":
-                arrow_text = event["value"][0]
-                plot.text = {
-                    "text": arrow_text["text"].as_py(),
-                    "font_scale": np.float32(arrow_text["font_scale"].as_py()),
-                    "color": (np.uint8(arrow_text["color"].as_py()[0]),
-                              np.uint8(arrow_text["color"].as_py()[1]),
-                              np.uint8(arrow_text["color"].as_py()[2])),
-                    "thickness": np.uint32(arrow_text["thickness"].as_py()),
-                    "position": (np.uint32(arrow_text["position"].as_py()[0]),
-                                 np.uint32(arrow_text["position"].as_py()[1]))
-                }
+                plot.text = event["value"][0].as_py()
 
                 if plot_frame(plot, ci_enabled):
                     break
 
-        elif event_type == "STOP":
-            break
         elif event_type == "ERROR":
             raise Exception(event["error"])
 

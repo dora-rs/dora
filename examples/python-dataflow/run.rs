@@ -1,4 +1,4 @@
-use dora_core::{get_python_path, run};
+use dora_core::{get_pip_path, get_python_path, run};
 use dora_tracing::set_up_tracing;
 use eyre::{bail, ContextCompat, WrapErr};
 use std::path::Path;
@@ -50,9 +50,13 @@ async fn main() -> eyre::Result<()> {
         );
     }
 
-    run("pip", &["install", "maturin"], Some(venv))
-        .await
-        .context("pip install maturin failed")?;
+    run(
+        get_pip_path().context("Could not get pip binary")?,
+        &["install", "maturin"],
+        Some(venv),
+    )
+    .await
+    .context("pip install maturin failed")?;
 
     run(
         "maturin",

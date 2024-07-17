@@ -29,8 +29,6 @@ def main():
     if isinstance(video_capture_path, str) and video_capture_path.isnumeric():
         video_capture_path = int(video_capture_path)
 
-    print(type(video_capture_path))
-
     image_width = os.getenv("IMAGE_WIDTH", args.image_width)
     image_height = os.getenv("IMAGE_HEIGHT", args.image_height)
 
@@ -86,8 +84,6 @@ def main():
                     event["metadata"]
                 )
 
-        elif event_type == "STOP":
-            break
         elif event_type == "ERROR":
             raise Exception(event["error"])
 
