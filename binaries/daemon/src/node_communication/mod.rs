@@ -18,8 +18,10 @@ use std::{
     sync::Arc,
     task::Poll,
 };
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::{
-    net::{TcpListener, UnixListener},
+    net::TcpListener,
     sync::{
         mpsc::{self, UnboundedReceiver},
         oneshot,

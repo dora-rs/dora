@@ -132,9 +132,10 @@ jobs:
       - name: "Unix Domain example"
         if: runner.os == 'Linux'
         run: |
-          sed -i '1i communication:\r\n\t_unstable_local:\r\n\t\tUnixDomain\r\n\r\n' examples/rust-dataflow/dataflow.yml
-          cargo run --example rust-dataflow
-
+          dora build examples/rust-dataflow/dataflow_socket.yml
+          dora start examples/rust-dataflow/dataflow_socket.yml --name ci-rust-socket         
+          dora stop --name ci-rust-socket  --grace-duration 5s
+          dora destroy
 
       # python examples
       - uses: actions/setup-python@v2
