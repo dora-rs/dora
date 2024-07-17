@@ -323,7 +323,7 @@ jobs:
           dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
           ultralytics-yolo --name object-detection
           sleep 5
-          dora stop --name ci-python-test  --grace-duration 5s
+          dora stop --name ci-python-dynamic  --grace-duration 5s
           dora destroy
 
       - name: "Test CLI (C)"

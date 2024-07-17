@@ -51,6 +51,13 @@ async fn main() -> eyre::Result<()> {
     }
 
     run(
+        "pip",
+        &["install", "maturin"]
+    )
+    .await
+    .context("pip install maturin failed")?;
+
+    run(
         "maturin",
         &["develop"],
         Some(&root.join("apis").join("python").join("node")),
