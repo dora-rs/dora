@@ -13,9 +13,9 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-dora-rs = "^0.3.5"
-numpy = "~2.0.0"
-opencv-python = "^4.1.1"
+dora-rs = "0.3.5"
+numpy = "< 2.0.0"
+opencv-python = ">= 4.1.1"
 
 [tool.poetry.scripts]
 opencv-video-capture = "opencv_video_capture.main:main"
