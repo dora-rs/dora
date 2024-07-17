@@ -1,4 +1,4 @@
-use dora_core::{get_pip_path, get_python_path, run};
+use dora_core::{get_python_path, run};
 use dora_tracing::set_up_tracing;
 use eyre::{bail, ContextCompat, WrapErr};
 use std::path::Path;
