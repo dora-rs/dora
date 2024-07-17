@@ -97,7 +97,7 @@ def main():
         description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model.")
 
     parser.add_argument("--name", type=str, required=False, help="The name of the node in the dataflow.",
-                        default="opencv-video-capture")
+                        default="ultralytics-yolo")
     parser.add_argument("--model", type=str, required=False,
                         help="The name of the model file (e.g. yolov8n.pt).", default="yolov8n.pt")
 

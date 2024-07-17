@@ -1,7 +1,7 @@
 nodes:
   - id: camera
     build: pip install ../../node-hub/opencv-video-capture
-    path: ../../node-hub/opencv-video-capture/main.py
+    path: opencv-video-capture
     inputs:
       tick: plot/tick
 
@@ -15,7 +15,7 @@ nodes:
 
   - id: object-detection
     build: pip install ../../node-hub/ultralytics-yolo
-    path: ../../node-hub/ultralytics-yolo/main.py
+    path: ultralytics-yolo
     inputs:
       image:
         source: camera/image
@@ -28,7 +28,7 @@ nodes:
 
   - id: plot
     build: pip install ../../node-hub/opencv-plot
-    path: ../../node-hub/opencv-plot/main.py
+    path: opencv-plot
     inputs:
       image:
         source: camera/image
