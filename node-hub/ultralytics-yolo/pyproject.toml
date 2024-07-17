@@ -13,9 +13,9 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-dora-rs = "^0.3.5"
-numpy = "~2.0.0"
-ultralytics = "~8.2.52"
+dora-rs = "0.3.5"
+numpy = "< 2.0.0"
+ultralytics = "<= 8.2.52"
 
 [tool.poetry.scripts]
 ultralytics-yolo = "ultralytics_yolo.main:main"
