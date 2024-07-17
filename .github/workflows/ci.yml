@@ -321,7 +321,7 @@ jobs:
           dora stop --name ci-python-test  --grace-duration 5s
           dora build ../examples/python-dataflow/dataflow_dynamic.yml
           dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
-          ultralytics-yolo --name object-detection
+          opencv-plot --name plot
           sleep 5
           dora stop --name ci-python-dynamic  --grace-duration 5s
           dora destroy
