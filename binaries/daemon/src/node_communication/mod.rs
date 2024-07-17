@@ -8,7 +8,7 @@ use dora_core::{
     message::uhlc,
     topics::LOCALHOST,
 };
-use eyre::{eyre, Context, ContextCompat};
+use eyre::{eyre, Context};
 use futures::{future, task, Future};
 use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
@@ -150,7 +150,7 @@ pub async fn spawn_listener_loop(
             if !tmpfile_dir.exists() {
                 std::fs::create_dir_all(&tmpfile_dir).context("could not create tmp dir")?;
             }
-            let socket_file = tmpfile_dir.join(format!("{}.sock", node_id.to_string()));
+            let socket_file = tmpfile_dir.join(format!("{}.sock", node_id));
             let socket = match UnixListener::bind(&socket_file) {
                 Ok(socket) => socket,
                 Err(err) => {
@@ -166,6 +166,7 @@ pub async fn spawn_listener_loop(
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
+            use eyre::ContextCompat;
             Ok(DaemonCommunication::UnixDomain {
                 socket_addr: socket_file
                     .to_str()

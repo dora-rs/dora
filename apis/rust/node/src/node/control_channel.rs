@@ -31,7 +31,7 @@ impl ControlChannel {
                 .wrap_err("failed to connect control channel")?,
             #[cfg(unix)]
             DaemonCommunication::UnixDomain { socket_addr } => {
-                DaemonChannel::new_unix_socket(&socket_addr)
+                DaemonChannel::new_unix_socket(socket_addr)
                     .wrap_err("failed to connect control channel")?
             }
         };

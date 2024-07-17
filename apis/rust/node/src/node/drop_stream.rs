@@ -38,7 +38,7 @@ impl DropStream {
                 .wrap_err_with(|| format!("failed to connect drop stream for node `{node_id}`"))?,
             #[cfg(unix)]
             DaemonCommunication::UnixDomain { socket_addr } => {
-                DaemonChannel::new_unix_socket(&socket_addr).wrap_err_with(|| {
+                DaemonChannel::new_unix_socket(socket_addr).wrap_err_with(|| {
                     format!("failed to connect drop stream for node `{node_id}`")
                 })?
             }

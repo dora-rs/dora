@@ -52,7 +52,7 @@ impl EventStream {
                 .wrap_err_with(|| format!("failed to connect event stream for node `{node_id}`"))?,
             #[cfg(unix)]
             DaemonCommunication::UnixDomain { socket_addr } => {
-                DaemonChannel::new_unix_socket(&socket_addr).wrap_err_with(|| {
+                DaemonChannel::new_unix_socket(socket_addr).wrap_err_with(|| {
                     format!("failed to connect event stream for node `{node_id}`")
                 })?
             }
@@ -71,7 +71,7 @@ impl EventStream {
                 })?,
             #[cfg(unix)]
             DaemonCommunication::UnixDomain { socket_addr } => {
-                DaemonChannel::new_unix_socket(&socket_addr).wrap_err_with(|| {
+                DaemonChannel::new_unix_socket(socket_addr).wrap_err_with(|| {
                     format!("failed to connect event close channel for node `{node_id}`")
                 })?
             }
