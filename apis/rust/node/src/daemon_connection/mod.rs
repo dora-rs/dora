@@ -19,6 +19,7 @@ mod unix_domain;
 pub enum DaemonChannel {
     Shmem(ShmemClient<Timestamped<DaemonRequest>, DaemonReply>),
     Tcp(TcpStream),
+    #[cfg(unix)]
     UnixDomain(UnixStream),
 }
 

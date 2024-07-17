@@ -129,6 +129,12 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 30
         run: cargo run --example cmake-dataflow
+      - name: "Unix Domain example"
+        if: runner.os == 'Linux'
+        run: |
+          sed -i '1i communication:\r\n\t_unstable_local:\r\n\t\tUnixDomain' examples/rust-dataflow/dataflow.yml
+          cargo run --example rust-dataflow
+
 
       # python examples
       - uses: actions/setup-python@v2
