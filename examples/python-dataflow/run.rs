@@ -71,9 +71,7 @@ async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--")
-        .arg("build")
-        .arg(dataflow);
+    cmd.arg("--").arg("build").arg(dataflow);
     if !cmd.status().await?.success() {
         bail!("failed to run dataflow");
     };
