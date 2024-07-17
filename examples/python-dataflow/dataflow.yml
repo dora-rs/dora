@@ -4,10 +4,9 @@ nodes:
     path: opencv-video-capture
     inputs:
       tick: plot/tick
-
     outputs:
       - image
-
+      - text
     env:
       CAPTURE_PATH: 0
       IMAGE_WIDTH: 640
@@ -17,13 +16,8 @@ nodes:
     build: pip install ../../node-hub/opencv-plot
     path: opencv-plot
     inputs:
-      image:
-        source: camera/image
-        queue_size: 1
-
-      tick:
-        source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
-        queue_size: 1
-
+      image: camera/image
+      tick: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
+      text: camera/text
     outputs:
       - tick
