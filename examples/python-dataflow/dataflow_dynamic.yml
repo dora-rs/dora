@@ -1,7 +1,7 @@
 nodes:
   - id: camera
     build: pip install ../../node-hub/opencv-video-capture
-    path: opencv-video-capture
+    path: ../../node-hub/opencv-video-capture/main.py
     inputs:
       tick: plot/tick
 
@@ -28,7 +28,7 @@ nodes:
 
   - id: plot
     build: pip install ../../node-hub/opencv-plot
-    path: opencv-plot
+    path: ../../node-hub/opencv-plot/main.py
     inputs:
       image:
         source: camera/image
