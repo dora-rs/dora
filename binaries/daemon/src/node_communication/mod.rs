@@ -14,7 +14,6 @@ use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
-    path::Path,
     sync::Arc,
     task::Poll,
 };
@@ -145,6 +144,7 @@ pub async fn spawn_listener_loop(
         }
         #[cfg(unix)]
         LocalCommunicationConfig::UnixDomain => {
+            use std::path::Path;
             let tmpfile_dir = Path::new("/tmp");
             let tmpfile_dir = tmpfile_dir.join(dataflow_id.to_string());
             if !tmpfile_dir.exists() {
