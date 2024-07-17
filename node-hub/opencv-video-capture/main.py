@@ -56,10 +56,6 @@ def main():
             if event_id == "tick":
                 ret, frame = video_capture.read()
 
-                # resize the frame
-                if image_width is not None and image_height is not None:
-                    frame = cv2.resize(frame, (image_width, image_height))
-
                 if not ret:
                     frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     cv2.putText(
@@ -72,6 +68,10 @@ def main():
                         1,
                         1,
                     )
+
+                # resize the frame
+                if image_width is not None and image_height is not None:
+                    frame = cv2.resize(frame, (image_width, image_height))
 
                 image = {
                     "width": np.uint32(frame.shape[1]),
