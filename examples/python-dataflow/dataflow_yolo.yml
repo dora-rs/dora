@@ -4,10 +4,8 @@ nodes:
     path: opencv-video-capture
     inputs:
       tick: plot/tick
-
     outputs:
       - image
-
     env:
       CAPTURE_PATH: 0
       IMAGE_WIDTH: 640
@@ -20,7 +18,6 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
-
     outputs:
       - bbox
     env:
@@ -33,12 +30,9 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
-
       bbox: object-detection/bbox
-
       tick:
         source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
         queue_size: 1
-
     outputs:
       - tick
