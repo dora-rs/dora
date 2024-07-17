@@ -348,6 +348,8 @@ pub struct CommunicationConfig {
 pub enum LocalCommunicationConfig {
     Tcp,
     Shmem,
+    #[cfg(unix)]
+    UnixDomain,
 }
 
 impl Default for LocalCommunicationConfig {

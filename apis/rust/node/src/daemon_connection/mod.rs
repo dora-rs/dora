@@ -5,16 +5,21 @@ use dora_core::{
 };
 use eyre::{bail, eyre, Context};
 use shared_memory_server::{ShmemClient, ShmemConf};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::{
     net::{SocketAddr, TcpStream},
     time::Duration,
 };
 
 mod tcp;
+#[cfg(unix)]
+mod unix_domain;
 
 pub enum DaemonChannel {
     Shmem(ShmemClient<Timestamped<DaemonRequest>, DaemonReply>),
     Tcp(TcpStream),
+    UnixDomain(UnixStream),
 }
 
 impl DaemonChannel {
@@ -36,6 +41,13 @@ impl DaemonChannel {
                 .wrap_err("failed to create ShmemChannel")?,
         );
         Ok(channel)
+    }
+
+    #[cfg(unix)]
+    #[tracing::instrument(level = "trace")]
+    pub fn new_unix_socket(path: &str) -> eyre::Result<Self> {
+        let stream = UnixStream::connect(path).wrap_err("failed to open Unix socket")?;
+        Ok(DaemonChannel::UnixDomain(stream))
     }
 
     pub fn register(
@@ -69,6 +81,8 @@ impl DaemonChannel {
         match self {
             DaemonChannel::Shmem(client) => client.request(request),
             DaemonChannel::Tcp(stream) => tcp::request(stream, request),
+            #[cfg(unix)]
+            DaemonChannel::UnixDomain(stream) => unix_domain::request(stream, request),
         }
     }
 }

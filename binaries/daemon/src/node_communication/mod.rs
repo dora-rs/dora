@@ -8,17 +8,18 @@ use dora_core::{
     message::uhlc,
     topics::LOCALHOST,
 };
-use eyre::{eyre, Context};
+use eyre::{eyre, Context, ContextCompat};
 use futures::{future, task, Future};
 use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
+    path::Path,
     sync::Arc,
     task::Poll,
 };
 use tokio::{
-    net::TcpListener,
+    net::{TcpListener, UnixListener},
     sync::{
         mpsc::{self, UnboundedReceiver},
         oneshot,
@@ -28,6 +29,8 @@ use tokio::{
 // TODO unify and avoid duplication;
 pub mod shmem;
 pub mod tcp;
+#[cfg(unix)]
+pub mod unix_domain;
 
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
@@ -136,6 +139,36 @@ pub async fn spawn_listener_loop(
                 daemon_events_region_id,
                 daemon_drop_region_id,
                 daemon_events_close_region_id,
+            })
+        }
+        #[cfg(unix)]
+        LocalCommunicationConfig::UnixDomain => {
+            let tmpfile_dir = Path::new("/tmp");
+            let tmpfile_dir = tmpfile_dir.join(dataflow_id.to_string());
+            if !tmpfile_dir.exists() {
+                std::fs::create_dir_all(&tmpfile_dir).context("could not create tmp dir")?;
+            }
+            let socket_file = tmpfile_dir.join(format!("{}.sock", node_id.to_string()));
+            let socket = match UnixListener::bind(&socket_file) {
+                Ok(socket) => socket,
+                Err(err) => {
+                    return Err(eyre::Report::new(err)
+                        .wrap_err("failed to create local Unix domain socket"))
+                }
+            };
+
+            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+            let daemon_tx = daemon_tx.clone();
+            tokio::spawn(async move {
+                unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
+                tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
+            });
+
+            Ok(DaemonCommunication::UnixDomain {
+                socket_addr: socket_file
+                    .to_str()
+                    .wrap_err("get unix domain file addr failed")?
+                    .to_string(),
             })
         }
     }
