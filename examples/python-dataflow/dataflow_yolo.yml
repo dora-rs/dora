@@ -3,7 +3,8 @@ nodes:
     build: pip install ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     inputs:
-      tick: plot/tick
+      tick: dora/timer/millis/16
+      stop: plot/end
     outputs:
       - image
     env:
@@ -21,7 +22,7 @@ nodes:
     outputs:
       - bbox
     env:
-      MODEL: yolov5n.pt
+      MODEL: yolov8n.pt
 
   - id: plot
     build: pip install ../../node-hub/opencv-plot
@@ -31,8 +32,5 @@ nodes:
         source: camera/image
         queue_size: 1
       bbox: object-detection/bbox
-      tick:
-        source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
-        queue_size: 1
     outputs:
-      - tick
+      - end

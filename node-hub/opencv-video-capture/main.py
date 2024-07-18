@@ -58,7 +58,7 @@ def main():
                     frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     cv2.putText(
                         frame,
-                        f'Error: Could not read frame from camera at path {video_capture_path}.',
+                        f'Error: no frame for camera at path {video_capture_path}.',
                         (int(30), int(30)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.50,
@@ -83,6 +83,10 @@ def main():
                     pa.array([image]),
                     event["metadata"]
                 )
+
+            if event_id == "stop":
+                video_capture.release()
+                break
 
         elif event_type == "ERROR":
             raise Exception(event["error"])

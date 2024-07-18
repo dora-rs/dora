@@ -7,6 +7,8 @@ import pyarrow as pa
 
 from dora import Node
 
+RUNNER_CI = True if os.getenv("CI", False) == "true" else False
+
 
 class Plot:
     frame: np.array = np.array([])
@@ -23,7 +25,7 @@ class Plot:
     height: np.uint32 = None
 
 
-def plot_frame(plot, ci_enabled):
+def plot_frame(plot):
     for bbox in zip(plot.bboxes["bbox"], plot.bboxes["conf"], plot.bboxes["names"]):
         [
             [min_x, min_y, max_x, max_y],
@@ -63,14 +65,9 @@ def plot_frame(plot, ci_enabled):
     if plot.width is not None and plot.height is not None:
         plot.frame = cv2.resize(plot.frame, (plot.width, plot.height))
 
-    if not ci_enabled:
+    if not RUNNER_CI:
         if len(plot.frame.shape) >= 3:
             cv2.imshow("Dora Node: opencv-plot", plot.frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                return True
-
-    return False
 
 
 def main():
@@ -96,11 +93,6 @@ def main():
         if isinstance(plot_height, str) and plot_height.isnumeric():
             plot_height = int(plot_height)
 
-    # check if the code is running in a CI environment (e.g. GitHub Actions) (parse to bool)
-    ci_enabled = os.getenv("CI", False)
-    if ci_enabled == "true":
-        ci_enabled = True
-
     node = Node(args.name)  # provide the name to connect to the dataflow if dynamic node
     plot = Plot()
 
@@ -115,17 +107,7 @@ def main():
         if event_type == "INPUT":
             event_id = event["id"]
 
-            if event_id == "tick":
-                if ci_enabled:
-                    break
-
-                node.send_output(
-                    "tick",
-                    pa.array([]),
-                    event["metadata"]
-                )
-
-            elif event_id == "image":
+            if event_id == "image":
                 arrow_image = event["value"][0]
                 image = {
                     "width": np.uint32(arrow_image["width"].as_py()),
@@ -136,28 +118,44 @@ def main():
 
                 plot.frame = np.reshape(image["data"], (image["height"], image["width"], image["channels"]))
 
-                if plot_frame(plot, ci_enabled):
-                    break
+                plot_frame(plot)
+                if not RUNNER_CI:
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                else:
+                    break  # break the loop for CI
 
             elif event_id == "bbox":
                 arrow_bbox = event["value"][0]
                 plot.bboxes = {
                     "bbox": arrow_bbox["bbox"].values.to_numpy().reshape(-1, 4),
                     "conf": arrow_bbox["conf"].values.to_numpy(),
-                    "names": arrow_bbox["names"].values.to_pylist(),
+                    "names": arrow_bbox["names"].values.to_numpy(zero_copy_only=False),
                 }
 
-                if plot_frame(plot, ci_enabled):
-                    break
-
+                plot_frame(plot)
+                if not RUNNER_CI:
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                else:
+                    break  # break the loop for CI
             elif event_id == "text":
                 plot.text = event["value"][0].as_py()
 
-                if plot_frame(plot, ci_enabled):
-                    break
+                plot_frame(plot)
+                if not RUNNER_CI:
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                else:
+                    break  # break the loop for CI
 
         elif event_type == "ERROR":
             raise Exception(event["error"])
+
+    node.send_output(
+        "end",
+        pa.array([0], type=pa.uint8())
+    )
 
 
 if __name__ == "__main__":

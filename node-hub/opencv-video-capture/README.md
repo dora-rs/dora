@@ -10,7 +10,7 @@ This node is used to capture video from a camera using OpenCV.
     path: opencv-video-capture
     inputs:
       tick: dora/timer/millis/16 # try to capture at 60fps
-
+      # stop: some stop signal from another node 
     outputs:
       - image: # the captured image
 
@@ -31,7 +31,7 @@ This node is used to capture video from a camera using OpenCV.
 
 ```Python
 
-image = {
+image: {
     "width": np.uint32,
     "height": np.uint32,
     "channels": np.uint8,
