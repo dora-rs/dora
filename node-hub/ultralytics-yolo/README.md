@@ -22,7 +22,7 @@ This node is used to detect objects in images using YOLOv8.
 - `image`: Arrow array containing the base image
 
 ```python
-image = {
+image: {
     "width": np.uint32,
     "height": np.uint32,
     "channels": np.uint8,
@@ -46,7 +46,7 @@ decoded_image = {
 
 ```Python
 
-bbox = {
+bbox: {
     "bbox": np.array,  # flattened array of bounding boxes
     "conf": np.array,  # flat array of confidence scores
     "names": np.array,  # flat array of class names
@@ -57,7 +57,7 @@ encoded_bbox = pa.array([bbox])
 decoded_bbox = {
     "bbox": encoded_bbox[0]["bbox"].values.to_numpy().reshape(-1, 3),
     "conf": encoded_bbox[0]["conf"].values.to_numpy(),
-    "names": encoded_bbox[0]["names"].values.to_pylist(),
+    "names": encoded_bbox[0]["names"].values.to_numpy(zero_copy_only=False),
 }
 ```
 

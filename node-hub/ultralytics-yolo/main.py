@@ -41,7 +41,7 @@ def main():
                     "data": arrow_image["data"].values.to_numpy().astype(np.uint8)
                 }
 
-                frame = image["data"].reshape((image["height"], image["width"], 3))
+                frame = image["data"].reshape((image["height"], image["width"], image["channels"]))
 
                 frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 results = model(frame, verbose=False)  # includes NMS

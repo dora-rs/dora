@@ -3,7 +3,8 @@ nodes:
     build: pip install ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     inputs:
-      tick: plot/tick
+      tick: dora/timer/millis/16
+      stop: plot/end
     outputs:
       - image
       - text
@@ -17,7 +18,6 @@ nodes:
     path: opencv-plot
     inputs:
       image: camera/image
-      tick: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
       text: camera/text
     outputs:
-      - tick
+      - end

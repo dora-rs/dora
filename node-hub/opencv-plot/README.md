@@ -13,12 +13,8 @@ This node is used to plot a text and a list of bbox on a base image (ideal for o
       # bbox: Arrow array of bbox
       # text: Arrow array of size 1 containing the text to be plotted
 
-      tick:
-        source: dora/timer/millis/16 # this node display a window, so it's better to deflect the timer, so when the window is closed, the ticks are not sent anymore in the graph
-        queue_size: 1
-
     outputs:
-      - tick
+      - end
 
     env:
       PLOT_WIDTH: 640 # optional, default is image input width
@@ -26,13 +22,11 @@ This node is used to plot a text and a list of bbox on a base image (ideal for o
 ```
 
 # Inputs
-- 
-- `tick`: empty Arrow array to trigger the capture
 
 - `image`: Arrow array containing the base image
 
 ```python
-image = {
+image: {
     "width": np.uint32,
     "height": np.uint32,
     "channels": np.uint8,
@@ -50,29 +44,33 @@ decoded_image = {
 
 ```
 
+- `bbox`: an arrow array containing the bounding boxes, confidence scores, and class names of the detected objects
+
+```Python
+
+bbox: {
+    "bbox": np.array,  # flattened array of bounding boxes
+    "conf": np.array,  # flat array of confidence scores
+    "names": np.array,  # flat array of class names
+}
+
+encoded_bbox = pa.array([bbox])
+
+decoded_bbox = {
+    "bbox": encoded_bbox[0]["bbox"].values.to_numpy().reshape(-1, 3),
+    "conf": encoded_bbox[0]["conf"].values.to_numpy(),
+    "names": encoded_bbox[0]["names"].values.to_numpy(zero_copy_only=False),
+}
+```
+
 - `text`: Arrow array containing the text to be plotted
 
 ```python
-text = {
-    "text": str,
-    "font_scale": np.float32,
-    "color": (np.uint8, np.uint8, np.uint8),
-    "thickness": np.uint32,
-    "position": (np.uint32, np.uint32)
-}
+text: str
 
 encoded_text = pa.array([text])
 
-decoded_text = {
-    "text": encoded_text[0]["text"].as_py(),
-    "font_scale": np.float32(encoded_text[0]["font_scale"].as_py()),
-    "color": (np.uint8(encoded_text[0]["color"].as_py()[0]),
-              np.uint8(encoded_text[0]["color"].as_py()[1]),
-              np.uint8(encoded_text[0]["color"].as_py()[2])),
-    "thickness": np.uint32(encoded_text[0]["thickness"].as_py()),
-    "position": (np.uint32(encoded_text[0]["position"].as_py()[0]),
-                 np.uint32(encoded_text[0]["position"].as_py()[1]))
-}
+decoded_text = encoded_text[0].as_py()
 ``` 
 
 ## License
