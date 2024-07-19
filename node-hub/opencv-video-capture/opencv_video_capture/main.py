@@ -54,18 +54,21 @@ def main():
     if isinstance(video_capture_path, str) and video_capture_path.isnumeric():
         video_capture_path = int(video_capture_path)
 
+    video_capture = cv2.VideoCapture(video_capture_path)
+
     image_width = os.getenv("IMAGE_WIDTH", args.image_width)
-    image_height = os.getenv("IMAGE_HEIGHT", args.image_height)
 
     if image_width is not None:
         if isinstance(image_width, str) and image_width.isnumeric():
             image_width = int(image_width)
+        video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, image_width)
 
+    image_height = os.getenv("IMAGE_HEIGHT", args.image_height)
     if image_height is not None:
         if isinstance(image_height, str) and image_height.isnumeric():
             image_height = int(image_height)
+        video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, image_height)
 
-    video_capture = cv2.VideoCapture(video_capture_path)
     node = Node(args.name)
     start_time = time.time()
 
@@ -105,15 +108,11 @@ def main():
                 image = {
                     "width": np.uint32(frame.shape[1]),
                     "height": np.uint32(frame.shape[0]),
-                    "channels": np.uint8(frame.shape[2]),
+                    "encoding": "bgr8",
                     "data": frame.ravel(),
                 }
 
                 node.send_output("image", pa.array([image]), event["metadata"])
-
-            if event_id == "stop":
-                video_capture.release()
-                break
 
         elif event_type == "ERROR":
             raise Exception(event["error"])

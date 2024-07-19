@@ -25,16 +25,16 @@ This node is used to detect objects in images using YOLOv8.
 image: {
     "width": np.uint32,
     "height": np.uint32,
-    "channels": np.uint8,
+    "encoding": str,
     "data": np.array  # flattened image data
 }
 
 encoded_image = pa.array([image])
 
 decoded_image = {
-    "width": np.uint32(encoded_image[0]["width"].as_py()),
-    "height": np.uint32(encoded_image[0]["height"].as_py()),
-    "channels": np.uint8(encoded_image[0]["channels"].as_py()),
+    "width": np.uint32(encoded_image[0]["width"]),
+    "height": np.uint32(encoded_image[0]["height"]),
+    "encoding": encoded_image[0]["encoding"].as_py(),
     "data": encoded_image[0]["data"].values.to_numpy().astype(np.uint8)
 }
 

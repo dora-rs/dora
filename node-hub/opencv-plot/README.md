@@ -5,17 +5,17 @@ This node is used to plot a text and a list of bbox on a base image (ideal for o
 # YAML
 
 ```yaml
-  - id: opencv-plot
-    build: pip install ../../node-hub/opencv-plot
-    path: opencv-plot
-    inputs:
-      # image: Arrow array of size 1 containing the base image
-      # bbox: Arrow array of bbox
-      # text: Arrow array of size 1 containing the text to be plotted
+- id: opencv-plot
+  build: pip install ../../node-hub/opencv-plot
+  path: opencv-plot
+  inputs:
+    # image: Arrow array of size 1 containing the base image
+    # bbox: Arrow array of bbox
+    # text: Arrow array of size 1 containing the text to be plotted
 
-    env:
-      PLOT_WIDTH: 640 # optional, default is image input width
-      PLOT_HEIGHT: 480 # optional, default is image input height
+  env:
+    PLOT_WIDTH: 640 # optional, default is image input width
+    PLOT_HEIGHT: 480 # optional, default is image input height
 ```
 
 # Inputs
@@ -26,19 +26,18 @@ This node is used to plot a text and a list of bbox on a base image (ideal for o
 image: {
     "width": np.uint32,
     "height": np.uint32,
-    "channels": np.uint8,
+    "encoding": bytes,
     "data": np.array  # flattened image data
 }
 
 encoded_image = pa.array([image])
 
 decoded_image = {
-    "width": np.uint32(encoded_image[0]["width"].as_py()),
-    "height": np.uint32(encoded_image[0]["height"].as_py()),
-    "channels": np.uint8(encoded_image[0]["channels"].as_py()),
+    "width": np.uint32(encoded_image[0]["width"]),
+    "height": np.uint32(encoded_image[0]["height"]),
+    "encoding": encoded_image[0]["encoding"].as_py(),
     "data": encoded_image[0]["data"].values.to_numpy().astype(np.uint8)
-} 
-
+}
 ```
 
 - `bbox`: an arrow array containing the bounding boxes, confidence scores, and class names of the detected objects
@@ -68,7 +67,7 @@ text: str
 encoded_text = pa.array([text])
 
 decoded_text = encoded_text[0].as_py()
-``` 
+```
 
 ## License
 
