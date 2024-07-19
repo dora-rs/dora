@@ -1,6 +1,6 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub async fn tcp_send(
+pub async fn socket_stream_send(
     connection: &mut (impl AsyncWrite + Unpin),
     message: &[u8],
 ) -> std::io::Result<()> {
@@ -11,7 +11,9 @@ pub async fn tcp_send(
     Ok(())
 }
 
-pub async fn tcp_receive(connection: &mut (impl AsyncRead + Unpin)) -> std::io::Result<Vec<u8>> {
+pub async fn socket_stream_receive(
+    connection: &mut (impl AsyncRead + Unpin),
+) -> std::io::Result<Vec<u8>> {
     let reply_len = {
         let mut raw = [0; 8];
         connection.read_exact(&mut raw).await?;

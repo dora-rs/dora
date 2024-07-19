@@ -29,6 +29,11 @@ impl ControlChannel {
                 .wrap_err("failed to create shmem control channel")?,
             DaemonCommunication::Tcp { socket_addr } => DaemonChannel::new_tcp(*socket_addr)
                 .wrap_err("failed to connect control channel")?,
+            #[cfg(unix)]
+            DaemonCommunication::UnixDomain { socket_file } => {
+                DaemonChannel::new_unix_socket(socket_file)
+                    .wrap_err("failed to connect control channel")?
+            }
         };
 
         Self::init_on_channel(dataflow_id, node_id, channel, clock)

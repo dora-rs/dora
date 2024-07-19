@@ -129,6 +129,9 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 30
         run: cargo run --example cmake-dataflow
+      - name: "Unix Domain Socket example"
+        if: runner.os == 'Linux'
+        run: cargo run --example rust-dataflow -- dataflow_socket.yml
 
       # python examples
       - uses: actions/setup-python@v2
