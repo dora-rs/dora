@@ -4,20 +4,30 @@ nodes:
     path: opencv-video-capture
     inputs:
       tick: dora/timer/millis/16
-      stop: plot/end
     outputs:
       - image
-      - text
     env:
       CAPTURE_PATH: 0
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
 
+  - id: object-detection
+    build: pip install ../../node-hub/ultralytics-yolo
+    path: ultralytics-yolo
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+    outputs:
+      - bbox
+    env:
+      MODEL: yolov8n.pt
+
   - id: plot
     build: pip install ../../node-hub/opencv-plot
     path: opencv-plot
     inputs:
-      image: camera/image
-      text: camera/text
-    outputs:
-      - end
+      image:
+        source: camera/image
+        queue_size: 1
+      bbox: object-detection/bbox

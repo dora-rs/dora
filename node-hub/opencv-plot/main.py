@@ -7,7 +7,7 @@ import pyarrow as pa
 
 from dora import Node
 
-RUNNER_CI = True if os.getenv("CI", False) == "true" else False
+RUNNER_CI = True if os.getenv("CI") == "true" else False
 
 
 class Plot:
@@ -71,14 +71,33 @@ def plot_frame(plot):
 
 
 def main():
+
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image.")
+        description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image."
+    )
 
-    parser.add_argument("--name", type=str, required=False, help="The name of the node in the dataflow.",
-                        default="opencv-plot")
-    parser.add_argument("--plot-width", type=int, required=False, help="The width of the plot.", default=None)
-    parser.add_argument("--plot-height", type=int, required=False, help="The height of the plot.", default=None)
+    parser.add_argument(
+        "--name",
+        type=str,
+        required=False,
+        help="The name of the node in the dataflow.",
+        default="opencv-plot",
+    )
+    parser.add_argument(
+        "--plot-width",
+        type=int,
+        required=False,
+        help="The width of the plot.",
+        default=None,
+    )
+    parser.add_argument(
+        "--plot-height",
+        type=int,
+        required=False,
+        help="The height of the plot.",
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -93,7 +112,9 @@ def main():
         if isinstance(plot_height, str) and plot_height.isnumeric():
             plot_height = int(plot_height)
 
-    node = Node(args.name)  # provide the name to connect to the dataflow if dynamic node
+    node = Node(
+        args.name
+    )  # provide the name to connect to the dataflow if dynamic node
     plot = Plot()
 
     plot.width = plot_width
@@ -113,18 +134,17 @@ def main():
                     "width": np.uint32(arrow_image["width"].as_py()),
                     "height": np.uint32(arrow_image["height"].as_py()),
                     "channels": np.uint8(arrow_image["channels"].as_py()),
-                    "data": arrow_image["data"].values.to_numpy().astype(np.uint8)
+                    "data": arrow_image["data"].values.to_numpy().astype(np.uint8),
                 }
 
-                plot.frame = np.reshape(image["data"], (image["height"], image["width"], image["channels"]))
+                plot.frame = np.reshape(
+                    image["data"], (image["height"], image["width"], image["channels"])
+                )
 
                 plot_frame(plot)
                 if not RUNNER_CI:
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
-                else:
-                    break  # break the loop for CI
-
             elif event_id == "bbox":
                 arrow_bbox = event["value"][0]
                 plot.bboxes = {
@@ -132,30 +152,10 @@ def main():
                     "conf": arrow_bbox["conf"].values.to_numpy(),
                     "names": arrow_bbox["names"].values.to_numpy(zero_copy_only=False),
                 }
-
-                plot_frame(plot)
-                if not RUNNER_CI:
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-                else:
-                    break  # break the loop for CI
             elif event_id == "text":
                 plot.text = event["value"][0].as_py()
-
-                plot_frame(plot)
-                if not RUNNER_CI:
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-                else:
-                    break  # break the loop for CI
-
         elif event_type == "ERROR":
             raise Exception(event["error"])
-
-    node.send_output(
-        "end",
-        pa.array([0], type=pa.uint8())
-    )
 
 
 if __name__ == "__main__":

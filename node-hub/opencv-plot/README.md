@@ -13,9 +13,6 @@ This node is used to plot a text and a list of bbox on a base image (ideal for o
       # bbox: Arrow array of bbox
       # text: Arrow array of size 1 containing the text to be plotted
 
-    outputs:
-      - end
-
     env:
       PLOT_WIDTH: 640 # optional, default is image input width
       PLOT_HEIGHT: 480 # optional, default is image input height

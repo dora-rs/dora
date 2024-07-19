@@ -7,15 +7,27 @@ import pyarrow as pa
 from dora import Node
 from ultralytics import YOLO
 
+
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model.")
+        description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model."
+    )
 
-    parser.add_argument("--name", type=str, required=False, help="The name of the node in the dataflow.",
-                        default="ultralytics-yolo")
-    parser.add_argument("--model", type=str, required=False,
-                        help="The name of the model file (e.g. yolov8n.pt).", default="yolov8n.pt")
+    parser.add_argument(
+        "--name",
+        type=str,
+        required=False,
+        help="The name of the node in the dataflow.",
+        default="ultralytics-yolo",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=False,
+        help="The name of the model file (e.g. yolov8n.pt).",
+        default="yolov8n.pt",
+    )
 
     args = parser.parse_args()
 
@@ -38,10 +50,12 @@ def main():
                     "width": np.uint32(arrow_image["width"].as_py()),
                     "height": np.uint32(arrow_image["height"].as_py()),
                     "channels": np.uint8(arrow_image["channels"].as_py()),
-                    "data": arrow_image["data"].values.to_numpy().astype(np.uint8)
+                    "data": arrow_image["data"].values.to_numpy().astype(np.uint8),
                 }
 
-                frame = image["data"].reshape((image["height"], image["width"], image["channels"]))
+                frame = image["data"].reshape(
+                    (image["height"], image["width"], image["channels"])
+                )
 
                 frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 results = model(frame, verbose=False)  # includes NMS
