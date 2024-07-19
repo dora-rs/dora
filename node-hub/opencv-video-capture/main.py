@@ -73,7 +73,7 @@ def main():
 
     for event in node:
 
-        # Run this eample in the CI for 20 seconds only.
+        # Run this example in the CI for 20 seconds only.
         if RUNNER_CI and time.time() - start_time > 20:
             break
 
