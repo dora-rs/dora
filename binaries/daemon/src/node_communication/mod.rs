@@ -166,9 +166,7 @@ pub async fn spawn_listener_loop(
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
-            Ok(DaemonCommunication::UnixDomain {
-                socket_file
-            })
+            Ok(DaemonCommunication::UnixDomain { socket_file })
         }
         #[cfg(not(unix))]
         LocalCommunicationConfig::UnixDomain => {

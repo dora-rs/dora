@@ -30,6 +30,7 @@ use inter_daemon::InterDaemonConnection;
 use local_listener::DynamicNodeEventWrapper;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
+use socket_stream_utils::socket_stream_send;
 use std::sync::Arc;
 use std::time::Instant;
 use std::{
@@ -39,7 +40,6 @@ use std::{
     time::Duration,
 };
 use sysinfo::Pid;
-use socket_stream_utils::socket_stream_send;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -56,8 +56,8 @@ mod local_listener;
 mod log;
 mod node_communication;
 mod pending;
-mod spawn;
 mod socket_stream_utils;
+mod spawn;
 
 #[cfg(feature = "telemetry")]
 use dora_tracing::telemetry::serialize_context;
