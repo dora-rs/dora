@@ -421,3 +421,35 @@ jobs:
           override: true
       - name: Typos check with custom config file
         uses: crate-ci/typos@master
+
+  cross-check:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-20.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-20.04
+            target: i686-unknown-linux-gnu
+          - runner: ubuntu-20.04
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-20.04
+            target: aarch64-unknown-linux-musl
+          - runner: ubuntu-20.04
+            target: armv7-unknown-linux-musleabihf
+          - runner: macos-12
+            target: aarch64-apple-darwin
+          - runner: macos-12
+            target: x86_64-apple-darwin
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v3
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - name: "Add toolchains"
+        run: rustup target add ${{ matrix.platform.target }}
+      - name: "Build"
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: check
+          args: --target  ${{ matrix.platform.target }} -p dora-cli
