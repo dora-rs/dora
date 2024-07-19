@@ -13,6 +13,8 @@ on:
     types:
       - "published"
   workflow_dispatch:
+  push:
+  pull_request:
 
 permissions:
   contents: write
@@ -49,11 +51,13 @@ jobs:
           manylinux: auto
           working-directory: apis/python/node
       - name: Upload wheels
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -86,11 +90,13 @@ jobs:
           manylinux: musllinux_1_2
           working-directory: apis/python/node
       - name: Upload wheels
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -127,11 +133,13 @@ jobs:
           args: --release -o dist
           working-directory: apis/python/node
       - name: Upload wheels
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v3
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -160,11 +168,13 @@ jobs:
           sccache: "true"
           working-directory: apis/python/node
       - name: Upload wheels
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -194,11 +204,13 @@ jobs:
           sccache: "true"
           working-directory: apis/python/node
       - name: Upload wheels
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -217,6 +229,7 @@ jobs:
           args: --out dist
           working-directory: apis/python/node
       - name: Upload sdist
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v3
         with:
           name: wheels
@@ -225,7 +238,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
+    if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
     needs: [linux, musllinux, musleabi, windows, macos, sdist]
     steps:
       - uses: actions/download-artifact@v4
