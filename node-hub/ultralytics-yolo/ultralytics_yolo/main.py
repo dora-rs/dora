@@ -46,18 +46,29 @@ def main():
 
             if event_id == "image":
                 arrow_image = event["value"][0]
+                encoding = arrow_image["encoding"].as_py()
+
+                if encoding == "bgr8":
+                    channels = 3
+                    storage_type = np.uint8
+                else:
+                    raise Exception(f"Unsupported image encoding: {encoding}")
+
                 image = {
                     "width": np.uint32(arrow_image["width"].as_py()),
                     "height": np.uint32(arrow_image["height"].as_py()),
-                    "channels": np.uint8(arrow_image["channels"].as_py()),
-                    "data": arrow_image["data"].values.to_numpy().astype(np.uint8),
+                    "encoding": encoding,
+                    "channels": channels,
+                    "data": arrow_image["data"].values.to_numpy().astype(storage_type),
                 }
 
                 frame = image["data"].reshape(
                     (image["height"], image["width"], image["channels"])
                 )
 
-                frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                if encoding == "bgr8":
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+
                 results = model(frame, verbose=False)  # includes NMS
 
                 bboxes = np.array(results[0].boxes.xyxy.cpu())

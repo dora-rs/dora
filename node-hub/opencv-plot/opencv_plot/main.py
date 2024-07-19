@@ -130,11 +130,20 @@ def main():
 
             if event_id == "image":
                 arrow_image = event["value"][0]
+
+                encoding = arrow_image["encoding"].as_py()
+                if encoding == "bgr8":
+                    channels = 3
+                    storage_type = np.uint8
+                else:
+                    raise Exception(f"Unsupported image encoding: {encoding}")
+
                 image = {
                     "width": np.uint32(arrow_image["width"].as_py()),
                     "height": np.uint32(arrow_image["height"].as_py()),
-                    "channels": np.uint8(arrow_image["channels"].as_py()),
-                    "data": arrow_image["data"].values.to_numpy().astype(np.uint8),
+                    "encoding": encoding,
+                    "channels": channels,
+                    "data": arrow_image["data"].values.to_numpy().astype(storage_type),
                 }
 
                 plot.frame = np.reshape(
