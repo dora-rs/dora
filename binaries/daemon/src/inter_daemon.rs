@@ -1,4 +1,4 @@
-use crate::tcp_utils::{tcp_receive, tcp_send};
+use crate::socket_stream_utils::{socket_stream_receive, socket_stream_send};
 use dora_core::daemon_messages::{InterDaemonEvent, Timestamped};
 use eyre::{Context, ContextCompat};
 use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr};
@@ -52,7 +52,7 @@ pub async fn send_inter_daemon_event(
             .connect()
             .await
             .wrap_err_with(|| format!("failed to connect to machine `{target_machine}`"))?;
-        tcp_send(connection, &message)
+        socket_stream_send(connection, &message)
             .await
             .wrap_err_with(|| format!("failed to send event to machine `{target_machine}`"))?;
     }
@@ -131,7 +131,7 @@ async fn handle_connection_loop(
 async fn receive_message(
     connection: &mut TcpStream,
 ) -> eyre::Result<Option<Timestamped<InterDaemonEvent>>> {
-    let raw = match tcp_receive(connection).await {
+    let raw = match socket_stream_receive(connection).await {
         Ok(raw) => raw,
         Err(err) => match err.kind() {
             ErrorKind::UnexpectedEof

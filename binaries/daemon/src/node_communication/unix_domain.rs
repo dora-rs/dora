@@ -1,10 +1,5 @@
 use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
 
-use super::{Connection, Listener};
-use crate::{
-    socket_stream_utils::{socket_stream_receive, socket_stream_send},
-    Event,
-};
 use dora_core::{
     config::DataId,
     daemon_messages::{DaemonReply, DaemonRequest, Timestamped},
@@ -12,13 +7,20 @@ use dora_core::{
 };
 use eyre::Context;
 use tokio::{
-    net::{TcpListener, TcpStream},
+    net::{UnixListener, UnixStream},
     sync::mpsc,
 };
 
+use crate::{
+    socket_stream_utils::{socket_stream_receive, socket_stream_send},
+    Event,
+};
+
+use super::{Connection, Listener};
+
 #[tracing::instrument(skip(listener, daemon_tx, clock), level = "trace")]
 pub async fn listener_loop(
-    listener: TcpListener,
+    listener: UnixListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
@@ -46,22 +48,18 @@ pub async fn listener_loop(
 
 #[tracing::instrument(skip(connection, daemon_tx, clock), level = "trace")]
 async fn handle_connection_loop(
-    connection: TcpStream,
+    connection: UnixStream,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
 ) {
-    if let Err(err) = connection.set_nodelay(true) {
-        tracing::warn!("failed to set nodelay for connection: {err}");
-    }
-
-    Listener::run(TcpConnection(connection), daemon_tx, queue_sizes, clock).await
+    Listener::run(UnixConnection(connection), daemon_tx, queue_sizes, clock).await
 }
 
-struct TcpConnection(TcpStream);
+struct UnixConnection(UnixStream);
 
 #[async_trait::async_trait]
-impl Connection for TcpConnection {
+impl Connection for UnixConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
         let raw = match socket_stream_receive(&mut self.0).await {
             Ok(raw) => raw,

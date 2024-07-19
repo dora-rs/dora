@@ -10,7 +10,13 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    let dataflow = Path::new("dataflow.yml");
+    let args: Vec<String> = std::env::args().collect();
+    let dataflow = if args.len() > 1 {
+        Path::new(&args[1])
+    } else {
+        Path::new("dataflow.yml")
+    };
+
     build_dataflow(dataflow).await?;
 
     run_dataflow(dataflow).await?;

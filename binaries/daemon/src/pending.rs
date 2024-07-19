@@ -9,7 +9,7 @@ use dora_core::{
 use eyre::{bail, Context};
 use tokio::{net::TcpStream, sync::oneshot};
 
-use crate::{tcp_utils::tcp_send, CascadingErrorCauses};
+use crate::{socket_stream_utils::socket_stream_send, CascadingErrorCauses};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
@@ -210,7 +210,7 @@ impl PendingNodes {
             },
             timestamp,
         })?;
-        tcp_send(connection, &msg)
+        socket_stream_send(connection, &msg)
             .await
             .wrap_err("failed to send AllNodesReady message to dora-coordinator")?;
         Ok(())
