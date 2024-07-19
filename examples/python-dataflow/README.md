@@ -16,8 +16,8 @@ information on how to start such a dataflow.
 ## Getting started
 
 After installing Rust, `dora-cli` and `Python >3.11`, you will need to **activate** (or create and **activate**) a
-virtual
-environment. Then, you will need to install the dependencies:
+[Python virtual environment](https://docs.python.org/3/library/venv.html).
+Then, you will need to install the dependencies:
 
 ```bash
 cd examples/python-dataflow
