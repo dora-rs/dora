@@ -4,7 +4,6 @@ nodes:
     path: opencv-video-capture
     inputs:
       tick: dora/timer/millis/16
-      stop: plot/end
     outputs:
       - image
     env:
@@ -17,5 +16,3 @@ nodes:
     path: dynamic
     inputs:
       image: camera/image
-    outputs:
-      - end
