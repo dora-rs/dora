@@ -166,13 +166,13 @@ pub async fn spawn_listener_loop(
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
-            use eyre::ContextCompat;
             Ok(DaemonCommunication::UnixDomain {
-                socket_addr: socket_file
-                    .to_str()
-                    .wrap_err("get unix domain file addr failed")?
-                    .to_string(),
+                socket_file
             })
+        }
+        #[cfg(not(unix))]
+        LocalCommunicationConfig::UnixDomain => {
+            eyre::bail!("Communication via UNIX domain sockets is only supported on UNIX systems")
         }
     }
 }

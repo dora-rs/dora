@@ -1,5 +1,5 @@
 use crate::{
-    tcp_utils::{tcp_receive, tcp_send},
+    socket_stream_utils::{socket_stream_receive, socket_stream_send},
     DaemonCoordinatorEvent,
 };
 use dora_core::{
@@ -41,10 +41,10 @@ pub async fn register(
         },
         timestamp: clock.new_timestamp(),
     })?;
-    tcp_send(&mut stream, &register)
+    socket_stream_send(&mut stream, &register)
         .await
         .wrap_err("failed to send register request to dora-coordinator")?;
-    let reply_raw = tcp_receive(&mut stream)
+    let reply_raw = socket_stream_receive(&mut stream)
         .await
         .wrap_err("failed to register reply from dora-coordinator")?;
     let result: Timestamped<RegisterResult> = serde_json::from_slice(&reply_raw)
@@ -59,7 +59,7 @@ pub async fn register(
     let (tx, rx) = mpsc::channel(1);
     tokio::spawn(async move {
         loop {
-            let event = match tcp_receive(&mut stream).await {
+            let event = match socket_stream_receive(&mut stream).await {
                 Ok(raw) => match serde_json::from_slice(&raw) {
                     Ok(event) => event,
                     Err(err) => {
@@ -109,7 +109,7 @@ pub async fn register(
                         continue;
                     }
                 };
-                if let Err(err) = tcp_send(&mut stream, &serialized).await {
+                if let Err(err) = socket_stream_send(&mut stream, &serialized).await {
                     tracing::warn!("failed to send reply to coordinator: {err}");
                     continue;
                 };

@@ -37,7 +37,7 @@ pub enum DaemonCommunication {
     },
     #[cfg(unix)]
     UnixDomain {
-        socket_addr: String,
+        socket_file: PathBuf,
     },
 }
 

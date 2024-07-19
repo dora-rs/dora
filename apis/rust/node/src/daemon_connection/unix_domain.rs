@@ -31,7 +31,7 @@ fn send_message(
     message: &Timestamped<DaemonRequest>,
 ) -> eyre::Result<()> {
     let serialized = bincode::serialize(&message).wrap_err("failed to serialize DaemonRequest")?;
-    tcp_send(connection, &serialized).wrap_err("failed to send DaemonRequest")?;
+    stream_send(connection, &serialized).wrap_err("failed to send DaemonRequest")?;
     Ok(())
 }
 
@@ -39,7 +39,7 @@ fn receive_reply(
     connection: &mut UnixStream,
     serializer: Serializer,
 ) -> eyre::Result<Option<DaemonReply>> {
-    let raw = match tcp_receive(connection) {
+    let raw = match stream_receive(connection) {
         Ok(raw) => raw,
         Err(err) => match err.kind() {
             std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionAborted => {
@@ -64,7 +64,7 @@ fn receive_reply(
     }
 }
 
-fn tcp_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::Result<()> {
+fn stream_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::Result<()> {
     let len_raw = (message.len() as u64).to_le_bytes();
     connection.write_all(&len_raw)?;
     connection.write_all(message)?;
@@ -72,7 +72,7 @@ fn tcp_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::R
     Ok(())
 }
 
-fn tcp_receive(connection: &mut (impl Read + Unpin)) -> std::io::Result<Vec<u8>> {
+fn stream_receive(connection: &mut (impl Read + Unpin)) -> std::io::Result<Vec<u8>> {
     let reply_len = {
         let mut raw = [0; 8];
         connection.read_exact(&mut raw)?;

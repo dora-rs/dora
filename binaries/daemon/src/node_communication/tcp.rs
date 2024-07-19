@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
 
 use super::{Connection, Listener};
 use crate::{
-    tcp_utils::{tcp_receive, tcp_send},
+    socket_stream_utils::{socket_stream_receive, socket_stream_send},
     Event,
 };
 use dora_core::{
@@ -63,7 +63,7 @@ struct TcpConnection(TcpStream);
 #[async_trait::async_trait]
 impl Connection for TcpConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
-        let raw = match tcp_receive(&mut self.0).await {
+        let raw = match socket_stream_receive(&mut self.0).await {
             Ok(raw) => raw,
             Err(err) => match err.kind() {
                 ErrorKind::UnexpectedEof
@@ -87,7 +87,7 @@ impl Connection for TcpConnection {
         }
         let serialized =
             bincode::serialize(&message).wrap_err("failed to serialize DaemonReply")?;
-        tcp_send(&mut self.0, &serialized)
+        socket_stream_send(&mut self.0, &serialized)
             .await
             .wrap_err("failed to send DaemonReply")?;
         Ok(())

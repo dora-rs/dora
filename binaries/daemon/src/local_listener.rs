@@ -1,4 +1,4 @@
-use crate::tcp_utils::{tcp_receive, tcp_send};
+use crate::socket_stream_utils::{socket_stream_receive, socket_stream_send};
 use dora_core::daemon_messages::{DaemonReply, DaemonRequest, DynamicNodeEvent, Timestamped};
 use eyre::Context;
 use std::{io::ErrorKind, net::SocketAddr};
@@ -99,7 +99,7 @@ async fn handle_connection_loop(
                             continue;
                         }
                     };
-                    if let Err(err) = tcp_send(&mut connection, &serialized).await {
+                    if let Err(err) = socket_stream_send(&mut connection, &serialized).await {
                         tracing::warn!("failed to send reply: {err}");
                         continue;
                     };
@@ -120,7 +120,7 @@ async fn handle_connection_loop(
 async fn receive_message(
     connection: &mut TcpStream,
 ) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
-    let raw = match tcp_receive(connection).await {
+    let raw = match socket_stream_receive(connection).await {
         Ok(raw) => raw,
         Err(err) => match err.kind() {
             ErrorKind::UnexpectedEof

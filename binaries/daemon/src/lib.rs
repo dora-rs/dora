@@ -39,7 +39,7 @@ use std::{
     time::Duration,
 };
 use sysinfo::Pid;
-use tcp_utils::tcp_send;
+use socket_stream_utils::socket_stream_send;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -57,7 +57,7 @@ mod log;
 mod node_communication;
 mod pending;
 mod spawn;
-mod tcp_utils;
+mod socket_stream_utils;
 
 #[cfg(feature = "telemetry")]
 use dora_tracing::telemetry::serialize_context;
@@ -314,7 +314,7 @@ impl Daemon {
                             },
                             timestamp: self.clock.new_timestamp(),
                         })?;
-                        tcp_send(connection, &msg)
+                        socket_stream_send(connection, &msg)
                             .await
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
@@ -345,7 +345,7 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             })?;
-            tcp_send(connection, &msg)
+            socket_stream_send(connection, &msg)
                 .await
                 .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
@@ -1103,7 +1103,7 @@ impl Daemon {
                     },
                     timestamp: self.clock.new_timestamp(),
                 })?;
-                tcp_send(connection, &msg)
+                socket_stream_send(connection, &msg)
                     .await
                     .wrap_err("failed to report dataflow finish to dora-coordinator")?;
             }

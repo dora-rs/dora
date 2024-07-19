@@ -46,7 +46,7 @@ impl DaemonChannel {
 
     #[cfg(unix)]
     #[tracing::instrument(level = "trace")]
-    pub fn new_unix_socket(path: &str) -> eyre::Result<Self> {
+    pub fn new_unix_socket(path: &std::path::PathBuf) -> eyre::Result<Self> {
         let stream = UnixStream::connect(path).wrap_err("failed to open Unix socket")?;
         Ok(DaemonChannel::UnixDomain(stream))
     }
