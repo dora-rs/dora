@@ -7,20 +7,45 @@ import pyarrow as pa
 
 from dora import Node
 
+import time
+
+RUNNER_CI = True if os.getenv("CI") == "true" else False
+
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="OpenCV Video Capture: This node is used to capture video from a camera.")
+        description="OpenCV Video Capture: This node is used to capture video from a camera."
+    )
 
-    parser.add_argument("--name", type=str, required=False, help="The name of the node in the dataflow.",
-                        default="opencv-video-capture")
-    parser.add_argument("--path", type=int, required=False,
-                        help="The path of the device to capture (e.g. /dev/video1, or an index like 0, 1...", default=0)
-    parser.add_argument("--image-width", type=int, required=False,
-                        help="The width of the image output. Default is the camera width.", default=None)
-    parser.add_argument("--image-height", type=int, required=False,
-                        help="The height of the camera. Default is the camera height.", default=None)
+    parser.add_argument(
+        "--name",
+        type=str,
+        required=False,
+        help="The name of the node in the dataflow.",
+        default="opencv-video-capture",
+    )
+    parser.add_argument(
+        "--path",
+        type=int,
+        required=False,
+        help="The path of the device to capture (e.g. /dev/video1, or an index like 0, 1...",
+        default=0,
+    )
+    parser.add_argument(
+        "--image-width",
+        type=int,
+        required=False,
+        help="The width of the image output. Default is the camera width.",
+        default=None,
+    )
+    parser.add_argument(
+        "--image-height",
+        type=int,
+        required=False,
+        help="The height of the camera. Default is the camera height.",
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -42,10 +67,16 @@ def main():
 
     video_capture = cv2.VideoCapture(video_capture_path)
     node = Node(args.name)
+    start_time = time.time()
 
     pa.array([])  # initialize pyarrow array
 
     for event in node:
+
+        # Run this eample in the CI for 20 seconds only.
+        if RUNNER_CI and time.time() - start_time > 20:
+            break
+
         event_type = event["type"]
 
         if event_type == "INPUT":
@@ -58,7 +89,7 @@ def main():
                     frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     cv2.putText(
                         frame,
-                        f'Error: no frame for camera at path {video_capture_path}.',
+                        f"Error: no frame for camera at path {video_capture_path}.",
                         (int(30), int(30)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.50,
@@ -75,14 +106,10 @@ def main():
                     "width": np.uint32(frame.shape[1]),
                     "height": np.uint32(frame.shape[0]),
                     "channels": np.uint8(frame.shape[2]),
-                    "data": frame.ravel()
+                    "data": frame.ravel(),
                 }
 
-                node.send_output(
-                    "image",
-                    pa.array([image]),
-                    event["metadata"]
-                )
+                node.send_output("image", pa.array([image]), event["metadata"])
 
             if event_id == "stop":
                 video_capture.release()
