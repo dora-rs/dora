@@ -160,7 +160,7 @@ esac
 
 archive="$releases/download/v$tag/$bin-v$tag-$target.$extension"
 say "Repository:  $url"
-say "bin:       $bin"
+say "Bin:         $bin"
 say "Tag:         $tag"
 say "Target:      $target"
 say "Destination: $dest"
@@ -181,6 +181,9 @@ else
   mkdir -p "$dest"
   cp "$td/$bin" "$dest/$bin"
   chmod 755 "$dest/$bin"
+  echo ""
+  echo "  Update PATH:"
+  echo "export PATH=\$PATH:$dest/$bin"
 fi
 
 rm -rf "$td"
