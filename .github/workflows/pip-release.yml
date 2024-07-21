@@ -13,46 +13,135 @@ on:
     types:
       - "published"
   workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
 
 permissions:
   contents: write
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
-        target: [x86_64, x86, aarch64]
+        platform:
+          - runner: ubuntu-latest
+            target: x86_64
+          - runner: ubuntu-latest
+            target: x86
+          - runner: ubuntu-latest
+            target: aarch64
+          - runner: ubuntu-latest
+            target: armv7
+          # - runner: ubuntu-latest
+          # target: s390x
+          # - runner: ubuntu-latest
+          # target: ppc64le
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
-      - name: Install dependencies
-        run: |
-          pip install patchelf --upgrade
+          python-version: 3.8
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
           sccache: "true"
           manylinux: auto
           working-directory: apis/python/node
+      - name: Upload wheels
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.platform.target }}
+          path: apis/python/node/dist
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: apis/python/node/dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
+
+  musllinux:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-latest
+            target: x86_64
+          - runner: ubuntu-latest
+            target: x86
+          - runner: ubuntu-latest
+            target: aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.8
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --zig
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
           sccache: "true"
-          working-directory: apis/python/node
           manylinux: musllinux_1_2
+          working-directory: apis/python/node
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-musllinux-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: apis/python/node/dist/*
+          tag: ${{ github.ref }}
+          file_glob: true
+
+  musleabi:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform:
+          [
+            {
+              target: "armv7-unknown-linux-musleabihf",
+              image_tag: "armv7-musleabihf",
+            },
+          ]
+    container:
+      image: docker://messense/rust-musl-cross:${{ matrix.platform.image_tag }}
+      env:
+        CFLAGS_armv7_unknown_linux_musleabihf: "-mfpu=vfpv3-d16"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.8
+      - name: Build Wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          manylinux: auto
+          container: off
+          args: --release -o dist
+          working-directory: apis/python/node
+      - name: Upload wheels
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels-musllinux-${{ matrix.platform.target }}
+          path: apis/python/node/dist
+      - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -61,29 +150,33 @@ jobs:
           file_glob: true
 
   windows:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
-        target: [x64, x86]
+        platform:
+          - runner: windows-latest
+            target: x64
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.7"
-          architecture: ${{ matrix.target }}
+          python-version: 3.8
+          architecture: ${{ matrix.platform.target }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: "true"
           working-directory: apis/python/node
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-windows-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -92,28 +185,34 @@ jobs:
           file_glob: true
 
   macos:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
-        target: [x86_64, aarch64]
+        platform:
+          - runner: macos-12
+            target: x86_64
+          - runner: macos-14
+            target: aarch64
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
+          python-version: 3.8
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: "true"
           working-directory: apis/python/node
       - name: Upload wheels
-        uses: actions/upload-artifact@v3
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-macos-${{ matrix.platform.target }}
           path: apis/python/node/dist
       - name: Upload to release
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -132,6 +231,7 @@ jobs:
           args: --out dist
           working-directory: apis/python/node
       - name: Upload sdist
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@v3
         with:
           name: wheels
@@ -140,16 +240,14 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    if: "startsWith(github.ref, 'refs/tags/')"
-    needs: [linux, windows, macos, sdist]
+    if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
+    needs: [linux, musllinux, musleabi, windows, macos, sdist]
     steps:
-      - uses: actions/download-artifact@v3
-        with:
-          name: wheels
+      - uses: actions/download-artifact@v4
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_PASS }}
         with:
           command: upload
-          args: --skip-existing *
+          args: --non-interactive --skip-existing wheels-*/*
