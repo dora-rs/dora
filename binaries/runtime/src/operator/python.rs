@@ -6,7 +6,7 @@ use dora_core::{
     descriptor::{source_is_url, Descriptor, PythonSource},
 };
 use dora_download::download_file;
-use dora_node_api::Event;
+use dora_node_api::{Event, Parameter};
 use dora_operator_api_python::PyEvent;
 use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
@@ -201,11 +201,15 @@ pub fn run(
                     use tracing_opentelemetry::OpenTelemetrySpanExt;
                     span.record("input_id", input_id.as_str());
 
-                    let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
+                    let otel = metadata.open_telemetry_context();
+                    let cx = deserialize_context(&otel);
                     span.set_parent(cx);
                     let cx = span.context();
                     let string_cx = serialize_context(&cx);
-                    metadata.parameters.open_telemetry_context = string_cx;
+                    metadata.parameters.insert(
+                        "open_telemetry_context".to_string(),
+                        Parameter::String(string_cx),
+                    );
                 }
 
                 let py_event = PyEvent::from(event)
@@ -314,17 +318,22 @@ mod callback_impl {
             metadata: Option<Bound<'_, PyDict>>,
             py: Python,
         ) -> Result<()> {
-            let parameters = pydict_to_metadata(metadata)
-                .wrap_err("failed to parse metadata")?
-                .into_owned();
+            let parameters = pydict_to_metadata(metadata).wrap_err("failed to parse metadata")?;
             let span = span!(
                 tracing::Level::TRACE,
                 "send_output",
                 output_id = field::Empty
             );
             span.record("output_id", output);
+            let otel = if let Some(dora_node_api::Parameter::String(otel)) =
+                parameters.get("open_telemetry_context")
+            {
+                otel.to_string()
+            } else {
+                "".to_string()
+            };
 
-            let cx = deserialize_context(&parameters.open_telemetry_context);
+            let cx = deserialize_context(&otel);
             span.set_parent(cx);
             let _ = span.enter();
 
