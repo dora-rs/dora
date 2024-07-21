@@ -100,7 +100,12 @@ async fn main() -> eyre::Result<()> {
                 None => {}
                 Some(tx) => drop(tx),
             },
-            _ => {}
+            Event::Error(err) => {
+                println!("Error: {}", err);
+            }
+            event => {
+                println!("Event: {event:#?}")
+            }
         }
     }
 
@@ -137,7 +142,7 @@ async fn write_event(
     let timestamp_utc = TimestampMillisecondArray::from(vec![dt.timestamp_millis()]);
     let timestamp_utc = make_array(timestamp_utc.into());
 
-    let string_otel_context = metadata.parameters.open_telemetry_context.to_string();
+    let string_otel_context = metadata.open_telemetry_context();
     let otel_context = deserialize_to_hashmap(&string_otel_context);
     let traceparent = otel_context.get("traceparent");
     let trace_id = match traceparent {
