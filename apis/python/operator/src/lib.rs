@@ -1,12 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use arrow::pyarrow::ToPyArrow;
-use dora_node_api::{merged::MergedEvent, Event, Metadata, MetadataParameters};
+use dora_node_api::{
+    dora_core::message::MetadataParameters, merged::MergedEvent, Event, Metadata, Parameter,
+};
 use eyre::{Context, Result};
 use pyo3::{
     prelude::*,
-    pybacked::PyBackedStr,
-    types::{IntoPyDict, PyDict},
+    types::{IntoPyDict, PyBool, PyDict, PyInt, PyString},
 };
 
 /// Dora Event
@@ -32,7 +33,7 @@ impl PyEvent {
                 if let Some(value) = self.value(py)? {
                     pydict.insert("value", value);
                 }
-                if let Some(metadata) = Self::metadata(event, py) {
+                if let Some(metadata) = Self::metadata(event, py)? {
                     pydict.insert("metadata", metadata);
                 }
                 if let Some(error) = Self::error(event) {
@@ -77,10 +78,14 @@ impl PyEvent {
         }
     }
 
-    fn metadata(event: &Event, py: Python<'_>) -> Option<PyObject> {
+    fn metadata(event: &Event, py: Python<'_>) -> Result<Option<PyObject>> {
         match event {
-            Event::Input { metadata, .. } => Some(metadata_to_pydict(metadata, py).to_object(py)),
-            _ => None,
+            Event::Input { metadata, .. } => Ok(Some(
+                metadata_to_pydict(metadata, py)
+                    .context("Issue deserializing metadata")?
+                    .to_object(py),
+            )),
+            _ => Ok(None),
         }
     }
 
@@ -105,44 +110,45 @@ impl From<MergedEvent<PyObject>> for PyEvent {
 }
 
 pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataParameters> {
-    let mut default_metadata = MetadataParameters::default();
-    if let Some(metadata) = dict {
-        for (key, value) in metadata.iter() {
-            match key
-                .extract::<PyBackedStr>()
-                .context("Parsing metadata keys")?
-                .as_ref()
-            {
-                "watermark" => {
-                    default_metadata.watermark =
-                        value.extract().context("parsing watermark failed")?;
-                }
-                "deadline" => {
-                    default_metadata.deadline =
-                        value.extract().context("parsing deadline failed")?;
-                }
-                "open_telemetry_context" => {
-                    let otel_context: PyBackedStr = value
-                        .extract()
-                        .context("parsing open telemetry context failed")?;
-                    default_metadata.open_telemetry_context = otel_context.to_string();
-                }
-                _ => (),
-            }
+    let mut parameters = BTreeMap::default();
+    if let Some(pymetadata) = dict {
+        for (key, value) in pymetadata.iter() {
+            let key = key.extract::<String>().context("Parsing metadata keys")?;
+            if value.is_exact_instance_of::<PyBool>() {
+                parameters.insert(key, Parameter::Bool(value.extract()?))
+            } else if value.is_instance_of::<PyInt>() {
+                parameters.insert(key, Parameter::Integer(value.extract::<i64>()?))
+            } else if value.is_instance_of::<PyString>() {
+                parameters.insert(key, Parameter::String(value.extract()?))
+            } else {
+                println!("could not convert type {value}");
+                parameters.insert(key, Parameter::String(value.str()?.to_string()))
+            };
         }
     }
-    Ok(default_metadata)
+    Ok(parameters)
 }
 
-pub fn metadata_to_pydict<'a>(metadata: &'a Metadata, py: Python<'a>) -> pyo3::Bound<'a, PyDict> {
+pub fn metadata_to_pydict<'a>(
+    metadata: &'a Metadata,
+    py: Python<'a>,
+) -> Result<pyo3::Bound<'a, PyDict>> {
     let dict = PyDict::new_bound(py);
-    dict.set_item(
-        "open_telemetry_context",
-        &metadata.parameters.open_telemetry_context,
-    )
-    .wrap_err("could not make metadata a python dictionary item")
-    .unwrap();
-    dict
+    for (k, v) in metadata.parameters.iter() {
+        match v {
+            Parameter::Bool(bool) => dict
+                .set_item(k, bool)
+                .context(format!("Could not insert metadata into python dictionary"))?,
+            Parameter::Integer(int) => dict
+                .set_item(k, int)
+                .context(format!("Could not insert metadata into python dictionary"))?,
+            Parameter::String(s) => dict
+                .set_item(k, s)
+                .context(format!("Could not insert metadata into python dictionary"))?,
+        }
+    }
+
+    Ok(dict)
 }
 
 #[cfg(test)]

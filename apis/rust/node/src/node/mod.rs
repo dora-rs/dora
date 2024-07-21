@@ -250,11 +250,7 @@ impl DoraNode {
         if !self.node_config.outputs.contains(&output_id) {
             eyre::bail!("unknown output");
         }
-        let metadata = Metadata::from_parameters(
-            self.clock.new_timestamp(),
-            type_info,
-            parameters.into_owned(),
-        );
+        let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
         let (data, shmem) = match sample {
             Some(sample) => sample.finalize(),
