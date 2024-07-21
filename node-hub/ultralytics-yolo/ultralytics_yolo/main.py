@@ -52,7 +52,7 @@ def main():
                     channels = 3
                     storage_type = np.uint8
                 else:
-                    raise Exception(f"Unsupported image encoding: {encoding}")
+                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
                 image = {
                     "width": np.uint32(arrow_image["width"].as_py()),
@@ -68,6 +68,8 @@ def main():
 
                 if encoding == "bgr8":
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                else:
+                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
                 results = model(frame, verbose=False)  # includes NMS
 
@@ -90,7 +92,7 @@ def main():
                 )
 
         elif event_type == "ERROR":
-            raise Exception(event["error"])
+            raise RuntimeError(event["error"])
 
 
 if __name__ == "__main__":

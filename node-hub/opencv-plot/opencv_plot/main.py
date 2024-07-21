@@ -1,6 +1,6 @@
 import os
 import argparse
-import cv2
+from cv2 import cv2  # Importing cv2 this way remove error warnings``
 
 import numpy as np
 import pyarrow as pa
@@ -13,7 +13,7 @@ RUNNER_CI = True if os.getenv("CI") == "true" else False
 class Plot:
     frame: np.array = np.array([])
 
-    bboxes: {} = {
+    bboxes: dict = {
         "bbox": np.array([]),
         "conf": np.array([]),
         "names": np.array([]),
@@ -136,7 +136,7 @@ def main():
                     channels = 3
                     storage_type = np.uint8
                 else:
-                    raise Exception(f"Unsupported image encoding: {encoding}")
+                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
                 image = {
                     "width": np.uint32(arrow_image["width"].as_py()),
@@ -164,7 +164,7 @@ def main():
             elif event_id == "text":
                 plot.text = event["value"][0].as_py()
         elif event_type == "ERROR":
-            raise Exception(event["error"])
+            raise RuntimeError(event["error"])
 
 
 if __name__ == "__main__":

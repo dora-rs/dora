@@ -1,6 +1,6 @@
 import os
 import argparse
-import cv2
+from cv2 import cv2  # Importing cv2 this way remove error warnings``
 
 import numpy as np
 import pyarrow as pa
@@ -115,7 +115,7 @@ def main():
                 node.send_output("image", pa.array([image]), event["metadata"])
 
         elif event_type == "ERROR":
-            raise Exception(event["error"])
+            raise RuntimeError(event["error"])
 
 
 if __name__ == "__main__":
