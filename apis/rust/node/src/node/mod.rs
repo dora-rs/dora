@@ -401,7 +401,7 @@ impl Drop for DoraNode {
                 );
             }
 
-            match self.drop_stream.recv_timeout(Duration::from_millis(500)) {
+            match self.drop_stream.recv_timeout(Duration::from_secs(10)) {
                 Ok(token) => {
                     self.sent_out_shared_memory.remove(&token);
                 }

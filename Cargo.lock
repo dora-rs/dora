@@ -2526,6 +2526,8 @@ dependencies = [
  "dora-node-api",
  "eyre",
  "flume 0.10.14",
+ "futures",
+ "futures-concurrency",
  "pyo3",
  "serde_yaml 0.8.26",
 ]
