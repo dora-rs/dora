@@ -45,8 +45,11 @@ def main():
             event_id = event["id"]
 
             if event_id == "image":
-                arrow_image = event["value"][0]
-                encoding = arrow_image["encoding"].as_py()
+                storage = event["value"]
+                metadata = event["metadata"]
+                encoding = metadata["encoding"]
+                width = metadata["width"]
+                height = metadata["height"]
 
                 if encoding == "bgr8":
                     channels = 3
@@ -54,18 +57,11 @@ def main():
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
-                image = {
-                    "width": np.uint32(arrow_image["width"].as_py()),
-                    "height": np.uint32(arrow_image["height"].as_py()),
-                    "encoding": encoding,
-                    "channels": channels,
-                    "data": arrow_image["data"].values.to_numpy().astype(storage_type),
-                }
-
-                frame = image["data"].reshape(
-                    (image["height"], image["width"], image["channels"])
+                frame = (
+                    storage.to_numpy()
+                    .astype(storage_type)
+                    .reshape((height, width, channels))
                 )
-
                 if encoding == "bgr8":
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 else:

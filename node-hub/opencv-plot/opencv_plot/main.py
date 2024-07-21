@@ -1,6 +1,6 @@
 import os
 import argparse
-from cv2 import cv2  # Importing cv2 this way remove error warnings``
+import cv2
 
 import numpy as np
 import pyarrow as pa
@@ -129,25 +129,24 @@ def main():
             event_id = event["id"]
 
             if event_id == "image":
-                arrow_image = event["value"][0]
+                storage = event["value"]
 
-                encoding = arrow_image["encoding"].as_py()
+                metadata = event["metadata"]
+                encoding = metadata["encoding"]
+                width = metadata["width"]
+                height = metadata["height"]
+
                 if encoding == "bgr8":
                     channels = 3
                     storage_type = np.uint8
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
-                image = {
-                    "width": np.uint32(arrow_image["width"].as_py()),
-                    "height": np.uint32(arrow_image["height"].as_py()),
-                    "encoding": encoding,
-                    "channels": channels,
-                    "data": arrow_image["data"].values.to_numpy().astype(storage_type),
-                }
-
-                plot.frame = np.reshape(
-                    image["data"], (image["height"], image["width"], image["channels"])
+                plot.frame = (
+                    storage.to_numpy()
+                    .astype(storage_type)
+                    .reshape((height, width, channels))
+                    .copy()  # Copy So that we can add annotation on the image
                 )
 
                 plot_frame(plot)

@@ -1,6 +1,6 @@
 import os
 import argparse
-from cv2 import cv2  # Importing cv2 this way remove error warnings``
+import cv2
 
 import numpy as np
 import pyarrow as pa
@@ -105,14 +105,14 @@ def main():
                 if image_width is not None and image_height is not None:
                     frame = cv2.resize(frame, (image_width, image_height))
 
-                image = {
-                    "width": np.uint32(frame.shape[1]),
-                    "height": np.uint32(frame.shape[0]),
-                    "encoding": "bgr8",
-                    "data": frame.ravel(),
-                }
+                storage = pa.array(frame.ravel())
 
-                node.send_output("image", pa.array([image]), event["metadata"])
+                metadata = event["metadata"]
+                metadata["width"] = int(frame.shape[1])
+                metadata["height"] = int(frame.shape[0])
+                metadata["encoding"] = "bgr8"
+
+                node.send_output("image", storage, metadata)
 
         elif event_type == "ERROR":
             raise RuntimeError(event["error"])
