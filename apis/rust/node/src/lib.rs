@@ -16,7 +16,7 @@
 pub use arrow;
 pub use dora_arrow_convert::*;
 pub use dora_core;
-pub use dora_core::message::{uhlc, Metadata, MetadataParameters};
+pub use dora_core::message::{uhlc, Metadata, MetadataParameters, Parameter};
 pub use event_stream::{merged, Event, EventStream, MappedInputData, RawData};
 pub use flume::Receiver;
 pub use node::{arrow_utils, DataSample, DoraNode, ZERO_COPY_THRESHOLD};
