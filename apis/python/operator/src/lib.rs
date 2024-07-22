@@ -54,7 +54,8 @@ impl Stream for DelayedCleanup<EventStream> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.get_mut().poll_next_unpin(cx)
+        let mut inner: std::sync::MutexGuard<'_, EventStream> = self.get_mut().get_mut();
+        inner.poll_next_unpin(cx)
     }
 }
 
