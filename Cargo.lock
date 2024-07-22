@@ -4613,7 +4613,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e310b3a6b5907f99202fcdb4960ff45b93735d7c7d96b760fcff8db2dc0e103d"
 dependencies = [
  "cfg-if 1.0.0",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.5",
 ]
 
 [[package]]
@@ -6591,9 +6591,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3_special_method_derive"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f42480b1d189c6ff58bf7fdf3df6a452e8d7931d978b1f2f6c3a3cbb9da6c87"
+checksum = "ec0907c3891814e36e0ba29bc61faf5c302faceeb131e394735a2f1d2dd6dea1"
 dependencies = [
  "proc-macro2",
  "pyo3",
@@ -6605,9 +6605,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3_special_method_derive_lib"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ee61e71376a5c2fdd9e2abb183c58f44b8a2005159b69f0d25ecdcbfed8b6aa"
+checksum = "f4010ed27144ed68fe802f642cc80858cf95b9e76f5537db8bdc0e18bad87b65"
 
 [[package]]
 name = "pythonize"
@@ -9485,9 +9485,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.38.0"
+version = "1.38.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba4f4a02a7a80d6f274636f0aa95c7e383b912d41fe721a31f29e29698585a4a"
+checksum = "eb2caba9f80616f438e09748d5acda951967e1ea58508ef53d9c6402485a46df"
 dependencies = [
  "backtrace",
  "bytes",
