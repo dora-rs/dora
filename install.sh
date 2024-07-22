@@ -23,10 +23,10 @@ FLAGS:
     -f, --force     Force overwriting an existing binary
 
 OPTIONS:
-    --repo REPO     Github Repository to install the binary from
-    --bin BIN       Name of the binary to install
-    --tag TAG       Tag (version) of the bin to install, defaults to latest release
-    --to LOCATION   Where to install the binary [default: ~/.cargo/bin]
+    --repo REPO     Github Repository to install the binary from  [default: dora-rs]
+    --bin BIN       Name of the binary to install  [default: dora]
+    --tag TAG       Tag (version) of the bin to install, defaults to latest release 
+    --to LOCATION   Where to install the binary [default: ~/.dora/bin]
     --target TARGET
 EOF
 }
@@ -100,6 +100,14 @@ while test $# -gt 0; do
   shift
 done
 
+if [ -z "${repo-}" ]; then
+  repo="dora-rs"
+fi
+
+if [ -z "${bin-}" ]; then
+  bin="dora"
+fi
+
 url=https://github.com/$repo/$bin
 releases=$url/releases
 
@@ -120,8 +128,9 @@ if [ -z "${target-}" ]; then
 fi
 
 if [ -z "${dest-}" ]; then
-  dest="$HOME/.cargo/bin"
+  dest="$HOME/.dora/bin"
 fi
+
 
 if [ -z "${tag-}" ]; then
   tag=$(
@@ -145,8 +154,6 @@ if [ -z "${target-}" ]; then
     armv7l-Linux) target=armv7-unknown-linux-musleabihf;;
     x86_64-Darwin) target=x86_64-apple-darwin;;
     x86_64-Linux) target=x86_64-unknown-linux-gnu;;
-    x86_64-MINGW64_NT) target=x86_64-pc-windows-msvc;;
-    x86_64-Windows_NT) target=x86_64-pc-windows-msvc;;
     *)
       # shellcheck disable=SC2016
       err 'Could not determine target from output of `uname -m`-`uname -s`, please use `--target`:' "$uname_target"
