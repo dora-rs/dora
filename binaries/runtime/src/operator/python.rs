@@ -6,7 +6,7 @@ use dora_core::{
     descriptor::{source_is_url, Descriptor, PythonSource},
 };
 use dora_download::download_file;
-use dora_node_api::Event;
+use dora_node_api::{merged::MergedEvent, Event};
 use dora_operator_api_python::PyEvent;
 use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
@@ -208,9 +208,12 @@ pub fn run(
                     metadata.parameters.open_telemetry_context = string_cx;
                 }
 
-                let py_event = PyEvent::from(event)
-                    .to_py_dict(py)
-                    .context("Could not convert event to pydict bound")?;
+                let py_event = PyEvent {
+                    event: MergedEvent::Dora(event),
+                    _cleanup: None,
+                }
+                .to_py_dict(py)
+                .context("Could not convert event to pydict bound")?;
 
                 let status_enum = operator
                     .call_method1(py, "on_event", (py_event, send_output.clone()))
