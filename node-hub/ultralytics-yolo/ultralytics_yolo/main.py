@@ -32,6 +32,7 @@ def main():
     args = parser.parse_args()
 
     model_path = os.getenv("MODEL", args.model)
+    bbox_format = os.getenv("FORMAT", "xyxy")
 
     model = YOLO(model_path)
     node = Node(args.name)
@@ -54,6 +55,9 @@ def main():
                 if encoding == "bgr8":
                     channels = 3
                     storage_type = np.uint8
+                elif encoding == "rgb8":
+                    channels = 3
+                    storage_type = np.uint8
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
@@ -64,12 +68,20 @@ def main():
                 )
                 if encoding == "bgr8":
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                elif encoding == "rgb8":
+                    pass
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
                 results = model(frame, verbose=False)  # includes NMS
 
-                bboxes = np.array(results[0].boxes.xyxy.cpu())
+                if bbox_format == "xyxy":
+                    bboxes = np.array(results[0].boxes.xyxy.cpu())
+                elif bbox_format == "xywh":
+                    bboxes = np.array(results[0].boxes.xywh.cpu())
+                else:
+                    raise RuntimeError(f"Unsupported bbox format: {bbox_format}")
+
                 conf = np.array(results[0].boxes.conf.cpu())
                 labels = np.array(results[0].boxes.cls.cpu())
 
@@ -78,13 +90,17 @@ def main():
                 bbox = {
                     "bbox": bboxes.ravel(),
                     "conf": conf,
-                    "names": names,
+                    "labels": names,
                 }
+                bbox = pa.array([bbox])
+
+                metadata = event["metadata"]
+                metadata["format"] = bbox_format
 
                 node.send_output(
                     "bbox",
-                    pa.array([bbox]),
-                    event["metadata"],
+                    bbox,
+                    metadata,
                 )
 
         elif event_type == "ERROR":
