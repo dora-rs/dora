@@ -1600,7 +1600,7 @@ impl RunningDataflow {
         let running_nodes = self.running_nodes.clone();
         let grace_duration_kills = self.grace_duration_kills.clone();
         tokio::spawn(async move {
-            let duration = grace_duration.unwrap_or(Duration::from_millis(2000));
+            let duration = grace_duration.unwrap_or(Duration::from_millis(15000));
             tokio::time::sleep(duration).await;
             let mut system = sysinfo::System::new();
             system.refresh_processes();

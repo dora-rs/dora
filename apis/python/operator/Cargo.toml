@@ -18,3 +18,5 @@ flume = "0.10.14"
 arrow = { workspace = true, features = ["pyarrow"] }
 arrow-schema = { workspace = true }
 aligned-vec = "0.5.0"
+futures = "0.3.28"
+futures-concurrency = "7.3.0"

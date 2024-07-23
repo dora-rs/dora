@@ -1,8 +1,16 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use arrow::pyarrow::ToPyArrow;
-use dora_node_api::{merged::MergedEvent, Event, Metadata, MetadataParameters};
+use dora_node_api::{
+    merged::{MergeExternalSend, MergedEvent},
+    DoraNode, Event, EventStream, Metadata, MetadataParameters,
+};
 use eyre::{Context, Result};
+use futures::{Stream, StreamExt};
+use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
     pybacked::PyBackedStr,
@@ -10,10 +18,64 @@ use pyo3::{
 };
 
 /// Dora Event
-#[derive(Debug)]
 pub struct PyEvent {
-    event: MergedEvent<PyObject>,
+    pub event: MergedEvent<PyObject>,
+    pub _cleanup: Option<NodeCleanupHandle>,
 }
+
+/// Keeps the dora node alive until all event objects have been dropped.
+#[derive(Clone)]
+#[pyclass]
+pub struct NodeCleanupHandle {
+    pub _handles: Arc<(CleanupHandle<DoraNode>, CleanupHandle<EventStream>)>,
+}
+
+/// Owned type with delayed cleanup (using `handle` method).
+pub struct DelayedCleanup<T>(Arc<Mutex<T>>);
+
+impl<T> DelayedCleanup<T> {
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(Mutex::new(value)))
+    }
+
+    pub fn handle(&self) -> CleanupHandle<T> {
+        CleanupHandle(self.0.clone())
+    }
+
+    pub fn get_mut(&mut self) -> std::sync::MutexGuard<T> {
+        self.0.try_lock().expect("failed to lock DelayedCleanup")
+    }
+}
+
+impl Stream for DelayedCleanup<EventStream> {
+    type Item = Event;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let mut inner: std::sync::MutexGuard<'_, EventStream> = self.get_mut().get_mut();
+        inner.poll_next_unpin(cx)
+    }
+}
+
+impl<'a, E> MergeExternalSend<'a, E> for DelayedCleanup<EventStream>
+where
+    E: 'static,
+{
+    type Item = MergedEvent<E>;
+
+    fn merge_external_send(
+        self,
+        external_events: impl Stream<Item = E> + Unpin + Send + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + 'a> {
+        let dora = self.map(MergedEvent::Dora);
+        let external = external_events.map(MergedEvent::External);
+        Box::new((dora, external).merge())
+    }
+}
+
+pub struct CleanupHandle<T>(Arc<Mutex<T>>);
 
 impl PyEvent {
     pub fn to_py_dict(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
@@ -42,6 +104,10 @@ impl PyEvent {
             MergedEvent::External(event) => {
                 pydict.insert("value", event.clone());
             }
+        }
+
+        if let Some(cleanup) = self._cleanup.clone() {
+            pydict.insert("_cleanup", cleanup.into_py(py));
         }
 
         Ok(pydict.into_py_dict_bound(py).unbind())
@@ -89,18 +155,6 @@ impl PyEvent {
             Event::Error(error) => Some(error),
             _other => None,
         }
-    }
-}
-
-impl From<Event> for PyEvent {
-    fn from(event: Event) -> Self {
-        Self::from(MergedEvent::Dora(event))
-    }
-}
-
-impl From<MergedEvent<PyObject>> for PyEvent {
-    fn from(event: MergedEvent<PyObject>) -> Self {
-        Self { event }
     }
 }
 
