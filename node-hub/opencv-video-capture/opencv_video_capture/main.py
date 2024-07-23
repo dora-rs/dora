@@ -50,6 +50,7 @@ def main():
     args = parser.parse_args()
 
     video_capture_path = os.getenv("CAPTURE_PATH", args.path)
+    encoding = os.getenv("ENCODING", "bgr8")
 
     if isinstance(video_capture_path, str) and video_capture_path.isnumeric():
         video_capture_path = int(video_capture_path)
@@ -102,15 +103,25 @@ def main():
                     )
 
                 # resize the frame
-                if image_width is not None and image_height is not None:
+                if (
+                    image_width is not None
+                    and image_height is not None
+                    and (
+                        frame.shape[1] != image_width or frame.shape[0] != image_height
+                    )
+                ):
                     frame = cv2.resize(frame, (image_width, image_height))
+
+                # Get the right encoding
+                if encoding == "rgb8":
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
                 storage = pa.array(frame.ravel())
 
                 metadata = event["metadata"]
                 metadata["width"] = int(frame.shape[1])
                 metadata["height"] = int(frame.shape[0])
-                metadata["encoding"] = "bgr8"
+                metadata["encoding"] = encoding
 
                 node.send_output("image", storage, metadata)
 

@@ -3,12 +3,15 @@
 use std::env::VarError;
 
 use dora_node_api::{
-    arrow::array::{Float32Array, StringArray, UInt8Array},
-    DoraNode, Event,
+    arrow::{
+        array::{AsArray, StringArray, StructArray, UInt8Array},
+        datatypes::Float32Type,
+    },
+    DoraNode, Event, Parameter,
 };
-use eyre::{eyre, Context, Result};
+use eyre::{eyre, Context, ContextCompat, Result};
 use rerun::{
-    external::re_types::ArrowBuffer, SpawnOptions, TensorBuffer, TensorData, TensorDimension,
+    external::re_types::ArrowBuffer, SpawnOptions, TensorBuffer, TensorData, TensorDimension, Text,
 };
 
 fn main() -> Result<()> {
@@ -39,60 +42,65 @@ fn main() -> Result<()> {
         .context("Could not spawn rerun visualization")?;
 
     while let Some(event) = events.recv() {
-        if let Event::Input {
-            id,
-            data,
-            metadata: _,
-        } = event
-        {
+        if let Event::Input { id, data, metadata } = event {
             if id.as_str().contains("image") {
+                let height =
+                    if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
+                        height
+                    } else {
+                        &480
+                    };
+                let width =
+                    if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
+                        width
+                    } else {
+                        &640
+                    };
+                let encoding = if let Some(Parameter::String(encoding)) =
+                    metadata.parameters.get("encoding")
+                {
+                    encoding
+                } else {
+                    "bgr8"
+                };
+                let channels = if encoding == "bgr8" { 3 } else { 3 };
+
                 let shape = vec![
                     TensorDimension {
                         name: Some("height".into()),
-                        size: std::env::var(format!("{}_HEIGHT", id.as_str().to_uppercase()))
-                            .context(format!(
-                                "Could not read {}_HEIGHT env variable for parsing the image",
-                                id.as_str().to_uppercase()
-                            ))?
-                            .parse()
-                            .context(format!(
-                                "Could not parse env {}_HEIGHT",
-                                id.as_str().to_uppercase()
-                            ))?,
+                        size: *height as u64,
                     },
                     TensorDimension {
                         name: Some("width".into()),
-                        size: std::env::var(format!("{}_WIDTH", id.as_str().to_uppercase()))
-                            .context(format!(
-                                "Could not read {}_WIDTH env variable for parsing the image",
-                                id.as_str().to_uppercase()
-                            ))?
-                            .parse()
-                            .context(format!(
-                                "Could not parse env {}_WIDTH",
-                                id.as_str().to_uppercase()
-                            ))?,
+                        size: *width as u64,
                     },
                     TensorDimension {
                         name: Some("depth".into()),
-                        size: std::env::var(format!("{}_DEPTH", id.as_str().to_uppercase()))
-                            .context(format!(
-                                "Could not read {}_DEPTH env variable for parsing the image",
-                                id.as_str().to_uppercase()
-                            ))?
-                            .parse()
-                            .context(format!(
-                                "Could not parse env {}_DEPTH",
-                                id.as_str().to_uppercase()
-                            ))?,
+                        size: channels as u64,
                     },
                 ];
 
-                let buffer: UInt8Array = data.to_data().into();
-                let buffer: &[u8] = buffer.values();
-                let buffer = TensorBuffer::U8(ArrowBuffer::from(buffer));
-                let tensordata = TensorData::new(shape.clone(), buffer);
-                let image = rerun::Image::new(tensordata);
+                let image = if encoding == "bgr8" {
+                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                    let buffer: &[u8] = buffer.values();
+
+                    // Transpose values from BGR to RGB
+                    let buffer: Vec<u8> =
+                        buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
+                    let buffer = TensorBuffer::U8(ArrowBuffer::from(buffer));
+                    let tensordata = TensorData::new(shape.clone(), buffer);
+
+                    rerun::Image::new(tensordata)
+                } else if encoding == "rgb8" {
+                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                    let buffer: &[u8] = buffer.values();
+                    let buffer = TensorBuffer::U8(ArrowBuffer::from(buffer));
+                    let tensordata = TensorData::new(shape.clone(), buffer);
+
+                    rerun::Image::new(tensordata)
+                } else {
+                    unimplemented!("We haven't worked on additional encodings.")
+                };
 
                 rec.log(id.as_str(), &image)
                     .context("could not log image")?;
@@ -107,21 +115,73 @@ fn main() -> Result<()> {
                     }
                 })?;
             } else if id.as_str().contains("boxes2d") {
-                let buffer: Float32Array = data.to_data().into();
-                let buffer: &[f32] = buffer.values();
+                let bbox_struct: StructArray = data.to_data().into();
+                let format =
+                    if let Some(Parameter::String(format)) = metadata.parameters.get("format") {
+                        format
+                    } else {
+                        "xyxy"
+                    };
+
+                // Cast Bbox
+                let bbox_buffer = bbox_struct
+                    .column_by_name("bbox")
+                    .context("Did not find labels field within bbox struct")?;
+                let bbox = bbox_buffer
+                    .as_list_opt::<i32>()
+                    .context("Could not deserialize bbox as list")?
+                    .values();
+                let bbox = bbox
+                    .as_primitive_opt::<Float32Type>()
+                    .context("Could not get bbox value as list")?
+                    .values();
+
+                // Cast Labels
+                let labels_buffer = bbox_struct
+                    .column_by_name("labels")
+                    .context("Did not find labels field within bbox struct")?;
+                let labels = labels_buffer
+                    .as_list_opt::<i32>()
+                    .context("Could not deserialize labels as list")?
+                    .values();
+                let labels = labels
+                    .as_string_opt::<i32>()
+                    .context("Could not deserialize labels as string")?;
+                let labels: Vec<Text> = labels.iter().map(|x| Text::from(x.unwrap())).collect();
+
+                // Cast confidence
+                let conf_buffer = bbox_struct
+                    .column_by_name("conf")
+                    .context("Did not find conf field within bbox struct")?;
+                let conf = conf_buffer
+                    .as_list_opt::<i32>()
+                    .context("Could not deserialize conf as list")?
+                    .values();
+                let _conf = conf
+                    .as_primitive_opt::<Float32Type>()
+                    .context("Could not deserialize conf as string")?;
+
                 let mut centers = vec![];
                 let mut sizes = vec![];
-                let mut classes = vec![];
-                buffer.chunks(6).for_each(|block| {
-                    if let [x, y, w, h, _conf, cls] = block {
-                        centers.push((*x, *y));
-                        sizes.push((*w, *h));
-                        classes.push(*cls as u16);
-                    }
-                });
+
+                if format == "xywh" {
+                    bbox.chunks(4).for_each(|block| {
+                        if let [x, y, w, h] = block {
+                            centers.push((*x, *y));
+                            sizes.push((*w, *h));
+                        }
+                    });
+                } else if format == "xyxy" {
+                    bbox.chunks(4).for_each(|block| {
+                        if let [min_x, min_y, max_x, max_y] = block {
+                            centers.push(((max_x + min_x) / 2., (max_y + min_y) / 2.));
+                            sizes.push(((max_x - min_x), (max_y - min_y)));
+                        }
+                    });
+                }
                 rec.log(
                     id.as_str(),
-                    &rerun::Boxes2D::from_centers_and_sizes(centers, sizes).with_class_ids(classes),
+                    &rerun::Boxes2D::from_centers_and_sizes(centers, sizes).with_labels(labels),
                 )
                 .wrap_err("Could not log Boxes2D")?;
             }

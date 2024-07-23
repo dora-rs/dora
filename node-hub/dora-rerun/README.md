@@ -25,15 +25,15 @@ cargo install --git https://github.com/dora-rs/dora dora-rerun
       text: webcam/text
       boxes2d: object_detection/bbox
     envs:
-      IMAGE_WIDTH: 960
-      IMAGE_HEIGHT: 540
-      IMAGE_DEPTH: 3
       RERUN_MEMORY_LIMIT: 25%
 ```
 
+## Input definition
+
+- image: UInt8Array + metadata { "width": int, "height": int, "encoding": str }
+- boxes2D: StructArray + metadata { "format": str }
+- text: StringArray
+
 ## Configurations
 
-- IMAGE_WIDTH: Image width in pixels
-- IMAGE_HEIGHT: Image height in heights
-- IMAGE_DEPTH: Image depth
 - RERUN_MEMORY_LIMIT: Rerun memory limit

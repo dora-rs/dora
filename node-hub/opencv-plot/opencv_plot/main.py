@@ -16,7 +16,7 @@ class Plot:
     bboxes: dict = {
         "bbox": np.array([]),
         "conf": np.array([]),
-        "names": np.array([]),
+        "labels": np.array([]),
     }
 
     text: str = ""
@@ -26,7 +26,7 @@ class Plot:
 
 
 def plot_frame(plot):
-    for bbox in zip(plot.bboxes["bbox"], plot.bboxes["conf"], plot.bboxes["names"]):
+    for bbox in zip(plot.bboxes["bbox"], plot.bboxes["conf"], plot.bboxes["labels"]):
         [
             [min_x, min_y, max_x, max_y],
             confidence,
@@ -139,15 +139,24 @@ def main():
                 if encoding == "bgr8":
                     channels = 3
                     storage_type = np.uint8
+                    plot.frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                        .copy()  # Copy So that we can add annotation on the image
+                    )
+                elif encoding == "rgb8":
+                    channels = 3
+                    storage_type = np.uint8
+                    frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                    )
+
+                    plot.frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
-
-                plot.frame = (
-                    storage.to_numpy()
-                    .astype(storage_type)
-                    .reshape((height, width, channels))
-                    .copy()  # Copy So that we can add annotation on the image
-                )
 
                 plot_frame(plot)
                 if not RUNNER_CI:
@@ -155,10 +164,32 @@ def main():
                         break
             elif event_id == "bbox":
                 arrow_bbox = event["value"][0]
+                bbox_format = event["metadata"]["format"]
+
+                if bbox_format == "xyxy":
+                    bbox = arrow_bbox["bbox"].values.to_numpy().reshape(-1, 4)
+                elif bbox_format == "xywh":
+                    original_bbox = arrow_bbox["bbox"].values.to_numpy().reshape(-1, 4)
+                    bbox = np.array(
+                        [
+                            (
+                                x - w / 2,
+                                y - h / 2,
+                                x + w / 2,
+                                y + h / 2,
+                            )
+                            for [x, y, w, h] in original_bbox
+                        ]
+                    )
+                else:
+                    raise RuntimeError(f"Unsupported bbox format: {bbox_format}")
+
                 plot.bboxes = {
-                    "bbox": arrow_bbox["bbox"].values.to_numpy().reshape(-1, 4),
+                    "bbox": bbox,
                     "conf": arrow_bbox["conf"].values.to_numpy(),
-                    "names": arrow_bbox["names"].values.to_numpy(zero_copy_only=False),
+                    "labels": arrow_bbox["labels"].values.to_numpy(
+                        zero_copy_only=False
+                    ),
                 }
             elif event_id == "text":
                 plot.text = event["value"][0].as_py()
