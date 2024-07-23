@@ -29,22 +29,36 @@ This node is used to capture video from a camera using OpenCV.
 - `image`: an arrow array containing the captured image
 
 ```Python
-
-image: {
-    "width": np.uint32,
-    "height": np.uint32,
-    "encoding": str,
-    "data": np.array  # flattened image data
+## Image data
+image_data: UInt8Array # Example: pa.array(img.ravel())
+metadata = {
+  "width": 640,
+  "height": 480,
+  "encoding": str, # bgr8, rgb8
 }
 
-encoded_image = pa.array([image])
+## Example
+node.send_output(
+  image_data, {"width": 640, "height": 480, "encoding": "bgr8"}
+  )
 
-decoded_image = {
-    "width": np.uint32(encoded_image[0]["width"]),
-    "height": np.uint32(encoded_image[0]["height"]),
-    "encoding": encoded_image[0]["encoding"].as_py(),
-    "data": encoded_image[0]["data"].values.to_numpy().astype(np.uint8)
-}
+## Decoding
+storage = event["value"]
+
+metadata = event["metadata"]
+encoding = metadata["encoding"]
+width = metadata["width"]
+height = metadata["height"]
+
+if encoding == "bgr8":
+    channels = 3
+    storage_type = np.uint8
+
+frame = (
+    storage.to_numpy()
+    .astype(storage_type)
+    .reshape((height, width, channels))
+)
 ```
 
 ## License
