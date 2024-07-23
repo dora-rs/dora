@@ -1,0 +1,9 @@
+  - id: rust-node-#
+    custom:
+      source: ../../target/release/benchmark-example-node
+      envs:
+        NODE_ID: #
+      outputs:
+        - latency#
+        - throughput#
+      __INPUTS__

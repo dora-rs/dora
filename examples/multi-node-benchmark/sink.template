@@ -1,0 +1,6 @@
+  - id: rust-sink
+    custom:
+      source: ../../target/release/benchmark-example-sink
+      inputs:
+        latency: rust-node-#/latency#
+        throughput: rust-node-#/throughput#

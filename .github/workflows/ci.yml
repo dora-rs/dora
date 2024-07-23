@@ -251,6 +251,10 @@ jobs:
       - name: "Benchmark example"
         timeout-minutes: 30
         run: cargo run --example benchmark --release
+      
+      - name: "Multiple Nodes Benchmark example"
+        timeout-minutes: 30
+        run: cargo run --release --example multi-node-benchmark -- 3
 
   CLI:
     name: "CLI Test"
