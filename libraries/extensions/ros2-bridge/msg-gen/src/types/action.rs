@@ -223,7 +223,7 @@ impl Action {
 
         let matches = format_ident!("matches__{package_name}__{}", self.name);
         let cxx_matches = format_ident!("matches");
-        let downcast = format_ident!("actiondowncast__{package_name}__{}", self.name);
+        let downcast = format_ident!("action_downcast__{package_name}__{}", self.name);
         let cxx_downcast = format_ident!("downcast");
 
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
