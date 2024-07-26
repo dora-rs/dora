@@ -98,6 +98,25 @@ impl Package {
         }
     }
 
+    fn action_aliases(&self, package_name: &Ident) -> impl ToTokens {
+        if self.actions.is_empty() {
+            quote! {
+                //empty msg
+            }
+        } else {
+            let items = self
+                .actions
+                .iter()
+                .map(|v| v.alias_token_stream(package_name));
+
+            quote! {
+                pub mod action {
+                    #(#items)*
+                }  // action
+            }
+        }
+    }
+
     fn actions_block(&self) -> impl ToTokens {
         if self.actions.is_empty() {
             quote! {
@@ -117,11 +136,13 @@ impl Package {
         let package_name = Ident::new(&self.name, Span::call_site());
         let aliases = self.message_aliases(&package_name);
         let service_aliases = self.service_aliases(&package_name);
+        let action_aliases = self.action_aliases(&package_name);
 
         quote! {
             pub mod #package_name {
                 #aliases
                 #service_aliases
+                #action_aliases
             }
         }
     }
