@@ -1,25 +1,33 @@
 nodes:
-  - id: webcam
-    custom:
-      source: ./webcam.py
-      inputs:
-        tick:
-          source: dora/timer/millis/50
-          queue_size: 1000
-      outputs:
-        - image
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
 
-  - id: object_detection
-    custom:
-      source: ./object_detection.py
-      inputs:
-        image: webcam/image
-      outputs:
-        - bbox
+  - id: object-detection
+    build: pip install ../../node-hub/ultralytics-yolo
+    path: ultralytics-yolo
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+    outputs:
+      - bbox
+    env:
+      MODEL: yolov8n.pt
 
   - id: plot
-    custom:
-      source: ./plot.py
-      inputs:
-        image: webcam/image
-        bbox: object_detection/bbox
+    build: pip install ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+      bbox: object-detection/bbox

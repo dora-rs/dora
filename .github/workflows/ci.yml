@@ -264,6 +264,22 @@ jobs:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6 GB
+          tool-cache: false
+
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -318,14 +334,15 @@ jobs:
           cd test_python_project
           dora up
           dora list
+          dora build dataflow.yml
           dora start dataflow.yml --name ci-python-test --detach
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
-          pip install "numpy<2.0.0" opencv-python
+          dora build ../examples/python-dataflow/dataflow_dynamic.yml
           dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
-          python ../examples/python-dataflow/plot_dynamic.py
+          opencv-plot --name plot
           sleep 5
-          dora stop --name ci-python-test  --grace-duration 5s
+          dora stop --name ci-python-dynamic  --grace-duration 5s
           dora destroy
 
       - name: "Test CLI (C)"
@@ -346,7 +363,7 @@ jobs:
           sleep 10
           dora stop --name ci-c-test  --grace-duration 5s
           dora destroy
-      
+
       - name: "Test CLI (C++)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly

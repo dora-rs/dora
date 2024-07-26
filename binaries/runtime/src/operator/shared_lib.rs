@@ -8,7 +8,7 @@ use dora_core::{
 use dora_download::download_file;
 use dora_node_api::{
     arrow_utils::{copy_array_into_sample, required_data_size},
-    Event, MetadataParameters,
+    Event, Parameter,
 };
 use dora_operator_api_types::{
     safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent,
@@ -17,6 +17,7 @@ use dora_operator_api_types::{
 use eyre::{bail, eyre, Context, Result};
 use libloading::Symbol;
 use std::{
+    collections::BTreeMap,
     ffi::c_void,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -119,10 +120,11 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     open_telemetry_context,
                 },
             } = output;
-            let parameters = MetadataParameters {
-                open_telemetry_context: open_telemetry_context.into(),
-                ..Default::default()
-            };
+            let mut parameters = BTreeMap::new();
+            parameters.insert(
+                "open_telemetry_context".to_string(),
+                Parameter::String(open_telemetry_context.to_string()),
+            );
 
             let arrow_array = match unsafe { arrow::ffi::from_ffi(data_array, &schema) } {
                 Ok(a) => a,
@@ -173,11 +175,15 @@ impl<'lib> SharedLibraryOperator<'lib> {
                 use tracing_opentelemetry::OpenTelemetrySpanExt;
                 span.record("input_id", input_id.as_str());
 
-                let cx = deserialize_context(&metadata.parameters.open_telemetry_context);
+                let otel = metadata.open_telemetry_context();
+                let cx = deserialize_context(&otel);
                 span.set_parent(cx);
                 let cx = span.context();
                 let string_cx = serialize_context(&cx);
-                metadata.parameters.open_telemetry_context = string_cx;
+                metadata.parameters.insert(
+                    "open_telemetry_context".to_string(),
+                    Parameter::String(string_cx),
+                );
             }
 
             let mut operator_event = match event {
@@ -193,16 +199,13 @@ impl<'lib> SharedLibraryOperator<'lib> {
                     data,
                 } => {
                     let (data_array, schema) = arrow::ffi::to_ffi(&data.to_data())?;
-
+                    let otel = metadata.open_telemetry_context();
                     let operator_input = dora_operator_api_types::Input {
                         id: String::from(input_id).into(),
                         data_array: Some(data_array),
                         schema,
                         metadata: Metadata {
-                            open_telemetry_context: metadata
-                                .parameters
-                                .open_telemetry_context
-                                .into(),
+                            open_telemetry_context: otel.into(),
                         },
                     };
                     dora_operator_api_types::RawEvent {
