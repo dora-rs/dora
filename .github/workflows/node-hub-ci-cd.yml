@@ -40,7 +40,7 @@ jobs:
             if [ -d "$dir" ]; then
               if [ -f "$dir/pyproject.toml" ]; then
                 echo "Running linting and tests for Python project in $dir..."
-                (cd "$dir" && poetry install)
+                (cd "$dir" && pip install .)
                 (cd "$dir" && poetry run black --check .)
                 (cd "$dir" && poetry run pylint --disable=C,R  --ignored-modules=cv2 **/*.py)
                 (cd "$dir" && poetry run pytest)
