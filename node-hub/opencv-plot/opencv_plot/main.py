@@ -1,7 +1,7 @@
-import os
 import argparse
-import cv2
+import os
 
+import cv2
 import numpy as np
 import pyarrow as pa
 
