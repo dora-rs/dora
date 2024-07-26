@@ -29,6 +29,12 @@ where
     let mut service_impls = Vec::new();
     let mut service_creation_defs = Vec::new();
     let mut service_creation_impls = Vec::new();
+
+    let mut action_defs = Vec::new();
+    let mut action_impls = Vec::new();
+    let mut action_creation_defs = Vec::new();
+    let mut action_creation_impls = Vec::new();
+
     let mut aliases = Vec::new();
     for package in &packages {
         for message in &package.messages {
@@ -54,6 +60,20 @@ where
             }
         }
 
+        for action in &package.actions {
+            let (def, imp) = action.struct_token_stream(&package.name, create_cxx_bridge);
+            action_defs.push(def);
+            action_impls.push(imp);
+            if create_cxx_bridge {
+                let (action_creation_def, action_creation_impl) =
+                    action.cxx_action_creation_functions(&package.name);
+                let action_creation_def = quote! { #action_creation_def };
+                let action_creation_impl = quote! { #action_creation_impl };
+                action_creation_defs.push(action_creation_def);
+                action_creation_impls.push(action_creation_impl);
+            }
+        }
+
         aliases.push(package.aliases_token_stream());
     }
 
@@ -73,9 +93,11 @@ where
                     fn init_ros2_context() -> Result<Box<Ros2Context>>;
                     fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
                     fn qos_default() -> Ros2QosPolicies;
+                    fn actionqos_default() -> Ros2ActionClientQosPolicies;
 
                     #(#message_topic_defs)*
                     #(#service_creation_defs)*
+                    #(#action_creation_defs)*
                 }
 
                 #[derive(Debug, Clone)]
@@ -87,6 +109,15 @@ where
                     pub max_blocking_time: f64,
                     pub keep_all: bool,
                     pub keep_last: i32,
+                }
+
+                #[derive(Debug, Clone)]
+                pub struct Ros2ActionClientQosPolicies {
+                    pub goal_service: Ros2QosPolicies,
+                    pub result_service: Ros2QosPolicies,
+                    pub cancel_service: Ros2QosPolicies,
+                    pub feedback_subscription: Ros2QosPolicies,
+                    pub status_subscription: Ros2QosPolicies,
                 }
 
                 /// DDS 2.2.3.4 DURABILITY
@@ -148,6 +179,16 @@ where
 
                 fn qos_default() -> ffi::Ros2QosPolicies {
                     ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)
+                }
+
+                fn actionqos_default() -> ffi::Ros2ActionClientQosPolicies {
+                    ffi::Ros2ActionClientQosPolicies::new(
+                        Some(qos_default()),
+                        Some(qos_default()),
+                        Some(qos_default()),
+                        Some(qos_default()),
+                        Some(qos_default())
+                    )
                 }
 
                 impl ffi::Ros2QosPolicies {
@@ -229,6 +270,36 @@ where
                         }
                     }
                 }
+
+                impl ffi::Ros2ActionClientQosPolicies {
+                    pub fn new(
+                        goal_service: Option<ffi::Ros2QosPolicies>,
+                        result_service: Option<ffi::Ros2QosPolicies>,
+                        cancel_service: Option<ffi::Ros2QosPolicies>,
+                        feedback_subscription: Option<ffi::Ros2QosPolicies>,
+                        status_subscription: Option<ffi::Ros2QosPolicies>,
+                   ) -> Self {
+                        Self {
+                            goal_service: goal_service.unwrap_or_else(|| ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)),
+                            result_service: result_service.unwrap_or_else(|| ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)),
+                            cancel_service: cancel_service.unwrap_or_else(|| ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)),
+                            feedback_subscription: feedback_subscription.unwrap_or_else(|| ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)),
+                            status_subscription: status_subscription.unwrap_or_else(|| ffi::Ros2QosPolicies::new(None, None, None, None, None, None, None)),
+                        }
+                    }
+                }
+
+                impl From<ffi::Ros2ActionClientQosPolicies> for ros2_client::action::ActionClientQosPolicies {
+                    fn from(value: ffi::Ros2ActionClientQosPolicies) -> Self {
+                        ros2_client::action::ActionClientQosPolicies {
+                            goal_service: value.goal_service.into(),
+                            result_service: value.result_service.into(),
+                            cancel_service: value.cancel_service.into(),
+                            feedback_subscription: value.feedback_subscription.into(),
+                            status_subscription: value.status_subscription.into(),
+                        }
+                    }
+                }
             },
         )
     } else {
@@ -253,6 +324,7 @@ where
 
             #(#shared_type_defs)*
             #(#service_defs)*
+            #(#action_defs)*
         }
 
 
@@ -273,9 +345,11 @@ where
         #cxx_bridge_impls
         #(#message_topic_impls)*
         #(#service_creation_impls)*
+        #(#action_creation_impls)*
 
 
         #(#service_impls)*
+        #(#action_impls)*
 
         #(#aliases)*
     }
