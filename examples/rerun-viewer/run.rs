@@ -1,5 +1,4 @@
 use dora_core::{get_pip_path, get_python_path, run};
-use dora_download::download_file;
 use dora_tracing::set_up_tracing;
 use eyre::{bail, ContextCompat, WrapErr};
 use std::path::Path;
@@ -52,19 +51,12 @@ async fn main() -> eyre::Result<()> {
     }
 
     run(
-        get_python_path().context("Could not get pip binary")?,
-        &["-m", "pip", "install", "--upgrade", "pip"],
-        None,
-    )
-    .await
-    .context("failed to install pip")?;
-    run(
         get_pip_path().context("Could not get pip binary")?,
-        &["install", "-r", "requirements.txt"],
-        None,
+        &["install", "maturin"],
+        Some(venv),
     )
     .await
-    .context("pip install failed")?;
+    .context("pip install maturin failed")?;
 
     run(
         "maturin",
@@ -73,12 +65,6 @@ async fn main() -> eyre::Result<()> {
     )
     .await
     .context("maturin develop failed")?;
-    download_file(
-        "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
-        Path::new("yolov8n.pt"),
-    )
-    .await
-    .context("Could not download weights.")?;
 
     let dataflow = Path::new("dataflow.yml");
     run_dataflow(dataflow).await?;
@@ -88,6 +74,16 @@ async fn main() -> eyre::Result<()> {
 
 async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
+
+    // First build the dataflow (install requirements)
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--").arg("build").arg(dataflow);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
+    };
+
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");

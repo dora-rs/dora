@@ -51,19 +51,12 @@ async fn main() -> eyre::Result<()> {
     }
 
     run(
-        get_python_path().context("Could not get pip binary")?,
-        &["-m", "pip", "install", "--upgrade", "pip"],
-        None,
-    )
-    .await
-    .context("failed to install pip")?;
-    run(
         get_pip_path().context("Could not get pip binary")?,
-        &["install", "-r", "requirements.txt"],
-        None,
+        &["install", "maturin"],
+        Some(venv),
     )
     .await
-    .context("pip install failed")?;
+    .context("pip install maturin failed")?;
 
     run(
         "maturin",
@@ -81,6 +74,16 @@ async fn main() -> eyre::Result<()> {
 
 async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
+
+    // First build the dataflow (install requirements)
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--").arg("build").arg(dataflow);
+    if !cmd.status().await?.success() {
+        bail!("failed to run dataflow");
+    };
+
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");

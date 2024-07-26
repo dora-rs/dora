@@ -3,11 +3,15 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+use std::collections::BTreeMap;
+
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
 use eyre::Context;
 use serde::{Deserialize, Serialize};
 pub use uhlc;
+
+pub type MetadataParameters = BTreeMap<String, Parameter>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Metadata {
@@ -105,20 +109,11 @@ pub struct BufferOffset {
     pub len: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub struct MetadataParameters {
-    pub watermark: u64,
-    pub deadline: u64,
-    pub open_telemetry_context: String,
-}
-
-impl MetadataParameters {
-    pub fn into_owned(self) -> MetadataParameters {
-        MetadataParameters {
-            open_telemetry_context: self.open_telemetry_context,
-            ..self
-        }
-    }
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub enum Parameter {
+    Bool(bool),
+    Integer(i64),
+    String(String),
 }
 
 impl Metadata {
@@ -141,5 +136,13 @@ impl Metadata {
 
     pub fn timestamp(&self) -> uhlc::Timestamp {
         self.timestamp
+    }
+
+    pub fn open_telemetry_context(&self) -> String {
+        if let Some(Parameter::String(otel)) = self.parameters.get("open_telemetry_context") {
+            otel.to_string()
+        } else {
+            "".to_string()
+        }
     }
 }

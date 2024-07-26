@@ -1,48 +1,38 @@
 nodes:
-  - id: webcam
-    custom:
-      source: ./webcam.py
-      inputs:
-        tick:
-          source: dora/timer/millis/10
-          queue_size: 1000
-      outputs:
-        - image
-        - text
-      envs:
-        IMAGE_WIDTH: 960
-        IMAGE_HEIGHT: 540
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+      ENCODING: rgb8
 
-
-  - id: object_detection
-    custom:
-      source: ./object_detection.py
-      inputs:
-        image: webcam/image
-      outputs:
-        - bbox
-      envs:
-        IMAGE_WIDTH: 960
-        IMAGE_HEIGHT: 540
+  - id: object-detection
+    build: pip install -e ../../node-hub/ultralytics-yolo
+    path: ultralytics-yolo
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+    outputs:
+      - bbox
+    env:
+      MODEL: yolov8n.pt
+      FORMAT: xywh
 
   - id: rerun
-    custom:
-      source: dora-rerun
-      inputs:
-        image: webcam/image
-        text: webcam/text
-        boxes2d: object_detection/bbox
-      envs:
-        IMAGE_WIDTH: 960
-        IMAGE_HEIGHT: 540
-        IMAGE_DEPTH: 3
-
-  - id: matplotlib
-    custom:
-      source: ./plot.py
-      inputs:
-        image: webcam/image
-        bbox: object_detection/bbox
-      envs:
-        IMAGE_WIDTH: 960
-        IMAGE_HEIGHT: 540
+    build: cargo build -p dora-rerun --release
+    path: dora-rerun
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+      boxes2d: object-detection/bbox
+    env:
+      RERUN_FLUSH_TICK_SECS: "0.001"
+      RERUN_MEMORY_LIMIT: 25%

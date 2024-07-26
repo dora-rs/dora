@@ -8,7 +8,7 @@ use dora_core::daemon_messages::{
 };
 use dora_core::descriptor::runtime_node_inputs;
 use dora_core::message::uhlc::{self, HLC};
-use dora_core::message::{ArrowTypeInfo, Metadata, MetadataParameters};
+use dora_core::message::{ArrowTypeInfo, Metadata};
 use dora_core::topics::LOCALHOST;
 use dora_core::topics::{
     DataflowDaemonResult, DataflowResult, NodeError, NodeErrorCause, NodeExitStatus,
@@ -23,6 +23,7 @@ use dora_core::{
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 
+use dora_node_api::Parameter;
 use eyre::{bail, eyre, Context, ContextCompat, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
@@ -1543,17 +1544,19 @@ impl RunningDataflow {
                     let span = tracing::span!(tracing::Level::TRACE, "tick");
                     let _ = span.enter();
 
+                    let mut parameters = BTreeMap::new();
+                    parameters.insert(
+                        "open_telemetry_context".to_string(),
+                        #[cfg(feature = "telemetry")]
+                        Parameter::String(serialize_context(&span.context())),
+                        #[cfg(not(feature = "telemetry"))]
+                        Parameter::String("".into()),
+                    );
+
                     let metadata = dora_core::message::Metadata::from_parameters(
                         hlc.new_timestamp(),
                         ArrowTypeInfo::empty(),
-                        MetadataParameters {
-                            watermark: 0,
-                            deadline: 0,
-                            #[cfg(feature = "telemetry")]
-                            open_telemetry_context: serialize_context(&span.context()),
-                            #[cfg(not(feature = "telemetry"))]
-                            open_telemetry_context: "".into(),
-                        },
+                        parameters,
                     );
 
                     let event = Timestamped {
