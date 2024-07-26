@@ -223,7 +223,7 @@ impl Action {
 
         let matches = format_ident!("matches__{package_name}__{}", self.name);
         let cxx_matches = format_ident!("matches");
-        let downcast = format_ident!("actiondowncast__{package_name}__{}", self.name);
+        let downcast = format_ident!("action_downcast__{package_name}__{}", self.name);
         let cxx_downcast = format_ident!("downcast");
 
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
@@ -249,7 +249,7 @@ impl Action {
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_downcast]
-            fn #downcast(self: &mut #client_name, event: CombinedEvent) -> Result<()>;
+            fn #downcast(self: &mut #client_name, event: CombinedEvent) -> Result<#result_type_raw>;
         };
 
         let imp = quote! {
@@ -374,7 +374,7 @@ impl Action {
                 }
 
                 #[allow(non_snake_case)]
-                fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<()> {
+                fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<ffi::#result_type_raw> {
                     use eyre::WrapErr;
 
                     match (*event.event).0 {
@@ -382,10 +382,9 @@ impl Action {
                             let result = event.event.downcast::<eyre::Result<ffi::#result_type_raw>>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", #result_type_raw_str))?;
 
-                            let _data = result.with_context(|| format!("failed to receive {} response", #self_name_str))
+                            let data = result.with_context(|| format!("failed to receive {} response", #self_name_str))
                                 .map_err(|e| eyre::eyre!("{e:?}"))?;
-                            // Ok(data)
-                            Ok(())
+                            Ok(data)
                         },
                         _ => eyre::bail!("not a {} response event", #self_name_str),
                     }
