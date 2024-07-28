@@ -1,4 +1,4 @@
-name: node-hub-ci
+name: node-hub
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
     types: [published]
 
 jobs:
-  build_and_test:
+  ci:
     runs-on: ubuntu-latest
 
     steps:
@@ -56,8 +56,9 @@ jobs:
           done
 
   publish:
-    needs: [build_and_test]
+    needs: [ci]
     runs-on: ubuntu-latest
+    if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
 
     steps:
       - name: Checkout repository
