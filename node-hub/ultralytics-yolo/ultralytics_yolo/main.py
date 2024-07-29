@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 
 import numpy as np
 import pyarrow as pa
+from ultralytics import YOLO
 
 from dora import Node
-from ultralytics import YOLO
 
 
 def main():
