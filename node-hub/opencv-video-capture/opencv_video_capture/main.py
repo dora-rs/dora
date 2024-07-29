@@ -1,13 +1,12 @@
-import os
 import argparse
-import cv2
+import os
+import time
 
+import cv2
 import numpy as np
 import pyarrow as pa
 
 from dora import Node
-
-import time
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
 
