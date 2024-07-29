@@ -647,10 +647,10 @@ impl Daemon {
                 }
             }
             if local {
-                dataflow.pending_nodes.insert(node.id.clone());
-
                 if node.kind.dynamic() {
                     dataflow.dynamic_nodes.insert(node.id.clone());
+                } else {
+                    dataflow.pending_nodes.insert(node.id.clone());
                 }
 
                 let node_id = node.id.clone();
