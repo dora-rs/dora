@@ -50,5 +50,7 @@ fn main_inner() -> eyre::Result<()> {
         }
     };
 
-    run(args.command)
+    let dora_cli_path =
+        std::env::current_exe().wrap_err("failed to get current executable path")?;
+    run(args.command, dora_cli_path)
 }

@@ -86,6 +86,7 @@ pub struct Daemon {
     dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
 
     clock: Arc<uhlc::HLC>,
+    dora_cli_path: PathBuf,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -96,6 +97,7 @@ impl Daemon {
         machine_id: String,
         inter_daemon_addr: SocketAddr,
         local_listen_port: u16,
+        dora_cli_path: PathBuf,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
@@ -150,12 +152,16 @@ impl Daemon {
             machine_id,
             None,
             clock,
+            dora_cli_path,
         )
         .await
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<DataflowResult> {
+    pub async fn run_dataflow(
+        dataflow_path: &Path,
+        dora_cli_path: PathBuf,
+    ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canoncialize dataflow path")?
@@ -200,6 +206,7 @@ impl Daemon {
             "".to_string(),
             Some(exit_when_done),
             clock.clone(),
+            dora_cli_path,
         );
 
         let spawn_result = reply_rx
@@ -230,6 +237,7 @@ impl Daemon {
         machine_id: String,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
+        dora_cli_path: PathBuf,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -256,6 +264,7 @@ impl Daemon {
             exit_when_done,
             dataflow_node_results: BTreeMap::new(),
             clock,
+            dora_cli_path,
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -667,6 +676,7 @@ impl Daemon {
                     dataflow_descriptor.clone(),
                     self.clock.clone(),
                     node_stderr_most_recent,
+                    &self.dora_cli_path,
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))

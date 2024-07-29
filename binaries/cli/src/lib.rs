@@ -12,7 +12,7 @@ use dora_daemon::Daemon;
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
-use std::{io::Write, net::SocketAddr};
+use std::{io::Write, net::SocketAddr, path::Path};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
@@ -243,7 +243,7 @@ enum Lang {
     Cxx,
 }
 
-pub fn run(command: Command) -> eyre::Result<()> {
+pub fn run(command: Command, dora_cli_path: PathBuf) -> eyre::Result<()> {
     let log_level = env_logger::Builder::new()
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
@@ -283,7 +283,7 @@ pub fn run(command: Command) -> eyre::Result<()> {
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
         Command::Up { config } => {
-            up::up(config.as_deref())?;
+            up::up(config.as_deref(), &dora_cli_path)?;
         }
         Command::Logs {
             dataflow,
@@ -445,14 +445,14 @@ pub fn run(command: Command) -> eyre::Result<()> {
                             );
                         }
 
-                        let result = Daemon::run_dataflow(&dataflow_path).await?;
+                        let result = Daemon::run_dataflow(&dataflow_path, dora_cli_path.to_owned()).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {
                         if coordinator_addr.ip() == LOCALHOST {
                             tracing::info!("Starting in local mode");
                         }
-                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
+                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port, dora_cli_path.to_owned()).await
                     }
                 }
             })

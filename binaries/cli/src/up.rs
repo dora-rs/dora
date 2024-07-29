@@ -5,13 +5,13 @@ use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
+pub(crate) fn up(config_path: Option<&Path>, dora_cli_path: &Path) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
     let mut session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
         Err(_) => {
-            start_coordinator().wrap_err("failed to start dora-coordinator")?;
+            start_coordinator(dora_cli_path).wrap_err("failed to start dora-coordinator")?;
 
             loop {
                 match connect_to_coordinator(coordinator_addr) {
@@ -26,7 +26,7 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     };
 
     if !daemon_running(&mut *session)? {
-        start_daemon().wrap_err("failed to start dora-daemon")?;
+        start_daemon(dora_cli_path).wrap_err("failed to start dora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
@@ -81,9 +81,8 @@ fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrRe
     Ok(config)
 }
 
-fn start_coordinator() -> eyre::Result<()> {
-    let mut cmd =
-        Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
+fn start_coordinator(dora_cli_path: &Path) -> eyre::Result<()> {
+    let mut cmd = Command::new(dora_cli_path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
@@ -93,9 +92,8 @@ fn start_coordinator() -> eyre::Result<()> {
     Ok(())
 }
 
-fn start_daemon() -> eyre::Result<()> {
-    let mut cmd =
-        Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
+fn start_daemon(dora_cli_path: &Path) -> eyre::Result<()> {
+    let mut cmd = Command::new(dora_cli_path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;

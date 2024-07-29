@@ -44,6 +44,7 @@ pub async fn spawn_node(
     dataflow_descriptor: Descriptor,
     clock: Arc<HLC>,
     node_stderr_most_recent: Arc<ArrayQueue<String>>,
+    dora_cli_path: &Path,
 ) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -223,9 +224,7 @@ pub async fn spawn_node(
                     command
                 }
             } else if python_operators.is_empty() && other_operators {
-                let mut cmd = tokio::process::Command::new(
-                    std::env::current_exe().wrap_err("failed to get current executable path")?,
-                );
+                let mut cmd = tokio::process::Command::new(dora_cli_path);
                 cmd.arg("runtime");
                 cmd
             } else {
