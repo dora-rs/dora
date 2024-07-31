@@ -288,7 +288,6 @@ async fn start_inner(
                             if entry.get_mut().machines.is_empty() {
                                 let finished_dataflow = entry.remove();
                                 let reply = ControlRequestReply::DataflowStopped {
-                                    uuid,
                                     result: dataflow_results
                                         .get(&uuid)
                                         .map(|r| dataflow_result(r, uuid, &clock))
@@ -354,7 +353,6 @@ async fn start_inner(
                                     uuid: dataflow_uuid,
                                 },
                                 None => ControlRequestReply::DataflowStopped {
-                                    uuid: dataflow_uuid,
                                     result: dataflow_results
                                         .get(&dataflow_uuid)
                                         .map(|r| dataflow_result(r, dataflow_uuid, &clock))
@@ -615,7 +613,6 @@ async fn stop_dataflow_by_uuid(
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
         if let Some(result) = dataflow_results.get(&dataflow_uuid) {
             let reply = ControlRequestReply::DataflowStopped {
-                uuid: dataflow_uuid,
                 result: dataflow_result(result, dataflow_uuid, clock),
             };
             let _ = reply_sender.send(Ok(reply));

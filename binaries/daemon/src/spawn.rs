@@ -36,6 +36,7 @@ use tokio::{
 use tracing::error;
 
 /// clock is required for generating timestamps when dropping messages early because queue is full
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_node(
     dataflow_id: DataflowId,
     working_dir: &Path,

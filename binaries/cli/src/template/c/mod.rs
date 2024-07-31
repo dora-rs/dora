@@ -5,12 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::Kind;
+
 const NODE: &str = include_str!("node/node-template.c");
 const TALKER: &str = include_str!("talker/talker-template.c");
 const LISTENER: &str = include_str!("listener/listener-template.c");
 
-pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
-    let crate::CommandNew {
+pub fn create(args: super::CreateArgs, use_path_deps: bool) -> eyre::Result<()> {
+    let super::CreateArgs {
         kind,
         lang: _,
         name,
@@ -18,8 +20,8 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::CustomNode => create_custom_node(name, path, NODE),
-        crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
+        Kind::CustomNode => create_custom_node(name, path, NODE),
+        Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
 

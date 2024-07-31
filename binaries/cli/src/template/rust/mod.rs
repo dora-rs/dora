@@ -4,13 +4,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::Kind;
+
 const MAIN_RS: &str = include_str!("node/main-template.rs");
 const TALKER_RS: &str = include_str!("talker/main-template.rs");
 const LISTENER_RS: &str = include_str!("listener/main-template.rs");
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
-    let crate::CommandNew {
+pub fn create(args: super::CreateArgs, use_path_deps: bool) -> eyre::Result<()> {
+    let super::CreateArgs {
         kind,
         lang: _,
         name,
@@ -18,8 +20,8 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::CustomNode => create_custom_node(name, path, use_path_deps, MAIN_RS),
-        crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
+        Kind::CustomNode => create_custom_node(name, path, use_path_deps, MAIN_RS),
+        Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
 
