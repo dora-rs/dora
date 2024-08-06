@@ -1053,7 +1053,7 @@ dependencies = [
  "bincode",
  "bugreport",
  "bytesize",
- "clap 4.5.11",
+ "clap 4.5.13",
  "clircle",
  "console",
  "content_inspector",
@@ -1426,6 +1426,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdr-encoding"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "903031fe1dcde5c45c72aa55d255e75855292808f65f61dfc663256e5d262b59"
+dependencies = [
+ "byteorder",
+ "log",
+ "paste",
+ "serde",
+ "serde_repr",
+ "static_assertions",
+ "thiserror",
+]
+
+[[package]]
 name = "cdr-encoding-size"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1539,19 +1554,19 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.11"
+version = "4.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35723e6a11662c2afb578bcf0b88bf6ea8e21282a953428f240574fcc3a2b5b3"
+checksum = "0fbb260a053428790f3de475e304ff84cdbc4face759ea7a3e64c1edd938a7fc"
 dependencies = [
  "clap_builder",
- "clap_derive 4.5.11",
+ "clap_derive 4.5.13",
 ]
 
 [[package]]
 name = "clap_builder"
-version = "4.5.11"
+version = "4.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49eb96cbfa7cfa35017b7cd548c75b14c3118c98b423041d70562665e07fb0fa"
+checksum = "64b17d7ea74e9f833c7dbf2cbe4fb12ff26783eda4782a8975b72f895c9b4d99"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1575,9 +1590,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.5.11"
+version = "4.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d029b67f89d30bbb547c89fd5161293c0aec155fc691d7924b64550662db93e"
+checksum = "501d359d5f3dcaf6ecdeee48833ae73ec6e42723a1e52419c79abf9507eec0a0"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2262,7 +2277,7 @@ name = "dora-cli"
 version = "0.3.5"
 dependencies = [
  "bat",
- "clap 4.5.11",
+ "clap 4.5.13",
  "colored",
  "communication-layer-request-reply",
  "ctrlc",
@@ -2665,9 +2680,9 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dunce"
-version = "1.0.4"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56ce8c6da7551ec6c462cbaf3bfbc75131ebbfa1c944aeaa9dab51ca1c5f0c3b"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "duration-str"
@@ -4614,7 +4629,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e310b3a6b5907f99202fcdb4960ff45b93735d7c7d96b760fcff8db2dc0e103d"
 dependencies = [
  "cfg-if 1.0.0",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.5",
 ]
 
 [[package]]
@@ -7841,7 +7856,7 @@ version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9d11fe92ba3e159b2c4fe3640973d00cf8143ffb8d010078068a16b58a0c48b"
 dependencies = [
- "clap 4.5.11",
+ "clap 4.5.13",
  "document-features",
  "futures-util",
  "hyper 0.14.29",
@@ -7917,9 +7932,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.10.5"
+version = "1.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b91213439dad192326a0d7c6ee3955910425f441d7038e0d6933b0aec5c4517f"
+checksum = "4219d74c6b67a3654a9fbebc4b419e22126d13d2f3c4a07ee0cb61ff79a79619"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -8148,16 +8163,16 @@ dependencies = [
 
 [[package]]
 name = "ros2-client"
-version = "0.7.2"
+version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "958115e451bf1038e4e8508fdc46c6c1830bce22520dfd734639543ff9419660"
+checksum = "7731fe4aa476d24aa824a0788efc744b7f2118d55fa10994e7a232858d3941bd"
 dependencies = [
  "async-channel 2.3.1",
  "bstr 1.9.1",
  "bytes",
  "cdr-encoding-size",
  "chrono",
- "clap 4.5.11",
+ "clap 4.5.13",
  "futures",
  "itertools 0.11.0",
  "lazy_static",
@@ -8288,13 +8303,14 @@ dependencies = [
 
 [[package]]
 name = "rustdds"
-version = "0.10.1"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da8578c4897ed597565e5934994fa9d875cee3244768a3d4ec67f813b499fc7e"
+checksum = "9d7e52bbc8b96db37e61a54e3f7fe3397ab109de64c772822a308cd7ac456858"
 dependencies = [
  "bit-vec",
  "byteorder",
  "bytes",
+ "cdr-encoding",
  "cdr-encoding-size",
  "chrono",
  "enumflags2",
@@ -8449,9 +8465,9 @@ checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
 
 [[package]]
 name = "safer-ffi"
-version = "0.1.9"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "861a5ab47974b7f0d4fc3ff63570100497dd4d31b93ee53ddfef6c255dd98453"
+checksum = "614978f55c6e885794b44afb2e2378fe61b104ec4391f310d879edf3df9d874c"
 dependencies = [
  "inventory",
  "libc",
@@ -8467,9 +8483,9 @@ dependencies = [
 
 [[package]]
 name = "safer_ffi-proc_macros"
-version = "0.1.9"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90b7ec3757043f78fa48668325d81d9e9718820a655e6ce8bd89871444bb06a3"
+checksum = "7cdcb365894c49e42b5413def59ac644ea085bbbdee535d7c80b2b008a345686"
 dependencies = [
  "macro_rules_attribute",
  "prettyplease 0.1.25",
@@ -8656,9 +8672,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.121"
+version = "1.0.122"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ab380d7d9f22ef3f21ad3e6c1ebe8e4fc7a2000ccba2e4d71fc96f15b2cb609"
+checksum = "784b6203951c57ff748476b126ccb5e8e2959a5c19e5c617ab1956be3dbc68da"
 dependencies = [
  "itoa",
  "memchr",
@@ -9072,9 +9088,9 @@ dependencies = [
 
 [[package]]
 name = "stabby"
-version = "36.1.1-rc8"
+version = "36.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08cc900971922b54e6a2538906ec4bb17ae834d99ff9025741c701edf44006ba"
+checksum = "311d6bcf0070c462ff626122ec2246f42bd2acd44b28908eedbfd07d500c7d99"
 dependencies = [
  "rustversion",
  "stabby-abi",
@@ -9082,9 +9098,9 @@ dependencies = [
 
 [[package]]
 name = "stabby-abi"
-version = "36.1.1-rc8"
+version = "36.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca372c473f8a01399568c4d6d131e6248d71958e38eb2e574b863feedbddac27"
+checksum = "e6daae1a0707399f56d27fce7f212e50e31d215112a447e1bbcd837ae1bf5f49"
 dependencies = [
  "rustversion",
  "sha2-const-stable",
@@ -9093,11 +9109,11 @@ dependencies = [
 
 [[package]]
 name = "stabby-macros"
-version = "36.1.1-rc8"
+version = "36.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80454eabdc8324ded185cd1c91641127f7f7186be3b21ef5a21202affc4544ce"
+checksum = "43cf89a0cc9131279235baf8599b0e073fbcb096419204de0cc5d1a48ae73f74"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 3.1.0",
  "proc-macro2",
  "quote",
  "rand",
@@ -9813,7 +9829,7 @@ version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
- "cfg-if 1.0.0",
+ "cfg-if 0.1.10",
  "static_assertions",
 ]
 
