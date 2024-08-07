@@ -1,6 +1,7 @@
 [package]
 name = "dora-message"
-version.workspace = true
+# versioned separately from the other dora crates
+version = "0.3.5"
 edition = "2021"
 documentation.workspace = true
 description.workspace = true
