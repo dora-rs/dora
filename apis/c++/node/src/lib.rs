@@ -15,11 +15,14 @@ use futures_lite::{stream, Stream, StreamExt};
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
 mod ffi {
+
+    /// ---Insert Documentation Here 1---
     struct DoraNode {
         events: Box<Events>,
         send_output: Box<OutputSender>,
     }
 
+    /// ---Insert Documentation Here 2---
     pub enum DoraEventType {
         Stop,
         Input,
@@ -29,6 +32,7 @@ mod ffi {
         AllInputsClosed,
     }
 
+    /// ---Insert Documentation Here 3---
     struct DoraInput {
         id: String,
         data: Vec<u8>,
