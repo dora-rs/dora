@@ -58,6 +58,7 @@ jobs:
           cargo publish -p dora-metrics --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-download --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # TODO: only publish if new version
           cargo publish -p dora-message --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p communication-layer-pub-sub --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p communication-layer-request-reply --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
