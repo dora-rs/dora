@@ -15,8 +15,11 @@
 //!
 pub use arrow;
 pub use dora_arrow_convert::*;
-pub use dora_core;
-pub use dora_core::message::{uhlc, Metadata, MetadataParameters, Parameter};
+pub use dora_core::{self, uhlc};
+pub use dora_message::{
+    metadata::{Metadata, MetadataParameters, Parameter},
+    DataflowId,
+};
 pub use event_stream::{merged, Event, EventStream, MappedInputData, RawData};
 pub use flume::Receiver;
 pub use node::{arrow_utils, DataSample, DoraNode, ZERO_COPY_THRESHOLD};

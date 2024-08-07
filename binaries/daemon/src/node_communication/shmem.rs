@@ -2,10 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use super::{Connection, Listener};
 use crate::Event;
-use dora_core::{
-    config::DataId,
-    daemon_messages::{DaemonReply, DaemonRequest, Timestamped},
-    message::uhlc::HLC,
+use dora_core::{config::DataId, uhlc::HLC};
+use dora_message::{
+    common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
 use eyre::eyre;
 use shared_memory_server::ShmemServer;

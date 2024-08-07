@@ -3,8 +3,13 @@ use std::sync::Arc;
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::{DataId, NodeId},
-    daemon_messages::{DaemonCommunication, DaemonRequest, DataMessage, DataflowId, Timestamped},
-    message::{uhlc::HLC, Metadata},
+    uhlc::HLC,
+};
+use dora_message::{
+    daemon_to_node::{DaemonCommunication, DaemonReply},
+    metadata::Metadata,
+    node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
+    DataflowId,
 };
 use eyre::{bail, eyre, Context};
 
@@ -60,7 +65,7 @@ impl ControlChannel {
             })
             .wrap_err("failed to report outputs done to dora-daemon")?;
         match reply {
-            dora_core::daemon_messages::DaemonReply::Result(result) => result
+            DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to report outputs done event to dora-daemon")?,
             other => bail!("unexpected outputs done reply: {other:?}"),
@@ -77,7 +82,7 @@ impl ControlChannel {
             })
             .wrap_err("failed to report closed outputs to dora-daemon")?;
         match reply {
-            dora_core::daemon_messages::DaemonReply::Result(result) => result
+            DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to receive closed outputs reply from dora-daemon")?,
             other => bail!("unexpected closed outputs reply: {other:?}"),
@@ -104,7 +109,7 @@ impl ControlChannel {
             })
             .wrap_err("failed to send SendMessage request to dora-daemon")?;
         match reply {
-            dora_core::daemon_messages::DaemonReply::Empty => Ok(()),
+            DaemonReply::Empty => Ok(()),
             other => bail!("unexpected SendMessage reply: {other:?}"),
         }
     }

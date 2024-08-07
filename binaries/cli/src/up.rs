@@ -1,5 +1,6 @@
 use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
-use dora_core::topics::{ControlRequest, DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use dora_message::cli_to_coordinator::ControlRequest;
 use eyre::Context;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]

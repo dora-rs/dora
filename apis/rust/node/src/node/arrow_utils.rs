@@ -1,5 +1,5 @@
 use arrow::array::{ArrayData, BufferSpec};
-use dora_core::message::{ArrowTypeInfo, BufferOffset};
+use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
 
 pub fn required_data_size(array: &ArrayData) -> usize {
     let mut next_offset = 0;

@@ -2,9 +2,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use dora_core::{
     config::NodeId,
-    coordinator_messages::{CoordinatorRequest, DaemonEvent, Level, LogMessage},
-    daemon_messages::{DaemonReply, DataflowId, Timestamped},
-    message::uhlc::{Timestamp, HLC},
+    uhlc::{Timestamp, HLC},
+};
+use dora_message::{
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, LogMessage, Timestamped},
+    daemon_to_node::DaemonReply,
+    DataflowId,
 };
 use eyre::{bail, Context};
 use tokio::{net::TcpStream, sync::oneshot};
@@ -83,7 +86,7 @@ impl PendingNodes {
             log.push(LogMessage {
                 dataflow_id: self.dataflow_id,
                 node_id: Some(node_id.clone()),
-                level: Level::Warn,
+                level: LogLevel::Warn,
                 target: None,
                 module_path: None,
                 file: None,
