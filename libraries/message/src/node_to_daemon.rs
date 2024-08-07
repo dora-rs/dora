@@ -86,6 +86,7 @@ impl NodeRegisterRequest {
 
     pub fn check_version(&self) -> Result<(), String> {
         let crate_version = env!("CARGO_PKG_VERSION");
+        // TODO: semver version comparison
         if self.dora_version == crate_version {
             Ok(())
         } else {
