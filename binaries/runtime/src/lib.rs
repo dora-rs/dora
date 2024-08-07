@@ -2,9 +2,9 @@
 
 use dora_core::{
     config::{DataId, OperatorId},
-    daemon_messages::{NodeConfig, RuntimeConfig},
     descriptor::OperatorConfig,
 };
+use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
 use dora_metrics::init_meter_provider;
 use dora_node_api::{DoraNode, Event};
 use eyre::{bail, Context, Result};

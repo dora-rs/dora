@@ -2,7 +2,7 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     Event,
 };
-use dora_core::topics::{ControlRequest, ControlRequestReply};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{eyre, Context};
 use futures::{
     future::{self, Either},

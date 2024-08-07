@@ -1,4 +1,4 @@
-use dora_core::topics::{DataflowResult, NodeErrorCause};
+use dora_message::{common::NodeErrorCause, coordinator_to_cli::DataflowResult};
 
 pub struct FormatDataflowError<'a>(pub &'a DataflowResult);
 

@@ -1,7 +1,8 @@
-use dora_core::{
-    config::NodeId,
-    daemon_messages::{DaemonReply, DaemonRequest, DataflowId, Timestamped},
-    message::uhlc::Timestamp,
+use dora_core::{config::NodeId, uhlc::Timestamp};
+use dora_message::{
+    daemon_to_node::DaemonReply,
+    node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
+    DataflowId,
 };
 use eyre::{bail, eyre, Context};
 use shared_memory_server::{ShmemClient, ShmemConf};
@@ -58,11 +59,7 @@ impl DaemonChannel {
         timestamp: Timestamp,
     ) -> eyre::Result<()> {
         let msg = Timestamped {
-            inner: DaemonRequest::Register {
-                dataflow_id,
-                node_id,
-                dora_version: env!("CARGO_PKG_VERSION").to_owned(),
-            },
+            inner: DaemonRequest::Register(NodeRegisterRequest::new(dataflow_id, node_id)),
             timestamp,
         };
         let reply = self
@@ -70,7 +67,7 @@ impl DaemonChannel {
             .wrap_err("failed to send register request to dora-daemon")?;
 
         match reply {
-            dora_core::daemon_messages::DaemonReply::Result(result) => result
+            DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to register node with dora-daemon")?,
             other => bail!("unexpected register reply: {other:?}"),

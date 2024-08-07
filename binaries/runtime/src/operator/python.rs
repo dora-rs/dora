@@ -290,7 +290,7 @@ mod callback_impl {
     use super::SendOutputCallback;
     use aligned_vec::{AVec, ConstAlign};
     use arrow::{array::ArrayData, pyarrow::FromPyArrow};
-    use dora_core::message::ArrowTypeInfo;
+    use dora_message::metadata::ArrowTypeInfo;
     use dora_node_api::{
         arrow_utils::{copy_array_into_sample, required_data_size},
         ZERO_COPY_THRESHOLD,

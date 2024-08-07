@@ -1,4 +1,4 @@
-use dora_core::coordinator_messages::LogMessage;
+use dora_message::coordinator_to_cli::LogMessage;
 use eyre::{Context, ContextCompat};
 
 use crate::tcp_utils::tcp_send;

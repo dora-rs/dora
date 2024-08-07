@@ -1,12 +1,14 @@
 use crate::{DaemonNodeEvent, Event};
 use dora_core::{
     config::{DataId, LocalCommunicationConfig, NodeId},
-    daemon_messages::{
-        DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, NodeDropEvent, NodeEvent,
-        Timestamped,
-    },
-    message::uhlc,
     topics::LOCALHOST,
+    uhlc,
+};
+use dora_message::{
+    common::{DropToken, Timestamped},
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
+    node_to_daemon::DaemonRequest,
+    DataflowId,
 };
 use eyre::{eyre, Context};
 use futures::{future, task, Future};
@@ -215,24 +217,14 @@ impl Listener {
         }
 
         match message.inner {
-            DaemonRequest::Register {
-                dataflow_id,
-                node_id,
-                dora_version: node_api_version,
-            } => {
-                let daemon_version = env!("CARGO_PKG_VERSION");
-                let result = if node_api_version == daemon_version {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "version mismatch: node API v{node_api_version} is not compatible \
-                        with daemon v{daemon_version}"
-                    ))
-                };
+            DaemonRequest::Register(register_request) => {
+                let result = register_request.check_version();
                 let send_result = connection
                     .send_reply(DaemonReply::Result(result.clone()))
                     .await
                     .wrap_err("failed to send register reply");
+                let dataflow_id = register_request.dataflow_id;
+                let node_id = register_request.node_id;
                 match (result, send_result) {
                     (Ok(()), Ok(())) => {
                         let mut listener = Listener {
@@ -517,10 +509,7 @@ impl Listener {
         Ok(())
     }
 
-    async fn report_drop_tokens(
-        &mut self,
-        drop_tokens: Vec<dora_core::daemon_messages::DropToken>,
-    ) -> eyre::Result<()> {
+    async fn report_drop_tokens(&mut self, drop_tokens: Vec<DropToken>) -> eyre::Result<()> {
         if !drop_tokens.is_empty() {
             let event = Event::Node {
                 dataflow_id: self.dataflow_id,
