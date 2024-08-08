@@ -227,7 +227,7 @@ jobs:
         run: |
           # Reset only the turtlesim instance as it is not destroyed at the end of the previous job
           source /opt/ros/humble/setup.bash && ros2 service call /reset std_srvs/srv/Empty &
-          cargo run --example cxx-ros2-dataflow --features="ros2-examples"
+          source /opt/ros/humble/setup.bash && cargo run --example cxx-ros2-dataflow --features="ros2-examples"
 
   bench:
     name: "Bench"
