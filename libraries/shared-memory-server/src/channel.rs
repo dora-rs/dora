@@ -209,9 +209,9 @@ fn offsets(
 
 fn offset_ptrs(next_free: *mut u8) -> (*mut AtomicBool, *mut AtomicU64, *mut u8) {
     let disconnect_ptr = next_free.wrapping_add(next_free.align_offset(align_of::<AtomicBool>()));
-    let len_ptr = disconnect_ptr
-        .wrapping_add(mem::size_of::<AtomicBool>())
-        .wrapping_add(next_free.align_offset(align_of::<AtomicU64>()));
+    let len_ptr_unaligned = disconnect_ptr.wrapping_add(mem::size_of::<AtomicBool>());
+    let len_ptr =
+        len_ptr_unaligned.wrapping_add(len_ptr_unaligned.align_offset(align_of::<AtomicU64>()));
     let data_ptr = len_ptr.wrapping_add(mem::size_of::<AtomicU64>());
     (disconnect_ptr.cast(), len_ptr.cast(), data_ptr)
 }
