@@ -1,9 +1,9 @@
 use colored::Colorize;
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use communication_layer_request_reply::TcpConnection;
 use dora_core::{
     coordinator_messages::LogMessage,
     descriptor::{resolve_path, CoreNodeKind, Descriptor},
-    topics::{ControlRequest, ControlRequestReply},
+    topics::{ControlRequest, ControlRequestReply, DataflowResult},
 };
 use eyre::Context;
 use notify::event::ModifyKind;
@@ -16,17 +16,17 @@ use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::handle_dataflow_result;
-
-pub fn attach_dataflow(
+#[allow(clippy::too_many_arguments)]
+pub fn attach_to_dataflow(
+    connection: &mut crate::DoraConnection,
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
-    session: &mut TcpRequestReplyConnection,
     hot_reload: bool,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
-) -> Result<(), eyre::ErrReport> {
+    log_output: &mut impl std::io::Write,
+) -> eyre::Result<DataflowResult> {
     let (tx, rx) = mpsc::sync_channel(2);
 
     // Generate path hashmap
@@ -181,7 +181,7 @@ pub fn attach_dataflow(
                     None => "".normal(),
                 };
 
-                println!("{level}{node}{target}: {message}");
+                writeln!(log_output, "{level}{node}{target}: {message}")?;
                 continue;
             }
             Ok(AttachEvent::Log(Err(err))) => {
@@ -190,16 +190,16 @@ pub fn attach_dataflow(
             }
         };
 
-        let reply_raw = session
+        let reply_raw = connection
+            .session
             .request(&serde_json::to_vec(&control_request)?)
             .wrap_err("failed to send request message to coordinator")?;
         let result: ControlRequestReply =
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
             ControlRequestReply::DataflowStarted { uuid: _ } => (),
-            ControlRequestReply::DataflowStopped { uuid, result } => {
-                info!("dataflow {uuid} stopped");
-                break handle_dataflow_result(result, Some(uuid));
+            ControlRequestReply::DataflowStopped { result } => {
+                break Ok(result);
             }
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")

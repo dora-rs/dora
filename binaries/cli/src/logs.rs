@@ -1,18 +1,20 @@
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{ControlRequest, ControlRequestReply};
 use eyre::{bail, Context, Result};
 use uuid::Uuid;
 
 use bat::{Input, PrettyPrinter};
 
-pub fn logs(
-    session: &mut TcpRequestReplyConnection,
+use crate::DoraConnection;
+
+pub fn dataflow_logs(
+    connection: &mut DoraConnection,
     uuid: Option<Uuid>,
     name: Option<String>,
     node: String,
 ) -> Result<()> {
     let logs = {
-        let reply_raw = session
+        let reply_raw = connection
+            .session
             .request(
                 &serde_json::to_vec(&ControlRequest::Logs {
                     uuid,

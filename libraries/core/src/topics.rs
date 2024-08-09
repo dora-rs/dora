@@ -93,7 +93,7 @@ pub enum ControlRequestReply {
     CoordinatorStopped,
     DataflowStarted { uuid: Uuid },
     DataflowReloaded { uuid: Uuid },
-    DataflowStopped { uuid: Uuid, result: DataflowResult },
+    DataflowStopped { result: DataflowResult },
     DataflowList(DataflowList),
     DestroyOk,
     DaemonConnected(bool),
@@ -118,6 +118,7 @@ impl Display for DataflowId {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[must_use]
 pub struct DataflowResult {
     pub uuid: Uuid,
     pub timestamp: uhlc::Timestamp,
