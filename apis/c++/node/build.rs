@@ -1,6 +1,8 @@
+use cxx_build::CFG;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    CFG.doxygen = true;
     let mut bridge_files = vec![PathBuf::from("src/lib.rs")];
     #[cfg(feature = "ros2-bridge")]
     bridge_files.push(ros2::generate());
