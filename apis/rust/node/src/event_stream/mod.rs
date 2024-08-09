@@ -1,5 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
+use dora_message::{
+    daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
+    node_to_daemon::{DaemonRequest, Timestamped},
+    DataflowId,
+};
 pub use event::{Event, MappedInputData, RawData};
 use futures::{
     future::{select, Either},
@@ -12,13 +17,7 @@ use self::{
     thread::{EventItem, EventStreamThreadHandle},
 };
 use crate::daemon_connection::DaemonChannel;
-use dora_core::{
-    config::NodeId,
-    daemon_messages::{
-        self, DaemonCommunication, DaemonRequest, DataflowId, NodeEvent, Timestamped,
-    },
-    message::uhlc,
-};
+use dora_core::{config::NodeId, uhlc};
 use eyre::{eyre, Context};
 
 mod event;
@@ -97,8 +96,8 @@ impl EventStream {
             .wrap_err("failed to create subscription with dora-daemon")?;
 
         match reply {
-            daemon_messages::DaemonReply::Result(Ok(())) => {}
-            daemon_messages::DaemonReply::Result(Err(err)) => {
+            DaemonReply::Result(Ok(())) => {}
+            DaemonReply::Result(Err(err)) => {
                 eyre::bail!("subscribe failed: {err}")
             }
             other => eyre::bail!("unexpected subscribe reply: {other:?}"),
@@ -151,8 +150,8 @@ impl EventStream {
                 NodeEvent::Input { id, metadata, data } => {
                     let data = match data {
                         None => Ok(None),
-                        Some(daemon_messages::DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-                        Some(daemon_messages::DataMessage::SharedMemory {
+                        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
+                        Some(DataMessage::SharedMemory {
                             shared_memory_id,
                             len,
                             drop_token: _, // handled in `event_stream_loop`
@@ -225,10 +224,8 @@ impl Drop for EventStream {
             .map_err(|e| eyre!(e))
             .wrap_err("failed to signal event stream closure to dora-daemon")
             .and_then(|r| match r {
-                daemon_messages::DaemonReply::Result(Ok(())) => Ok(()),
-                daemon_messages::DaemonReply::Result(Err(err)) => {
-                    Err(eyre!("EventStreamClosed failed: {err}"))
-                }
+                DaemonReply::Result(Ok(())) => Ok(()),
+                DaemonReply::Result(Err(err)) => Err(eyre!("EventStreamClosed failed: {err}")),
                 other => Err(eyre!("unexpected EventStreamClosed reply: {other:?}")),
             });
         if let Err(err) = result {

@@ -1,5 +1,6 @@
-use crate::{tcp_utils::tcp_receive, DaemonEvent, DataflowEvent, Event};
-use dora_core::{coordinator_messages, daemon_messages::Timestamped, message::uhlc::HLC};
+use crate::{tcp_utils::tcp_receive, DaemonRequest, DataflowEvent, Event};
+use dora_core::uhlc::HLC;
+use dora_message::daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped};
 use eyre::Context;
 use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{
@@ -34,7 +35,7 @@ pub async fn handle_connection(
                 continue;
             }
         };
-        let message: Timestamped<coordinator_messages::CoordinatorRequest> =
+        let message: Timestamped<CoordinatorRequest> =
             match serde_json::from_slice(&raw).wrap_err("failed to deserialize node message") {
                 Ok(e) => e,
                 Err(err) => {
@@ -49,22 +50,18 @@ pub async fn handle_connection(
 
         // handle the message and translate it to a DaemonEvent
         match message.inner {
-            coordinator_messages::CoordinatorRequest::Register {
-                machine_id,
-                dora_version,
-                listen_port,
-            } => {
-                let event = DaemonEvent::Register {
-                    dora_version,
-                    machine_id,
+            CoordinatorRequest::Register(register_request) => {
+                let event = DaemonRequest::Register {
                     connection,
-                    listen_port,
+                    version_check_result: register_request.check_version(),
+                    machine_id: register_request.machine_id,
+                    listen_port: register_request.listen_port,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
             }
-            coordinator_messages::CoordinatorRequest::Event { machine_id, event } => match event {
-                coordinator_messages::DaemonEvent::AllNodesReady {
+            CoordinatorRequest::Event { machine_id, event } => match event {
+                DaemonEvent::AllNodesReady {
                     dataflow_id,
                     exited_before_subscribe,
                 } => {
@@ -79,7 +76,7 @@ pub async fn handle_connection(
                         break;
                     }
                 }
-                coordinator_messages::DaemonEvent::AllNodesFinished {
+                DaemonEvent::AllNodesFinished {
                     dataflow_id,
                     result,
                 } => {
@@ -91,13 +88,13 @@ pub async fn handle_connection(
                         break;
                     }
                 }
-                coordinator_messages::DaemonEvent::Heartbeat => {
+                DaemonEvent::Heartbeat => {
                     let event = Event::DaemonHeartbeat { machine_id };
                     if events_tx.send(event).await.is_err() {
                         break;
                     }
                 }
-                coordinator_messages::DaemonEvent::Log(message) => {
+                DaemonEvent::Log(message) => {
                     let event = Event::Log(message);
                     if events_tx.send(event).await.is_err() {
                         break;

@@ -5,11 +5,9 @@ use std::{
     path::Path,
 };
 
-pub use dora_message as message;
+pub use uhlc;
 
 pub mod config;
-pub mod coordinator_messages;
-pub mod daemon_messages;
 pub mod descriptor;
 pub mod topics;
 

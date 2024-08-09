@@ -1,10 +1,11 @@
 use dora_coordinator::{ControlEvent, Event};
 use dora_core::{
     descriptor::Descriptor,
-    topics::{
-        ControlRequest, ControlRequestReply, DataflowId, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-        DORA_COORDINATOR_PORT_DEFAULT,
-    },
+    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
+};
+use dora_message::{
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
 use dora_tracing::set_up_tracing;
 use eyre::{bail, Context};
@@ -166,7 +167,9 @@ async fn connected_machines(
     Ok(machines)
 }
 
-async fn running_dataflows(coordinator_events_tx: &Sender<Event>) -> eyre::Result<Vec<DataflowId>> {
+async fn running_dataflows(
+    coordinator_events_tx: &Sender<Event>,
+) -> eyre::Result<Vec<DataflowIdAndName>> {
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {

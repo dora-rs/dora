@@ -1,10 +1,9 @@
 use colored::Colorize;
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::{
-    coordinator_messages::LogMessage,
-    descriptor::{resolve_path, CoreNodeKind, Descriptor},
-    topics::{ControlRequest, ControlRequestReply},
-};
+use dora_core::descriptor::{resolve_path, CoreNodeKind, Descriptor};
+use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::common::LogMessage;
+use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
