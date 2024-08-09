@@ -1,0 +1,16 @@
+nodes:
+  - id: pyarrow-sender
+    build: pip install -e ../../node-hub/pyarrow-sender
+    path: dynamic
+    outputs:
+      - data
+    env:
+      DATA: "[1, 2, 3, 4, 5]"
+
+  - id: pyarrow-assert
+    build: pip install -e ../../node-hub/pyarrow-assert
+    path: pyarrow-assert
+    inputs:
+      data: pyarrow-sender/data
+    env:
+      DATA: "pa.array([1, 2, 3, 4, 5])"
