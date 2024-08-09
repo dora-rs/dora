@@ -1,0 +1,12 @@
+nodes:
+  - id: pyarrow-sender
+    build: pip install -e ../../node-hub/pyarrow-sender
+    path: dynamic
+    outputs:
+      - data
+
+  - id: terminal-print
+    build: pip install -e ../../node-hub/terminal-print
+    path: dynamic
+    inputs:
+      data: pyarrow-sender/data
