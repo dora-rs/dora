@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "pyarrow-assert"
+version = "0.3.5"
+authors = [
+    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
+    "Enzo Le Van <dev@enzo-le-van.fr>",
+]
+description = "Dora Node for plotting text and bbox on image with OpenCV"
+license = "MIT License"
+homepage = "https://github.com/dora-rs/dora.git"
+documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/pyarrow-assert/README.md"
+readme = "README.md"
+packages = [{ include = "pyarrow_assert" }]
+
+[tool.poetry.dependencies]
+dora-rs = "0.3.5"
+numpy = "< 2.0.0"
+pyarrow = ">= 5.0.0"
+
+[tool.poetry.scripts]
+pyarrow-assert = "pyarrow_assert.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+readme = "README.md"
