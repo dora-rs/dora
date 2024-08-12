@@ -33,7 +33,7 @@
 
 # What is dora-rs?
 
-Dataflow-oriented robotic application (dora-rs) is a framework that makes creation of robotic applications fast and simple.
+Dataflow-Oriented Robotic Architecture (dora-rs) is a framework that makes creation of robotic applications fast and simple.
 
 Building a robotic application can be summed up as bringing together hardwares, algorithms, and AI models, and make them communicate with each others. At dora-rs, we try to:
 
