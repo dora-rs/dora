@@ -2418,6 +2418,7 @@ dependencies = [
  "dora-core",
  "eyre",
  "log",
+ "semver",
  "serde",
  "tokio",
  "uuid",
