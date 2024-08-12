@@ -1,4 +1,7 @@
-use dora_core::daemon_messages::{DaemonReply, DaemonRequest, Timestamped};
+use dora_message::{
+    daemon_to_node::DaemonReply,
+    node_to_daemon::{DaemonRequest, Timestamped},
+};
 use eyre::{eyre, Context};
 use std::{
     io::{Read, Write},

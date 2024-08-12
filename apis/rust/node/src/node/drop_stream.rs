@@ -1,13 +1,11 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::daemon_connection::DaemonChannel;
-use dora_core::{
-    config::NodeId,
-    daemon_messages::{
-        self, DaemonCommunication, DaemonReply, DaemonRequest, DataflowId, DropToken,
-        NodeDropEvent, Timestamped,
-    },
-    message::uhlc,
+use dora_core::{config::NodeId, uhlc};
+use dora_message::{
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent},
+    node_to_daemon::{DaemonRequest, DropToken, Timestamped},
+    DataflowId,
 };
 use eyre::{eyre, Context};
 use flume::RecvTimeoutError;
@@ -64,8 +62,8 @@ impl DropStream {
             .wrap_err("failed to create subscription with dora-daemon")?;
 
         match reply {
-            daemon_messages::DaemonReply::Result(Ok(())) => {}
-            daemon_messages::DaemonReply::Result(Err(err)) => {
+            DaemonReply::Result(Ok(())) => {}
+            DaemonReply::Result(Err(err)) => {
                 eyre::bail!("drop subscribe failed: {err}")
             }
             other => eyre::bail!("unexpected drop subscribe reply: {other:?}"),

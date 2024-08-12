@@ -26,3 +26,4 @@ serde_json = "1.0.86"
 names = "0.14.0"
 ctrlc = "3.2.5"
 log = { version = "0.4.21", features = ["serde"] }
+dora-message = { workspace = true }

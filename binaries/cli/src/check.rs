@@ -1,6 +1,6 @@
 use crate::connect_to_coordinator;
 use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_core::topics::{ControlRequest, ControlRequestReply};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{bail, Context};
 use std::{
     io::{IsTerminal, Write},

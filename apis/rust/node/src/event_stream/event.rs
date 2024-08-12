@@ -2,10 +2,8 @@ use std::{ptr::NonNull, sync::Arc};
 
 use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::{ArrowData, IntoArrow};
-use dora_core::{
-    config::{DataId, OperatorId},
-    message::{ArrowTypeInfo, BufferOffset, Metadata},
-};
+use dora_core::config::{DataId, OperatorId};
+use dora_message::metadata::{ArrowTypeInfo, BufferOffset, Metadata};
 use eyre::{Context, Result};
 use shared_memory_extended::{Shmem, ShmemConf};
 

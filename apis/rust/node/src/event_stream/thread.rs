@@ -1,7 +1,10 @@
 use dora_core::{
     config::NodeId,
-    daemon_messages::{DaemonReply, DaemonRequest, DropToken, NodeEvent, Timestamped},
-    message::uhlc::{self, Timestamp},
+    uhlc::{self, Timestamp},
+};
+use dora_message::{
+    daemon_to_node::{DaemonReply, NodeEvent},
+    node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
 use eyre::{eyre, Context};
 use flume::RecvTimeoutError;
@@ -263,7 +266,7 @@ fn report_drop_tokens(
         timestamp,
     };
     match channel.request(&daemon_request)? {
-        dora_core::daemon_messages::DaemonReply::Empty => Ok(()),
+        DaemonReply::Empty => Ok(()),
         other => Err(eyre!("unexpected ReportDropTokens reply: {other:?}")),
     }
 }
