@@ -2,10 +2,11 @@ use crate::{
     socket_stream_utils::{socket_stream_receive, socket_stream_send},
     DaemonCoordinatorEvent,
 };
-use dora_core::{
-    coordinator_messages::{CoordinatorRequest, RegisterResult},
-    daemon_messages::{DaemonCoordinatorReply, Timestamped},
-    message::uhlc::HLC,
+use dora_core::uhlc::HLC;
+use dora_message::{
+    common::Timestamped,
+    coordinator_to_daemon::RegisterResult,
+    daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
 };
 use eyre::{eyre, Context};
 use std::{io::ErrorKind, net::SocketAddr};
@@ -34,11 +35,7 @@ pub async fn register(
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
     let register = serde_json::to_vec(&Timestamped {
-        inner: CoordinatorRequest::Register {
-            dora_version: env!("CARGO_PKG_VERSION").to_owned(),
-            machine_id,
-            listen_port,
-        },
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, listen_port)),
         timestamp: clock.new_timestamp(),
     })?;
     socket_stream_send(&mut stream, &register)

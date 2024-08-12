@@ -4,11 +4,12 @@ use crate::{
 };
 
 use dora_core::{
-    daemon_messages::{
-        DaemonCoordinatorEvent, DaemonCoordinatorReply, SpawnDataflowNodes, Timestamped,
-    },
     descriptor::{Descriptor, ResolvedNode},
-    message::uhlc::HLC,
+    uhlc::HLC,
+};
+use dora_message::{
+    coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes, Timestamped},
+    daemon_to_coordinator::DaemonCoordinatorReply,
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{

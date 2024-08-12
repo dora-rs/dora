@@ -1,9 +1,9 @@
 use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource},
-    message::{ArrowTypeInfo, MetadataParameters},
 };
-use dora_node_api::{DataSample, Event};
+use dora_message::metadata::ArrowTypeInfo;
+use dora_node_api::{DataSample, Event, MetadataParameters};
 use eyre::{Context, Result};
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};

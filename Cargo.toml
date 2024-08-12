@@ -60,18 +60,22 @@ dora-metrics = { version = "0.3.5", path = "libraries/extensions/telemetry/metri
 dora-download = { version = "0.3.5", path = "libraries/extensions/download" }
 shared-memory-server = { version = "0.3.5", path = "libraries/shared-memory-server" }
 communication-layer-request-reply = { version = "0.3.5", path = "libraries/communication-layer/request-reply" }
-dora-message = { version = "0.3.5", path = "libraries/message" }
 dora-runtime = { version = "0.3.5", path = "binaries/runtime" }
 dora-daemon = { version = "0.3.5", path = "binaries/daemon" }
 dora-coordinator = { version = "0.3.5", path = "binaries/coordinator" }
 dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
+dora-message = { version = "0.3.5", path = "libraries/message" }
 arrow = { version = "52" }
 arrow-schema = { version = "52" }
 arrow-data = { version = "52" }
 arrow-array = { version = "52" }
-pyo3 = { version = "0.21", features = ["eyre", "abi3-py37", "multiple-pymethods"] }
+pyo3 = { version = "0.21", features = [
+    "eyre",
+    "abi3-py37",
+    "multiple-pymethods",
+] }
 pythonize = "0.21"
 
 [package]
@@ -90,6 +94,7 @@ eyre = "0.6.8"
 tokio = "1.24.2"
 dora-coordinator = { workspace = true }
 dora-core = { workspace = true }
+dora-message = { workspace = true }
 dora-tracing = { workspace = true }
 dora-download = { workspace = true }
 dunce = "1.0.2"

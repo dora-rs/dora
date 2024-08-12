@@ -5,14 +5,17 @@ use crate::{
 pub use control::ControlEvent;
 use dora_core::{
     config::{NodeId, OperatorId},
-    coordinator_messages::{LogMessage, RegisterResult},
-    daemon_messages::{DaemonCoordinatorEvent, DaemonCoordinatorReply, Timestamped},
     descriptor::{Descriptor, ResolvedNode},
-    message::uhlc::{self, HLC},
-    topics::{
-        ControlRequest, ControlRequestReply, DataflowDaemonResult, DataflowId, DataflowListEntry,
-        DataflowResult,
+    uhlc::{self, HLC},
+};
+use dora_message::{
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::{
+        ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
+        DataflowStatus, LogMessage,
     },
+    coordinator_to_daemon::{DaemonCoordinatorEvent, RegisterResult, Timestamped},
+    daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use futures::{stream::FuturesUnordered, Future, Stream, StreamExt};
@@ -169,26 +172,17 @@ async fn start_inner(
                 tracing::warn!("{:?}", err.wrap_err("failed to connect to dora-daemon"));
             }
             Event::Daemon(event) => match event {
-                DaemonEvent::Register {
+                DaemonRequest::Register {
                     machine_id,
                     mut connection,
-                    dora_version: daemon_version,
+                    version_check_result,
                     listen_port,
                 } => {
-                    let coordinator_version: &&str = &env!("CARGO_PKG_VERSION");
-                    let version_check = if &daemon_version == coordinator_version {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "version mismatch: daemon v{daemon_version} is \
-                        not compatible with coordinator v{coordinator_version}"
-                        ))
-                    };
                     let peer_ip = connection
                         .peer_addr()
                         .map(|addr| addr.ip())
                         .map_err(|err| format!("failed to get peer addr of connection: {err}"));
-                    let register_result = version_check.and(peer_ip);
+                    let register_result = version_check_result.and(peer_ip);
 
                     let reply: Timestamped<RegisterResult> = Timestamped {
                         inner: match &register_result {
@@ -470,30 +464,28 @@ async fn start_inner(
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
                             let running = dataflows.into_iter().map(|d| DataflowListEntry {
-                                id: DataflowId {
+                                id: DataflowIdAndName {
                                     uuid: d.uuid,
                                     name: d.name.clone(),
                                 },
-                                status: dora_core::topics::DataflowStatus::Running,
+                                status: DataflowStatus::Running,
                             });
                             let finished_failed =
                                 dataflow_results.iter().map(|(&uuid, results)| {
                                     let name =
                                         archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
-                                    let id = DataflowId { uuid, name };
+                                    let id = DataflowIdAndName { uuid, name };
                                     let status = if results.values().all(|r| r.is_ok()) {
-                                        dora_core::topics::DataflowStatus::Finished
+                                        DataflowStatus::Finished
                                     } else {
-                                        dora_core::topics::DataflowStatus::Failed
+                                        DataflowStatus::Failed
                                     };
                                     DataflowListEntry { id, status }
                                 });
 
-                            let reply = Ok(ControlRequestReply::DataflowList(
-                                dora_core::topics::DataflowList(
-                                    running.chain(finished_failed).collect(),
-                                ),
-                            ));
+                            let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
+                                running.chain(finished_failed).collect(),
+                            )));
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DaemonConnected => {
@@ -965,7 +957,7 @@ pub enum Event {
     DaemonHeartbeat { machine_id: String },
     Dataflow { uuid: Uuid, event: DataflowEvent },
     Control(ControlEvent),
-    Daemon(DaemonEvent),
+    Daemon(DaemonRequest),
     DaemonHeartbeatInterval,
     CtrlC,
     Log(LogMessage),
@@ -995,9 +987,9 @@ pub enum DataflowEvent {
 }
 
 #[derive(Debug)]
-pub enum DaemonEvent {
+pub enum DaemonRequest {
     Register {
-        dora_version: String,
+        version_check_result: Result<(), String>,
         machine_id: String,
         connection: TcpStream,
         listen_port: u16,

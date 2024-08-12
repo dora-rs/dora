@@ -6,11 +6,15 @@ use dora_coordinator::Event;
 use dora_core::{
     descriptor::Descriptor,
     topics::{
-        ControlRequest, ControlRequestReply, DataflowList, DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-        DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
+        DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
+use dora_message::{
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult, DataflowStatus},
+};
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 use dora_tracing::set_up_tracing_opts;
@@ -575,10 +579,7 @@ fn stop_dataflow(
     }
 }
 
-fn handle_dataflow_result(
-    result: dora_core::topics::DataflowResult,
-    uuid: Option<Uuid>,
-) -> Result<(), eyre::Error> {
+fn handle_dataflow_result(result: DataflowResult, uuid: Option<Uuid>) -> Result<(), eyre::Error> {
     if result.is_ok() {
         Ok(())
     } else {
@@ -627,9 +628,9 @@ fn list(session: &mut TcpRequestReplyConnection) -> Result<(), eyre::ErrReport> 
         let uuid = entry.id.uuid;
         let name = entry.id.name.unwrap_or_default();
         let status = match entry.status {
-            dora_core::topics::DataflowStatus::Running => "Running",
-            dora_core::topics::DataflowStatus::Finished => "Succeeded",
-            dora_core::topics::DataflowStatus::Failed => "Failed",
+            DataflowStatus::Running => "Running",
+            DataflowStatus::Finished => "Succeeded",
+            DataflowStatus::Failed => "Failed",
         };
         tw.write_all(format!("{uuid}\t{name}\t{status}\n").as_bytes())?;
     }

@@ -9,12 +9,17 @@ use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    daemon_messages::{DaemonRequest, DataMessage, DataflowId, DropToken, NodeConfig, Timestamped},
     descriptor::Descriptor,
-    message::{uhlc, ArrowTypeInfo, Metadata, MetadataParameters},
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
+    uhlc,
 };
 
+use dora_message::{
+    daemon_to_node::{DaemonReply, NodeConfig},
+    metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
+    node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
+    DataflowId,
+};
 use eyre::{bail, WrapErr};
 use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
@@ -94,10 +99,10 @@ impl DoraNode {
             })
             .wrap_err("failed to request node config from daemon")?;
         match reply {
-            dora_core::daemon_messages::DaemonReply::NodeConfig {
+            DaemonReply::NodeConfig {
                 result: Ok(node_config),
             } => Self::init(node_config),
-            dora_core::daemon_messages::DaemonReply::NodeConfig { result: Err(error) } => {
+            DaemonReply::NodeConfig { result: Err(error) } => {
                 bail!("failed to get node config from daemon: {error}")
             }
             _ => bail!("unexpected reply from daemon"),

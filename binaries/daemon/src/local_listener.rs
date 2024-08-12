@@ -1,5 +1,8 @@
 use crate::socket_stream_utils::{socket_stream_receive, socket_stream_send};
-use dora_core::daemon_messages::{DaemonReply, DaemonRequest, DynamicNodeEvent, Timestamped};
+use dora_message::{
+    daemon_to_node::DaemonReply,
+    node_to_daemon::{DaemonRequest, DynamicNodeEvent, Timestamped},
+};
 use eyre::Context;
 use std::{io::ErrorKind, net::SocketAddr};
 use tokio::{

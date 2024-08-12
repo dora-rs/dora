@@ -2284,6 +2284,7 @@ dependencies = [
  "dora-coordinator",
  "dora-core",
  "dora-daemon",
+ "dora-message",
  "dora-node-api-c",
  "dora-operator-api-c",
  "dora-runtime",
@@ -2313,6 +2314,7 @@ version = "0.3.5"
 dependencies = [
  "ctrlc",
  "dora-core",
+ "dora-message",
  "dora-tracing",
  "eyre",
  "futures",
@@ -2330,8 +2332,6 @@ dependencies = [
 name = "dora-core"
 version = "0.3.5"
 dependencies = [
- "aligned-vec",
- "dora-message",
  "eyre",
  "log",
  "once_cell",
@@ -2342,6 +2342,7 @@ dependencies = [
  "serde_yaml 0.9.34+deprecated",
  "tokio",
  "tracing",
+ "uhlc",
  "uuid",
  "which",
 ]
@@ -2359,6 +2360,7 @@ dependencies = [
  "dora-arrow-convert",
  "dora-core",
  "dora-download",
+ "dora-message",
  "dora-node-api",
  "dora-tracing",
  "eyre",
@@ -2394,6 +2396,7 @@ dependencies = [
  "dora-coordinator",
  "dora-core",
  "dora-download",
+ "dora-message",
  "dora-tracing",
  "dunce",
  "eyre",
@@ -2409,11 +2412,15 @@ dependencies = [
 name = "dora-message"
 version = "0.3.5"
 dependencies = [
+ "aligned-vec",
  "arrow-data",
  "arrow-schema",
+ "dora-core",
  "eyre",
+ "log",
  "serde",
- "uhlc",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2436,6 +2443,7 @@ dependencies = [
  "bincode",
  "dora-arrow-convert",
  "dora-core",
+ "dora-message",
  "dora-tracing",
  "eyre",
  "flume 0.10.14",
@@ -2641,6 +2649,7 @@ dependencies = [
  "arrow",
  "dora-core",
  "dora-download",
+ "dora-message",
  "dora-metrics",
  "dora-node-api",
  "dora-operator-api-python",

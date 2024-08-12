@@ -1,5 +1,5 @@
 use crate::socket_stream_utils::{socket_stream_receive, socket_stream_send};
-use dora_core::daemon_messages::{InterDaemonEvent, Timestamped};
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use eyre::{Context, ContextCompat};
 use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr};
 use tokio::net::{TcpListener, TcpStream};
