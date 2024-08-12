@@ -21,3 +21,4 @@ dora-core = { workspace = true }
 uuid = { version = "1.7", features = ["serde", "v7"] }
 log = { version = "0.4.21", features = ["serde"] }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
+semver = { version = "1.0.23", features = ["serde"] }

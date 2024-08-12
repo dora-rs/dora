@@ -5,7 +5,7 @@ use dora_core::{config::NodeId, uhlc};
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
-use crate::DataflowId;
+use crate::{current_crate_version, versions_compatible, DataflowId};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
@@ -18,7 +18,7 @@ pub enum CoordinatorRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DaemonRegisterRequest {
-    dora_version: String,
+    dora_version: semver::Version,
     pub machine_id: String,
     pub listen_port: u16,
 }
@@ -26,16 +26,17 @@ pub struct DaemonRegisterRequest {
 impl DaemonRegisterRequest {
     pub fn new(machine_id: String, listen_port: u16) -> Self {
         Self {
-            dora_version: env!("CARGO_PKG_VERSION").to_owned(),
+            dora_version: current_crate_version(),
             machine_id,
             listen_port,
         }
     }
 
     pub fn check_version(&self) -> Result<(), String> {
-        let crate_version = env!("CARGO_PKG_VERSION");
-        // TODO: semver version comparison
-        if self.dora_version == crate_version {
+        let crate_version = current_crate_version();
+        let specified_version = &self.dora_version;
+
+        if versions_compatible(&crate_version, specified_version)? {
             Ok(())
         } else {
             Err(format!(
