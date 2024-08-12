@@ -58,8 +58,8 @@ jobs:
           cargo publish -p dora-metrics --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-download --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p dora-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          # TODO: only publish if new version
-          cargo publish -p dora-message --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # the dora-message package is versioned separately, so this publish command might fail if the version is already published
+          cargo publish -p dora-message --token ${{ secrets.CARGO_REGISTRY_TOKEN }} || true
           cargo publish -p communication-layer-pub-sub --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p communication-layer-request-reply --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
           cargo publish -p shared-memory-server --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
