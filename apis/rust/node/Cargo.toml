@@ -5,6 +5,7 @@ edition = "2021"
 documentation.workspace = true
 description.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["tracing"]
