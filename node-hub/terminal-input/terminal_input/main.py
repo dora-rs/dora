@@ -19,7 +19,7 @@ def main():
         type=str,
         required=False,
         help="The name of the node in the dataflow.",
-        default="pyarrow-sender",
+        default="terminal-input",
     )
     parser.add_argument(
         "--data",
@@ -51,9 +51,14 @@ def main():
                 data = pa.array([data])
             elif isinstance(data, float):
                 data = pa.array([data])
+            elif isinstance(data, dict):
+                data = pa.array([data])
             else:
                 data = pa.array(data)  # initialize pyarrow array
             node.send_output("data", data)
+            event = node.next(timeout=0.2)
+            if event is not None:
+                print(f"Received: {event['value'].to_pylist()}")
     else:
         data = ast.literal_eval(data)
         if isinstance(data, list):
