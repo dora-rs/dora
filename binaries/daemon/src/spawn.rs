@@ -210,7 +210,7 @@ pub async fn spawn_node(
                     command.args([
                         "run",
                         "-n",
-                        &conda_env,
+                        conda_env,
                         "python",
                         "-c",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
