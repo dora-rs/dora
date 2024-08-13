@@ -190,13 +190,13 @@ pub fn metadata_to_pydict<'a>(
         match v {
             Parameter::Bool(bool) => dict
                 .set_item(k, bool)
-                .context(format!("Could not insert metadata into python dictionary"))?,
+                .context("Could not insert metadata into python dictionary")?,
             Parameter::Integer(int) => dict
                 .set_item(k, int)
-                .context(format!("Could not insert metadata into python dictionary"))?,
+                .context("Could not insert metadata into python dictionary")?,
             Parameter::String(s) => dict
                 .set_item(k, s)
-                .context(format!("Could not insert metadata into python dictionary"))?,
+                .context("Could not insert metadata into python dictionary")?,
         }
     }
 
