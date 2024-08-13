@@ -643,7 +643,7 @@ fn dataflow_result(
     clock: &uhlc::HLC,
 ) -> DataflowResult {
     let mut node_results = BTreeMap::new();
-    for (_machine, result) in results {
+    for result in results.values() {
         node_results.extend(result.node_results.clone());
         if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
             tracing::warn!("failed to update HLC: {err}");
