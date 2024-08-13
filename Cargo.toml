@@ -68,7 +68,7 @@ dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
-dora-message = { version = "0.3.5", path = "libraries/message" }
+dora-message = { version = "0.4.0", path = "libraries/message" }
 arrow = { version = "52" }
 arrow-schema = { version = "52" }
 arrow-data = { version = "52" }
