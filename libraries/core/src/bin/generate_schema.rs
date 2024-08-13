@@ -3,7 +3,7 @@ use std::{env, path::Path};
 use dora_core::descriptor::Descriptor;
 use schemars::schema_for;
 
-fn main() -> () {
+fn main() {
     let schema = schema_for!(Descriptor);
     let raw_schema =
         serde_json::to_string_pretty(&schema).expect("Could not serialize schema to json");
