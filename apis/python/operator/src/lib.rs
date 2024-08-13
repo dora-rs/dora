@@ -74,6 +74,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 pub struct CleanupHandle<T>(Arc<Mutex<T>>);
 
 impl PyEvent {
