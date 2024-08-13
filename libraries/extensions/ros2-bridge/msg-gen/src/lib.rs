@@ -336,6 +336,7 @@ where
         }
 
         impl ffi::U16String {
+            #[allow(dead_code)]
             fn from_str(arg: &str) -> Self {
                 Self { chars: crate::_core::widestring::U16String::from_str(arg).into_vec()}
             }
