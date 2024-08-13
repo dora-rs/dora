@@ -16,6 +16,7 @@ pub mod types;
 
 pub use crate::parser::get_packages;
 
+#[allow(clippy::cognitive_complexity)]
 pub fn gen<P>(paths: &[P], create_cxx_bridge: bool) -> proc_macro2::TokenStream
 where
     P: AsRef<Path>,

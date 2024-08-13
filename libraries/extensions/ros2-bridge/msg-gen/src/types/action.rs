@@ -219,7 +219,7 @@ impl Action {
         let self_name_str = &self.name;
 
         let send_goal = format_ident!("send_goal__{package_name}__{}", self.name);
-        let cxx_send_goal = format!("send_goal");
+        let cxx_send_goal = "send_goal".to_string();
 
         let matches = format_ident!("matches__{package_name}__{}", self.name);
         let cxx_matches = format_ident!("matches");
