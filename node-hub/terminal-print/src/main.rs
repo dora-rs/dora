@@ -29,6 +29,8 @@ fn main() -> eyre::Result<()> {
                     _other => {}
                 }
             }
+            // Waiting for the daemon to update ending of the dataflow.
+            std::thread::sleep(std::time::Duration::from_secs(1));
         } else {
             if !printed {
                 println!("🕐 waiting for node `terminal-print` to be available...");
