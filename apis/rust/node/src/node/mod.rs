@@ -70,7 +70,7 @@ impl DoraNode {
             serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
         };
         #[cfg(feature = "tracing")]
-        set_up_tracing(&node_config.node_id.to_string())
+        set_up_tracing(node_config.node_id.as_ref())
             .context("failed to set up tracing subscriber")?;
         Self::init(node_config)
     }

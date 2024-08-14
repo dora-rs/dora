@@ -16,6 +16,7 @@ pub mod types;
 
 pub use crate::parser::get_packages;
 
+#[allow(clippy::cognitive_complexity)]
 pub fn gen<P>(paths: &[P], create_cxx_bridge: bool) -> proc_macro2::TokenStream
 where
     P: AsRef<Path>,
@@ -335,6 +336,7 @@ where
         }
 
         impl ffi::U16String {
+            #[allow(dead_code)]
             fn from_str(arg: &str) -> Self {
                 Self { chars: crate::_core::widestring::U16String::from_str(arg).into_vec()}
             }

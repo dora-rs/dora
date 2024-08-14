@@ -63,7 +63,7 @@ fn main() -> Result<()> {
                 } else {
                     "bgr8"
                 };
-                let channels = if encoding == "bgr8" { 3 } else { 3 };
+                let channels = 3;
 
                 let shape = vec![
                     TensorDimension {
