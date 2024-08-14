@@ -37,7 +37,7 @@ pub fn main() -> eyre::Result<()> {
     } = config;
     let node_id = config.node_id.clone();
     #[cfg(feature = "tracing")]
-    set_up_tracing(&node_id.to_string()).context("failed to set up tracing subscriber")?;
+    set_up_tracing(node_id.as_ref()).context("failed to set up tracing subscriber")?;
 
     let dataflow_descriptor = config.dataflow_descriptor.clone();
 

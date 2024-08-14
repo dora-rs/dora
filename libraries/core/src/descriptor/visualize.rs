@@ -132,12 +132,9 @@ fn visualize_node_inputs(
 ) {
     let node_id = &node.id;
     match &node.kind {
-        CoreNodeKind::Custom(node) => visualize_inputs(
-            &node_id.to_string(),
-            &node.run_config.inputs,
-            flowchart,
-            nodes,
-        ),
+        CoreNodeKind::Custom(node) => {
+            visualize_inputs(node_id.as_ref(), &node.run_config.inputs, flowchart, nodes)
+        }
         CoreNodeKind::Runtime(RuntimeNode { operators, .. }) => {
             for operator in operators {
                 visualize_inputs(

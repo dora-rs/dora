@@ -270,10 +270,9 @@ async fn start_inner(
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             // Archive finished dataflow
-                            if archived_dataflows.get(&uuid).is_none() {
-                                archived_dataflows
-                                    .insert(uuid, ArchivedDataflow::from(entry.get()));
-                            }
+                            archived_dataflows
+                                .entry(uuid)
+                                .or_insert_with(|| ArchivedDataflow::from(entry.get()));
                             entry.get_mut().machines.remove(&machine_id);
                             dataflow_results
                                 .entry(uuid)
@@ -643,7 +642,7 @@ fn dataflow_result(
     clock: &uhlc::HLC,
 ) -> DataflowResult {
     let mut node_results = BTreeMap::new();
-    for (_machine, result) in results {
+    for result in results.values() {
         node_results.extend(result.node_results.clone());
         if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
             tracing::warn!("failed to update HLC: {err}");
