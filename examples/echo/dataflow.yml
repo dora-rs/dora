@@ -14,3 +14,9 @@ nodes:
       input: terminal-input/data
     outputs:
       - echo
+
+  - id: terminal-print
+    build: cargo build -p terminal-print
+    path: dynamic
+    inputs:
+      echo: dora-echo/echo
