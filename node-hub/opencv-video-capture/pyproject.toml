@@ -11,7 +11,7 @@ readme = "README.md"
 packages = [{ include = "opencv_video_capture" }]
 
 [tool.poetry.dependencies]
-dora-rs = "^0.3.6"
+dora-rs = "^0.3.6rc0"
 numpy = "< 2.0.0"
 opencv-python = ">= 4.1.1"
 

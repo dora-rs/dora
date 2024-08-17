@@ -13,7 +13,7 @@ readme = "README.md"
 packages = [{ include = "dora_microphone" }]
 
 [tool.poetry.dependencies]
-dora-rs = "^0.3.6"
+dora-rs = "^0.3.6rc0"
 numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
 sounddevice = "^0.4.6"
