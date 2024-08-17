@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyarrow-sender"
-version = "0.3.5"
+version = "0.3.6-rc0"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>",
@@ -13,7 +13,7 @@ readme = "README.md"
 packages = [{ include = "pyarrow_sender" }]
 
 [tool.poetry.dependencies]
-dora-rs = "0.3.5"
+dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
 
