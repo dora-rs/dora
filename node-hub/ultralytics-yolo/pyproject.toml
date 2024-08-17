@@ -11,7 +11,7 @@ readme = "README.md"
 packages = [{ include = "ultralytics_yolo" }]
 
 [tool.poetry.dependencies]
-dora-rs = "^0.3.6"
+dora-rs = "^0.3.6rc0"
 numpy = "< 2.0.0"
 ultralytics = "<= 8.2.52"
 
