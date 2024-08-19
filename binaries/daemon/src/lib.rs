@@ -724,16 +724,11 @@ impl Daemon {
                     .count();
 
                 let node_config = match number_node_id {
-                    2.. => {
-                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
-                            result: Err(format!(
-                                "multiple dataflows contains dynamic node id {}. Please only have one running dataflow with the specified node id if you want to use dynamic node",
-                                node_id
-                            )
-                            .to_string()),
-                        }));
-                        return Ok(());
-                    }
+                    2.. => Err(format!(
+                        "multiple dataflows contains dynamic node id {node_id}. \
+                        Please only have one running dataflow with the specified \
+                        node id if you want to use dynamic node",
+                    )),
                     1 => self
                         .running
                         .iter()
@@ -751,18 +746,18 @@ impl Daemon {
                             Ok(node_config)
                         })
                         .next()
-                        .context("no node with ID `{node_id}`")?
-                        .context("failed to get dynamic node config within given dataflow")?,
-                    0 => {
-                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
-                            result: Err("no node with ID `{node_id}`".to_string()),
-                        }));
-                        return Ok(());
-                    }
+                        .ok_or_else(|| eyre!("no node with ID `{node_id}`"))
+                        .and_then(|r| r)
+                        .map_err(|err| {
+                            format!(
+                                "failed to get dynamic node config within given dataflow: {err}"
+                            )
+                        }),
+                    0 => Err("no node with ID `{node_id}`".to_string()),
                 };
 
                 let reply = DaemonReply::NodeConfig {
-                    result: Ok(node_config),
+                    result: node_config,
                 };
                 let _ = reply_tx.send(Some(reply)).map_err(|_| {
                     error!("could not send node info reply from daemon to coordinator")
