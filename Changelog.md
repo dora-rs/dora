@@ -83,7 +83,7 @@
 - Expose ROS2 constants in generated bindings (Rust and C++) by @phil-opp in https://github.com/dora-rs/dora/pull/428
 - Add option to send `stdout` as node/operator output by @haixuanTao in https://github.com/dora-rs/dora/pull/388
 - Fix warning about `#pragma once` in main file by @phil-opp in https://github.com/dora-rs/dora/pull/433
-- Send runs artefacts into a dedicated `out` folder by @haixuanTao in https://github.com/dora-rs/dora/pull/429
+- Send runs artifacts into a dedicated `out` folder by @haixuanTao in https://github.com/dora-rs/dora/pull/429
 - Create README.md for cxx-ros2-example by @bobd988 in https://github.com/dora-rs/dora/pull/431
 - Use Async Parquet Writer for `dora-record` by @haixuanTao in https://github.com/dora-rs/dora/pull/434
 - Update mio to fix security vulnerability by @phil-opp in https://github.com/dora-rs/dora/pull/440
