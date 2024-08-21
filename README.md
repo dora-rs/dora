@@ -86,8 +86,8 @@ nodes:
 
 Nodes can either be:
 
-- custom nodes were dora-rs is embedded as a native libraries.
-- runtime nodes were dora-rs takes care of the main loop and run user-defined operators. This make dora-rs featureful as we can run features like `hot-reloading`.
+- custom nodes where dora-rs is embedded as a native libraries.
+- runtime nodes where dora-rs takes care of the main loop and run user-defined operators. This makes dora-rs featureful as we can run features like `hot-reloading`.
 
 The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
 
@@ -111,7 +111,7 @@ Nodes communicate with Apache Arrow Data Format.
 
 dora-rs uses Opentelemetry to record all your logs, metrics and traces. This means that the data and telemetry can be linked using a shared abstraction.
 
-[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectable by most backend such as elasticseach, prometheus, Datadog..
+[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectable by most backends such as elasticsearch, prometheus, Datadog..
 
 Opentelemetry is language independent, backend agnostic, and easily collect distributed data, making it perfect for dora-rs applications.
 
@@ -199,7 +199,7 @@ import pyarrow as pa
 turtle_twist_writer = ...
 
 ## Arrow Based ROS2 Twist Message
-## which does not requires ROS2 import
+## which does not require ROS2 import
 message = pa.array([{
             "linear": {
                 "x": 1,
