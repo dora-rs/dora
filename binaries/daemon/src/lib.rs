@@ -491,20 +491,27 @@ impl Daemon {
                 let dataflow = self
                     .running
                     .get_mut(&dataflow_id)
-                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+                    .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"));
+                let (reply, future) = match dataflow {
+                    Ok(dataflow) => {
+                        let future = dataflow.stop_all(
+                            &mut self.coordinator_connection,
+                            &self.clock,
+                            grace_duration,
+                        );
+                        (Ok(()), Some(future))
+                    }
+                    Err(err) => (Err(err.to_string()), None),
+                };
 
-                let reply = DaemonCoordinatorReply::StopResult(Ok(()));
                 let _ = reply_tx
-                    .send(Some(reply))
+                    .send(Some(DaemonCoordinatorReply::StopResult(reply)))
                     .map_err(|_| error!("could not send stop reply from daemon to coordinator"));
 
-                dataflow
-                    .stop_all(
-                        &mut self.coordinator_connection,
-                        &self.clock,
-                        grace_duration,
-                    )
-                    .await?;
+                if let Some(future) = future {
+                    future.await?;
+                }
+
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::Destroy => {
@@ -724,16 +731,11 @@ impl Daemon {
                     .count();
 
                 let node_config = match number_node_id {
-                    2.. => {
-                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
-                            result: Err(format!(
-                                "multiple dataflows contains dynamic node id {}. Please only have one running dataflow with the specified node id if you want to use dynamic node",
-                                node_id
-                            )
-                            .to_string()),
-                        }));
-                        return Ok(());
-                    }
+                    2.. => Err(format!(
+                        "multiple dataflows contains dynamic node id {node_id}. \
+                        Please only have one running dataflow with the specified \
+                        node id if you want to use dynamic node",
+                    )),
                     1 => self
                         .running
                         .iter()
@@ -751,18 +753,18 @@ impl Daemon {
                             Ok(node_config)
                         })
                         .next()
-                        .context("no node with ID `{node_id}`")?
-                        .context("failed to get dynamic node config within given dataflow")?,
-                    0 => {
-                        let _ = reply_tx.send(Some(DaemonReply::NodeConfig {
-                            result: Err("no node with ID `{node_id}`".to_string()),
-                        }));
-                        return Ok(());
-                    }
+                        .ok_or_else(|| eyre!("no node with ID `{node_id}`"))
+                        .and_then(|r| r)
+                        .map_err(|err| {
+                            format!(
+                                "failed to get dynamic node config within given dataflow: {err}"
+                            )
+                        }),
+                    0 => Err("no node with ID `{node_id}`".to_string()),
                 };
 
                 let reply = DaemonReply::NodeConfig {
-                    result: Ok(node_config),
+                    result: node_config,
                 };
                 let _ = reply_tx.send(Some(reply)).map_err(|_| {
                     error!("could not send node info reply from daemon to coordinator")
@@ -823,9 +825,15 @@ impl Daemon {
             } => {
                 let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                     format!("failed to subscribe: no running dataflow with ID `{dataflow_id}`")
-                })?;
-                dataflow.drop_channels.insert(node_id, event_sender);
-                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+                });
+                let result = match dataflow {
+                    Ok(dataflow) => {
+                        dataflow.drop_channels.insert(node_id, event_sender);
+                        Ok(())
+                    }
+                    Err(err) => Err(err.to_string()),
+                };
+                let _ = reply_sender.send(DaemonReply::Result(result));
             }
             DaemonNodeEvent::CloseOutputs {
                 outputs,
@@ -868,31 +876,36 @@ impl Daemon {
                 output_id,
                 metadata,
                 data,
-            } => {
-                self.send_out(dataflow_id, node_id, output_id, metadata, data)
-                    .await?
-            }
+            } => self
+                .send_out(dataflow_id, node_id, output_id, metadata, data)
+                .await
+                .context("failed to send out")?,
             DaemonNodeEvent::ReportDrop { tokens } => {
                 let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                     format!(
                         "failed to get handle drop tokens: \
                         no running dataflow with ID `{dataflow_id}`"
                     )
-                })?;
+                });
 
-                for token in tokens {
-                    match dataflow.pending_drop_tokens.get_mut(&token) {
-                        Some(info) => {
-                            if info.pending_nodes.remove(&node_id) {
-                                dataflow.check_drop_token(token, &self.clock).await?;
-                            } else {
-                                tracing::warn!(
-                                    "node `{node_id}` is not pending for drop token `{token:?}`"
-                                );
+                match dataflow {
+                    Ok(dataflow) => {
+                        for token in tokens {
+                            match dataflow.pending_drop_tokens.get_mut(&token) {
+                                Some(info) => {
+                                    if info.pending_nodes.remove(&node_id) {
+                                        dataflow.check_drop_token(token, &self.clock).await?;
+                                    } else {
+                                        tracing::warn!(
+                                            "node `{node_id}` is not pending for drop token `{token:?}`"
+                                        );
+                                    }
+                                }
+                                None => tracing::warn!("unknown drop token `{token:?}`"),
                             }
                         }
-                        None => tracing::warn!("unknown drop token `{token:?}`"),
                     }
+                    Err(err) => tracing::warn!("{err:?}"),
                 }
             }
             DaemonNodeEvent::EventStreamDropped { reply_sender } => {
