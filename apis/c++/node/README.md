@@ -186,7 +186,7 @@ Multiple subscriptions can be merged into the same event stream.
 Combined event streams enable the merging of multiple event streams into one.
 The combined stream will then deliver messages from all sources, in order of arrival.
 
-You can create such a event stream from Dora's event stream using the `dora_events_into_combined` function:
+You can create such an event stream from Dora's event stream using the `dora_events_into_combined` function:
 
 ```c++
 auto event_stream = dora_events_into_combined(std::move(dora_node.events));
