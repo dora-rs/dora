@@ -111,7 +111,7 @@ Nodes communicate with Apache Arrow Data Format.
 
 dora-rs uses Opentelemetry to record all your logs, metrics and traces. This means that the data and telemetry can be linked using a shared abstraction.
 
-[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectable by most backends such as elasticsearch, prometheus, Datadog..
+[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectible by most backends such as elasticsearch, prometheus, Datadog..
 
 Opentelemetry is language independent, backend agnostic, and easily collect distributed data, making it perfect for dora-rs applications.
 
