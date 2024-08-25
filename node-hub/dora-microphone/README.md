@@ -1,3 +1,3 @@
-# Dora Node for sending arrow data.
+# Dora Node for recording data from microphone
 
-This node send DATA that is specified within the environemnt variable or from `--data` argument.
+This node will send data as soon as the microphone volume is higher than a threshold.
