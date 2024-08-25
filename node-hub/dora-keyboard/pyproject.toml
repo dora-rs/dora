@@ -1,16 +1,16 @@
 [tool.poetry]
-name = "keyboard-listener"
+name = "dora-keyboard"
 version = "0.3.5"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>",
 ]
-description = "Dora keyboard-listener"
+description = "Dora dora-keyboard"
 license = "MIT License"
 homepage = "https://github.com/dora-rs/dora.git"
-documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/keyboard-listener/README.md"
+documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/dora-keyboard/README.md"
 readme = "README.md"
-packages = [{ include = "keyboard_listener" }]
+packages = [{ include = "dora_keyboard" }]
 
 [tool.poetry.dependencies]
 dora-rs = "0.3.5"
@@ -19,7 +19,7 @@ pyarrow = ">= 5.0.0"
 pynput = "^1.7.6"
 
 [tool.poetry.scripts]
-keyboard-listener = "keyboard_listener.main:main"
+dora-keyboard = "dora_keyboard.main:main"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]
