@@ -2,41 +2,43 @@ use dora_node_api::{self, dora_core::config::NodeId, DoraNode, Event};
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
-    let mut printed = false;
+    let mut printed_error = String::new();
     loop {
-        if let Ok((node, mut events)) =
-            DoraNode::init_from_node_id(NodeId::from("terminal-print".to_string()))
-        {
-            printed = false;
-            println!("🔥 `terminal-print` connected to: {}", node.dataflow_id());
+        match DoraNode::init_from_node_id(NodeId::from("terminal-print".to_string())) {
+            Ok((node, mut events)) => {
+                printed_error = String::new();
+                println!("🔥 `terminal-print` connected to: {}", node.dataflow_id());
 
-            while let Some(event) = events.recv() {
-                match event {
-                    Event::Input {
-                        id,
-                        metadata: _,
-                        data,
-                    } => match data.data_type() {
-                        dora_node_api::arrow::datatypes::DataType::Utf8 => {
-                            let received_string: &str =
-                                TryFrom::try_from(&data).context("expected string message")?;
-                            println!("Received id: {}, data: {}", id, received_string);
-                        }
-                        _other => {
-                            println!("Received id: {}, data: {:#?}", id, data);
-                        }
-                    },
-                    _other => {}
+                while let Some(event) = events.recv() {
+                    match event {
+                        Event::Input {
+                            id,
+                            metadata: _,
+                            data,
+                        } => match data.data_type() {
+                            dora_node_api::arrow::datatypes::DataType::Utf8 => {
+                                let received_string: &str =
+                                    TryFrom::try_from(&data).context("expected string message")?;
+                                println!("Received id: {}, data: {}", id, received_string);
+                            }
+                            _other => {
+                                println!("Received id: {}, data: {:#?}", id, data);
+                            }
+                        },
+                        _other => {}
+                    }
                 }
+                // Waiting for the daemon to update ending of the dataflow.
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
-            // Waiting for the daemon to update ending of the dataflow.
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        } else {
-            if !printed {
-                println!("🕐 waiting for node `terminal-print` to be available...");
-                printed = true;
+            Err(err) => {
+                if err.to_string() == printed_error {
+                    println!("{:#?}", err);
+                    println!("🕐 waiting for node `terminal-print` to be available...");
+                    printed_error = err.to_string();
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
-            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
 }
