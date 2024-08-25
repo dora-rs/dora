@@ -11,6 +11,8 @@ examples/**/*.txt
 
 # Removing images.
 *.jpg
+*.mp3
+*.wav
 *.png
 !docs/src/latency.png
 
