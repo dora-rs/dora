@@ -32,6 +32,7 @@ def main():
     silence_start_time = tm.time()
     node = Node()
 
+    # pylint: disable=unused-argument
     def callback(indata, frames, time, status):
         nonlocal buffer, state, silence_start_time, node
 
