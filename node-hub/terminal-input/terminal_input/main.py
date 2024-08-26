@@ -63,10 +63,19 @@ def main():
             if event is not None:
                 print(f"Received: {event['value'].to_pylist()}")
     else:
-        data = ast.literal_eval(data)
+        try:
+            data = ast.literal_eval(data)
+        except ValueError:
+            print("Passing input as string")
         if isinstance(data, list):
             data = pa.array(data)  # initialize pyarrow array
         elif isinstance(data, str):
+            data = pa.array([data])
+        elif isinstance(data, int):
+            data = pa.array([data])
+        elif isinstance(data, float):
+            data = pa.array([data])
+        elif isinstance(data, dict):
             data = pa.array([data])
         else:
             data = pa.array(data)  # initialize pyarrow array
