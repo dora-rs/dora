@@ -393,6 +393,7 @@ pub async fn spawn_node(
     let (log_finish_tx, log_finish_rx) = oneshot::channel();
     tokio::spawn(async move {
         let exit_status = NodeExitStatus::from(child.wait().await);
+        tracing::debug!("node exited with status: {exit_status:?}");
         let _ = log_finish_rx.await;
         let event = DoraEvent::SpawnedNodeResult {
             dataflow_id,

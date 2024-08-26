@@ -173,6 +173,12 @@ where
                     }
                 }
 
+                impl Drop for Ros2Context {
+                    fn drop(&mut self) {
+                        tracing::debug!("dropping Ros2Context");
+                    }
+                }
+
                 struct Ros2Node {
                     node : ros2_client::Node,
                     executor: std::sync::Arc<futures::executor::ThreadPool>,

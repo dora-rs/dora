@@ -14,6 +14,11 @@ ros2 = []
 name = "rust-ros2-dataflow-example-node"
 required-features = ["ros2"]
 
+[[bin]]
+path = "src/bin/service-server.rs"
+name = "rust-ros2-dataflow-service-server"
+required-features = ["ros2"]
+
 [dependencies]
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"

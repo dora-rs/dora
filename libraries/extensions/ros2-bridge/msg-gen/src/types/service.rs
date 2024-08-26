@@ -85,6 +85,11 @@ impl Service {
         let create_client = format_ident!("new_Client__{package_name}__{}", self.name);
         let cxx_create_client = format!("create_client_{package_name}_{}", self.name);
 
+        let server_name = format_ident!("Server__{package_name}__{}", self.name);
+        let cxx_server_name = format_ident!("Server_{}", self.name);
+        let create_server = format_ident!("new_Server__{package_name}__{}", self.name);
+        let cxx_create_server = format!("create_server_{package_name}_{}", self.name);
+
         let package = format_ident!("{package_name}");
         let self_name = format_ident!("{}", self.name);
         let self_name_str = &self.name;
@@ -94,6 +99,7 @@ impl Service {
         let send_request = format_ident!("send_request__{package_name}__{}", self.name);
         let cxx_send_request = format_ident!("send_request");
         let req_type_raw = format_ident!("{package_name}__{}_Request", self.name);
+        let req_type_raw_str = req_type_raw.to_string();
         let res_type_raw = format_ident!("{package_name}__{}_Response", self.name);
         let res_type_raw_str = res_type_raw.to_string();
 
@@ -106,9 +112,14 @@ impl Service {
             #[namespace = #package_name]
             #[cxx_name = #cxx_client_name]
             type #client_name;
-            // TODO: add `merged_streams` argument (for sending replies)
             #[cxx_name = #cxx_create_client]
             fn #create_client(self: &mut Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_server_name]
+            type #server_name;
+            #[cxx_name = #cxx_create_server]
+            fn #create_server(self: &mut Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#server_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_wait_for_service]
@@ -144,6 +155,29 @@ impl Service {
                         client: std::sync::Arc::new(client),
                         response_tx: std::sync::Arc::new(response_tx),
                         executor: self.executor.clone(),
+                        stream_id: id,
+                    }))
+                }
+
+                #[allow(non_snake_case)]
+                pub fn #create_server(&mut self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#server_name>> {
+                    let server = self.node.create_server::< #package :: service :: #self_name >(
+                        ros2_client::ServiceMapping::Enhanced,
+                        &ros2_client::Name::new(name_space, base_name).unwrap(),
+                        &ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
+                        qos.clone().into(),
+                        qos.into(),
+                    )?;
+                    let server = std::sync::Arc::new(server);
+
+                    let stream = futures::stream::unfold(server.clone(), |server| async move {
+                        let result = server.async_receive_request().await;
+                        Some((Box::new(result) as Box<dyn std::any::Any + 'static>, server))
+                    });
+                    let id = events.events.merge(Box::pin(stream));
+
+                    Ok(Box::new(#server_name {
+                        server,
                         stream_id: id,
                     }))
                 }
@@ -224,6 +258,38 @@ impl Service {
                     }
                 }
             }
+
+            #[allow(non_camel_case_types)]
+            pub struct #server_name {
+                server: std::sync::Arc<ros2_client::service::Server< #package :: service :: #self_name >>,
+                stream_id: u32,
+            }
+
+            impl #server_name {
+                #[allow(non_snake_case)]
+                fn #matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                    match &event.event.as_ref().0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id  => true,
+                        _ => false
+                    }
+                }
+                #[allow(non_snake_case)]
+                fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<ffi::#req_type_raw> {
+                    use eyre::WrapErr;
+
+                    match (*event.event).0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id  => {
+                            let result = event.event.downcast::<eyre::Result<ffi::#req_type_raw>>()
+                                .map_err(|_| eyre::eyre!("downcast to {} failed", #req_type_raw_str))?;
+
+                            let data = result.with_context(|| format!("failed to receive {} request", #self_name_str))?;
+                            Ok(data)
+                        },
+                        _ => eyre::bail!("not a {} request event", #self_name_str),
+                    }
+                }
+            }
+
         };
         (def, imp)
     }
