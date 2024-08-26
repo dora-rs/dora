@@ -44,9 +44,8 @@ def main():
             )
             try:
                 data = ast.literal_eval(data)
-            except Exception:
+            except ValueError:
                 print("Passing input as string")
-                pass
             if isinstance(data, list):
                 data = pa.array(data)  # initialize pyarrow array
             elif isinstance(data, str):
