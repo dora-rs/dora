@@ -14,6 +14,3 @@ with keyboard.Events() as events:
             if hasattr(event.key, "char"):
                 if event.key.char is not None:
                     node.send_output("char", pa.array([event.key.char]))
-        # busy_wait(0.1)
-        # if event is not None and isinstance(event, Events.Release):
-        # node.send_output("move", pa.array([0.0, 0, 0, 0, 0, 0]))
