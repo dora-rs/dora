@@ -84,6 +84,10 @@ encoded_text = pa.array([text])
 decoded_text = encoded_text[0].as_py()
 ```
 
+## Example
+
+Check example at [examples/python-dataflow](examples/python-dataflow)
+
 ## License
 
 This project is licensed under Apache-2.0. Check out [NOTICE.md](../../NOTICE.md) for more information.
