@@ -32,6 +32,7 @@ members = [
     "libraries/extensions/telemetry/*",
     "node-hub/dora-record",
     "node-hub/dora-rerun",
+    "node-hub/terminal-print",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",

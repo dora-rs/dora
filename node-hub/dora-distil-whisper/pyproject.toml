@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "dora-distil-whisper"
+version = "0.3.5"
+authors = [
+    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
+    "Enzo Le Van <dev@enzo-le-van.fr>",
+]
+description = "Dora dora-distil-whisper"
+license = "MIT License"
+homepage = "https://github.com/dora-rs/dora.git"
+documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/dora-distil-whisper/README.md"
+readme = "README.md"
+packages = [{ include = "dora_distil_whisper" }]
+
+[tool.poetry.dependencies]
+dora-rs = "0.3.5"
+numpy = "< 2.0.0"
+pyarrow = ">= 5.0.0"
+transformers = ">= 4.0.0"
+accelerate = "^0.29.2"
+torch = "^2.1.1"
+
+[tool.poetry.scripts]
+dora-distil-whisper = "dora_distil_whisper.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+readme = "README.md"
