@@ -43,6 +43,7 @@ version = "0.3.5"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora.carsmos.ai"
 license = "Apache-2.0"
+repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
 dora-node-api = { version = "0.3.5", path = "apis/rust/node", default-features = false }
@@ -66,7 +67,8 @@ dora-coordinator = { version = "0.3.5", path = "binaries/coordinator" }
 dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-dora-message = { version = "0.3.5", path = "libraries/message" }
+# versioned independently from the other dora crates
+dora-message = { version = "0.4.0", path = "libraries/message" }
 arrow = { version = "52" }
 arrow-schema = { version = "52" }
 arrow-data = { version = "52" }
@@ -83,6 +85,7 @@ name = "dora-examples"
 version = "0.0.0"
 edition = "2021"
 license = "Apache-2.0"
+publish = false
 
 
 [features]

@@ -2410,7 +2410,7 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "aligned-vec",
  "arrow-data",
@@ -2418,6 +2418,7 @@ dependencies = [
  "dora-core",
  "eyre",
  "log",
+ "semver",
  "serde",
  "tokio",
  "uuid",
