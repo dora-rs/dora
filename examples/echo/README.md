@@ -8,5 +8,5 @@ dora build dataflow.yml
 dora start dataflow.yml
 
 # In another terminal
-terminal-print
+terminal-input
 ```
