@@ -5,6 +5,7 @@ edition = "2021"
 description = "C API implementation for Dora Operator"
 documentation.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [lib]
 crate-type = ["staticlib", "lib"]

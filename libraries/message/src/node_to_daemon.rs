@@ -1,7 +1,7 @@
 pub use crate::common::{
     DataMessage, DropToken, LogLevel, LogMessage, SharedMemoryId, Timestamped,
 };
-use crate::{metadata::Metadata, DataflowId};
+use crate::{current_crate_version, metadata::Metadata, versions_compatible, DataflowId};
 
 use dora_core::config::{DataId, NodeId};
 
@@ -72,7 +72,7 @@ impl DaemonRequest {
 pub struct NodeRegisterRequest {
     pub dataflow_id: DataflowId,
     pub node_id: NodeId,
-    dora_version: String,
+    dora_version: semver::Version,
 }
 
 impl NodeRegisterRequest {
@@ -80,13 +80,15 @@ impl NodeRegisterRequest {
         Self {
             dataflow_id,
             node_id,
-            dora_version: env!("CARGO_PKG_VERSION").to_owned(),
+            dora_version: semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap(),
         }
     }
 
     pub fn check_version(&self) -> Result<(), String> {
-        let crate_version = env!("CARGO_PKG_VERSION");
-        if self.dora_version == crate_version {
+        let crate_version = current_crate_version();
+        let specified_version = &self.dora_version;
+
+        if versions_compatible(&crate_version, specified_version)? {
             Ok(())
         } else {
             Err(format!(
