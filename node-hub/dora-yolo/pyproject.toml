@@ -1,22 +1,23 @@
 [tool.poetry]
-name = "ultralytics-yolo"
+name = "dora-yolo"
 version = "0.3.6"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>",
 ]
-description = "Dora Node for object detection with Ultralytics YOLOv8"
+description = "Dora Node for object detection with dora YOLOv8"
 readme = "README.md"
 
-packages = [{ include = "ultralytics_yolo" }]
+packages = [{ include = "dora_yolo" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 ultralytics = "<= 8.2.52"
+python = "^3.7"
 
 [tool.poetry.scripts]
-ultralytics-yolo = "ultralytics_yolo.main:main"
+dora-yolo = "dora_yolo.main:main"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

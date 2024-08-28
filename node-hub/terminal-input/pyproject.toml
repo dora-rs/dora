@@ -16,6 +16,7 @@ packages = [{ include = "terminal_input" }]
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
+python = "^3.7"
 
 [tool.poetry.scripts]
 terminal-input = "terminal_input.main:main"
@@ -23,6 +24,3 @@ terminal-input = "terminal_input.main:main"
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
-
-[project]
-readme = "README.md"

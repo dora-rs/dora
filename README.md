@@ -73,8 +73,8 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: object-detection
-    build: pip install ../../node-hub/ultralytics-yolo
-    path: ultralytics-yolo
+    build: pip install ../../node-hub/dora-yolo
+    path: dora-yolo
     inputs:
       image:
         source: camera/image
@@ -153,6 +153,14 @@ Quickest way:
 
 ```bash
 cargo install dora-cli --locked
+
+dora --help
+```
+
+On Unix system, you can install dora without cargo with:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/dora-rs/dora/main/install.sh | bash
 
 dora --help
 ```

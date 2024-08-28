@@ -13,8 +13,8 @@ nodes:
       ENCODING: rgb8
 
   - id: object-detection
-    build: pip install -e ../../node-hub/ultralytics-yolo
-    path: ultralytics-yolo
+    build: pip install -e ../../node-hub/dora-yolo
+    path: dora-yolo
     inputs:
       image:
         source: camera/image
