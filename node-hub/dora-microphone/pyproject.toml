@@ -17,6 +17,7 @@ dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
 sounddevice = "^0.4.6"
+python = "^3.7"
 
 [tool.poetry.scripts]
 dora-microphone = "dora_microphone.main:main"
@@ -24,6 +25,3 @@ dora-microphone = "dora_microphone.main:main"
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
-
-[project]
-readme = "README.md"

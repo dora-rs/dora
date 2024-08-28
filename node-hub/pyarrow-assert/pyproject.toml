@@ -16,6 +16,7 @@ packages = [{ include = "pyarrow_assert" }]
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
+python = "^3.7"
 
 [tool.poetry.scripts]
 pyarrow-assert = "pyarrow_assert.main:main"
@@ -23,6 +24,3 @@ pyarrow-assert = "pyarrow_assert.main:main"
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
-
-[project]
-readme = "README.md"
