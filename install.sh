@@ -165,7 +165,7 @@ case $target in
   *) extension=zip; need unzip;;
 esac
 
-archive="$releases/download/v$tag/$bin-v$tag-$target.$extension"
+archive="$releases/download/$tag/$bin-$tag-$target.$extension"
 say "Repository:  $url"
 say "Bin:         $bin"
 say "Tag:         $tag"
@@ -181,6 +181,8 @@ if [ "$extension" = "zip" ]; then
 else
   download "$archive" - | tar -C "$td" -xz
 fi
+
+echo "Placing dora-rs cli in $dest/$bin" 
 
 if [ -e "$dest/$bin" ] && [ "$force" = false ]; then
   err "\`$dest/$bin\` already exists"
