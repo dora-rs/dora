@@ -74,7 +74,7 @@ jobs:
             if [ -d "$dir" ]; then
               if [ -f "$dir/pyproject.toml" ]; then
                 echo "Publishing $dir using Poetry..."
-                (cd "$dir" && poetry publish)
+                (cd "$dir" && poetry publish --build)
               fi
               
               if [ -f "$dir/Cargo.toml" ]; then
