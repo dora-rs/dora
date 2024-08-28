@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.3.6 (2024-08-17)
+
+## What's Changed
+
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/579
+- Don't wait for non-started dynamic nodes on stop by @phil-opp in https://github.com/dora-rs/dora/pull/583
+- add a comment on read_dora_input_id by @XxChang in https://github.com/dora-rs/dora/pull/580
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/584
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/585
+- Add domain unix socket supports by @XxChang in https://github.com/dora-rs/dora/pull/594
+- Check build for cross-compiled targets on CI by @phil-opp in https://github.com/dora-rs/dora/pull/597
+- Test pip release creation as part of normal CI by @phil-opp in https://github.com/dora-rs/dora/pull/596
+- Add-armv7-musleabihf-prebuilt-release by @haixuanTao in https://github.com/dora-rs/dora/pull/578
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/602
+- Delay dropping of `DoraNode` in Python until all event data is freed by @phil-opp in https://github.com/dora-rs/dora/pull/601
+- Add install script by @haixuanTao in https://github.com/dora-rs/dora/pull/600
+- Nodes hub to store and reuse commonly used node by @haixuanTao in https://github.com/dora-rs/dora/pull/569
+- Ros2-bridge action attempt by @starlitxiling in https://github.com/dora-rs/dora/pull/567
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/605
+- Add a CI/CD for the node-hub by @haixuanTao in https://github.com/dora-rs/dora/pull/604
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/608
+- Remove dynamic node from pending nodes before starting a dataflow by @haixuanTao in https://github.com/dora-rs/dora/pull/606
+- Fix alignment of atomics in shared memory communication channel by @phil-opp in https://github.com/dora-rs/dora/pull/612
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/622
+- Refactor: Move message definitions to `dora-message` crate by @phil-opp in https://github.com/dora-rs/dora/pull/613
+- Update README.md by @heyong4725 in https://github.com/dora-rs/dora/pull/623
+- Update Rust crate serde to v1.0.207 by @renovate in https://github.com/dora-rs/dora/pull/624
+- fix clippy warnings by @Michael-J-Ward in https://github.com/dora-rs/dora/pull/626
+
 ## v0.3.5 (2024-07-03)
 
 ## What's Changed
