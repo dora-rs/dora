@@ -157,6 +157,14 @@ cargo install dora-cli --locked
 dora --help
 ```
 
+On Unix system, you can install dora without cargo with:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/dora-rs/dora/main/install.sh | bash
+
+dora --help
+```
+
 For more info on installation, check out [our guide](https://www.dora-rs.ai/docs/guides/Installation/installing).
 
 ## Getting Started
