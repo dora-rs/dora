@@ -60,34 +60,39 @@ Each node defines its inputs and outputs to connect with other nodes.
 
 ```yaml
 nodes:
-  - id: webcam
-    custom:
-      source: webcam.py
-      inputs:
-        tick: dora/timer/millis/50
-      outputs:
-        - image
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
 
-  - id: object_detection
-    custom:
-      source: object_detection.py
-      inputs:
-        image: webcam/image
-      outputs:
-        - bbox
+  - id: object-detection
+    build: pip install ../../node-hub/ultralytics-yolo
+    path: ultralytics-yolo
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+    outputs:
+      - bbox
+    env:
+      MODEL: yolov8n.pt
 
   - id: plot
-    custom:
-      source: plot.py
-      inputs:
-        image: webcam/image
-        bbox: object_detection/bbox
+    build: pip install ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+      bbox: object-detection/bbox
 ```
-
-Nodes can either be:
-
-- custom nodes where dora-rs is embedded as a native libraries.
-- runtime nodes where dora-rs takes care of the main loop and run user-defined operators. This makes dora-rs featureful as we can run features like `hot-reloading`.
 
 The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
 
@@ -148,7 +153,6 @@ Quickest way:
 
 ```bash
 cargo install dora-cli --locked
-pip install dora-rs # For Python API
 
 dora --help
 ```
@@ -157,27 +161,19 @@ For more info on installation, check out [our guide](https://www.dora-rs.ai/docs
 
 ## Getting Started
 
-1. Install the example python dependencies:
+1. Run the example:
 
 ```bash
-pip install -r https://raw.githubusercontent.com/dora-rs/dora/v0.3.5/examples/python-operator-dataflow/requirements.txt
+git clone https://github.com/dora-rs/dora
+cd examples/python-dataflow
+dora build dataflow.yml
 ```
 
 2. Get some example operators:
 
 ```bash
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.5/examples/python-operator-dataflow/webcam.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.5/examples/python-operator-dataflow/plot.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.5/examples/python-operator-dataflow/utils.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.5/examples/python-operator-dataflow/object_detection.py
-wget https://raw.githubusercontent.com/dora-rs/dora/v0.3.5/examples/python-operator-dataflow/dataflow.yml
-```
-
-3. Start the dataflow
-
-```bash
 dora up
-dora start dataflow.yml --attach --hot-reload
+dora start dataflow.yml
 ```
 
 > Make sure to have a webcam
