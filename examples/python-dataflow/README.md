@@ -33,7 +33,7 @@ dora up
 dora start ./dataflow.yml (or dora start ./dataflow_dynamic.yml)
 ```
 
-**Note**: if you're running the dynamic dataflow, you will need to start manually the ultralytics-yolo node:
+**Note**: if you're running the dynamic dataflow, you will need to start manually the dora-yolo node:
 
 ```bash
 # activate your virtual environment in another terminal
