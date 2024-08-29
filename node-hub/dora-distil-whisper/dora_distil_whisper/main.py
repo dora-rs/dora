@@ -2,9 +2,7 @@ import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from dora import Node
 import pyarrow as pa
-import os
 
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
