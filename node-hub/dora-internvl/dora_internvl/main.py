@@ -120,6 +120,7 @@ def main():
 
     node = Node()
 
+    question = "<image>\nPlease describe the image shortly."
     pa.array([])  # initialize pyarrow array
 
     for event in node:
@@ -159,7 +160,6 @@ def main():
                 # set the max number of tiles in `max_num`
                 pixel_values = load_image(frame, max_num=12).to(torch.bfloat16).cuda()
                 generation_config = dict(max_new_tokens=1024, do_sample=True)
-                question = "<image>\nPlease describe the image shortly."
                 response = model.chat(
                     tokenizer, pixel_values, question, generation_config
                 )
@@ -169,6 +169,9 @@ def main():
                     pa.array([response]),
                     metadata,
                 )
+
+            elif event_id == "text":
+                question = "<image>\n" + event["value"][0].as_py()
 
         elif event_type == "ERROR":
             raise RuntimeError(event["error"])
