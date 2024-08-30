@@ -25,7 +25,7 @@ FLAGS:
 OPTIONS:
     --repo REPO     Github Repository to install the binary from  [default: dora-rs]
     --bin BIN       Name of the binary to install  [default: dora]
-    --tag TAG       Tag (version) of the bin to install, defaults to latest release 
+    --tag TAG       Tag (version) of the bin to install, defaults to latest release
     --to LOCATION   Where to install the binary [default: ~/.dora/bin]
     --target TARGET
 EOF
@@ -182,7 +182,7 @@ else
   download "$archive" - | tar -C "$td" -xz
 fi
 
-echo "Placing dora-rs cli in $dest/$bin" 
+echo "Placing dora-rs cli in $dest/$bin"
 
 if [ -e "$dest/$bin" ] && [ "$force" = false ]; then
   err "\`$dest/$bin\` already exists"
@@ -191,8 +191,16 @@ else
   cp "$td/$bin" "$dest/$bin"
   chmod 755 "$dest/$bin"
   echo ""
-  echo "  Update PATH:"
-  echo "export PATH=\$PATH:$dest/$bin"
+  echo "To run Dora CLI from your terminal, you must add ~/.dora/bin to your PATH."
+  echo "For bashrc terminal Run:"
+  echo "    echo 'export PATH=\$PATH:$dest' >> ~/.bashrc"
+  echo "    source ~/.bashrc"
+  echo ""
+  echo "For zshrc terminal Run:"
+  echo "    echo 'export PATH=\$PATH:$dest' >> ~/.zshrc"
+  echo "    source ~/.zshrc"
+  echo ""
+  echo "To run Dora CLI without adding to PATH, '~/.dora/bin/dora'"
 fi
 
 rm -rf "$td"
