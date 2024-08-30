@@ -2,8 +2,8 @@ nodes:
   - id: rust-node
     _unstable_deploy:
       machine: A
-    path: cargo build -p multiple-daemons-example-node
-    source: ../../target/debug/multiple-daemons-example-node
+    build: cargo build -p multiple-daemons-example-node
+    path: ../../target/debug/multiple-daemons-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
