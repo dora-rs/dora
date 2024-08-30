@@ -24,7 +24,7 @@ model = ParlerTTSForConditionalGeneration.from_pretrained(
     repo_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True
 ).to(device)
 model.generation_config.cache_implementation = "static"
-model.forward = torch.compile(model.forward, mode="reduce-overhead")
+model.forward = torch.compile(model.forward, mode="default")
 
 tokenizer = AutoTokenizer.from_pretrained(repo_id)
 feature_extractor = AutoFeatureExtractor.from_pretrained(repo_id)
@@ -36,7 +36,6 @@ default_text = "Hello, my name is Reachy the best robot in the world !"
 default_description = (
     "Jenny delivers her words quite expressively, in a very confined sounding environment with clear audio quality.",
 )
-init_sleep = True
 
 
 p = pyaudio.PyAudio()
@@ -78,7 +77,6 @@ def generate_base(
     play_steps_in_s=0.5,
 ):
     prev_time = time.time()
-    global init_sleep
     play_steps = int(frame_rate * play_steps_in_s)
     inputs = tokenizer(description, return_tensors="pt").to(device)
     prompt = tokenizer(text, return_tensors="pt").to(device)
@@ -119,14 +117,13 @@ def generate_base(
                 stopping_criteria.stop()
                 break
             elif event["id"] == "text":
-                text = event["value"][0].as_py()
                 stopping_criteria.stop()
+
+                text = event["value"][0].as_py()
                 generate_base(node, text, default_description, 0.5)
 
 
 def main():
-    generate_base(None, "Ready !", default_description, 0.5)
-    generate_base(None, "Ready !", default_description, 0.5)
     generate_base(None, "Ready !", default_description, 0.5)
     node = Node()
     while True:
