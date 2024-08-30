@@ -1,6 +1,7 @@
 use dora_node_api::{self, dora_core::config::DataId, DoraNode};
-use eyre::Context;
+use eyre::{Context, ContextCompat, Error};
 use rand::Rng;
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing_subscriber::Layer;
 
@@ -24,15 +25,26 @@ fn main() -> eyre::Result<()> {
         1000 * 4096,
     ];
 
+    let mut data = HashMap::new();
+    for size in sizes {
+        let vec: Vec<u8> = rand::thread_rng()
+            .sample_iter(rand::distributions::Standard)
+            .take(size)
+            .collect();
+
+        data.insert(size, vec);
+    }
+
     // test latency first
     for size in sizes {
         for _ in 0..100 {
-            let data: Vec<u8> = rand::thread_rng()
-                .sample_iter(rand::distributions::Standard)
-                .take(size)
-                .collect();
+            let data = data.get(&size).wrap_err(eyre::Report::msg(format!(
+                "data not found for size {}",
+                size
+            )))?;
+
             node.send_output_raw(latency.clone(), Default::default(), data.len(), |out| {
-                out.copy_from_slice(&data);
+                out.copy_from_slice(data);
             })?;
 
             // sleep a bit to avoid queue buildup
@@ -46,12 +58,13 @@ fn main() -> eyre::Result<()> {
     // then throughput with full speed
     for size in sizes {
         for _ in 0..100 {
-            let data: Vec<u8> = rand::thread_rng()
-                .sample_iter(rand::distributions::Standard)
-                .take(size)
-                .collect();
+            let data = data.get(&size).wrap_err(eyre::Report::msg(format!(
+                "data not found for size {}",
+                size
+            )))?;
+
             node.send_output_raw(throughput.clone(), Default::default(), data.len(), |out| {
-                out.copy_from_slice(&data);
+                out.copy_from_slice(data);
             })?;
         }
     }
