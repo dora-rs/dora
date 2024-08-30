@@ -165,7 +165,7 @@ def main():
                 )
 
                 node.send_output(
-                    "response",
+                    "text",
                     pa.array([response]),
                     metadata,
                 )

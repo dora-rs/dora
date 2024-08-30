@@ -18,7 +18,7 @@ numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
 transformers = ">= 4.0.0"
 accelerate = "^0.29.2"
-torch = "^2.1.1"
+torch = "^2.2.0"
 python = "^3.7"
 
 [tool.poetry.scripts]
