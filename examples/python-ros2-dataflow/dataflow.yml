@@ -1,17 +1,15 @@
 nodes:
   - id: turtle
-    custom:
-      source: ./random_turtle.py
-      inputs:
-        direction: control/direction
-      outputs:
-        - turtle_pose
+    path: ./random_turtle.py
+    inputs:
+      direction: control/direction
+    outputs:
+      - turtle_pose
 
   - id: control
-    custom:
-      source: ./control_node.py
-      inputs:
-        turtle_pose: turtle/turtle_pose
-        tick: dora/timer/millis/500
-      outputs:
-        - direction
+    path: ./control_node.py
+    inputs:
+      turtle_pose: turtle/turtle_pose
+      tick: dora/timer/millis/500
+    outputs:
+      - direction

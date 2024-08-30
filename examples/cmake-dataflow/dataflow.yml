@@ -1,18 +1,17 @@
 nodes:
   - id: cxx-node-rust-api
-    custom:
-      source: bin/node_rust_api
-      inputs:
-        tick: dora/timer/millis/300
-      outputs:
-        - counter
+    path: bin/node_rust_api
+    inputs:
+      tick: dora/timer/millis/300
+    outputs:
+      - counter
+
   - id: cxx-node-c-api
-    custom:
-      source: bin/node_c_api
-      inputs:
-        tick: dora/timer/millis/300
-      outputs:
-        - counter
+    path: bin/node_c_api
+    inputs:
+      tick: dora/timer/millis/300
+    outputs:
+      - counter
 
   - id: runtime-node-1
     operators:
@@ -23,6 +22,7 @@ nodes:
           counter_2: cxx-node-rust-api/counter
         outputs:
           - status
+
   - id: runtime-node-2
     operators:
       - id: operator-c-api
