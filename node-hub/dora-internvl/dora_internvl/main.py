@@ -121,6 +121,7 @@ def main():
     node = Node()
 
     question = "<image>\nPlease describe the image shortly."
+    frame = None
     pa.array([])  # initialize pyarrow array
 
     for event in node:
@@ -157,21 +158,22 @@ def main():
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
-                # set the max number of tiles in `max_num`
-                pixel_values = load_image(frame, max_num=12).to(torch.bfloat16).cuda()
-                generation_config = dict(max_new_tokens=1024, do_sample=True)
-                response = model.chat(
-                    tokenizer, pixel_values, question, generation_config
-                )
-
-                node.send_output(
-                    "text",
-                    pa.array([response]),
-                    metadata,
-                )
-
             elif event_id == "text":
                 question = "<image>\n" + event["value"][0].as_py()
+                if frame is not None:
+                    # set the max number of tiles in `max_num`
+                    pixel_values = (
+                        load_image(frame, max_num=12).to(torch.bfloat16).cuda()
+                    )
+                    generation_config = dict(max_new_tokens=1024, do_sample=True)
+                    response = model.chat(
+                        tokenizer, pixel_values, question, generation_config
+                    )
+                    node.send_output(
+                        "text",
+                        pa.array([response]),
+                        metadata,
+                    )
 
         elif event_type == "ERROR":
             raise RuntimeError(event["error"])
