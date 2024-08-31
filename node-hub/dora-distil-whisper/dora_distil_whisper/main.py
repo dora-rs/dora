@@ -27,7 +27,6 @@ pipe = pipeline(
     max_new_tokens=128,
     torch_dtype=torch_dtype,
     device=device,
-    generate_kwargs={"language": "chinese"},
 )
 
 
