@@ -1,8 +1,7 @@
 nodes:
   - id: cxx-node-rust-api
-    custom:
-      source: build/node_rust_api
-      inputs:
-        tick: dora/timer/millis/500
-      outputs:
-        - pose
+    path: build/node_rust_api
+    inputs:
+      tick: dora/timer/millis/500
+    outputs:
+      - pose

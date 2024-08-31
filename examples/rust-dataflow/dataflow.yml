@@ -6,20 +6,22 @@ nodes:
       tick: dora/timer/millis/10
     outputs:
       - random
+
   - id: rust-status-node
-    custom:
-      build: cargo build -p rust-dataflow-example-status-node
-      source: ../../target/debug/rust-dataflow-example-status-node
-      inputs:
-        tick: dora/timer/millis/100
-        random: rust-node/random
-      outputs:
-        - status
+    build: cargo build -p rust-dataflow-example-status-node
+    path: ../../target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/100
+      random: rust-node/random
+    outputs:
+      - status
+
   - id: rust-sink
     build: cargo build -p rust-dataflow-example-sink
     path: ../../target/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
+
   - id: dora-record
     build: cargo build -p dora-record
     path: ../../target/debug/dora-record

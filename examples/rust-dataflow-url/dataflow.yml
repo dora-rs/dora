@@ -1,11 +1,11 @@
 nodes:
   - id: rust-node
-    custom:
-      source: https://github.com/dora-rs/dora/releases/download/v0.0.0-test.4/rust-dataflow-example-node
-      inputs:
-        tick: dora/timer/millis/300
-      outputs:
-        - random
+    path: https://github.com/dora-rs/dora/releases/download/v0.0.0-test.4/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/300
+    outputs:
+      - random
+
   - id: runtime-node
     operators:
       - id: rust-operator
@@ -15,9 +15,9 @@ nodes:
           random: rust-node/random
         outputs:
           - status
+
   - id: rust-sink
-    custom:
-      build: cargo build -p rust-dataflow-example-sink
-      source: ../../target/debug/rust-dataflow-url-example-sink
-      inputs:
-        message: runtime-node/rust-operator/status
+    build: cargo build -p rust-dataflow-example-sink
+    path: ../../target/debug/rust-dataflow-url-example-sink
+    inputs:
+      message: runtime-node/rust-operator/status
