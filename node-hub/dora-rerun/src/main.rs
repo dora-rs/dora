@@ -104,7 +104,7 @@ fn main() -> Result<()> {
 
                 rec.log(id.as_str(), &image)
                     .context("could not log image")?;
-            } else if id.as_str().contains("textlog") {
+            } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {
                     if let Some(str) = string {
