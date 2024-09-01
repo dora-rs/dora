@@ -1,0 +1,31 @@
+nodes:
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: dora-qwenvl
+    build: pip install -e ../../node-hub/dora-qwenvl
+    path: dora-qwenvl
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+    outputs:
+      - text
+
+  - id: plot
+    build: pip install ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image:
+        source: camera/image
+        queue_size: 1
+      text: dora-qwenvl/text
