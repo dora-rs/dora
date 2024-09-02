@@ -15,7 +15,7 @@ DEFAULT_QUESTION = os.getenv(
 
 # default: Load the model on the available device(s)
 model = Qwen2VLForConditionalGeneration.from_pretrained(
-    PATH,
+    CUSTOM_MODEL_PATH,
     torch_dtype="auto",
     device_map="auto",
     attn_implementation="flash_attention_2",
@@ -118,7 +118,7 @@ def main():
                     continue
                 response = generate(frame, question)
                 node.send_output(
-                    "text",
+                    "tick",
                     pa.array([response]),
                     metadata,
                 )
