@@ -185,22 +185,43 @@ fi
 echo "Placing dora-rs cli in $dest/$bin"
 
 if [ -e "$dest/$bin" ] && [ "$force" = false ]; then
-  err "\`$dest/$bin\` already exists"
+  echo "\`$dest/$bin\` already exists"
 else
   mkdir -p "$dest"
   cp "$td/$bin" "$dest/$bin"
   chmod 755 "$dest/$bin"
   echo ""
-  echo "To run Dora CLI from your terminal, you must add ~/.dora/bin to your PATH."
-  echo "For bashrc terminal Run:"
-  echo "    echo 'export PATH=\$PATH:$dest' >> ~/.bashrc"
-  echo "    source ~/.bashrc"
-  echo ""
-  echo "For zshrc terminal Run:"
-  echo "    echo 'export PATH=\$PATH:$dest' >> ~/.zshrc"
-  echo "    source ~/.zshrc"
-  echo ""
-  echo "To run Dora CLI without adding to PATH, '~/.dora/bin/dora'"
+fi
+
+read -p "Do you want to add $dest to your PATH automatically? (y/n): " response
+
+if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    if [ "$SHELL" = "/bin/bash" ]; then
+        if ! grep -q "$dest" ~/.bashrc; then
+            echo "Adding $dest to PATH in ~/.bashrc"
+            echo "export PATH=\$PATH:$dest" >> ~/.bashrc
+            source ~/.bashrc
+            echo "Path added to ~/.bashrc and reloaded."
+        else
+            echo "$dest is already in the PATH in ~/.bashrc"
+        fi
+    elif [ "$SHELL" = "/bin/zsh" ]; then
+        if ! grep -q "$dest" ~/.zshrc; then
+            echo "Adding $dest to PATH in ~/.zshrc"
+            echo "export PATH=\$PATH:$dest" >> ~/.zshrc
+            source ~/.zshrc
+            echo "Path added to ~/.zshrc and reloaded."
+        else
+            echo "$dest is already in the PATH in ~/.zshrc"
+        fi
+    else
+        echo "Unsupported shell: $SHELL"
+        echo "Please add the following to your shell's configuration file manually:"
+        echo "    export PATH=\$PATH:$dest"
+    fi
+else
+    echo "You chose not to add $dest to your PATH."
+    echo "To run dora CLI without adding to PATH, use: '~/.dora/bin/dora'"
 fi
 
 rm -rf "$td"
