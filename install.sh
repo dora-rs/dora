@@ -182,7 +182,7 @@ else
   download "$archive" - | tar -C "$td" -xz
 fi
 
-echo "Placing dora-rs cli in $dest/$bin"
+echo "Placing dora-rs cli in $dest"
 
 if [ -e "$dest/$bin" ] && [ "$force" = false ]; then
   echo "\`$dest/$bin\` already exists"
