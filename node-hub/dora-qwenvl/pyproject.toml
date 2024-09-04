@@ -19,7 +19,7 @@ torchvision = "^0.19"
 transformers = { git = "https://github.com/huggingface/transformers" }
 qwen-vl-utils = "^0.0.2"
 accelerate = "^0.33"
-flash-attention = "^2.6.1"
+flash_attn = "^2.6.1"
 
 
 [tool.poetry.scripts]
