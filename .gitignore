@@ -168,4 +168,7 @@ cython_debug/
 # log output file
 out/
 
+# MacOS DS_Store
+.DS_Store
+
 ~*
