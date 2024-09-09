@@ -3,7 +3,7 @@ set -euo
 
 # List of ignored modules 
 # TODO: Fix HF github action issue.
-ignored_folders=("dora-distil-whisper" "dora-internvl" "dora-parler" "dora-qwenvl" "dora-keyboard" "dora-microphone" "terminal-input")
+ignored_folders=("dora-internvl" "dora-parler" "dora-qwenvl" "dora-keyboard" "dora-microphone" "terminal-input")
 
 for dir in node-hub/*/ ; do
     # Get the base name of the directory (without the path)
