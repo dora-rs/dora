@@ -41,7 +41,9 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 </p>
 
 <p align="center">
+ <a href="https://github.com/dora-rs/dora-benchmark/" >
   <i>Latency benchmark with Python API for both framework, sending 40M of random bytes.</i>
+  </a>
 </p>
 
 ## Highlights
