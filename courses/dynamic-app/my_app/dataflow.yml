@@ -1,0 +1,10 @@
+nodes:
+  - id: talker
+    path: dynamic
+    outputs:
+      - message
+
+  - id: listener
+    path: dynamic
+    inputs:
+      message: talker/message
