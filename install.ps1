@@ -112,7 +112,7 @@ Write-Host "Archive $archive"
 $zip = "$tmp\$bin-$tag-$target.zip"
 Download-File $archive $zip
 
-Write-Host "Placing dora-rs cli in ", $dest
+Write-Host "Placing dora-rs cli in ", $to
 
 Expand-Archive -Path $zip -DestinationPath $to -Force
 Remove-Item -Path $tmp -Recurse -Force
