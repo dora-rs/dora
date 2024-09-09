@@ -1,6 +1,6 @@
 #
 <p align="center">
-    <img src="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/logo.svg" width="400"/>
+    <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/logo.svg" width="400"/>
 </p>
 
 <h2 align="center">
@@ -34,9 +34,9 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 
 <p align="center">
   <picture align="center">
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/bar_chart_dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/bar_chart_light.svg">
-    <img src="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/bar_chart_light.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/bar_chart_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/bar_chart_light.svg">
+    <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/bar_chart_light.svg">
   </picture>
 </p>
 
@@ -47,8 +47,8 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 ## Highlights
 
 - 🚀 A single CLI to launch your Python and Rust robotic projects.
-- ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark/README.md) than `ros2`.
-- 🐍 Easy and Fast prototyping with a clean [Python API](https://www.dora-rs.ai/docs/api/python-api).
+- ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark) than `ros2`.
+- 🐍 Easy and Fast prototyping with a clean [Python API](https://www.dora-rs.ai/docs/python-api.html).
 - 🖥️ Supports macOS, Linux, and Windows.
 - ⏬ Installable without Rust via `curl` or `powershell`.
 - ❇️ Includes a large set of pre-packaged nodes for fast prototyping.
@@ -133,9 +133,9 @@ The dataflow paradigm has the advantage of creating an abstraction layer that ma
 
 <p align="center">
   <picture align="center">
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/dora_diag_dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/dora_diag_light.svg">
-    <img src="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/dora_diag_light.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/dora_diag_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/dora_diag_light.svg">
+    <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/dora_diag_light.svg">
   </picture>
 </p>
 
@@ -209,9 +209,9 @@ See:[examples/python-operator-dataflow](examples/python-operator-dataflow)
 
 <p align="center">
   <picture align="center">
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/self_coding_dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/self_coding_light.svg">
-    <img src="https://raw.githubusercontent.com/dora-rs/dora/improve-beginner-exp/docs/src/self_coding_light.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/self_coding_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/self_coding_light.svg">
+    <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/self_coding_light.svg">
   </picture>
 </p>
 

@@ -125,7 +125,7 @@ function Add-PathToEnv {
     $currentPath = [System.Environment]::GetEnvironmentVariable("PATH", [System.EnvironmentVariableTarget]::User)
 
     if ($currentPath -like "*$newPath*") {
-        Write-Host "`$newPath` is already in the PATH variable."
+        Write-Host "$newPath is already in the PATH variable."
     } else {
         $updatedPath = "$currentPath;$newPath"
 
@@ -140,11 +140,11 @@ function Confirm-AddToPath {
         [string]$newPath
     )
 
-    $response = Read-Host "Do you want to add `$newPath` to your PATH automatically? (y/n): "
+    $response = Read-Host "Do you want to add $newPath to your PATH automatically? (y/n): "
     if ($response -eq "Y" -or $response -eq "y" -or $response -eq "") {
         Add-PathToEnv -newPath $newPath
     } else {
-        Write-Host "You chose not to add `$newPath` to your PATH."
+        Write-Host "You chose not to add $newPath to your PATH."
         Write-Host "To run dora CLI without adding to PATH, use: '~/.dora/bin/dora'"
     }
 }
