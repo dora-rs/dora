@@ -8,19 +8,17 @@ use dora_node_api::{
     self,
     arrow::{
         array::{AsArray, PrimitiveArray},
-        datatypes::{Int64Type, UInt64Type},
-        temporal_conversions::EPOCH_DAYS_FROM_CE,
+        datatypes::UInt64Type,
     },
-    dora_core::config::DataId,
-    DoraNode, Metadata,
+    DoraNode,
 };
-use uhlc::system_time_clock;
 
 fn main() -> eyre::Result<()> {
-    let mut printed_error = String::new();
-    let (node, mut events) = DoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
+    // Voluntarily sleep for 5 seconds to ensure that the node is dropping the oldest input
     sleep(Duration::from_secs(5));
+
     while let Some(event) = events.recv() {
         match event {
             dora_node_api::Event::Input {

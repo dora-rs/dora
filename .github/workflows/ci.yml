@@ -316,6 +316,10 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
+          cargo build -p receive_data --release
+          # Run tests
+          dora start ../tests/queue_size_latest_data_rust/dataflow.yaml
+
       - name: "Test CLI (Python)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
@@ -344,6 +348,9 @@ jobs:
           sleep 5
           dora stop --name ci-python-dynamic  --grace-duration 5s
           dora destroy
+
+          # Run tests
+          dora start ../tests/queue_size_latest_data_python/dataflow.yaml
 
       - name: "Test CLI (C)"
         timeout-minutes: 30

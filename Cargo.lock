@@ -7909,7 +7909,6 @@ dependencies = [
  "chrono",
  "dora-node-api",
  "eyre",
- "uhlc",
 ]
 
 [[package]]

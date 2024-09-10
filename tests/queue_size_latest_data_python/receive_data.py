@@ -3,7 +3,10 @@ import time
 
 
 node = Node()
+
+# Voluntarily sleep for 5 seconds to ensure that the node is dropping the oldest input
 time.sleep(5)
+
 for event in node:
     event_type = event["type"]
 
