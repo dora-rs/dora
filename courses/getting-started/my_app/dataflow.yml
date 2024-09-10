@@ -2,7 +2,7 @@ nodes:
   - id: talker
     path: shell
     args: |
-      source .venv/bin/activate
+      . .venv/bin/activate
       python nodes/talker.py
     outputs:
       - message
@@ -10,7 +10,7 @@ nodes:
   - id: listener
     path: shell
     args: |
-      source .venv/bin/activate
+      . .venv/bin/activate
       python nodes/listener.py
     inputs:
       message: talker/message
