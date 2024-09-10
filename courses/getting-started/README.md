@@ -137,7 +137,7 @@ nodes:
       python nodes/listener.py
 ```
 #### Windows
-**For windows users it's hard to make everything works correctly**, so I recommand using the first option or this `dataflow.yml`:
+**For windows users it's hard to make everything works correctly**, so I recommend using the first option or this `dataflow.yml`:
 
 ```yaml
 nodes:
