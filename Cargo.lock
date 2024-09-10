@@ -7903,6 +7903,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "receive_data"
+version = "0.3.6"
+dependencies = [
+ "chrono",
+ "dora-node-api",
+ "eyre",
+ "uhlc",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

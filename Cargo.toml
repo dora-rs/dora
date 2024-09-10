@@ -23,6 +23,7 @@ members = [
     "examples/multiple-daemons/node",
     "examples/multiple-daemons/operator",
     "examples/multiple-daemons/sink",
+    "tests/queue_size_latest_data_rust/receive_data",
     "libraries/arrow-convert",
     "libraries/communication-layer/*",
     "libraries/core",
