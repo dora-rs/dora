@@ -1,0 +1,12 @@
+nodes:
+  - id: send_data
+    path: ../queue_size_latest_data_python/send_data.py
+    outputs:
+      - data
+
+  - id: receive_data_with_sleep
+    path: ../../target/release/receive_data
+    inputs:
+      tick:
+        source: send_data/data
+        queue_size: 1
