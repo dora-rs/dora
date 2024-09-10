@@ -425,24 +425,31 @@ async fn start_inner(
                         },
                         ControlRequest::Logs { uuid, name, node } => {
                             let dataflow_uuid = if let Some(uuid) = uuid {
-                                uuid
+                                Ok(uuid)
                             } else if let Some(name) = name {
-                                resolve_name(name, &running_dataflows, &archived_dataflows)?
+                                resolve_name(name, &running_dataflows, &archived_dataflows)
                             } else {
-                                bail!("No uuid")
+                                Err(eyre!("No uuid"))
                             };
 
-                            let reply = retrieve_logs(
-                                &running_dataflows,
-                                &archived_dataflows,
-                                dataflow_uuid,
-                                node.into(),
-                                &mut daemon_connections,
-                                clock.new_timestamp(),
-                            )
-                            .await
-                            .map(ControlRequestReply::Logs);
-                            let _ = reply_sender.send(reply);
+                            match dataflow_uuid {
+                                Ok(uuid) => {
+                                    let reply = retrieve_logs(
+                                        &running_dataflows,
+                                        &archived_dataflows,
+                                        uuid,
+                                        node.into(),
+                                        &mut daemon_connections,
+                                        clock.new_timestamp(),
+                                    )
+                                    .await
+                                    .map(ControlRequestReply::Logs);
+                                    let _ = reply_sender.send(reply);
+                                }
+                                Err(err) => {
+                                    let _ = reply_sender.send(Err(err));
+                                }
+                            }
                         }
                         ControlRequest::Destroy => {
                             tracing::info!("Received destroy command");
