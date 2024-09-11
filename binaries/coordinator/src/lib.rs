@@ -487,7 +487,7 @@ async fn start_inner(
                             tracing::info!("Received destroy command");
 
                             let reply = handle_destroy(
-                                &running_dataflows,
+                                &mut running_dataflows,
                                 &mut daemon_connections,
                                 &abort_handle,
                                 &mut daemon_events_tx,
@@ -595,7 +595,7 @@ async fn start_inner(
             Event::CtrlC => {
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
                 handle_destroy(
-                    &running_dataflows,
+                    &mut running_dataflows,
                     &mut daemon_connections,
                     &abort_handle,
                     &mut daemon_events_tx,
@@ -631,50 +631,6 @@ async fn start_inner(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn stop_dataflow_by_uuid(
-    running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
-    dataflow_results: &HashMap<Uuid, BTreeMap<String, DataflowDaemonResult>>,
-    dataflow_uuid: Uuid,
-    daemon_connections: &mut HashMap<String, DaemonConnection>,
-    reply_sender: tokio::sync::oneshot::Sender<Result<ControlRequestReply, eyre::ErrReport>>,
-    timestamp: uhlc::Timestamp,
-    grace_duration: Option<Duration>,
-    clock: &uhlc::HLC,
-) -> Result<(), eyre::ErrReport> {
-    let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
-        if let Some(result) = dataflow_results.get(&dataflow_uuid) {
-            let reply = ControlRequestReply::DataflowStopped {
-                uuid: dataflow_uuid,
-                result: dataflow_result(result, dataflow_uuid, clock),
-            };
-            let _ = reply_sender.send(Ok(reply));
-            return Ok(());
-        }
-        bail!("no known dataflow found with UUID `{dataflow_uuid}`")
-    };
-    let stop = async {
-        stop_dataflow_old(
-            dataflow,
-            dataflow_uuid,
-            daemon_connections,
-            timestamp,
-            grace_duration,
-        )
-        .await?;
-        Result::<_, eyre::Report>::Ok(())
-    };
-    match stop.await {
-        Ok(()) => {
-            dataflow.reply_senders.push(reply_sender);
-        }
-        Err(err) => {
-            let _ = reply_sender.send(Err(err));
-        }
-    };
-    Ok(())
-}
-
 fn dataflow_result(
     results: &BTreeMap<String, DataflowDaemonResult>,
     dataflow_uuid: Uuid,
@@ -702,17 +658,17 @@ struct DaemonConnection {
 }
 
 async fn handle_destroy(
-    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     abortable_events: &futures::stream::AbortHandle,
     daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
     clock: &HLC,
 ) -> Result<(), eyre::ErrReport> {
     abortable_events.abort();
-    for (&uuid, dataflow) in running_dataflows {
-        stop_dataflow_old(
-            dataflow,
-            uuid,
+    for dataflow_uuid in running_dataflows.keys().cloned().collect::<Vec<_>>() {
+        let _ = stop_dataflow(
+            running_dataflows,
+            dataflow_uuid,
             daemon_connections,
             clock.new_timestamp(),
             None,
@@ -775,47 +731,6 @@ impl PartialEq for RunningDataflow {
 }
 
 impl Eq for RunningDataflow {}
-
-async fn stop_dataflow_old(
-    dataflow: &RunningDataflow,
-    uuid: Uuid,
-    daemon_connections: &mut HashMap<String, DaemonConnection>,
-    timestamp: uhlc::Timestamp,
-    grace_duration: Option<Duration>,
-) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::StopDataflow {
-            dataflow_id: uuid,
-            grace_duration,
-        },
-        timestamp,
-    })?;
-
-    for machine_id in &dataflow.machines {
-        let daemon_connection = daemon_connections
-            .get_mut(machine_id)
-            .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(&mut daemon_connection.stream, &message)
-            .await
-            .wrap_err("failed to send stop message to daemon")?;
-
-        // wait for reply
-        let reply_raw = tcp_receive(&mut daemon_connection.stream)
-            .await
-            .wrap_err("failed to receive stop reply from daemon")?;
-        match serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize stop reply from daemon")?
-        {
-            DaemonCoordinatorReply::StopResult(result) => result
-                .map_err(|e| eyre!(e))
-                .wrap_err("failed to stop dataflow")?,
-            other => bail!("unexpected reply after sending stop: {other:?}"),
-        }
-    }
-    tracing::info!("successfully send stop dataflow `{uuid}` to all daemons");
-
-    Ok(())
-}
 
 async fn stop_dataflow<'a>(
     running_dataflows: &'a mut HashMap<Uuid, RunningDataflow>,
