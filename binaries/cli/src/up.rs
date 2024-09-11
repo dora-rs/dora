@@ -1,7 +1,7 @@
 use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::cli_to_coordinator::ControlRequest;
-use eyre::Context;
+use eyre::{bail, Context};
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
@@ -61,7 +61,7 @@ pub(crate) fn destroy(
             println!("Send destroy command to dora-coordinator");
         }
         Err(_) => {
-            eprintln!("Could not connect to dora-coordinator");
+            bail!("Could not connect to dora-coordinator");
         }
     }
 
