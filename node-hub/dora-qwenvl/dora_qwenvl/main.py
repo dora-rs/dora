@@ -15,7 +15,7 @@ DEFAULT_QUESTION = os.getenv(
 
 # Check if flash_attn is installed
 try:
-    import flash_attn
+    import flash_attn as _
 
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         CUSTOM_MODEL_PATH,
