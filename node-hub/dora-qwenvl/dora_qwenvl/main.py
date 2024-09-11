@@ -31,7 +31,7 @@ except ImportError:
     )
 
 
-# default processer
+# default processor
 processor = AutoProcessor.from_pretrained(DEFAULT_PATH)
 
 
