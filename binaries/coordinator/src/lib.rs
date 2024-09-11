@@ -397,7 +397,7 @@ async fn start_inner(
                                 };
                                 let _ = reply_sender.send(Ok(reply));
 
-                                return Ok(());
+                                continue;
                             }
 
                             let dataflow = stop_dataflow(
@@ -430,7 +430,7 @@ async fn start_inner(
                                     };
                                     let _ = reply_sender.send(Ok(reply));
 
-                                    return Ok(());
+                                    continue;
                                 }
 
                                 let dataflow = stop_dataflow(
