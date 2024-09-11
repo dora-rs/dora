@@ -10,20 +10,6 @@ DEFAULT_QUESTION = os.getenv(
     "DEFAULT_QUESTION",
     "Describe this image",
 )
-ENTRY_NAME = "dora_demo"
-LLAMA_FACTORY_ROOT_PATH = Path(os.getenv("LLAMA_FACTORY_ROOT_PATH")) / "data"
-
-
-# If JSON already exists, append incremental suffix to avoid overwriting
-if (LLAMA_FACTORY_ROOT_PATH / ENTRY_NAME).exists():
-    i = 1
-    while (LLAMA_FACTORY_ROOT_PATH / f"{ENTRY_NAME}_{i}.json").exists():
-        i += 1
-    ENTRY_NAME = f"{ENTRY_NAME}_{i}"
-
-
-DEFAULT_RECORD_IMAGE_ROOT_PATH = LLAMA_FACTORY_ROOT_PATH / ENTRY_NAME
-DEFAULT_RECORD_JSON_PATH = LLAMA_FACTORY_ROOT_PATH / (ENTRY_NAME + ".json")
 
 
 def write_dict_to_json(file_path, key: str, new_data):
@@ -53,23 +39,6 @@ def write_dict_to_json(file_path, key: str, new_data):
         # If the file doesn't exist, create it and write the new data as a list
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump({key: new_data}, file, indent=4, ensure_ascii=False)
-
-
-write_dict_to_json(
-    LLAMA_FACTORY_ROOT_PATH / "dataset_info.json",
-    ENTRY_NAME,
-    {
-        "file_name": ENTRY_NAME + ".json",
-        "formatting": "sharegpt",
-        "columns": {"messages": "messages", "images": "images"},
-        "tags": {
-            "role_tag": "role",
-            "content_tag": "content",
-            "user_tag": "user",
-            "assistant_tag": "assistant",
-        },
-    },
-)
 
 
 def save_image_and_add_to_json(
@@ -121,6 +90,37 @@ def save_image_and_add_to_json(
 def main():
     pa.array([])  # initialize pyarrow array
     node = Node()
+
+    assert os.getenv(
+        "LLAMA_FACTORY_ROOT_PATH"
+    ), "LLAMA_FACTORY_ROOT_PATH is not set, Either git clone the repo or set the environment variable"
+    llama_factory_root_path = Path(os.getenv("LLAMA_FACTORY_ROOT_PATH")) / "data"
+
+    entry_name = os.getenv("ENTRY_NAME", "dora_demo")
+    # If JSON already exists, append incremental suffix to avoid overwriting
+    if (llama_factory_root_path / entry_name).exists():
+        i = 1
+        while (llama_factory_root_path / f"{entry_name}_{i}.json").exists():
+            i += 1
+        entry_name = f"{entry_name}_{i}"
+
+    default_record_json_path = llama_factory_root_path / (entry_name + ".json")
+
+    write_dict_to_json(
+        llama_factory_root_path / "dataset_info.json",
+        entry_name,
+        {
+            "file_name": entry_name + ".json",
+            "formatting": "sharegpt",
+            "columns": {"messages": "messages", "images": "images"},
+            "tags": {
+                "role_tag": "role",
+                "content_tag": "content",
+                "user_tag": "user",
+                "assistant_tag": "assistant",
+            },
+        },
+    )
 
     question = DEFAULT_QUESTION
     frame = None
@@ -178,9 +178,9 @@ def main():
 
                 save_image_and_add_to_json(
                     image_array=frame,
-                    root_path=ENTRY_NAME,
-                    llama_root_path=LLAMA_FACTORY_ROOT_PATH,
-                    jsonl_file=DEFAULT_RECORD_JSON_PATH,
+                    root_path=entry_name,
+                    llama_root_path=llama_factory_root_path,
+                    jsonl_file=default_record_json_path,
                     messages=messages,
                 )
                 node.send_output(
