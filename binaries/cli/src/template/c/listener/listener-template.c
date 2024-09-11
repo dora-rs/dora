@@ -43,7 +43,7 @@ int main()
             read_dora_input_data(event, &data_ptr, &data_len);
 
             unsigned long long timestamp = read_dora_input_timestamp(event);
-            printf("I heard %s from %s at %llu\n", data_ptr, id_ptr, timestamp);
+            printf("I heard %s from %.*s at %llu\n", data_ptr, (int)id_len, id_ptr, timestamp);
         }
         else if (ty == DoraEventType_Stop)
         {
