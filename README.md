@@ -58,8 +58,6 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 - 🤖 Simplifies building robotic applications by integrating hardware, algorithms, and AI models to facilitate seamless communication.
 - ⚙️ Eases integration of hardware and software by supporting Python, C, C++, and ROS2, while ensuring low-latency communication with zero-copy Arrow messages.
 
-`dora-rs` is backed by [1ms.ai](https://1ms.ai).
-
 ## Installation
 
 Install dora with our standalone installers, or from [crates.io](https://crates.io/crates/dora-cli):
