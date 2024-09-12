@@ -127,27 +127,27 @@ def main():
                 frames[event_id] = Image.fromarray(frame)
 
             elif event_id == "tick":
-                if frame is None:
+                if len(frames.keys()) == 0:
                     continue
-                response = generate(frame, question)
+                response = generate(frames, question)
                 node.send_output(
                     "tick",
                     pa.array([response]),
-                    metadata,
+                    {},
                 )
 
             elif event_id == "text":
                 text = event["value"][0].as_py()
                 if text != "":
                     question = text
-                if frame is None:
+                if len(frames.keys()) == 0:
                     continue
                 # set the max number of tiles in `max_num`
-                response = generate(frame, question)
+                response = generate(frames, question)
                 node.send_output(
                     "text",
                     pa.array([response]),
-                    metadata,
+                    {},
                 )
 
         elif event_type == "ERROR":
