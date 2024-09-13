@@ -18,8 +18,12 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
+      tick: dora/timer/millis/300
     outputs:
       - text
+      - tick
+    env:
+      DEFAULT_QUESTION: Describe the image.
 
   - id: plot
     build: pip install ../../node-hub/opencv-plot
@@ -28,4 +32,4 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
-      text: dora-qwenvl/text
+      text: dora-qwenvl/tick
