@@ -385,6 +385,15 @@ impl Daemon {
                     }
                 }
 
+                // Use the working directory if it exists, otherwise use the working directory where the daemon is spawned
+                let working_dir = if working_dir.exists()
+                    & nodes.iter().all(|n| n.deploy.machine == self.machine_id)
+                {
+                    working_dir
+                } else {
+                    std::env::current_dir().wrap_err("failed to get current working dir")?
+                };
+
                 let result = self
                     .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor)
                     .await;
