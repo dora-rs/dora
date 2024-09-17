@@ -195,10 +195,7 @@ else
   echo ""
 fi
 
-read -p "Do you want to add $dest to your PATH automatically? (y/n): " response
-
-if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-    if [ "$SHELL" = "/bin/bash" ]; then
+if [ -z "$BASH" ]; then
     if ! grep -q "$dest" ~/.bashrc; then
         echo "Adding $dest to PATH in ~/.bashrc"
         echo "export PATH=\$PATH:$dest" >> ~/.bashrc
