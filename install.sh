@@ -199,8 +199,9 @@ if [ "$SHELL" = "/bin/bash" ]; then
     if ! grep -q "$dest" ~/.bashrc; then
         echo "Adding $dest to PATH in ~/.bashrc"
         echo "export PATH=\$PATH:$dest" >> ~/.bashrc
-        source ~/.bashrc
-        echo "Path added to ~/.bashrc and reloaded."
+        echo "Path added to ~/.bashrc."
+        echo "Please reload with:"
+        echo "  source ~/.bashrc"
     else
         echo "$dest is already in the PATH in ~/.bashrc"
     fi
@@ -208,8 +209,9 @@ elif [ "$SHELL" = "/bin/zsh" ]; then
     if ! grep -q "$dest" ~/.zshrc; then
         echo "Adding $dest to PATH in ~/.zshrc"
         echo "export PATH=\$PATH:$dest" >> ~/.zshrc
-        source ~/.zshrc
-        echo "Path added to ~/.zshrc and reloaded."
+        echo "Path added to ~/.zshrc."
+        echo "Please reload with:"
+        echo "  source ~/.zshrc"
     else
         echo "$dest is already in the PATH in ~/.zshrc"
     fi
