@@ -195,7 +195,7 @@ else
   echo ""
 fi
 
-if [ -z "$BASH" ]; then
+if [ "$SHELL" = "/bin/bash" ]; then
     if ! grep -q "$dest" ~/.bashrc; then
         echo "Adding $dest to PATH in ~/.bashrc"
         echo "export PATH=\$PATH:$dest" >> ~/.bashrc
