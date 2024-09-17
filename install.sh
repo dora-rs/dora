@@ -185,7 +185,9 @@ fi
 echo "Placing dora-rs cli in $dest"
 
 if [ -e "$dest/$bin" ] && [ "$force" = false ]; then
-  echo "\`$dest/$bin\` already exists"
+  echo " Replacing \`$dest/$bin\` with downloaded version"
+  cp "$td/$bin" "$dest/$bin"
+  chmod 755 "$dest/$bin"
 else
   mkdir -p "$dest"
   cp "$td/$bin" "$dest/$bin"
@@ -197,31 +199,28 @@ read -p "Do you want to add $dest to your PATH automatically? (y/n): " response
 
 if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
     if [ "$SHELL" = "/bin/bash" ]; then
-        if ! grep -q "$dest" ~/.bashrc; then
-            echo "Adding $dest to PATH in ~/.bashrc"
-            echo "export PATH=\$PATH:$dest" >> ~/.bashrc
-            source ~/.bashrc
-            echo "Path added to ~/.bashrc and reloaded."
-        else
-            echo "$dest is already in the PATH in ~/.bashrc"
-        fi
-    elif [ "$SHELL" = "/bin/zsh" ]; then
-        if ! grep -q "$dest" ~/.zshrc; then
-            echo "Adding $dest to PATH in ~/.zshrc"
-            echo "export PATH=\$PATH:$dest" >> ~/.zshrc
-            source ~/.zshrc
-            echo "Path added to ~/.zshrc and reloaded."
-        else
-            echo "$dest is already in the PATH in ~/.zshrc"
-        fi
+    if ! grep -q "$dest" ~/.bashrc; then
+        echo "Adding $dest to PATH in ~/.bashrc"
+        echo "export PATH=\$PATH:$dest" >> ~/.bashrc
+        source ~/.bashrc
+        echo "Path added to ~/.bashrc and reloaded."
     else
-        echo "Unsupported shell: $SHELL"
-        echo "Please add the following to your shell's configuration file manually:"
-        echo "    export PATH=\$PATH:$dest"
+        echo "$dest is already in the PATH in ~/.bashrc"
+    fi
+elif [ "$SHELL" = "/bin/zsh" ]; then
+    if ! grep -q "$dest" ~/.zshrc; then
+        echo "Adding $dest to PATH in ~/.zshrc"
+        echo "export PATH=\$PATH:$dest" >> ~/.zshrc
+        source ~/.zshrc
+        echo "Path added to ~/.zshrc and reloaded."
+    else
+        echo "$dest is already in the PATH in ~/.zshrc"
     fi
 else
-    echo "You chose not to add $dest to your PATH."
-    echo "To run dora CLI without adding to PATH, use: '~/.dora/bin/dora'"
+    echo "Unsupported shell: $SHELL"
+    echo "Please add the following to your shell's configuration file manually:"
+    echo "    export PATH=\$PATH:$dest"
 fi
+
 
 rm -rf "$td"
