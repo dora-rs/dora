@@ -3,6 +3,10 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+use std::fmt::format;
+
+use eyre::Context;
+
 pub mod common;
 pub mod metadata;
 
@@ -29,9 +33,13 @@ fn versions_compatible(
     crate_version: &semver::Version,
     specified_version: &semver::Version,
 ) -> Result<bool, String> {
-    let req = semver::VersionReq::parse(&crate_version.to_string()).map_err(|error| {
-        format!("failed to parse crate version `{crate_version}` as `VersionReq`: {error}")
-    })?;
+    let current_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|error| format!("failed to parse current version: {error}"))?;
+    let req = semver::VersionReq::parse(&format!(
+        "~{}.{}.0",
+        current_version.major, current_version.minor
+    ))
+    .map_err(|error| format!("failed to set allowing patch version of messages: {error}"))?;
     let specified_dora_req = semver::VersionReq::parse(&specified_version.to_string())
         .map_err(|error| {
             format!(
