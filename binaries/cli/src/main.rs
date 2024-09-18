@@ -196,7 +196,7 @@ enum Command {
         #[clap(long, short, default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
-        #[clap(long, short, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
         coordinator_port: u16,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
