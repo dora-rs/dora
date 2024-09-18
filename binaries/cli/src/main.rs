@@ -193,7 +193,7 @@ enum Command {
         #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
         local_listen_port: u16,
         /// Address and port number of the dora coordinator
-        #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
+        #[clap(long, short, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
         coordinator_addr: SocketAddr,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
