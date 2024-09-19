@@ -1,7 +1,7 @@
 use crate::{
     adjust_shared_library_path,
     config::{DataId, Input, InputMapping, OperatorId, UserInputMapping},
-    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource, EXE_EXTENSION},
+    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
     get_python_path,
 };
 
@@ -34,23 +34,7 @@ pub fn check_dataflow(
                         if remote_daemon_id.contains(&node.deploy.machine.as_str())
                             || coordinator_is_remote
                         {
-                            let path = Path::new(&source);
-                            let path = if path.extension().is_none() {
-                                path.with_extension(EXE_EXTENSION)
-                            } else {
-                                path.to_owned()
-                            };
-                            if path.is_relative() {
-                                eyre::bail!(
-                                    "paths of remote nodes must be absolute (node `{}`)",
-                                    node.id
-                                );
-                            }
                             info!("skipping path check for remote node `{}`", node.id);
-                        } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{}`", source)
-                            })?;
                         }
                     } else {
                         resolve_path(source, working_dir)

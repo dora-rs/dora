@@ -193,8 +193,11 @@ enum Command {
         #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
         local_listen_port: u16,
         /// Address and port number of the dora coordinator
-        #[clap(long, default_value_t = SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT))]
-        coordinator_addr: SocketAddr,
+        #[clap(long, short, default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
+        coordinator_port: u16,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
         /// Suppresses all log output to stdout.
@@ -469,6 +472,7 @@ fn run() -> eyre::Result<()> {
         }
         Command::Daemon {
             coordinator_addr,
+            coordinator_port,
             inter_daemon_addr,
             local_listen_port,
             machine_id,
@@ -483,7 +487,7 @@ fn run() -> eyre::Result<()> {
                 match run_dataflow {
                     Some(dataflow_path) => {
                         tracing::info!("Starting dataflow `{}`", dataflow_path.display());
-                        if coordinator_addr != SocketAddr::new(LOCALHOST, DORA_COORDINATOR_PORT_DEFAULT){
+                        if coordinator_addr != LOCALHOST {
                             tracing::info!(
                                 "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
                                 coordinator_addr
@@ -494,10 +498,10 @@ fn run() -> eyre::Result<()> {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        if coordinator_addr.ip() == LOCALHOST {
+                        if coordinator_addr == LOCALHOST {
                             tracing::info!("Starting in local mode");
                         }
-                        Daemon::run(coordinator_addr, machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
+                        Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
                     }
                 }
             })
