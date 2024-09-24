@@ -25,7 +25,7 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-            node.send_output("echo", event["value"])
+            node.send_output(event["id"], event["value"], event["metadata"])
 
 
 if __name__ == "__main__":
