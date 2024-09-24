@@ -160,7 +160,8 @@ def main():
                     )
 
                     plot.frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                elif encoding == "jpeg":
+
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     channels = 3
                     storage_type = np.uint8
                     storage = storage.to_numpy()
