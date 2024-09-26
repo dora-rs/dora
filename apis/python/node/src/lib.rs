@@ -40,6 +40,7 @@ pub struct Node {
 #[pymethods]
 impl Node {
     #[new]
+    #[pyo3(signature = (node_id=None))]
     pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
         let (node, events) = if let Some(node_id) = node_id {
             DoraNode::init_flexible(NodeId::from(node_id))
@@ -87,6 +88,7 @@ impl Node {
     ///
     /// :type timeout: float, optional
     /// :rtype: dict
+    #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
@@ -151,6 +153,7 @@ impl Node {
     /// :type data: pyarrow.Array
     /// :type metadata: dict, optional
     /// :rtype: None
+    #[pyo3(signature = (output_id, data, metadata=None))]
     pub fn send_output(
         &mut self,
         output_id: String,
@@ -185,10 +188,10 @@ impl Node {
     ///
     /// :rtype: dict
     pub fn dataflow_descriptor(&mut self, py: Python) -> eyre::Result<PyObject> {
-        Ok(pythonize::pythonize(
-            py,
-            self.node.get_mut().dataflow_descriptor(),
-        )?)
+        Ok(
+            pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor())
+                .map(|x| x.unbind())?,
+        )
     }
 
     /// Returns the dataflow id.
