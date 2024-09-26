@@ -70,6 +70,11 @@ def plot_frame(plot):
             cv2.imshow("Dora Node: opencv-plot", plot.frame)
 
 
+def yuv420p_to_bgr_opencv(yuv_array, width, height):
+    yuv = yuv_array.reshape((height * 3 // 2, width))
+    return cv2.cvtColor(yuv, cv2.COLOR_YUV420p2RGB)
+
+
 def main():
 
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
@@ -155,6 +160,23 @@ def main():
                     )
 
                     plot.frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    channels = 3
+                    storage_type = np.uint8
+                    storage = storage.to_numpy()
+                    plot.frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
+
+                elif encoding == "yuv420":
+
+                    storage = storage.to_numpy()
+
+                    # Convert back to BGR results in more saturated image.
+                    channels = 3
+                    storage_type = np.uint8
+                    img_bgr_restored = yuv420p_to_bgr_opencv(storage, width, height)
+
+                    plot.frame = img_bgr_restored
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
