@@ -101,6 +101,11 @@ def main():
                         1,
                     )
 
+                metadata = event["metadata"]
+                metadata["encoding"] = encoding
+                metadata["width"] = int(frame.shape[1])
+                metadata["height"] = int(frame.shape[0])
+
                 # resize the frame
                 if (
                     image_width is not None
@@ -114,13 +119,10 @@ def main():
                 # Get the right encoding
                 if encoding == "rgb8":
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    frame = cv2.imencode("." + encoding, frame)[1]
 
                 storage = pa.array(frame.ravel())
-
-                metadata = event["metadata"]
-                metadata["width"] = int(frame.shape[1])
-                metadata["height"] = int(frame.shape[0])
-                metadata["encoding"] = encoding
 
                 node.send_output("image", storage, metadata)
 
