@@ -6,7 +6,4 @@ Make sure to have, dora, pip and cargo installed.
 dora up
 dora build dataflow.yml
 dora start dataflow.yml
-
-# In another terminal
-terminal-input
 ```

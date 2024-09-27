@@ -2,7 +2,7 @@ import argparse
 import os
 import ast
 
-
+import pyarrow as pa
 from dora import Node
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
@@ -36,12 +36,23 @@ def main():
         args.name
     )  # provide the name to connect to the dataflow if dynamic node
 
-    assert_data = ast.literal_eval(data)
+    data = ast.literal_eval(data)
+
+    if isinstance(data, list):
+        data = pa.array(data)  # initialize pyarrow array
+    elif isinstance(data, str):
+        data = pa.array([data])
+    elif isinstance(data, int):
+        data = pa.array([data])
+    elif isinstance(data, float):
+        data = pa.array([data])
+    else:
+        data = pa.array(data)  # initialize pyarrow array
 
     for event in node:
         if event["type"] == "INPUT":
             value = event["value"]
-            assert value == assert_data, f"Expected {assert_data}, got {value}"
+            assert value == data, f"Expected {data}, got {value}"
 
 
 if __name__ == "__main__":

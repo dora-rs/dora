@@ -1,7 +1,7 @@
 nodes:
   - id: pyarrow-sender
     build: pip install -e ../../node-hub/pyarrow-sender
-    path: dynamic
+    path: pyarrow-sender
     outputs:
       - data
     env:
@@ -13,4 +13,4 @@ nodes:
     inputs:
       data: pyarrow-sender/data
     env:
-      DATA: "pa.array([1, 2, 3, 4, 5])"
+      DATA: "[1, 2, 3, 4, 5]"
