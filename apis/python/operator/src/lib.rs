@@ -102,7 +102,7 @@ impl PyEvent {
                 }
             }
             MergedEvent::External(event) => {
-                pydict.insert("value", event.clone());
+                pydict.insert("value", event.clone_ref(py));
             }
         }
 

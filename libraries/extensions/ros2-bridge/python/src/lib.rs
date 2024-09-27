@@ -56,6 +56,7 @@ pub struct Ros2Context {
 impl Ros2Context {
     /// Create a new context
     #[new]
+    #[pyo3(signature = (ros_paths=None))]
     pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
         Python::with_gil(|py| -> Result<()> {
             let warnings = py
@@ -209,6 +210,7 @@ impl Ros2Node {
     /// :type topic: dora.Ros2Topic
     /// :type qos: dora.Ros2QosPolicies, optional
     /// :rtype: dora.Ros2Publisher
+    #[pyo3(signature = (topic, qos=None))]
     pub fn create_publisher(
         &mut self,
         topic: &Ros2Topic,
@@ -236,6 +238,7 @@ impl Ros2Node {
     /// :type topic: dora.Ros2Topic
     /// :type qos: dora.Ros2QosPolicies, optional
     /// :rtype: dora.Ros2Subscription
+    #[pyo3(signature = (topic, qos=None))]
     pub fn create_subscription(
         &mut self,
         topic: &Ros2Topic,
@@ -263,6 +266,7 @@ pub struct Ros2NodeOptions {
 
 #[pymethods]
 impl Ros2NodeOptions {
+    #[pyo3(signature = (rosout=None))]
     #[new]
     pub fn new(rosout: Option<bool>) -> Self {
         Self {

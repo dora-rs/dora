@@ -27,30 +27,34 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             target: x86_64
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             target: x86
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             target: aarch64
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             target: armv7
-          # - runner: ubuntu-latest
+          # - runner: ubuntu-20.04
           # target: s390x
-          # - runner: ubuntu-latest
+          # - runner: ubuntu-20.04
           # target: ppc64le
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: 3.8
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-provider: buildjet
+          # only save caches for `main` branch
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
-          sccache: "true"
-          manylinux: auto
+          manylinux: manylinux_2_28
           working-directory: apis/python/node
       - name: Upload wheels
         if: github.event_name == 'release'
@@ -72,11 +76,11 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: ubuntu-latest
+          - runner: ubuntu-20.04
             target: x86_64
-          - runner: ubuntu-latest
+          - runner: ubuntu-20.04
             target: x86
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             target: aarch64
     steps:
       - uses: actions/checkout@v4
@@ -107,7 +111,7 @@ jobs:
           file_glob: true
 
   musleabi:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         platform:
@@ -221,7 +225,7 @@ jobs:
           file_glob: true
 
   sdist:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v3
       - name: Build sdist
@@ -239,7 +243,7 @@ jobs:
 
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
     needs: [linux, musllinux, musleabi, windows, macos, sdist]
     steps:
