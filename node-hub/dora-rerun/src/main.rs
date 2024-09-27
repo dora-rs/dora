@@ -11,12 +11,14 @@ use dora_node_api::{
 };
 use eyre::{eyre, Context, ContextCompat, Result};
 use rerun::{
-    external::re_types::ArrowBuffer, SpawnOptions, TensorBuffer, TensorData, TensorDimension, Text,
+    components::ImageBuffer, external::re_types::ArrowBuffer, ImageFormat, SpawnOptions, Text,
 };
 
 fn main() -> Result<()> {
     // rerun `serve()` requires to have a running Tokio runtime in the current context.
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
     let (_node, mut events) =
@@ -63,22 +65,6 @@ fn main() -> Result<()> {
                 } else {
                     "bgr8"
                 };
-                let channels = 3;
-
-                let shape = vec![
-                    TensorDimension {
-                        name: Some("height".into()),
-                        size: *height as u64,
-                    },
-                    TensorDimension {
-                        name: Some("width".into()),
-                        size: *width as u64,
-                    },
-                    TensorDimension {
-                        name: Some("depth".into()),
-                        size: channels as u64,
-                    },
-                ];
 
                 let image = if encoding == "bgr8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
@@ -87,17 +73,26 @@ fn main() -> Result<()> {
                     // Transpose values from BGR to RGB
                     let buffer: Vec<u8> =
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
-                    let buffer = TensorBuffer::U8(ArrowBuffer::from(buffer));
-                    let tensordata = TensorData::new(shape.clone(), buffer);
+                    let buffer = ArrowBuffer::from(buffer);
+                    let image_buffer = ImageBuffer::try_from(buffer)
+                        .context("Could not convert buffer to image buffer")?;
+                    // let tensordata = ImageBuffer(buffer);
 
-                    rerun::Image::new(tensordata)
+                    rerun::Image::new(
+                        image_buffer,
+                        ImageFormat::rgb8([*width as u32, *height as u32]),
+                    )
                 } else if encoding == "rgb8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
-                    let buffer = TensorBuffer::U8(ArrowBuffer::from(buffer));
-                    let tensordata = TensorData::new(shape.clone(), buffer);
+                    let buffer = ArrowBuffer::from(buffer);
+                    let image_buffer = ImageBuffer::try_from(buffer)
+                        .context("Could not convert buffer to image buffer")?;
 
-                    rerun::Image::new(tensordata)
+                    rerun::Image::new(
+                        image_buffer,
+                        ImageFormat::rgb8([*width as u32, *height as u32]),
+                    )
                 } else {
                     unimplemented!("We haven't worked on additional encodings.")
                 };
