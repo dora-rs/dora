@@ -54,7 +54,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
-          manylinux: auto
+          manylinux: manylinux_2_28
           working-directory: apis/python/node
       - name: Upload wheels
         if: github.event_name == 'release'
