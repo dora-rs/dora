@@ -36,13 +36,15 @@ mod tests {
     use arrow::pyarrow::FromPyArrow;
     use arrow::pyarrow::ToPyArrow;
 
+    use eyre::eyre;
     use pyo3::types::IntoPyDict;
     use pyo3::types::PyAnyMethods;
     use pyo3::types::PyDict;
     use pyo3::types::PyList;
+    use pyo3::types::PyListMethods;
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
-    use pyo3::PyNativeType;
+
     use pyo3::Python;
     use serde::de::DeserializeSeed;
     use serde::Serialize;
@@ -71,9 +73,14 @@ mod tests {
 
             let my_module = PyModule::import_bound(py, "test_utils")?;
 
-            let arrays: &PyList = my_module.getattr("TEST_ARRAYS")?.extract()?;
+            let arrays = my_module.getattr("TEST_ARRAYS")?;
+            let arrays = arrays
+                .downcast::<PyList>()
+                .map_err(|err| eyre!("Could not downcast PyAny. Err: {}", err))?;
             for array_wrapper in arrays.iter() {
-                let arrays: &PyTuple = array_wrapper.extract()?;
+                let arrays = array_wrapper.downcast::<PyTuple>().map_err(|err| {
+                    eyre!("Could not downcast expected tuple test array. Err: {}", err)
+                })?;
                 let package_name: String = arrays.get_item(0)?.extract()?;
                 let message_name: String = arrays.get_item(1)?.extract()?;
                 println!("Checking {}::{}", package_name, message_name);
