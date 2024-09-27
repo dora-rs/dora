@@ -44,12 +44,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.8
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-provider: buildjet
+          # only save caches for `main` branch
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --zig
-          sccache: "true"
+          args: --release --out dist
           manylinux: auto
           working-directory: apis/python/node
       - name: Upload wheels
@@ -107,7 +111,7 @@ jobs:
           file_glob: true
 
   musleabi:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         platform:
