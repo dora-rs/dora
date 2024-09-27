@@ -29,6 +29,7 @@ pub struct Ros2QosPolicies {
 #[pymethods]
 impl Ros2QosPolicies {
     #[new]
+    #[pyo3(signature = (durability=None, liveliness=None, reliable=None, keep_all=None, lease_duration=None, max_blocking_time=None, keep_last=None))]
     pub fn new(
         durability: Option<Ros2Durability>,
         liveliness: Option<Ros2Liveliness>,
@@ -79,7 +80,7 @@ impl From<Ros2QosPolicies> for rustdds::QosPolicies {
 ///
 /// :rtype: dora.Ros2Durability
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Str, Repr, Dir, Dict)]
-#[pyclass]
+#[pyclass(eq, eq_int)]
 pub enum Ros2Durability {
     Volatile,
     TransientLocal,
@@ -105,7 +106,7 @@ impl From<Ros2Durability> for policy::Durability {
 /// DDS 2.2.3.11 LIVELINESS
 /// :rtype: dora.Ros2Liveliness
 #[derive(Copy, Clone, PartialEq, Str, Repr, Dir, Dict)]
-#[pyclass]
+#[pyclass(eq, eq_int)]
 pub enum Ros2Liveliness {
     Automatic,
     ManualByParticipant,

@@ -12,7 +12,7 @@ use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
 use pyo3::{
     pyclass,
-    types::{IntoPyDict, PyAnyMethods, PyDict, PyTracebackMethods},
+    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyTracebackMethods},
     Py, PyAny, Python,
 };
 use std::{
@@ -138,9 +138,10 @@ pub fn run(
                     let current_state = operator
                         .getattr(py, "__dict__")
                         .wrap_err("Could not retrieve current operator state")?;
-                    let current_state = current_state
-                        .extract::<&PyDict>(py)
-                        .wrap_err("could not extract operator state as a PyDict")?;
+                    let current_state =
+                        current_state.downcast_bound::<PyDict>(py).map_err(|err| {
+                            eyre!("could not extract operator state as a PyDict. Err: {}", err)
+                        })?;
                     // Reload module
                     let module = py
                         .import_bound(module_name)
@@ -168,8 +169,10 @@ pub fn run(
                     operator
                         .getattr(py, "__dict__")
                         .wrap_err("Could not retrieve new operator state")?
-                        .extract::<&PyDict>(py)
-                        .wrap_err("could not extract new operator state as a PyDict")?
+                        .downcast_bound::<PyDict>(py)
+                        .map_err(|err| {
+                            eyre!("could not extract new operator state as a PyDict. Err: {err}")
+                        })?
                         .update(current_state.as_mapping())
                         .wrap_err("could not restore operator state")?;
 
@@ -314,6 +317,7 @@ mod callback_impl {
     /// `e.g.:  send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`
     #[pymethods]
     impl SendOutputCallback {
+        #[pyo3(signature = (output, data, metadata=None))]
         fn __call__(
             &mut self,
             output: &str,
