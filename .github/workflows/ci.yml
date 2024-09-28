@@ -73,7 +73,7 @@ jobs:
     name: "Examples"
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest, windows-latest]
+        platform: [ubuntu-22.04, macos-latest, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
@@ -132,27 +132,6 @@ jobs:
       - name: "Unix Domain Socket example"
         if: runner.os == 'Linux'
         run: cargo run --example rust-dataflow -- dataflow_socket.yml
-
-      # python examples
-      - uses: actions/setup-python@v2
-        if: runner.os != 'Windows'
-        with:
-          python-version: "3.8"
-      - uses: actions/setup-python@v2
-        if: runner.os == 'Windows'
-        with:
-          python-version: "3.10"
-      - name: "Python Dataflow example"
-        run: cargo run --example python-dataflow
-      - uses: conda-incubator/setup-miniconda@v3
-        with:
-          auto-activate-base: true
-          activate-environment: ""
-      - name: "Python Operator Dataflow example"
-        shell: bash -l {0}
-        run: |
-          conda deactivate 
-          cargo run --example python-operator-dataflow
 
   # ROS2 bridge examples
   ros2-bridge-examples:
@@ -270,7 +249,7 @@ jobs:
         with:
           # this might remove tools that are actually needed,
           # if set to "true" but frees about 6 GB
-          tool-cache: false
+          tool-cache: true
 
           # all of these default to true, but feel free to set to
           # "false" if necessary for your workflow
@@ -279,7 +258,7 @@ jobs:
           haskell: true
           large-packages: false
           docker-images: true
-          swap-storage: false
+          swap-storage: true
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -338,11 +317,27 @@ jobs:
           dora start dataflow.yml --name ci-python-test --detach
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
-          dora build ../examples/python-dataflow/dataflow_dynamic.yml
+
+          # Run Python Node Example
+
+          dora build ../examples/python-dataflow/dataflow.yml
+          dora start ../examples/python-dataflow/dataflow.yml --name ci-python --detach
+          sleep 5
+          dora stop --name ci-python  --grace-duration 5s
+
+          # Run Python Dynamic Node Example
+
           dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
           opencv-plot --name plot
           sleep 5
           dora stop --name ci-python-dynamic  --grace-duration 5s
+
+          # Run Python Operator Example
+
+          dora start ../examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach
+          sleep 5
+          dora stop --name ci-python-operator  --grace-duration 5s
+
           dora destroy
 
       - name: "Test CLI (C)"
