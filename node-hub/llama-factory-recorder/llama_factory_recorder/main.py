@@ -42,7 +42,7 @@ def write_dict_to_json(file_path, key: str, new_data):
 
 
 def save_image_and_add_to_json(
-    image_array, root_path, llama_root_path, jsonl_file, messages
+    frame_dict: dict, root_path, llama_root_path, jsonl_file, messages
 ):
     """
     Saves an image from a NumPy array and adds a new JSON object as a line to a JSONL file.
@@ -69,17 +69,19 @@ def save_image_and_add_to_json(
             if os.path.isfile(os.path.join(llama_root_path / root_path, name))
         ]
     )
+    image_paths = []
+    for (event_id, data) in frame_dict.items():
+        # Define the image filename
+        image_filename = f"{event_id}-{image_id}.png"
+        image_path = os.path.join(root_path, image_filename)
 
-    # Define the image filename
-    image_filename = f"{image_id}.png"
-    image_path = os.path.join(root_path, image_filename)
-
-    # Save the image
-    image = Image.fromarray(image_array)
-    image.save(llama_root_path / image_path)
+        # Save the image
+        image = Image.fromarray(data)
+        image.save(llama_root_path / image_path)
+        image_paths.append(image_path)
 
     # Create the JSON entry with 'messages' and 'images'
-    new_entry = {"messages": messages, "images": [image_path]}
+    new_entry = {"messages": messages, "images": image_paths}
 
     # Add the entry to the JSONL file with UTF-8 encoding
     with open(jsonl_file, "a", encoding="utf-8") as f:
@@ -123,7 +125,7 @@ def main():
     )
 
     question = DEFAULT_QUESTION
-    frame = None
+    frames = {}
 
     for event in node:
         event_type = event["type"]
@@ -131,7 +133,7 @@ def main():
         if event_type == "INPUT":
             event_id = event["id"]
 
-            if event_id == "image":
+            if "image" in event_id:
                 storage = event["value"]
                 metadata = event["metadata"]
                 encoding = metadata["encoding"]
@@ -153,7 +155,7 @@ def main():
                     .reshape((height, width, channels))
                 )
                 if encoding == "bgr8":
-                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                    frames[event_id] = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 elif encoding == "rgb8":
                     pass
                 else:
@@ -164,12 +166,12 @@ def main():
                 if text != "":
                     question = text
             elif event_id == "ground_truth":
-                if frame is None:
+                if len(frames.keys()) == 0:
                     continue
                 ground_truth = event["value"][0].as_py()
 
                 messages = [
-                    {"content": "<image>" + question, "role": "user"},
+                    {"content": "<image>"  * len(frames.keys()) + question, "role": "user"},
                     {
                         "content": ground_truth,
                         "role": "assistant",
@@ -177,7 +179,7 @@ def main():
                 ]
 
                 save_image_and_add_to_json(
-                    image_array=frame,
+                    frame_dict=frames,
                     root_path=entry_name,
                     llama_root_path=llama_factory_root_path,
                     jsonl_file=default_record_json_path,
