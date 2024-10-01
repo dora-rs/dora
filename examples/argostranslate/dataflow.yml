@@ -1,0 +1,15 @@
+nodes:
+  - id: type
+    custom:
+      source: shell
+      args: python write_op.py
+      inputs:
+        tick: dora/timer/millis/5000
+      outputs:
+        - text
+  - id: argo
+    custom:
+      source: shell
+      args: python argo_translate_op.py
+      inputs:
+        text: type/text
