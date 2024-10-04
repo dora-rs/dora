@@ -1,5 +1,6 @@
 import pytest
 
+
 def test_import_main():
     from dora_argo.main import main
 
