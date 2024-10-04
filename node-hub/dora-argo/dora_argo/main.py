@@ -1,5 +1,6 @@
 import argostranslate.package
 import argostranslate.translate
+
 from dora import Node
 
 from_code = "fr"
