@@ -16,6 +16,7 @@ package_to_install = next(
 )
 argostranslate.package.install_from_path(package_to_install.download())
 
+
 def main():
     node = Node()
     while True:
