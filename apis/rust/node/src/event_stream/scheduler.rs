@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use dora_message::{daemon_to_node::NodeEvent, id::DataId};
 
-use super::thread::EventItem;
+use super::{thread::EventItem, Event};
 pub const NON_INPUT_EVENT: &str = "dora/non_input_event";
 
 // This scheduler will make sure that there is fairness between
@@ -40,13 +40,7 @@ impl Scheduler {
     pub fn add_event(&mut self, event: EventItem) {
         let event_id = match &event {
             EventItem::NodeEvent {
-                event:
-                    NodeEvent::Input {
-                        id,
-                        metadata: _,
-                        data: _,
-                    },
-                ack_channel: _,
+                event: Event::Input { id, .. },
             } => id,
             _ => &DataId::from(NON_INPUT_EVENT.to_string()),
         };

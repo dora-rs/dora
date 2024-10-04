@@ -5,7 +5,7 @@ use dora_core::{
     uhlc,
 };
 use dora_message::{
-    common::{DropToken, Timestamped},
+    common::{DropTokenState, DropTokenStatus, Timestamped},
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
     node_to_daemon::DaemonRequest,
     DataflowId,
@@ -461,13 +461,13 @@ impl Listener {
         Ok(())
     }
 
-    async fn report_drop_tokens(&mut self, drop_tokens: Vec<DropToken>) -> eyre::Result<()> {
+    async fn report_drop_tokens(&mut self, drop_tokens: Vec<DropTokenStatus>) -> eyre::Result<()> {
         if !drop_tokens.is_empty() {
             let event = Event::Node {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node_id.clone(),
-                event: DaemonNodeEvent::ReportDrop {
-                    tokens: drop_tokens,
+                event: DaemonNodeEvent::ReportTokenState {
+                    token_events: drop_tokens,
                 },
             };
             let event = Timestamped {

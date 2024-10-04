@@ -192,6 +192,22 @@ impl fmt::Debug for DataMessage {
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
+pub struct DropTokenStatus {
+    pub token: DropToken,
+    pub state: DropTokenState,
+}
+
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum DropTokenState {
+    Mapped,
+    Dropped,
+}
+
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct DropToken(Uuid);
 
 impl DropToken {
