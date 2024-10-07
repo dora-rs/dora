@@ -6,7 +6,6 @@ from dora import Node
 import asyncio
 import pyarrow as pa
 import ast
-import os
 
 DORA_RESPONSE_TIMEOUT = 10
 app = FastAPI()
@@ -74,7 +73,6 @@ async def create_chat_completion(request: ChatCompletionRequest):
         print("Timedout")
         response_str = "No response received"
     else:
-
         response = event["value"]
         response_str = response[0].as_py() if response else "No response received"
 
@@ -117,7 +115,12 @@ async def run_fastapi():
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
 
-    await asyncio.gather(server.serve())
+    server = asyncio.gather(server.serve())
+    while True:
+        await asyncio.sleep(1)
+        event = node.next(0.001)
+        if event["type"] == "STOP":
+            break
 
 
 def main():
