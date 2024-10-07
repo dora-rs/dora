@@ -253,7 +253,7 @@ impl DoraNode {
         self.handle_finished_drop_tokens()?;
 
         if !self.node_config.outputs.contains(&output_id) {
-            eyre::bail!("unknown output");
+            eyre::bail!("unknown dora node output `{output_id}` called by `send_output`. Double-check if this output is defined within your dataflow YAML file.",);
         }
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
