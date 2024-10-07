@@ -33,6 +33,7 @@ members = [
     "node-hub/dora-record",
     "node-hub/dora-rerun",
     "node-hub/terminal-print",
+    "node-hub/openai-proxy-server",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
