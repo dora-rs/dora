@@ -16,7 +16,7 @@ dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 torch = "^2.4.0"
 torchvision = "^0.19"
-transformers = { git = "https://github.com/huggingface/transformers" }
+transformers = "^4.45"
 qwen-vl-utils = "^0.0.2"
 accelerate = "^0.33"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
