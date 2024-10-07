@@ -17,6 +17,10 @@ dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
 python = "^3.7"
+fastapi = "^0.115"
+asyncio = "^3.4"
+uvicorn = "^0.31"
+pydantic = "^2.9"
 
 [tool.poetry.scripts]
 dora-openai-server = "dora_openai_server.main:main"
