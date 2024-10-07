@@ -1,7 +1,10 @@
 use dora_node_api::{self, dora_core::config::DataId, merged::MergeExternalSend, DoraNode, Event};
 
 use eyre::{Context, ContextCompat};
-use futures::channel::oneshot::{self, Canceled};
+use futures::{
+    channel::oneshot::{self, Canceled},
+    TryStreamExt,
+};
 use hyper::{
     body::{to_bytes, Body, HttpBody},
     header,
@@ -362,6 +365,7 @@ async fn chat_completions_handler(
 
     // log user id
     info!(target: "stdout", "user: {}", chat_request.user.clone().unwrap());
+    let stream = chat_request.stream;
 
     let (tx, rx) = oneshot::channel();
     if let Err(err) = request_tx
@@ -375,58 +379,95 @@ async fn chat_completions_handler(
         return error::internal_server_error(format!("{err:?}"));
     }
 
-    let res = match rx
-        .await
-        .unwrap_or_else(|Canceled| Err(eyre::eyre!("result channel closed early")))
-    {
-        Ok(chat_completion_object) => {
-            // serialize chat completion object
-            let s = match serde_json::to_string(&chat_completion_object) {
-                Ok(s) => s,
-                Err(e) => {
-                    let err_msg = format!("Failed to serialize chat completion object. {}", e);
+    let res = if let Some(true) = stream {
+        let result = async {
+            let chat_completion_object = rx
+                .await
+                .unwrap_or_else(|Canceled| Err(eyre::eyre!("result channel closed early")))?;
+            serde_json::to_string(&chat_completion_object).context("failed to serialize response")
+        };
+        let stream = futures::stream::once(result).map_err(|e| e.to_string());
 
-                    // log
-                    error!(target: "stdout", "{}", &err_msg);
+        let result = Response::builder()
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "*")
+            .header("Access-Control-Allow-Headers", "*")
+            .header("Content-Type", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("Connection", "keep-alive")
+            .header("user", id)
+            .body(Body::wrap_stream(stream));
 
-                    return error::internal_server_error(err_msg);
-                }
-            };
+        match result {
+            Ok(response) => {
+                // log
+                info!(target: "stdout", "finish chat completions in stream mode");
 
-            // return response
-            let result = Response::builder()
-                .header("Access-Control-Allow-Origin", "*")
-                .header("Access-Control-Allow-Methods", "*")
-                .header("Access-Control-Allow-Headers", "*")
-                .header("Content-Type", "application/json")
-                .header("user", id)
-                .body(Body::from(s));
+                response
+            }
+            Err(e) => {
+                let err_msg = format!("Failed chat completions in stream mode. Reason: {}", e);
 
-            match result {
-                Ok(response) => {
-                    // log
-                    info!(target: "stdout", "Finish chat completions in non-stream mode");
+                // log
+                error!(target: "stdout", "{}", &err_msg);
 
-                    response
-                }
-                Err(e) => {
-                    let err_msg =
-                        format!("Failed chat completions in non-stream mode. Reason: {}", e);
-
-                    // log
-                    error!(target: "stdout", "{}", &err_msg);
-
-                    error::internal_server_error(err_msg)
-                }
+                error::internal_server_error(err_msg)
             }
         }
-        Err(e) => {
-            let err_msg = format!("Failed to get chat completions. Reason: {}", e);
+    } else {
+        match rx
+            .await
+            .unwrap_or_else(|Canceled| Err(eyre::eyre!("result channel closed early")))
+        {
+            Ok(chat_completion_object) => {
+                // serialize chat completion object
+                let s = match serde_json::to_string(&chat_completion_object) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let err_msg = format!("Failed to serialize chat completion object. {}", e);
 
-            // log
-            error!(target: "stdout", "{}", &err_msg);
+                        // log
+                        error!(target: "stdout", "{}", &err_msg);
 
-            error::internal_server_error(err_msg)
+                        return error::internal_server_error(err_msg);
+                    }
+                };
+
+                // return response
+                let result = Response::builder()
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("Access-Control-Allow-Methods", "*")
+                    .header("Access-Control-Allow-Headers", "*")
+                    .header("Content-Type", "application/json")
+                    .header("user", id)
+                    .body(Body::from(s));
+
+                match result {
+                    Ok(response) => {
+                        // log
+                        info!(target: "stdout", "Finish chat completions in non-stream mode");
+
+                        response
+                    }
+                    Err(e) => {
+                        let err_msg =
+                            format!("Failed chat completions in non-stream mode. Reason: {}", e);
+
+                        // log
+                        error!(target: "stdout", "{}", &err_msg);
+
+                        error::internal_server_error(err_msg)
+                    }
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("Failed to get chat completions. Reason: {}", e);
+
+                // log
+                error!(target: "stdout", "{}", &err_msg);
+
+                error::internal_server_error(err_msg)
+            }
         }
     };
 
