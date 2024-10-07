@@ -68,13 +68,17 @@ async def create_chat_completion(request: ChatCompletionRequest):
     node.send_output("v1/chat/completions", data)
 
     # Wait for response from dora-echo
-    event = node.next(timeout=DORA_RESPONSE_TIMEOUT)
-    if event["type"] == "ERROR":
-        print("Timedout")
-        response_str = "No response received"
-    else:
-        response = event["value"]
-        response_str = response[0].as_py() if response else "No response received"
+    while True:
+        event = node.next(timeout=DORA_RESPONSE_TIMEOUT)
+        if event["type"] == "ERROR":
+            response_str = "No response received. Err: " + event["value"][0].as_py()
+            break
+        elif event["type"] == "INPUT" and event["id"] == "v1/chat/completions":
+            response = event["value"]
+            response_str = response[0].as_py() if response else "No response received"
+            break
+        else:
+            pass
 
     return ChatCompletionResponse(
         id="chatcmpl-1234",
