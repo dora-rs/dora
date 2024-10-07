@@ -76,8 +76,8 @@ def main():
 
     for event in node:
 
-        # Run this example in the CI for 20 seconds only.
-        if RUNNER_CI and time.time() - start_time > 20:
+        # Run this example in the CI for 10 seconds only.
+        if RUNNER_CI and time.time() - start_time > 10:
             break
 
         event_type = event["type"]
