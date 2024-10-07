@@ -374,13 +374,6 @@ fn run() -> eyre::Result<()> {
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            if !coordinator_addr.is_loopback() {
-                dataflow_descriptor.check_in_daemon(&working_dir, &[], true)?;
-            } else {
-                dataflow_descriptor
-                    .check(&working_dir)
-                    .wrap_err("Could not validate yaml")?;
-            }
 
             let coordinator_socket = (coordinator_addr, coordinator_port).into();
             let mut session = connect_to_coordinator(coordinator_socket)
@@ -498,9 +491,6 @@ fn run() -> eyre::Result<()> {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        if coordinator_addr == LOCALHOST {
-                            tracing::info!("Starting in local mode");
-                        }
                         Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
                     }
                 }
