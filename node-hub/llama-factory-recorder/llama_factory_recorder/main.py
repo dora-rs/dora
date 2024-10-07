@@ -70,7 +70,7 @@ def save_image_and_add_to_json(
         ]
     )
     image_paths = []
-    for (event_id, data) in frame_dict.items():
+    for event_id, data in frame_dict.items():
         # Define the image filename
         image_filename = f"{event_id}-{image_id}.png"
         image_path = os.path.join(root_path, image_filename)
@@ -171,7 +171,10 @@ def main():
                 ground_truth = event["value"][0].as_py()
 
                 messages = [
-                    {"content": "<image>"  * len(frames.keys()) + question, "role": "user"},
+                    {
+                        "content": "<image>" * len(frames.keys()) + question,
+                        "role": "user",
+                    },
                     {
                         "content": ground_truth,
                         "role": "assistant",
