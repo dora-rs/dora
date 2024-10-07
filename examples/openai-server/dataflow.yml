@@ -1,0 +1,16 @@
+nodes:
+  - id: dora-openai-server
+    build: pip install -e ../../node-hub/dora-openai-server
+    path: dora-openai-server
+    outputs:
+      - v1/chat/completions
+    inputs:
+      v1/chat/completions: dora-echo/echo
+
+  - id: dora-echo
+    build: pip install -e ../../node-hub/dora-echo
+    path: dora-echo
+    inputs:
+      echo: dora-openai-server/v1/chat/completions
+    outputs:
+      - echo
