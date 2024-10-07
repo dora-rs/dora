@@ -33,8 +33,7 @@ class ChatCompletionResponse(BaseModel):
     usage: dict
 
 
-if not os.getenv("PYTEST_CURRENT_TEST"):
-    node = Node()  # provide the name to connect to the dataflow if dynamic node
+node = Node()  # provide the name to connect to the dataflow if dynamic node
 
 
 @app.post("/v1/chat/completions")

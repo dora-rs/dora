@@ -1,5 +1,4 @@
 from openai import OpenAI
-import os
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy_api_key")
 
