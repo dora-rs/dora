@@ -322,20 +322,20 @@ jobs:
 
           dora build ../examples/python-dataflow/dataflow.yml
           dora start ../examples/python-dataflow/dataflow.yml --name ci-python --detach
-          sleep 35
+          sleep 80
           dora stop --name ci-python  --grace-duration 5s
 
           # Run Python Dynamic Node Example
 
           dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
           opencv-plot --name plot
-          sleep 35
+          sleep 80
           dora stop --name ci-python-dynamic  --grace-duration 5s
 
           # Run Python Operator Example
 
           dora start ../examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach
-          sleep 35
+          sleep 80
           dora stop --name ci-python-operator  --grace-duration 5s
 
           dora destroy
