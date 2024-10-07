@@ -24,7 +24,7 @@ try:
         device_map="auto",
         attn_implementation="flash_attention_2",
     )
-except ImportError or ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         CUSTOM_MODEL_PATH,
         torch_dtype="auto",
