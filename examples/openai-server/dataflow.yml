@@ -5,7 +5,7 @@ nodes:
     outputs:
       - v1/chat/completions
     inputs:
-      echo: dora-echo/echo
+      v1/chat/completions: dora-echo/echo
 
   - id: dora-echo
     build: pip install -e ../../node-hub/dora-echo
