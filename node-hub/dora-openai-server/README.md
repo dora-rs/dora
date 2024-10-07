@@ -2,4 +2,4 @@
 
 This is an experimental to expose an openai server endpoint with dora.
 
-Check example at [examples/api-echo](examples/api-echo)
+Check example at [examples/openai-server](../../examples/openai-server/README.md)
