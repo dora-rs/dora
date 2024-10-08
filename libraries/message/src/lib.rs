@@ -19,27 +19,17 @@ pub mod coordinator_to_cli;
 
 pub type DataflowId = uuid::Uuid;
 
-fn current_crate_version() -> semver::Version {
-    let crate_version_raw = env!("CARGO_PKG_VERSION");
-    semver::Version::parse(crate_version_raw).unwrap()
-}
-
+// Current version compatibility will makes dora message accept
+// all messages from the same major and minor version and ignore patch version.
 fn versions_compatible(
     crate_version: &semver::Version,
     specified_version: &semver::Version,
 ) -> Result<bool, String> {
-    let current_version = current_crate_version();
     let req = semver::VersionReq::parse(&format!(
         "~{}.{}.0",
-        current_version.major, current_version.minor
+        crate_version.major, crate_version.minor
     ))
-    .map_err(|error| format!("failed to set allowing patch version of messages: {error}"))?;
-    let specified_dora_req = semver::VersionReq::parse(&specified_version.to_string())
-        .map_err(|error| {
-            format!(
-                "failed to parse specified dora version `{specified_version}` as `VersionReq`: {error}",
-            )
-        })?;
-    let matches = req.matches(&specified_version) || specified_dora_req.matches(crate_version);
+    .unwrap();
+    let matches = req.matches(&specified_version);
     Ok(matches)
 }
