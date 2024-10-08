@@ -1,6 +1,6 @@
 use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{bail, Context};
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -55,10 +55,22 @@ pub(crate) fn destroy(
     match connect_to_coordinator(coordinator_addr) {
         Ok(mut session) => {
             // send destroy command to dora-coordinator
-            session
+            let reply_raw = session
                 .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
                 .wrap_err("failed to send destroy message")?;
-            println!("Send destroy command to dora-coordinator");
+            let result: ControlRequestReply =
+                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+            match result {
+                ControlRequestReply::DestroyOk => {
+                    println!("Coordinator and daemons destroyed successfully");
+                }
+                ControlRequestReply::Error(err) => {
+                    bail!("Destroy command failed with error: {}", err);
+                }
+                _ => {
+                    bail!("Unexpected reply from dora-coordinator");
+                }
+            }
         }
         Err(_) => {
             bail!("Could not connect to dora-coordinator");
