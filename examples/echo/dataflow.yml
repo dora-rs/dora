@@ -1,22 +1,24 @@
 nodes:
-  - id: terminal-input
-    build: pip install -e ../../node-hub/terminal-input
-    path: dynamic
+  - id: pyarrow-sender
+    build: pip install -e ../../node-hub/pyarrow-sender
+    path: pyarrow-sender
     outputs:
       - data
-    inputs:
-      echo: dora-echo/echo
+    env:
+      DATA: "[1, 2, 3, 4, 5]"
 
   - id: dora-echo
     build: pip install -e ../../node-hub/dora-echo
     path: dora-echo
     inputs:
-      echo: terminal-input/data
+      data: pyarrow-sender/data
     outputs:
-      - echo
+      - data
 
-  - id: terminal-print
-    build: cargo build -p terminal-print
-    path: dynamic
+  - id: pyarrow-assert
+    build: pip install -e ../../node-hub/pyarrow-assert
+    path: pyarrow-assert
     inputs:
-      echo: dora-echo/echo
+      data: dora-echo/data
+    env:
+      DATA: "[1, 2, 3, 4, 5]"
