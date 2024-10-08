@@ -73,5 +73,6 @@ pub enum NodeEvent {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum NodeDropEvent {
+    OutputMapped { drop_token: DropToken },
     OutputDropped { drop_token: DropToken },
 }

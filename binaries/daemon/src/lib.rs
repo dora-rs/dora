@@ -8,7 +8,10 @@ use dora_core::{
     uhlc::{self, HLC},
 };
 use dora_message::{
-    common::{DataMessage, DropToken, LogLevel, NodeError, NodeErrorCause, NodeExitStatus},
+    common::{
+        DataMessage, DropToken, DropTokenStatus, LogLevel, NodeError, NodeErrorCause,
+        NodeExitStatus,
+    },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes},
     daemon_to_coordinator::{
@@ -887,7 +890,7 @@ impl Daemon {
                 .send_out(dataflow_id, node_id, output_id, metadata, data)
                 .await
                 .context("failed to send out")?,
-            DaemonNodeEvent::ReportDrop { tokens } => {
+            DaemonNodeEvent::ReportTokenState { token_events } => {
                 let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                     format!(
                         "failed to get handle drop tokens: \
@@ -897,17 +900,27 @@ impl Daemon {
 
                 match dataflow {
                     Ok(dataflow) => {
-                        for token in tokens {
+                        for event in token_events {
+                            let DropTokenStatus { token, state } = event;
                             match dataflow.pending_drop_tokens.get_mut(&token) {
-                                Some(info) => {
-                                    if info.pending_nodes.remove(&node_id) {
-                                        dataflow.check_drop_token(token, &self.clock).await?;
-                                    } else {
-                                        tracing::warn!(
-                                            "node `{node_id}` is not pending for drop token `{token:?}`"
-                                        );
+                                Some(info) => match state {
+                                    dora_message::common::DropTokenState::Mapped => {
+                                        let changed = info.pending_nodes.remove(&node_id);
+                                        info.mapped_in_nodes.insert(node_id.clone());
+                                        if changed {
+                                            dataflow
+                                                .check_drop_token_mapped(token, &self.clock)
+                                                .await?;
+                                        }
                                     }
-                                }
+                                    dora_message::common::DropTokenState::Dropped => {
+                                        let mut changed = info.pending_nodes.remove(&node_id);
+                                        changed |= info.mapped_in_nodes.remove(&node_id);
+                                        if changed {
+                                            dataflow.check_drop_token(token, &self.clock).await?;
+                                        }
+                                    }
+                                },
                                 None => tracing::warn!("unknown drop token `{token:?}`"),
                             }
                         }
@@ -1344,6 +1357,7 @@ async fn send_output_to_local_receivers(
                             .or_insert_with(|| DropTokenInformation {
                                 owner: node_id.clone(),
                                 pending_nodes: Default::default(),
+                                mapped_in_nodes: Default::default(),
                             })
                             .pending_nodes
                             .insert(receiver_id.clone());
@@ -1382,6 +1396,7 @@ async fn send_output_to_local_receivers(
             .or_insert_with(|| DropTokenInformation {
                 owner: node_id.clone(),
                 pending_nodes: Default::default(),
+                mapped_in_nodes: Default::default(),
             });
         // check if all local subscribers are finished with the token
         dataflow.check_drop_token(token, clock).await?;
@@ -1642,7 +1657,7 @@ impl RunningDataflow {
     async fn check_drop_token(&mut self, token: DropToken, clock: &HLC) -> eyre::Result<()> {
         match self.pending_drop_tokens.entry(token) {
             std::collections::hash_map::Entry::Occupied(entry) => {
-                if entry.get().pending_nodes.is_empty() {
+                if entry.get().pending_nodes.is_empty() && entry.get().mapped_in_nodes.is_empty() {
                     let (drop_token, info) = entry.remove_entry();
                     let result = match self.drop_channels.get_mut(&info.owner) {
                         Some(channel) => send_with_timestamp(
@@ -1670,6 +1685,38 @@ impl RunningDataflow {
 
         Ok(())
     }
+
+    async fn check_drop_token_mapped(&mut self, token: DropToken, clock: &HLC) -> eyre::Result<()> {
+        match self.pending_drop_tokens.entry(token) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                if entry.get().pending_nodes.is_empty() && !entry.get().mapped_in_nodes.is_empty() {
+                    let info = entry.get();
+                    let result = match self.drop_channels.get_mut(&info.owner) {
+                        Some(channel) => send_with_timestamp(
+                            channel,
+                            NodeDropEvent::OutputMapped { drop_token: token },
+                            clock,
+                        )
+                        .wrap_err("send failed"),
+                        None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
+                    };
+                    if let Err(err) = result.wrap_err_with(|| {
+                        format!(
+                            "failed to report drop token mapped `{token:?}` to owner `{}`",
+                            &info.owner
+                        )
+                    }) {
+                        tracing::warn!("{err:?}");
+                    }
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(_) => {
+                tracing::warn!("check_drop_token_mapped called with already closed token")
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1679,9 +1726,14 @@ type InputId = (NodeId, DataId);
 struct DropTokenInformation {
     /// The node that created the associated drop token.
     owner: NodeId,
-    /// Contains the set of pending nodes that still have access to the input
-    /// associated with a drop token.
+    /// Contains the set of nodes that have not mapped the input associated
+    /// with a drop token yet. The shared memory region needs to be kept
+    /// alive until this list is empty.
     pending_nodes: BTreeSet<NodeId>,
+    /// Contains the set of nodes that still have the input data associated
+    /// with a drop token mapped in their address space. The shared memory
+    /// region must not be overwritten until this list is empty.
+    mapped_in_nodes: BTreeSet<NodeId>,
 }
 
 #[derive(Debug)]
@@ -1727,8 +1779,8 @@ pub enum DaemonNodeEvent {
         metadata: metadata::Metadata,
         data: Option<DataMessage>,
     },
-    ReportDrop {
-        tokens: Vec<DropToken>,
+    ReportTokenState {
+        token_events: Vec<DropTokenStatus>,
     },
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
