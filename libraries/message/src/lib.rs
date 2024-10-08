@@ -3,10 +3,6 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use std::fmt::format;
-
-use eyre::Context;
-
 pub mod common;
 pub mod metadata;
 
@@ -25,16 +21,14 @@ pub type DataflowId = uuid::Uuid;
 
 fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
-    let crate_version = semver::Version::parse(crate_version_raw).unwrap();
-    crate_version
+    semver::Version::parse(crate_version_raw).unwrap()
 }
 
 fn versions_compatible(
     crate_version: &semver::Version,
     specified_version: &semver::Version,
 ) -> Result<bool, String> {
-    let current_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
-        .map_err(|error| format!("failed to parse current version: {error}"))?;
+    let current_version = current_crate_version();
     let req = semver::VersionReq::parse(&format!(
         "~{}.{}.0",
         current_version.major, current_version.minor
