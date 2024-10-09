@@ -4,13 +4,14 @@ use colored::Colorize;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_coordinator::Event;
 use dora_core::{
-    descriptor::Descriptor,
+    descriptor::{source_is_url, Descriptor},
     topics::{
         DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT,
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
 use dora_daemon::Daemon;
+use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult, DataflowStatus},
@@ -21,7 +22,7 @@ use dora_tracing::set_up_tracing_opts;
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
-use std::{io::Write, net::SocketAddr};
+use std::{env::current_dir, io::Write, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
@@ -80,8 +81,8 @@ enum Command {
     /// Run build commands provided in the given dataflow.
     Build {
         /// Path to the dataflow descriptor file
-        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
-        dataflow: PathBuf,
+        #[clap(value_name = "PATH")]
+        dataflow: String,
     },
     /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
@@ -111,8 +112,8 @@ enum Command {
     /// Start the given dataflow path. Attach a name to the running dataflow by using --name.
     Start {
         /// Path to the dataflow descriptor file
-        #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
-        dataflow: PathBuf,
+        #[clap(value_name = "PATH")]
+        dataflow: String,
         /// Assign a name to the dataflow
         #[clap(long)]
         name: Option<String>,
@@ -324,7 +325,7 @@ fn run() -> eyre::Result<()> {
             graph::create(dataflow, mermaid, open)?;
         }
         Command::Build { dataflow } => {
-            build::build(&dataflow)?;
+            build::build(dataflow)?;
         }
         Command::New {
             args,
@@ -366,6 +367,7 @@ fn run() -> eyre::Result<()> {
             detach,
             hot_reload,
         } => {
+            let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
             let dataflow_descriptor =
                 Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
             let working_dir = dataflow
@@ -655,4 +657,20 @@ fn connect_to_coordinator(
     coordinator_addr: SocketAddr,
 ) -> std::io::Result<Box<TcpRequestReplyConnection>> {
     TcpLayer::new().connect(coordinator_addr)
+}
+
+fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
+    let dataflow = if source_is_url(&dataflow) {
+        // try to download the shared library
+        let target_path = current_dir().context("Could not access the current dir")?;
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+        rt.block_on(async { download_file(&dataflow, &target_path).await })
+            .wrap_err("failed to download dataflow yaml file")?
+    } else {
+        PathBuf::from(dataflow)
+    };
+    Ok(dataflow)
 }
