@@ -5,8 +5,11 @@ use dora_core::{
 use eyre::{eyre, Context};
 use std::{path::Path, process::Command};
 
-pub fn build(dataflow: &Path) -> eyre::Result<()> {
-    let descriptor = Descriptor::blocking_read(dataflow)?;
+use crate::resolve_dataflow;
+
+pub fn build(dataflow: String) -> eyre::Result<()> {
+    let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    let descriptor = Descriptor::blocking_read(&dataflow)?;
     let dataflow_absolute = if dataflow.is_relative() {
         std::env::current_dir().unwrap().join(dataflow)
     } else {
