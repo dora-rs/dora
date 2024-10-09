@@ -1,0 +1,42 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: chinese
+      TRANSLATE: false
+
+  - id: dora-opus
+    build: pip install -e ../../node-hub/dora-opus
+    path: dora-opus
+    inputs:
+      text: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      SOURCE_LANGUAGE: zh
+      TARGET_LANGUAGE: en
+
+  - id: pretty-print
+    path: dynamic
+    inputs:
+      translated_text: dora-opus/text
+      original_text: dora-distil-whisper/text

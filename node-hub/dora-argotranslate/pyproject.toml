@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "dora-argotranslate"
+version = "0.3.6"
+description = "Dora Node for Text translating using Argostranslate"
+readme = "README.md"
+authors = [
+    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
+    "Enzo Le Van <dev@enzo-le-van.fr>",
+    "Félix Huang <felix.huang.net@gmail.com>",
+]
+
+packages = [{ include = "dora_argotranslate" }]
+
+[tool.poetry.dependencies]
+dora-rs = "^0.3.6"
+numpy = "< 2.0.0"
+python = "^3.7"
+argostranslate = "^1.9.6"
+
+[tool.poetry.scripts]
+dora-argotranslate = "dora_argotranslate.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"

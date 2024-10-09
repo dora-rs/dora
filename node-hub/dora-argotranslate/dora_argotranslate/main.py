@@ -1,10 +1,14 @@
+import os
+
+os.environ["ARGOS_DEVICE_TYPE"] = "auto"
+
+from dora import Node
+import pyarrow as pa
 import argostranslate.package
 import argostranslate.translate
 
-from dora import Node
-
-from_code = "fr"
-to_code = "en"
+from_code = os.getenv("SOURCE_LANGUAGE", "fr")
+to_code = os.getenv("TARGET_LANGUAGE", "en")
 
 # Download and install Argos Translate package
 argostranslate.package.update_package_index()
@@ -30,4 +34,10 @@ def main():
                 from_code,
                 to_code,
             )
-            print(f"translated: {translatedText}", flush=True)
+            print(text, flush=True)
+            print("translated: " + translatedText, flush=True)
+            node.send_output(
+                "text",
+                pa.array([translatedText]),
+                {"language": to_code},
+            )
