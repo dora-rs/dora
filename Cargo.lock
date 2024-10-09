@@ -2284,6 +2284,7 @@ dependencies = [
  "dora-coordinator",
  "dora-core",
  "dora-daemon",
+ "dora-download",
  "dora-message",
  "dora-node-api-c",
  "dora-operator-api-c",
