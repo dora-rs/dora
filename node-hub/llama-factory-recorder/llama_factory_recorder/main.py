@@ -5,6 +5,7 @@ import numpy as np
 import pyarrow as pa
 from PIL import Image
 from pathlib import Path
+import cv2
 
 DEFAULT_QUESTION = os.getenv(
     "DEFAULT_QUESTION",
@@ -155,11 +156,18 @@ def main():
                     .reshape((height, width, channels))
                 )
                 if encoding == "bgr8":
-                    frames[event_id] = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 elif encoding == "rgb8":
                     pass
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    channels = 3
+                    storage_type = np.uint8
+                    storage = storage.to_numpy()
+                    frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
+
+                frames[event_id] = frame
 
             elif event_id == "text":
                 text = event["value"][0].as_py()
