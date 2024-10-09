@@ -1,0 +1,6 @@
+nodes:
+  - id: dora-microphone
+    build: |
+      pip install -e ../../node-hub/dora-microphone
+      pip install -e ../../node-hub/dora-vad
+    path: dora-microphone
