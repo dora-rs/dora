@@ -3,12 +3,22 @@
 Make sure to have, dora, pip and cargo installed.
 
 ```bash
-# Install rerun if it's not done already
 dora up
 
-dora build dataflow_cn_terminal.yml
-dora start dataflow_cn_terminal.yml
+## For chinese
+dora build dataflow_zh_en_terminal.yml
+dora start dataflow_zh_en_terminal.yml --detach
 
-# In another terminal
 python pretty_print.py
+
+dora stop
+
+
+## For chinese
+dora build dataflow_en_zh_terminal.yml
+dora start dataflow_en_zh_terminal.yml --detach
+
+python pretty_print.py
+
+dora stop
 ```
