@@ -147,23 +147,31 @@ def main():
                 elif encoding == "rgb8":
                     channels = 3
                     storage_type = np.uint8
+                elif encoding == "jpeg":
+                    channels = 3
+                    storage_type = np.uint8
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
-                frame = (
-                    storage.to_numpy()
-                    .astype(storage_type)
-                    .reshape((height, width, channels))
-                )
                 if encoding == "bgr8":
+                    frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                    )
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 elif encoding == "rgb8":
-                    pass
+                    frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                    )
                 elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     channels = 3
                     storage_type = np.uint8
                     storage = storage.to_numpy()
                     frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 

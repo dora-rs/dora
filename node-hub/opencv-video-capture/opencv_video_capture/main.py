@@ -10,6 +10,8 @@ from dora import Node
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
 
+FLIP = os.getenv("FLIP", "")
+
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
@@ -101,10 +103,12 @@ def main():
                         1,
                     )
 
-                metadata = event["metadata"]
-                metadata["encoding"] = encoding
-                metadata["width"] = int(frame.shape[1])
-                metadata["height"] = int(frame.shape[0])
+                if FLIP == "VERTICAL":
+                    frame = cv2.flip(frame, 0)
+                elif FLIP == "HORIZONTAL":
+                    frame = cv2.flip(frame, 1)
+                elif FLIP == "BOTH":
+                    frame = cv2.flip(frame, -1)
 
                 # resize the frame
                 if (
@@ -116,13 +120,18 @@ def main():
                 ):
                     frame = cv2.resize(frame, (image_width, image_height))
 
+                metadata = event["metadata"]
+                metadata["encoding"] = encoding
+                metadata["width"] = int(frame.shape[1])
+                metadata["height"] = int(frame.shape[0])
+
                 # Get the right encoding
                 if encoding == "rgb8":
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     ret, frame = cv2.imencode("." + encoding, frame)
                     if not ret:
-                        print("Could not encode image...")
+                        print("Error encoding image...")
                         continue
 
                 storage = pa.array(frame.ravel())
