@@ -66,7 +66,7 @@ fn main() -> Result<()> {
                     "bgr8"
                 };
 
-                let image = if encoding == "bgr8" {
+                if encoding == "bgr8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
 
@@ -78,10 +78,12 @@ fn main() -> Result<()> {
                         .context("Could not convert buffer to image buffer")?;
                     // let tensordata = ImageBuffer(buffer);
 
-                    rerun::Image::new(
+                    let image = rerun::Image::new(
                         image_buffer,
                         ImageFormat::rgb8([*width as u32, *height as u32]),
-                    )
+                    );
+                    rec.log(id.as_str(), &image)
+                        .context("could not log image")?;
                 } else if encoding == "rgb8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
@@ -89,16 +91,20 @@ fn main() -> Result<()> {
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
 
-                    rerun::Image::new(
+                    let image = rerun::Image::new(
                         image_buffer,
                         ImageFormat::rgb8([*width as u32, *height as u32]),
-                    )
-                } else {
-                    unimplemented!("We haven't worked on additional encodings.")
-                };
+                    );
+                    rec.log(id.as_str(), &image)
+                        .context("could not log image")?;
+                } else if ["jpeg", "png"].contains(&encoding) {
+                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                    let buffer: &[u8] = buffer.values();
 
-                rec.log(id.as_str(), &image)
-                    .context("could not log image")?;
+                    let image = rerun::EncodedImage::from_file_contents(buffer.to_vec());
+                    rec.log(id.as_str(), &image)
+                        .context("could not log image")?;
+                };
             } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {
