@@ -5,6 +5,7 @@ from qwen_vl_utils import process_vision_info
 import numpy as np
 import pyarrow as pa
 from PIL import Image
+import cv2
 
 DEFAULT_PATH = "Qwen/Qwen2-VL-2B-Instruct"
 CUSTOM_MODEL_PATH = os.getenv("CUSTOM_MODEL_PATH", DEFAULT_PATH)
@@ -115,18 +116,29 @@ def main():
                 elif encoding == "rgb8":
                     channels = 3
                     storage_type = np.uint8
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    channels = 3
+                    storage_type = np.uint8
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
 
-                frame = (
-                    storage.to_numpy()
-                    .astype(storage_type)
-                    .reshape((height, width, channels))
-                )
                 if encoding == "bgr8":
+                    frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                    )
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 elif encoding == "rgb8":
-                    pass
+                    frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                    )
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    storage = storage.to_numpy()
+                    frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
                 frames[event_id] = Image.fromarray(frame)
