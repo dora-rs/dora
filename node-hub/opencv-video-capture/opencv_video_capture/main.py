@@ -120,7 +120,10 @@ def main():
                 if encoding == "rgb8":
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
-                    frame = cv2.imencode("." + encoding, frame)[1]
+                    ret, frame = cv2.imencode("." + encoding, frame)
+                    if not ret:
+                        print("Could not encode image...")
+                        continue
 
                 storage = pa.array(frame.ravel())
 
