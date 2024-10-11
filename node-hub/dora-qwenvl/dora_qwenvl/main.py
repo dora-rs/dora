@@ -101,6 +101,15 @@ def main():
         event_type = event["type"]
 
         if event_type == "INPUT":
+
+            # TODO: Remove this after https://github.com/dora-rs/dora/pull/652
+            while True:
+                next_event = node.next(timeout=0.001)
+                if next_event is not None and next_event["type"] == "INPUT":
+                    event = next_event
+                else:
+                    break
+
             event_id = event["id"]
 
             if "image" in event_id:
