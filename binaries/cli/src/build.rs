@@ -62,22 +62,24 @@ pub fn build(dataflow: String) -> eyre::Result<()> {
 
 fn run_build_command(build: Option<&str>, working_dir: &Path) -> eyre::Result<()> {
     if let Some(build) = build {
-        let mut split = build.split_whitespace();
-        let mut cmd = Command::new(
-            split
-                .next()
-                .ok_or_else(|| eyre!("build command is empty"))?,
-        );
-        cmd.args(split);
-        cmd.current_dir(working_dir);
-        let exit_status = cmd
-            .status()
-            .wrap_err_with(|| format!("failed to run `{}`", build))?;
-        if exit_status.success() {
-            Ok(())
-        } else {
-            Err(eyre!("build command returned an error code"))
+        let lines = build.lines().collect::<Vec<_>>();
+        for build_line in lines {
+            let mut split = build_line.split_whitespace();
+            let mut cmd = Command::new(
+                split
+                    .next()
+                    .ok_or_else(|| eyre!("build command is empty"))?,
+            );
+            cmd.args(split);
+            cmd.current_dir(working_dir);
+            let exit_status = cmd
+                .status()
+                .wrap_err_with(|| format!("failed to run `{}`", build))?;
+            if !exit_status.success() {
+                return Err(eyre!("build command `{build_line}` returned {exit_status}"));
+            }
         }
+        Ok(())
     } else {
         Ok(())
     }
