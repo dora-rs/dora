@@ -18,7 +18,7 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
-      tick: dora/timer/millis/300
+      tick: dora/timer/millis/100
     outputs:
       - text
       - tick
