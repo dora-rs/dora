@@ -27,26 +27,21 @@ use tokio::sync::{mpsc::Sender, oneshot};
 use tracing::{field, span};
 
 pub fn run(
-    node_id: &NodeId,
-    operator_id: &OperatorId,
+    _node_id: &NodeId,
+    _operator_id: &OperatorId,
     source: &str,
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
     let path = if source_is_url(source) {
-        let target_path = adjust_shared_library_path(
-            &Path::new("build")
-                .join(node_id.to_string())
-                .join(operator_id.to_string()),
-        )?;
+        let target_path = &Path::new("build");
         // try to download the shared library
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         rt.block_on(download_file(source, &target_path))
-            .wrap_err("failed to download shared library operator")?;
-        target_path
+            .wrap_err("failed to download shared library operator")?
     } else {
         adjust_shared_library_path(Path::new(source))?
     };

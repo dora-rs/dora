@@ -27,7 +27,6 @@ use dora_node_api::{
 };
 use eyre::{ContextCompat, WrapErr};
 use std::{
-    env::consts::EXE_EXTENSION,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -101,13 +100,10 @@ pub async fn spawn_node(
                 source => {
                     let resolved_path = if source_is_url(source) {
                         // try to download the shared library
-                        let target_path = Path::new("build")
-                            .join(node_id.to_string())
-                            .with_extension(EXE_EXTENSION);
-                        download_file(source, &target_path)
+                        let target_dir = Path::new("build");
+                        download_file(source, &target_dir)
                             .await
-                            .wrap_err("failed to download custom node")?;
-                        target_path.clone()
+                            .wrap_err("failed to download custom node")?
                     } else {
                         resolve_path(source, working_dir).wrap_err_with(|| {
                             format!("failed to resolve node source `{}`", source)

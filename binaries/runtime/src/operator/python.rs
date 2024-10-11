@@ -42,16 +42,13 @@ pub fn run(
     dataflow_descriptor: &Descriptor,
 ) -> eyre::Result<()> {
     let path = if source_is_url(&python_source.source) {
-        let target_path = Path::new("build")
-            .join(node_id.to_string())
-            .join(format!("{}.py", operator_id));
+        let target_path = Path::new("build");
         // try to download the shared library
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         rt.block_on(download_file(&python_source.source, &target_path))
-            .wrap_err("failed to download Python operator")?;
-        target_path
+            .wrap_err("failed to download Python operator")?
     } else {
         Path::new(&python_source.source).to_owned()
     };
