@@ -9,12 +9,16 @@ use dora_message::{
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
 };
 use eyre::{eyre, Context};
-use std::{io::ErrorKind, net::SocketAddr};
+use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
+    time::sleep,
 };
 use tokio_stream::{wrappers::ReceiverStream, Stream};
+use tracing::warn;
+
+const DAEMON_COORDINATOR_RETRY_INTERVAL: std::time::Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct CoordinatorEvent {
@@ -28,9 +32,20 @@ pub async fn register(
     listen_port: u16,
     clock: &HLC,
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
-    let mut stream = TcpStream::connect(addr)
-        .await
-        .wrap_err("failed to connect to dora-coordinator")?;
+    let mut stream = loop {
+        match TcpStream::connect(addr)
+            .await
+            .wrap_err("failed to connect to dora-coordinator")
+        {
+            Err(err) => {
+                warn!("Could not connect to: {addr}, with error: {err}. Retring in {DAEMON_COORDINATOR_RETRY_INTERVAL:#?}..");
+                sleep(DAEMON_COORDINATOR_RETRY_INTERVAL).await;
+            }
+            Ok(stream) => {
+                break stream;
+            }
+        };
+    };
     stream
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
