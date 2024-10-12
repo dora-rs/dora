@@ -102,6 +102,7 @@ def main():
 
         if event_type == "INPUT":
 
+            # pylint: disable=fixme
             # TODO: Remove this after https://github.com/dora-rs/dora/pull/652
             while True:
                 next_event = node.next(timeout=0.001)
