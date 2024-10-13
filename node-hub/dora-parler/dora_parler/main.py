@@ -1,6 +1,7 @@
 from threading import Thread
 from dora import Node
-
+import os
+from pathlib import Path
 import numpy as np
 import torch
 import time
@@ -18,16 +19,25 @@ from transformers import (
 device = "cuda:0"  # if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 torch_dtype = torch.float16 if device != "cpu" else torch.float32
 
-repo_id = "ylacombe/parler-tts-mini-jenny-30H"
+DEFAULT_PATH = "ylacombe/parler-tts-mini-jenny-30H"
+
+
+MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
+
+if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
+    from modelscope import snapshot_download
+
+    if not Path(MODEL_NAME_OR_PATH).exists():
+        MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
 
 model = ParlerTTSForConditionalGeneration.from_pretrained(
-    repo_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True
+    MODEL_NAME_OR_PATH, torch_dtype=torch_dtype, low_cpu_mem_usage=True
 ).to(device)
 model.generation_config.cache_implementation = "static"
 model.forward = torch.compile(model.forward, mode="default")
 
-tokenizer = AutoTokenizer.from_pretrained(repo_id)
-feature_extractor = AutoFeatureExtractor.from_pretrained(repo_id)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH)
+feature_extractor = AutoFeatureExtractor.from_pretrained(MODEL_NAME_OR_PATH)
 
 SAMPLE_RATE = feature_extractor.sampling_rate
 SEED = 42
@@ -59,6 +69,7 @@ def play_audio(audio_array):
 
 class InterruptStoppingCriteria(StoppingCriteria):
     def __init__(self):
+        super().__init__()
         self.stop_signal = False
 
     def __call__(

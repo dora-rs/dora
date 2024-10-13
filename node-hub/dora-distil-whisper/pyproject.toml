@@ -20,6 +20,7 @@ transformers = "^4.0.0"
 accelerate = "^0.29.2"
 torch = "^2.2.0"
 python = "^3.7"
+modelscope = "^1.18.1"
 
 [tool.poetry.scripts]
 dora-distil-whisper = "dora_distil_whisper.main:main"

@@ -3,10 +3,20 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 from dora import Node
 import pyarrow as pa
 import os
+from pathlib import Path
 
-MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", "openai/whisper-large-v3-turbo")
+DEFAULT_PATH = "openai/whisper-large-v3-turbo"
 TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "chinese")
 TRANSLATE = bool(os.getenv("TRANSLATE", "False"))
+
+
+MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
+
+if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
+    from modelscope import snapshot_download
+
+    if not Path(MODEL_NAME_OR_PATH).exists():
+        MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32

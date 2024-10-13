@@ -1,15 +1,26 @@
 import os
+from pathlib import Path
 from dora import Node
 import pyarrow as pa
 import numpy as np
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 from_code = os.getenv("SOURCE_LANGUAGE", "zh")
 to_code = os.getenv("TARGET_LANGUAGE", "en")
-MODEL_NAME_OR_PATH = os.getenv(
-    "MODEL_NAME_OR_PATH", f"Helsinki-NLP/opus-mt-{from_code}-{to_code}"
-)
+DEFAULT_PATH = f"Helsinki-NLP/opus-mt-{from_code}-{to_code}"
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
+
+if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
+    from modelscope import snapshot_download
+
+    if not Path(MODEL_NAME_OR_PATH).exists():
+        MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH)
+
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME_OR_PATH)
 
 
 def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
@@ -42,9 +53,6 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
 
 
 def main():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH)
-
-    model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME_OR_PATH)
     node = Node()
     while True:
         event = node.next()
