@@ -1,0 +1,46 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: french
+      TRANSLATE: false
+
+  - id: dora-argotranslate
+    build: pip install -e ../../node-hub/dora-argotranslate
+    path: dora-argotranslate
+    inputs:
+      text: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      SOURCE_LANGUAGE: fr
+      TARGET_LANGUAGE: en
+
+  - id: dora-rerun
+    build: cargo build -p dora-rerun --release
+    path: dora-rerun
+    inputs:
+      translated_text: dora-argotranslate/text
+      original_text: dora-distil-whisper/text
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
