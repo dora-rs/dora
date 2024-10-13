@@ -12,7 +12,7 @@ DEFAULT_PATH = "Qwen/Qwen2-VL-2B-Instruct"
 
 MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
 
-if bool(os.getenv("MODELSCOPE")) is True:
+if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
     from modelscope import snapshot_download
 
     if not Path(MODEL_NAME_OR_PATH).exists():

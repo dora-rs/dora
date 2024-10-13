@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "dora-opus"
+version = "0.3.6"
+description = "Dora Node for Text translating using Opus"
+readme = "README.md"
+authors = [
+    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
+    "Enzo Le Van <dev@enzo-le-van.fr>",
+    "Félix Huang <felix.huang.net@gmail.com>",
+]
+
+packages = [{ include = "dora_opus" }]
+
+[tool.poetry.dependencies]
+dora-rs = "^0.3.6"
+numpy = "< 2.0.0"
+python = "^3.7"
+transformers = "^4.45"
+modelscope = "^1.18.1"
+
+[tool.poetry.scripts]
+dora-opus = "dora_opus.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"

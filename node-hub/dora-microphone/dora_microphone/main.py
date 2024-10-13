@@ -2,66 +2,31 @@ import sounddevice as sd
 import numpy as np
 import pyarrow as pa
 import time as tm
-from enum import Enum
+import os
 
 from dora import Node
 
-
-class RecordingState(Enum):
-    """Enum for recording states."""
-
-    PENDING = 0
-    RUNNING = 1
-    SILENCE = 2
-
-
-def detect_speech(audio_data, threshold):
-    """Check if the amplitude of the audio signal exceeds the threshold."""
-    return np.any(np.abs(audio_data) > threshold)
+MAX_DURATION = float(os.getenv("MAX_DURATION", "0.1"))
+SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 
 
 def main():
-    # Parameters
-    threshold = 500  # Threshold for detecting speech (adjust this as needed)
-    SAMPLE_RATE = 16000
-    silence_duration = 0.5  # Duration of silence before stopping the recording
-
     # Initialize buffer and recording flag
     buffer = []
-    state = RecordingState.PENDING
-    silence_start_time = tm.time()
     start_recording_time = tm.time()
-    max_duration = 20
     node = Node()
 
     # pylint: disable=unused-argument
     def callback(indata, frames, time, status):
-        nonlocal buffer, state, silence_start_time, node, max_duration, start_recording_time
+        nonlocal buffer, node, start_recording_time
 
-        is_speaking = detect_speech(indata[:, 0], threshold)
-        if is_speaking:
-            if state == RecordingState.PENDING:
-                buffer = []
-                state = RecordingState.RUNNING
-                start_recording_time = tm.time()
-            buffer.extend(indata[:, 0])
-        elif not is_speaking and state == RecordingState.RUNNING:
-            silence_start_time = tm.time()  # Reset silence timer
-            buffer.extend(indata[:, 0])
-            state = RecordingState.SILENCE
-        elif (
-            state == RecordingState.RUNNING or state == RecordingState.SILENCE
-        ) and tm.time() - start_recording_time > max_duration:
+        if tm.time() - start_recording_time > MAX_DURATION:
             audio_data = np.array(buffer).ravel().astype(np.float32) / 32768.0
             node.send_output("audio", pa.array(audio_data))
-            state = RecordingState.PENDING
-        elif not is_speaking and state == RecordingState.SILENCE:
-            if tm.time() - silence_start_time > silence_duration:
-                audio_data = np.array(buffer).ravel().astype(np.float32) / 32768.0
-                node.send_output("audio", pa.array(audio_data))
-                state = RecordingState.PENDING
-            else:
-                buffer.extend(indata[:, 0])
+            buffer = []
+            start_recording_time = tm.time()
+        else:
+            buffer.extend(indata[:, 0])
 
     # Start recording
     with sd.InputStream(
