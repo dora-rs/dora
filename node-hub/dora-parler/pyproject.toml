@@ -20,6 +20,7 @@ torchaudio = "^2.2.2"
 sentencepiece = "^0.1.99"
 python = "^3.7"
 pyaudio = "^0.2.14"
+modelscope = "^1.18.1"
 
 
 [tool.poetry.scripts]
