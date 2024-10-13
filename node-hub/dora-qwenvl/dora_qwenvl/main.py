@@ -5,10 +5,19 @@ from qwen_vl_utils import process_vision_info
 import numpy as np
 import pyarrow as pa
 from PIL import Image
+from pathlib import Path
 import cv2
 
 DEFAULT_PATH = "Qwen/Qwen2-VL-2B-Instruct"
-CUSTOM_MODEL_PATH = os.getenv("CUSTOM_MODEL_PATH", DEFAULT_PATH)
+
+MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
+
+if bool(os.getenv("MODELSCOPE")) is True:
+    from modelscope import snapshot_download
+
+    if not Path(MODEL_NAME_OR_PATH).exists():
+        MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
+
 DEFAULT_QUESTION = os.getenv(
     "DEFAULT_QUESTION",
     "Describe this image",
@@ -20,14 +29,14 @@ try:
     import flash_attn as _
 
     model = Qwen2VLForConditionalGeneration.from_pretrained(
-        CUSTOM_MODEL_PATH,
+        MODEL_NAME_OR_PATH,
         torch_dtype="auto",
         device_map="auto",
         attn_implementation="flash_attention_2",
     )
 except (ImportError, ModuleNotFoundError):
     model = Qwen2VLForConditionalGeneration.from_pretrained(
-        CUSTOM_MODEL_PATH,
+        MODEL_NAME_OR_PATH,
         torch_dtype="auto",
         device_map="auto",
     )
@@ -38,7 +47,7 @@ if ADAPTER_PATH != "":
 
 
 # default processor
-processor = AutoProcessor.from_pretrained(CUSTOM_MODEL_PATH)
+processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
 def generate(frames: dict, question):
@@ -101,6 +110,16 @@ def main():
         event_type = event["type"]
 
         if event_type == "INPUT":
+
+            # pylint: disable=fixme
+            # TODO: Remove this after https://github.com/dora-rs/dora/pull/652
+            while True:
+                next_event = node.next(timeout=0.001)
+                if next_event is not None and next_event["type"] == "INPUT":
+                    event = next_event
+                else:
+                    break
+
             event_id = event["id"]
 
             if "image" in event_id:
