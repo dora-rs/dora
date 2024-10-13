@@ -43,6 +43,20 @@ fn main() -> Result<()> {
         .spawn_opts(&options, None)
         .context("Could not spawn rerun visualization")?;
 
+    match std::env::var("README") {
+        Ok(readme) => {
+            readme
+                .parse::<String>()
+                .context("Could not parse readme value")?;
+            rec.log("README", &rerun::TextDocument::new(readme))
+                .wrap_err("Could not log text")?;
+        }
+        Err(VarError::NotUnicode(_)) => {
+            return Err(eyre!("readme env variable is not unicode"));
+        }
+        Err(VarError::NotPresent) => (),
+    };
+
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
             if id.as_str().contains("image") {
