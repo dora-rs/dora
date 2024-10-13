@@ -11,12 +11,14 @@ use dora_node_api::{
 };
 use eyre::{eyre, Context, ContextCompat, Result};
 use rerun::{
-    external::re_types::ArrowBuffer, SpawnOptions, TensorBuffer, TensorData, TensorDimension, Text,
+    components::ImageBuffer, external::re_types::ArrowBuffer, ImageFormat, SpawnOptions, Text,
 };
 
 fn main() -> Result<()> {
     // rerun `serve()` requires to have a running Tokio runtime in the current context.
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
     let (_node, mut events) =
@@ -41,6 +43,20 @@ fn main() -> Result<()> {
         .spawn_opts(&options, None)
         .context("Could not spawn rerun visualization")?;
 
+    match std::env::var("README") {
+        Ok(readme) => {
+            readme
+                .parse::<String>()
+                .context("Could not parse readme value")?;
+            rec.log("README", &rerun::TextDocument::new(readme))
+                .wrap_err("Could not log text")?;
+        }
+        Err(VarError::NotUnicode(_)) => {
+            return Err(eyre!("readme env variable is not unicode"));
+        }
+        Err(VarError::NotPresent) => (),
+    };
+
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
             if id.as_str().contains("image") {
@@ -63,47 +79,46 @@ fn main() -> Result<()> {
                 } else {
                     "bgr8"
                 };
-                let channels = 3;
 
-                let shape = vec![
-                    TensorDimension {
-                        name: Some("height".into()),
-                        size: *height as u64,
-                    },
-                    TensorDimension {
-                        name: Some("width".into()),
-                        size: *width as u64,
-                    },
-                    TensorDimension {
-                        name: Some("depth".into()),
-                        size: channels as u64,
-                    },
-                ];
-
-                let image = if encoding == "bgr8" {
+                if encoding == "bgr8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
 
                     // Transpose values from BGR to RGB
                     let buffer: Vec<u8> =
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
-                    let buffer = TensorBuffer::U8(ArrowBuffer::from(buffer));
-                    let tensordata = TensorData::new(shape.clone(), buffer);
+                    let buffer = ArrowBuffer::from(buffer);
+                    let image_buffer = ImageBuffer::try_from(buffer)
+                        .context("Could not convert buffer to image buffer")?;
+                    // let tensordata = ImageBuffer(buffer);
 
-                    rerun::Image::new(tensordata)
+                    let image = rerun::Image::new(
+                        image_buffer,
+                        ImageFormat::rgb8([*width as u32, *height as u32]),
+                    );
+                    rec.log(id.as_str(), &image)
+                        .context("could not log image")?;
                 } else if encoding == "rgb8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
-                    let buffer = TensorBuffer::U8(ArrowBuffer::from(buffer));
-                    let tensordata = TensorData::new(shape.clone(), buffer);
+                    let buffer = ArrowBuffer::from(buffer);
+                    let image_buffer = ImageBuffer::try_from(buffer)
+                        .context("Could not convert buffer to image buffer")?;
 
-                    rerun::Image::new(tensordata)
-                } else {
-                    unimplemented!("We haven't worked on additional encodings.")
+                    let image = rerun::Image::new(
+                        image_buffer,
+                        ImageFormat::rgb8([*width as u32, *height as u32]),
+                    );
+                    rec.log(id.as_str(), &image)
+                        .context("could not log image")?;
+                } else if ["jpeg", "png"].contains(&encoding) {
+                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                    let buffer: &[u8] = buffer.values();
+
+                    let image = rerun::EncodedImage::from_file_contents(buffer.to_vec());
+                    rec.log(id.as_str(), &image)
+                        .context("could not log image")?;
                 };
-
-                rec.log(id.as_str(), &image)
-                    .context("could not log image")?;
             } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {
