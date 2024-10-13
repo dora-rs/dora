@@ -20,6 +20,7 @@ transformers = "^4.45"
 qwen-vl-utils = "^0.0.2"
 accelerate = "^0.33"
 opencv-python = ">= 4.1.1"
+modelscope = "^1.18.1"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
 
