@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dora-vad"
-version = "0.3.6"
+version = "0.3.7rc0"
 description = "Dora Node for Text translating using Argostranslate"
 readme = "README.md"
 authors = [
