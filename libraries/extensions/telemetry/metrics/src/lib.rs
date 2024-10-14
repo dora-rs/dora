@@ -44,6 +44,6 @@ pub fn init_metrics() -> metrics::Result<SdkMeterProvider> {
 pub fn init_meter_provider(meter_id: String) -> Result<SdkMeterProvider> {
     let meter_provider = init_metrics().context("Could not create opentelemetry meter")?;
     let meter = meter_provider.meter(meter_id);
-    init_process_observer(meter).context("could not initiale system metrics observer")?;
+    init_process_observer(meter).context("could not initiat system metrics observer")?;
     Ok(meter_provider)
 }

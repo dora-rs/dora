@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.3.7 (2024-11-04)
+
+## What's Changed
+
+- Post release `0.3.6` small fix by @haixuanTao in https://github.com/dora-rs/dora/pull/638
+- Changes to template by @XxChang in https://github.com/dora-rs/dora/pull/639
+- Add appending to PATH instruction inside installation script by @Hennzau in https://github.com/dora-rs/dora/pull/641
+- Make the benchmark run in release and at full speed by @Hennzau in https://github.com/dora-rs/dora/pull/644
+- Use the new node syntax for examples dataflow by @Hennzau in https://github.com/dora-rs/dora/pull/643
+- Improve beginner experience by @Hennzau in https://github.com/dora-rs/dora/pull/645
+- improve node-hub pytest by @haixuanTao in https://github.com/dora-rs/dora/pull/640
+- Fix not-null terminated string print within C template by @haixuanTao in https://github.com/dora-rs/dora/pull/654
+- Raise error if dora-coordinator is not connected when calling `dora destroy` by @haixuanTao in https://github.com/dora-rs/dora/pull/655
+- Coordinator stopped on bad control command by @Hennzau in https://github.com/dora-rs/dora/pull/650
+- Add support for Qwenvl2 by @haixuanTao in https://github.com/dora-rs/dora/pull/646
+- Fix distributed node by @haixuanTao in https://github.com/dora-rs/dora/pull/658
+- Small install script update for bash by @haixuanTao in https://github.com/dora-rs/dora/pull/657
+- Add additional image encoding by @haixuanTao in https://github.com/dora-rs/dora/pull/661
+- `dora-echo` replicate the topic received with the topic send by @haixuanTao in https://github.com/dora-rs/dora/pull/663
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/656
+- Bump pyo3 and arrow versions by @haixuanTao in https://github.com/dora-rs/dora/pull/667
+- Fix ros2 bridge incompatibility with CI Ubuntu 24 and with pyo3 22 by @haixuanTao in https://github.com/dora-rs/dora/pull/670
+- Add transformers version pinning for qwenvl2 by @haixuanTao in https://github.com/dora-rs/dora/pull/665
+- Remove cli dataflow path check by @haixuanTao in https://github.com/dora-rs/dora/pull/662
+- Better error handling for unknown output by @haixuanTao in https://github.com/dora-rs/dora/pull/675
+- Fix llama recorder multi image recorder by @haixuanTao in https://github.com/dora-rs/dora/pull/677
+- Dora openai server example by @haixuanTao in https://github.com/dora-rs/dora/pull/676
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/674
+- Create Rust-based openai api proxy server in node hub by @phil-opp in https://github.com/dora-rs/dora/pull/678
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/679
+- Update Rust crate hyper to v0.14.30 by @renovate in https://github.com/dora-rs/dora/pull/680
+- Fix hanged coordinator when failing to connect to the daemon on destroy command by @haixuanTao in https://github.com/dora-rs/dora/pull/664
+- Small example improvement using pyarrow assertion by @haixuanTao in https://github.com/dora-rs/dora/pull/669
+- Fix dora list listing twice a stopping dataflow when using multiple daemon. by @haixuanTao in https://github.com/dora-rs/dora/pull/668
+- Add package flake by @Ben-PH in https://github.com/dora-rs/dora/pull/685
+- Add jpeg format to qwenvl2 by @haixuanTao in https://github.com/dora-rs/dora/pull/684
+- Enable downloading remote dataflow by @haixuanTao in https://github.com/dora-rs/dora/pull/682
+- Enable multiline build for better packaging of dora node. by @haixuanTao in https://github.com/dora-rs/dora/pull/683
+- Bump rerun version to 0.18 by @haixuanTao in https://github.com/dora-rs/dora/pull/686
+- Temporary fix qwenvl2 queue error by @haixuanTao in https://github.com/dora-rs/dora/pull/688
+- Make daemon loop over coordinator connection to make it possible to create a system service awaiting coordinator connection by @haixuanTao in https://github.com/dora-rs/dora/pull/689
+- Add translation example from chinese, french to english by @haixuanTao in https://github.com/dora-rs/dora/pull/681
+
+## New Contributors
+
+- @Ben-PH made their first contribution in https://github.com/dora-rs/dora/pull/685
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.6...v0.3.7rc0
+
 ## v0.3.6 (2024-08-17)
 
 ## What's Changed
