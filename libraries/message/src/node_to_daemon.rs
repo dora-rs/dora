@@ -1,7 +1,10 @@
 pub use crate::common::{
     DataMessage, DropToken, LogLevel, LogMessage, SharedMemoryId, Timestamped,
 };
-use crate::{current_crate_version, metadata::Metadata, versions_compatible, DataflowId};
+use crate::{
+    common::DropTokenStatus, current_crate_version, metadata::Metadata, versions_compatible,
+    DataflowId,
+};
 
 use dora_core::config::{DataId, NodeId};
 
@@ -19,10 +22,10 @@ pub enum DaemonRequest {
     /// required drop tokens.
     OutputsDone,
     NextEvent {
-        drop_tokens: Vec<DropToken>,
+        drop_tokens: Vec<DropTokenStatus>,
     },
     ReportDropTokens {
-        drop_tokens: Vec<DropToken>,
+        drop_tokens: Vec<DropTokenStatus>,
     },
     SubscribeDrop,
     NextFinishedDropTokens,
