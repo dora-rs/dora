@@ -1,0 +1,8 @@
+[build-system]
+requires = ["maturin>=0.13.2"]
+build-backend = "maturin"
+
+[project]
+name = "dora-rerun"
+# Install pyarrow at the same time of dora-rs
+dependencies = ['pyarrow']

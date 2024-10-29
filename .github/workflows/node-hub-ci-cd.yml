@@ -104,9 +104,14 @@ jobs:
         run: |
           for dir in node-hub/*/ ; do
             if [ -d "$dir" ]; then
-              if [ -f "$dir/pyproject.toml" ]; then
-                echo "Publishing $dir using Poetry..."
-                (cd "$dir" && poetry publish --build)
+              if [[ -f "$dir/Cargo.toml" && -f "$dir/pyproject.toml" ]]; then
+                echo "Publishing $dir using maturin..."
+                (cd "$dir" && poetry publish)
+              else
+                if [ -f "$dir/pyproject.toml" ]; then
+                  echo "Publishing $dir using Poetry..."
+                  (cd "$dir" && poetry publish --build)
+                fi
               fi
               
               if [ -f "$dir/Cargo.toml" ]; then
