@@ -3,4 +3,4 @@ requires = ["maturin>=0.13.2"]
 build-backend = "maturin"
 
 [project]
-name = "dora-rerun"
+name = "dora-rs-cli"
