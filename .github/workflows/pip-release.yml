@@ -39,6 +39,9 @@ jobs:
           # target: s390x
           # - runner: ubuntu-20.04
           # target: ppc64le
+        repository:
+          - path: apis/python/node
+          - path: binaries/cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -55,19 +58,19 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
           manylinux: manylinux_2_28
-          working-directory: apis/python/node
+          working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.platform.target }}
-          path: apis/python/node/dist
+          path: ${{ matrix.repository.path }}/dist
       - name: Upload to release
         if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: apis/python/node/dist/*
+          file: ${{ matrix.repository.path }}/dist/*
           tag: ${{ github.ref }}
           file_glob: true
 
@@ -82,6 +85,9 @@ jobs:
             target: x86
           - runner: ubuntu-22.04
             target: aarch64
+        repository:
+          - path: apis/python/node
+          - path: binaries/cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -94,19 +100,19 @@ jobs:
           args: --release --out dist
           sccache: "true"
           manylinux: musllinux_1_2
-          working-directory: apis/python/node
+          working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
-          path: apis/python/node/dist
+          path: ${{ matrix.repository.path }}/dist
       - name: Upload to release
         if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: apis/python/node/dist/*
+          file: ${{ matrix.repository.path }}/dist/*
           tag: ${{ github.ref }}
           file_glob: true
 
@@ -121,6 +127,9 @@ jobs:
               image_tag: "armv7-musleabihf",
             },
           ]
+        repository:
+          - path: apis/python/node
+          - path: binaries/cli
     container:
       image: docker://messense/rust-musl-cross:${{ matrix.platform.image_tag }}
       env:
@@ -137,19 +146,19 @@ jobs:
           manylinux: auto
           container: off
           args: --release -o dist
-          working-directory: apis/python/node
+          working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v3
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
-          path: apis/python/node/dist
+          path: ${{ matrix.repository.path }}/dist
       - name: Upload to release
         if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: apis/python/node/dist/*
+          file: ${{ matrix.repository.path }}/dist/*
           tag: ${{ github.ref }}
           file_glob: true
 
@@ -160,6 +169,9 @@ jobs:
         platform:
           - runner: windows-latest
             target: x64
+        repository:
+          - path: apis/python/node
+          - path: binaries/cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -172,19 +184,19 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: "true"
-          working-directory: apis/python/node
+          working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-${{ matrix.platform.target }}
-          path: apis/python/node/dist
+          path: ${{ matrix.repository.path }}/dist
       - name: Upload to release
         if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: apis/python/node/dist/*
+          file: ${{ matrix.repository.path }}/dist/*
           tag: ${{ github.ref }}
           file_glob: true
 
@@ -197,6 +209,9 @@ jobs:
             target: x86_64
           - runner: macos-14
             target: aarch64
+        repository:
+          - path: apis/python/node
+          - path: binaries/cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -208,24 +223,29 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: "true"
-          working-directory: apis/python/node
+          working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.platform.target }}
-          path: apis/python/node/dist
+          path: ${{ matrix.repository.path }}/dist
       - name: Upload to release
         if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: apis/python/node/dist/*
+          file: ${{ matrix.repository.path }}/dist/*
           tag: ${{ github.ref }}
           file_glob: true
 
   sdist:
     runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        repository:
+          - path: apis/python/node
+          - path: binaries/cli
     steps:
       - uses: actions/checkout@v3
       - name: Build sdist
@@ -233,13 +253,13 @@ jobs:
         with:
           command: sdist
           args: --out dist
-          working-directory: apis/python/node
+          working-directory: ${{ matrix.repository.path }}
       - name: Upload sdist
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v3
         with:
           name: wheels
-          path: apis/python/node/dist
+          path: ${{ matrix.repository.path }}/dist
 
   release:
     name: Release
