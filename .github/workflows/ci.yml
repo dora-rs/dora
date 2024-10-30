@@ -235,7 +235,8 @@ jobs:
     name: "CLI Test"
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest, windows-latest]
+        # TODO: Support macos-14 when https://github.com/pytorch/pytorch/issues/130249 is fixed
+        platform: [ubuntu-latest, macos-13, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
