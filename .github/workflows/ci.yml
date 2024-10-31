@@ -62,10 +62,10 @@ jobs:
 
       - name: "Check"
         run: cargo check --all
-      - name: "Build  (Without Python node as it is build with maturin)"
-        run: cargo build --all --exclude dora-node-api-python
+      - name: "Build  (Without Python dep as it is build with maturin)"
+        run: cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
       - name: "Test"
-        run: cargo test --all --exclude dora-ros2-bridge-python
+        run: cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
   # Run examples as separate job because otherwise we will exhaust the disk
   # space of the GitHub action runners.
@@ -295,6 +295,10 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
+      - uses: actions/setup-python@v2
+        with:
+          # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
+          python-version: "3.12"
       - name: "Test CLI (Python)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
