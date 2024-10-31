@@ -296,6 +296,9 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
+      - uses: actions/setup-python@v2
+        with:
+          python-version: "3.12"
       - name: "Test CLI (Python)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
