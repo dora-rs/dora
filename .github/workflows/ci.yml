@@ -235,8 +235,7 @@ jobs:
     name: "CLI Test"
     strategy:
       matrix:
-        # TODO: Support macos-14 when https://github.com/pytorch/pytorch/issues/130249 is fixed
-        platform: [ubuntu-latest, macos-13, windows-latest]
+        platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
@@ -298,6 +297,7 @@ jobs:
 
       - uses: actions/setup-python@v2
         with:
+          # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
           python-version: "3.12"
       - name: "Test CLI (Python)"
         timeout-minutes: 30
