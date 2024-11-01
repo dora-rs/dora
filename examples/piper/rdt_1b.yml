@@ -1,0 +1,132 @@
+nodes:
+  - id: piper_left
+    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/500
+      action: post_process_rdt_1b/jointstate_left
+    outputs:
+      - jointstate
+    env:
+      CAN_BUS: can_left
+
+  - id: piper_right
+    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/1000
+      action: post_process_rdt_1b/jointstate_right
+    outputs:
+      - jointstate
+    env:
+      CAN_BUS: can_right
+
+  - id: camera_left
+    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/1000
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 0
+      ENCODING: jpeg
+
+  - id: camera_center
+    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/1000
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 1
+      ENCODING: jpeg
+
+  - id: camera_right
+    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/1000
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 2
+      ENCODING: jpeg
+      # import opencv as cv
+      # [cv2.VideoCapture(i) for i in range(12)]
+
+  - id: rerun
+    path: dora-rerun
+    inputs:
+      jointstate_piper_left: piper_left/jointstate
+      jointstate_piper_right: piper_right/jointstate
+      jointstate_piper_left_pred: post_process_rdt_1b/jointstate_left
+      jointstate_piper_right_pred: post_process_rdt_1b/jointstate_right
+      series_piper_left: piper_left/jointstate
+      series_piper_right: piper_right/jointstate
+      series_piper_left_pred: post_process_rdt_1b/jointstate_left
+      series_piper_right_pred: post_process_rdt_1b/jointstate_right
+      image_left: camera_left/image
+      image_center: camera_center/image
+      image_right: camera_right/image
+    env:
+      piper_left_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_left.urdf
+      piper_right_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_right.urdf
+      piper_left_transform: 0 0.2 0
+      piper_right_transform: 0 -0.2 0
+      piper_left_pred_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_left_pred.urdf
+      piper_right_pred_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_right_pred.urdf
+      piper_left_pred_transform: 0 0.2 0
+      piper_right_pred_transform: 0 -0.2 0
+
+  - id: rdt_1b
+    path: dora-rdt_1b
+    inputs:
+      jointstate_left:
+        source: piper_left/jointstate
+        queue_size: 1
+      jointstate_right:
+        source: piper_right/jointstate
+        queue_size: 1
+      image_left:
+        source: camera_left/image
+        queue_size: 1
+      image_center:
+        source: camera_center/image
+        queue_size: 1
+      image_right:
+        source: camera_right/image
+        queue_size: 1
+      tick:
+        source: dora/timer/secs/1
+        queue_size: 1
+    outputs:
+      - action
+    env:
+      ROBOTIC_MODEL_NAME_OR_PATH: /home/peter/Documents/work/dora/examples/piper/checkpoints/checkpoint-450
+      VISION_MODEL_NAME_OR_PATH: /home/peter/.cache/huggingface/hub/models--google--siglip-so400m-patch14-384/snapshots/9fdffc58afc957d1a03a25b10dba0329ab15c2a3
+      LANGUAGE_EMBEDDING_PATH: lang_embed.pt
+
+  - id: post_process_rdt_1b
+    path: post_process_action.py
+    inputs:
+      action: rdt_1b/action
+    outputs:
+      - jointstate_left
+      - jointstate_right
+
+  - id: mobile_base
+    path: /home/agilex/1ms.ai/ugv_sdk/tracer_node.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/40
+      # action: dummy/mobile_base
+    outputs:
+      - velocity

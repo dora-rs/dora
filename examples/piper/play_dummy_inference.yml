@@ -1,13 +1,12 @@
 nodes:
   - id: piper
-    path: dummy_inference.py
+    path: dummy_inference_2.py
     inputs:
       tick: dora/timer/millis/20
     outputs:
       - jointstate_left
       - jointstate_right
-    env:
-      CAN_BUS: can_left
+      - mobile_base
 
   - id: rerun
     build: |
@@ -24,10 +23,44 @@ nodes:
       pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git
     path: dora-rerun
     inputs:
-      jointstate_piper_left: piper/jointstate_left
-      jointstate_piper_right: piper/jointstate_right
+      jointstate_piper_left: piper_left/jointstate
+      jointstate_piper_right: piper_right/jointstate
+      jointstate_piper_left_pred: piper/jointstate_left
+      jointstate_piper_right_pred: piper/jointstate_right
+      series_piper_left: piper_left/jointstate
+      series_piper_right: piper_right/jointstate
+      series_piper_left_pred: piper/jointstate_left
+      series_piper_right_pred: piper/jointstate_right
     env:
       piper_left_urdf: piper_left.urdf # Make sure to download meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
       piper_right_urdf: piper_right.urdf # Make sure to download meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
       piper_left_transform: 0 0.2 0
       piper_right_transform: 0 -0.2 0
+      piper_left_pred_urdf: assets/piper_left_pred.urdf
+      piper_right_pred_urdf: assets/piper_right_pred.urdf
+      piper_left_pred_transform: 0 0.2 0
+      piper_right_pred_transform: 0 -0.2 0
+
+  - id: piper_left
+    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/500
+      action: piper/jointstate_left
+    outputs:
+      - jointstate
+    env:
+      CAN_BUS: can_left
+
+  - id: piper_right
+    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
+    _unstable_deploy:
+      machine: piper
+    inputs:
+      tick: dora/timer/millis/1000
+      action: piper/jointstate_right
+    outputs:
+      - jointstate
+    env:
+      CAN_BUS: can_right
