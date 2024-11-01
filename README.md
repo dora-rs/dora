@@ -6,7 +6,7 @@
 <h2 align="center">
   <a href="https://www.dora-rs.ai">Website</a>
   |
-  <a href="https://www.dora-rs.ai/docs/api/python-api">Python API</a>
+  <a href="https://dora-rs.ai/docs/guides/getting-started/conversation_py/">Python API</a>
   |
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
   |
