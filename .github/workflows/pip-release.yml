@@ -252,7 +252,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist -i 3.8
+          args: --out dist
           working-directory: ${{ matrix.repository.path }}
       - name: Upload sdist
         if: github.event_name == 'release'
