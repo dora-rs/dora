@@ -56,7 +56,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --zig
+          args: --release --out dist --zig -i 3.8
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
@@ -97,7 +97,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist -i 3.8
           sccache: "true"
           manylinux: musllinux_1_2
           working-directory: ${{ matrix.repository.path }}
@@ -145,7 +145,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           manylinux: auto
           container: off
-          args: --release -o dist
+          args: --release -o dist -i 3.8
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
@@ -182,7 +182,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist -i 3.8
           sccache: "true"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
@@ -221,7 +221,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist -i 3.8
           sccache: "true"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
@@ -252,7 +252,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist
+          args: --out dist -i 3.8
           working-directory: ${{ matrix.repository.path }}
       - name: Upload sdist
         if: github.event_name == 'release'
