@@ -6,7 +6,7 @@
 <h2 align="center">
   <a href="https://www.dora-rs.ai">Website</a>
   |
-  <a href="https://www.dora-rs.ai/docs/api/python-api">Python API</a>
+  <a href="https://dora-rs.ai/docs/guides/getting-started/conversation_py/">Python API</a>
   |
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
   |
@@ -50,7 +50,7 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 
 - 🚀 A single CLI to launch your Python and Rust robotic projects.
 - ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark) than `ros2`.
-- 🐍 Easy and Fast prototyping with a clean [Python API](https://www.dora-rs.ai/docs/python-api.html).
+- 🐍 Easy and Fast prototyping with a clean [Python API](https://dora-rs.ai/docs/guides/getting-started/conversation_py/).
 - 🖥️ Supports macOS, Linux, and Windows.
 - ⏬ Installable without Rust via `curl` or `powershell`.
 - ❇️ Includes a large set of pre-packaged nodes for fast prototyping.
