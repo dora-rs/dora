@@ -106,17 +106,17 @@ jobs:
             if [ -d "$dir" ]; then
               if [[ -f "$dir/Cargo.toml" && -f "$dir/pyproject.toml" ]]; then
                 echo "Publishing $dir using maturin..."
-                (cd "$dir" && poetry publish)
+                (cd "$dir" && maturin publish --skip-existing)
               else
                 if [ -f "$dir/pyproject.toml" ]; then
                   echo "Publishing $dir using Poetry..."
-                  (cd "$dir" && poetry publish --build)
+                  (cd "$dir" && poetry publish --build --skip-existing)
                 fi
               fi
               
               if [ -f "$dir/Cargo.toml" ]; then
                 echo "Publishing $dir using Cargo..."
-                (cd "$dir" && cargo publish)
+                (cd "$dir" && cargo publish )
               fi
             fi
           done
