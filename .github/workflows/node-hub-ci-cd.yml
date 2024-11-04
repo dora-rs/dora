@@ -130,16 +130,21 @@ jobs:
         run: |
           dir=$(pwd)
           base_dir=$(basename "$dir")
+          ignored_folders=("dora-parler")
 
-          if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
-            echo "Publishing $dir using maturin..."
-            maturin publish  --skip-existing
+          if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then
+              echo "Skipping $base_dir as there is a hf model fetching issue..."
           else
-            if [ -f "pyproject.toml" ]; then
-              echo "Publishing $dir using Poetry..."
-              poetry publish --build  --skip-existing
+            if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
+              echo "Publishing $dir using maturin..."
+              maturin publish  --skip-existing
+            else
+              if [ -f "pyproject.toml" ]; then
+                echo "Publishing $dir using Poetry..."
+                poetry publish --build  --skip-existing
 
-          if [ -f "Cargo.toml" ]; then
-            echo "Publishing $dir using Cargo..."
-            cargo publish
+            if [ -f "Cargo.toml" ]; then
+              echo "Publishing $dir using Cargo..."
+              cargo publish
+            fi
           fi
