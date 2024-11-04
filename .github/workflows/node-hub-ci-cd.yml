@@ -133,13 +133,11 @@ jobs:
 
           if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
             echo "Publishing $dir using maturin..."
-            poetry publish
+            maturin publish  --skip-existing
           else
             if [ -f "pyproject.toml" ]; then
               echo "Publishing $dir using Poetry..."
-              poetry publish --build
-            fi
-          fi
+              poetry publish --build  --skip-existing
 
           if [ -f "Cargo.toml" ]; then
             echo "Publishing $dir using Cargo..."
