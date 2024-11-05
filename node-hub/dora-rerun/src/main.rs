@@ -1,18 +1,69 @@
 //! Demonstrates the most barebone usage of the Rerun SDK.
 
-use std::env::VarError;
+use std::{collections::HashMap, env::VarError};
 
 use dora_node_api::{
     arrow::{
-        array::{AsArray, StringArray, StructArray, UInt8Array},
+        array::{AsArray, Float32Array, StringArray, StructArray, UInt8Array},
         datatypes::Float32Type,
     },
     DoraNode, Event, Parameter,
 };
 use eyre::{eyre, Context, ContextCompat, Result};
 use rerun::{
-    components::ImageBuffer, external::re_types::ArrowBuffer, ImageFormat, SpawnOptions, Text,
+    components::{ImageBuffer, RotationAxisAngle},
+    external::re_types::ArrowBuffer,
+    Angle, ImageFormat, Rotation3D, SpawnOptions, Text, Vec3D,
 };
+pub struct MyIntersperse<T, I> {
+    iterator: I,
+    sep: T,
+    nxt: Option<T>,
+}
+
+pub trait MyIntersperseExt<T: Clone, I: Iterator>: Iterator<Item = T> {
+    fn my_intersperse(self, sep: T) -> MyIntersperse<T, I>;
+}
+
+impl<T: Clone, I: Iterator<Item = T>> MyIntersperseExt<T, I> for I {
+    fn my_intersperse(mut self, sep: T) -> MyIntersperse<T, I> {
+        let next = self.next();
+        MyIntersperse {
+            iterator: self,
+            sep: sep.clone(),
+            nxt: next,
+        }
+    }
+}
+
+impl<T: Clone, I: Iterator<Item = T>> Iterator for MyIntersperse<T, I> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(item) = self.nxt.take() {
+            Some(item)
+        } else {
+            self.nxt = self.iterator.next();
+            if self.nxt.is_some() {
+                Some(self.sep.clone())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn get_entity_path(link: &k::Node<f32>, urdf_path: &str) -> String {
+    let mut ancestors: Vec<_> = link
+        .iter_ancestors()
+        .map(|node| node.link().as_ref().unwrap().name.clone())
+        .collect();
+    ancestors.push(String::from(urdf_path));
+    ancestors
+        .into_iter()
+        .rev()
+        .my_intersperse(String::from("/"))
+        .collect()
+}
 
 fn main() -> Result<()> {
     // rerun `serve()` requires to have a running Tokio runtime in the current context.
@@ -20,9 +71,6 @@ fn main() -> Result<()> {
         .build()
         .expect("Failed to create tokio runtime");
     let _guard = rt.enter();
-
-    let (_node, mut events) =
-        DoraNode::init_from_env().context("Could not initialize dora node")?;
 
     // Limit memory usage
     let mut options = SpawnOptions::default();
@@ -42,6 +90,40 @@ fn main() -> Result<()> {
     let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
         .spawn_opts(&options, None)
         .context("Could not spawn rerun visualization")?;
+
+    // Get all env variable that start with URDF_
+    let urdfs = std::env::vars()
+        .filter(|(key, _)| key.ends_with(".urdf"))
+        .collect::<Vec<_>>();
+    let mut chains = HashMap::new();
+    for (key, urdf_path) in urdfs {
+        let chain = k::Chain::<f32>::from_urdf_file(&urdf_path).unwrap();
+
+        let transform = key.replace(".urdf", ".transform");
+        rec.log_file_from_path(&urdf_path, None, false).unwrap();
+        // Get transform by replacing URDF_ with TRANSFORM_
+        if let Ok(transform) = std::env::var(transform) {
+            let transform = transform
+                .split(' ')
+                .map(|x| x.parse::<f32>().unwrap())
+                .collect::<Vec<f32>>();
+            rec.log(
+                key.clone(),
+                &rerun::Transform3D::from_translation_rotation(
+                    [transform[0], transform[1], transform[2]],
+                    Rotation3D::AxisAngle(RotationAxisAngle::new(
+                        [0., 0., 0.],
+                        Angle::from_degrees(0.0),
+                    )),
+                ),
+            )
+            .unwrap();
+            println!("{}: {}", key, urdf_path);
+            chains.insert(key, chain);
+        }
+    }
+    let (_node, mut events) =
+        DoraNode::init_from_env().context("Could not initialize dora node")?;
 
     match std::env::var("README") {
         Ok(readme) => {
@@ -199,6 +281,46 @@ fn main() -> Result<()> {
                     &rerun::Boxes2D::from_centers_and_sizes(centers, sizes).with_labels(labels),
                 )
                 .wrap_err("Could not log Boxes2D")?;
+            } else if id.as_str().contains("jointstate") {
+                let buffer: &Float32Array = data.as_any().downcast_ref().unwrap();
+                let mut positions: Vec<f32> = buffer.values().to_vec();
+                positions.push(0.);
+                positions.push(0.);
+
+                // Set position 1 between 0 and pi
+                let mut id = id.as_str().replace("jointstate_", "");
+                id.push_str(".urdf");
+                if let Some(chain) = &chains.get(&id) {
+                    chain.set_joint_positions_clamped(&positions);
+
+                    chain.update_transforms();
+                    chain.update_link_transforms();
+
+                    for link_name in chain.iter_links().map(|link| link.name.clone()) {
+                        let link = chain.find_link(&link_name).unwrap();
+                        let entity_path = get_entity_path(&link, &id);
+                        let link_to_world = link.world_transform().unwrap();
+                        let link_to_parent = if link_name != "base_link" {
+                            let parent = link.parent().unwrap();
+                            parent.world_transform().unwrap().inv_mul(&link_to_world)
+                        } else {
+                            link_to_world
+                        };
+                        let link_to_parent_mat = link_to_parent.to_matrix();
+
+                        let trans = link_to_parent_mat.column(3);
+                        let trans = trans.as_slice();
+                        let quat = link_to_parent.rotation.quaternion();
+                        rec.log(
+                            entity_path,
+                            &rerun::Transform3D::from_translation_rotation(
+                                Vec3D::new(trans[0], trans[1], trans[2]),
+                                rerun::Quaternion::from([quat.i, quat.j, quat.k, quat.w]),
+                            ),
+                        )
+                        .unwrap();
+                    }
+                }
             }
         }
     }
