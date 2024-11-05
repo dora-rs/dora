@@ -102,7 +102,19 @@ jobs:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_PASS }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          # List of ignored modules 
+          ignored_folders=("dora-parler")
+
           for dir in node-hub/*/ ; do
+
+            # Get the base name of the directory (without the path)
+            base_dir=$(basename "$dir")
+            
+            if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then
+                echo "Skipping $base_dir as there is a hf model fetching issue..."
+                continue
+            fi
+            
             if [ -d "$dir" ]; then
               if [[ -f "$dir/Cargo.toml" && -f "$dir/pyproject.toml" ]]; then
                 echo "Publishing $dir using maturin..."
