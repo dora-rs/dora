@@ -16,25 +16,35 @@ use tracing_subscriber::Registry;
 pub mod telemetry;
 
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
-    set_up_tracing_opts(name, true, None)
+    set_up_tracing_opts(name, Some(LevelFilter::WARN), None)
 }
 
-pub fn set_up_tracing_opts(name: &str, stdout: bool, filename: Option<&str>) -> eyre::Result<()> {
+pub struct FileLogging {
+    pub file_name: String,
+    pub filter: LevelFilter,
+}
+
+pub fn set_up_tracing_opts(
+    name: &str,
+    stdout: Option<LevelFilter>,
+    file: Option<FileLogging>,
+) -> eyre::Result<()> {
     let mut layers = Vec::new();
 
-    if stdout {
+    if let Some(level) = stdout {
         // Filter log using `RUST_LOG`. More useful for CLI.
-        let env_filter = EnvFilter::from_default_env().or(LevelFilter::WARN);
+        let env_filter = EnvFilter::from_default_env().or(level);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
             .with_filter(env_filter);
         layers.push(layer.boxed());
     }
 
-    if let Some(filename) = filename {
+    if let Some(file) = file {
+        let FileLogging { file_name, filter } = file;
         let out_dir = Path::new("out");
         std::fs::create_dir_all(out_dir).context("failed to create `out` directory")?;
-        let path = out_dir.join(filename).with_extension("txt");
+        let path = out_dir.join(file_name).with_extension("txt");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -44,7 +54,7 @@ pub fn set_up_tracing_opts(name: &str, stdout: bool, filename: Option<&str>) -> 
         let layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_writer(file)
-            .with_filter(LevelFilter::INFO);
+            .with_filter(filter);
         layers.push(layer.boxed());
     }
 
