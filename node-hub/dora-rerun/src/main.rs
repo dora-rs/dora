@@ -10,10 +10,11 @@ use dora_node_api::{
     DoraNode, Event, Parameter,
 };
 use eyre::{eyre, Context, ContextCompat, Result};
+use k::Chain;
 use rerun::{
     components::{ImageBuffer, RotationAxisAngle},
     external::re_types::ArrowBuffer,
-    Angle, ImageFormat, Rotation3D, SpawnOptions, Text, Vec3D,
+    Angle, ImageFormat, RecordingStream, Rotation3D, SpawnOptions, Text, Vec3D,
 };
 pub struct MyIntersperse<T, I> {
     iterator: I,
@@ -65,6 +66,46 @@ fn get_entity_path(link: &k::Node<f32>, urdf_path: &str) -> String {
         .collect()
 }
 
+fn update_visualization(
+    chain: &Chain<f32>,
+    rec: &RecordingStream,
+    id: &str,
+    positions: &[f32],
+) -> Result<()> {
+    chain.set_joint_positions_clamped(&positions);
+
+    chain.update_transforms();
+    chain.update_link_transforms();
+
+    for link_name in chain.iter_links().map(|link| link.name.clone()) {
+        let link = chain.find_link(&link_name).unwrap();
+        let entity_path = get_entity_path(&link, &id);
+        let link_to_world = link
+            .world_transform()
+            .context("Could not get world transform")?;
+        let link_to_parent = if link_name != "base_link" {
+            let parent = link.parent().unwrap();
+            parent.world_transform().unwrap().inv_mul(&link_to_world)
+        } else {
+            link_to_world
+        };
+        let link_to_parent_mat = link_to_parent.to_matrix();
+
+        let trans = link_to_parent_mat.column(3);
+        let trans = trans.as_slice();
+        let quat = link_to_parent.rotation.quaternion();
+        rec.log(
+            entity_path,
+            &rerun::Transform3D::from_translation_rotation(
+                Vec3D::new(trans[0], trans[1], trans[2]),
+                rerun::Quaternion::from([quat.i, quat.j, quat.k, quat.w]),
+            ),
+        )
+        .context("Could not log transform")?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // rerun `serve()` requires to have a running Tokio runtime in the current context.
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -93,13 +134,14 @@ fn main() -> Result<()> {
 
     // Get all env variable that start with URDF_
     let urdfs = std::env::vars()
-        .filter(|(key, _)| key.ends_with(".urdf"))
+        .filter(|(key, _)| key.ends_with("_urdf"))
         .collect::<Vec<_>>();
     let mut chains = HashMap::new();
     for (key, urdf_path) in urdfs {
+        let path = key.replace("_urdf", ".urdf");
         let chain = k::Chain::<f32>::from_urdf_file(&urdf_path).unwrap();
 
-        let transform = key.replace(".urdf", ".transform");
+        let transform = key.replace("_urdf", "_transform");
         rec.log_file_from_path(&urdf_path, None, false).unwrap();
         // Get transform by replacing URDF_ with TRANSFORM_
         if let Ok(transform) = std::env::var(transform) {
@@ -108,7 +150,7 @@ fn main() -> Result<()> {
                 .map(|x| x.parse::<f32>().unwrap())
                 .collect::<Vec<f32>>();
             rec.log(
-                key.clone(),
+                path.clone(),
                 &rerun::Transform3D::from_translation_rotation(
                     [transform[0], transform[1], transform[2]],
                     Rotation3D::AxisAngle(RotationAxisAngle::new(
@@ -118,8 +160,7 @@ fn main() -> Result<()> {
                 ),
             )
             .unwrap();
-            println!("{}: {}", key, urdf_path);
-            chains.insert(key, chain);
+            chains.insert(path, chain);
         }
     }
     let (_node, mut events) =
@@ -282,45 +323,29 @@ fn main() -> Result<()> {
                 )
                 .wrap_err("Could not log Boxes2D")?;
             } else if id.as_str().contains("jointstate") {
-                let buffer: &Float32Array = data.as_any().downcast_ref().unwrap();
+                let buffer: &Float32Array = data
+                    .as_any()
+                    .downcast_ref()
+                    .context("data is not float32")?;
                 let mut positions: Vec<f32> = buffer.values().to_vec();
-                positions.push(0.);
-                positions.push(0.);
 
-                // Set position 1 between 0 and pi
+                // Match file name
                 let mut id = id.as_str().replace("jointstate_", "");
                 id.push_str(".urdf");
-                if let Some(chain) = &chains.get(&id) {
-                    chain.set_joint_positions_clamped(&positions);
 
-                    chain.update_transforms();
-                    chain.update_link_transforms();
+                let chain = chains.get(&id).unwrap();
+                let dof = chain.dof();
 
-                    for link_name in chain.iter_links().map(|link| link.name.clone()) {
-                        let link = chain.find_link(&link_name).unwrap();
-                        let entity_path = get_entity_path(&link, &id);
-                        let link_to_world = link.world_transform().unwrap();
-                        let link_to_parent = if link_name != "base_link" {
-                            let parent = link.parent().unwrap();
-                            parent.world_transform().unwrap().inv_mul(&link_to_world)
-                        } else {
-                            link_to_world
-                        };
-                        let link_to_parent_mat = link_to_parent.to_matrix();
-
-                        let trans = link_to_parent_mat.column(3);
-                        let trans = trans.as_slice();
-                        let quat = link_to_parent.rotation.quaternion();
-                        rec.log(
-                            entity_path,
-                            &rerun::Transform3D::from_translation_rotation(
-                                Vec3D::new(trans[0], trans[1], trans[2]),
-                                rerun::Quaternion::from([quat.i, quat.j, quat.k, quat.w]),
-                            ),
-                        )
-                        .unwrap();
+                // Truncate or pad positions to match the chain's dof
+                if dof < positions.len() {
+                    positions.truncate(dof);
+                } else {
+                    for _ in 0..(dof - positions.len()) {
+                        positions.push(0.);
                     }
                 }
+
+                update_visualization(&chain, &rec, &id, &positions)?;
             }
         }
     }

@@ -13,6 +13,6 @@ repository.workspace = true
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
 tokio = { version = "1.24.2", features = ["rt"] }
-rerun = { version = "0.18.2", features = ["web_viewer", "image"] }
+rerun = { version = "0.19.0", features = ["web_viewer", "image"] }
 ndarray = "0.15.6"
 k = "0.32"
