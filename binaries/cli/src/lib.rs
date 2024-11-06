@@ -17,7 +17,7 @@ use dora_message::{
 };
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
-use dora_tracing::set_up_tracing_opts;
+use dora_tracing::{set_up_tracing_opts, FileLogging};
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
@@ -29,6 +29,7 @@ use std::{
 };
 use tabwriter::TabWriter;
 use tokio::runtime::Builder;
+use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
 
 mod attach;
@@ -89,6 +90,15 @@ enum Command {
         args: CommandNew,
         #[clap(hide = true, long)]
         internal_create_with_path_dependencies: bool,
+    },
+    /// Run a dataflow locally.
+    ///
+    /// Directly runs the given dataflow without connecting to a dora
+    /// coordinator or daemon. The dataflow is executed on the local machine.
+    Run {
+        /// Path to the dataflow descriptor file
+        #[clap(value_name = "PATH")]
+        dataflow: String,
     },
     /// Spawn coordinator and daemon in local mode (with default config)
     Up {
@@ -274,7 +284,12 @@ fn run(args: Args) -> eyre::Result<()> {
                 .as_ref()
                 .map(|id| format!("{name}-{id}"))
                 .unwrap_or(name.to_string());
-            set_up_tracing_opts(name, !quiet, Some(&filename))
+            let stdout = (!quiet).then_some(LevelFilter::WARN);
+            let file = Some(FileLogging {
+                file_name: filename,
+                filter: LevelFilter::INFO,
+            });
+            set_up_tracing_opts(name, stdout, file)
                 .context("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
@@ -282,7 +297,16 @@ fn run(args: Args) -> eyre::Result<()> {
         }
         Command::Coordinator { quiet, .. } => {
             let name = "dora-coordinator";
-            set_up_tracing_opts(name, !quiet, Some(name))
+            let stdout = (!quiet).then_some(LevelFilter::WARN);
+            let file = Some(FileLogging {
+                file_name: name.to_owned(),
+                filter: LevelFilter::INFO,
+            });
+            set_up_tracing_opts(name, stdout, file)
+                .context("failed to set up tracing subscriber")?;
+        }
+        Command::Run { .. } => {
+            set_up_tracing_opts("run", Some(LevelFilter::INFO), None)
                 .context("failed to set up tracing subscriber")?;
         }
         _ => {
@@ -328,6 +352,15 @@ fn run(args: Args) -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
+        Command::Run { dataflow } => {
+            let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+            let rt = Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("tokio runtime failed")?;
+            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path))?;
+            handle_dataflow_result(result, None)?
+        }
         Command::Up { config } => {
             up::up(config.as_deref())?;
         }
