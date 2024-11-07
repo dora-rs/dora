@@ -1,0 +1,22 @@
+nodes:
+  - id: piper
+    path: piper_inference.py
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - jointstate_left
+      - jointstate_right
+    env:
+      CAN_BUS: can_left
+
+  - id: rerun
+    build: wget
+    path: dora-rerun
+    inputs:
+      jointstate_piper_left: piper/jointstate_left
+      jointstate_piper_right: piper/jointstate_right
+    env:
+      piper_left_urdf: assets/piper_left.urdf # Make sure to download assets/meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
+      piper_right_urdf: assets/piper_right.urdf # Make sure to download assets/meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
+      piper_left_transform: 0 0.2 0
+      piper_right_transform: 0 -0.2 0
