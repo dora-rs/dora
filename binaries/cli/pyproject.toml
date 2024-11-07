@@ -4,3 +4,9 @@ build-backend = "maturin"
 
 [project]
 name = "dora-rs-cli"
+
+scripts = { "dora" = "dora_cli:py_main" }
+
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

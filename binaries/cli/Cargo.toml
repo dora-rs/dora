@@ -16,6 +16,7 @@ path = "src/main.rs"
 [features]
 default = ["tracing"]
 tracing = ["dep:dora-tracing"]
+python = ["pyo3"]
 
 [dependencies]
 clap = { version = "4.0.3", features = ["derive"] }
@@ -49,3 +50,13 @@ tabwriter = "1.4.0"
 log = { version = "0.4.21", features = ["serde"] }
 colored = "2.1.0"
 env_logger = "0.11.3"
+pyo3 = { workspace = true, features = [
+    "extension-module",
+    "abi3",
+], optional = true }
+
+
+[lib]
+name = "dora_cli"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
