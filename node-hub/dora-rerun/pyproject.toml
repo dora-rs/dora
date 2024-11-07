@@ -6,5 +6,10 @@ build-backend = "maturin"
 name = "dora-rerun"
 dependencies = [
     'rerun_sdk==0.19.1',
-    "git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git",
+    # "rerun-loader-urdf @ git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git",
 ]
+
+scripts = { "dora-rerun" = "dora_rerun:py_main" }
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

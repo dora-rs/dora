@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use eyre::{Context, ContextCompat, Result};
 use k::Chain;
-use rerun::{RecordingStream, Vec3D};
+use rerun::{components::RotationAxisAngle, Angle, RecordingStream, Rotation3D, Vec3D};
 pub struct MyIntersperse<T, I> {
     iterator: I,
     sep: T,
@@ -49,6 +51,48 @@ fn get_entity_path(link: &k::Node<f32>, urdf_path: &str) -> String {
         .rev()
         .my_intersperse(String::from("/"))
         .collect()
+}
+
+pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
+    // Get all env variable that end with urdf
+    let urdfs = std::env::vars()
+        .filter(|(key, _)| key.ends_with("_urdf"))
+        .collect::<Vec<_>>();
+    let mut chains = HashMap::new();
+    for (key, urdf_path) in urdfs {
+        let path = key.replace("_urdf", ".urdf");
+        let chain = k::Chain::<f32>::from_urdf_file(&urdf_path).context("Could not load URDF")?;
+
+        let transform = key.replace("_urdf", "_transform");
+        if let Err(err) = rec.log_file_from_path(&urdf_path, None, false) {
+            println!("Could not log file: {}. Errored with {}", urdf_path, err);
+            println!("Make sure to install urdf loader with:");
+            println!(
+                "pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git"
+            )
+        };
+        // Get transform by replacing URDF_ with TRANSFORM_
+        if let Ok(transform) = std::env::var(transform) {
+            let transform = transform
+                .split(' ')
+                .map(|x| x.parse::<f32>().unwrap())
+                .collect::<Vec<f32>>();
+            rec.log(
+                path.clone(),
+                &rerun::Transform3D::from_translation_rotation(
+                    [transform[0], transform[1], transform[2]],
+                    Rotation3D::AxisAngle(RotationAxisAngle::new(
+                        [0., 0., 0.],
+                        Angle::from_degrees(0.0),
+                    )),
+                ),
+            )
+            .unwrap();
+            chains.insert(path, chain);
+        }
+    }
+
+    Ok(chains)
 }
 
 pub fn update_visualization(
