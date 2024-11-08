@@ -56,6 +56,14 @@ Make sure to name the dataflow as follows:
 > [!IMPORTANT]  
 > Make sure that the urdf file name correspond to your dataflow object name otherwise, it will not be able to link to the corresponding entity.
 
+> [!WARNING]
+> Please make sure to review the following gotchas:
+>
+> - Filename included in URDF are going to be relative to your dataflow working directory instead of the URDF path: https://github.com/rerun-io/rerun-loader-python-example-urdf/issues/13
+> - URDF loader is not on pip and so you need to install it yourself https://github.com/rerun-io/rerun-loader-python-example-urdf/issues/12
+> - There is no warning if a file is not logged properly. https://github.com/rerun-io/rerun-loader-python-example-urdf/pull/14
+> - There is no transparent color in rerun. https://github.com/rerun-io/rerun/issues/1611
+
 ## Configurations
 
 - RERUN_MEMORY_LIMIT: Rerun memory limit

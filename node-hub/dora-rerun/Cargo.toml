@@ -29,4 +29,4 @@ pyo3 = { workspace = true, features = [
 [lib]
 name = "dora_rerun"
 path = "src/lib.rs"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["lib", "cdylib"]
