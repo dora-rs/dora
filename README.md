@@ -79,7 +79,7 @@ cargo install dora-cli
 
 ## Documentation
 
-The full documentation is available on [our website](https://www.dora-rs.ai/docs).
+The full documentation is available on [our website](https://dora-rs.ai/).
 A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/) of our website.
 
 ## Getting Started
@@ -249,7 +249,7 @@ Cool hardware that we think might be good fit to try out dora-rs 🙋 We are not
 | **Local Communication**           | Shared Memory                                             | Custom Middleware, [zero-copy GPU IPC](https://arrow.apache.org/docs/python/api/cuda.html), intra-process `tokio::channel` communication |
 | **Remote Communication**          | TCP    | Custom Middleware, [Zenoh](https://zenoh.io/)                                                                                            |
 | **Metrics, Tracing, and Logging** | Opentelemetry                                             | Native logging libraries into Opentelemetry                                                                                              |
-| **Data archives**                 | Parquet ([dora-record](libraries/extensions/dora-record)) |
+| **Data archives**                 | Parquet ([dora-record](https://github.com/dora-rs/dora/tree/main/node-hub/dora-record)) |
 | **Visualization and annotation**  | OpenCV                                                    | [rerun.io](rerun.io)                                                                                                                     |
 | **Supported Platforms (x86)**     | Windows, macOS, Linux                                     |
 | **Supported Platforms (ARM)**     | macOS, Linux                                              |
