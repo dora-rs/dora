@@ -101,7 +101,7 @@ fn start_coordinator() -> eyre::Result<()> {
             .context("Could not get first argument correspond to dora with python installation")?
     } else {
         std::env::args_os()
-            .nth(0)
+            .next()
             .context("Could not get dora path")?
     };
     let mut cmd = Command::new(path);
@@ -121,7 +121,7 @@ fn start_daemon() -> eyre::Result<()> {
             .context("Could not get first argument correspond to dora with python installation")?
     } else {
         std::env::args_os()
-            .nth(0)
+            .next()
             .context("Could not get dora path")?
     };
     let mut cmd = Command::new(path);
