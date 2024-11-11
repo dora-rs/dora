@@ -2316,6 +2316,7 @@ dependencies = [
  "inquire",
  "log",
  "notify 5.2.0",
+ "pyo3",
  "serde",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
