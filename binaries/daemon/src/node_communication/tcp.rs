@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
+use std::{collections::BTreeMap, io::ErrorKind, sync::Arc, time::Duration};
 
 use super::{Connection, Listener};
 use crate::{
@@ -10,10 +10,12 @@ use dora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
 use eyre::Context;
+use futures::future::select;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
 };
+use tracing::warn;
 
 #[tracing::instrument(skip(listener, daemon_tx, clock), level = "trace")]
 pub async fn listener_loop(
@@ -86,9 +88,20 @@ impl Connection for TcpConnection {
         }
         let serialized =
             bincode::serialize(&message).wrap_err("failed to serialize DaemonReply")?;
-        socket_stream_send(&mut self.0, &serialized)
-            .await
-            .wrap_err("failed to send DaemonReply")?;
+        let timeout = futures_timer::Delay::new(Duration::from_secs(1));
+        let sent_message = socket_stream_send(&mut self.0, &serialized);
+        futures::pin_mut!(sent_message);
+
+        match select(sent_message, timeout).await {
+            futures::future::Either::Left((Ok(_), _)) => {}
+            futures::future::Either::Left((Err(err), _)) => {
+                warn!("Errored on send_reply: {err}");
+            }
+            futures::future::Either::Right(_) => {
+                warn!("timeout while waiting for daemon send_reply");
+            }
+        }
+
         Ok(())
     }
 }
