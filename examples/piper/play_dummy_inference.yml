@@ -1,6 +1,6 @@
 nodes:
   - id: piper
-    path: piper_inference.py
+    path: dummy_inference.py
     inputs:
       tick: dora/timer/millis/20
     outputs:
