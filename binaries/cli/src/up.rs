@@ -1,7 +1,7 @@
 use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::{bail, Context};
+use eyre::{bail, Context, ContextCompat};
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
@@ -95,8 +95,16 @@ fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrRe
 }
 
 fn start_coordinator() -> eyre::Result<()> {
-    let mut cmd =
-        Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
+    let path = if cfg!(feature = "python") {
+        std::env::args_os()
+            .nth(1)
+            .context("Could not get first argument correspond to dora with python installation")?
+    } else {
+        std::env::args_os()
+            .next()
+            .context("Could not get dora path")?
+    };
+    let mut cmd = Command::new(path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
@@ -107,8 +115,16 @@ fn start_coordinator() -> eyre::Result<()> {
 }
 
 fn start_daemon() -> eyre::Result<()> {
-    let mut cmd =
-        Command::new(std::env::current_exe().wrap_err("failed to get current executable path")?);
+    let path = if cfg!(feature = "python") {
+        std::env::args_os()
+            .nth(1)
+            .context("Could not get first argument correspond to dora with python installation")?
+    } else {
+        std::env::args_os()
+            .next()
+            .context("Could not get dora path")?
+    };
+    let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
