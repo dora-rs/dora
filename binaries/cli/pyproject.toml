@@ -9,4 +9,4 @@ scripts = { "dora" = "dora_cli:py_main" }
 
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["python", "pyo3/extension-module"]
