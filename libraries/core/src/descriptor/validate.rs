@@ -6,7 +6,7 @@ use crate::{
 
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
-    descriptor::{CoreNodeKind, OperatorSource, DYNAMIC_SOURCE, SHELL_SOURCE},
+    descriptor::{CoreNodeKind, OperatorSource, ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE},
     id::{DataId, OperatorId},
 };
 use eyre::{bail, eyre, Context};
@@ -114,6 +114,37 @@ pub fn check_dataflow(
     }
 
     Ok(())
+}
+
+pub trait ResolvedNodeExt {
+    fn send_stdout_as(&self) -> eyre::Result<Option<String>>;
+}
+
+impl ResolvedNodeExt for ResolvedNode {
+    fn send_stdout_as(&self) -> eyre::Result<Option<String>> {
+        match &self.kind {
+            // TODO: Split stdout between operators
+            CoreNodeKind::Runtime(n) => {
+                let count = n
+                    .operators
+                    .iter()
+                    .filter(|op| op.config.send_stdout_as.is_some())
+                    .count();
+                if count == 1 && n.operators.len() > 1 {
+                    tracing::warn!("All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator.")
+                } else if count > 1 {
+                    return Err(eyre!("More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."));
+                }
+                Ok(n.operators.iter().find_map(|op| {
+                    op.config
+                        .send_stdout_as
+                        .clone()
+                        .map(|stdout| format!("{}/{}", op.id, stdout))
+                }))
+            }
+            CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
+        }
+    }
 }
 
 fn check_input(

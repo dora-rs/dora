@@ -11,10 +11,11 @@ use std::{
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
-    runtime_node_inputs, CoreNodeKind, CustomNode, Descriptor, Node, OperatorConfig,
-    OperatorDefinition, OperatorSource, PythonSource, ResolvedDeploy, ResolvedNode, RuntimeNode,
-    SingleOperatorDefinition, DYNAMIC_SOURCE, SHELL_SOURCE,
+    CoreNodeKind, CustomNode, Descriptor, Node, OperatorConfig, OperatorDefinition, OperatorSource,
+    PythonSource, ResolvedDeploy, ResolvedNode, RuntimeNode, SingleOperatorDefinition,
+    DYNAMIC_SOURCE, SHELL_SOURCE,
 };
+pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
 
 mod validate;
