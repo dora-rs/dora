@@ -1,10 +1,11 @@
 use std::{path::PathBuf, time::Duration};
 
-use dora_core::{
-    config::{NodeId, OperatorId},
-    descriptor::Descriptor,
-};
 use uuid::Uuid;
+
+use crate::{
+    descriptor::Descriptor,
+    id::{NodeId, OperatorId},
+};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {

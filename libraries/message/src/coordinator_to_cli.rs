@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use dora_core::config::NodeId;
-use dora_core::uhlc;
 use uuid::Uuid;
 
-pub use crate::common::LogMessage;
-pub use crate::common::{NodeError, NodeErrorCause, NodeExitStatus};
+pub use crate::common::{LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
+use crate::id::NodeId;
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {

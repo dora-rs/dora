@@ -3,7 +3,10 @@ use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
     config::{DataId, Input, InputMapping, NodeId, OperatorId},
-    descriptor::{runtime_node_inputs, CoreNodeKind, Descriptor, ResolvedNode},
+    descriptor::{
+        read_as_descriptor, runtime_node_inputs, CoreNodeKind, Descriptor, DescriptorExt,
+        ResolvedNode,
+    },
     topics::LOCALHOST,
     uhlc::{self, HLC},
 };
@@ -162,7 +165,7 @@ impl Daemon {
             .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
             .to_owned();
 
-        let descriptor = Descriptor::read(dataflow_path).await?;
+        let descriptor = read_as_descriptor(dataflow_path).await?;
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 

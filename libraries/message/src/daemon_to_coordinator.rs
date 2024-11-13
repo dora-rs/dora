@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 
-use dora_core::{config::NodeId, uhlc};
-
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
-use crate::{current_crate_version, versions_compatible, DataflowId};
+use crate::{current_crate_version, id::NodeId, versions_compatible, DataflowId};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {

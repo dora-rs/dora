@@ -1,9 +1,12 @@
 pub use crate::common::{
     DataMessage, DropToken, LogLevel, LogMessage, SharedMemoryId, Timestamped,
 };
-use crate::{current_crate_version, metadata::Metadata, versions_compatible, DataflowId};
-
-use dora_core::config::{DataId, NodeId};
+use crate::{
+    current_crate_version,
+    id::{DataId, NodeId},
+    metadata::Metadata,
+    versions_compatible, DataflowId,
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum DaemonRequest {

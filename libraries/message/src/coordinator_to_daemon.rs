@@ -1,12 +1,10 @@
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
 
-use dora_core::{
-    config::{NodeId, OperatorId},
-    // TODO: how should we version these?
+use crate::{
     descriptor::{Descriptor, ResolvedNode},
+    id::{NodeId, OperatorId},
+    DataflowId,
 };
-
-use crate::DataflowId;
 
 pub use crate::common::Timestamped;
 

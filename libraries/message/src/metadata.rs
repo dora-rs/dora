@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
-use dora_core::uhlc;
 use eyre::Context;
 use serde::{Deserialize, Serialize};
 
