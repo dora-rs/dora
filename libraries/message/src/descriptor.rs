@@ -2,8 +2,6 @@ use crate::{
     config::{CommunicationConfig, Input, InputMapping, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
-use eyre::{eyre, Result};
-use log::warn;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_with_expand_env::with_expand_envs;
@@ -89,33 +87,6 @@ pub struct ResolvedNode {
     pub kind: CoreNodeKind,
 }
 
-impl ResolvedNode {
-    pub fn send_stdout_as(&self) -> Result<Option<String>> {
-        match &self.kind {
-            // TODO: Split stdout between operators
-            CoreNodeKind::Runtime(n) => {
-                let count = n
-                    .operators
-                    .iter()
-                    .filter(|op| op.config.send_stdout_as.is_some())
-                    .count();
-                if count == 1 && n.operators.len() > 1 {
-                    warn!("All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator.")
-                } else if count > 1 {
-                    return Err(eyre!("More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."));
-                }
-                Ok(n.operators.iter().find_map(|op| {
-                    op.config
-                        .send_stdout_as
-                        .clone()
-                        .map(|stdout| format!("{}/{}", op.id, stdout))
-                }))
-            }
-            CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResolvedDeploy {
     pub machine: String,
@@ -128,52 +99,6 @@ pub enum CoreNodeKind {
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
     Custom(CustomNode),
-}
-
-pub fn runtime_node_inputs(n: &RuntimeNode) -> BTreeMap<DataId, Input> {
-    n.operators
-        .iter()
-        .flat_map(|operator| {
-            operator.config.inputs.iter().map(|(input_id, mapping)| {
-                (
-                    DataId::from(format!("{}/{input_id}", operator.id)),
-                    mapping.clone(),
-                )
-            })
-        })
-        .collect()
-}
-
-fn runtime_node_outputs(n: &RuntimeNode) -> BTreeSet<DataId> {
-    n.operators
-        .iter()
-        .flat_map(|operator| {
-            operator
-                .config
-                .outputs
-                .iter()
-                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
-        })
-        .collect()
-}
-
-impl CoreNodeKind {
-    pub fn run_config(&self) -> NodeRunConfig {
-        match self {
-            CoreNodeKind::Runtime(n) => NodeRunConfig {
-                inputs: runtime_node_inputs(n),
-                outputs: runtime_node_outputs(n),
-            },
-            CoreNodeKind::Custom(n) => n.run_config.clone(),
-        }
-    }
-
-    pub fn dynamic(&self) -> bool {
-        match self {
-            CoreNodeKind::Runtime(_n) => false,
-            CoreNodeKind::Custom(n) => n.source == DYNAMIC_SOURCE,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -10,6 +10,7 @@ use arrow::array::Array;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
+    metadata::ArrowTypeInfoExt,
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
     uhlc,
 };

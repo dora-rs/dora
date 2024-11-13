@@ -8,6 +8,7 @@ use std::{
 pub use dora_message::{config, uhlc};
 
 pub mod descriptor;
+pub mod metadata;
 pub mod topics;
 
 pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyre::ErrReport> {
