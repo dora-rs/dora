@@ -1,4 +1,4 @@
-from piper_sdk import *
+from piper_sdk import C_PiperInterface
 from dora import Node
 import pyarrow as pa
 import os
@@ -39,9 +39,9 @@ def enable_fun(piper: C_PiperInterface):
             enable_flag = True
             break
         time.sleep(1)
-        pass
     if elapsed_time_flag:
         print("程序自动使能超时,退出程序")
+        print("If you have this issue, you should probably restart your computer")
         exit(0)
 
 

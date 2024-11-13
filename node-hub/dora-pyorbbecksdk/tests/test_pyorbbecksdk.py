@@ -1,6 +1,3 @@
-import pytest
-
-
 def test_import_main():
     # from opencv_video_capture.main import main
     pass
