@@ -9,6 +9,7 @@ except ImportError as err:
 
 from dora import Node
 import pyarrow as pa
+import os
 
 
 def main():
@@ -16,12 +17,9 @@ def main():
     robot = hunter_robot.HunterRobot(ugv_sdk_py.ProtocolVersion.AGX_V2)
 
     # Connect to the robot
-    try:
-        robot.connect("can0")
-        print("Connection to the robot established.")
-    except Exception as e:
-        print(f"Failed to connect to the robot: {e}")
-        return
+    can = os.getenv("CAN_BUS", "can0")
+    robot.connect(can)
+    print("Connection to the robot established.")
 
     print("protocol version: ", robot.get_parser_protocol_version())
     print("robot version: ", robot.request_version())
