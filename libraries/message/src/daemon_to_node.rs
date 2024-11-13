@@ -1,11 +1,12 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use dora_core::{
-    config::{DataId, NodeId, NodeRunConfig, OperatorId},
+use crate::{
+    config::NodeRunConfig,
     descriptor::{Descriptor, OperatorDefinition},
+    id::{DataId, NodeId, OperatorId},
+    metadata::Metadata,
+    DataflowId,
 };
-
-use crate::{metadata::Metadata, DataflowId};
 
 pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
 

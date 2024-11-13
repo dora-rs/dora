@@ -1,6 +1,6 @@
 use dora_core::{
     config::OperatorId,
-    descriptor::{Descriptor, SINGLE_OPERATOR_DEFAULT_ID},
+    descriptor::{Descriptor, DescriptorExt, NodeExt, SINGLE_OPERATOR_DEFAULT_ID},
 };
 use eyre::{eyre, Context};
 use std::{path::Path, process::Command};

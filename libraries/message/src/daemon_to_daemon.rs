@@ -1,9 +1,12 @@
 use std::collections::BTreeSet;
 
 use aligned_vec::{AVec, ConstAlign};
-use dora_core::config::{DataId, NodeId};
 
-use crate::{metadata::Metadata, DataflowId};
+use crate::{
+    id::{DataId, NodeId},
+    metadata::Metadata,
+    DataflowId,
+};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum InterDaemonEvent {

@@ -1,15 +1,19 @@
 use crate::{
     adjust_shared_library_path,
-    config::{DataId, Input, InputMapping, OperatorId, UserInputMapping},
-    descriptor::{self, source_is_url, CoreNodeKind, OperatorSource},
+    descriptor::{self, source_is_url},
     get_python_path,
 };
 
+use dora_message::{
+    config::{Input, InputMapping, UserInputMapping},
+    descriptor::{CoreNodeKind, OperatorSource, DYNAMIC_SOURCE, SHELL_SOURCE},
+    id::{DataId, OperatorId},
+};
 use eyre::{bail, eyre, Context};
 use std::{path::Path, process::Command};
 use tracing::info;
 
-use super::{resolve_path, Descriptor, DYNAMIC_SOURCE, SHELL_SOURCE};
+use super::{resolve_path, Descriptor, DescriptorExt};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_dataflow(

@@ -1,5 +1,10 @@
-use super::{CoreNodeKind, CustomNode, OperatorDefinition, ResolvedNode, RuntimeNode};
-use crate::config::{format_duration, DataId, Input, InputMapping, NodeId, UserInputMapping};
+use dora_message::{
+    config::{format_duration, Input, InputMapping, UserInputMapping},
+    descriptor::{CoreNodeKind, OperatorDefinition},
+    id::{DataId, NodeId},
+};
+
+use super::{CustomNode, ResolvedNode, RuntimeNode};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Write as _,

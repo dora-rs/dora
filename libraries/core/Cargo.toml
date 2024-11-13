@@ -10,6 +10,7 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+dora-message = { workspace = true }
 eyre = "0.6.8"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = "0.9.11"
@@ -22,4 +23,3 @@ tokio = { version = "1.24.1", features = ["fs", "process", "sync"] }
 schemars = "0.8.19"
 serde_json = "1.0.117"
 log = { version = "0.4.21", features = ["serde"] }
-uhlc = "0.5.1"

@@ -3,13 +3,11 @@ use crate::{
     DaemonConnection,
 };
 
-use dora_core::{
-    descriptor::{Descriptor, ResolvedNode},
-    uhlc::HLC,
-};
+use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
 use dora_message::{
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes, Timestamped},
     daemon_to_coordinator::DaemonCoordinatorReply,
+    descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{

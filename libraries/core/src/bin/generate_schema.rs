@@ -1,6 +1,6 @@
 use std::{env, path::Path};
 
-use dora_core::descriptor::Descriptor;
+use dora_message::descriptor::Descriptor;
 use schemars::schema_for;
 
 fn main() {

@@ -2403,6 +2403,7 @@ dependencies = [
 name = "dora-core"
 version = "0.3.6"
 dependencies = [
+ "dora-message",
  "eyre",
  "log",
  "once_cell",
@@ -2413,7 +2414,6 @@ dependencies = [
  "serde_yaml 0.9.34+deprecated",
  "tokio",
  "tracing",
- "uhlc",
  "uuid",
  "which",
 ]
@@ -2486,12 +2486,16 @@ dependencies = [
  "aligned-vec",
  "arrow-data",
  "arrow-schema",
- "dora-core",
  "eyre",
  "log",
+ "once_cell",
+ "schemars",
  "semver",
  "serde",
+ "serde-with-expand-env",
+ "serde_yaml 0.9.34+deprecated",
  "tokio",
+ "uhlc",
  "uuid",
 ]
 

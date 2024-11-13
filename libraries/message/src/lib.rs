@@ -3,7 +3,12 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub use uhlc;
+
 pub mod common;
+pub mod config;
+pub mod descriptor;
+pub mod id;
 pub mod metadata;
 
 pub mod coordinator_to_daemon;

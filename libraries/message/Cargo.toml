@@ -17,8 +17,13 @@ serde = { version = "1.0.136", features = ["derive"] }
 eyre = "0.6.8"
 arrow-schema = { workspace = true, features = ["serde"] }
 tokio = "1.39.2"
-dora-core = { workspace = true }
+# dora-core = { workspace = true }
 uuid = { version = "1.7", features = ["serde", "v7"] }
 log = { version = "0.4.21", features = ["serde"] }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
 semver = { version = "1.0.23", features = ["serde"] }
+schemars = "0.8.19"
+uhlc = "0.5.1"
+serde_yaml = "0.9.11"
+once_cell = "1.13.0"
+serde-with-expand-env = "1.1.0"

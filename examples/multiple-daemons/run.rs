@@ -1,6 +1,6 @@
 use dora_coordinator::{ControlEvent, Event};
 use dora_core::{
-    descriptor::Descriptor,
+    descriptor::{read_as_descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
 };
 use dora_message::{
@@ -115,7 +115,7 @@ async fn start_dataflow(
     dataflow: &Path,
     coordinator_events_tx: &Sender<Event>,
 ) -> eyre::Result<Uuid> {
-    let dataflow_descriptor = Descriptor::read(dataflow)
+    let dataflow_descriptor = read_as_descriptor(dataflow)
         .await
         .wrap_err("failed to read yaml dataflow")?;
     let working_dir = dataflow
