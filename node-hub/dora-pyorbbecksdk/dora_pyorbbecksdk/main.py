@@ -15,7 +15,15 @@
 # ******************************************************************************
 import cv2
 import os
-from pyorbbecsdk import Context
+
+try:
+
+    from pyorbbecsdk import Context
+except ImportError as err:
+    print(
+        "Please install pyorbbecsdk first by following the instruction at: https://github.com/orbbec/pyorbbecsdk"
+    )
+    raise err
 from pyorbbecsdk import Config
 from pyorbbecsdk import OBError
 from pyorbbecsdk import OBSensorType, OBFormat
