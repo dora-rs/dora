@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "dora-pyorbbecksdk"
+version = "0.3.6"
+authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+description = "Dora Node for capturing video with PyOrbbeck SDK"
+readme = "README.md"
+
+packages = [{ include = "dora_pyorbbecksdk" }]
+
+[tool.poetry.dependencies]
+dora-rs = "^0.3.6"
+python = "^3.7"
+
+
+[tool.poetry.scripts]
+dora-pyorbbecksdk = "dora_pyorbbecksdk"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
