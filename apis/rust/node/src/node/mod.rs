@@ -15,6 +15,7 @@ use dora_core::{
 };
 
 use dora_message::{
+    common::DropTokenStatus,
     daemon_to_node::{DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
@@ -47,6 +48,7 @@ pub struct DoraNode {
     clock: Arc<uhlc::HLC>,
 
     sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
+    shared_memory_in_use: HashMap<DropToken, ShmemHandle>,
     drop_stream: DropStream,
     cache: VecDeque<ShmemHandle>,
 
@@ -147,6 +149,7 @@ impl DoraNode {
             control_channel,
             clock,
             sent_out_shared_memory: HashMap::new(),
+            shared_memory_in_use: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
             dataflow_descriptor,
@@ -348,10 +351,7 @@ impl DoraNode {
     fn handle_finished_drop_tokens(&mut self) -> eyre::Result<()> {
         loop {
             match self.drop_stream.try_recv() {
-                Ok(token) => match self.sent_out_shared_memory.remove(&token) {
-                    Some(region) => self.add_to_cache(region),
-                    None => tracing::warn!("received unknown finished drop token `{token:?}`"),
-                },
+                Ok(event) => self.handle_drop_token_event(event),
                 Err(flume::TryRecvError::Empty) => break,
                 Err(flume::TryRecvError::Disconnected) => {
                     bail!("event stream was closed before sending all expected drop tokens")
@@ -359,6 +359,35 @@ impl DoraNode {
             }
         }
         Ok(())
+    }
+
+    fn handle_drop_token_event(&mut self, event: DropTokenStatus) {
+        let DropTokenStatus { token, state } = event;
+        match state {
+            dora_message::common::DropTokenState::Mapped => {
+                let region = self.sent_out_shared_memory.remove(&token);
+                match region {
+                    Some(region) => {
+                        self.shared_memory_in_use.insert(token, region);
+                    }
+                    None => {
+                        tracing::warn!("received unknown mapped drop token `{token:?}`")
+                    }
+                };
+            }
+            dora_message::common::DropTokenState::Dropped => {
+                let region = self
+                    .sent_out_shared_memory
+                    .remove(&token)
+                    .or_else(|| self.shared_memory_in_use.remove(&token));
+                match region {
+                    Some(region) => self.add_to_cache(region),
+                    None => {
+                        tracing::warn!("received unknown finished drop token `{token:?}`")
+                    }
+                }
+            }
+        };
     }
 
     fn add_to_cache(&mut self, memory: ShmemHandle) {
@@ -403,9 +432,7 @@ impl Drop for DoraNode {
             }
 
             match self.drop_stream.recv_timeout(Duration::from_secs(10)) {
-                Ok(token) => {
-                    self.sent_out_shared_memory.remove(&token);
-                }
+                Ok(event) => self.handle_drop_token_event(event),
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     tracing::warn!(
                         "finished_drop_tokens channel closed while still waiting for drop tokens; \

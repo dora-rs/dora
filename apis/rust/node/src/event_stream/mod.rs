@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use dora_message::{
-    daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
+    daemon_to_node::{DaemonCommunication, DaemonReply},
     node_to_daemon::{DaemonRequest, Timestamped},
     DataflowId,
 };
@@ -12,10 +12,7 @@ use futures::{
 };
 use futures_timer::Delay;
 
-use self::{
-    event::SharedMemoryData,
-    thread::{EventItem, EventStreamThreadHandle},
-};
+use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{config::NodeId, uhlc};
 use eyre::{eyre, Context};
@@ -143,51 +140,7 @@ impl EventStream {
 
     fn convert_event_item(item: EventItem) -> Event {
         match item {
-            EventItem::NodeEvent { event, ack_channel } => match event {
-                NodeEvent::Stop => Event::Stop,
-                NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
-                NodeEvent::InputClosed { id } => Event::InputClosed { id },
-                NodeEvent::Input { id, metadata, data } => {
-                    let data = match data {
-                        None => Ok(None),
-                        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-                        Some(DataMessage::SharedMemory {
-                            shared_memory_id,
-                            len,
-                            drop_token: _, // handled in `event_stream_loop`
-                        }) => unsafe {
-                            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                                Some(RawData::SharedMemory(SharedMemoryData {
-                                    data,
-                                    _drop: ack_channel,
-                                }))
-                            })
-                        },
-                    };
-                    let data = data.and_then(|data| {
-                        let raw_data = data.unwrap_or(RawData::Empty);
-                        raw_data
-                            .into_arrow_array(&metadata.type_info)
-                            .map(arrow::array::make_array)
-                    });
-                    match data {
-                        Ok(data) => Event::Input {
-                            id,
-                            metadata,
-                            data: data.into(),
-                        },
-                        Err(err) => Event::Error(format!("{err:?}")),
-                    }
-                }
-                NodeEvent::AllInputsClosed => {
-                    let err = eyre!(
-                        "received `AllInputsClosed` event, which should be handled by background task"
-                    );
-                    tracing::error!("{err:?}");
-                    Event::Error(err.wrap_err("internal error").to_string())
-                }
-            },
-
+            EventItem::NodeEvent { event } => event,
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
             }
