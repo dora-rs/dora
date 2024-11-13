@@ -1,6 +1,6 @@
 def test_import_main():
     return  # Remove this if you want to test pyorbbecksdk installation
-    import pyorbbecksdk
+    # import pyorbbecksdk
 
     # from opencv_video_capture.main import main
     # skip test as pyorbbecksdk installation is a bit complicated
