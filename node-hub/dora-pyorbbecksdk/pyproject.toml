@@ -13,7 +13,7 @@ python = "^3.7"
 
 
 [tool.poetry.scripts]
-dora-pyorbbecksdk = "dora_pyorbbecksdk"
+dora-pyorbbecksdk = "dora_pyorbbecksdk.main:main"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]
