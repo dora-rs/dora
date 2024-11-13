@@ -1,5 +1,5 @@
 def test_import_main():
-    import pyorbbecksdk
+    import piper_sdk
 
     # from opencv_video_capture.main import main
     # skip test as pyorbbecksdk installation is a bit complicated

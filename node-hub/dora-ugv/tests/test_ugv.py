@@ -1,5 +1,8 @@
+import pytest
+
+
 def test_import_main():
-    import pyorbbecksdk
+    import ugv_sdk_py
 
     # from opencv_video_capture.main import main
     # skip test as pyorbbecksdk installation is a bit complicated
