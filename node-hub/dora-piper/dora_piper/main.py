@@ -4,7 +4,10 @@ import pyarrow as pa
 import os
 import time
 
-TEACH_MODE = False
+TEACH_MODE = (
+    os.getenv("TEACH_MODE", "False") == "True"
+    or os.getenv("TEACH_MODE", "False") == "true"
+)
 
 
 def enable_fun(piper: C_PiperInterface):
