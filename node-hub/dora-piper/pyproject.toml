@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "dora-piper"
+version = "0.3.6"
+authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+description = "Dora Node for using Agilex piper"
+readme = "README.md"
+
+packages = [{ include = "dora_piper" }]
+
+[tool.poetry.dependencies]
+dora-rs = "^0.3.6"
+python = "^3.7"
+piper_sdk = "^0.0.7"
+
+
+[tool.poetry.scripts]
+dora-piper = "dora_piper"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
