@@ -101,14 +101,14 @@ pub fn update_visualization(
     id: &str,
     positions: &[f32],
 ) -> Result<()> {
-    chain.set_joint_positions_clamped(&positions);
+    chain.set_joint_positions_clamped(positions);
 
     chain.update_transforms();
     chain.update_link_transforms();
 
     for link_name in chain.iter_links().map(|link| link.name.clone()) {
         let link = chain.find_link(&link_name).context("Could not find link")?;
-        let entity_path = get_entity_path(&link, &id);
+        let entity_path = get_entity_path(link, id);
         let link_to_world = link
             .world_transform()
             .context("Could not get world transform")?;

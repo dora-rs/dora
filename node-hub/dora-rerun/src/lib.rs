@@ -227,7 +227,7 @@ pub fn lib_main() -> Result<()> {
                         }
                     }
 
-                    update_visualization(&chain, &rec, &id, &positions)?;
+                    update_visualization(chain, &rec, &id, &positions)?;
                 } else {
                     println!("Could not find chain for {}", id);
                 }
