@@ -5,10 +5,10 @@ use std::{
     path::Path,
 };
 
-pub use uhlc;
+pub use dora_message::{config, uhlc};
 
-pub mod config;
 pub mod descriptor;
+pub mod metadata;
 pub mod topics;
 
 pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyre::ErrReport> {

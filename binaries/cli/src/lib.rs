@@ -3,7 +3,7 @@ use colored::Colorize;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_coordinator::Event;
 use dora_core::{
-    descriptor::{source_is_url, Descriptor},
+    descriptor::{source_is_url, Descriptor, DescriptorExt},
     topics::{
         DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT,
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,

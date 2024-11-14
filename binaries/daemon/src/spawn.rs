@@ -1,6 +1,6 @@
 use crate::{
-    log, node_communication::spawn_listener_loop, node_inputs, DoraEvent, Event, OutputId,
-    RunningNode,
+    log, node_communication::spawn_listener_loop, node_inputs, CoreNodeKindExt, DoraEvent, Event,
+    OutputId, RunningNode,
 };
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
@@ -9,7 +9,7 @@ use dora_core::{
     config::DataId,
     descriptor::{
         resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
-        ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE,
+        ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
     },
     get_python_path,
     uhlc::HLC,

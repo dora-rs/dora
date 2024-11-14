@@ -2,10 +2,9 @@ use core::fmt;
 use std::borrow::Cow;
 
 use aligned_vec::{AVec, ConstAlign};
-use dora_core::{config::NodeId, uhlc};
 use uuid::Uuid;
 
-use crate::DataflowId;
+use crate::{id::NodeId, DataflowId};
 
 pub use log::Level as LogLevel;
 
