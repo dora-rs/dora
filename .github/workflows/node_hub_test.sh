@@ -16,6 +16,8 @@ if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then
 else
     if [ -f "$dir/Cargo.toml" ]; then
         echo "Running build and tests for Rust project in $dir..."
+        cargo check
+        cargo clippy
         cargo build
         cargo test
     else
