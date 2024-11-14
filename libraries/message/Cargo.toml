@@ -17,7 +17,6 @@ serde = { version = "1.0.136", features = ["derive"] }
 eyre = "0.6.8"
 arrow-schema = { workspace = true, features = ["serde"] }
 tokio = "1.39.2"
-# dora-core = { workspace = true }
 uuid = { version = "1.7", features = ["serde", "v7"] }
 log = { version = "0.4.21", features = ["serde"] }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
