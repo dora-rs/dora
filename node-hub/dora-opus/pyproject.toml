@@ -17,6 +17,8 @@ numpy = "< 2.0.0"
 python = "^3.7"
 transformers = "^4.45"
 modelscope = "^1.18.1"
+sentencepiece = "^0.1.99"
+torch = "^2.2.0"
 
 [tool.poetry.scripts]
 dora-opus = "dora_opus.main:main"

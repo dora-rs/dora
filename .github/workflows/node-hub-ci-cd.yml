@@ -33,6 +33,7 @@ jobs:
     strategy:
       matrix:
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
+      fail-fast: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
@@ -79,7 +80,7 @@ jobs:
     needs: [ci, find-jobs]
     defaults:
       run:
-        working-directory: ${{ matrix.folder }}
+        working-directory: node-hub/${{ matrix.folder }}
     strategy:
       matrix:
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
