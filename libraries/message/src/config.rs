@@ -36,7 +36,7 @@ pub struct NodeRunConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, from = "InputDef", into = "InputDef")]
+#[serde(from = "InputDef", into = "InputDef")]
 pub struct Input {
     pub mapping: InputMapping,
     pub queue_size: Option<usize>,
