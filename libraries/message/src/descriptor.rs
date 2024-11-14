@@ -150,11 +150,7 @@ pub enum OperatorSource {
     Wasm(String),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    deny_unknown_fields,
-    from = "PythonSourceDef",
-    into = "PythonSourceDef"
-)]
+#[serde(from = "PythonSourceDef", into = "PythonSourceDef")]
 pub struct PythonSource {
     pub source: String,
     pub conda_env: Option<String>,
