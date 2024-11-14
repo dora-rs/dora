@@ -153,6 +153,11 @@ pub async fn spawn_node(
                     command.env(key, value.to_string());
                 }
             }
+
+            // Set the process group to 0 to ensure that the spawned process does not exit immediately on CTRL-C
+            #[cfg(unix)]
+            command.process_group(0);
+
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -249,6 +254,9 @@ pub async fn spawn_node(
                     command.env(key, value.to_string());
                 }
             }
+            // Set the process group to 0 to ensure that the spawned process does not exit immediately on CTRL-C
+            #[cfg(unix)]
+            command.process_group(0);
 
             command
                 .stdin(Stdio::null())
