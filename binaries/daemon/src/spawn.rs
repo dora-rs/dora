@@ -154,7 +154,7 @@ pub async fn spawn_node(
                 }
             }
 
-            // Set the process group to 0 to ensure that the spawned process does not spawn immediately on CTRL-C
+            // Set the process group to 0 to ensure that the spawned process does not exit immediately on CTRL-C
             #[cfg(unix)]
             command.process_group(0);
 
