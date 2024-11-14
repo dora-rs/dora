@@ -2,8 +2,11 @@ use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
-    config::{DataId, Input, InputMapping, NodeId, OperatorId},
-    descriptor::{runtime_node_inputs, CoreNodeKind, Descriptor, ResolvedNode},
+    config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
+    descriptor::{
+        read_as_descriptor, CoreNodeKind, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
+        DYNAMIC_SOURCE,
+    },
     topics::LOCALHOST,
     uhlc::{self, HLC},
 };
@@ -20,7 +23,7 @@ use dora_message::{
     node_to_daemon::{DynamicNodeEvent, Timestamped},
     DataflowId,
 };
-use dora_node_api::Parameter;
+use dora_node_api::{arrow::datatypes::DataType, Parameter};
 use eyre::{bail, eyre, Context, ContextCompat, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
@@ -162,7 +165,7 @@ impl Daemon {
             .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
             .to_owned();
 
-        let descriptor = Descriptor::read(dataflow_path).await?;
+        let descriptor = read_as_descriptor(dataflow_path).await?;
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
@@ -1565,7 +1568,7 @@ impl RunningDataflow {
 
                     let metadata = metadata::Metadata::from_parameters(
                         hlc.new_timestamp(),
-                        ArrowTypeInfo::empty(),
+                        empty_type_info(),
                         parameters,
                     );
 
@@ -1669,6 +1672,18 @@ impl RunningDataflow {
         }
 
         Ok(())
+    }
+}
+
+fn empty_type_info() -> ArrowTypeInfo {
+    ArrowTypeInfo {
+        data_type: DataType::Null,
+        len: 0,
+        null_count: 0,
+        validity: None,
+        offset: 0,
+        buffer_offsets: Vec::new(),
+        child_data: Vec::new(),
     }
 }
 
@@ -1819,5 +1834,56 @@ impl CascadingErrorCauses {
 
     pub fn report_cascading_error(&mut self, causing_node: NodeId, affected_node: NodeId) {
         self.caused_by.entry(affected_node).or_insert(causing_node);
+    }
+}
+
+fn runtime_node_inputs(n: &RuntimeNode) -> BTreeMap<DataId, Input> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator.config.inputs.iter().map(|(input_id, mapping)| {
+                (
+                    DataId::from(format!("{}/{input_id}", operator.id)),
+                    mapping.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn runtime_node_outputs(n: &RuntimeNode) -> BTreeSet<DataId> {
+    n.operators
+        .iter()
+        .flat_map(|operator| {
+            operator
+                .config
+                .outputs
+                .iter()
+                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
+        })
+        .collect()
+}
+
+trait CoreNodeKindExt {
+    fn run_config(&self) -> NodeRunConfig;
+    fn dynamic(&self) -> bool;
+}
+
+impl CoreNodeKindExt for CoreNodeKind {
+    fn run_config(&self) -> NodeRunConfig {
+        match self {
+            CoreNodeKind::Runtime(n) => NodeRunConfig {
+                inputs: runtime_node_inputs(n),
+                outputs: runtime_node_outputs(n),
+            },
+            CoreNodeKind::Custom(n) => n.run_config.clone(),
+        }
+    }
+
+    fn dynamic(&self) -> bool {
+        match self {
+            CoreNodeKind::Runtime(_n) => false,
+            CoreNodeKind::Custom(n) => n.source == DYNAMIC_SOURCE,
+        }
     }
 }

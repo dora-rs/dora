@@ -1,6 +1,6 @@
 use std::{fs::File, io::Write, path::Path};
 
-use dora_core::descriptor::Descriptor;
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use eyre::Context;
 
 const MERMAID_TEMPLATE: &str = include_str!("mermaid-template.html");

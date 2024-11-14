@@ -5,7 +5,6 @@ use crate::{
 pub use control::ControlEvent;
 use dora_core::{
     config::{NodeId, OperatorId},
-    descriptor::{Descriptor, ResolvedNode},
     uhlc::{self, HLC},
 };
 use dora_message::{
@@ -16,6 +15,7 @@ use dora_message::{
     },
     coordinator_to_daemon::{DaemonCoordinatorEvent, RegisterResult, Timestamped},
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
+    descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::{bail, eyre, ContextCompat, Result, WrapErr};
 use futures::{future::join_all, stream::FuturesUnordered, Future, Stream, StreamExt};

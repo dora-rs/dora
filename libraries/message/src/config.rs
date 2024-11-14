@@ -1,129 +1,87 @@
-use once_cell::sync::OnceCell;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use core::fmt;
 use std::{
-    borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
-    convert::Infallible,
-    fmt,
-    str::FromStr,
     time::Duration,
 };
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-pub struct NodeId(String);
+use once_cell::sync::OnceCell;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-impl FromStr for NodeId {
-    type Err = Infallible;
+pub use crate::id::{DataId, NodeId, OperatorId};
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_owned()))
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct NodeRunConfig {
+    /// Inputs for the nodes as a map from input ID to `node_id/output_id`.
+    ///
+    /// e.g.
+    ///
+    /// inputs:
+    ///
+    ///   example_input: example_node/example_output1
+    ///
+    #[serde(default)]
+    pub inputs: BTreeMap<DataId, Input>,
+    /// List of output IDs.
+    ///
+    /// e.g.
+    ///
+    /// outputs:
+    ///
+    ///  - output_1
+    ///
+    ///  - output_2
+    #[serde(default)]
+    pub outputs: BTreeSet<DataId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "InputDef", into = "InputDef")]
+pub struct Input {
+    pub mapping: InputMapping,
+    pub queue_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InputDef {
+    MappingOnly(InputMapping),
+    WithOptions {
+        source: InputMapping,
+        queue_size: Option<usize>,
+    },
+}
+
+impl From<Input> for InputDef {
+    fn from(input: Input) -> Self {
+        match input {
+            Input {
+                mapping,
+                queue_size: None,
+            } => Self::MappingOnly(mapping),
+            Input {
+                mapping,
+                queue_size,
+            } => Self::WithOptions {
+                source: mapping,
+                queue_size,
+            },
+        }
     }
 }
 
-impl From<String> for NodeId {
-    fn from(id: String) -> Self {
-        Self(id)
-    }
-}
-
-impl std::fmt::Display for NodeId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl AsRef<str> for NodeId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-pub struct OperatorId(String);
-
-impl FromStr for OperatorId {
-    type Err = Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(s.to_owned()))
-    }
-}
-
-impl From<String> for OperatorId {
-    fn from(id: String) -> Self {
-        Self(id)
-    }
-}
-
-impl std::fmt::Display for OperatorId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl AsRef<str> for OperatorId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-pub struct DataId(String);
-
-impl From<DataId> for String {
-    fn from(id: DataId) -> Self {
-        id.0
-    }
-}
-
-impl From<String> for DataId {
-    fn from(id: String) -> Self {
-        Self(id)
-    }
-}
-
-impl std::fmt::Display for DataId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl std::ops::Deref for DataId {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<String> for DataId {
-    fn as_ref(&self) -> &String {
-        &self.0
-    }
-}
-
-impl AsRef<str> for DataId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Borrow<String> for DataId {
-    fn borrow(&self) -> &String {
-        &self.0
-    }
-}
-
-impl Borrow<str> for DataId {
-    fn borrow(&self) -> &str {
-        &self.0
+impl From<InputDef> for Input {
+    fn from(value: InputDef) -> Self {
+        match value {
+            InputDef::MappingOnly(mapping) => Self {
+                mapping,
+                queue_size: None,
+            },
+            InputDef::WithOptions { source, queue_size } => Self {
+                mapping: source,
+                queue_size,
+            },
+        }
     }
 }
 
@@ -156,6 +114,22 @@ impl fmt::Display for InputMapping {
             }
         }
     }
+}
+
+pub struct FormattedDuration(pub Duration);
+
+impl fmt::Display for FormattedDuration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.subsec_millis() == 0 {
+            write!(f, "secs/{}", self.0.as_secs())
+        } else {
+            write!(f, "millis/{}", self.0.as_millis())
+        }
+    }
+}
+
+pub fn format_duration(interval: Duration) -> FormattedDuration {
+    FormattedDuration(interval)
 }
 
 impl Serialize for InputMapping {
@@ -231,97 +205,6 @@ impl<'de> Deserialize<'de> for InputMapping {
 pub struct UserInputMapping {
     pub source: NodeId,
     pub output: DataId,
-}
-
-pub struct FormattedDuration(pub Duration);
-
-impl fmt::Display for FormattedDuration {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0.subsec_millis() == 0 {
-            write!(f, "secs/{}", self.0.as_secs())
-        } else {
-            write!(f, "millis/{}", self.0.as_millis())
-        }
-    }
-}
-
-pub fn format_duration(interval: Duration) -> FormattedDuration {
-    FormattedDuration(interval)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct NodeRunConfig {
-    /// Inputs for the nodes as a map from input ID to `node_id/output_id`.
-    ///
-    /// e.g.
-    ///
-    /// inputs:
-    ///
-    ///   example_input: example_node/example_output1
-    ///
-    #[serde(default)]
-    pub inputs: BTreeMap<DataId, Input>,
-    /// List of output IDs.
-    ///
-    /// e.g.
-    ///
-    /// outputs:
-    ///
-    ///  - output_1
-    ///
-    ///  - output_2
-    #[serde(default)]
-    pub outputs: BTreeSet<DataId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, from = "InputDef", into = "InputDef")]
-pub struct Input {
-    pub mapping: InputMapping,
-    pub queue_size: Option<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum InputDef {
-    MappingOnly(InputMapping),
-    WithOptions {
-        source: InputMapping,
-        queue_size: Option<usize>,
-    },
-}
-
-impl From<Input> for InputDef {
-    fn from(input: Input) -> Self {
-        match input {
-            Input {
-                mapping,
-                queue_size: None,
-            } => Self::MappingOnly(mapping),
-            Input {
-                mapping,
-                queue_size,
-            } => Self::WithOptions {
-                source: mapping,
-                queue_size,
-            },
-        }
-    }
-}
-
-impl From<InputDef> for Input {
-    fn from(value: InputDef) -> Self {
-        match value {
-            InputDef::MappingOnly(mapping) => Self {
-                mapping,
-                queue_size: None,
-            },
-            InputDef::WithOptions { source, queue_size } => Self {
-                mapping: source,
-                queue_size,
-            },
-        }
-    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema, Clone)]
