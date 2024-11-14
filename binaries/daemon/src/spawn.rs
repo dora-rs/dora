@@ -153,6 +153,11 @@ pub async fn spawn_node(
                     command.env(key, value.to_string());
                 }
             }
+
+            // Set the process group to 0 to ensure that the spawned process does not exit immediately on CTRL-C
+            #[cfg(unix)]
+            command.process_group(0);
+
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -249,6 +254,9 @@ pub async fn spawn_node(
                     command.env(key, value.to_string());
                 }
             }
+            // Set the process group to 0 to ensure that the spawned process does not exit immediately on CTRL-C
+            #[cfg(unix)]
+            command.process_group(0);
 
             command
                 .stdin(Stdio::null())
@@ -262,6 +270,11 @@ pub async fn spawn_node(
         }
     };
 
+    let pid = crate::ProcessId::new(child.id().context(
+        "Could not get the pid for the just spawned node and indicate that there is an error",
+    )?);
+    tracing::debug!("Spawned node `{dataflow_id}/{node_id}` with pid {pid:?}");
+
     let dataflow_dir: PathBuf = working_dir.join("out").join(dataflow_id.to_string());
     if !dataflow_dir.exists() {
         std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
@@ -272,9 +285,6 @@ pub async fn spawn_node(
         .expect("Failed to create log file");
     let mut child_stdout =
         tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"));
-    let pid = child.id().context(
-        "Could not get the pid for the just spawned node and indicate that there is an error",
-    )?;
     let running_node = RunningNode {
         pid: Some(pid),
         node_config,

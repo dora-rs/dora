@@ -180,6 +180,8 @@ impl Daemon {
 
         let clock = Arc::new(HLC::default());
 
+        let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
+
         let exit_when_done = spawn_command
             .nodes
             .iter()
@@ -196,8 +198,9 @@ impl Daemon {
                 timestamp,
             }
         });
+        let events = (coordinator_events, ctrlc_events).merge();
         let run_result = Self::run_general(
-            Box::pin(coordinator_events),
+            Box::pin(events),
             None,
             "".to_string(),
             Some(exit_when_done),
@@ -327,11 +330,16 @@ impl Daemon {
                     }
                 }
                 Event::CtrlC => {
+                    tracing::info!("received ctrlc signal -> stopping all dataflows");
                     for dataflow in self.running.values_mut() {
                         dataflow
                             .stop_all(&mut self.coordinator_connection, &self.clock, None)
                             .await?;
                     }
+                }
+                Event::SecondCtrlC => {
+                    tracing::warn!("received second ctrlc signal -> exit immediately");
+                    bail!("received second ctrl-c signal");
                 }
             }
         }
@@ -1088,7 +1096,9 @@ impl Daemon {
         )
         .await?;
 
-        dataflow.running_nodes.remove(node_id);
+        if let Some(mut pid) = dataflow.running_nodes.remove(node_id).and_then(|n| n.pid) {
+            pid.mark_as_stopped()
+        }
         if dataflow
             .running_nodes
             .iter()
@@ -1472,10 +1482,49 @@ fn close_input(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct RunningNode {
-    pid: Option<u32>,
+    pid: Option<ProcessId>,
     node_config: NodeConfig,
+}
+
+#[derive(Debug)]
+struct ProcessId(Option<u32>);
+
+impl ProcessId {
+    pub fn new(process_id: u32) -> Self {
+        Self(Some(process_id))
+    }
+
+    pub fn mark_as_stopped(&mut self) {
+        self.0 = None;
+    }
+
+    pub fn kill(&mut self) -> bool {
+        if let Some(pid) = self.0 {
+            let mut system = sysinfo::System::new();
+            system.refresh_processes();
+
+            if let Some(process) = system.process(Pid::from(pid as usize)) {
+                process.kill();
+                self.mark_as_stopped();
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+impl Drop for ProcessId {
+    fn drop(&mut self) {
+        // kill the process if it's still running
+        if let Some(pid) = self.0 {
+            if self.kill() {
+                warn!("process {pid} was killed on drop because it was still running")
+            }
+        }
+    }
 }
 
 pub struct RunningDataflow {
@@ -1613,19 +1662,20 @@ impl RunningDataflow {
             let _ = send_with_timestamp(&channel, NodeEvent::Stop, clock);
         }
 
-        let running_nodes = self.running_nodes.clone();
+        let running_processes: Vec<_> = self
+            .running_nodes
+            .iter_mut()
+            .map(|(id, n)| (id.clone(), n.pid.take()))
+            .collect();
         let grace_duration_kills = self.grace_duration_kills.clone();
         tokio::spawn(async move {
             let duration = grace_duration.unwrap_or(Duration::from_millis(15000));
             tokio::time::sleep(duration).await;
-            let mut system = sysinfo::System::new();
-            system.refresh_processes();
 
-            for (node, node_details) in running_nodes.iter() {
-                if let Some(pid) = node_details.pid {
-                    if let Some(process) = system.process(Pid::from(pid as usize)) {
+            for (node, pid) in running_processes {
+                if let Some(mut pid) = pid {
+                    if pid.kill() {
                         grace_duration_kills.insert(node.clone());
-                        process.kill();
                         warn!(
                             "{node} was killed due to not stopping within the {:#?} grace period",
                             duration
@@ -1712,6 +1762,7 @@ pub enum Event {
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
     CtrlC,
+    SecondCtrlC,
 }
 
 impl From<DoraEvent> for Event {
@@ -1792,25 +1843,27 @@ fn set_up_ctrlc_handler(
 ) -> Result<impl Stream<Item = Timestamped<Event>>, eyre::ErrReport> {
     let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
 
-    let mut ctrlc_sent = false;
+    let mut ctrlc_sent = 0;
     ctrlc::set_handler(move || {
-        if ctrlc_sent {
-            tracing::warn!("received second ctrlc signal -> aborting immediately");
-            std::process::abort();
-        } else {
-            tracing::info!("received ctrlc signal");
-            if ctrlc_tx
-                .blocking_send(Timestamped {
-                    inner: Event::CtrlC,
-                    timestamp: clock.new_timestamp(),
-                })
-                .is_err()
-            {
-                tracing::error!("failed to report ctrl-c event to dora-coordinator");
+        let event = match ctrlc_sent {
+            0 => Event::CtrlC,
+            1 => Event::SecondCtrlC,
+            _ => {
+                tracing::warn!("received 3rd ctrlc signal -> aborting immediately");
+                std::process::abort();
             }
-
-            ctrlc_sent = true;
+        };
+        if ctrlc_tx
+            .blocking_send(Timestamped {
+                inner: event,
+                timestamp: clock.new_timestamp(),
+            })
+            .is_err()
+        {
+            tracing::error!("failed to report ctrl-c event to dora-coordinator");
         }
+
+        ctrlc_sent += 1;
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
