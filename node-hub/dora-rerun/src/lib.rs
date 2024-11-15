@@ -14,7 +14,9 @@ use eyre::{eyre, Context, ContextCompat, Result};
 use rerun::{
     components::ImageBuffer, external::re_types::ArrowBuffer, ImageFormat, SpawnOptions, Text,
 };
+pub mod series;
 pub mod urdf;
+use series::update_series;
 use urdf::{init_urdf, update_visualization};
 
 pub fn lib_main() -> Result<()> {
@@ -227,10 +229,14 @@ pub fn lib_main() -> Result<()> {
                         }
                     }
 
-                    update_visualization(chain, &rec, &id, &positions)?;
+                    update_visualization(&rec, &chain, &id, &positions)?;
                 } else {
                     println!("Could not find chain for {}", id);
                 }
+            } else if id.as_str().contains("series") {
+                update_series(&rec, id, data).context("could not plot series")?;
+            } else {
+                println!("Could not find handler for {}", id);
             }
         }
     }

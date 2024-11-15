@@ -96,8 +96,8 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
 }
 
 pub fn update_visualization(
-    chain: &Chain<f32>,
     rec: &RecordingStream,
+    chain: &Chain<f32>,
     id: &str,
     positions: &[f32],
 ) -> Result<()> {
