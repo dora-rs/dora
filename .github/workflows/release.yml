@@ -42,6 +42,8 @@ jobs:
 
       - name: "Publish packages on `crates.io`"
         if: runner.os == 'Linux'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
 
           # Publishing those crates from outer crates with no dependency to inner crates
@@ -52,33 +54,50 @@ jobs:
           # We should preferably test pre-releases before testing releases as
           # cargo publish might catch release issues that the workspace manages to fix using 
           # workspace crates.
+          publish_if_not_exists() {
+              local package_name=$1
+              local version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="'"$package_name"'") | .version')
+
+              if [[ -z $version ]]; then
+                  echo "error: package '$package_name' not found in the workspace."
+                  return 1
+              fi
+
+              if cargo search "$package_name" | grep -q "^$package_name = \"$version\""; then
+                  echo "package '$package_name' version '$version' already exists on crates.io. skipping publish."
+              else
+                  echo "publishing package '$package_name' version '$version'..."
+                  cargo publish --package "$package_name"
+              fi
+          }
+
+          # the dora-message package is versioned separately, so this publish command might fail if the version is already published
+          publish_if_not_exists dora-message
 
           # Publish libraries crates
-          cargo publish -p dora-tracing --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-metrics --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-download --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          # the dora-message package is versioned separately, so this publish command might fail if the version is already published
-          cargo publish -p dora-message --token ${{ secrets.CARGO_REGISTRY_TOKEN }} || true
-          cargo publish -p communication-layer-pub-sub --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p communication-layer-request-reply --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p shared-memory-server --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-arrow-convert --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          publish_if_not_exists dora-tracing
+          publish_if_not_exists dora-metrics 
+          publish_if_not_exists dora-download 
+          publish_if_not_exists dora-core
+          publish_if_not_exists communication-layer-pub-sub
+          publish_if_not_exists communication-layer-request-reply
+          publish_if_not_exists shared-memory-server
+          publish_if_not_exists dora-arrow-convert
 
           # Publish rust API
-          cargo publish -p dora-operator-api-macros --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-operator-api-types --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-operator-api --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-node-api --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-operator-api-python --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-operator-api-c --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-node-api-c --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          publish_if_not_exists dora-operator-api-macros
+          publish_if_not_exists dora-operator-api-types
+          publish_if_not_exists dora-operator-api
+          publish_if_not_exists dora-node-api
+          publish_if_not_exists dora-operator-api-python
+          publish_if_not_exists dora-operator-api-c
+          publish_if_not_exists dora-node-api-c
 
           # Publish binaries crates
-          cargo publish -p dora-coordinator --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-runtime --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-daemon --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          cargo publish -p dora-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          publish_if_not_exists dora-coordinator
+          publish_if_not_exists dora-runtime
+          publish_if_not_exists dora-daemon
+          publish_if_not_exists dora-cli
 
   unix:
     runs-on: ${{ matrix.platform.runner }}
