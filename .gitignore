@@ -9,6 +9,10 @@ examples/**/*.txt
 **/*.arrow
 *.pt
 
+# Remove hdf and stl files
+*.stl
+*.hdf5
+
 # Removing images.
 *.jpg
 *.mp3
