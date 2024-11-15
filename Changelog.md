@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.7 (2024-11-04)
+## v0.3.7 (2024-11-15)
 
 ## What's Changed
 
@@ -42,12 +42,27 @@
 - Temporary fix qwenvl2 queue error by @haixuanTao in https://github.com/dora-rs/dora/pull/688
 - Make daemon loop over coordinator connection to make it possible to create a system service awaiting coordinator connection by @haixuanTao in https://github.com/dora-rs/dora/pull/689
 - Add translation example from chinese, french to english by @haixuanTao in https://github.com/dora-rs/dora/pull/681
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/690
+- Fix macos 14 yolo error by @haixuanTao in https://github.com/dora-rs/dora/pull/696
+- Update dependencies by @renovate in https://github.com/dora-rs/dora/pull/692
+- Publish rust project on pip to make it simpler to deploy dora node on different machine without requiring installing cargo by @haixuanTao in https://github.com/dora-rs/dora/pull/695
+- Docs: README by @Radovenchyk in https://github.com/dora-rs/dora/pull/697
+- Update README.md by @pucedoteth in https://github.com/dora-rs/dora/pull/705
+- Bump rust toolchains 1.81 by @haixuanTao in https://github.com/dora-rs/dora/pull/707
+- Make dora cli pip installable by @haixuanTao in https://github.com/dora-rs/dora/pull/706
+- Add urdf visualization in rerun by @haixuanTao in https://github.com/dora-rs/dora/pull/704
+- Fix child process receiving ctrl-c by setting own process group by @haixuanTao in https://github.com/dora-rs/dora/pull/712
+- Move more types from `dora-core` to `dora-message` to avoid dependency by @phil-opp in https://github.com/dora-rs/dora/pull/711
+- Implement `dora run` command by @phil-opp in https://github.com/dora-rs/dora/pull/703
+- Adding Agilex Piper node, PyOrbbeckSDK node, Agilex UGV node by @haixuanTao in https://github.com/dora-rs/dora/pull/709
+- Make the node hub CI/CD parallel for faster testing as well as having more granular integration control by @haixuanTao in https://github.com/dora-rs/dora/pull/710
+- Add time series to dora rerun by @haixuanTao in https://github.com/dora-rs/dora/pull/713
 
 ## New Contributors
 
 - @Ben-PH made their first contribution in https://github.com/dora-rs/dora/pull/685
-
-**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.6...v0.3.7rc0
+- @Radovenchyk made their first contribution in https://github.com/dora-rs/dora/pull/697
+- @pucedoteth made their first contribution in https://github.com/dora-rs/dora/pull/705
 
 ## v0.3.6 (2024-08-17)
 
