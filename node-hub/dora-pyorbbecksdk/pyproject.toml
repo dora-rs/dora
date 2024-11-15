@@ -10,6 +10,8 @@ packages = [{ include = "dora_pyorbbecksdk" }]
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
 python = "^3.7"
+numpy = "< 2.0.0"
+opencv-python = ">= 4.1.1"
 
 
 [tool.poetry.scripts]
