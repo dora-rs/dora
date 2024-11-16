@@ -4,7 +4,7 @@ nodes:
     _unstable_deploy:
       machine: piper
     inputs:
-      tick: dora/timer/millis/500
+      tick: dora/timer/millis/50
       action: post_process_rdt_1b/jointstate_left
     outputs:
       - jointstate
@@ -16,7 +16,7 @@ nodes:
     _unstable_deploy:
       machine: piper
     inputs:
-      tick: dora/timer/millis/1000
+      tick: dora/timer/millis/50
       action: post_process_rdt_1b/jointstate_right
     outputs:
       - jointstate
@@ -28,7 +28,7 @@ nodes:
     _unstable_deploy:
       machine: piper
     inputs:
-      tick: dora/timer/millis/1000
+      tick: dora/timer/millis/50
     outputs:
       - image
     env:
@@ -40,7 +40,7 @@ nodes:
     _unstable_deploy:
       machine: piper
     inputs:
-      tick: dora/timer/millis/1000
+      tick: dora/timer/millis/50
     outputs:
       - image
     env:
@@ -52,7 +52,7 @@ nodes:
     _unstable_deploy:
       machine: piper
     inputs:
-      tick: dora/timer/millis/1000
+      tick: dora/timer/millis/50
     outputs:
       - image
     env:
@@ -109,7 +109,7 @@ nodes:
     outputs:
       - action
     env:
-      ROBOTIC_MODEL_NAME_OR_PATH: /home/peter/Documents/work/dora/examples/piper/checkpoints/checkpoint-450
+      ROBOTIC_MODEL_NAME_OR_PATH: /home/peter/Documents/work/dora/examples/piper/checkpoints/checkpoint-850
       VISION_MODEL_NAME_OR_PATH: /home/peter/.cache/huggingface/hub/models--google--siglip-so400m-patch14-384/snapshots/9fdffc58afc957d1a03a25b10dba0329ab15c2a3
       LANGUAGE_EMBEDDING_PATH: lang_embed.pt
 
@@ -120,13 +120,3 @@ nodes:
     outputs:
       - jointstate_left
       - jointstate_right
-
-  - id: mobile_base
-    path: /home/agilex/1ms.ai/ugv_sdk/tracer_node.py
-    _unstable_deploy:
-      machine: piper
-    inputs:
-      tick: dora/timer/millis/40
-      # action: dummy/mobile_base
-    outputs:
-      - velocity
