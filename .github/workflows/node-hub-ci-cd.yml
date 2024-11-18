@@ -89,7 +89,7 @@ jobs:
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
       fail-fast: false
     runs-on: ${{ matrix.platform }}
-    if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
