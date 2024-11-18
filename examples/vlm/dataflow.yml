@@ -1,9 +1,9 @@
 nodes:
   - id: camera
-    build: pip install ../../node-hub/opencv-video-capture
+    build: pip install -e ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     inputs:
-      tick: dora/timer/millis/20
+      tick: dora/timer/millis/50
     outputs:
       - image
     env:
@@ -18,15 +18,17 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
-      tick: dora/timer/millis/100
+      tick: dora/timer/millis/400
     outputs:
       - text
       - tick
     env:
-      DEFAULT_QUESTION: Describe the image.
+      DEFAULT_QUESTION: Describe the image in a very short sentence.
+      # For China
+      # USE_MODELSCOPE_HUB: true
 
   - id: plot
-    build: pip install ../../node-hub/opencv-plot
+    build: pip install -e ../../node-hub/opencv-plot
     path: opencv-plot
     inputs:
       image:

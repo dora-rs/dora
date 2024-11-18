@@ -23,10 +23,27 @@ nodes:
     env:
       TARGET_LANGUAGE: english
       # For China
-      # USE_MODELSCOPE_HUB: true
+      # HF_ENDPOINT: https://hf-mirror.com
+
+  - id: dora-opus
+    build: pip install -e ../../node-hub/dora-opus
+    path: dora-opus
+    inputs:
+      text: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      SOURCE_LANGUAGE: en
+      TARGET_LANGUAGE: fr
+      # For China
+      # HF_ENDPOINT: https://hf-mirror.com
 
   - id: dora-rerun
     build: cargo build -p dora-rerun --release
     path: dora-rerun
     inputs:
+      translated_text: dora-opus/text
       original_text: dora-distil-whisper/text
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
