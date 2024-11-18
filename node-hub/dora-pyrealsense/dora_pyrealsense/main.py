@@ -1,4 +1,3 @@
-import argparse
 import os
 import time
 
@@ -11,18 +10,30 @@ from dora import Node
 RUNNER_CI = True if os.getenv("CI") == "true" else False
 import pyrealsense2 as rs
 
-FLIP = os.getenv("FLIP", "")
-DEVICE_ID = os.getenv("DEVICE_ID", "")
-pipeline = rs.pipeline()
-config = rs.config()
-config.enable_device(DEVICE_ID)
-config.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 15)
-align_to = rs.stream.color
-align = rs.align(align_to)
-pipeline.start(config)
-
 
 def main():
+    FLIP = os.getenv("FLIP", "")
+    DEVICE_SERIAL = os.getenv("DEVICE_SERIAL", "")
+    image_height = int(os.getenv("IMAGE_HEIGHT", "480"))
+    image_width = int(os.getenv("IMAGE_WIDTH", "640"))
+    encoding = os.getenv("ENCODING", "jpeg")
+    ctx = rs.context()
+    devices = ctx.query_devices()
+    if devices.size() == 0:
+        raise ConnectionError("No realsense camera connected.")
+
+    # Serial list
+    serials = [device.get_info(rs.camera_info.serial_number) for device in devices]
+    if DEVICE_SERIAL and (DEVICE_SERIAL in serials):
+        raise ConnectionError(f"Device with serial {DEVICE_SERIAL} not found.")
+
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_device(DEVICE_SERIAL)
+
+    config.enable_stream(rs.stream.color, image_width, image_height, rs.format.rgb8, 30)
+    pipeline.start()
+
     node = Node()
     start_time = time.time()
 
@@ -45,6 +56,7 @@ def main():
                 # 获取各种数据流
                 color_frames = frames.get_color_frame()
                 frame = np.asanyarray(color_frames.get_data())
+                ## Change rgb to bgr
 
                 if FLIP == "VERTICAL":
                     frame = cv2.flip(frame, 0)
@@ -69,8 +81,8 @@ def main():
                 metadata["height"] = int(frame.shape[0])
 
                 # Get the right encoding
-                if encoding == "rgb8":
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if encoding == "bgr8":
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     ret, frame = cv2.imencode("." + encoding, frame)
                     if not ret:

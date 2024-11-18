@@ -1,6 +1,23 @@
-# Dora Node for capturing video with OpenCV
+# Dora Node for capturing video with PyRealSense
 
-This node is used to capture video from a camera using OpenCV.
+This node is used to capture video from a camera using PyRealsense.
+
+# Installation
+
+Make sure to use realsense udev config at https://github.com/IntelRealSense/librealsense/blob/master/doc/installation.md
+
+You can try, the following:
+
+```bash
+wget https://raw.githubusercontent.com/IntelRealSense/librealsense/refs/heads/master/scripts/setup_udev_rules.sh
+
+mkdir config
+cd config
+wget https://raw.githubusercontent.com/IntelRealSense/librealsense/refs/heads/master/scripts/config/99-realsense-libusb.rules
+cd ..
+
+chmod +x setup_udev_rules.sh
+```
 
 # YAML
 
