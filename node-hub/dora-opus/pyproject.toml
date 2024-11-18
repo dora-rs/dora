@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dora-opus"
-version = "0.3.6"
+version = "0.3.7"
 description = "Dora Node for Text translating using Opus"
 readme = "README.md"
 authors = [

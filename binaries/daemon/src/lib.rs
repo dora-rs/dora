@@ -160,7 +160,7 @@ impl Daemon {
     pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
-            .context("failed to canoncialize dataflow path")?
+            .context("failed to canonicalize dataflow path")?
             .parent()
             .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
             .to_owned();

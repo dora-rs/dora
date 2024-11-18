@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dora-keyboard"
-version = "0.3.6"
+version = "0.3.7"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>",
@@ -16,7 +16,7 @@ packages = [{ include = "dora_keyboard" }]
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
-pynput = "^1.7.6"
+pynput = "^1.6.0"
 python = "^3.7"
 
 [tool.poetry.scripts]

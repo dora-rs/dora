@@ -12,7 +12,7 @@ DEFAULT_PATH = "Qwen/Qwen2-VL-2B-Instruct"
 
 MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
 
-if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
+if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
     from modelscope import snapshot_download
 
     if not Path(MODEL_NAME_OR_PATH).exists():
@@ -110,15 +110,6 @@ def main():
         event_type = event["type"]
 
         if event_type == "INPUT":
-
-            # pylint: disable=fixme
-            # TODO: Remove this after https://github.com/dora-rs/dora/pull/652
-            while True:
-                next_event = node.next(timeout=0.001)
-                if next_event is not None and next_event["type"] == "INPUT":
-                    event = next_event
-                else:
-                    break
 
             event_id = event["id"]
 

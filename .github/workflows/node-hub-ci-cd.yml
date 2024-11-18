@@ -1,6 +1,7 @@
 name: node-hub
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -130,18 +131,31 @@ jobs:
         run: |
           dir=$(pwd)
           base_dir=$(basename "$dir")
+          ignored_folders=("dora-parler")
 
-          if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
-            echo "Publishing $dir using maturin..."
-            poetry publish
+          if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then
+              echo "Skipping $base_dir as there is a hf model fetching issue..."
           else
-            if [ -f "pyproject.toml" ]; then
-              echo "Publishing $dir using Poetry..."
-              poetry publish --build
-            fi
-          fi
+            if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
+              echo "Publishing $dir using maturin..."
+              pip3 install "maturin[patchelf]"                                                                             
+              maturin publish  --skip-existing
+            else
+              if [ -f "pyproject.toml" ]; then
+                echo "Publishing $dir using Poetry..."
+                poetry publish --build  --skip-existing
+              fi
 
-          if [ -f "Cargo.toml" ]; then
-            echo "Publishing $dir using Cargo..."
-            cargo publish
+              if [ -f "Cargo.toml" ]; then
+                echo "Publishing $dir using Cargo..."
+                package_name=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].name')
+                version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')
+                if cargo search "$package_name" | grep -q "^$package_name = \"$version\""; then
+                    echo "Package '$package_name' version '$version' already exists on crates.io. Skipping publish."
+                else
+                    echo "Publishing package '$package_name' version '$version'..."
+                    cargo publish
+                fi
+              fi
+            fi
           fi
