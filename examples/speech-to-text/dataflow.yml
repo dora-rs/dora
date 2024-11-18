@@ -5,16 +5,27 @@ nodes:
     outputs:
       - audio
 
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
   - id: dora-distil-whisper
     build: pip install -e ../../node-hub/dora-distil-whisper
     path: dora-distil-whisper
     inputs:
-      input: dora-microphone/audio
+      input: dora-vad/audio
     outputs:
       - text
+    env:
+      TARGET_LANGUAGE: english
+      # USE_MODELSCOPE_HUB: true
 
-  - id: terminal-print
-    build: cargo build -p terminal-print
-    path: dynamic
+  - id: dora-rerun
+    build: cargo build -p dora-rerun --release
+    path: dora-rerun
     inputs:
-      text: dora-distil-whisper/text
+      original_text: dora-distil-whisper/text
