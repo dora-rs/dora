@@ -24,7 +24,7 @@ DEFAULT_PATH = "ylacombe/parler-tts-mini-jenny-30H"
 
 MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
 
-if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
+if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
     from modelscope import snapshot_download
 
     if not Path(MODEL_NAME_OR_PATH).exists():

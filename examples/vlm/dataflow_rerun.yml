@@ -3,7 +3,7 @@ nodes:
     build: pip install -e ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     inputs:
-      tick: dora/timer/millis/20
+      tick: dora/timer/millis/50
     outputs:
       - image
     env:
@@ -18,12 +18,13 @@ nodes:
       image:
         source: camera/image
         queue_size: 1
-      tick: dora/timer/millis/200
+      tick: dora/timer/millis/400
     outputs:
       - text
       - tick
     env:
-      DEFAULT_QUESTION: Describe the image.
+      DEFAULT_QUESTION: Describe the image in a very short sentence.
+      # USE_MODELSCOPE_HUB: true
 
   - id: plot
     build: cargo build -p dora-rerun --release
@@ -37,7 +38,4 @@ nodes:
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
       README: |
-        # Visualization of your webcam
-
-        - You can increase or decrease the frequency within the dataflow with: `tick: dora/timer/millis/20` in the webcam node.
-        - You can change the model prompt within the dataflow with: `DEFAULT_QUESTION: Describe the image.` 
+        # Visualization of QwenVL2

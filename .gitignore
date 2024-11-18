@@ -11,6 +11,7 @@ examples/**/*.txt
 
 # Remove hdf and stl files
 *.stl
+*.STL
 *.hdf5
 
 # Removing images.

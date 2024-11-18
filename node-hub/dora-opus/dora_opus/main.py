@@ -5,6 +5,7 @@ import pyarrow as pa
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
+
 from_code = os.getenv("SOURCE_LANGUAGE", "zh")
 to_code = os.getenv("TARGET_LANGUAGE", "en")
 DEFAULT_PATH = f"Helsinki-NLP/opus-mt-{from_code}-{to_code}"
@@ -12,7 +13,7 @@ DEFAULT_PATH = f"Helsinki-NLP/opus-mt-{from_code}-{to_code}"
 
 MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
 
-if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
+if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
     from modelscope import snapshot_download
 
     if not Path(MODEL_NAME_OR_PATH).exists():
