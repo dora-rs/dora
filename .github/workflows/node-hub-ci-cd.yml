@@ -33,7 +33,7 @@ jobs:
         working-directory: node-hub/${{ matrix.folder }}
     strategy:
       matrix:
-        platform: [ubuntu-22.04, macos-12]
+        platform: [ubuntu-22.04, macos-14]
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
       fail-fast: false
     steps:
@@ -74,6 +74,8 @@ jobs:
           override: true
 
       - name: Run Linting and Tests
+        ## Run Linting and testing only on Mac for release workflows.
+        if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
         run: |
           chmod +x ../../.github/workflows/node_hub_test.sh
           ../../.github/workflows/node_hub_test.sh
@@ -85,7 +87,7 @@ jobs:
         working-directory: node-hub/${{ matrix.folder }}
     strategy:
       matrix:
-        platform: [ubuntu-22.04, macos-12]
+        platform: [ubuntu-22.04, macos-14]
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
       fail-fast: false
     runs-on: ${{ matrix.platform }}
