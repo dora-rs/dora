@@ -147,6 +147,7 @@ jobs:
                 maturin publish  --skip-existing --zig
               else
                 maturin publish  --skip-existing
+              fi
             else
               if [ -f "pyproject.toml" ]; then
                 echo "Publishing $dir using Poetry..."
