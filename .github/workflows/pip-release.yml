@@ -236,7 +236,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-20.04
-    if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
     needs: [linux, musllinux, musleabi, windows, macos, sdist]
     strategy:
       matrix:
