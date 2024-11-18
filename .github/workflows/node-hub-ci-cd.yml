@@ -13,7 +13,7 @@ on:
 
 jobs:
   find-jobs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     name: Find Jobs
     outputs:
       folders: ${{ steps.jobs.outputs.folders }}
@@ -33,7 +33,7 @@ jobs:
         working-directory: node-hub/${{ matrix.folder }}
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest]
+        platform: [ubuntu-20.04, macos-12]
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
       fail-fast: false
     steps:
@@ -85,7 +85,7 @@ jobs:
         working-directory: node-hub/${{ matrix.folder }}
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest]
+        platform: [ubuntu-20.04, macos-12]
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
       fail-fast: false
     runs-on: ${{ matrix.platform }}
