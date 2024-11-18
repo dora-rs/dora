@@ -41,7 +41,9 @@ jobs:
           # target: ppc64le
         repository:
           - path: apis/python/node
+            name: dora-node-api
           - path: binaries/cli
+            name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,16 +65,8 @@ jobs:
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-linux-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ matrix.repository.path }}/dist/*
-          tag: ${{ github.ref }}
-          file_glob: true
 
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -87,7 +81,9 @@ jobs:
             target: aarch64
         repository:
           - path: apis/python/node
+            name: dora-node-api
           - path: binaries/cli
+            name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -105,16 +101,8 @@ jobs:
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-musllinux-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ matrix.repository.path }}/dist/*
-          tag: ${{ github.ref }}
-          file_glob: true
 
   musleabi:
     runs-on: ubuntu-22.04
@@ -129,7 +117,9 @@ jobs:
           ]
         repository:
           - path: apis/python/node
+            name: dora-node-api
           - path: binaries/cli
+            name: dora-rs-cli
     container:
       image: docker://messense/rust-musl-cross:${{ matrix.platform.image_tag }}
       env:
@@ -151,16 +141,8 @@ jobs:
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v3
         with:
-          name: wheels-musllinux-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ matrix.repository.path }}/dist/*
-          tag: ${{ github.ref }}
-          file_glob: true
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -171,7 +153,9 @@ jobs:
             target: x64
         repository:
           - path: apis/python/node
+            name: dora-node-api
           - path: binaries/cli
+            name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -189,16 +173,8 @@ jobs:
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-windows-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-windows-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ matrix.repository.path }}/dist/*
-          tag: ${{ github.ref }}
-          file_glob: true
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
@@ -211,7 +187,9 @@ jobs:
             target: aarch64
         repository:
           - path: apis/python/node
+            name: dora-node-api
           - path: binaries/cli
+            name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -228,16 +206,8 @@ jobs:
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-macos-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ matrix.repository.path }}/dist/*
-          tag: ${{ github.ref }}
-          file_glob: true
 
   sdist:
     runs-on: ubuntu-22.04
@@ -245,7 +215,9 @@ jobs:
       matrix:
         repository:
           - path: apis/python/node
+            name: dora-node-api
           - path: binaries/cli
+            name: dora-rs-cli
     steps:
       - uses: actions/checkout@v3
       - name: Build sdist
@@ -266,6 +238,13 @@ jobs:
     runs-on: ubuntu-22.04
     if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
     needs: [linux, musllinux, musleabi, windows, macos, sdist]
+    strategy:
+      matrix:
+        repository:
+          - path: apis/python/node
+            name: dora-node-api
+          - path: binaries/cli
+            name: dora-rs-cli
     steps:
       - uses: actions/download-artifact@v4
       - name: Publish to PyPI
@@ -274,4 +253,4 @@ jobs:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_PASS }}
         with:
           command: upload
-          args: --non-interactive --skip-existing wheels-*/*
+          args: --non-interactive --skip-existing ${{ matrix.repository.name }}-*/*

@@ -7,12 +7,12 @@ from pathlib import Path
 
 DEFAULT_PATH = "openai/whisper-large-v3-turbo"
 TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "chinese")
-TRANSLATE = bool(os.getenv("TRANSLATE", "False"))
+TRANSLATE = bool(os.getenv("TRANSLATE", "False") in ["True", "true"])
 
 
 MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
 
-if bool(os.getenv("USE_MODELSCOPE_HUB")) is True:
+if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
     from modelscope import snapshot_download
 
     if not Path(MODEL_NAME_OR_PATH).exists():
@@ -107,5 +107,4 @@ def main():
             if result["text"] in BAD_SENTENCES:
                 continue
             text = cut_repetition(result["text"])
-            print(text, flush=True)
             node.send_output("text", pa.array([text]), {"language": TARGET_LANGUAGE})

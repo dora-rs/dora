@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dora-qwenvl"
-version = "0.3.6-rc0"
+version = "0.3.7"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>",
@@ -21,6 +21,7 @@ qwen-vl-utils = "^0.0.2"
 accelerate = "^0.33"
 opencv-python = ">= 4.1.1"
 modelscope = "^1.18.1"
+peft = "0.13.2"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
 

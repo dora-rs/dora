@@ -10,13 +10,24 @@ nodes:
       CAN_BUS: can_left
 
   - id: rerun
-    build: wget
+    build: |
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/base_link.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link1.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link2.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link3.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link4.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link5.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link6.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link7.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link8.STL
+      pip install -e ../../node-hub/dora-rerun
+      pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git
     path: dora-rerun
     inputs:
       jointstate_piper_left: piper/jointstate_left
       jointstate_piper_right: piper/jointstate_right
     env:
-      piper_left_urdf: assets/piper_left.urdf # Make sure to download assets/meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
-      piper_right_urdf: assets/piper_right.urdf # Make sure to download assets/meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
+      piper_left_urdf: piper_left.urdf # Make sure to download meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
+      piper_right_urdf: piper_right.urdf # Make sure to download meshes from https://github.com/agilexrobotics/Piper_ros/tree/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes and put them in the assets folder
       piper_left_transform: 0 0.2 0
       piper_right_transform: 0 -0.2 0
