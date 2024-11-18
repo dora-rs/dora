@@ -141,7 +141,7 @@ jobs:
             if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
               echo "Publishing $dir using maturin..."
               pip3 install "maturin[patchelf]"                                                                             
-              maturin publish  --skip-existing
+              maturin publish  --skip-existing --zig
             else
               if [ -f "pyproject.toml" ]; then
                 echo "Publishing $dir using Poetry..."
@@ -156,7 +156,7 @@ jobs:
                     echo "Package '$package_name' version '$version' already exists on crates.io. Skipping publish."
                 else
                     echo "Publishing package '$package_name' version '$version'..."
-                    cargo publish
+                    cargo publish 
                 fi
               fi
             fi
