@@ -4,10 +4,7 @@ import pyarrow as pa
 import os
 import time
 
-TEACH_MODE = (
-    os.getenv("TEACH_MODE", "False") == "True"
-    or os.getenv("TEACH_MODE", "False") == "true"
-)
+TEACH_MODE = os.getenv("TEACH_MODE", "False") in ["True", "true"]
 
 
 def enable_fun(piper: C_PiperInterface):
@@ -32,8 +29,6 @@ def enable_fun(piper: C_PiperInterface):
             and piper.GetArmLowSpdInfoMsgs().motor_6.foc_status.driver_enable_status
         )
         print("使能状态:", enable_flag)
-        piper.EnableArm(7)
-        piper.GripperCtrl(0, 1000, 0x01, 0)
         print("--------------------")
         # 检查是否超过超时时间
         if elapsed_time > timeout:
@@ -44,8 +39,7 @@ def enable_fun(piper: C_PiperInterface):
         time.sleep(1)
     if elapsed_time_flag:
         print("程序自动使能超时,退出程序")
-        print("If you have this issue, you should probably restart your computer")
-        exit(0)
+        raise ConnectionError("程序自动使能超时,退出程序")
 
 
 def main():
@@ -54,13 +48,17 @@ def main():
     piper = C_PiperInterface(CAN_BUS)
     piper.ConnectPort()
 
-    if TEACH_MODE is False:
+    if not TEACH_MODE:
         # piper.MotionCtrl_3(0, 0, 0, 0x00)#位置速度模式
         piper.EnableArm(7)
         enable_fun(piper=piper)
-        piper.GripperCtrl(0, 1000, 0x01, 0)
+        piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
+        piper.JointCtrl(0, 0, 0, 0, 0, 0)
+        piper.GripperCtrl(abs(0), 1000, 0x01, 0)
+        piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
+        time.sleep(5)
+
     factor = 57324.840764  # 1000*180/3.14
-    time.sleep(2)
     node = Node()
 
     for event in node:
@@ -76,13 +74,12 @@ def main():
                 joint_value += [joint.joint_state.joint_4.real / factor]
                 joint_value += [joint.joint_state.joint_5.real / factor]
                 joint_value += [joint.joint_state.joint_6.real / factor]
-                joint_value += [gripper.gripper_state.grippers_angle / 1000 / 1000 / 4]
+                joint_value += [gripper.gripper_state.grippers_angle / 1000 / 100]
 
                 node.send_output("jointstate", pa.array(joint_value, type=pa.float32()))
             else:
 
                 # Do not push to many commands to fast. Limiting it to 20Hz
-                # This is due to writing on a moving arm might fail the can bus.
                 if time.time() - elapsed_time > 0.05:
                     elapsed_time = time.time()
                 else:
@@ -95,7 +92,7 @@ def main():
                 joint_3 = round(position[3] * factor)
                 joint_4 = round(position[4] * factor)
                 joint_5 = round(position[5] * factor)
-                joint_6 = round(position[6] * 1000 * 1000 * 12)
+                joint_6 = round(position[6] * 1000 * 100)
 
                 piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
                 piper.JointCtrl(joint_0, joint_1, joint_2, joint_3, joint_4, joint_5)
@@ -103,7 +100,11 @@ def main():
                 piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
         elif event["type"] == "STOP":
 
-            # Waiting for the arm to stop moving before stopping the node
+            if not TEACH_MODE:
+                piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
+                piper.JointCtrl(0, 0, 0, 0, 0, 0)
+                piper.GripperCtrl(abs(0), 1000, 0x01, 0)
+                piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
             time.sleep(5)
             break
 
