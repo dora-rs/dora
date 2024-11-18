@@ -142,10 +142,11 @@ jobs:
           else
             if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
               echo "Publishing $dir using maturin..."
-              pip3 install maturin
               if [[ "${{ runner.os }}" == "Linux" ]]; then
+                pip3 install "maturin[zig]"
                 maturin publish  --skip-existing --zig
               else
+                pip3 install maturin
                 maturin publish  --skip-existing
               fi
             else
