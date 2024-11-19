@@ -20,6 +20,14 @@ else
         cargo clippy
         cargo build
         cargo test
+        
+        # aarch64-unknown-linux-gnu
+        rustup target add aarch64-unknown-linux-gnu
+        cargo check --target aarch64-unknown-linux-gnu
+                
+        # armv7-unknown-linux-musleabihf
+        rustup target add armv7-unknown-linux-musleabihf
+        cargo check --target armv7-unknown-linux-musleabihf
     else
         if [ -f "$dir/pyproject.toml" ]; then
         echo "Running linting and tests for Python project in $dir..."
