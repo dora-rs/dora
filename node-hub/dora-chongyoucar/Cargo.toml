@@ -1,0 +1,18 @@
+[package]
+name = "dora-chongyoucar"
+edition = "2021"
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+eyre = "0.6.8"
+dora-node-api = { workspace = true, features = ["tracing"] }
+dotenv = "0.15.0"
+serde = { version = "1.0.204", features = ["derive"] }
+serde_json = "1.0.120"
+serial = "0.4.0"
+thiserror = "1.0.63"
+tokio = { version = "1.24.2", features = ["rt", "macros", "rt-multi-thread"] }
