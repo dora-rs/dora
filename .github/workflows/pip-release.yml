@@ -35,9 +35,9 @@ jobs:
             target: aarch64
           - runner: ubuntu-22.04
             target: armv7
-          # - runner: ubuntu-20.04
+          # - runner: ubuntu-22.04
           # target: s390x
-          # - runner: ubuntu-20.04
+          # - runner: ubuntu-22.04
           # target: ppc64le
         repository:
           - path: apis/python/node
@@ -73,9 +73,9 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: ubuntu-20.04
+          - runner: ubuntu-22.04
             target: x86_64
-          - runner: ubuntu-20.04
+          - runner: ubuntu-22.04
             target: x86
           - runner: ubuntu-22.04
             target: aarch64
@@ -183,7 +183,7 @@ jobs:
         platform:
           - runner: macos-12
             target: x86_64
-          - runner: macos-14
+          - runner: macos-12
             target: aarch64
         repository:
           - path: apis/python/node
@@ -236,7 +236,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-22.04
-    if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
     needs: [linux, musllinux, musleabi, windows, macos, sdist]
     strategy:
       matrix:

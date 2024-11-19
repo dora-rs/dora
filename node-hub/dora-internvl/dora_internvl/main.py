@@ -101,6 +101,7 @@ def load_image(image_array: np.array, input_size=448, max_num=12):
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     model_path = os.getenv("MODEL", "OpenGVLab/InternVL2-1B")
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     # If you want to load a model using multiple GPUs, please refer to the `Multiple GPUs` section.
     model = (
@@ -112,7 +113,7 @@ def main():
             trust_remote_code=True,
         )
         .eval()
-        .cuda()
+        .to(device)
     )
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, trust_remote_code=True, use_fast=False
