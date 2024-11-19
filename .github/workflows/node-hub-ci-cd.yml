@@ -13,7 +13,7 @@ on:
 
 jobs:
   find-jobs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     name: Find Jobs
     outputs:
       folders: ${{ steps.jobs.outputs.folders }}
@@ -26,13 +26,14 @@ jobs:
           path: ./node-hub
 
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform }}
     needs: [find-jobs]
     defaults:
       run:
         working-directory: node-hub/${{ matrix.folder }}
     strategy:
       matrix:
+        platform: [ubuntu-22.04, macos-14]
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
       fail-fast: false
     steps:
@@ -73,6 +74,8 @@ jobs:
           override: true
 
       - name: Run Linting and Tests
+        ## Run Linting and testing only on Mac for release workflows.
+        if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
         run: |
           chmod +x ../../.github/workflows/node_hub_test.sh
           ../../.github/workflows/node_hub_test.sh
@@ -84,10 +87,11 @@ jobs:
         working-directory: node-hub/${{ matrix.folder }}
     strategy:
       matrix:
+        platform: [ubuntu-22.04, macos-14]
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
-
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
@@ -138,8 +142,13 @@ jobs:
           else
             if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
               echo "Publishing $dir using maturin..."
-              pip3 install "maturin[patchelf]"                                                                             
-              maturin publish  --skip-existing
+              if [[ "${{ runner.os }}" == "Linux" ]]; then
+                pip3 install "maturin[zig]"
+                maturin publish  --skip-existing --zig
+              else
+                pip3 install maturin
+                maturin publish  --skip-existing
+              fi
             else
               if [ -f "pyproject.toml" ]; then
                 echo "Publishing $dir using Poetry..."
@@ -154,7 +163,7 @@ jobs:
                     echo "Package '$package_name' version '$version' already exists on crates.io. Skipping publish."
                 else
                     echo "Publishing package '$package_name' version '$version'..."
-                    cargo publish
+                    cargo publish 
                 fi
               fi
             fi
