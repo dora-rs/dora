@@ -1,11 +1,13 @@
 # Getting Started with Tracer + Piper
 
+# DATA COLLECTION
+
 ## Installation (To do once)
 
 Make sure to:
 
 ```bash
-dora build rdt_1b.yaml
+dora build record.yaml
 
 # Make sure to install from source pyorbbecksdk
 
@@ -23,6 +25,7 @@ python3 setup.py bdist_wheel
 pip3 install dist/*.whl
 
 export PYTHONPATH=$PYTHONPATH:$(pwd)/install/lib/ # Make sure to save this in your .bashrc
+cd ..
 
 
 # Install ugv_sdk_py from source
@@ -31,6 +34,7 @@ cd ugv_sdk
 python setup.py build_ext --inplace
 
 export PYTHONPATH=$PYTHONPATH:$(pwd) # Make sure to save this in your .bashrc
+cd ..
 ```
 
 ### Your bashrc should contain something like this
@@ -52,10 +56,4 @@ source /home/agilex/cobot_magic/Piper_ros_private-ros-noetic/can_config.sh
 
 ```bash
 dora run record.yml
-```
-
-## For inference
-
-```bash
-dora run rdt_1b.yml
 ```

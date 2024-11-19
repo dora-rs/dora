@@ -1,8 +1,7 @@
 nodes:
   - id: piper_left
-    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
     inputs:
       tick: dora/timer/millis/40
     outputs:
@@ -12,9 +11,8 @@ nodes:
       TEACH_MODE: True
 
   - id: piper_right
-    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
     inputs:
       tick: dora/timer/millis/40
     outputs:
@@ -23,19 +21,9 @@ nodes:
       CAN_BUS: can_right
       TEACH_MODE: True
 
-  - id: mobile_base
-    path: /home/agilex/1ms.ai/ugv_sdk/tracer_node.py
-    _unstable_deploy:
-      machine: piper
-    inputs:
-      tick: dora/timer/millis/40
-    outputs:
-      - velocity
-
   - id: camera_left
-    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
     inputs:
       tick: dora/timer/millis/40
     outputs:
@@ -45,9 +33,8 @@ nodes:
       ENCODING: jpeg
 
   - id: camera_center
-    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
     inputs:
       tick: dora/timer/millis/40
     outputs:
@@ -57,9 +44,8 @@ nodes:
       ENCODING: jpeg
 
   - id: camera_right
-    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
     inputs:
       tick: dora/timer/millis/40
     outputs:
@@ -67,25 +53,34 @@ nodes:
     env:
       DEVICE_INDEX: 2
       ENCODING: jpeg
-      # import opencv as cv
-      # [cv2.VideoCapture(i) for i in range(12)]
 
   - id: rerun
     path: dora-rerun
+    build: |
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/base_link.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link1.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link2.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link3.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link4.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link5.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link6.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link7.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link8.STL
+      pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git
+      pip install dora-rerun
     inputs:
       jointstate_piper_left: piper_left/jointstate
       jointstate_piper_right: piper_right/jointstate
-      series_base_vel: mobile_base/velocity
       image_left: camera_left/image
       image_center: camera_center/image
       image_right: camera_right/image
     env:
-      piper_left_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_left.urdf
-      piper_right_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_right.urdf
+      piper_left_urdf: piper_left.urdf
+      piper_right_urdf: piper_right.urdf
       piper_left_transform: 0 0.2 0
       piper_right_transform: 0 -0.2 0
-      piper_left_pred_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_left_pred.urdf
-      piper_right_pred_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_right_pred.urdf
+      piper_left_pred_urdf: piper_left_pred.urdf
+      piper_right_pred_urdf: piper_right_pred.urdf
       piper_left_pred_transform: 0 0.2 0
       piper_right_pred_transform: 0 -0.2 0
 
@@ -96,6 +91,8 @@ nodes:
       tick: dora/timer/millis/1000
     outputs:
       - char
+    env:
+      DISPLAY: :0
 
   - id: recorder
     path: record.py
@@ -104,8 +101,6 @@ nodes:
         source: piper_left/jointstate
       /observations/qpos_right:
         source: piper_right/jointstate
-      /observations/base_vel:
-        source: mobile_base/velocity
       /observations/images/cam_left_wrist:
         source: camera_left/image
       /observations/images/cam_high:
