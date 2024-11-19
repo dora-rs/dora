@@ -145,8 +145,11 @@ jobs:
               if [[ "${{ runner.os }}" == "Linux" ]]; then
                 pip3 install "maturin[zig]"
                 
+                ## The CI/CD is sequential to limit the number of workers used.
+                
+                # x86_64-unknown-linux-gnu
                 maturin publish  --skip-existing --zig
-
+                
                 # aarch64-unknown-linux-gnu
                 rustup target add aarch64-unknown-linux-gnu
                 maturin publish --target aarch64-unknown-linux-gnu --zig
