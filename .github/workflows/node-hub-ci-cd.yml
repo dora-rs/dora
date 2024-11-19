@@ -144,7 +144,17 @@ jobs:
               echo "Publishing $dir using maturin..."
               if [[ "${{ runner.os }}" == "Linux" ]]; then
                 pip3 install "maturin[zig]"
+                
                 maturin publish  --skip-existing --zig
+
+                # aarch64-unknown-linux-gnu
+                rustup target add aarch64-unknown-linux-gnu
+                maturin publish --target aarch64-unknown-linux-gnu --zig
+                
+                # armv7-unknown-linux-musleabihf
+                rustup target add armv7-unknown-linux-musleabihf
+                maturin publish --target armv7-unknown-linux-musleabihf --zig
+
               else
                 pip3 install maturin
                 maturin publish  --skip-existing
