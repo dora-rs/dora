@@ -6,8 +6,14 @@ from dora import Node
 
 def main():
     node = Node()
+
+    always_none = node.next(timeout=0.001) is None
     with keyboard.Events() as events:
         while True:
+            if not always_none:
+                event_stream_is_none = node.next(timeout=0.001) is None
+                if event_stream_is_none:
+                    break
             event = events.get(1.0)
             if event is not None and isinstance(event, Events.Press):
                 if hasattr(event.key, "char"):
