@@ -104,7 +104,8 @@ STATE_VEC_LEN = 128
 
 now = datetime.datetime.now()
 
-DATA_DIR = now.strftime("%Y.%m.%d")
+ROOT_DIR = os.getenv("DATA_DIR", "/home/agilex/Desktop")
+DATA_DIR = ROOT_DIR + now.strftime("%Y.%m.%d")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 ## Make data dir if it does not exist
@@ -201,7 +202,7 @@ for event in node:
             value = event["value"].to_numpy()
             euler = value[None, 3:6]  # Add batch dimension
             rotmat = convert_euler_to_rotation_matrix(euler)
-            ortho6d = compute_ortho6d_from_rotation_matrix(rotmat)
+            ortho6d = compute_ortho6d_from_rotation_matrix(rotmat)[0]
             values = np.array(
                 [
                     value[0],
