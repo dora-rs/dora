@@ -6,6 +6,8 @@ nodes:
       tick: dora/timer/millis/40
     outputs:
       - jointstate
+      - pose
+      - gripper
     env:
       CAN_BUS: can_left
       TEACH_MODE: True
@@ -17,6 +19,8 @@ nodes:
       tick: dora/timer/millis/40
     outputs:
       - jointstate
+      - pose
+      - gripper
     env:
       CAN_BUS: can_right
       TEACH_MODE: True
@@ -101,6 +105,10 @@ nodes:
         source: piper_left/jointstate
       /observations/qpos_right:
         source: piper_right/jointstate
+      /observations/pose_left:
+        source: piper_left/pose
+      /observations/pose_right:
+        source: piper_right/pose
       /observations/images/cam_left_wrist:
         source: camera_left/image
       /observations/images/cam_high:

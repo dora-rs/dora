@@ -5,6 +5,10 @@ import datetime
 
 from dora import Node
 import numpy as np
+from convert import (
+    convert_euler_to_rotation_matrix,
+    compute_ortho6d_from_rotation_matrix,
+)
 
 STATE_VEC_IDX_MAPPING = {
     # [0, 10): right arm joint positions
@@ -193,18 +197,39 @@ for event in node:
             tmp_dict[event["id"]] = event["value"].to_numpy()
         elif "qpos" in event["id"]:
             tmp_dict[event["id"]] = event["value"].to_numpy()
+        elif "pose" in event["id"]:
+            value = event["value"].to_numpy()
+            euler = value[None, 3:6]  # Add batch dimension
+            rotmat = convert_euler_to_rotation_matrix(euler)
+            ortho6d = compute_ortho6d_from_rotation_matrix(rotmat)
+            values = np.array(
+                [
+                    value[0],
+                    value[1],
+                    value[2],
+                    ortho6d[0],
+                    ortho6d[1],
+                    ortho6d[2],
+                    ortho6d[3],
+                    ortho6d[4],
+                    ortho6d[5],
+                ]
+            )
+            tmp_dict[event["id"]] = values
         elif "base_vel" in event["id"]:
             tmp_dict[event["id"]] = event["value"].to_numpy()
 
         # Check if tmp dict is full
-        if len(tmp_dict) != 6:
+        if len(tmp_dict) != 8:
             continue
         elif event["id"] == LEAD_CAMERA and start == True:
             values = np.concatenate(
                 [
                     tmp_dict["/observations/qpos_left"],
                     tmp_dict["/observations/qpos_right"],
-                    tmp_dict["/observations/base_vel"],
+                    tmp_dict["/observations/pose_left"],
+                    tmp_dict["/observations/pose_right"],
+                    # tmp_dict["/observations/base_vel"],
                 ]
             )
             UNI_STATE_INDICES = (
@@ -212,8 +237,26 @@ for event in node:
                 + [STATE_VEC_IDX_MAPPING["left_gripper_open"]]
                 + [STATE_VEC_IDX_MAPPING[f"right_arm_joint_{i}_pos"] for i in range(6)]
                 + [STATE_VEC_IDX_MAPPING["right_gripper_open"]]
-                + [STATE_VEC_IDX_MAPPING["base_vel_x"]]
-                + [STATE_VEC_IDX_MAPPING["base_angular_vel"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_pos_x"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_pos_y"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_pos_z"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_angle_0"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_angle_1"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_angle_2"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_angle_3"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_angle_4"]]
+                + [STATE_VEC_IDX_MAPPING["left_eef_angle_5"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_pos_x"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_pos_y"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_pos_z"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_angle_0"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_angle_1"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_angle_2"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_angle_3"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_angle_4"]]
+                + [STATE_VEC_IDX_MAPPING["right_eef_angle_5"]]
+                # + [STATE_VEC_IDX_MAPPING["base_vel_x"]]
+                # + [STATE_VEC_IDX_MAPPING["base_angular_vel"]],
             )
             universal_vec = np.zeros(STATE_VEC_LEN)
             universal_vec[UNI_STATE_INDICES] = values
