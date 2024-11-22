@@ -290,7 +290,7 @@ pub async fn spawn_node(
         node_config,
     };
     let stdout_tx = tx.clone();
-
+    let node_id = node.id.clone();
     // Stdout listener stream
     tokio::spawn(async move {
         let mut buffer = String::new();
@@ -337,6 +337,11 @@ pub async fn spawn_node(
 
             // send the buffered lines
             let lines = std::mem::take(&mut buffer);
+            if std::env::var("DORA_QUIET").is_err() {
+                if lines.len() > 1 {
+                    tracing::info!("log_{}: {}", node_id, &lines[..lines.len() - 1]);
+                }
+            }
             let sent = stdout_tx.send(lines.clone()).await;
             if sent.is_err() {
                 println!("Could not log: {lines}");
