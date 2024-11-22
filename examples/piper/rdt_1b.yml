@@ -1,10 +1,9 @@
 nodes:
   - id: piper_left
-    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
     inputs:
-      tick: dora/timer/millis/50
+      tick: dora/timer/millis/500
       action: post_process_rdt_1b/jointstate_left
     outputs:
       - jointstate
@@ -12,11 +11,10 @@ nodes:
       CAN_BUS: can_left
 
   - id: piper_right
-    path: /home/agilex/1ms.ai/piper_sdk/dora_piper.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
     inputs:
-      tick: dora/timer/millis/50
+      tick: dora/timer/millis/500
       action: post_process_rdt_1b/jointstate_right
     outputs:
       - jointstate
@@ -24,11 +22,10 @@ nodes:
       CAN_BUS: can_right
 
   - id: camera_left
-    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
     inputs:
-      tick: dora/timer/millis/50
+      tick: dora/timer/millis/500
     outputs:
       - image
     env:
@@ -36,11 +33,10 @@ nodes:
       ENCODING: jpeg
 
   - id: camera_center
-    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
     inputs:
-      tick: dora/timer/millis/50
+      tick: dora/timer/millis/500
     outputs:
       - image
     env:
@@ -48,11 +44,10 @@ nodes:
       ENCODING: jpeg
 
   - id: camera_right
-    path: /home/agilex/1ms.ai/pyorbbecsdk/examples/color_viewer.py
-    _unstable_deploy:
-      machine: piper
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
     inputs:
-      tick: dora/timer/millis/50
+      tick: dora/timer/millis/500
     outputs:
       - image
     env:
@@ -76,17 +71,17 @@ nodes:
       image_center: camera_center/image
       image_right: camera_right/image
     env:
-      piper_left_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_left.urdf
-      piper_right_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_right.urdf
+      piper_left_urdf: piper_left.urdf
+      piper_right_urdf: piper_right.urdf
       piper_left_transform: 0 0.2 0
       piper_right_transform: 0 -0.2 0
-      piper_left_pred_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_left_pred.urdf
-      piper_right_pred_urdf: /home/peter/Documents/work/dora/examples/piper/assets/piper_right_pred.urdf
+      piper_left_pred_urdf: piper_left_pred.urdf
+      piper_right_pred_urdf: piper_right_pred.urdf
       piper_left_pred_transform: 0 0.2 0
       piper_right_pred_transform: 0 -0.2 0
 
   - id: rdt_1b
-    path: dora-rdt_1b
+    path: dora-rdt-1b
     inputs:
       jointstate_left:
         source: piper_left/jointstate
@@ -104,13 +99,12 @@ nodes:
         source: camera_right/image
         queue_size: 1
       tick:
-        source: dora/timer/secs/1
+        source: dora/timer/secs/2
         queue_size: 1
     outputs:
       - action
     env:
-      ROBOTIC_MODEL_NAME_OR_PATH: /home/peter/Documents/work/dora/examples/piper/checkpoints/checkpoint-850
-      VISION_MODEL_NAME_OR_PATH: /home/peter/.cache/huggingface/hub/models--google--siglip-so400m-patch14-384/snapshots/9fdffc58afc957d1a03a25b10dba0329ab15c2a3
+      ROBOTIC_MODEL_NAME_OR_PATH: checkpoints/checkpoint-4400
       LANGUAGE_EMBEDDING_PATH: lang_embed.pt
 
   - id: post_process_rdt_1b
