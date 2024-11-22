@@ -3,10 +3,12 @@ nodes:
     build: pip install -e ../../node-hub/dora-piper
     path: dora-piper
     inputs:
-      tick: dora/timer/millis/500
+      tick: dora/timer/millis/100
       joint_action: post_process_rdt_1b/jointstate_left
     outputs:
       - jointstate
+      - pose
+      - gripper
     env:
       CAN_BUS: can_left
 
@@ -14,10 +16,12 @@ nodes:
     build: pip install -e ../../node-hub/dora-piper
     path: dora-piper
     inputs:
-      tick: dora/timer/millis/500
+      tick: dora/timer/millis/100
       joint_action: post_process_rdt_1b/jointstate_right
     outputs:
       - jointstate
+      - pose
+      - gripper
     env:
       CAN_BUS: can_right
 
@@ -25,7 +29,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-pyorbbecksdk
     path: dora-pyorbbecksdk
     inputs:
-      tick: dora/timer/millis/500
+      tick: dora/timer/millis/100
     outputs:
       - image
     env:
@@ -36,7 +40,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-pyorbbecksdk
     path: dora-pyorbbecksdk
     inputs:
-      tick: dora/timer/millis/500
+      tick: dora/timer/millis/100
     outputs:
       - image
     env:
@@ -47,7 +51,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-pyorbbecksdk
     path: dora-pyorbbecksdk
     inputs:
-      tick: dora/timer/millis/500
+      tick: dora/timer/millis/100
     outputs:
       - image
     env:
