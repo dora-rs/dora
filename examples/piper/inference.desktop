@@ -1,0 +1,7 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Inference
+Exec=bash -c "/home/agilex/Desktop/inference.sh; sleep 5"
+Terminal=true
+Categories=Application

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Record
+Exec=bash -c "/home/agilex/Desktop/record.sh; sleep 5"
+Terminal=true
+Categories=Application
