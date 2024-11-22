@@ -56,7 +56,6 @@ def main():
         piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
         piper.JointCtrl(0, 0, 0, 0, 0, 0)
         piper.GripperCtrl(abs(0), 1000, 0x01, 0)
-        piper.Geten()
         piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
         time.sleep(5)
 
