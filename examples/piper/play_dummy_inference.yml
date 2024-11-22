@@ -19,8 +19,8 @@ nodes:
       proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link6.STL
       proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link7.STL
       proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link8.STL
-      pip install -e ../../node-hub/dora-rerun
       pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git
+      pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
       jointstate_piper_left: piper_left/jointstate
