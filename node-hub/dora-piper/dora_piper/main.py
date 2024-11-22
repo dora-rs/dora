@@ -1,6 +1,7 @@
 from piper_sdk import C_PiperInterface
 from dora import Node
 import pyarrow as pa
+import numpy as np
 import os
 import time
 
@@ -65,6 +66,8 @@ def main():
     for event in node:
         if event["type"] == "INPUT":
             if event["id"] == "joint_action":
+                if TEACH_MODE:
+                    continue
                 # Do not push to many commands to fast. Limiting it to 20Hz
                 if time.time() - elapsed_time > 0.05:
                     elapsed_time = time.time()
@@ -86,6 +89,8 @@ def main():
                 piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
 
             elif event["id"] == "eef_action":
+                if TEACH_MODE:
+                    continue
                 # Do not push to many commands to fast. Limiting it to 20Hz
                 if time.time() - elapsed_time > 0.05:
                     elapsed_time = time.time()
@@ -95,12 +100,12 @@ def main():
                 position = event["value"].to_numpy()
                 piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
                 piper.EndPoseCtrl(
-                    position[0] * 1000,
-                    position[1] * 1000,
-                    position[2] * 1000,
-                    position[3] * 1000,
-                    position[4] * 1000,
-                    position[5] * 1000,
+                    position[0] * 1000 * 1000,
+                    position[1] * 1000 * 1000,
+                    position[2] * 1000 * 1000,
+                    position[3] * 1000 / (2 * np.pi) * 360,
+                    position[4] * 1000 / (2 * np.pi) * 360,
+                    position[5] * 1000 / (2 * np.pi) * 360,
                 )
                 piper.GripperCtrl(abs(position[6] * 1000 * 100), 1000, 0x01, 0)
                 piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
@@ -123,12 +128,12 @@ def main():
 
                 position = piper.GetArmEndPoseMsgs()
                 position_value = []
-                position_value += [position.end_pose.X_axis * 0.001]
-                position_value += [position.end_pose.Y_axis * 0.001]
-                position_value += [position.end_pose.Z_axis * 0.001]
-                position_value += [position.end_pose.RX_axis * 0.001]
-                position_value += [position.end_pose.RY_axis * 0.001]
-                position_value += [position.end_pose.RZ_axis * 0.001]
+                position_value += [position.end_pose.X_axis * 0.001 * 0.001]
+                position_value += [position.end_pose.Y_axis * 0.001 * 0.001]
+                position_value += [position.end_pose.Z_axis * 0.001 * 0.001]
+                position_value += [position.end_pose.RX_axis * 0.001 / 360 * 2 * np.pi]
+                position_value += [position.end_pose.RY_axis * 0.001 / 360 * 2 * np.pi]
+                position_value += [position.end_pose.RZ_axis * 0.001 / 360 * 2 * np.pi]
 
                 node.send_output("pose", pa.array(position_value, type=pa.float32()))
                 node.send_output(
