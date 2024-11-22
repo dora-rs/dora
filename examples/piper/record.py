@@ -104,8 +104,7 @@ STATE_VEC_LEN = 128
 
 now = datetime.datetime.now()
 
-ROOT_DIR = os.getenv("DATA_DIR", "/home/agilex/Desktop")
-DATA_DIR = ROOT_DIR + now.strftime("%Y.%m.%d")
+DATA_DIR = "/home/agilex/Desktop/" + now.strftime("%Y.%m.%d.%H.%M")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 ## Make data dir if it does not exist
@@ -221,7 +220,7 @@ for event in node:
             tmp_dict[event["id"]] = event["value"].to_numpy()
 
         # Check if tmp dict is full
-        if len(tmp_dict) != 8:
+        if len(tmp_dict) != 7:
             continue
         elif event["id"] == LEAD_CAMERA and start == True:
             values = np.concatenate(
