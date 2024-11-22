@@ -4,7 +4,7 @@ nodes:
     path: dora-piper
     inputs:
       tick: dora/timer/millis/500
-      action: post_process_rdt_1b/jointstate_left
+      joint_action: post_process_rdt_1b/jointstate_left
     outputs:
       - jointstate
     env:
@@ -15,7 +15,7 @@ nodes:
     path: dora-piper
     inputs:
       tick: dora/timer/millis/500
-      action: post_process_rdt_1b/jointstate_right
+      joint_action: post_process_rdt_1b/jointstate_right
     outputs:
       - jointstate
     env:
