@@ -83,10 +83,6 @@ nodes:
       piper_right_urdf: piper_right.urdf
       piper_left_transform: 0 0.2 0
       piper_right_transform: 0 -0.2 0
-      piper_left_pred_urdf: piper_left_pred.urdf
-      piper_right_pred_urdf: piper_right_pred.urdf
-      piper_left_pred_transform: 0 0.2 0
-      piper_right_pred_transform: 0 -0.2 0
 
   - id: keyboard
     build: pip install dora-keyboard
