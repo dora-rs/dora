@@ -2,8 +2,6 @@ from dora import Node
 
 node = Node()
 
-import numpy as np
-
 
 import time
 import pyarrow as pa
@@ -29,5 +27,5 @@ for event in node:
             node.send_output(
                 "jointstate_right", pa.array(action[7:], type=pa.float32())
             )
-            time.sleep(0.005)
+            time.sleep(0.02)
         print(actions)
