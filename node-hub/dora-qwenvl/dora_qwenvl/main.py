@@ -1,5 +1,6 @@
 import os
 from dora import Node
+import torch
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 import numpy as np
@@ -83,7 +84,9 @@ def generate(frames: dict, question):
         padding=True,
         return_tensors="pt",
     )
-    inputs = inputs.to("cuda")
+
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    inputs = inputs.to(device)
 
     # Inference: Generation of the output
     generated_ids = model.generate(**inputs, max_new_tokens=128)
