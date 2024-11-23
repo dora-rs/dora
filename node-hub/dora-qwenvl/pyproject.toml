@@ -14,7 +14,7 @@ packages = [{ include = "dora_qwenvl" }]
 python = "^3.7"
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
-torch = "^2.4.0"
+torch = "^2.2.0"
 torchvision = "^0.19"
 transformers = "^4.45"
 qwen-vl-utils = "^0.0.2"
