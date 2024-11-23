@@ -55,18 +55,18 @@ pub fn lib_main() -> eyre::Result<()> {
         } = event
         {
             if let Some(cmd) = data.as_any().downcast_ref::<Float64Array>() {
-                let datas = cmd.values();
-                if datas.len() == 3 {
+                let data = cmd.values();
+                if data.len() == 3 {
                     // x， w 和速度 speed
-                    let x = datas[0];
-                    let w = datas[0];
-                    let speed = if datas[0] < 0.0 { 0.0 } else { datas[0] };
+                    let x = data[0];
+                    let w = data[0];
+                    let speed = if data[0] < 0.0 { 0.0 } else { data[0] };
                     tx_key.send((speed * x, speed * w)).ok();
-                } else if datas.len() == 6 {
+                } else if data.len() == 6 {
                     // https://docs.ros.org/en/noetic/api/geometry_msgs/html/msg/Twist.html
                     // [x, y, z, rx, ry, rz]
-                    let x = datas[0];
-                    let w = datas[5];
+                    let x = data[0];
+                    let w = data[5];
                     let speed = 0.2;
                     tx_key.send((speed * x, speed * w)).ok();
                 }
