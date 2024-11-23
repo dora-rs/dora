@@ -7,12 +7,24 @@ documentation.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "dora_chongyoucar"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = []
+python = ["pyo3"]
+
 [dependencies]
-eyre = "0.6.8"
 dora-node-api = { workspace = true, features = ["tracing"] }
 dotenv = "0.15.0"
+eyre = "0.6.8"
+pyo3 = { workspace = true, features = [
+    "extension-module",
+    "abi3",
+], optional = true }
 serde = { version = "1.0.204", features = ["derive"] }
 serde_json = "1.0.120"
 serial = "0.4.0"
 thiserror = "1.0.63"
-tokio = { version = "1.24.2", features = ["rt", "macros", "rt-multi-thread"] }

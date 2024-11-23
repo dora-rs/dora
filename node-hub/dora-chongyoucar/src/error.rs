@@ -3,9 +3,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("serial connect fail")]
-    SerialConnect,
+    Connect,
     #[error("serial settings set fail")]
-    SerialSettingsSet,
+    SettingsSet,
     #[error("serial set timeout fail")]
-    SerialSetTimeout,
+    SetTimeout,
 }
