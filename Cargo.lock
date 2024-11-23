@@ -2348,11 +2348,11 @@ dependencies = [
  "dora-node-api",
  "dotenv",
  "eyre",
+ "pyo3",
  "serde",
  "serde_json",
  "serial",
  "thiserror",
- "tokio",
 ]
 
 [[package]]

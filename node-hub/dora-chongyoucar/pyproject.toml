@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=0.13.2"]
+build-backend = "maturin"
+
+[project]
+name = "dora-chongyoucar"
+version = "0.3.7"
+authors = [{ name = "Leon", email = "echo_ai@foxmail.com" }]
+description = "Dora Node for chongyoucar"
+readme = "README.md"
+
+[tool.maturin]
+features = ["python", "pyo3/extension-module"]

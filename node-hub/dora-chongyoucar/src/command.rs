@@ -1,5 +1,5 @@
 // 差速小车
-pub fn send_speed_to_x4chassis(x: f64, y: f64, w: f64) -> Vec<u8> {
+pub fn send_speed_to_x4chassis(x: f64, _y: f64, w: f64) -> Vec<u8> {
     let mut data = vec![];
 
     let speed_offset = 10.0; // 速度偏移值 10m/s，把速度转换成正数发送
