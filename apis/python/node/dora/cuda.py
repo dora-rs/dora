@@ -11,7 +11,7 @@ from numba.cuda.cudadrv.devicearray import DeviceNDArray
 from numba.cuda import to_device
 
 
-def torch_to_buffer(tensor: torch.Tensor) -> tuple[pa.array, dict]:
+def torch_to_buffer(tensor: torch.TensorType) -> tuple[pa.array, dict]:
     """Converts a Pytorch tensor into a pyarrow buffer containing the IPC handle and its metadata."""
     device_arr = to_device(tensor)
     cuda_buf = pa.cuda.CudaBuffer.from_numba(device_arr.gpu_data)
@@ -24,27 +24,26 @@ def torch_to_buffer(tensor: torch.Tensor) -> tuple[pa.array, dict]:
     return pa.array(handle_buffer, type=pa.uint8()), metadata
 
 
-def buffer_to_ipc(handle_buffer: pa.array) -> cuda.IpcMemHandle:
+def buffer_to_ipc_handle(handle_buffer: pa.array) -> cuda.IpcMemHandle:
     """Converts a buffer containing a serialized handler into cuda IPC MemHandle."""
     handle_buffer = handle_buffer.buffers()[1]
     ipc_handle = pa.cuda.IpcMemHandle.from_buffer(handle_buffer)
     return ipc_handle
 
 
-def ipc_to_torch(
-    arr: cuda.CudaBuffer, metadata: dict, device: str | torch.DeviceObjType
-) -> torch.Tensor:
-    """Converts a pyarrow CUDA buffer to a torch tensor."""
+def cudabuffer_to_numba(buffer: cuda.CudaBuffer, metadata: dict) -> DeviceNDArray:
+    """Converts a pyarrow CUDA buffer to numba."""
 
-    device = torch.device(device)
     shape = metadata["shape"]
     strides = metadata["strides"]
     dtype = metadata["dtype"]
-    device_arr = DeviceNDArray(shape, strides, dtype, gpu_data=arr.to_numba())
-    if device.type == "cpu":
-        torch_tensor = torch.as_tensor(device_arr.copy_to_host())
-    elif device.type == "cuda":
-        torch_tensor = torch.as_tensor(device_arr, device=device)
-    else:
-        raise NotImplementedError("Haven't implemented this device yet!")
+    device_arr = DeviceNDArray(shape, strides, dtype, gpu_data=buffer.to_numba())
+    return device_arr
+
+
+def cudabuffer_to_torch(buffer: cuda.CudaBuffer, metadata: dict) -> torch.Tensor:
+    """Converts a pyarrow CUDA buffer to a torch tensor."""
+
+    device_arr = cudabuffer_to_numba(buffer, metadata)
+    torch_tensor = torch.as_tensor(device_arr, device="cuda")
     return torch_tensor
