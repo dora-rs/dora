@@ -13,7 +13,7 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
-    types::{IntoPyDict, PyBool, PyDict, PyInt, PyString},
+    types::{IntoPyDict, PyBool, PyDict, PyInt, PyList, PyString, PyTuple},
 };
 
 /// Dora Event
@@ -173,6 +173,18 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 parameters.insert(key, Parameter::Integer(value.extract::<i64>()?))
             } else if value.is_instance_of::<PyString>() {
                 parameters.insert(key, Parameter::String(value.extract()?))
+            } else if value.is_instance_of::<PyTuple>()
+                && value.len()? > 0
+                && value.get_item(0)?.is_exact_instance_of::<PyInt>()
+            {
+                let list: Vec<i64> = value.extract()?;
+                parameters.insert(key, Parameter::ListInt(list))
+            } else if value.is_instance_of::<PyList>()
+                && value.len()? > 0
+                && value.get_item(0)?.is_exact_instance_of::<PyInt>()
+            {
+                let list: Vec<i64> = value.extract()?;
+                parameters.insert(key, Parameter::ListInt(list))
             } else {
                 println!("could not convert type {value}");
                 parameters.insert(key, Parameter::String(value.str()?.to_string()))
@@ -197,6 +209,9 @@ pub fn metadata_to_pydict<'a>(
                 .context("Could not insert metadata into python dictionary")?,
             Parameter::String(s) => dict
                 .set_item(k, s)
+                .context("Could not insert metadata into python dictionary")?,
+            Parameter::ListInt(l) => dict
+                .set_item(k, l)
                 .context("Could not insert metadata into python dictionary")?,
         }
     }
