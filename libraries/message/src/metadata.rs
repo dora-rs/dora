@@ -60,6 +60,7 @@ pub enum Parameter {
     Bool(bool),
     Integer(i64),
     String(String),
+    ListInt(Vec<i64>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
