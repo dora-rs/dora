@@ -8,7 +8,7 @@ import time
 import pyarrow as pa
 from tqdm import tqdm
 from dora import Node
-from dora.cuda import buffer_to_ipc_handle, cudabuffer_to_torch
+from dora.cuda import ipc_buffer_to_ipc_handle, cudabuffer_to_torch
 from helper import record_results
 import torch
 
@@ -43,9 +43,10 @@ while True:
         else:
             # AFTER
             # storage needs to be spawned in the same file as where it's used. Don't ask me why.
-            ipc_handle = buffer_to_ipc_handle(event["value"])
+            ipc_handle = ipc_buffer_to_ipc_handle(event["value"])
             cudabuffer = ctx.open_ipc_buffer(ipc_handle)
-            torch_tensor = cudabuffer_to_torch(cudabuffer, event["metadata"])
+            torch_tensor = cudabuffer_to_torch(cudabuffer, event["metadata"])  # on cuda
+            print(torch_tensor[0])
     else:
         break
     t_received = time.perf_counter_ns()

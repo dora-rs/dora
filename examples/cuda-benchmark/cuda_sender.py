@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pyarrow as pa
 from dora import Node
-from dora.cuda import torch_to_buffer
+from dora.cuda import torch_to_ipc_buffer
 import torch
 
 torch.tensor([], device="cuda")
@@ -36,10 +36,10 @@ for size in SIZES:
             node.send_output("latency", pa.array(torch_tensor.numpy()), metadata)
         else:
             # AFTER
-            buffer, metadata = torch_to_buffer(torch_tensor)
+            ipc_buffer, metadata = torch_to_ipc_buffer(torch_tensor)
             metadata["time"] = t_send
             metadata["device"] = "cuda"
-            node.send_output("latency", buffer, metadata)
+            node.send_output("latency", ipc_buffer, metadata)
 
         # Wait before sending next output
         node.next()
