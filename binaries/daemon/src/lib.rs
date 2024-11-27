@@ -1258,8 +1258,8 @@ impl Daemon {
                                 NodeErrorCause::Cascading { caused_by_node }
                             }
                             None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => NodeErrorCause::Other {
-                                stderr: dataflow
+                            None => {
+                                let cause = dataflow
                                     .and_then(|d| d.node_stderr_most_recent.get(&node_id))
                                     .map(|queue| {
                                         let mut s = if queue.is_full() {
@@ -1272,8 +1272,14 @@ impl Daemon {
                                         }
                                         s
                                     })
-                                    .unwrap_or_default(),
-                            },
+                                    .unwrap_or_default();
+
+                                tracing::error!("node {dataflow_id}/{node_id} failed with:");
+                                for line in cause.lines() {
+                                    tracing::error!("    {}", line);
+                                }
+                                NodeErrorCause::Other { stderr: cause }
+                            }
                         };
                         Err(NodeError {
                             timestamp: self.clock.new_timestamp(),
