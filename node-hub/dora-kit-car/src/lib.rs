@@ -88,7 +88,7 @@ fn py_main(_py: Python) -> PyResult<()> {
 
 #[cfg(feature = "python")]
 #[pymodule]
-fn dora_chongyoucar(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+fn dora_kit_car(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_main, &m)?)?;
     Ok(())
 }

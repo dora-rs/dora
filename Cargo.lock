@@ -2342,20 +2342,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-chongyoucar"
-version = "0.3.7"
-dependencies = [
- "dora-node-api",
- "dotenv",
- "eyre",
- "pyo3",
- "serde",
- "serde_json",
- "serial",
- "thiserror",
-]
-
-[[package]]
 name = "dora-cli"
 version = "0.3.7"
 dependencies = [
@@ -2491,6 +2477,20 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "dora-kit-car"
+version = "0.3.7"
+dependencies = [
+ "dora-node-api",
+ "dotenv",
+ "eyre",
+ "pyo3",
+ "serde",
+ "serde_json",
+ "serial",
+ "thiserror",
 ]
 
 [[package]]
