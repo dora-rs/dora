@@ -46,12 +46,10 @@ while True:
             ipc_handle = ipc_buffer_to_ipc_handle(event["value"])
             cudabuffer = ctx.open_ipc_buffer(ipc_handle)
             torch_tensor = cudabuffer_to_torch(cudabuffer, event["metadata"])  # on cuda
-            print(torch_tensor[0])
     else:
         break
     t_received = time.perf_counter_ns()
     length = len(torch_tensor) * 8
-    pbar.update(1)
 
     if length != current_size:
         if n > 0:
@@ -64,6 +62,7 @@ while True:
         start = time.perf_counter_ns()
         latencies = []
 
+    pbar.update(1)
     latencies.append((t_received - t_send) / 1000)
     node.send_output("next", pa.array([]))
 
