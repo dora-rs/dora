@@ -30,10 +30,11 @@ pub fn lib_main() -> eyre::Result<()> {
         flow_control: serial::FlowNone,
     };
 
-    let mut com = serial::open(&serial_port).wrap_err(Error::Connect)?;
-    com.configure(&COM_SETTINGS).wrap_err(Error::SettingsSet)?;
+    let mut com = serial::open(&serial_port).wrap_err(Error::Connect(serial_port))?;
+    com.configure(&COM_SETTINGS)
+        .wrap_err(Error::SettingsSet(format!("{:?}", COM_SETTINGS)))?;
     com.set_timeout(Duration::from_millis(1000))
-        .wrap_err(Error::SetTimeout)?;
+        .wrap_err(Error::SetTimeout("1000ms".to_string()))?;
 
     // msg channel
     let (tx_key, rx_key) = mpsc::channel::<(f64, f64)>();
