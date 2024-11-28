@@ -11,7 +11,7 @@ import torch
 
 torch.tensor([], device="cuda")
 
-SIZES = [512, 10 * 512, 100 * 512, 1000 * 512, 10000 * 512]
+SIZES = [10000 * 512]
 
 DEVICE = os.getenv("DEVICE", "cuda")
 
@@ -43,4 +43,3 @@ for size in SIZES:
 
         # Wait before sending next output
         node.next()
-        time.sleep(0.1)

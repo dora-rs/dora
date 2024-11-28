@@ -4,11 +4,11 @@ nodes:
       next: node_2/next
     outputs:
       - latency
-    path: cuda_sender.py
+    path: sender.py
     env:
       DEVICE: cpu
   - id: node_2
-    path: cuda_receiver.py
+    path: receiver.py
     inputs:
       next: node_1/latency
     outputs:
