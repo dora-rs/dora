@@ -1,5 +1,5 @@
 [package]
-name = "dora-chongyoucar"
+name = "dora-kit-car"
 edition = "2021"
 version.workspace = true
 description.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "dora_chongyoucar"
+name = "dora_kit_car"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
 
