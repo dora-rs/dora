@@ -33,3 +33,12 @@ dora run cuda_bench.yml
 
 cat benchmark_data.csv
 ```
+
+## To run the demo code
+
+```bash
+dora up
+dora start demo_bench.yml --detach
+python demo_receiver.py
+dora destroy
+```
