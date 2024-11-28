@@ -358,10 +358,39 @@ impl Daemon {
             })?;
             socket_stream_send(connection, &msg)
                 .await
-                .wrap_err("failed to send watchdog message to dora-coordinator")?;
+                .wrap_err("failed to send log message to dora-coordinator")?;
 
             if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
                 bail!("lost connection to coordinator")
+            }
+        } else {
+            match message.level {
+                LogLevel::Error => {
+                    if let Some(node_id) = message.node_id {
+                        tracing::error!("{}/{} errored:", message.dataflow_id.to_string(), node_id);
+                    }
+                    for line in message.message.lines() {
+                        tracing::error!("   {}", line);
+                    }
+                }
+                LogLevel::Warn => {
+                    if let Some(node_id) = message.node_id {
+                        tracing::warn!("{}/{} warned:", message.dataflow_id.to_string(), node_id);
+                    }
+                    for line in message.message.lines() {
+                        tracing::warn!("    {}", line);
+                    }
+                }
+                LogLevel::Info => {
+                    if let Some(node_id) = message.node_id {
+                        tracing::info!("{}/{} info:", message.dataflow_id.to_string(), node_id);
+                    }
+
+                    for line in message.message.lines() {
+                        tracing::info!("    {}", line);
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -1237,10 +1266,7 @@ impl Daemon {
                 exit_status,
             } => {
                 let node_result = match exit_status {
-                    NodeExitStatus::Success => {
-                        tracing::info!("node {dataflow_id}/{node_id} finished successfully");
-                        Ok(())
-                    }
+                    NodeExitStatus::Success => Ok(()),
                     exit_status => {
                         let dataflow = self.running.get(&dataflow_id);
                         let caused_by_node = dataflow
@@ -1258,8 +1284,8 @@ impl Daemon {
                                 NodeErrorCause::Cascading { caused_by_node }
                             }
                             None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => NodeErrorCause::Other {
-                                stderr: dataflow
+                            None => {
+                                let cause = dataflow
                                     .and_then(|d| d.node_stderr_most_recent.get(&node_id))
                                     .map(|queue| {
                                         let mut s = if queue.is_full() {
@@ -1272,8 +1298,10 @@ impl Daemon {
                                         }
                                         s
                                     })
-                                    .unwrap_or_default(),
-                            },
+                                    .unwrap_or_default();
+
+                                NodeErrorCause::Other { stderr: cause }
+                            }
                         };
                         Err(NodeError {
                             timestamp: self.clock.new_timestamp(),
@@ -1296,7 +1324,7 @@ impl Daemon {
                     file: None,
                     line: None,
                     message: match &node_result {
-                        Ok(()) => "node finished successfully".to_string(),
+                        Ok(()) => format!("{node_id} finished successfully"),
                         Err(err) => format!("{err}"),
                     },
                 })
