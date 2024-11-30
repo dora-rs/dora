@@ -130,9 +130,15 @@ impl DoraNode {
             dynamic: _,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
+        let input_config = run_config.inputs.clone();
 
-        let event_stream =
-            EventStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
+        let event_stream = EventStream::init(
+            dataflow_id,
+            &node_id,
+            &daemon_communication,
+            input_config,
+            clock.clone(),
+        )
                 .wrap_err("failed to init event stream")?;
         let drop_stream =
             DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())

@@ -1,7 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use dora_message::{
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
+    id::DataId,
     node_to_daemon::{DaemonRequest, Timestamped},
     DataflowId,
 };
@@ -17,7 +18,10 @@ use self::{
     thread::{EventItem, EventStreamThreadHandle},
 };
 use crate::daemon_connection::DaemonChannel;
-use dora_core::{config::NodeId, uhlc};
+use dora_core::{
+    config::{Input, NodeId},
+    uhlc,
+};
 use eyre::{eyre, Context};
 
 mod event;
@@ -30,6 +34,8 @@ pub struct EventStream {
     _thread_handle: EventStreamThreadHandle,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    queue: Vec<EventItem>,
+    input_config: BTreeMap<DataId, Input>,
 }
 
 impl EventStream {
@@ -38,6 +44,7 @@ impl EventStream {
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
+        input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
@@ -76,7 +83,14 @@ impl EventStream {
             }
         };
 
-        Self::init_on_channel(dataflow_id, node_id, channel, close_channel, clock)
+        Self::init_on_channel(
+            dataflow_id,
+            node_id,
+            channel,
+            close_channel,
+            input_config,
+            clock,
+        )
     }
 
     pub(crate) fn init_on_channel(
@@ -84,6 +98,7 @@ impl EventStream {
         node_id: &NodeId,
         mut channel: DaemonChannel,
         mut close_channel: DaemonChannel,
+        input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
@@ -105,7 +120,8 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(0);
+        let (tx, rx) = flume::bounded(100_000);
+
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
         Ok(EventStream {
@@ -114,6 +130,8 @@ impl EventStream {
             _thread_handle: thread_handle,
             close_channel,
             clock,
+            queue: vec![],
+            input_config,
         })
     }
 
@@ -128,7 +146,83 @@ impl EventStream {
     }
 
     pub async fn recv_async(&mut self) -> Option<Event> {
-        self.receiver.next().await.map(Self::convert_event_item)
+        loop {
+            if self.queue.is_empty() {
+                if let Some(event) = self.receiver.next().await {
+                    self.queue.push(event);
+                } else {
+                    break;
+                }
+            } else {
+                match select(Delay::new(Duration::from_nanos(1000)), self.receiver.next()).await {
+                    Either::Left((_elapsed, _)) => break,
+                    Either::Right((Some(event), _)) => self.queue.push(event),
+                    Either::Right((None, _)) => break,
+                };
+            }
+        }
+        let event = loop {
+            if !self.queue.is_empty() {
+                let event = self.queue.remove(0);
+                match &event {
+                    EventItem::TimeoutError(_) => break Some(event),
+                    EventItem::FatalError(_) => break Some(event),
+                    EventItem::NodeEvent {
+                        event: node_event,
+                        ack_channel: _,
+                    } => match node_event {
+                        NodeEvent::Stop => break Some(event),
+                        NodeEvent::Reload { operator_id: _ } => break Some(event),
+                        NodeEvent::InputClosed { id: _ } => break Some(event),
+                        NodeEvent::AllInputsClosed => break Some(event),
+                        NodeEvent::Input {
+                            id: current_event_id,
+                            metadata: _,
+                            data: _,
+                        } => {
+                            if self
+                                .queue
+                                .iter()
+                                .filter(|queue_event| {
+                                    if let EventItem::NodeEvent {
+                                        event: node_event,
+                                        ack_channel: _,
+                                    } = queue_event
+                                    {
+                                        if let NodeEvent::Input {
+                                            id,
+                                            data: _,
+                                            metadata: _,
+                                        } = node_event
+                                        {
+                                            id == current_event_id
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                })
+                                .count()
+                                > self
+                                    .input_config
+                                    .get(current_event_id)
+                                    .map(|input| input.queue_size.unwrap_or(1))
+                                    .unwrap_or(1)
+                                    - 1
+                            {
+                                continue;
+                            } else {
+                                break Some(event);
+                            }
+                        }
+                    },
+                }
+            } else {
+                break None;
+            }
+        };
+        event.map(Self::convert_event_item)
     }
 
     pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
