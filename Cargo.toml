@@ -34,6 +34,7 @@ members = [
     "node-hub/dora-rerun",
     "node-hub/terminal-print",
     "node-hub/openai-proxy-server",
+    "node-hub/dora-kit-car",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
