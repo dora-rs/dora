@@ -139,7 +139,7 @@ impl DoraNode {
             input_config,
             clock.clone(),
         )
-                .wrap_err("failed to init event stream")?;
+        .wrap_err("failed to init event stream")?;
         let drop_stream =
             DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init drop stream")?;
