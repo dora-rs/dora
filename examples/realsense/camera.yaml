@@ -6,6 +6,7 @@ nodes:
       tick: dora/timer/millis/20
     outputs:
       - image
+      - depth_image
     env:
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480

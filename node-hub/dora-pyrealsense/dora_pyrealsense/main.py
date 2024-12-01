@@ -16,7 +16,7 @@ def main():
     DEVICE_SERIAL = os.getenv("DEVICE_SERIAL", "")
     image_height = int(os.getenv("IMAGE_HEIGHT", "480"))
     image_width = int(os.getenv("IMAGE_WIDTH", "640"))
-    encoding = os.getenv("ENCODING", "jpeg")
+    encoding = os.getenv("ENCODING", "rgb8")
     ctx = rs.context()
     devices = ctx.query_devices()
     if devices.size() == 0:
@@ -25,14 +25,24 @@ def main():
     # Serial list
     serials = [device.get_info(rs.camera_info.serial_number) for device in devices]
     if DEVICE_SERIAL and (DEVICE_SERIAL in serials):
-        raise ConnectionError(f"Device with serial {DEVICE_SERIAL} not found.")
+        raise ConnectionError(
+            f"Device with serial {DEVICE_SERIAL} not found within: {serials}."
+        )
 
     pipeline = rs.pipeline()
+
     config = rs.config()
     config.enable_device(DEVICE_SERIAL)
-
     config.enable_stream(rs.stream.color, image_width, image_height, rs.format.rgb8, 30)
-    pipeline.start()
+    config.enable_stream(rs.stream.depth, image_width, image_height)
+
+    align_to = rs.stream.color
+    align = rs.align(align_to)
+
+    profile = pipeline.start(config)
+
+    depth_sensor = profile.get_device().first_depth_sensor()
+    depth_scale = depth_sensor.get_depth_scale()
 
     node = Node()
     start_time = time.time()
@@ -52,10 +62,17 @@ def main():
 
             if event_id == "tick":
                 frames = pipeline.wait_for_frames()
-                # 使用线程锁来确保只有一个线程能访问数据流
-                # 获取各种数据流
-                color_frames = frames.get_color_frame()
-                frame = np.asanyarray(color_frames.get_data())
+                aligned_frames = align.process(frames)
+
+                aligned_depth_frame = aligned_frames.get_depth_frame()
+                color_frame = aligned_frames.get_color_frame()
+                if not aligned_depth_frame or not color_frame:
+                    continue
+
+                depth_image = np.asanyarray(aligned_depth_frame.get_data())
+                scaled_depth_image = depth_image * depth_scale
+                frame = np.asanyarray(color_frame.get_data())
+
                 ## Change rgb to bgr
 
                 if FLIP == "VERTICAL":
@@ -92,6 +109,9 @@ def main():
                 storage = pa.array(frame.ravel())
 
                 node.send_output("image", storage, metadata)
+                node.send_output(
+                    "depth_image", pa.array(scaled_depth_image.ravel()), metadata
+                )
 
         elif event_type == "ERROR":
             raise RuntimeError(event["error"])
