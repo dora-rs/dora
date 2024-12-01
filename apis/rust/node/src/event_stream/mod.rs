@@ -185,20 +185,16 @@ impl EventStream {
                                 .iter()
                                 .filter(|queue_event| {
                                     if let EventItem::NodeEvent {
-                                        event: node_event,
+                                        event:
+                                            NodeEvent::Input {
+                                                id,
+                                                data: _,
+                                                metadata: _,
+                                            },
                                         ack_channel: _,
                                     } = queue_event
                                     {
-                                        if let NodeEvent::Input {
-                                            id,
-                                            data: _,
-                                            metadata: _,
-                                        } = node_event
-                                        {
-                                            id == current_event_id
-                                        } else {
-                                            false
-                                        }
+                                        id == current_event_id
                                     } else {
                                         false
                                     }
