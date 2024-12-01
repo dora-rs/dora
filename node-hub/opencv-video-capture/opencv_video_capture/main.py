@@ -128,6 +128,8 @@ def main():
                 # Get the right encoding
                 if encoding == "rgb8":
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                elif encoding == "yuv420":
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV_I420)
                 elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     ret, frame = cv2.imencode("." + encoding, frame)
                     if not ret:
