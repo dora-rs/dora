@@ -12,6 +12,7 @@ use futures::{
     Stream, StreamExt,
 };
 use futures_timer::Delay;
+use scheduler::Scheduler;
 
 use self::{
     event::SharedMemoryData,
@@ -26,6 +27,7 @@ use eyre::{eyre, Context};
 
 mod event;
 pub mod merged;
+mod scheduler;
 mod thread;
 
 pub struct EventStream {
@@ -34,8 +36,7 @@ pub struct EventStream {
     _thread_handle: EventStreamThreadHandle,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
-    queue: Vec<EventItem>,
-    input_config: BTreeMap<DataId, Input>,
+    scheduler: Scheduler,
 }
 
 impl EventStream {
@@ -82,14 +83,19 @@ impl EventStream {
                 })?
             }
         };
+        let queue_size_limit = input_config
+            .iter()
+            .map(|(input, config)| (input.clone(), config.queue_size.unwrap_or(1)))
+            .collect();
+        let scheduler = Scheduler::new(queue_size_limit);
 
         Self::init_on_channel(
             dataflow_id,
             node_id,
             channel,
             close_channel,
-            input_config,
             clock,
+            scheduler,
         )
     }
 
@@ -98,8 +104,8 @@ impl EventStream {
         node_id: &NodeId,
         mut channel: DaemonChannel,
         mut close_channel: DaemonChannel,
-        input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
+        scheduler: Scheduler,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -130,8 +136,7 @@ impl EventStream {
             _thread_handle: thread_handle,
             close_channel,
             clock,
-            queue: vec![],
-            input_config,
+            scheduler,
         })
     }
 
@@ -147,77 +152,21 @@ impl EventStream {
 
     pub async fn recv_async(&mut self) -> Option<Event> {
         loop {
-            if self.queue.is_empty() {
+            if self.scheduler.is_empty() {
                 if let Some(event) = self.receiver.next().await {
-                    self.queue.push(event);
+                    self.scheduler.add_event(event);
                 } else {
                     break;
                 }
             } else {
-                match select(Delay::new(Duration::from_nanos(1000)), self.receiver.next()).await {
+                match select(Delay::new(Duration::from_nanos(100)), self.receiver.next()).await {
                     Either::Left((_elapsed, _)) => break,
-                    Either::Right((Some(event), _)) => self.queue.push(event),
+                    Either::Right((Some(event), _)) => self.scheduler.add_event(event),
                     Either::Right((None, _)) => break,
                 };
             }
         }
-        let event = loop {
-            if !self.queue.is_empty() {
-                let event = self.queue.remove(0);
-                match &event {
-                    EventItem::TimeoutError(_) => break Some(event),
-                    EventItem::FatalError(_) => break Some(event),
-                    EventItem::NodeEvent {
-                        event: node_event,
-                        ack_channel: _,
-                    } => match node_event {
-                        NodeEvent::Stop => break Some(event),
-                        NodeEvent::Reload { operator_id: _ } => break Some(event),
-                        NodeEvent::InputClosed { id: _ } => break Some(event),
-                        NodeEvent::AllInputsClosed => break Some(event),
-                        NodeEvent::Input {
-                            id: current_event_id,
-                            metadata: _,
-                            data: _,
-                        } => {
-                            if self
-                                .queue
-                                .iter()
-                                .filter(|queue_event| {
-                                    if let EventItem::NodeEvent {
-                                        event:
-                                            NodeEvent::Input {
-                                                id,
-                                                data: _,
-                                                metadata: _,
-                                            },
-                                        ack_channel: _,
-                                    } = queue_event
-                                    {
-                                        id == current_event_id
-                                    } else {
-                                        false
-                                    }
-                                })
-                                .count()
-                                > self
-                                    .input_config
-                                    .get(current_event_id)
-                                    .map(|input| input.queue_size.unwrap_or(1))
-                                    .unwrap_or(1)
-                                    - 1
-                            {
-                                continue;
-                            } else {
-                                break Some(event);
-                            }
-                        }
-                    },
-                }
-            } else {
-                break None;
-            }
-        };
+        let event = self.scheduler.next();
         event.map(Self::convert_event_item)
     }
 
