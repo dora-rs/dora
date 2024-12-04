@@ -16,7 +16,7 @@ use futures::{
     Stream, StreamExt,
 };
 use futures_timer::Delay;
-use scheduler::Scheduler;
+use scheduler::{Scheduler, NON_INPUT_EVENT};
 
 use self::{
     event::SharedMemoryData,
@@ -25,7 +25,6 @@ use self::{
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::{Input, NodeId},
-    topics::NON_INPUT_EVENT,
     uhlc,
 };
 use eyre::{eyre, Context};
