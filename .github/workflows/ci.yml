@@ -456,9 +456,9 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: ubuntu-20.04
             target: armv7-unknown-linux-musleabihf
-          - runner: macos-12
+          - runner: macos-13
             target: aarch64-apple-darwin
-          - runner: macos-12
+          - runner: macos-13
             target: x86_64-apple-darwin
       fail-fast: false
     steps:
