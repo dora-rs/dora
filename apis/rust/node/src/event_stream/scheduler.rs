@@ -64,7 +64,7 @@ impl Scheduler {
     }
 
     pub fn next(&mut self) -> Option<EventItem> {
-        // Retreive message from the non input event first that have priority over input messaage.
+        // Retrieve message from the non input event first that have priority over input message.
         if let Some((_size, queue)) = self
             .event_queues
             .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
@@ -74,7 +74,7 @@ impl Scheduler {
             }
         }
 
-        // Process the ID with the oldest timestamp using BTreMap Ordering
+        // Process the ID with the oldest timestamp using BTreeMap Ordering
         for (index, id) in self.last_used.clone().iter().enumerate() {
             if let Some((_size, queue)) = self.event_queues.get_mut(id) {
                 if let Some(event) = queue.pop_front() {
