@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
+use dora_core::topics::NON_INPUT_EVENT;
 use dora_message::{daemon_to_node::NodeEvent, id::DataId};
 
 use super::thread::EventItem;
@@ -42,7 +43,7 @@ impl Scheduler {
                     },
                 ack_channel: _,
             } => id.clone(),
-            _ => DataId::from("non_input_event".to_string()),
+            _ => DataId::from(NON_INPUT_EVENT.to_string()),
         };
 
         // Enforce queue size limit
@@ -54,13 +55,24 @@ impl Scheduler {
         } else {
             self.event_queues
                 .insert(event_id.clone(), VecDeque::from([event]));
-            self.last_used.push_front(event_id.clone());
+            if event_id != DataId::from(NON_INPUT_EVENT.to_string()) {
+                self.last_used.push_front(event_id.clone());
+            }
         }
     }
 
     pub fn next(&mut self) -> Option<EventItem> {
-        // Process the ID with the oldest timestamp using BTreMap Ordering
+        // Retreive message from the non input event first that have priority over input messaage.
+        if let Some(queue) = self
+            .event_queues
+            .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
+        {
+            if let Some(event) = queue.pop_front() {
+                return Some(event);
+            }
+        }
 
+        // Process the ID with the oldest timestamp using BTreMap Ordering
         for (index, id) in self.last_used.clone().iter().enumerate() {
             if let Some(queue) = self.event_queues.get_mut(id) {
                 if let Some(event) = queue.pop_front() {
