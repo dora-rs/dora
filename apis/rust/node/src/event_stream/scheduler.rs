@@ -1,9 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 
-use dora_core::topics::NON_INPUT_EVENT;
 use dora_message::{daemon_to_node::NodeEvent, id::DataId};
 
 use super::thread::EventItem;
+pub const NON_INPUT_EVENT: &str = "dora/non_input_event";
 
 // This scheduler will make sure that there is fairness between
 // inputs.
