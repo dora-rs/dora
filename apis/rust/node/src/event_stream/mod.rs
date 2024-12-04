@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Duration,
+};
 
 use dora_message::{
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
@@ -21,6 +25,7 @@ use self::{
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::{Input, NodeId},
+    topics::NON_INPUT_EVENT,
     uhlc,
 };
 use eyre::{eyre, Context};
@@ -83,10 +88,11 @@ impl EventStream {
                 })?
             }
         };
-        let queue_size_limit = input_config
+        let mut queue_size_limit: HashMap<DataId, usize> = input_config
             .iter()
             .map(|(input, config)| (input.clone(), config.queue_size.unwrap_or(1)))
             .collect();
+        queue_size_limit.insert(DataId::from(NON_INPUT_EVENT.to_string()), 100_000);
         let scheduler = Scheduler::new(queue_size_limit);
 
         Self::init_on_channel(
