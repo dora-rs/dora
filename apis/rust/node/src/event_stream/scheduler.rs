@@ -19,16 +19,21 @@ use super::thread::EventItem;
 #[derive(Debug)]
 pub struct Scheduler {
     last_used: VecDeque<DataId>, // Tracks the last-used event ID
-    event_queues: HashMap<DataId, VecDeque<EventItem>>, // Tracks events per ID
-    queue_limit: HashMap<DataId, usize>, // Maximum size of the queue per ID
+    event_queues: HashMap<DataId, (usize, VecDeque<EventItem>)>, // Tracks events per ID
 }
 
 impl Scheduler {
-    pub fn new(queue_limit: HashMap<DataId, usize>) -> Self {
+    pub fn new(event_queues: HashMap<DataId, (usize, VecDeque<EventItem>)>) -> Self {
+        let topic = VecDeque::from_iter(
+            event_queues
+                .keys()
+                .into_iter()
+                .filter(|t| **t != DataId::from(NON_INPUT_EVENT.to_string()))
+                .cloned(),
+        );
         Self {
-            last_used: VecDeque::new(),
-            event_queues: HashMap::new(),
-            queue_limit: queue_limit,
+            last_used: topic,
+            event_queues,
         }
     }
 
@@ -42,28 +47,25 @@ impl Scheduler {
                         data: _,
                     },
                 ack_channel: _,
-            } => id.clone(),
-            _ => DataId::from(NON_INPUT_EVENT.to_string()),
+            } => id,
+            _ => &DataId::from(NON_INPUT_EVENT.to_string()),
         };
 
         // Enforce queue size limit
-        if let Some(queue) = self.event_queues.get_mut(&event_id) {
-            if &queue.len() >= self.queue_limit.get(&event_id).unwrap_or(&1) {
-                queue.pop_front(); // Remove the oldest event if at limit
+        if let Some((size, queue)) = self.event_queues.get_mut(event_id) {
+            // Remove the oldest event if at limit
+            if &queue.len() >= size {
+                queue.pop_front();
             }
             queue.push_back(event);
         } else {
-            self.event_queues
-                .insert(event_id.clone(), VecDeque::from([event]));
-            if event_id != DataId::from(NON_INPUT_EVENT.to_string()) {
-                self.last_used.push_front(event_id.clone());
-            }
+            unimplemented!("Received an event that was not in the definition event id description.")
         }
     }
 
     pub fn next(&mut self) -> Option<EventItem> {
         // Retreive message from the non input event first that have priority over input messaage.
-        if let Some(queue) = self
+        if let Some((_size, queue)) = self
             .event_queues
             .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
         {
@@ -74,7 +76,7 @@ impl Scheduler {
 
         // Process the ID with the oldest timestamp using BTreMap Ordering
         for (index, id) in self.last_used.clone().iter().enumerate() {
-            if let Some(queue) = self.event_queues.get_mut(id) {
+            if let Some((_size, queue)) = self.event_queues.get_mut(id) {
                 if let Some(event) = queue.pop_front() {
                     // Put last used at last
                     self.last_used.remove(index);
@@ -90,6 +92,6 @@ impl Scheduler {
     pub fn is_empty(&self) -> bool {
         self.event_queues
             .iter()
-            .all(|(_id, queue)| queue.is_empty())
+            .all(|(_id, (_size, queue))| queue.is_empty())
     }
 }
