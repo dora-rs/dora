@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -88,11 +88,22 @@ impl EventStream {
                 })?
             }
         };
-        let mut queue_size_limit: HashMap<DataId, usize> = input_config
+
+        let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
             .iter()
-            .map(|(input, config)| (input.clone(), config.queue_size.unwrap_or(1)))
+            .map(|(input, config)| {
+                (
+                    input.clone(),
+                    (config.queue_size.unwrap_or(1), VecDeque::new()),
+                )
+            })
             .collect();
-        queue_size_limit.insert(DataId::from(NON_INPUT_EVENT.to_string()), 100_000);
+
+        queue_size_limit.insert(
+            DataId::from(NON_INPUT_EVENT.to_string()),
+            (1_000, VecDeque::new()),
+        );
+
         let scheduler = Scheduler::new(queue_size_limit);
 
         Self::init_on_channel(
@@ -132,7 +143,7 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(100_000);
+        let (tx, rx) = flume::bounded(100_000_000);
 
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
@@ -165,7 +176,12 @@ impl EventStream {
                     break;
                 }
             } else {
-                match select(Delay::new(Duration::from_nanos(100)), self.receiver.next()).await {
+                match select(
+                    Delay::new(Duration::from_nanos(10_000)),
+                    self.receiver.next(),
+                )
+                .await
+                {
                     Either::Left((_elapsed, _)) => break,
                     Either::Right((Some(event), _)) => self.scheduler.add_event(event),
                     Either::Right((None, _)) => break,
