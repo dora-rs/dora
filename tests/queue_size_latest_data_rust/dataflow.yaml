@@ -2,7 +2,7 @@ nodes:
   - id: send_data
     path: ../queue_size_latest_data_python/send_data.py
     inputs:
-      tick: dora/timer/millis/1
+      tick: dora/timer/millis/10
     outputs:
       - data
 

@@ -2,7 +2,7 @@ nodes:
   - id: send_data
     path: ./send_data.py
     inputs:
-      tick: dora/timer/millis/20
+      tick: dora/timer/millis/10
     outputs:
       - data
 
