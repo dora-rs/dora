@@ -409,14 +409,14 @@ impl Drop for DoraNode {
                 );
             }
 
-            match self.drop_stream.recv_timeout(Duration::from_secs(10)) {
+            match self.drop_stream.recv_timeout(Duration::from_secs(2)) {
                 Ok(token) => {
                     self.sent_out_shared_memory.remove(&token);
                 }
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     tracing::warn!(
                         "finished_drop_tokens channel closed while still waiting for drop tokens; \
-                        closing {} shared memory regions that might still be used",
+                        closing {} shared memory regions that might not yet been mapped.",
                         self.sent_out_shared_memory.len()
                     );
                     break;
@@ -424,7 +424,7 @@ impl Drop for DoraNode {
                 Err(flume::RecvTimeoutError::Timeout) => {
                     tracing::warn!(
                         "timeout while waiting for drop tokens; \
-                        closing {} shared memory regions that might still be used",
+                        closing {} shared memory regions that might not yet been mapped.",
                         self.sent_out_shared_memory.len()
                     );
                     break;

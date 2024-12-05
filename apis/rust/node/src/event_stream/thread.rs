@@ -237,13 +237,12 @@ fn report_remaining_drop_tokens(
                     drop_tokens.push(token);
                 }
                 Err(flume::RecvTimeoutError::Timeout) => {
-                    let duration = Duration::from_secs(2);
+                    let duration = Duration::from_secs(1);
                     if since.elapsed() > duration {
                         tracing::warn!(
                             "timeout: node finished, but token {token:?} was still not \
                             dropped after {duration:?} -> ignoring it"
                         );
-                        drop_tokens.push(token);
                     } else {
                         still_pending.push((token, rx, since, 0));
                     }
