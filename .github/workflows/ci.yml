@@ -322,27 +322,36 @@ jobs:
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
 
+          cd ..
+
           # Run Python Node Example
 
-          dora build ../examples/python-dataflow/dataflow.yml
-          dora start ../examples/python-dataflow/dataflow.yml --name ci-python --detach
+          dora build examples/python-dataflow/dataflow.yml
+          dora start examples/python-dataflow/dataflow.yml --name ci-python --detach
           sleep 80
           dora stop --name ci-python  --grace-duration 5s
 
           # Run Python Dynamic Node Example
 
-          dora start ../examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
+          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
           opencv-plot --name plot
           sleep 80
           dora stop --name ci-python-dynamic  --grace-duration 5s
 
           # Run Python Operator Example
 
-          dora start ../examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach
+          dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach
           sleep 80
           dora stop --name ci-python-operator  --grace-duration 5s
 
           dora destroy
+
+          # Run Python queue latency test 
+          dora run tests/queue_size_latest_data_python/dataflow.yaml
+
+          # Run Rust queue latency test 
+          dora build tests/queue_size_latest_data_rust/dataflow.yaml
+          dora run tests/queue_size_latest_data_rust/dataflow.yaml
 
       - name: "Test CLI (C)"
         timeout-minutes: 30
