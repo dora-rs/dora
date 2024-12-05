@@ -184,7 +184,6 @@ struct Listener {
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
 }
 
@@ -192,7 +191,6 @@ impl Listener {
     pub(crate) async fn run<C: Connection>(
         mut connection: C,
         daemon_tx: mpsc::Sender<Timestamped<Event>>,
-        queue_sizes: BTreeMap<DataId, usize>,
         hlc: Arc<uhlc::HLC>,
     ) {
         // receive the first message
@@ -233,7 +231,6 @@ impl Listener {
                             daemon_tx,
                             subscribed_events: None,
                             subscribed_drop_events: None,
-                            queue_sizes,
                             queue: VecDeque::new(),
                             clock: hlc.clone(),
                         };

@@ -54,7 +54,7 @@ async fn handle_connection_loop(
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, queue_sizes, clock).await
+    Listener::run(TcpConnection(connection), daemon_tx, clock).await
 }
 
 struct TcpConnection(TcpStream);
