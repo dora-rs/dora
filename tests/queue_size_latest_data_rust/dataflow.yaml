@@ -1,0 +1,15 @@
+nodes:
+  - id: send_data
+    path: ../queue_size_latest_data_python/send_data.py
+    inputs:
+      tick: dora/timer/millis/1
+    outputs:
+      - data
+
+  - id: receive_data_with_sleep
+    path: ../../target/release/receive_data
+    build: cargo build -p receive_data --release
+    inputs:
+      tick:
+        source: send_data/data
+        queue_size: 1
