@@ -2689,6 +2689,7 @@ dependencies = [
 name = "dora-rerun"
 version = "0.3.7"
 dependencies = [
+ "bytemuck",
  "dora-node-api",
  "eyre",
  "k",
