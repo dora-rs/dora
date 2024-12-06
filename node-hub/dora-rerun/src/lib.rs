@@ -253,9 +253,9 @@ use pyo3::{
 
 #[cfg(feature = "python")]
 #[pyfunction]
-fn py_main(_py: Python) -> PyResult<()> {
+fn py_main(_py: Python) -> eyre::Result<()> {
     pyo3::prepare_freethreaded_python();
-    lib_main().map_err(|e| pyo3::exceptions::PyException::new_err(e.to_string()))
+    lib_main()
 }
 
 /// A Python module implemented in Rust.
