@@ -164,12 +164,12 @@ pub fn lib_main() -> Result<()> {
                     .with_colormap(rerun::components::Colormap::Inferno);
 
                 rec.log(
-                    "world/camera",
+                    id.as_str().replace("/depth", ""),
                     &rerun::Pinhole::from_focal_length_and_resolution(&[605., 605.], &[640., 480.]),
                 )?;
 
                 // If we log a pinhole camera model, the depth gets automatically back-projected to 3D
-                rec.log("world/camera/depth", &depth_image)?;
+                rec.log(id.as_str(), &depth_image)?;
             } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {

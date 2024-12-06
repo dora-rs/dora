@@ -43,9 +43,9 @@ def main():
 
     depth_sensor = profile.get_device().first_depth_sensor()
     depth_scale = depth_sensor.get_depth_scale()
-    rgb_profile = profile.get_stream(rs.stream.color)
-    depth_profile = profile.get_stream(rs.stream.depth)
-    rgb_intr = rgb_profile.as_video_stream_profile().get_intrinsics()
+    # rgb_profile = profile.get_stream(rs.stream.color)
+    # depth_profile = profile.get_stream(rs.stream.depth)
+    # rgb_intr = rgb_profile.as_video_stream_profile().get_intrinsics()
     # rgb_intr = depth_profile.get_extrinsics_to(rgb_profile)
     node = Node()
     start_time = time.time()
@@ -110,9 +110,10 @@ def main():
                         continue
 
                 storage = pa.array(frame.ravel())
-                # metadata["resolution"] = [rgb_intr.width, rgb_intr.height]
-                # metadata["focal_length"] = [rgb_intr.fx, rgb_intr.fy]
-                # metadata["principal_point"] = [rgb_intr.ppx, rgb_intr.ppy]
+
+                # metadata["resolution"] = [int(rgb_intr.width), int(rgb_intr.height)]
+                # metadata["focal_length"] = [int(rgb_intr.fx), int(rgb_intr.fy)]
+                # metadata["principal_point"] = [int(rgb_intr.ppx), int(rgb_intr.ppy)]
                 node.send_output("image", storage, metadata)
                 node.send_output(
                     "depth", pa.array(scaled_depth_image.ravel()), metadata

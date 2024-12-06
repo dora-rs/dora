@@ -12,9 +12,9 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: plot
-    build: pip install ../../node-hub/opencv-plot
-    path: opencv-plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
     inputs:
-      image:
-        source: camera/image
-        queue_size: 1
+      image: camera/image
+      world/camera/depth: camera/depth
+        
