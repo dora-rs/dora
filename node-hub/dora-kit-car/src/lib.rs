@@ -80,10 +80,10 @@ use pyo3::{
 
 #[cfg(feature = "python")]
 #[pyfunction]
-fn py_main(_py: Python) -> PyResult<()> {
+fn py_main(_py: Python) -> eyre::Result<()> {
     pyo3::prepare_freethreaded_python();
 
-    lib_main().map_err(|err| pyo3::exceptions::PyException::new_err(err.to_string()))
+    lib_main()
 }
 
 #[cfg(feature = "python")]
