@@ -14,7 +14,7 @@ for event in node:
         event_id = event["id"]
         send_time = event["value"][0].as_py()
 
-        duration = (time.clock_gettime_ns(0) - send_time) / 1_000_000_000
+        duration = (time.perf_counter_ns() - send_time) / 1_000_000_000
         print("Duration: ", duration)
         assert (
             duration < 1.2
