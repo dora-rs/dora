@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.3.8 (2024-12-06)
+
+* Make node hub CI/CD cross platform by @haixuanTao in https://github.com/dora-rs/dora/pull/714
+* Make node hub CI/CD cross architecture by @haixuanTao in https://github.com/dora-rs/dora/pull/716
+* Make list an available type for metadata by @haixuanTao in https://github.com/dora-rs/dora/pull/721
+* Add stdout logging by @haixuanTao in https://github.com/dora-rs/dora/pull/720
+* Add an error when a node fails when using dora run by @haixuanTao in https://github.com/dora-rs/dora/pull/719
+* Add pyarrow cuda zero copy helper by @haixuanTao in https://github.com/dora-rs/dora/pull/722
+* feat: Add Dora-kit car Control in node-hub by @LyonRust in https://github.com/dora-rs/dora/pull/715
+* Add yuv420 encoding to opencv-video-capture by @haixuanTao in https://github.com/dora-rs/dora/pull/725
+* Change macOS CI runner to `macos-13` by @phil-opp in https://github.com/dora-rs/dora/pull/729
+* Add eyre to pyo3 node by @haixuanTao in https://github.com/dora-rs/dora/pull/730
+* Moving queue size and making node flume queue bigger by @haixuanTao in https://github.com/dora-rs/dora/pull/724
+* Make python default for macos by @haixuanTao in https://github.com/dora-rs/dora/pull/731
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.7...v0.3.8
+
 ## v0.3.7 (2024-11-15)
 
 ## What's Changed
