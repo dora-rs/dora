@@ -11,5 +11,5 @@ for event in node:
         break
     else:
         i += 1
-    now = time.clock_gettime_ns(0)
+    now = time.perf_counter_ns()
     node.send_output("data", pa.array([np.uint64(now)]))
