@@ -184,7 +184,6 @@ struct Listener {
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
 }
 
@@ -192,7 +191,6 @@ impl Listener {
     pub(crate) async fn run<C: Connection>(
         mut connection: C,
         daemon_tx: mpsc::Sender<Timestamped<Event>>,
-        queue_sizes: BTreeMap<DataId, usize>,
         hlc: Arc<uhlc::HLC>,
     ) {
         // receive the first message
@@ -233,7 +231,6 @@ impl Listener {
                             daemon_tx,
                             subscribed_events: None,
                             subscribed_drop_events: None,
-                            queue_sizes,
                             queue: VecDeque::new(),
                             clock: hlc.clone(),
                         };
@@ -309,51 +306,6 @@ impl Listener {
             while let Ok(event) = events.try_recv() {
                 self.queue.push_back(Box::new(Some(event)));
             }
-
-            // drop oldest input events to maintain max queue length queue
-            self.drop_oldest_inputs().await?;
-        }
-        Ok(())
-    }
-
-    #[tracing::instrument(skip(self), fields(%self.node_id), level = "trace")]
-    async fn drop_oldest_inputs(&mut self) -> Result<(), eyre::ErrReport> {
-        let mut queue_size_remaining = self.queue_sizes.clone();
-        let mut dropped = 0;
-        let mut drop_tokens = Vec::new();
-
-        // iterate over queued events, newest first
-        for event in self.queue.iter_mut().rev() {
-            let Some(Timestamped {
-                inner: NodeEvent::Input { id, data, .. },
-                ..
-            }) = event.as_mut()
-            else {
-                continue;
-            };
-            match queue_size_remaining.get_mut(id) {
-                Some(0) => {
-                    dropped += 1;
-                    if let Some(drop_token) = data.as_ref().and_then(|d| d.drop_token()) {
-                        drop_tokens.push(drop_token);
-                    }
-                    *event.as_mut() = None;
-                }
-                Some(size_remaining) => {
-                    *size_remaining = size_remaining.saturating_sub(1);
-                }
-                None => {
-                    tracing::warn!("no queue size known for received input `{id}`");
-                }
-            }
-        }
-        self.report_drop_tokens(drop_tokens).await?;
-
-        if dropped > 0 {
-            tracing::debug!(
-                "dropped {dropped} inputs of node `{}` because event queue was too full",
-                self.node_id
-            );
         }
         Ok(())
     }

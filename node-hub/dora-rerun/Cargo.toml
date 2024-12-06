@@ -23,6 +23,7 @@ k = "0.32"
 pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
+    "eyre"
 ], optional = true }
 
 

@@ -1,7 +1,12 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use dora_message::{
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
+    id::DataId,
     node_to_daemon::{DaemonRequest, Timestamped},
     DataflowId,
 };
@@ -11,17 +16,22 @@ use futures::{
     Stream, StreamExt,
 };
 use futures_timer::Delay;
+use scheduler::{Scheduler, NON_INPUT_EVENT};
 
 use self::{
     event::SharedMemoryData,
     thread::{EventItem, EventStreamThreadHandle},
 };
 use crate::daemon_connection::DaemonChannel;
-use dora_core::{config::NodeId, uhlc};
+use dora_core::{
+    config::{Input, NodeId},
+    uhlc,
+};
 use eyre::{eyre, Context};
 
 mod event;
 pub mod merged;
+mod scheduler;
 mod thread;
 
 pub struct EventStream {
@@ -30,6 +40,7 @@ pub struct EventStream {
     _thread_handle: EventStreamThreadHandle,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    scheduler: Scheduler,
 }
 
 impl EventStream {
@@ -38,6 +49,7 @@ impl EventStream {
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunication,
+        input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
@@ -76,7 +88,31 @@ impl EventStream {
             }
         };
 
-        Self::init_on_channel(dataflow_id, node_id, channel, close_channel, clock)
+        let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
+            .iter()
+            .map(|(input, config)| {
+                (
+                    input.clone(),
+                    (config.queue_size.unwrap_or(1), VecDeque::new()),
+                )
+            })
+            .collect();
+
+        queue_size_limit.insert(
+            DataId::from(NON_INPUT_EVENT.to_string()),
+            (1_000, VecDeque::new()),
+        );
+
+        let scheduler = Scheduler::new(queue_size_limit);
+
+        Self::init_on_channel(
+            dataflow_id,
+            node_id,
+            channel,
+            close_channel,
+            clock,
+            scheduler,
+        )
     }
 
     pub(crate) fn init_on_channel(
@@ -85,6 +121,7 @@ impl EventStream {
         mut channel: DaemonChannel,
         mut close_channel: DaemonChannel,
         clock: Arc<uhlc::HLC>,
+        scheduler: Scheduler,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -105,7 +142,8 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(0);
+        let (tx, rx) = flume::bounded(100_000_000);
+
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
         Ok(EventStream {
@@ -114,6 +152,7 @@ impl EventStream {
             _thread_handle: thread_handle,
             close_channel,
             clock,
+            scheduler,
         })
     }
 
@@ -128,7 +167,28 @@ impl EventStream {
     }
 
     pub async fn recv_async(&mut self) -> Option<Event> {
-        self.receiver.next().await.map(Self::convert_event_item)
+        loop {
+            if self.scheduler.is_empty() {
+                if let Some(event) = self.receiver.next().await {
+                    self.scheduler.add_event(event);
+                } else {
+                    break;
+                }
+            } else {
+                match select(
+                    Delay::new(Duration::from_nanos(10_000)),
+                    self.receiver.next(),
+                )
+                .await
+                {
+                    Either::Left((_elapsed, _)) => break,
+                    Either::Right((Some(event), _)) => self.scheduler.add_event(event),
+                    Either::Right((None, _)) => break,
+                };
+            }
+        }
+        let event = self.scheduler.next();
+        event.map(Self::convert_event_item)
     }
 
     pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
