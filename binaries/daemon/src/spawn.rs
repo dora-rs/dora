@@ -116,6 +116,8 @@ pub async fn spawn_node(
                             let python = get_python_path().context("Could not get python path")?;
                             tracing::info!("spawning: {:?} {}", &python, resolved_path.display());
                             let mut cmd = tokio::process::Command::new(&python);
+                            // Force python to always flush stdout/stderr buffer
+                            cmd.arg("-u");
                             cmd.arg(&resolved_path);
                             cmd
                         }
@@ -221,6 +223,8 @@ pub async fn spawn_node(
                     let python = get_python_path()
                         .context("Could not find python path when spawning runtime node")?;
                     let mut command = tokio::process::Command::new(python);
+                    // Force python to always flush stdout/stderr buffer
+                    command.arg("-u");
                     command.args([
                         "-c",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
