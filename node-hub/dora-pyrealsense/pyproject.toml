@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "dora-pyrealsense"
+version = "0.0.1"
+authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+description = "Dora Node for capturing video with Pyrealsense"
+readme = "README.md"
+
+packages = [{ include = "dora_pyrealsense" }]
+
+[tool.poetry.dependencies]
+dora-rs = "^0.3.6"
+numpy = "< 2.0.0"
+opencv-python = ">= 4.1.1"
+pyrealsense2 = "2.54.1.5216"
+
+[tool.poetry.scripts]
+dora-pyrealsense = "dora_pyrealsense.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
