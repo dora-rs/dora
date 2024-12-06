@@ -52,7 +52,7 @@ async fn handle_connection_loop(
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
 ) {
-    Listener::run(UnixConnection(connection), daemon_tx, queue_sizes, clock).await
+    Listener::run(UnixConnection(connection), daemon_tx, clock).await
 }
 
 struct UnixConnection(UnixStream);

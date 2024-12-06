@@ -104,7 +104,7 @@ def main():
                 )
 
         elif event_type == "ERROR":
-            raise RuntimeError(event["error"])
+            print(f"Received dora error: {event['error']}")
 
 
 if __name__ == "__main__":

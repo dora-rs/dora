@@ -39,7 +39,7 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx, queue_sizes, clock).await
+    Listener::run(connection, daemon_tx, clock).await
 }
 
 enum Operation {

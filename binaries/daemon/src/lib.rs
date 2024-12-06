@@ -841,7 +841,7 @@ impl Daemon {
                         let _ = reply_sender.send(DaemonReply::Result(Err(err)));
                     }
                     Ok(dataflow) => {
-                        tracing::debug!("node `{node_id}` is ready");
+                        tracing::info!("node `{node_id}` is ready");
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow

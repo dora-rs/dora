@@ -1,0 +1,14 @@
+nodes:
+  - id: send_data
+    path: ./send_data.py
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - data
+
+  - id: receive_data_with_sleep
+    path: ./receive_data.py
+    inputs:
+      tick:
+        source: send_data/data
+        queue_size: 1

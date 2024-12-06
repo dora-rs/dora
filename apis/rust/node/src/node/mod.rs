@@ -130,10 +130,16 @@ impl DoraNode {
             dynamic: _,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
+        let input_config = run_config.inputs.clone();
 
-        let event_stream =
-            EventStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init event stream")?;
+        let event_stream = EventStream::init(
+            dataflow_id,
+            &node_id,
+            &daemon_communication,
+            input_config,
+            clock.clone(),
+        )
+        .wrap_err("failed to init event stream")?;
         let drop_stream =
             DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init drop stream")?;
@@ -403,14 +409,14 @@ impl Drop for DoraNode {
                 );
             }
 
-            match self.drop_stream.recv_timeout(Duration::from_secs(10)) {
+            match self.drop_stream.recv_timeout(Duration::from_secs(2)) {
                 Ok(token) => {
                     self.sent_out_shared_memory.remove(&token);
                 }
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     tracing::warn!(
                         "finished_drop_tokens channel closed while still waiting for drop tokens; \
-                        closing {} shared memory regions that might still be used",
+                        closing {} shared memory regions that might not yet been mapped.",
                         self.sent_out_shared_memory.len()
                     );
                     break;
@@ -418,7 +424,7 @@ impl Drop for DoraNode {
                 Err(flume::RecvTimeoutError::Timeout) => {
                     tracing::warn!(
                         "timeout while waiting for drop tokens; \
-                        closing {} shared memory regions that might still be used",
+                        closing {} shared memory regions that might not yet been mapped.",
                         self.sent_out_shared_memory.len()
                     );
                     break;

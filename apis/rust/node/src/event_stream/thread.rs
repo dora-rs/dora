@@ -60,7 +60,14 @@ impl Drop for EventStreamThreadHandle {
         if self.handle.is_empty() {
             tracing::trace!("waiting for event stream thread");
         }
-        match self.handle.recv_timeout(Duration::from_secs(20)) {
+
+        // TODO: The event stream duration has been shorten due to
+        // Python Reference Counting not working properly and deleting the node
+        // before deleting event creating a race condition.
+        //
+        // In the future, we hope to fix this issue so that
+        // the event stream can be properly waited for every time.
+        match self.handle.recv_timeout(Duration::from_secs(1)) {
             Ok(Ok(())) => {
                 tracing::trace!("event stream thread finished");
             }
@@ -230,7 +237,7 @@ fn report_remaining_drop_tokens(
                     drop_tokens.push(token);
                 }
                 Err(flume::RecvTimeoutError::Timeout) => {
-                    let duration = Duration::from_secs(30);
+                    let duration = Duration::from_secs(1);
                     if since.elapsed() > duration {
                         tracing::warn!(
                             "timeout: node finished, but token {token:?} was still not \
