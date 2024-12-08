@@ -175,12 +175,7 @@ impl EventStream {
                     break;
                 }
             } else {
-                match select(
-                    Delay::new(Duration::from_nanos(10_000)),
-                    self.receiver.next(),
-                )
-                .await
-                {
+                match select(Delay::new(Duration::from_micros(300)), self.receiver.next()).await {
                     Either::Left((_elapsed, _)) => break,
                     Either::Right((Some(event), _)) => self.scheduler.add_event(event),
                     Either::Right((None, _)) => break,
