@@ -176,7 +176,7 @@ impl EventStream {
                 }
             } else {
                 match select(
-                    Delay::new(Duration::from_nanos(10_000)),
+                    Delay::new(Duration::from_micros(300)),
                     self.receiver.next(),
                 )
                 .await
