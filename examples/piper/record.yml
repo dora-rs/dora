@@ -1,0 +1,114 @@
+nodes:
+  - id: piper_left
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
+    inputs:
+      tick: dora/timer/millis/40
+    outputs:
+      - jointstate
+      - pose
+      - gripper
+    env:
+      CAN_BUS: can_left
+      TEACH_MODE: True
+
+  - id: piper_right
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
+    inputs:
+      tick: dora/timer/millis/40
+    outputs:
+      - jointstate
+      - pose
+      - gripper
+    env:
+      CAN_BUS: can_right
+      TEACH_MODE: True
+
+  - id: camera_left
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
+    inputs:
+      tick: dora/timer/millis/40
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 0
+      ENCODING: jpeg
+
+  - id: camera_center
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
+    inputs:
+      tick: dora/timer/millis/40
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 1
+      ENCODING: jpeg
+
+  - id: camera_right
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
+    inputs:
+      tick: dora/timer/millis/40
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 2
+      ENCODING: jpeg
+
+  - id: rerun
+    path: dora-rerun
+    build: |
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/base_link.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link1.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link2.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link3.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link4.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link5.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link6.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link7.STL
+      proxychains wget -nc https://raw.githubusercontent.com/agilexrobotics/Piper_ros/4f22c61f96b8fb3ef3f937b99b63edb697caadf0/src/piper_description/meshes/link8.STL
+      pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git
+      pip install dora-rerun
+    inputs:
+      jointstate_piper_left: piper_left/jointstate
+      jointstate_piper_right: piper_right/jointstate
+      image_left: camera_left/image
+      image_center: camera_center/image
+      image_right: camera_right/image
+    env:
+      piper_left_urdf: piper_left.urdf
+      piper_right_urdf: piper_right.urdf
+      piper_left_transform: 0 0.2 0
+      piper_right_transform: 0 -0.2 0
+
+  - id: keyboard
+    build: pip install dora-keyboard
+    path: dora-keyboard
+    inputs:
+      tick: dora/timer/millis/1000
+    outputs:
+      - char
+    env:
+      DISPLAY: :0
+
+  - id: recorder
+    path: record.py
+    inputs:
+      /observations/qpos_left:
+        source: piper_left/jointstate
+      /observations/qpos_right:
+        source: piper_right/jointstate
+      /observations/pose_left:
+        source: piper_left/pose
+      /observations/pose_right:
+        source: piper_right/pose
+      /observations/images/cam_left_wrist:
+        source: camera_left/image
+      /observations/images/cam_high:
+        source: camera_center/image
+      /observations/images/cam_right_wrist:
+        source: camera_right/image
+      save: keyboard/char
