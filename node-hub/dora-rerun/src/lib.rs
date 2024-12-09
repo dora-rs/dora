@@ -4,7 +4,7 @@ use std::env::VarError;
 
 use dora_node_api::{
     arrow::{
-        array::{AsArray, Float32Array, StringArray, StructArray, UInt8Array},
+        array::{AsArray, Float32Array, Float64Array, StringArray, StructArray, UInt8Array},
         datatypes::Float32Type,
     },
     DoraNode, Event, Parameter,
@@ -126,6 +126,50 @@ pub fn lib_main() -> Result<()> {
                     rec.log(id.as_str(), &image)
                         .context("could not log image")?;
                 };
+            } else if id.as_str().contains("depth") {
+                let height =
+                    if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
+                        height
+                    } else {
+                        &480
+                    };
+                let width =
+                    if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
+                        width
+                    } else {
+                        &640
+                    };
+                // let focal_length = if let Some(Parameter::ListInt(focals)) =
+                // metadata.parameters.get("focal_length")
+                // {
+                // focals
+                // } else {
+                // &vec![605, 605]
+                // };
+                // let resolutions = if let Some(Parameter::ListInt(resolutions)) =
+                // metadata.parameters.get("resolutions")
+                // {
+                // resolutions
+                // } else {
+                // &vec![640, 480]
+                // };
+                let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
+                let buffer: &[u8] = bytemuck::cast_slice(buffer.values());
+                let image_buffer = ImageBuffer::try_from(buffer.to_vec())
+                    .context("Could not convert buffer to image buffer")?;
+                let image_format =
+                    ImageFormat::depth([*width as _, *height as _], rerun::ChannelDatatype::F64);
+
+                let depth_image = rerun::DepthImage::new(image_buffer, image_format)
+                    .with_colormap(rerun::components::Colormap::Inferno);
+
+                rec.log(
+                    id.as_str().replace("/depth", ""),
+                    &rerun::Pinhole::from_focal_length_and_resolution(&[605., 605.], &[640., 480.]),
+                )?;
+
+                // If we log a pinhole camera model, the depth gets automatically back-projected to 3D
+                rec.log(id.as_str(), &depth_image)?;
             } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {

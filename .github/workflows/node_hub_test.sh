@@ -44,7 +44,7 @@ else
             echo "Running linting and tests for Python project in $dir..."
             pip install .
             poetry run black --check .
-            poetry run pylint --disable=C,R  --ignored-modules=cv2 **/*.py
+            poetry run pylint --disable=C,R  --ignored-modules=cv2,pyrealsense2 **/*.py
             poetry run pytest
             fi
         fi 
