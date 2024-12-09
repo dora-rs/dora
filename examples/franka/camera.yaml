@@ -7,7 +7,6 @@ nodes:
     outputs:
       - image
     env:
-      DEVICE_ID: 0
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
 
