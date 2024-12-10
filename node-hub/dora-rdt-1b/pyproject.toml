@@ -35,6 +35,10 @@ ignore-paths = '^dora_rdt_1b/RoboticsDiffusionTransformer.*$'
 pytest = "^8.3.4"
 pylint = "^3.3.2"
 
+[tool.black]
+extend-exclude = 'dora_rdt_1b/RoboticsDiffusionTransformer'
+
+
 [tool.poetry.scripts]
 dora-rdt-1b = "dora_rdt_1b.main:main"
 

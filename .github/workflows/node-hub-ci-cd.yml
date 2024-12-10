@@ -44,6 +44,7 @@ jobs:
           submodules: true # Make sure to check out the sub-module
 
       - name: Update submodule
+        if: runner.os == 'Linux'
         run: |
           git submodule update --init --recursive
           git submodule update --remote --recursive
