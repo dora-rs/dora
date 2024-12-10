@@ -11,10 +11,9 @@ def test_import_main():
 
     # Check that everything is working, and catch dora Runtime Exception as we're not running in a dora dataflow.
     # with pytest.raises(RuntimeError):
-    pass
     # main()
-    import dora_rdt_1b
-    import dora_rdt_1b.RoboticsDiffusionTransformer
+    import dora_rdt_1b.RoboticsDiffusionTransformer as _
+    import dora_rdt_1b as _
 
 
 def test_download_policy():
@@ -49,7 +48,6 @@ def test_download_vision_model():
 
 def test_download_language_embeddings():
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
     lang_embeddings = torch.load(
         "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/outs/handover_pan.pt",
         map_location=device,
@@ -61,7 +59,7 @@ def test_load_dummy_image():
     device = torch.device("cuda:0")
     dtype = torch.bfloat16  # recommanded
     config_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/configs/base.yaml"  # default config
-    with open(config_path, "r") as fp:
+    with open(config_path, "r", encoding="utf-8") as fp:
         config = yaml.safe_load(fp)
 
     # Load pretrained model (in HF style)
@@ -88,7 +86,7 @@ def test_load_dummy_image():
     # The background image used for padding
     background_color = np.array(
         [int(x * 255) for x in image_processor.image_mean], dtype=np.uint8
-    ).reshape(1, 1, 3)
+    ).reshape((1, 1, 3))
     background_image = (
         np.ones(
             (image_processor.size["height"], image_processor.size["width"], 3),
@@ -154,7 +152,7 @@ def test_dummy_states():
     device = torch.device("cuda:0")
     dtype = torch.bfloat16  # recommanded
     config_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/configs/base.yaml"  # default config
-    with open(config_path, "r") as fp:
+    with open(config_path, "r", encoding="utf-8") as fp:
         config = yaml.safe_load(fp)
 
     # suppose you do not have proprio
@@ -198,7 +196,7 @@ def test_dummy_states():
     pytest.STATE_INDICES = STATE_INDICES
 
 
-def test_dummy_input(request):
+def test_dummy_input():
 
     rdt = pytest.rdt
     lang_embeddings = pytest.lang_embeddings

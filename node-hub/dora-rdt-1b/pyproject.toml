@@ -28,6 +28,13 @@ imgaug = "0.4.0"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
 
+[tool.pylint.MASTER]
+ignore-paths = '^dora_rdt_1b/RoboticsDiffusionTransformer.*$'
+
+[tool.poetry.dev-dependencies]
+pytest = "^8.3.4"
+pylint = "^3.3.2"
+
 [tool.poetry.scripts]
 dora-rdt-1b = "dora_rdt_1b.main:main"
 

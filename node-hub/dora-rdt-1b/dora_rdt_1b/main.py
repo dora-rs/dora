@@ -3,15 +3,7 @@ import yaml
 import torch
 import numpy as np
 from PIL import Image
-from torchvision import transforms
 
-from dora_rdt_1b.RoboticsDiffusionTransformer.configs.state_vec import (
-    STATE_VEC_IDX_MAPPING,
-)
-from dora_rdt_1b.RoboticsDiffusionTransformer.models.multimodal_encoder.siglip_encoder import (
-    SiglipVisionTower,
-)
-from dora_rdt_1b.RoboticsDiffusionTransformer.models.rdt_runner import RDTRunner
 from dora_rdt_1b.RoboticsDiffusionTransformer.configs.state_vec import (
     STATE_VEC_IDX_MAPPING,
 )
@@ -30,6 +22,14 @@ LANGUAGE_EMBEDDING_PATH = os.getenv("LANGUAGE_EMBEDDING", "lang_embed.pt")
 VISION_DEFAULT_PATH = "google/siglip-so400m-patch14-384"
 VISION_MODEL_NAME_OR_PATH = os.getenv("VISION_MODEL_NAME_OR_PATH", VISION_DEFAULT_PATH)
 
+file_path = Path(__file__).parent
+
+config_path = (
+    file_path / "RoboticsDiffusionTransformer/configs/base.yaml"
+)  # default config
+
+with open(config_path, "r", encoding="utf-8") as fp:
+    config = yaml.safe_load(fp)
 
 def get_policy():
     from dora_rdt_1b.RoboticsDiffusionTransformer.models.rdt_runner import RDTRunner
@@ -63,7 +63,6 @@ def get_vision_model():
 
 def get_language_embeddings():
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
 
     lang_embeddings = torch.load(
         LANGUAGE_EMBEDDING_PATH,
@@ -93,14 +92,6 @@ def process_image(rgbs_lst, image_processor, vision_encoder):
     device = torch.device("cuda:0")
     dtype = torch.bfloat16  # recommanded
 
-    file_path = Path(__file__).parent
-
-    config_path = (
-        file_path / "RoboticsDiffusionTransformer/configs/base.yaml"
-    )  # default config
-
-    with open(config_path, "r") as fp:
-        config = yaml.safe_load(fp)
 
     # previous_image_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/img.jpeg"
     # # previous_image = None # if t = 0
@@ -166,13 +157,6 @@ def get_states(proprio):
         STATE_VEC_IDX_MAPPING["right_gripper_open"],
     ]
 
-    file_path = Path(__file__).parent
-
-    config_path = (
-        file_path / "RoboticsDiffusionTransformer/configs/base.yaml"
-    )  # default config
-    with open(config_path, "r") as fp:
-        config = yaml.safe_load(fp)
 
     B, N = 1, 1  # batch size and state history size
     states = torch.zeros(
