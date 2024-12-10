@@ -22,6 +22,11 @@ LANGUAGE_EMBEDDING_PATH = os.getenv("LANGUAGE_EMBEDDING", "lang_embed.pt")
 VISION_DEFAULT_PATH = "google/siglip-so400m-patch14-384"
 VISION_MODEL_NAME_OR_PATH = os.getenv("VISION_MODEL_NAME_OR_PATH", VISION_DEFAULT_PATH)
 
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+DEVICE = os.getenv("DEVICE", DEVICE)
+DEVICE = torch.device(DEVICE)
+DTYPE = torch.float16 if DEVICE != "cpu" else torch.float32
+
 file_path = Path(__file__).parent
 
 config_path = (
@@ -54,9 +59,7 @@ def get_vision_model():
         vision_tower=VISION_MODEL_NAME_OR_PATH,
         args=None,
     )
-    device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommended
-    vision_encoder.to(device, dtype=dtype)
+    vision_encoder.to(DEVICE, dtype=DTYPE)
     vision_encoder.eval()
     image_processor = vision_encoder.image_processor
     return vision_encoder, image_processor
@@ -90,9 +93,6 @@ def expand2square(pil_img, background_color):
 
 
 def process_image(rgbs_lst, image_processor, vision_encoder):
-    device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommended
-
     # previous_image_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/img.jpeg"
     # # previous_image = None # if t = 0
     # previous_image = Image.fromarray(previous_image_path).convert("RGB")  # if t > 0
@@ -129,16 +129,13 @@ def process_image(rgbs_lst, image_processor, vision_encoder):
             ][0]
             image_tensor_list.append(image)
 
-    image_tensor = torch.stack(image_tensor_list, dim=0).to(device, dtype=dtype)
+    image_tensor = torch.stack(image_tensor_list, dim=0).to(DEVICE, dtype=DTYPE)
     # encode images
     image_embeds = vision_encoder(image_tensor).detach()
     return image_embeds.reshape(-1, vision_encoder.hidden_size).unsqueeze(0)
 
 
 def get_states(proprio):
-    device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommended
-
     # suppose you control in 7DOF joint position
     STATE_INDICES = [
         STATE_VEC_IDX_MAPPING["left_arm_joint_0_pos"],
@@ -159,11 +156,11 @@ def get_states(proprio):
 
     B, N = 1, 1  # batch size and state history size
     states = torch.zeros(
-        (B, N, config["model"]["state_token_dim"]), device=device, dtype=dtype
+        (B, N, config["model"]["state_token_dim"]), device=DEVICE, dtype=DTYPE
     )
     # suppose you do not have proprio
     # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
-    proprio = torch.tensor(proprio, device=device, dtype=dtype).reshape(
+    proprio = torch.tensor(proprio, device=DEVICE, dtype=DTYPE).reshape(
         (1, 1, -1)
     )  # B, N = 1, 1  # batch size and state history size
 
@@ -173,12 +170,12 @@ def get_states(proprio):
     states[:, :, STATE_INDICES] = proprio
 
     state_elem_mask = torch.zeros(
-        (1, config["model"]["state_token_dim"]), device=device, dtype=torch.bool
+        (1, config["model"]["state_token_dim"]), device=DEVICE, dtype=torch.bool
     )
 
     state_elem_mask[:, STATE_INDICES] = True
-    states, state_elem_mask = states.to(device, dtype=dtype), state_elem_mask.to(
-        device, dtype=dtype
+    states, state_elem_mask = states.to(DEVICE, dtype=DTYPE), state_elem_mask.to(
+        DEVICE, dtype=DTYPE
     )
     states = states[:, -1:, :]  # only use the last state
     return states, state_elem_mask, STATE_INDICES
@@ -186,7 +183,6 @@ def get_states(proprio):
 
 def main():
 
-    device = torch.device("cuda:0")
     rdt = get_policy()
     lang_embeddings = get_language_embeddings()
     vision_encoder, image_processor = get_vision_model()
@@ -289,13 +285,13 @@ def main():
                     actions = rdt.predict_action(
                         lang_tokens=lang_embeddings,
                         lang_attn_mask=torch.ones(
-                            lang_embeddings.shape[:2], dtype=torch.bool, device=device
+                            lang_embeddings.shape[:2], dtype=torch.bool, device=DEVICE
                         ),
                         img_tokens=image_embeds,
                         state_tokens=states,  # how can I get this?
                         action_mask=state_elem_mask.unsqueeze(1),  # how can I get this?
                         ctrl_freqs=torch.tensor(
-                            [25.0], device=device
+                            [25.0], device=DEVICE
                         ),  # would this default work?
                     )  # (1, chunk_size, 128)
 
