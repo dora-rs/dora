@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dora-qwenvl"
-version = "0.3.7"
+version = "0.3.8"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>",
