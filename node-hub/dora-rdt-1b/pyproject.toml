@@ -1,0 +1,48 @@
+[tool.poetry]
+name = "dora-rdt-1b"
+version = "0.3.8"
+authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+description = "Dora Node for RDT 1B"
+readme = "README.md"
+
+packages = [{ include = "dora_rdt_1b" }]
+
+[tool.poetry.dependencies]
+python = "^3.7"
+dora-rs = "^0.3.6"
+numpy = "< 2.0.0"
+torch = "^2.4.0"
+torchvision = "^0.19"
+transformers = "^4.45"
+qwen-vl-utils = "^0.0.2"
+accelerate = "^0.33"
+opencv-python = ">= 4.1.1"
+modelscope = "^1.18.1"
+packaging = "24.0"
+wandb = "0.17.0"
+diffusers = "0.27.2"
+timm = "1.0.3"
+sentencepiece = "0.2.0"
+h5py = "3.11.0"
+imgaug = "0.4.0"
+huggingface_hub = "0.23.5"
+# flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
+
+
+[tool.pylint.MASTER]
+ignore-paths = '^dora_rdt_1b/RoboticsDiffusionTransformer.*$'
+
+[tool.poetry.dev-dependencies]
+pytest = "^8.3.4"
+pylint = "^3.3.2"
+
+[tool.black]
+extend-exclude = 'dora_rdt_1b/RoboticsDiffusionTransformer'
+
+
+[tool.poetry.scripts]
+dora-rdt-1b = "dora_rdt_1b.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
