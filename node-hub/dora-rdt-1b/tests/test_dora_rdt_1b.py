@@ -22,7 +22,7 @@ def test_download_policy():
     pretrained_model_name_or_path = "robotics-diffusion-transformer/rdt-1b"
     rdt = RDTRunner.from_pretrained(pretrained_model_name_or_path)
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
     rdt.to(device, dtype=dtype)
     rdt.eval()
     pytest.rdt = rdt
@@ -38,7 +38,7 @@ def test_download_vision_model():
         vision_tower="google/siglip-so400m-patch14-384", args=None
     )
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
     vision_encoder.to(device, dtype=dtype)
     vision_encoder.eval()
     image_processor = vision_encoder.image_processor
@@ -57,7 +57,7 @@ def test_download_language_embeddings():
 
 def test_load_dummy_image():
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
     config_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/configs/base.yaml"  # default config
     with open(config_path, "r", encoding="utf-8") as fp:
         config = yaml.safe_load(fp)
@@ -74,7 +74,7 @@ def test_load_dummy_image():
     current_image = Image.open(current_image_path).convert("RGB")
 
     # here I suppose you only have an image from exterior (e.g., 3rd person view) and you don't have any state information
-    # the images shoud arrange in sequence [exterior_image, right_wrist_image, left_wrist_image] * image_history_size (e.g., 2)
+    # the images should arrange in sequence [exterior_image, right_wrist_image, left_wrist_image] * image_history_size (e.g., 2)
     rgbs_lst = [[previous_image, None, None], [current_image, None, None]]
     # if your have an right_wrist_image, then it should be
     # rgbs_lst = [
@@ -150,13 +150,13 @@ def test_load_dummy_image():
 
 def test_dummy_states():
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
     config_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/configs/base.yaml"  # default config
     with open(config_path, "r", encoding="utf-8") as fp:
         config = yaml.safe_load(fp)
 
     # suppose you do not have proprio
-    # it's kind of tricky, I strongly suggest adding proprio as input and futher fine-tuning
+    # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
     B, N = 1, 1  # batch size and state history size
     states = torch.zeros(
         (B, N, config["model"]["state_token_dim"]), device=device, dtype=dtype

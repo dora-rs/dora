@@ -4,7 +4,7 @@ from scipy.spatial.transform import Rotation as R
 
 def convert_quaternion_to_euler(quat):
     """
-    Convert Quarternion (xyzw) to Euler angles (rpy)
+    Convert Quaternion (xyzw) to Euler angles (rpy)
     """
     # Normalize
     quat = quat / np.linalg.norm(quat)
@@ -15,7 +15,7 @@ def convert_quaternion_to_euler(quat):
 
 def convert_euler_to_quaternion(euler):
     """
-    Convert Euler angles (rpy) to Quarternion (xyzw)
+    Convert Euler angles (rpy) to Quaternion (xyzw)
     """
     quat = R.from_euler("xyz", euler).as_quat()
 
