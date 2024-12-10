@@ -38,7 +38,7 @@ def get_policy():
     pretrained_model_name_or_path = ROBOTIC_MODEL_NAME_OR_PATH
     rdt = RDTRunner.from_pretrained(pretrained_model_name_or_path)
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
     rdt.to(device, dtype=dtype)
     rdt.eval()
     return rdt
@@ -55,7 +55,7 @@ def get_vision_model():
         args=None,
     )
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
     vision_encoder.to(device, dtype=dtype)
     vision_encoder.eval()
     image_processor = vision_encoder.image_processor
@@ -91,7 +91,7 @@ def expand2square(pil_img, background_color):
 
 def process_image(rgbs_lst, image_processor, vision_encoder):
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
 
     # previous_image_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/img.jpeg"
     # # previous_image = None # if t = 0
@@ -101,7 +101,7 @@ def process_image(rgbs_lst, image_processor, vision_encoder):
     # current_image = Image.fromarray(current_image_path).convert("RGB")
 
     # here I suppose you only have an image from exterior (e.g., 3rd person view) and you don't have any state information
-    # the images shoud arrange in sequence [exterior_image, right_wrist_image, left_wrist_image] * image_history_size (e.g., 2)
+    # the images should arrange in sequence [exterior_image, right_wrist_image, left_wrist_image] * image_history_size (e.g., 2)
     # rgbs_lst = [[previous_image, None, None], [current_image, None, None]]
     # if your have an right_wrist_image, then it should be
     # rgbs_lst = [
@@ -137,7 +137,7 @@ def process_image(rgbs_lst, image_processor, vision_encoder):
 
 def get_states(proprio):
     device = torch.device("cuda:0")
-    dtype = torch.bfloat16  # recommanded
+    dtype = torch.bfloat16  # recommended
 
     # suppose you control in 7DOF joint position
     STATE_INDICES = [
@@ -162,7 +162,7 @@ def get_states(proprio):
         (B, N, config["model"]["state_token_dim"]), device=device, dtype=dtype
     )
     # suppose you do not have proprio
-    # it's kind of tricky, I strongly suggest adding proprio as input and futher fine-tuning
+    # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
     proprio = torch.tensor(proprio, device=device, dtype=dtype).reshape(
         (1, 1, -1)
     )  # B, N = 1, 1  # batch size and state history size
