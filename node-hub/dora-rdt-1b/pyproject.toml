@@ -25,6 +25,7 @@ timm = "1.0.3"
 sentencepiece = "0.2.0"
 h5py = "3.11.0"
 imgaug = "0.4.0"
+huggingface_hub = "0.23.5"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
 

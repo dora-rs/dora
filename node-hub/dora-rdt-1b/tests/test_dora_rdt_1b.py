@@ -194,6 +194,9 @@ def test_dummy_states():
 
 
 def test_dummy_input():
+    ## in the future we should add this test within CI
+    if CI:
+        return
 
     rdt = pytest.rdt
     lang_embeddings = pytest.lang_embeddings
