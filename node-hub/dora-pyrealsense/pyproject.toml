@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dora-pyrealsense"
-version = "0.0.1"
+version = "0.3.8"
 authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
 description = "Dora Node for capturing video with Pyrealsense"
 readme = "README.md"
