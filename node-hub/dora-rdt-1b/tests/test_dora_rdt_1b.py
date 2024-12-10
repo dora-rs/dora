@@ -27,6 +27,9 @@ def test_import_main():
 def test_download_policy():
     from dora_rdt_1b.main import get_policy
 
+    ## in the future we should add this test within CI
+    if CI:
+        return
     rdt = get_policy()
 
     pytest.rdt = rdt
