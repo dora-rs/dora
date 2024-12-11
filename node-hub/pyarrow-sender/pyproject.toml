@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pyarrow-sender"
-version = "0.3.8"
+version = "0.3.8-rc0"
 authors = [
     "Haixuan Xavier Tao <tao.xavier@outlook.com>",
     "Enzo Le Van <dev@enzo-le-van.fr>",

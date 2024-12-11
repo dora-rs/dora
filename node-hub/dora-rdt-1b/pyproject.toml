@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dora-rdt-1b"
-version = "0.3.8"
+version = "0.3.8-rc0"
 authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
 description = "Dora Node for RDT 1B"
 readme = "README.md"
