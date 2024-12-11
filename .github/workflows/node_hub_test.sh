@@ -44,7 +44,7 @@ else
             echo "Running linting and tests for Python project in $dir..."
             pip install .
             ruff check .
-            poetry run pytest
+            pytest
             fi
         fi 
     fi 
