@@ -11,7 +11,10 @@ packages = [{ include = "dora_piper" }]
 dora-rs = "^0.3.6"
 python = "^3.7"
 piper_sdk = "^0.0.8"
+numpy = "< 2.0.0"
 
+[tool.poetry.dev-dependencies]
+pytest = "^8.3.4"
 
 [tool.poetry.scripts]
 dora-piper = "dora_piper.main:main"
