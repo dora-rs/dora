@@ -43,9 +43,9 @@ else
             if [ -f "$dir/pyproject.toml" ]; then
             echo "Running linting and tests for Python project in $dir..."
             pip install .
-            poetry run black --check .
-            poetry run pylint --disable=C,R  --ignored-modules=cv2,pyrealsense2 **/*.py
-            poetry run pytest
+            black --check .
+            pylint --disable=C,R  --ignored-modules=cv2,pyrealsense2 **/*.py
+            pytest
             fi
         fi 
     fi 
