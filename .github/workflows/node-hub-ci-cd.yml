@@ -81,12 +81,13 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Set up Poetry
+      - name: Set up UV and poetry
         if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
+          curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          pip install ruff pytest
+          uv pip install ruff pytest
 
       - name: Set up Rust
         if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
@@ -99,6 +100,7 @@ jobs:
         ## Run Linting and testing only on Mac for release workflows.
         if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
         run: |
+          alias pip="uv pip"
           chmod +x ../../.github/workflows/node_hub_test.sh
           ../../.github/workflows/node_hub_test.sh
 
