@@ -39,7 +39,16 @@ jobs:
     steps:
       - name: Checkout repository
         if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+        with:
+          submodules: true # Make sure to check out the sub-module
+
+      - name: Update submodule
+        if: runner.os == 'Linux'
+        run: |
+          git submodule update --init --recursive
+          git submodule update --remote --recursive
+
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         if: runner.os == 'Linux'

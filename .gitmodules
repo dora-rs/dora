@@ -1,0 +1,3 @@
+[submodule "node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer"]
+	path = node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer
+	url = https://github.com/thu-ml/RoboticsDiffusionTransformer

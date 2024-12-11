@@ -1,0 +1,120 @@
+nodes:
+  - id: piper_left
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
+    inputs:
+      tick: dora/timer/millis/100
+      joint_action: post_process_rdt_1b/jointstate_left
+    outputs:
+      - jointstate
+      - pose
+      - gripper
+    env:
+      CAN_BUS: can_left
+
+  - id: piper_right
+    build: pip install -e ../../node-hub/dora-piper
+    path: dora-piper
+    inputs:
+      tick: dora/timer/millis/100
+      joint_action: post_process_rdt_1b/jointstate_right
+    outputs:
+      - jointstate
+      - pose
+      - gripper
+    env:
+      CAN_BUS: can_right
+
+  - id: camera_left
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 0
+      ENCODING: jpeg
+
+  - id: camera_center
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 1
+      ENCODING: jpeg
+
+  - id: camera_right
+    build: pip install -e ../../node-hub/dora-pyorbbecksdk
+    path: dora-pyorbbecksdk
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      DEVICE_INDEX: 2
+      ENCODING: jpeg
+      # import opencv as cv
+      # [cv2.VideoCapture(i) for i in range(12)]
+
+  - id: rerun
+    path: dora-rerun
+    inputs:
+      jointstate_piper_left: piper_left/jointstate
+      jointstate_piper_right: piper_right/jointstate
+      jointstate_piper_left_pred: post_process_rdt_1b/jointstate_left
+      jointstate_piper_right_pred: post_process_rdt_1b/jointstate_right
+      series_piper_left: piper_left/jointstate
+      series_piper_right: piper_right/jointstate
+      series_piper_left_pred: post_process_rdt_1b/jointstate_left
+      series_piper_right_pred: post_process_rdt_1b/jointstate_right
+      image_left: camera_left/image
+      image_center: camera_center/image
+      image_right: camera_right/image
+    env:
+      piper_left_urdf: piper_left.urdf
+      piper_right_urdf: piper_right.urdf
+      piper_left_transform: 0 0.2 0
+      piper_right_transform: 0 -0.2 0
+      piper_left_pred_urdf: piper_left_pred.urdf
+      piper_right_pred_urdf: piper_right_pred.urdf
+      piper_left_pred_transform: 0 0.2 0
+      piper_right_pred_transform: 0 -0.2 0
+
+  - id: rdt_1b
+    path: dora-rdt-1b
+    inputs:
+      jointstate_left:
+        source: piper_left/jointstate
+        queue_size: 1
+      jointstate_right:
+        source: piper_right/jointstate
+        queue_size: 1
+      image_left:
+        source: camera_left/image
+        queue_size: 1
+      image_center:
+        source: camera_center/image
+        queue_size: 1
+      image_right:
+        source: camera_right/image
+        queue_size: 1
+      tick:
+        source: dora/timer/secs/2
+        queue_size: 1
+    outputs:
+      - action
+    env:
+      ROBOTIC_MODEL_NAME_OR_PATH: checkpoints/checkpoint-4400
+      LANGUAGE_EMBEDDING_PATH: lang_embed.pt
+
+  - id: post_process_rdt_1b
+    path: post_process_action.py
+    inputs:
+      action: rdt_1b/action
+    outputs:
+      - jointstate_left
+      - jointstate_right
