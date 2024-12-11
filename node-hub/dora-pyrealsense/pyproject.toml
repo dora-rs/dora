@@ -11,7 +11,13 @@ packages = [{ include = "dora_pyrealsense" }]
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
 opencv-python = ">= 4.1.1"
-pyrealsense2 = "2.54.1.5216"
+python = "^3.7"
+pyrealsense2 = [
+    { version = "2.54.1.5216", platform = "linux" },
+    { version = "2.54.1.5216", platform = "windows" },
+]
+pyrealsense2-macosx = { version = "2.54.2", platform = "darwin" }
+
 
 [tool.poetry.scripts]
 dora-pyrealsense = "dora_pyrealsense.main:main"
