@@ -6,6 +6,7 @@ build-backend = "maturin"
 name = "dora-rs-cli"
 
 scripts = { "dora" = "dora_cli:py_main" }
+dependencies = ['dora-rs']
 
 
 [tool.maturin]
