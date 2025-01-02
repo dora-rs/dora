@@ -25,6 +25,7 @@ jobs:
   linux:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - runner: ubuntu-22.04
@@ -58,7 +59,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --zig -i 3.8
+          args: --release --out dist
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
@@ -71,6 +72,7 @@ jobs:
   musllinux:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - runner: ubuntu-22.04
@@ -93,10 +95,11 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -i 3.8
+          args: --release --out dist
           sccache: "true"
           manylinux: musllinux_1_2
           working-directory: ${{ matrix.repository.path }}
+
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
@@ -107,6 +110,7 @@ jobs:
   musleabi:
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: false
       matrix:
         platform:
           [
@@ -135,7 +139,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           manylinux: auto
           container: off
-          args: --release -o dist -i 3.8
+          args: --release -o dist
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
@@ -147,6 +151,7 @@ jobs:
   windows:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - runner: windows-latest
@@ -179,6 +184,7 @@ jobs:
   macos:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - runner: macos-13
@@ -200,7 +206,6 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -i 3.8
-          sccache: "true"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
@@ -212,6 +217,7 @@ jobs:
   sdist:
     runs-on: ubuntu-22.04
     strategy:
+      fail-fast: false
       matrix:
         repository:
           - path: apis/python/node
@@ -239,6 +245,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
     needs: [linux, musllinux, musleabi, windows, macos, sdist]
     strategy:
+      fail-fast: false
       matrix:
         repository:
           - path: apis/python/node
