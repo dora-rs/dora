@@ -307,5 +307,6 @@ fn py_main(_py: Python) -> eyre::Result<()> {
 #[pymodule]
 fn dora_rerun(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_main, &m)?)?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
