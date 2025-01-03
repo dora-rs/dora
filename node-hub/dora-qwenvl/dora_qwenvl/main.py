@@ -186,7 +186,7 @@ def main():
                 )
 
         elif event_type == "ERROR":
-            raise RuntimeError(event["error"])
+            print("Event Error:" + event["error"])
 
 
 if __name__ == "__main__":
