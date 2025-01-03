@@ -72,29 +72,41 @@ fn collect_dora_nodes(
 
 fn visualize_node(node: &ResolvedNode, flowchart: &mut String) {
     let node_id = &node.id;
+    let description = if let Some(desc) = &node.description {
+        format!("<hr/>*{desc}*")
+    } else {
+        "".to_string()
+    };
+
     match &node.kind {
-        CoreNodeKind::Custom(node) => visualize_custom_node(node_id, node, flowchart),
+        CoreNodeKind::Custom(node) => visualize_custom_node(node_id, description, node, flowchart),
         CoreNodeKind::Runtime(RuntimeNode { operators, .. }) => {
-            visualize_runtime_node(node_id, operators, flowchart)
+            visualize_runtime_node(node_id, description, operators, flowchart)
         }
     }
 }
 
-fn visualize_custom_node(node_id: &NodeId, node: &CustomNode, flowchart: &mut String) {
+fn visualize_custom_node(
+    node_id: &NodeId,
+    description: String,
+    node: &CustomNode,
+    flowchart: &mut String,
+) {
     if node.run_config.inputs.is_empty() {
         // source node
-        writeln!(flowchart, "  {node_id}[\\{node_id}/]").unwrap();
+        writeln!(flowchart, "  {node_id}[\\**{node_id}**{description}/]").unwrap();
     } else if node.run_config.outputs.is_empty() {
         // sink node
-        writeln!(flowchart, "  {node_id}[/{node_id}\\]").unwrap();
+        writeln!(flowchart, "  {node_id}[/**{node_id}**{description}\\]").unwrap();
     } else {
         // normal node
-        writeln!(flowchart, "  {node_id}").unwrap();
+        writeln!(flowchart, "  {node_id}[**{node_id}**{description}]").unwrap();
     }
 }
 
 fn visualize_runtime_node(
     node_id: &NodeId,
+    _description: String,
     operators: &[OperatorDefinition],
     flowchart: &mut String,
 ) {
