@@ -2,6 +2,8 @@ nodes:
   - id: dora-microphone
     build: pip install -e ../../node-hub/dora-microphone
     path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
     outputs:
       - audio
 

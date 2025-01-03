@@ -16,6 +16,8 @@ def main():
     start_recording_time = tm.time()
     node = Node()
 
+    always_none = node.next(timeout=0.001) is None
+
     # pylint: disable=unused-argument
     def callback(indata, frames, time, status):
         nonlocal buffer, node, start_recording_time
@@ -32,5 +34,10 @@ def main():
     with sd.InputStream(
         callback=callback, dtype=np.int16, channels=1, samplerate=SAMPLE_RATE
     ):
-        while True:
-            sd.sleep(int(100 * 1000))
+        event_stream_is_none = False
+        while not event_stream_is_none:
+            if not always_none:
+                event = node.next()
+                event_stream_is_none = event is None
+            else:
+                sd.sleep(int(1000))
