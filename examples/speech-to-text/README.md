@@ -1,4 +1,4 @@
-# Dora echo example
+# Dora Speech to Text example
 
 Make sure to have, dora, pip and cargo installed.
 
