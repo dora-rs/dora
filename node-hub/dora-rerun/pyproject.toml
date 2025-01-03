@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "dora-rerun"
 dynamic = ["version"]
 dependencies = [
-    'rerun_sdk==0.19.1',
+    'rerun_sdk==0.21.0',
     # "rerun-loader-urdf @ git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git",
 ]
 
