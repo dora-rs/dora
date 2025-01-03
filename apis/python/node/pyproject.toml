@@ -4,6 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dora-rs"
+dynamic = ["version"]
 # Install pyarrow at the same time of dora-rs
 dependencies = ['pyarrow']
 
