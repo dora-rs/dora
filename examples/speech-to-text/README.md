@@ -3,10 +3,8 @@
 Make sure to have, dora, pip and cargo installed.
 
 ```bash
-dora up
 dora build dataflow.yml
-dora start dataflow.yml
+dora run dataflow.yml
 
-# In another terminal
-terminal-print
+# Wait for the whisper model to download which can takes a bit of time.
 ```
