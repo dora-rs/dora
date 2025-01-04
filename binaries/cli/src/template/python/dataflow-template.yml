@@ -1,19 +1,20 @@
 nodes:
   - id: talker_1
-    path: talker_1/talker_1.py
+    path: talker-1/talker_1/main.py
     inputs:
       tick: dora/timer/millis/100
     outputs:
       - speech
+
   - id: talker_2
-    path: talker_2/talker_2.py
+    path: talker-2/talker_2/main.py
     inputs:
       tick: dora/timer/secs/2
     outputs:
       - speech
 
   - id: listener_1
-    path: listener_1/listener_1.py
+    path: listener-1/listener_1/main.py
     inputs:
       speech-1: talker_1/speech
       speech-2: talker_2/speech
