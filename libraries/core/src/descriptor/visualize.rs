@@ -94,13 +94,13 @@ fn visualize_custom_node(
 ) {
     if node.run_config.inputs.is_empty() {
         // source node
-        writeln!(flowchart, "  {node_id}[\\**{node_id}**{description}/]").unwrap();
+        writeln!(flowchart, "  {node_id}[\\\"**{node_id}**{description}\"/]").unwrap();
     } else if node.run_config.outputs.is_empty() {
         // sink node
-        writeln!(flowchart, "  {node_id}[/**{node_id}**{description}\\]").unwrap();
+        writeln!(flowchart, "  {node_id}[/\"**{node_id}**{description}\"\\]").unwrap();
     } else {
         // normal node
-        writeln!(flowchart, "  {node_id}[**{node_id}**{description}]").unwrap();
+        writeln!(flowchart, "  {node_id}[\"**{node_id}**{description}\"]").unwrap();
     }
 }
 
