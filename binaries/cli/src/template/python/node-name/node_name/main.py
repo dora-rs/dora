@@ -1,7 +1,5 @@
-import os
 from dora import Node
-
-RUNNER_CI = True if os.getenv("CI") == "true" else False
+import pyarrow as pa
 
 
 def main():
@@ -9,12 +7,19 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-            print(
-                f"""Node received:
-            id: {event["id"]},
-            value: {event["value"]},
-            metadata: {event["metadata"]}"""
-            )
+            if event["id"] == "TICK":
+                print(
+                    f"""Node received:
+                id: {event["id"]},
+                value: {event["value"]},
+                metadata: {event["metadata"]}"""
+                )
+
+            else:
+                # Warning: Make sure to add the output event_id within the dataflow.
+                node.send_output(
+                    output_id="event_id", data=pa.array([1, 2, 3]), metadata={}
+                )
 
 
 if __name__ == "__main__":
