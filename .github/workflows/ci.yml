@@ -310,11 +310,18 @@ jobs:
             mv .venv/Scripts .venv/bin    # venv is placed under `Scripts` on Windows
           fi
           source .venv/bin/activate
-          pip3 install maturin
+          pip3 install maturin black pylint pytest
           maturin build -m apis/python/node/Cargo.toml
           pip3 install target/wheels/*
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
+
+          # Check Compliancy
+          black . --check
+          pylint --disable=C,R  --ignored-modules=cv2,pyrealsense2 **/*.py
+          pip install -e ./*/
+          pytest
+
           dora up
           dora list
           dora build dataflow.yml
