@@ -78,7 +78,7 @@ fn create_custom_node(
     // tests/tests_node_name.py
     let node_path = root
         .join("tests")
-        .join(format!("tests_{}.py", name.replace(" ", "_")));
+        .join(format!("test_{}.py", name.replace(" ", "_")));
     let file = replace_space(_TEST_PY, &name);
     fs::write(&node_path, file)
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
