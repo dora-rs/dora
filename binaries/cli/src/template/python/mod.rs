@@ -23,7 +23,7 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
     } = args;
 
     match kind {
-        crate::Kind::CustomNode => create_custom_node(name, path, MAIN_PY),
+        crate::Kind::Node => create_custom_node(name, path, MAIN_PY),
         crate::Kind::Dataflow => create_dataflow(name, path),
     }
 }
