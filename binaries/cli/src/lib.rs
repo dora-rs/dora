@@ -735,5 +735,6 @@ fn py_main(_py: Python) -> PyResult<()> {
 #[pymodule]
 fn dora_cli(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_main, &m)?)?;
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
