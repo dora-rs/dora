@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dora-kit-car"
-version = "0.3.8"
+dynamic = ["version"]
 authors = [{ name = "Leon", email = "echo_ai@foxmail.com" }]
 description = "Dora Node for dora kit car"
 readme = "README.md"
