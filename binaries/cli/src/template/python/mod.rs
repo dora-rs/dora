@@ -85,8 +85,18 @@ fn create_custom_node(
 
     println!(
         "Created new Python node `{name}` at {}",
-        Path::new(".").join(root).display()
+        Path::new(".").join(&root).display()
     );
+    println!(
+        "   pip install -e {} # Install",
+        Path::new(".").join(&root).display()
+    );
+    println!("   black {} # Format", Path::new(".").join(&root).display());
+    println!(
+        "   pylint  --disable=C,R {} # Lint",
+        Path::new(".").join(&root).display()
+    );
+    println!("   pytest {} # Test", Path::new(".").join(&root).display());
 
     Ok(())
 }

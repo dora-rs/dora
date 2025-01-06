@@ -318,7 +318,7 @@ jobs:
 
           # Check Compliancy
           black . --check
-          pylint --disable=C,R  --ignored-modules=cv2,pyrealsense2 **/*.py
+          pylint --disable=C,R **/*.py
           pip install -e ./*/
           pytest
 
