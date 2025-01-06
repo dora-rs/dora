@@ -41,7 +41,9 @@ class TemporalFilter:
         if self.previous_frame is None:
             result = frame
         else:
-            result = cv2.addWeighted(frame, self.alpha, self.previous_frame, 1 - self.alpha, 0)
+            result = cv2.addWeighted(
+                frame, self.alpha, self.previous_frame, 1 - self.alpha, 0
+            )
         self.previous_frame = result
         return result
 
@@ -122,8 +124,8 @@ from dora import Node
 import pyarrow as pa
 
 ESC_KEY = 27
-MIN_DEPTH = 10  # 10mm
-MAX_DEPTH = 15000  # 15000mm
+MIN_DEPTH = 10  # 10mm, 0.01m
+MAX_DEPTH = 15000  # 15000mm, 15m
 
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
 
@@ -150,7 +152,7 @@ def main():
         depth_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
             640, 480, OBFormat.Y16, 30
         )
-    except Exception as e:
+    except OBError as e:
         print(e)
         depth_profile = profile_list.get_default_video_stream_profile()
         print("depth profile: ", depth_profile)
@@ -182,22 +184,24 @@ def main():
                 continue
             width = depth_frame.get_width()
             height = depth_frame.get_height()
-            scale = depth_frame.get_depth_scale()
+            # scale = depth_frame.get_depth_scale()
             depth_data = np.frombuffer(depth_frame.get_data(), dtype=np.uint16)
             depth_data = depth_data.reshape((height, width))
-            depth_data = depth_data.astype(np.float32) * scale
-            depth_data = np.where((depth_data > MIN_DEPTH) & (depth_data < MAX_DEPTH), depth_data, 0)
-            depth_data = depth_data.astype(np.uint16)
+            depth_data = np.where(
+                (depth_data > MIN_DEPTH) & (depth_data < MAX_DEPTH), depth_data, 0
+            )
             depth_data = temporal_filter.process(depth_data)
             # Send Depth data
-            storage = pa.array(depth_data.ravel())
-            node.send_output("depth_data", storage)
+            # storage = pa.array(depth_data.ravel())
+            # node.send_output("depth", storage)
             # covert to Image
-            depth_image = cv2.normalize(depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            depth_image = cv2.normalize(
+                depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
+            )
             depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
             ret, frame = cv2.imencode("." + "jpeg", depth_image)
             if ret:
-                node.send_output("depth_image", pa.array(frame), {"encoding": "jpeg"})
+                node.send_output("depth", pa.array(frame), {"encoding": "jpeg"})
         except KeyboardInterrupt:
             break
     pipeline.stop()
