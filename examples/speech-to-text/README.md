@@ -3,8 +3,8 @@
 Make sure to have, dora, pip and cargo installed.
 
 ```bash
-dora build whisper.yml
-dora run whisper.yml
+dora build https://raw.githubusercontent.com/dora-rs/dora/main/examples/speech-to-text/whisper.yml
+dora run https://raw.githubusercontent.com/dora-rs/dora/main/examples/speech-to-text/whisper.yml
 
 # Wait for the whisper model to download which can takes a bit of time.
 ```

@@ -17,8 +17,8 @@ nodes:
       - audio
 
   - id: dora-whisper
-    build: pip install dora-whisper
-    path: dora-whisper
+    build: pip install dora-distil-whisper
+    path: dora-distil-whisper
     inputs:
       input: dora-vad/audio
     outputs:
