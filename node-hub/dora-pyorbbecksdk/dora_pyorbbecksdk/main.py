@@ -124,8 +124,8 @@ from dora import Node
 import pyarrow as pa
 
 ESC_KEY = 27
-MIN_DEPTH = 10  # 10mm, 0.01m
-MAX_DEPTH = 15000  # 15000mm, 15m
+MIN_DEPTH_METERS = 0.01
+MAX_DEPTH_METERS = 15.0
 
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
 
@@ -174,6 +174,7 @@ def main():
             if color_image is None:
                 print("failed to convert frame to image")
                 continue
+            # Send Color Image
             ret, frame = cv2.imencode("." + "jpeg", color_image)
             if ret:
                 node.send_output("image", pa.array(frame), {"encoding": "jpeg"})
@@ -184,24 +185,29 @@ def main():
                 continue
             width = depth_frame.get_width()
             height = depth_frame.get_height()
-            # scale = depth_frame.get_depth_scale()
+            scale = depth_frame.get_depth_scale()
             depth_data = np.frombuffer(depth_frame.get_data(), dtype=np.uint16)
             depth_data = depth_data.reshape((height, width))
+            depth_data = depth_data.astype(np.float32) * scale * 0.001
             depth_data = np.where(
-                (depth_data > MIN_DEPTH) & (depth_data < MAX_DEPTH), depth_data, 0
+                (depth_data > MIN_DEPTH_METERS) & (depth_data < MAX_DEPTH_METERS),
+                depth_data,
+                0,
             )
             depth_data = temporal_filter.process(depth_data)
             # Send Depth data
-            # storage = pa.array(depth_data.ravel())
-            # node.send_output("depth", storage)
-            # covert to Image
+            storage = pa.array(depth_data.ravel())
+            node.send_output("depth", storage)
+            # Covert to Image
             depth_image = cv2.normalize(
                 depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
             )
+            # Send Depth Image
             depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
             ret, frame = cv2.imencode("." + "jpeg", depth_image)
             if ret:
-                node.send_output("depth", pa.array(frame), {"encoding": "jpeg"})
+                node.send_output("image_depth", pa.array(frame), {"encoding": "jpeg"})
+
         except KeyboardInterrupt:
             break
     pipeline.stop()
