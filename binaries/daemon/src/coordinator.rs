@@ -9,7 +9,10 @@ use dora_message::{
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
 };
 use eyre::{eyre, Context};
+use futures::future;
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
+use tokio::signal;
+use tokio::sync::broadcast;
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
@@ -32,20 +35,35 @@ pub async fn register(
     listen_port: u16,
     clock: &HLC,
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
+    let (ctrl_c_tx, mut ctrl_c_rx) = broadcast::channel(1);
+
+    tokio::spawn(async move {
+        signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+        warn!("Ctrl+C received. Exiting...");
+        ctrl_c_tx.send(()).expect("Failed to send Ctrl+C signal");
+    });
+
     let mut stream = loop {
-        match TcpStream::connect(addr)
-            .await
-            .wrap_err("failed to connect to dora-coordinator")
-        {
-            Err(err) => {
-                warn!("Could not connect to: {addr}, with error: {err}. Retring in {DAEMON_COORDINATOR_RETRY_INTERVAL:#?}..");
-                sleep(DAEMON_COORDINATOR_RETRY_INTERVAL).await;
+        tokio::select! {
+            _ = ctrl_c_rx.recv() => {
+                // Quick and dirty hack: return a dummy stream to trigger a "daemon context error" (OS error 111).
+                break TcpStream::connect("0.0.0.0:0000").await?;
             }
-            Ok(stream) => {
-                break stream;
+
+            result = TcpStream::connect(addr) => {
+                match result.wrap_err("failed to connect to dora-coordinator") {
+                    Err(err) => {
+                        warn!("Could not connect to: {addr}, with error: {err}. Retrying in {DAEMON_COORDINATOR_RETRY_INTERVAL:?}..");
+                        sleep(DAEMON_COORDINATOR_RETRY_INTERVAL).await;
+                    }
+                    Ok(stream) => {
+                        break stream;
+                    }
+                };
             }
-        };
+        }
     };
+
     stream
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
