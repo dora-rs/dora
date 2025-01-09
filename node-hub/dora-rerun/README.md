@@ -7,25 +7,27 @@ This nodes is still experimental and format for passing Images, Bounding boxes, 
 ## Getting Started
 
 ```bash
-cargo install --force rerun-cli@0.15.1
-
-## To install this package
-git clone git@github.com:dora-rs/dora.git
-cargo install --git https://github.com/dora-rs/dora dora-rerun
+pip install dora-rerun
 ```
 
 ## Adding to existing graph:
 
 ```yaml
-- id: rerun
-  custom:
-    source: dora-rerun
-    inputs:
-      image: webcam/image
-      text: webcam/text
-      boxes2d: object_detection/bbox
-    envs:
-      RERUN_MEMORY_LIMIT: 25%
+- id: plot
+  build: pip install dora-rerun
+  path: dora-rerun
+  inputs:
+    image:
+      source: camera/image
+      queue_size: 1
+    text_qwenvl: dora-qwenvl/text
+    text_whisper: dora-distil-whisper/text
+  env:
+    IMAGE_WIDTH: 640
+    IMAGE_HEIGHT: 480
+    README: |
+      # Visualization
+    RERUN_MEMORY_LIMIT: 25%
 ```
 
 ## Input definition
@@ -67,3 +69,25 @@ Make sure to name the dataflow as follows:
 ## Configurations
 
 - RERUN_MEMORY_LIMIT: Rerun memory limit
+
+## Reference documentation
+
+- dora-rerun
+  - github: https://github.com/dora-rs/dora/blob/main/node-hub/dora-rerun
+  - website: http://dora-rs.ai/docs/nodes/rerun
+- rerun
+  - github: https://github.com/rerun-io/rerun
+  - website: https://rerun.io
+
+## Examples
+
+- speech to text
+  - github: https://github.com/dora-rs/dora/blob/main/examples/speech-to-text
+  - website: https://dora-rs.ai/docs/examples/stt
+- vision language model
+  - github: https://github.com/dora-rs/dora/blob/main/examples/vlm
+  - website: https://dora-rs.ai/docs/examples/vlm
+
+## License
+
+The code and model weights are released under the MIT License.
