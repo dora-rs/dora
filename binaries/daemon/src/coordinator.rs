@@ -1,3 +1,4 @@
+use crate::Event;
 use crate::{
     socket_stream_utils::{socket_stream_receive, socket_stream_send},
     DaemonCoordinatorEvent,
@@ -9,10 +10,9 @@ use dora_message::{
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
 };
 use eyre::{eyre, Context};
-use futures::future;
+use futures::StreamExt;
+use std::sync::Arc;
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
-use tokio::signal;
-use tokio::sync::broadcast;
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
@@ -33,21 +33,22 @@ pub async fn register(
     addr: SocketAddr,
     machine_id: String,
     listen_port: u16,
-    clock: &HLC,
+    clock: Arc<HLC>,
+    ctrlc_events: impl Stream<Item = Timestamped<Event>> + std::marker::Send,
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
-    let (ctrl_c_tx, mut ctrl_c_rx) = broadcast::channel(1);
-
-    tokio::spawn(async move {
-        signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
-        warn!("Ctrl+C received. Exiting...");
-        ctrl_c_tx.send(()).expect("Failed to send Ctrl+C signal");
-    });
+    let mut ctrlc_stream = ctrlc_events.boxed();
 
     let mut stream = loop {
         tokio::select! {
-            _ = ctrl_c_rx.recv() => {
-                // Quick and dirty hack: return a dummy stream to trigger a "daemon context error" (OS error 111).
-                break TcpStream::connect("0.0.0.0:0000").await?;
+            Some(event) = ctrlc_stream.next() => {
+                match event.inner {
+                    Event::CtrlC | Event::SecondCtrlC => {
+                        warn!("Ctrl+C received. Exiting...");
+                        // Quick and dirty hack: return a dummy stream to trigger a "daemon context error" (OS error 111).
+                        break TcpStream::connect("0.0.0.0:0000").await?;
+                    }
+                    _ => {}
+                }
             }
 
             result = TcpStream::connect(addr) => {

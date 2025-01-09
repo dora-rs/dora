@@ -114,20 +114,26 @@ impl Daemon {
         });
 
         // connect to the coordinator
-        let coordinator_events =
-            coordinator::register(coordinator_addr, machine_id.clone(), listen_port, &clock)
-                .await
-                .wrap_err("failed to connect to dora-coordinator")?
-                .map(
-                    |Timestamped {
-                         inner: event,
-                         timestamp,
-                     }| Timestamped {
-                        inner: Event::Coordinator(event),
-                        timestamp,
-                    },
-                );
+        let coordinator_events = coordinator::register(
+            coordinator_addr,
+            machine_id.clone(),
+            listen_port,
+            clock.clone(),
+            ctrlc_events,
+        )
+        .await
+        .wrap_err("failed to connect to dora-coordinator")?
+        .map(
+            |Timestamped {
+                 inner: event,
+                 timestamp,
+             }| Timestamped {
+                inner: Event::Coordinator(event),
+                timestamp,
+            },
+        );
 
+        let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Spawn local listener loop
         let (events_tx, events_rx) = flume::bounded(10);
         let _listen_port = local_listener::spawn_listener_loop(
