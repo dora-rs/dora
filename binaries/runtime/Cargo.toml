@@ -26,10 +26,10 @@ tokio = { version = "1.24.2", features = ["full"] }
 tokio-stream = "0.1.8"
 # pyo3-abi3 flag allow simpler linking. See: https://pyo3.rs/v0.13.2/building_and_distribution.html
 pyo3 = { workspace = true, features = ["eyre", "abi3-py37"], optional = true }
-tracing = "0.1.36"
+tracing = "0.1.41"
 dora-download = { workspace = true }
 flume = "0.10.14"
-tracing-opentelemetry = { version = "0.18.0", optional = true }
+tracing-opentelemetry = { version = "0.28.0", optional = true }
 pythonize = { workspace = true, optional = true }
 arrow = { workspace = true, features = ["ffi"] }
 aligned-vec = "0.5.0"

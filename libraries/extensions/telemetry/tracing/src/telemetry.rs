@@ -1,7 +1,9 @@
 use opentelemetry::propagation::Extractor;
-use opentelemetry::sdk::{propagation::TraceContextPropagator, trace as sdktrace};
-use opentelemetry::trace::TraceError;
 use opentelemetry::{global, Context};
+use opentelemetry::{Key, KeyValue, Value};
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{LogExporter, Protocol};
+use opentelemetry_sdk::{logs::LoggerProvider, Resource};
 use std::collections::HashMap;
 
 struct MetadataMap<'a>(HashMap<&'a str, &'a str>);
@@ -32,12 +34,23 @@ impl<'a> Extractor for MetadataMap<'a> {
 ///
 /// TODO: Make Jaeger configurable
 ///
-pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> Result<sdktrace::Tracer, TraceError> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
-    opentelemetry_jaeger::new_agent_pipeline()
+pub fn init_jaeger_tracing(
+    name: String,
+    endpoint: &str,
+) -> Result<LoggerProvider, opentelemetry_sdk::logs::LogError> {
+    let exporter = LogExporter::builder()
+        .with_http()
         .with_endpoint(endpoint)
-        .with_service_name(name)
-        .install_simple()
+        .with_protocol(Protocol::HttpBinary)
+        .build()?;
+
+    Ok(LoggerProvider::builder()
+        .with_simple_exporter(exporter)
+        .with_resource(Resource::new([KeyValue::new(
+            Key::new("name"),
+            Value::String(name.into()),
+        )]))
+        .build())
 }
 
 pub fn serialize_context(context: &Context) -> String {
