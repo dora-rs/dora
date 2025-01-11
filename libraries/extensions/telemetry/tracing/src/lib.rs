@@ -12,7 +12,7 @@ use tracing_subscriber::{
 };
 
 use eyre::ContextCompat;
-use tracing_subscriber::Registry;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 pub mod telemetry;
 
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
@@ -62,13 +62,12 @@ pub fn set_up_tracing_opts(
         let endpoint = endpoint
             .to_str()
             .wrap_err("Could not parse env variable: DORA_JAEGER_TRACING")?;
-        let tracer = crate::telemetry::init_jaeger_tracing(name, endpoint)
+        let tracer = crate::telemetry::init_jaeger_tracing(name.to_string(), endpoint)
             .wrap_err("Could not instantiate tracing")?;
-        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-        layers.push(telemetry.boxed());
+        layers.push(Box::new(OpenTelemetryTracingBridge::new(&tracer)));
     }
 
-    let registry = Registry::default().with(layers);
+    let registry = tracing_subscriber::registry().with(layers);
     tracing::subscriber::set_global_default(registry).context(format!(
         "failed to set tracing global subscriber for {name}"
     ))
