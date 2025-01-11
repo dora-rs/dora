@@ -101,8 +101,6 @@ impl Daemon {
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
-        let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
-
         // spawn inter daemon listen loop
         let (events_tx, events_rx) = flume::bounded(10);
         let listen_port =
@@ -119,7 +117,6 @@ impl Daemon {
             machine_id.clone(),
             listen_port,
             clock.clone(),
-            ctrlc_events,
         )
         .await
         .wrap_err("failed to connect to dora-coordinator")?
@@ -133,7 +130,6 @@ impl Daemon {
             },
         );
 
-        let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Spawn local listener loop
         let (events_tx, events_rx) = flume::bounded(10);
         let _listen_port = local_listener::spawn_listener_loop(
@@ -146,14 +142,9 @@ impl Daemon {
             inner: Event::DynamicNode(e.inner),
             timestamp: e.timestamp,
         });
+
         Self::run_general(
-            (
-                coordinator_events,
-                ctrlc_events,
-                daemon_events,
-                dynamic_node_events,
-            )
-                .merge(),
+            (coordinator_events, daemon_events, dynamic_node_events).merge(),
             Some(coordinator_addr),
             machine_id,
             None,
@@ -186,8 +177,6 @@ impl Daemon {
 
         let clock = Arc::new(HLC::default());
 
-        let ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
-
         let exit_when_done = spawn_command
             .nodes
             .iter()
@@ -204,9 +193,8 @@ impl Daemon {
                 timestamp,
             }
         });
-        let events = (coordinator_events, ctrlc_events).merge();
         let run_result = Self::run_general(
-            Box::pin(events),
+            Box::pin(coordinator_events),
             None,
             "".to_string(),
             Some(exit_when_done),
@@ -278,7 +266,9 @@ impl Daemon {
             inner: Event::HeartbeatInterval,
             timestamp: watchdog_clock.new_timestamp(),
         });
+
         let events = (external_events, dora_events, watchdog_interval).merge();
+
         daemon.run_inner(events).await
     }
 

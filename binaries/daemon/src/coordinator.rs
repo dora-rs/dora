@@ -1,3 +1,4 @@
+use crate::set_up_ctrlc_handler;
 use crate::Event;
 use crate::{
     socket_stream_utils::{socket_stream_receive, socket_stream_send},
@@ -34,9 +35,8 @@ pub async fn register(
     machine_id: String,
     listen_port: u16,
     clock: Arc<HLC>,
-    ctrlc_events: impl Stream<Item = Timestamped<Event>> + std::marker::Send,
 ) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
-    let mut ctrlc_stream = ctrlc_events.boxed();
+    let mut ctrlc_stream = set_up_ctrlc_handler(clock.clone())?.boxed();
 
     let mut stream = loop {
         tokio::select! {
