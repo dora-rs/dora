@@ -1,13 +1,13 @@
 [tool.poetry]
-name = "node-name"
+name = "__node-name__"
 version = "0.0.0"
 authors = ["author"]
 description = "Node Name"
 license = "MIT License"
 homepage = "https://github.com/dora-rs/dora.git"
-documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/node-name/README.md"
+documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/__node-name__/README.md"
 readme = "README.md"
-packages = [{ include = "node_name" }]
+packages = [{ include = "__node_name__" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
@@ -21,7 +21,7 @@ pylint = ">= 3.3.2"
 black = ">= 24.10"
 
 [tool.poetry.scripts]
-node-name = "node_name.main:main"
+__node-name__ = "__node_name__.main:main"
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

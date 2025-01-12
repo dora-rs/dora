@@ -4,12 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAIN_PY: &str = include_str!("node-name/node_name/main.py");
-const _MAIN_PY: &str = include_str!("node-name/node_name/__main__.py");
-const _INIT_PY: &str = include_str!("node-name/node_name/__init__.py");
-const _TEST_PY: &str = include_str!("node-name/tests/test_node_name.py");
-const PYPROJECT_TOML: &str = include_str!("node-name/pyproject.toml");
-const README_MD: &str = include_str!("node-name/README.md");
+const MAIN_PY: &str = include_str!("__node-name__/__node_name__/main.py");
+const _MAIN_PY: &str = include_str!("__node-name__/__node_name__/__main__.py");
+const _INIT_PY: &str = include_str!("__node-name__/__node_name__/__init__.py");
+const _TEST_PY: &str = include_str!("__node-name__/tests/test___node_name__.py");
+const PYPROJECT_TOML: &str = include_str!("__node-name__/pyproject.toml");
+const README_MD: &str = include_str!("__node-name__/README.md");
 
 const TALKER_PY: &str = include_str!("talker/talker-template.py");
 const LISTENER_PY: &str = include_str!("listener/listener-template.py");
@@ -29,8 +29,9 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
 }
 
 fn replace_space(file: &str, name: &str) -> String {
-    let file = file.replace("node-name", &name.replace(" ", "-"));
-    file.replace("node_name", &name.replace(" ", "_"))
+    let mut file = file.replace("__node-name__", &name.replace(" ", "-"));
+    file = file.replace("__node_name__", &name.replace("-", "_").replace(" ", "_"));
+    file.replace("Node Name", &name)
 }
 fn create_custom_node(
     name: String,
@@ -39,15 +40,15 @@ fn create_custom_node(
 ) -> Result<(), eyre::ErrReport> {
     // create directories
     let root = path.unwrap_or_else(|| PathBuf::from(name.replace(" ", "-")));
-    let module_path = root.join(name.replace(" ", "_"));
+    let module_path = root.join(name.replace(" ", "_").replace("-", "_"));
     fs::create_dir(&root)
-        .with_context(|| format!("failed to create directory `{}`", &root.display()))?;
+        .with_context(|| format!("failed to create root directory `{}`", &root.display()))?;
 
     fs::create_dir(&module_path)
-        .with_context(|| format!("failed to create directory `{}`", &root.display()))?;
+        .with_context(|| format!("failed to create module directory `{}`", &root.display()))?;
 
     fs::create_dir(&root.join("tests"))
-        .with_context(|| format!("failed to create directory `{}`", &root.display()))?;
+        .with_context(|| format!("failed to create tests directory `{}`", &root.display()))?;
 
     // PYPROJECT.toml
     let node_path = root.join("pyproject.toml");
@@ -57,7 +58,7 @@ fn create_custom_node(
 
     // README.md
     let node_path = root.join("README.md");
-    fs::write(&node_path, README_MD.replace("name", &name))
+    fs::write(&node_path, README_MD.replace("Node Name", &name))
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
 
     // main.py
@@ -75,7 +76,7 @@ fn create_custom_node(
     fs::write(&node_path, _INIT_PY)
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
 
-    // tests/tests_node_name.py
+    // tests/tests___node_name__.py
     let node_path = root
         .join("tests")
         .join(format!("test_{}.py", name.replace(" ", "_")));
@@ -87,16 +88,11 @@ fn create_custom_node(
         "Created new Python node `{name}` at {}",
         Path::new(".").join(&root).display()
     );
-    println!(
-        "   pip install -e {} # Install",
-        Path::new(".").join(&root).display()
-    );
-    println!("   black {} # Format", Path::new(".").join(&root).display());
-    println!(
-        "   pylint  --disable=C,R {} # Lint",
-        Path::new(".").join(&root).display()
-    );
-    println!("   pytest {} # Test", Path::new(".").join(&root).display());
+    println!("   cd {}", Path::new(".").join(&root).display());
+    println!("   pip install -e . # Install",);
+    println!("   black . # Format");
+    println!("   pylint  --disable=C,R . # Lint",);
+    println!("   pytest . # Test");
 
     Ok(())
 }
@@ -114,7 +110,7 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
     fs::create_dir(root)
-        .with_context(|| format!("failed to create directory `{}`", root.display()))?;
+        .with_context(|| format!("failed to create module directory `{}`", root.display()))?;
 
     let dataflow_yml = DATAFLOW_YML.replace("___name___", &name);
     let dataflow_yml_path = root.join("dataflow.yml");

@@ -15,10 +15,10 @@ def main():
                 metadata: {event["metadata"]}"""
                 )
 
-            else:
-                # Warning: Make sure to add the output event_id within the dataflow.
+            elif event["id"] == "my_input_id":
+                # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                 node.send_output(
-                    output_id="event_id", data=pa.array([1, 2, 3]), metadata={}
+                    output_id="my_output_id", data=pa.array([1, 2, 3]), metadata={}
                 )
 
 
