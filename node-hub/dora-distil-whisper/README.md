@@ -1,3 +1,30 @@
-# Dora Node for transforming speech to text (English only)
+# Dora Whisper Node for transforming speech to text
 
-Check example at [examples/speech-to-text](examples/speech-to-text)
+## YAML Specification
+
+This node is supposed to be used as follows:
+
+```yaml
+- id: dora-distil-whisper
+  build: pip install dora-distil-whisper
+  path: dora-distil-whisper
+  inputs:
+    input: dora-vad/audio
+  outputs:
+    - text
+  env:
+    TARGET_LANGUAGE: english
+```
+
+## Examples
+
+- Speech to Text
+  - github: https://github.com/dora-rs/dora/blob/main/examples/speech-to-text
+  - website: https://dora-rs.ai/docs/examples/stt
+- Vision Language Model
+  - github: https://github.com/dora-rs/dora/blob/main/examples/vlm
+  - website: https://dora-rs.ai/docs/examples/vlm
+
+## License
+
+Dora-whisper's code and model weights are released under the MIT License
