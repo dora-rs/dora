@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "__node-name__"
+version = "0.0.0"
+authors = ["author"]
+description = "Node Name"
+license = "MIT License"
+homepage = "https://github.com/dora-rs/dora.git"
+documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/__node-name__/README.md"
+readme = "README.md"
+packages = [{ include = "__node_name__" }]
+
+[tool.poetry.dependencies]
+dora-rs = "^0.3.6"
+numpy = "< 2.0.0"
+pyarrow = ">= 5.0.0"
+python = "^3.7"
+
+[tool.poetry.dev-dependencies]
+pytest = ">= 8.3.4"
+pylint = ">= 3.3.2"
+black = ">= 24.10"
+
+[tool.poetry.scripts]
+__node-name__ = "__node_name__.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
