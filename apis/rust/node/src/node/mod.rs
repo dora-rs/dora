@@ -52,7 +52,7 @@ pub struct DoraNode {
     cache: VecDeque<ShmemHandle>,
 
     dataflow_descriptor: Descriptor,
-    warn_once: BTreeSet<DataId>,
+    warned_unknown_output: BTreeSet<DataId>,
 }
 
 impl DoraNode {
@@ -158,18 +158,18 @@ impl DoraNode {
             drop_stream,
             cache: VecDeque::new(),
             dataflow_descriptor,
-            warn_once: BTreeSet::new(),
+            warned_unknown_output: BTreeSet::new(),
         };
         Ok((node, event_stream))
     }
 
     fn validate_output(&mut self, output_id: &DataId) -> bool {
         if !self.node_config.outputs.contains(output_id) {
-            if self.warn_once.contains(output_id) {
+            if self.warned_unknown_output.contains(output_id) {
                 warn!("Output {output_id} is not part of the node's output list.");
-                self.warn_once.insert(output_id.clone());
+                self.warned_unknown_output.insert(output_id.clone());
             } else {
-                self.warn_once.insert(output_id.clone());
+                self.warned_unknown_output.insert(output_id.clone());
             }
             false
         } else {
