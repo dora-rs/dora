@@ -1,17 +1,18 @@
 # install dependencies as shown in the README here https://github.com/alik-git/RoboticsDiffusionTransformer?tab=readme-ov-file#installation
-import yaml
-import torch
+import os
+from pathlib import Path
+
+import cv2
 import numpy as np
+import pyarrow as pa
+import torch
+import yaml
+from dora import Node
 from PIL import Image
 
 from dora_rdt_1b.RoboticsDiffusionTransformer.configs.state_vec import (
     STATE_VEC_IDX_MAPPING,
 )
-from dora import Node
-import cv2
-import pyarrow as pa
-import os
-from pathlib import Path
 
 VISION_DEFAULT_PATH = "robotics-diffusion-transformer/rdt-1b"
 ROBOTIC_MODEL_NAME_OR_PATH = os.getenv(
@@ -174,15 +175,15 @@ def get_states(proprio):
     )
 
     state_elem_mask[:, STATE_INDICES] = True
-    states, state_elem_mask = states.to(DEVICE, dtype=DTYPE), state_elem_mask.to(
-        DEVICE, dtype=DTYPE
+    states, state_elem_mask = (
+        states.to(DEVICE, dtype=DTYPE),
+        state_elem_mask.to(DEVICE, dtype=DTYPE),
     )
     states = states[:, -1:, :]  # only use the last state
     return states, state_elem_mask, STATE_INDICES
 
 
 def main():
-
     rdt = get_policy()
     lang_embeddings = get_language_embeddings()
     vision_encoder, image_processor = get_vision_model()
@@ -195,11 +196,9 @@ def main():
     frames = {}
     joints = {}
     with torch.no_grad():
-
         for event in node:
             event_type = event["type"]
             if event_type == "INPUT":
-
                 event_id = event["id"]
 
                 if "image" in event_id:

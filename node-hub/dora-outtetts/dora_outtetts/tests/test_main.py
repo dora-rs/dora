@@ -1,7 +1,5 @@
 import pytest
-
-from dora_outtetts.main import load_interface
-from dora_outtetts.main import main
+from dora_outtetts.main import load_interface, main
 
 
 def test_import_main():

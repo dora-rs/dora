@@ -4,7 +4,6 @@ import os
 import cv2
 import numpy as np
 import pyarrow as pa
-
 from dora import Node
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
@@ -76,7 +75,6 @@ def yuv420p_to_bgr_opencv(yuv_array, width, height):
 
 
 def main():
-
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
         description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image."
@@ -168,7 +166,6 @@ def main():
                     plot.frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
 
                 elif encoding == "yuv420":
-
                     storage = storage.to_numpy()
 
                     # Convert back to BGR results in more saturated image.

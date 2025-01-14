@@ -1,10 +1,10 @@
 import os
 from pathlib import Path
-from dora import Node
-import pyarrow as pa
-import numpy as np
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
+import numpy as np
+import pyarrow as pa
+from dora import Node
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from_code = os.getenv("SOURCE_LANGUAGE", "zh")
 to_code = os.getenv("TARGET_LANGUAGE", "en")

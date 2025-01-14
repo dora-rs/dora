@@ -1,10 +1,11 @@
-from dora import Node
-import outetts
 import argparse  # Add argparse import
-import pathlib
 import os
-import torch
+import pathlib
+
+import outetts
 import pyarrow as pa
+import torch
+from dora import Node
 
 PATH_SPEAKER = os.getenv("PATH_SPEAKER", "speaker.json")
 

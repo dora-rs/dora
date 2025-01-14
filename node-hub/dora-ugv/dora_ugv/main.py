@@ -7,9 +7,10 @@ except ImportError as err:
     )
     raise err
 
-from dora import Node
-import pyarrow as pa
 import os
+
+import pyarrow as pa
+from dora import Node
 
 
 def main():

@@ -13,18 +13,25 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # ******************************************************************************
-import cv2
 import os
+
+import cv2
 import numpy as np
+import pyarrow as pa
+from dora import Node
 
 try:
-    from pyorbbecsdk import Context
-    from pyorbbecsdk import Config
-    from pyorbbecsdk import OBError
-    from pyorbbecsdk import OBSensorType, OBFormat
-    from pyorbbecsdk import Pipeline, FrameSet
-    from pyorbbecsdk import VideoStreamProfile
-    from pyorbbecsdk import VideoFrame
+    from pyorbbecsdk import (
+        Config,
+        Context,
+        FrameSet,
+        OBError,
+        OBFormat,
+        OBSensorType,
+        Pipeline,
+        VideoFrame,
+        VideoStreamProfile,
+    )
 except ImportError as err:
     print(
         "Please install pyorbbecsdk first by following the instruction at: https://github.com/orbbec/pyorbbecsdk"
@@ -119,9 +126,6 @@ def frame_to_bgr_image(frame: VideoFrame):
         return None
     return image
 
-
-from dora import Node
-import pyarrow as pa
 
 ESC_KEY = 27
 MIN_DEPTH_METERS = 0.01

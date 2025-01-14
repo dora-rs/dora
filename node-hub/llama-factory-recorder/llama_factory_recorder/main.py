@@ -1,11 +1,12 @@
-import os
 import json
-from dora import Node
+import os
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pyarrow as pa
+from dora import Node
 from PIL import Image
-from pathlib import Path
-import cv2
 
 DEFAULT_QUESTION = os.getenv(
     "DEFAULT_QUESTION",
@@ -94,9 +95,9 @@ def main():
     pa.array([])  # initialize pyarrow array
     node = Node()
 
-    assert os.getenv(
-        "LLAMA_FACTORY_ROOT_PATH"
-    ), "LLAMA_FACTORY_ROOT_PATH is not set, Either git clone the repo or set the environment variable"
+    assert os.getenv("LLAMA_FACTORY_ROOT_PATH"), (
+        "LLAMA_FACTORY_ROOT_PATH is not set, Either git clone the repo or set the environment variable"
+    )
     llama_factory_root_path = Path(os.getenv("LLAMA_FACTORY_ROOT_PATH")) / "data"
 
     entry_name = os.getenv("ENTRY_NAME", "dora_demo")
