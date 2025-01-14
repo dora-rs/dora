@@ -1,14 +1,14 @@
-from dora import Node
-import pyarrow as pa
 import os
 import sys
 from pathlib import Path
 
-DEFAULT_PATH = "openai/whisper-large-v3-turbo"
-TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "chinese")
-TRANSLATE = bool(os.getenv("TRANSLATE", "False") in ["True", "true"])
-
+import pyarrow as pa
 import torch
+from dora import Node
+
+DEFAULT_PATH = "openai/whisper-large-v3-turbo"
+TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "english")
+TRANSLATE = bool(os.getenv("TRANSLATE", "False") in ["True", "true"])
 
 
 def load_model():
@@ -47,9 +47,7 @@ def load_model():
 
 
 def load_model_mlx():
-    from lightning_whisper_mlx import (
-        LightningWhisperMLX,
-    )  # pylint: disable=import-error
+    from lightning_whisper_mlx import LightningWhisperMLX  # noqa
 
     whisper = LightningWhisperMLX(model="distil-large-v3", batch_size=12, quant=None)
     return whisper
