@@ -1,10 +1,10 @@
 from dora import Node
-import pyarrow as pa
 import outetts
 import argparse  # Add argparse import
 import pathlib
 import os
 import torch
+import pyarrow as pa
 
 PATH_SPEAKER = os.getenv("PATH_SPEAKER", "speaker.json")
 
@@ -77,7 +77,6 @@ def main(arg_list: list[str] | None = None):
         speaker = interface.load_default_speaker(name="male_1")
 
     node = Node()
-    i = 0
 
     for event in node:
         if event["type"] == "INPUT":
@@ -92,16 +91,17 @@ def main(arg_list: list[str] | None = None):
             elif event["id"] == "text":
                 # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                 text = event["value"][0].as_py()
-                print(text)
                 output = interface.generate(
                     text=text,
                     temperature=0.1,
                     repetition_penalty=1.1,
                     speaker=speaker,  # Optional: speaker profile
                 )
-                i += 1
-                output.save(f"output_{i}.wav")
-                output.play()
+                node.send_output(
+                    "audio",
+                    pa.array(output.audio.cpu().numpy().ravel()),
+                    {"language": "en", "sample_rate": output.sr},
+                )
 
 
 if __name__ == "__main__":
