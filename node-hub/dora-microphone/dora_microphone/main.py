@@ -19,7 +19,6 @@ def main():
     always_none = node.next(timeout=0.001) is None
     finished = False
 
-    # noqa
     def callback(indata, frames, time, status):
         nonlocal buffer, node, start_recording_time, finished
 
@@ -36,7 +35,7 @@ def main():
 
     # Start recording
     with sd.InputStream(
-        callback=callback, dtype=np.int16, channels=1, samplerate=SAMPLE_RATE
+        callback=callback, dtype=np.int16, channels=1, samplerate=SAMPLE_RATE,
     ):
         while not finished:
-            sd.sleep(int(1000))
+            sd.sleep(1000)

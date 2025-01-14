@@ -3,7 +3,7 @@ try:
     from ugv_sdk_py import hunter_robot
 except ImportError as err:
     print(
-        "Please install ugv_sdk_py first by following the instruction at: https://github.com/westonrobot/ugv_sdk/tree/main?tab=readme-ov-file#build-the-package-as-a-python-package"
+        "Please install ugv_sdk_py first by following the instruction at: https://github.com/westonrobot/ugv_sdk/tree/main?tab=readme-ov-file#build-the-package-as-a-python-package",
     )
     raise err
 
@@ -42,7 +42,7 @@ def main():
                         [
                             state.motion_state.linear_velocity,
                             state.motion_state.angular_velocity,
-                        ]
+                        ],
                     ),
                 )
 

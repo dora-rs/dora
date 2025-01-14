@@ -56,13 +56,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
         print("Passing input as string")
     if isinstance(data, list):
         data = pa.array(data)  # initialize pyarrow array
-    elif isinstance(data, str):
-        data = pa.array([data])
-    elif isinstance(data, int):
-        data = pa.array([data])
-    elif isinstance(data, float):
-        data = pa.array([data])
-    elif isinstance(data, dict):
+    elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
         data = pa.array([data])
     else:
         data = pa.array(data)  # initialize pyarrow array
@@ -74,12 +68,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
         if event["type"] == "ERROR":
             response_str = "No response received. Err: " + event["value"][0].as_py()
             break
-        elif event["type"] == "INPUT" and event["id"] == "v1/chat/completions":
+        if event["type"] == "INPUT" and event["id"] == "v1/chat/completions":
             response = event["value"]
             response_str = response[0].as_py() if response else "No response received"
             break
-        else:
-            pass
 
     return ChatCompletionResponse(
         id="chatcmpl-1234",
@@ -91,7 +83,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 "index": 0,
                 "message": {"role": "assistant", "content": response_str},
                 "finish_reason": "stop",
-            }
+            },
         ],
         usage={
             "prompt_tokens": len(data),
@@ -111,7 +103,7 @@ async def list_models():
                 "object": "model",
                 "created": 1677610602,
                 "owned_by": "openai",
-            }
+            },
         ],
     }
 

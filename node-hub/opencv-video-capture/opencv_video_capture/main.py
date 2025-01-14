@@ -15,7 +15,7 @@ FLIP = os.getenv("FLIP", "")
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="OpenCV Video Capture: This node is used to capture video from a camera."
+        description="OpenCV Video Capture: This node is used to capture video from a camera.",
     )
 
     parser.add_argument(
@@ -93,7 +93,7 @@ def main():
                     cv2.putText(
                         frame,
                         f"Error: no frame for camera at path {video_capture_path}.",
-                        (int(30), int(30)),
+                        (30, 30),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.50,
                         (255, 255, 255),

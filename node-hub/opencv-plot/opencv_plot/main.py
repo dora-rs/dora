@@ -77,7 +77,7 @@ def yuv420p_to_bgr_opencv(yuv_array, width, height):
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image."
+        description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image.",
     )
 
     parser.add_argument(
@@ -116,7 +116,7 @@ def main():
             plot_height = int(plot_height)
 
     node = Node(
-        args.name
+        args.name,
     )  # provide the name to connect to the dataflow if dynamic node
     plot = Plot()
 
@@ -198,7 +198,7 @@ def main():
                                 y + h / 2,
                             )
                             for [x, y, w, h] in original_bbox
-                        ]
+                        ],
                     )
                 else:
                     raise RuntimeError(f"Unsupported bbox format: {bbox_format}")
@@ -207,7 +207,7 @@ def main():
                     "bbox": bbox,
                     "conf": arrow_bbox["conf"].values.to_numpy(),
                     "labels": arrow_bbox["labels"].values.to_numpy(
-                        zero_copy_only=False
+                        zero_copy_only=False,
                     ),
                 }
             elif event_id == "text":

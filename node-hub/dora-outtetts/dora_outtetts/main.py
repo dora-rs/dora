@@ -46,7 +46,6 @@ def create_speaker(interface, path):
     interface.save_speaker(speaker, "speaker.json")
 
     print("saved speaker.json")
-    return
 
 
 def main(arg_list: list[str] | None = None):
@@ -86,7 +85,7 @@ def main(arg_list: list[str] | None = None):
                     f"""Node received:
                 id: {event["id"]},
                 value: {event["value"]},
-                metadata: {event["metadata"]}"""
+                metadata: {event["metadata"]}""",
                 )
 
             elif event["id"] == "text":

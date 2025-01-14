@@ -78,7 +78,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
     if sum(1 for char in text if "\u4e00" <= char <= "\u9fff") / len(text) > 0.5:
         # Chinese text processing
         for repeat_length in range(
-            min_repeat_length, min(max_repeat_length, len(text) // 2)
+            min_repeat_length, min(max_repeat_length, len(text) // 2),
         ):
             for i in range(len(text) - repeat_length * 2 + 1):
                 chunk1 = text[i : i + repeat_length]
@@ -90,7 +90,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
         # Non-Chinese (space-separated) text processing
         words = text.split()
         for repeat_length in range(
-            min_repeat_length, min(max_repeat_length, len(words) // 2)
+            min_repeat_length, min(max_repeat_length, len(words) // 2),
         ):
             for i in range(len(words) - repeat_length * 2 + 1):
                 chunk1 = " ".join(words[i : i + repeat_length])

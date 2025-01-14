@@ -35,7 +35,7 @@ def main():
     while True:
         try:
             node = Node(
-                args.name
+                args.name,
             )  # provide the name to connect to the dataflow if dynamic node
         except RuntimeError as err:
             if err != last_err:
@@ -57,13 +57,7 @@ def main():
                     print("Passing input as string")
                 if isinstance(data, list):
                     data = pa.array(data)  # initialize pyarrow array
-                elif isinstance(data, str):
-                    data = pa.array([data])
-                elif isinstance(data, int):
-                    data = pa.array([data])
-                elif isinstance(data, float):
-                    data = pa.array([data])
-                elif isinstance(data, dict):
+                elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
                     data = pa.array([data])
                 else:
                     data = pa.array(data)  # initialize pyarrow array
@@ -81,13 +75,7 @@ def main():
                 print("Passing input as string")
             if isinstance(data, list):
                 data = pa.array(data)  # initialize pyarrow array
-            elif isinstance(data, str):
-                data = pa.array([data])
-            elif isinstance(data, int):
-                data = pa.array([data])
-            elif isinstance(data, float):
-                data = pa.array([data])
-            elif isinstance(data, dict):
+            elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
                 data = pa.array([data])
             else:
                 data = pa.array(data)  # initialize pyarrow array
