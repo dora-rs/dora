@@ -47,7 +47,9 @@ def load_model():
 
 
 def load_model_mlx():
-    from lightning_whisper_mlx import LightningWhisperMLX
+    from lightning_whisper_mlx import (
+        LightningWhisperMLX,
+    )  # pylint: disable=import-error
 
     whisper = LightningWhisperMLX(model="distil-large-v3", batch_size=12, quant=None)
     return whisper
