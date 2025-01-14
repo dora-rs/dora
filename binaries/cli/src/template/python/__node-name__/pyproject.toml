@@ -17,8 +17,7 @@ python = "^3.7"
 
 [tool.poetry.dev-dependencies]
 pytest = ">= 6.3.4"
-pylint = ">= 3.3.2"
-black = ">= 22.10"
+ruff = ">= 0.9.1"
 
 [tool.poetry.scripts]
 __node-name__ = "__node_name__.main:main"

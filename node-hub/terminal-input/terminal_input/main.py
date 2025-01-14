@@ -1,16 +1,15 @@
 import argparse
-import os
 import ast
+import os
 import time
-import pyarrow as pa
 
+import pyarrow as pa
 from dora import Node
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
 
 
 def main():
-
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(description="Simple arrow sender")
 

@@ -1,7 +1,6 @@
 from dora import Node
 
 
-import numpy as np
 import h5py
 
 f = h5py.File("data/episode_0.hdf5", "r")

@@ -310,15 +310,14 @@ jobs:
             mv .venv/Scripts .venv/bin    # venv is placed under `Scripts` on Windows
           fi
           source .venv/bin/activate
-          pip3 install maturin black pylint pytest
+          pip3 install maturin ruff pytest
           maturin build -m apis/python/node/Cargo.toml
           pip3 install target/wheels/*
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
 
           # Check Compliancy
-          black . --check
-          pylint --disable=C,R **/*.py
+          ruff . --check
           pip install -e ./*/
           pytest
 

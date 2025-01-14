@@ -1,6 +1,5 @@
 import os
 import cv2
-import time
 
 from dora import DoraStatus
 from utils import LABELS

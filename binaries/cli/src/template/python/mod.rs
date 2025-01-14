@@ -91,8 +91,8 @@ fn create_custom_node(
     );
     println!("   cd {}", Path::new(".").join(&root).display());
     println!("   pip install -e . # Install",);
-    println!("   black . # Format");
-    println!("   pylint  --disable=C,R . # Lint",);
+    println!("   ruff check . --fix # Format");
+    println!("   ruff check . # Lint",);
     println!("   pytest . # Test");
 
     Ok(())

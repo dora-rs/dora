@@ -5,7 +5,6 @@ import time
 import cv2
 import numpy as np
 import pyarrow as pa
-
 from dora import Node
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
@@ -77,7 +76,6 @@ def main():
     pa.array([])  # initialize pyarrow array
 
     for event in node:
-
         # Run this example in the CI for 10 seconds only.
         if RUNNER_CI and time.time() - start_time > 10:
             break
