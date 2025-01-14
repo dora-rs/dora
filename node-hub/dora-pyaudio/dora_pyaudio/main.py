@@ -1,16 +1,20 @@
-from dora import Node
+import os
+
+import numpy as np
 import pyarrow as pa
 import pyaudio
-import os
-import numpy as np
+from dora import Node
 
-SAMPLE_RATE = os.getenv("SAMPLE_RATE", 16000)
+SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 
 
 p = pyaudio.PyAudio()
 
 
-def play_audio(audio_array: pa.array, sample_rate: int, stream):
+def play_audio(
+    audio_array: pa.array, sample_rate: int, stream: pyaudio.Stream = None
+) -> pyaudio.Stream:
+    """Play audio using pyaudio and replace stream if already exists"""
 
     if np.issubdtype(audio_array.dtype, np.floating):
         max_val = np.max(np.abs(audio_array))
@@ -25,6 +29,7 @@ def play_audio(audio_array: pa.array, sample_rate: int, stream):
 
 
 def main():
+    """Main function for the node"""
     node = Node()
     stream = None
     for event in node:
