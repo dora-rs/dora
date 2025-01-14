@@ -31,6 +31,14 @@ nodes:
     path: dora-outtetts
     inputs:
       text: dora-whisper/text
+    outputs:
+      - audio
+
+  - id: dora-pyaudio
+    build: pip install dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-outtetts/audio
 
   - id: dora-rerun
     build: pip install dora-rerun
