@@ -20,7 +20,7 @@ def main():
     args = parser.parse_args()
 
     node = Node(
-        args.name
+        args.name,
     )  # provide the name to connect to the dataflow if dynamic node
 
     for event in node:

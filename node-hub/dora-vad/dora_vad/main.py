@@ -42,10 +42,9 @@ def main():
                 # Check if the audio is not cut at the end. And only return if there is a long time spent
                 if speech_timestamps[-1]["end"] == len(audio):
                     continue
-                else:
-                    audio = audio[0 : speech_timestamps[-1]["end"]]
-                    node.send_output("audio", pa.array(audio))
-                    last_audios = [audio[speech_timestamps[-1]["end"] :]]
+                audio = audio[0 : speech_timestamps[-1]["end"]]
+                node.send_output("audio", pa.array(audio))
+                last_audios = [audio[speech_timestamps[-1]["end"] :]]
 
             # If there is no sound for too long return the audio
             elif len(last_audios) > 75:
