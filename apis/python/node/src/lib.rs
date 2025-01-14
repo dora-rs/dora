@@ -155,7 +155,7 @@ impl Node {
     /// :rtype: None
     #[pyo3(signature = (output_id, data, metadata=None))]
     pub fn send_output(
-        &mut self,
+        &self,
         output_id: String,
         data: PyObject,
         metadata: Option<Bound<'_, PyDict>>,
