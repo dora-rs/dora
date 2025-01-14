@@ -48,6 +48,16 @@ jobs:
           git submodule update --init --recursive
           git submodule update --remote --recursive
 
+      - name: Install system-level dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install portaudio19-dev
+
+      - name: Install system-level dependencies for MacOS
+        if: runner.os == 'Mac' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
+        run: |
+          brew install portaudio
+
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         if: runner.os == 'Linux'
