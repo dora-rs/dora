@@ -12,17 +12,16 @@ p = pyaudio.PyAudio()
 
 
 def play_audio(
-    audio_array: pa.array, sample_rate: int, stream: pyaudio.Stream = None
+    audio_array: pa.array, sample_rate: int, stream: pyaudio.Stream = None,
 ) -> pyaudio.Stream:
     """Play audio using pyaudio and replace stream if already exists"""
-
     if np.issubdtype(audio_array.dtype, np.floating):
         max_val = np.max(np.abs(audio_array))
         audio_array = (audio_array / max_val) * 32767
         audio_array = audio_array.astype(np.int16)
     if stream is None:
         stream = p.open(
-            format=pyaudio.paInt16, channels=1, rate=sample_rate, output=True
+            format=pyaudio.paInt16, channels=1, rate=sample_rate, output=True,
         )
     stream.write(audio_array.tobytes())
     return stream
