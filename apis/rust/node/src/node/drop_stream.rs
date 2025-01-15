@@ -3,15 +3,16 @@ use std::{sync::Arc, time::Duration};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{config::NodeId, uhlc};
 use dora_message::{
+    common::{DropTokenState, DropTokenStatus},
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent},
-    node_to_daemon::{DaemonRequest, DropToken, Timestamped},
+    node_to_daemon::{DaemonRequest, Timestamped},
     DataflowId,
 };
 use eyre::{eyre, Context};
 use flume::RecvTimeoutError;
 
 pub struct DropStream {
-    receiver: flume::Receiver<DropToken>,
+    receiver: flume::Receiver<DropTokenStatus>,
     _thread_handle: DropStreamThreadHandle,
 }
 
@@ -82,7 +83,7 @@ impl DropStream {
 }
 
 impl std::ops::Deref for DropStream {
-    type Target = flume::Receiver<DropToken>;
+    type Target = flume::Receiver<DropTokenStatus>;
 
     fn deref(&self) -> &Self::Target {
         &self.receiver
@@ -92,7 +93,7 @@ impl std::ops::Deref for DropStream {
 #[tracing::instrument(skip(tx, channel, clock))]
 fn drop_stream_loop(
     node_id: NodeId,
-    tx: flume::Sender<DropToken>,
+    tx: flume::Sender<DropTokenStatus>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) {
@@ -125,16 +126,22 @@ fn drop_stream_loop(
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            match inner {
-                NodeDropEvent::OutputDropped { drop_token } => {
-                    if tx.send(drop_token).is_err() {
-                        tracing::warn!(
-                            "drop channel was closed already, could not forward \
-                            drop token`{drop_token:?}`"
-                        );
-                        break 'outer;
-                    }
-                }
+            let event = match inner {
+                NodeDropEvent::OutputMapped { drop_token } => DropTokenStatus {
+                    token: drop_token,
+                    state: DropTokenState::Mapped,
+                },
+                NodeDropEvent::OutputDropped { drop_token } => DropTokenStatus {
+                    token: drop_token,
+                    state: DropTokenState::Dropped,
+                },
+            };
+            if tx.send(event).is_err() {
+                tracing::warn!(
+                    "drop channel was closed already, could not forward \
+                    drop token event `{event:?}`"
+                );
+                break 'outer;
             }
         }
     }
