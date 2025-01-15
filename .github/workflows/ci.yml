@@ -317,7 +317,7 @@ jobs:
           cd test_python_project
 
           # Check Compliancy
-          ruff . --check
+          ruff check .
           pip install -e ./*/
           pytest
 
