@@ -165,10 +165,8 @@ impl DoraNode {
 
     fn validate_output(&mut self, output_id: &DataId) -> bool {
         if !self.node_config.outputs.contains(output_id) {
-            if self.warned_unknown_output.contains(output_id) {
-                warn!("Output {output_id} is not part of the node's output list.");
-                self.warned_unknown_output.insert(output_id.clone());
-            } else {
+            if !self.warned_unknown_output.contains(output_id) {
+                warn!("Ignoring output `{output_id}` not in node's output list.");
                 self.warned_unknown_output.insert(output_id.clone());
             }
             false
