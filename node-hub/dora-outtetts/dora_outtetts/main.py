@@ -15,7 +15,7 @@ torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
 
 def load_interface():
-    if os.getenv("INTERFACE", "") == "HF":
+    if os.getenv("INTERFACE", "HF") == "HF":
         model_config = outetts.HFModelConfig_v1(
             model_path="OuteAI/OuteTTS-0.2-500M",
             language="en",
@@ -25,7 +25,10 @@ def load_interface():
         interface = outetts.InterfaceHF(model_version="0.2", cfg=model_config)
     else:
         model_config = outetts.GGUFModelConfig_v1(
-            model_path="/Users/xaviertao/.cache/huggingface/hub/models--OuteAI--OuteTTS-0.2-500M-GGUF/snapshots/e6d78720d2a8edce2bc8f5c5c2d0332e57091930/OuteTTS-0.2-500M-Q4_0.gguf",
+            model_path=os.getenv(
+                "GGUF_MODEL_PATH",
+                "~/.cache/huggingface/hub/models--OuteAI--OuteTTS-0.2-500M-GGUF/snapshots/e6d78720d2a8edce2bc8f5c5c2d0332e57091930/OuteTTS-0.2-500M-Q4_0.gguf",
+            ),
             language="en",  # Supported languages in v0.2: en, zh, ja, ko
             n_gpu_layers=0,
         )
