@@ -1,10 +1,10 @@
 import os
 from pathlib import Path
-from dora import Node
-import pyarrow as pa
-import numpy as np
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
+import numpy as np
+import pyarrow as pa
+from dora import Node
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from_code = os.getenv("SOURCE_LANGUAGE", "zh")
 to_code = os.getenv("TARGET_LANGUAGE", "en")
@@ -29,7 +29,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
     if sum(1 for char in text if "\u4e00" <= char <= "\u9fff") / len(text) > 0.5:
         # Chinese text processing
         for repeat_length in range(
-            min_repeat_length, min(max_repeat_length, len(text) // 2)
+            min_repeat_length, min(max_repeat_length, len(text) // 2),
         ):
             for i in range(len(text) - repeat_length * 2 + 1):
                 chunk1 = text[i : i + repeat_length]
@@ -41,7 +41,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
         # Non-Chinese (space-separated) text processing
         words = text.split()
         for repeat_length in range(
-            min_repeat_length, min(max_repeat_length, len(words) // 2)
+            min_repeat_length, min(max_repeat_length, len(words) // 2),
         ):
             for i in range(len(words) - repeat_length * 2 + 1):
                 chunk1 = " ".join(words[i : i + repeat_length])

@@ -1,7 +1,7 @@
-from pynput import keyboard
-from pynput.keyboard import Events
 import pyarrow as pa
 from dora import Node
+from pynput import keyboard
+from pynput.keyboard import Events
 
 
 def main():

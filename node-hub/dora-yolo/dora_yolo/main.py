@@ -3,15 +3,14 @@ import os
 
 import numpy as np
 import pyarrow as pa
-from ultralytics import YOLO
-
 from dora import Node
+from ultralytics import YOLO
 
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model."
+        description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model.",
     )
 
     parser.add_argument(
@@ -52,10 +51,7 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8":
-                    channels = 3
-                    storage_type = np.uint8
-                elif encoding == "rgb8":
+                if encoding == "bgr8" or encoding == "rgb8":
                     channels = 3
                     storage_type = np.uint8
                 else:

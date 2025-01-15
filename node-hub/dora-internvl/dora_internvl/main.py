@@ -1,9 +1,10 @@
 import os
-from dora import Node
+
 import numpy as np
 import pyarrow as pa
 import torch
 import torchvision.transforms as T
+from dora import Node
 from PIL import Image
 from torchvision.transforms.functional import InterpolationMode
 from transformers import AutoModel, AutoTokenizer
@@ -20,7 +21,7 @@ def build_transform(input_size):
             T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
             T.ToTensor(),
             T.Normalize(mean=MEAN, std=STD),
-        ]
+        ],
     )
     return transform
 
@@ -42,7 +43,7 @@ def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_
 
 
 def dynamic_preprocess(
-    image, min_num=1, max_num=12, image_size=448, use_thumbnail=False
+    image, min_num=1, max_num=12, image_size=448, use_thumbnail=False,
 ):
     orig_width, orig_height = image.size
     aspect_ratio = orig_width / orig_height
@@ -59,7 +60,7 @@ def dynamic_preprocess(
 
     # find the closest aspect ratio to the target
     target_aspect_ratio = find_closest_aspect_ratio(
-        aspect_ratio, target_ratios, orig_width, orig_height, image_size
+        aspect_ratio, target_ratios, orig_width, orig_height, image_size,
     )
 
     # calculate the target width and height
@@ -91,7 +92,7 @@ def load_image(image_array: np.array, input_size=448, max_num=12):
     image = Image.fromarray(image_array).convert("RGB")
     transform = build_transform(input_size=input_size)
     images = dynamic_preprocess(
-        image, image_size=input_size, use_thumbnail=True, max_num=max_num
+        image, image_size=input_size, use_thumbnail=True, max_num=max_num,
     )
     pixel_values = [transform(image) for image in images]
     pixel_values = torch.stack(pixel_values)
@@ -116,7 +117,7 @@ def main():
         .to(device)
     )
     tokenizer = AutoTokenizer.from_pretrained(
-        model_path, trust_remote_code=True, use_fast=False
+        model_path, trust_remote_code=True, use_fast=False,
     )
 
     node = Node()
@@ -138,10 +139,7 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8":
-                    channels = 3
-                    storage_type = np.uint8
-                elif encoding == "rgb8":
+                if encoding == "bgr8" or encoding == "rgb8":
                     channels = 3
                     storage_type = np.uint8
                 else:
@@ -168,7 +166,7 @@ def main():
                     )
                     generation_config = dict(max_new_tokens=1024, do_sample=True)
                     response = model.chat(
-                        tokenizer, pixel_values, question, generation_config
+                        tokenizer, pixel_values, question, generation_config,
                     )
                     node.send_output(
                         "text",
