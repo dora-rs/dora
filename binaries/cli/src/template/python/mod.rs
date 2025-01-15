@@ -77,9 +77,10 @@ fn create_custom_node(
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
 
     // tests/tests___node_name__.py
-    let node_path = root
-        .join("tests")
-        .join(format!("test_{}.py", name.replace(" ", "_")));
+    let node_path = root.join("tests").join(format!(
+        "test_{}.py",
+        name.replace(" ", "_").replace("-", "_")
+    ));
     let file = replace_space(_TEST_PY, &name);
     fs::write(&node_path, file)
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
@@ -90,8 +91,8 @@ fn create_custom_node(
     );
     println!("   cd {}", Path::new(".").join(&root).display());
     println!("   pip install -e . # Install",);
-    println!("   black . # Format");
-    println!("   pylint  --disable=C,R . # Lint",);
+    println!("   ruff check . --fix # Format");
+    println!("   ruff check . # Lint",);
     println!("   pytest . # Test");
 
     Ok(())

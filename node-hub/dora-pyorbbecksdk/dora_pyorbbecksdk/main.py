@@ -13,21 +13,28 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # ******************************************************************************
-import cv2
 import os
+
+import cv2
 import numpy as np
+import pyarrow as pa
+from dora import Node
 
 try:
-    from pyorbbecsdk import Context
-    from pyorbbecsdk import Config
-    from pyorbbecsdk import OBError
-    from pyorbbecsdk import OBSensorType, OBFormat
-    from pyorbbecsdk import Pipeline, FrameSet
-    from pyorbbecsdk import VideoStreamProfile
-    from pyorbbecsdk import VideoFrame
+    from pyorbbecsdk import (
+        Config,
+        Context,
+        FrameSet,
+        OBError,
+        OBFormat,
+        OBSensorType,
+        Pipeline,
+        VideoFrame,
+        VideoStreamProfile,
+    )
 except ImportError as err:
     print(
-        "Please install pyorbbecsdk first by following the instruction at: https://github.com/orbbec/pyorbbecsdk"
+        "Please install pyorbbecsdk first by following the instruction at: https://github.com/orbbec/pyorbbecsdk",
     )
     raise err
 
@@ -42,7 +49,7 @@ class TemporalFilter:
             result = frame
         else:
             result = cv2.addWeighted(
-                frame, self.alpha, self.previous_frame, 1 - self.alpha, 0
+                frame, self.alpha, self.previous_frame, 1 - self.alpha, 0,
             )
         self.previous_frame = result
         return result
@@ -115,13 +122,10 @@ def frame_to_bgr_image(frame: VideoFrame):
         image = np.resize(data, (height, width, 2))
         image = cv2.cvtColor(image, cv2.COLOR_YUV2BGR_UYVY)
     else:
-        print("Unsupported color format: {}".format(color_format))
+        print(f"Unsupported color format: {color_format}")
         return None
     return image
 
-
-from dora import Node
-import pyarrow as pa
 
 ESC_KEY = 27
 MIN_DEPTH_METERS = 0.01
@@ -141,7 +145,7 @@ def main():
     profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
     try:
         color_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
-            640, 480, OBFormat.RGB, 30
+            640, 480, OBFormat.RGB, 30,
         )
     except OBError as e:
         print(e)
@@ -150,7 +154,7 @@ def main():
     profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
     try:
         depth_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
-            640, 480, OBFormat.Y16, 30
+            640, 480, OBFormat.Y16, 30,
         )
     except OBError as e:
         print(e)
@@ -200,7 +204,7 @@ def main():
             node.send_output("depth", storage)
             # Covert to Image
             depth_image = cv2.normalize(
-                depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U
+                depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U,
             )
             # Send Depth Image
             depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)

@@ -22,16 +22,16 @@ pip install -e .
 
 ## Contribution Guide
 
-- Format with [black](https://github.com/psf/black):
+- Format with [ruff](https://docs.astral.sh/ruff/):
 
 ```bash
-black . # Format
+ruff check . --fix
 ```
 
-- Lint with [pylint](https://github.com/pylint-dev/pylint):
+- Lint with ruff:
 
 ```bash
-pylint --disable=C,R --ignored-modules=cv2 . # Lint
+ruff check .
 ```
 
 - Test with [pytest](https://github.com/pytest-dev/pytest)

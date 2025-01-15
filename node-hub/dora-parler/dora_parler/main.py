@@ -1,19 +1,19 @@
-from threading import Thread
-from dora import Node
 import os
-from pathlib import Path
-import numpy as np
-import torch
 import time
-import pyaudio
+from pathlib import Path
+from threading import Thread
 
+import numpy as np
+import pyaudio
+import torch
+from dora import Node
 from parler_tts import ParlerTTSForConditionalGeneration, ParlerTTSStreamer
 from transformers import (
-    AutoTokenizer,
     AutoFeatureExtractor,
-    set_seed,
+    AutoTokenizer,
     StoppingCriteria,
     StoppingCriteriaList,
+    set_seed,
 )
 
 device = "cuda:0"  # if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
@@ -31,7 +31,7 @@ if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
         MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
 
 model = ParlerTTSForConditionalGeneration.from_pretrained(
-    MODEL_NAME_OR_PATH, torch_dtype=torch_dtype, low_cpu_mem_usage=True
+    MODEL_NAME_OR_PATH, torch_dtype=torch_dtype, low_cpu_mem_usage=True,
 ).to(device)
 model.generation_config.cache_implementation = "static"
 model.forward = torch.compile(model.forward, mode="default")
@@ -58,7 +58,6 @@ stream = p.open(format=pyaudio.paInt16, channels=1, rate=sampling_rate, output=T
 
 
 def play_audio(audio_array):
-
     if np.issubdtype(audio_array.dtype, np.floating):
         max_val = np.max(np.abs(audio_array))
         audio_array = (audio_array / max_val) * 32767
@@ -73,7 +72,7 @@ class InterruptStoppingCriteria(StoppingCriteria):
         self.stop_signal = False
 
     def __call__(
-        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs,
     ) -> bool:
         return self.stop_signal
 
@@ -109,7 +108,6 @@ def generate_base(
     thread.start()
 
     for new_audio in streamer:
-
         current_time = time.time()
 
         print(f"Time between iterations: {round(current_time - prev_time, 2)} seconds")
@@ -127,7 +125,7 @@ def generate_base(
             if event["id"] == "stop":
                 stopping_criteria.stop()
                 break
-            elif event["id"] == "text":
+            if event["id"] == "text":
                 stopping_criteria.stop()
 
                 text = event["value"][0].as_py()

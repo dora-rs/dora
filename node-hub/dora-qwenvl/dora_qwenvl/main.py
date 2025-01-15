@@ -1,13 +1,14 @@
 import os
-from dora import Node
-import torch
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pyarrow as pa
+import torch
+from dora import Node
 from PIL import Image
-from pathlib import Path
-import cv2
+from qwen_vl_utils import process_vision_info
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 
 DEFAULT_PATH = "Qwen/Qwen2-VL-2B-Instruct"
 
@@ -27,7 +28,7 @@ ADAPTER_PATH = os.getenv("ADAPTER_PATH", "")
 
 # Check if flash_attn is installed
 try:
-    import flash_attn as _
+    import flash_attn as _  # noqa
 
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         MODEL_NAME_OR_PATH,
@@ -52,10 +53,8 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
 def generate(frames: dict, question):
+    """Generate the response to the question given the image using Qwen2 model.
     """
-    Generate the response to the question given the image using Qwen2 model.
-    """
-
     messages = [
         {
             "role": "user",
@@ -69,12 +68,12 @@ def generate(frames: dict, question):
             + [
                 {"type": "text", "text": question},
             ],
-        }
+        },
     ]
 
     # Preparation for inference
     text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages, tokenize=False, add_generation_prompt=True,
     )
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
@@ -118,7 +117,6 @@ def main():
         event_type = event["type"]
 
         if event_type == "INPUT":
-
             event_id = event["id"]
 
             if "image" in event_id:
@@ -128,13 +126,7 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8":
-                    channels = 3
-                    storage_type = np.uint8
-                elif encoding == "rgb8":
-                    channels = 3
-                    storage_type = np.uint8
-                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     channels = 3
                     storage_type = np.uint8
                 else:
