@@ -29,12 +29,9 @@ huggingface_hub = "0.23.5"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
 
-[tool.pylint.MASTER]
-ignore-paths = '^dora_rdt_1b/RoboticsDiffusionTransformer.*$'
-
 [tool.poetry.dev-dependencies]
 pytest = "^8.3.4"
-pylint = "^3.3.2"
+ruff = ">= 0.9.1"
 
 [tool.black]
 extend-exclude = 'dora_rdt_1b/RoboticsDiffusionTransformer'
@@ -46,3 +43,6 @@ dora-rdt-1b = "dora_rdt_1b.main:main"
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+exclude = ["dora_rdt_1b/RoboticsDiffusionTransformer"]

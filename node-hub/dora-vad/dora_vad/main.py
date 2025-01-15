@@ -1,9 +1,10 @@
-from dora import Node
-import pyarrow as pa
-import numpy as np
 import os
-from silero_vad import load_silero_vad, get_speech_timestamps
+
+import numpy as np
+import pyarrow as pa
 import torch
+from dora import Node
+from silero_vad import get_speech_timestamps, load_silero_vad
 
 model = load_silero_vad()
 MIN_SILENCE_DURATION_MS = int(os.getenv("MIN_SILENCE_DURATION_MS", "200"))
@@ -38,14 +39,12 @@ def main():
                 len(speech_timestamps) > 0
                 and len(last_audios) > MIN_AUDIO_SAMPLING_DURAION_S
             ):
-
                 # Check if the audio is not cut at the end. And only return if there is a long time spent
                 if speech_timestamps[-1]["end"] == len(audio):
                     continue
-                else:
-                    audio = audio[0 : speech_timestamps[-1]["end"]]
-                    node.send_output("audio", pa.array(audio))
-                    last_audios = [audio[speech_timestamps[-1]["end"] :]]
+                audio = audio[0 : speech_timestamps[-1]["end"]]
+                node.send_output("audio", pa.array(audio))
+                last_audios = [audio[speech_timestamps[-1]["end"] :]]
 
             # If there is no sound for too long return the audio
             elif len(last_audios) > 75:

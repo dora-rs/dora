@@ -18,8 +18,8 @@ pyaudio = ">= 0.1.0"
 
 [tool.poetry.dev-dependencies]
 pytest = ">= 6.3.4"
-pylint = ">= 2.5.2"
-black = ">= 22.10"
+ruff = ">= 0.9.1"
+
 
 [tool.poetry.scripts]
 dora-pyaudio = "dora_pyaudio.main:main"

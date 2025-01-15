@@ -1,7 +1,6 @@
 from dora import Node
 
 
-import numpy as np
 import h5py
 import os
 

@@ -21,8 +21,7 @@ outetts = "^0.2.3"
 
 [tool.poetry.dev-dependencies]
 pytest = ">= 6.3.4"
-pylint = ">= 3.3.2"
-black = ">= 22.10"
+ruff = ">= 0.9.1"
 
 [tool.poetry.scripts]
 dora-outtetts = "dora_outtetts.main:main"
