@@ -1,9 +1,9 @@
-import sounddevice as sd
+import os
+import time as tm
+
 import numpy as np
 import pyarrow as pa
-import time as tm
-import os
-
+import sounddevice as sd
 from dora import Node
 
 MAX_DURATION = float(os.getenv("MAX_DURATION", "0.1"))
@@ -19,7 +19,6 @@ def main():
     always_none = node.next(timeout=0.001) is None
     finished = False
 
-    # pylint: disable=unused-argument
     def callback(indata, frames, time, status):
         nonlocal buffer, node, start_recording_time, finished
 
@@ -36,7 +35,7 @@ def main():
 
     # Start recording
     with sd.InputStream(
-        callback=callback, dtype=np.int16, channels=1, samplerate=SAMPLE_RATE
+        callback=callback, dtype=np.int16, channels=1, samplerate=SAMPLE_RATE,
     ):
         while not finished:
-            sd.sleep(int(1000))
+            sd.sleep(1000)

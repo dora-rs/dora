@@ -4,11 +4,10 @@ import time
 import cv2
 import numpy as np
 import pyarrow as pa
-
+import pyrealsense2 as rs
 from dora import Node
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
-import pyrealsense2 as rs
 
 
 def main():
@@ -26,7 +25,7 @@ def main():
     serials = [device.get_info(rs.camera_info.serial_number) for device in devices]
     if DEVICE_SERIAL and (DEVICE_SERIAL in serials):
         raise ConnectionError(
-            f"Device with serial {DEVICE_SERIAL} not found within: {serials}."
+            f"Device with serial {DEVICE_SERIAL} not found within: {serials}.",
         )
 
     pipeline = rs.pipeline()
@@ -53,7 +52,6 @@ def main():
     pa.array([])  # initialize pyarrow array
 
     for event in node:
-
         # Run this example in the CI for 10 seconds only.
         if RUNNER_CI and time.time() - start_time > 10:
             break
@@ -116,7 +114,7 @@ def main():
                 # metadata["principal_point"] = [int(rgb_intr.ppx), int(rgb_intr.ppy)]
                 node.send_output("image", storage, metadata)
                 node.send_output(
-                    "depth", pa.array(scaled_depth_image.ravel()), metadata
+                    "depth", pa.array(scaled_depth_image.ravel()), metadata,
                 )
 
         elif event_type == "ERROR":

@@ -1,0 +1,47 @@
+nodes:
+  - id: dora-microphone
+    description: Microphone
+    build: pip install dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-whisper
+    build: pip install dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english
+
+  - id: dora-outtetts
+    build: pip install dora-outtetts
+    path: dora-outtetts
+    inputs:
+      text: dora-whisper/text
+    outputs:
+      - audio
+
+  - id: dora-pyaudio
+    build: pip install dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-outtetts/audio
+
+  - id: dora-rerun
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      original_text: dora-whisper/text

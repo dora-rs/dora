@@ -12,13 +12,12 @@ packages = [{ include = "__node_name__" }]
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"
-pyarrow = ">= 5.0.0"
+pyarrow = ">= 15.0.0"
 python = "^3.7"
 
 [tool.poetry.dev-dependencies]
-pytest = ">= 8.3.4"
-pylint = ">= 3.3.2"
-black = ">= 24.10"
+pytest = ">= 6.3.4"
+ruff = ">= 0.9.1"
 
 [tool.poetry.scripts]
 __node-name__ = "__node_name__.main:main"

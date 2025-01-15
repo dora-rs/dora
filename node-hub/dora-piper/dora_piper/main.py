@@ -1,16 +1,16 @@
-from piper_sdk import C_PiperInterface
-from dora import Node
-import pyarrow as pa
-import numpy as np
 import os
 import time
+
+import numpy as np
+import pyarrow as pa
+from dora import Node
+from piper_sdk import C_PiperInterface
 
 TEACH_MODE = os.getenv("TEACH_MODE", "False") in ["True", "true"]
 
 
 def enable_fun(piper: C_PiperInterface):
-    """
-    使能机械臂并检测使能状态,尝试5s,如果使能超时则退出程序
+    """使能机械臂并检测使能状态,尝试5s,如果使能超时则退出程序
     """
     enable_flag = False
     # 设置超时时间（秒）
@@ -144,7 +144,6 @@ def main():
                 )
 
         elif event["type"] == "STOP":
-
             if not TEACH_MODE:
                 piper.MotionCtrl_2(0x01, 0x01, 50, 0x00)
                 piper.JointCtrl(0, 0, 0, 0, 0, 0)

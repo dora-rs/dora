@@ -5,7 +5,6 @@ import time
 import cv2
 import numpy as np
 import pyarrow as pa
-
 from dora import Node
 
 RUNNER_CI = True if os.getenv("CI") == "true" else False
@@ -16,7 +15,7 @@ FLIP = os.getenv("FLIP", "")
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="OpenCV Video Capture: This node is used to capture video from a camera."
+        description="OpenCV Video Capture: This node is used to capture video from a camera.",
     )
 
     parser.add_argument(
@@ -77,7 +76,6 @@ def main():
     pa.array([])  # initialize pyarrow array
 
     for event in node:
-
         # Run this example in the CI for 10 seconds only.
         if RUNNER_CI and time.time() - start_time > 10:
             break
@@ -95,7 +93,7 @@ def main():
                     cv2.putText(
                         frame,
                         f"Error: no frame for camera at path {video_capture_path}.",
-                        (int(30), int(30)),
+                        (30, 30),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.50,
                         (255, 255, 255),

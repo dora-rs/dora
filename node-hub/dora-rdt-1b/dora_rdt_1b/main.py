@@ -1,21 +1,22 @@
 # install dependencies as shown in the README here https://github.com/alik-git/RoboticsDiffusionTransformer?tab=readme-ov-file#installation
-import yaml
-import torch
+import os
+from pathlib import Path
+
+import cv2
 import numpy as np
+import pyarrow as pa
+import torch
+import yaml
+from dora import Node
 from PIL import Image
 
 from dora_rdt_1b.RoboticsDiffusionTransformer.configs.state_vec import (
     STATE_VEC_IDX_MAPPING,
 )
-from dora import Node
-import cv2
-import pyarrow as pa
-import os
-from pathlib import Path
 
 VISION_DEFAULT_PATH = "robotics-diffusion-transformer/rdt-1b"
 ROBOTIC_MODEL_NAME_OR_PATH = os.getenv(
-    "ROBOTIC_MODEL_NAME_OR_PATH", VISION_DEFAULT_PATH
+    "ROBOTIC_MODEL_NAME_OR_PATH", VISION_DEFAULT_PATH,
 )
 LANGUAGE_EMBEDDING_PATH = os.getenv("LANGUAGE_EMBEDDING", "lang_embed.pt")
 
@@ -33,7 +34,7 @@ config_path = (
     file_path / "RoboticsDiffusionTransformer/configs/base.yaml"
 )  # default config
 
-with open(config_path, "r", encoding="utf-8") as fp:
+with open(config_path, encoding="utf-8") as fp:
     config = yaml.safe_load(fp)
 
 
@@ -74,7 +75,7 @@ def get_language_embeddings():
     )
 
     return lang_embeddings.unsqueeze(
-        0
+        0,
     )  # Size:  (B, L_lang, D) or None, language condition tokens (variable length),    dimension D is assumed to be the same as the hidden size.
 
 
@@ -82,14 +83,13 @@ def expand2square(pil_img, background_color):
     width, height = pil_img.size
     if width == height:
         return pil_img
-    elif width > height:
+    if width > height:
         result = Image.new(pil_img.mode, (width, width), background_color)
         result.paste(pil_img, (0, (width - height) // 2))
         return result
-    else:
-        result = Image.new(pil_img.mode, (height, height), background_color)
-        result.paste(pil_img, ((height - width) // 2, 0))
-        return result
+    result = Image.new(pil_img.mode, (height, height), background_color)
+    result.paste(pil_img, ((height - width) // 2, 0))
+    return result
 
 
 def process_image(rgbs_lst, image_processor, vision_encoder):
@@ -156,12 +156,12 @@ def get_states(proprio):
 
     B, N = 1, 1  # batch size and state history size
     states = torch.zeros(
-        (B, N, config["model"]["state_token_dim"]), device=DEVICE, dtype=DTYPE
+        (B, N, config["model"]["state_token_dim"]), device=DEVICE, dtype=DTYPE,
     )
     # suppose you do not have proprio
     # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
     proprio = torch.tensor(proprio, device=DEVICE, dtype=DTYPE).reshape(
-        (1, 1, -1)
+        (1, 1, -1),
     )  # B, N = 1, 1  # batch size and state history size
 
     # if you have proprio, you can do like this
@@ -170,19 +170,19 @@ def get_states(proprio):
     states[:, :, STATE_INDICES] = proprio
 
     state_elem_mask = torch.zeros(
-        (1, config["model"]["state_token_dim"]), device=DEVICE, dtype=torch.bool
+        (1, config["model"]["state_token_dim"]), device=DEVICE, dtype=torch.bool,
     )
 
     state_elem_mask[:, STATE_INDICES] = True
-    states, state_elem_mask = states.to(DEVICE, dtype=DTYPE), state_elem_mask.to(
-        DEVICE, dtype=DTYPE
+    states, state_elem_mask = (
+        states.to(DEVICE, dtype=DTYPE),
+        state_elem_mask.to(DEVICE, dtype=DTYPE),
     )
     states = states[:, -1:, :]  # only use the last state
     return states, state_elem_mask, STATE_INDICES
 
 
 def main():
-
     rdt = get_policy()
     lang_embeddings = get_language_embeddings()
     vision_encoder, image_processor = get_vision_model()
@@ -195,11 +195,9 @@ def main():
     frames = {}
     joints = {}
     with torch.no_grad():
-
         for event in node:
             event_type = event["type"]
             if event_type == "INPUT":
-
                 event_id = event["id"]
 
                 if "image" in event_id:
@@ -207,13 +205,7 @@ def main():
                     metadata = event["metadata"]
                     encoding = metadata["encoding"]
 
-                    if encoding == "bgr8":
-                        channels = 3
-                        storage_type = np.uint8
-                    elif encoding == "rgb8":
-                        channels = 3
-                        storage_type = np.uint8
-                    elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                         channels = 3
                         storage_type = np.uint8
                     else:
@@ -243,13 +235,13 @@ def main():
                     else:
                         raise RuntimeError(f"Unsupported image encoding: {encoding}")
                     frames[f"last_{event_id}"] = frames.get(
-                        event_id, Image.fromarray(frame)
+                        event_id, Image.fromarray(frame),
                     )
                     frames[event_id] = Image.fromarray(frame)
                 elif "jointstate" in event_id:
                     joints[event_id] = event["value"].to_numpy()
 
-                elif "tick" == event_id:
+                elif event_id == "tick":
                     ## Wait for all images
                     if len(frames.keys()) < 6:
                         continue
@@ -270,7 +262,7 @@ def main():
                         ],
                     ]
                     image_embeds = process_image(
-                        rgbs_lst, image_processor, vision_encoder
+                        rgbs_lst, image_processor, vision_encoder,
                     )
 
                     ## Embed states
@@ -278,26 +270,26 @@ def main():
                         [
                             joints["jointstate_left"],
                             joints["jointstate_right"],
-                        ]
+                        ],
                     )
                     states, state_elem_mask, state_indices = get_states(proprio=proprio)
 
                     actions = rdt.predict_action(
                         lang_tokens=lang_embeddings,
                         lang_attn_mask=torch.ones(
-                            lang_embeddings.shape[:2], dtype=torch.bool, device=DEVICE
+                            lang_embeddings.shape[:2], dtype=torch.bool, device=DEVICE,
                         ),
                         img_tokens=image_embeds,
                         state_tokens=states,  # how can I get this?
                         action_mask=state_elem_mask.unsqueeze(1),  # how can I get this?
                         ctrl_freqs=torch.tensor(
-                            [25.0], device=DEVICE
+                            [25.0], device=DEVICE,
                         ),  # would this default work?
                     )  # (1, chunk_size, 128)
 
                     # select the meaning action via STATE_INDICES
                     action = actions[
-                        :, :, state_indices
+                        :, :, state_indices,
                     ]  # (1, chunk_size, len(STATE_INDICES)) = (1, chunk_size, 7+ 1)
                     action = action.detach().float().to("cpu").numpy()
                     node.send_output("action", pa.array(action.ravel()))
