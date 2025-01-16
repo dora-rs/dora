@@ -165,7 +165,7 @@ jobs:
             if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
               echo "Publishing $dir using maturin..."
               if [[ "${{ runner.os }}" == "Linux" ]]; then
-                uv pip install "maturin[zig]"
+                pip install "maturin[zig]"
                 
                 ## The CI/CD is sequential to limit the number of workers used.
                 
@@ -181,7 +181,7 @@ jobs:
                 maturin publish --target armv7-unknown-linux-musleabihf --zig --skip-existing
 
               else
-                uv pip install maturin
+                pip install maturin
                 maturin publish  --skip-existing
               fi
             else
