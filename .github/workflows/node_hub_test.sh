@@ -22,7 +22,7 @@ else
         cargo build
         cargo test
 
-        uv pip install "maturin[zig]"
+        pip install "maturin[zig]"
         maturin build --zig
                 
         # aarch64-unknown-linux-gnu
@@ -42,9 +42,10 @@ else
         else
             if [ -f "$dir/pyproject.toml" ]; then
             echo "Running linting and tests for Python project in $dir..."
+            uv venv
             uv pip install .
-            ruff check .
-            pytest
+            uv run ruff check .
+            uv run pytest
             fi
         fi 
     fi 
