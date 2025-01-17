@@ -41,10 +41,12 @@ else
             cargo test
         else
             if [ -f "$dir/pyproject.toml" ]; then
-            echo "Running linting and tests for Python project in $dir..."
+            echo "CI: Installing in $dir..."
             uv venv
             uv pip install .
+            echo "CI: Running Linting in $dir..."
             uv run ruff check .
+            echo "CI: Running Pytest in $dir..."
             uv run pytest
             fi
         fi 
