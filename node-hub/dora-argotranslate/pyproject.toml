@@ -18,7 +18,7 @@ numpy = "< 2.0.0"
 python = "^3.7"
 argostranslate = "^1.9.6"
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-argotranslate = "dora_argotranslate.main:main"
 
 [build-system]

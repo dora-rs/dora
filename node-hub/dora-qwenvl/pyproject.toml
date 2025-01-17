@@ -26,7 +26,7 @@ peft = "0.13.2"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-qwenvl = "dora_qwenvl.main:main"
 
 [build-system]

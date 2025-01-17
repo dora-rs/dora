@@ -24,7 +24,7 @@ pyaudio = "^0.2.14"
 modelscope = "^1.18.1"
 
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-parler = "dora_parler.main:main"
 
 [build-system]

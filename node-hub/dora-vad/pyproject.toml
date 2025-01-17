@@ -1,14 +1,11 @@
-[tool.poetry]
+[project]
 name = "dora-vad"
 version = "0.3.8"
 description = "Dora Node for Text translating using Argostranslate"
 readme = "README.md"
-authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
-    "Félix Huang <felix.huang.net@gmail.com>",
-]
+authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 
+[tool.poetry]
 packages = [{ include = "dora_vad" }]
 
 [tool.poetry.dependencies]
@@ -18,7 +15,7 @@ python = "^3.7"
 silero-vad = "^5.1"
 
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-vad = "dora_vad.main:main"
 
 [build-system]

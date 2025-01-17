@@ -20,7 +20,7 @@ asyncio = "^3.4"
 uvicorn = "^0.31"
 pydantic = "^2.9"
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-openai-server = "dora_openai_server.main:main"
 
 [build-system]
