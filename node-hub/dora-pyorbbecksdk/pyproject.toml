@@ -1,25 +1,20 @@
-[tool.poetry]
+[project]
 name = "dora-pyorbbecksdk"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Xiang Yang <Ryu-Yang@qq.com>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Xiang Yang", email = "Ryu-Yang@qq.com" },
 ]
 description = "Dora Node for capturing video with PyOrbbeck SDK"
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.8"
 
-packages = [{ include = "dora_pyorbbecksdk" }]
-
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-python = "^3.7"
-numpy = "< 2.0.0"
-opencv-python = ">= 4.1.1"
+dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "opencv-python >= 4.1.1"]
 
 
-[tool.poetry.scripts]
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
 dora-pyorbbecksdk = "dora_pyorbbecksdk.main:main"
-
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"

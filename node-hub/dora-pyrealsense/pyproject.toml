@@ -1,27 +1,22 @@
-[tool.poetry]
+[project]
 name = "dora-pyrealsense"
 version = "0.3.8"
-authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for capturing video with Pyrealsense"
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.8"
 
-packages = [{ include = "dora_pyrealsense" }]
-
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-opencv-python = ">= 4.1.1"
-python = "^3.7"
-pyrealsense2 = [
-    { version = "2.54.1.5216", platform = "linux" },
-    { version = "2.54.1.5216", platform = "windows" },
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "numpy < 2.0.0",
+    "opencv-python >= 4.1.1",
+    "pyrealsense2-macosx >= 2.54.2; sys_platform == 'darwin'",
+    "pyrealsense2 == 2.54.1.5216; sys_platform == 'linux'",
+    "pyrealsense2 == 2.54.1.5216; sys_platform == 'windows'",
 ]
-pyrealsense2-macosx = { version = "2.54.2", platform = "darwin" }
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
-
-[tool.poetry.scripts]
+[project.scripts]
 dora-pyrealsense = "dora_pyrealsense.main:main"
-
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"
