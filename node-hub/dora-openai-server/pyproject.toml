@@ -1,33 +1,32 @@
-[tool.poetry]
+[project]
 name = "dora-openai-server"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora OpenAI API Server"
-license = "MIT License"
-homepage = "https://github.com/dora-rs/dora.git"
-documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/dora-openai-server/README.md"
+license = { text = "MIT" }
 readme = "README.md"
-packages = [{ include = "dora_openai_server" }]
+requires-python = ">=3.8"
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-pyarrow = ">= 5.0.0"
-python = "^3.7"
-fastapi = "^0.115"
-asyncio = "^3.4"
-uvicorn = "^0.31"
-pydantic = "^2.9"
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "numpy < 2.0.0",
+    "pyarrow >= 5.0.0",
 
-[tool.poetry.scripts]
+    "fastapi >= 0.115",
+    "asyncio >= 3.4",
+    "uvicorn >= 0.31",
+    "pydantic >= 2.9",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
 dora-openai-server = "dora_openai_server.main:main"
 
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"
 
 [tool.ruff.lint]
 extend-select = ["I"]

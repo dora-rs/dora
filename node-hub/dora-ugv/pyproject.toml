@@ -1,20 +1,17 @@
-[tool.poetry]
+[project]
 name = "dora-ugv"
 version = "0.3.6"
-authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for using Agilex UGV"
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.8"
 
-packages = [{ include = "dora_ugv" }]
-
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-python = "^3.7"
+dependencies = ["dora-rs >= 0.3.6"]
 
 
-[tool.poetry.scripts]
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
 dora-ugv = "dora_ugv.main:main"
-
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"

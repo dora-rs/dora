@@ -1,32 +1,32 @@
-[tool.poetry]
+[project]
 name = "dora-internvl"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for VLM"
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.8"
 
-packages = [{ include = "dora_internvl" }]
+dependencies = [
 
-[tool.poetry.dependencies]
-python = "^3.7"
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-torch = "^2.2.0"
-torchvision = "^0.17"
-transformers = "^4.11.3"
-pillow = "^10.0.0"
-bitsandbytes = "^0.41.0"
-einops = "^0.6.1"
-einops-exts = "^0.0.4"
-timm = "^0.9.12"
-sentencepiece = "^0.1.99"
+    "dora-rs >= 0.3.6",
+    "numpy < 2.0.0",
+    "torch >= 2.2.0",
+    "torchvision >= 0.17",
+    "transformers >= 4.11.3",
+    "pillow >= 10.0.0",
+    "bitsandbytes >= 0.41.0",
+    "einops >= 0.6.1",
+    "einops-exts >= 0.0.4",
+    "timm >= 0.9.12",
+    "sentencepiece >= 0.1.99",
+]
 
-[tool.poetry.scripts]
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
 dora-internvl = "dora_internvl.main:main"
-
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"

@@ -1,24 +1,19 @@
-[tool.poetry]
+[project]
 name = "dora-yolo"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for object detection with dora YOLOv8"
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.8"
 
-packages = [{ include = "dora_yolo" }]
+dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "ultralytics >= 8.3.24"]
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-ultralytics = "^8.3.24"
-python = "^3.7"
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-yolo = "dora_yolo.main:main"
-
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"

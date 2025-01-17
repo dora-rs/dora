@@ -7,7 +7,9 @@ name = "dora-kit-car"
 dynamic = ["version"]
 authors = [{ name = "Leon", email = "echo_ai@foxmail.com" }]
 description = "Dora Node for dora kit car"
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.8"
 
 scripts = { "dora-kit-car" = "dora_kit_car:py_main" }
 

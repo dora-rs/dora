@@ -27,28 +27,21 @@ def main():
 And then you will need to adapt the following `pyproject.toml` file:
 
 ```toml
-[tool.poetry]
+[project]
 name = "[name of the node e.g. video-encoder, with '-' to replace spaces]"
 version = "0.1"
-authors = ["[Pseudo/Name] <[email]>"]
+authors = [{ name = "[Pseudo/Name]", email = "[email]" }]
 description = "Dora Node for []"
 readme = "README.md"
+license = { text = "MIT" }
 
-packages = [
-    { include = "main.py", to = "[name of the node with '_' to replace spaces]" }
+dependencies = [
+    "dora-rs >= 0.3.8",
 ]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-dora-rs = "0.3.5"
-... [add your dependencies here] ...
-
-[tool.poetry.scripts]
+[project.scripts]
 [name of the node with '-' to replace spaces] = "[name of the node with '_' to replace spaces].main:main"
 
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
 ```
 
 Finally, the README.md file should explicit all inputs/outputs of the node and how to configure it in the YAML file.
@@ -56,7 +49,7 @@ Finally, the README.md file should explicit all inputs/outputs of the node and h
 # Example
 
 ```toml
-[tool.poetry]
+[project]
 name = "opencv-plot"
 version = "0.1"
 authors = [
@@ -65,22 +58,18 @@ authors = [
 ]
 description = "Dora Node for plotting data with OpenCV"
 readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.7"
 
-packages = [
-    { include = "main.py", to = "opencv_plot" }
+dependencies = [
+    "dora-rs >= 0.3.8",
 ]
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-dora-rs = "^0.3.5"
-opencv-python = "^4.10.0.84"
-
-[tool.poetry.scripts]
+[project.scripts]
 opencv-plot = "opencv_plot.main:main"
 
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
 ```
 
 ## License

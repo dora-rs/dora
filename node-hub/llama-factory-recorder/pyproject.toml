@@ -1,24 +1,23 @@
-[tool.poetry]
+[project]
 name = "llama-factory-recorder"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for VLM"
-readme = "README.md"
 
-packages = [{ include = "llama_factory_recorder" }]
 
-[tool.poetry.dependencies]
-python = "^3.7"
-dora-rs = "^0.3.6"
-pillow = "^10.4.0"
-opencv-python = ">= 4.1.1"
+requires-python = ">=3.8"
 
-[tool.poetry.scripts]
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "pillow >= 10.4.0",
+    "opencv-python >= 4.1.1",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
 llama-factory-recorder = "llama_factory_recorder.main:main"
-
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"
