@@ -9,11 +9,12 @@ description = "Dora Node for VLM"
 readme = "README.md"
 
 
-[tool.poetry.dependencies]
-python = "^3.7"
-dora-rs = "^0.3.6"
-pillow = "^10.4.0"
-opencv-python = ">= 4.1.1"
+dependencies = [
+
+    "dora-rs >= 0.3.6",
+    "pillow >= 10.4.0",
+    "opencv-python >= 4.1.1",
+]
 
 [project.scripts]
 llama-factory-recorder = "llama_factory_recorder.main:main"

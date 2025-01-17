@@ -6,11 +6,7 @@ readme = "README.md"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-python = "^3.7"
-silero-vad = "^5.1"
+dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "silero-vad >= 5.1"]
 
 
 [project.scripts]

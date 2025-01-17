@@ -10,16 +10,17 @@ license = "MIT License"
 readme = "README.md"
 
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-pyarrow = ">= 5.0.0"
-transformers = "^4.0.0"
-accelerate = "^0.29.2"
-torch = "^2.2.0"
-python = "^3.7"
-modelscope = "^1.18.1"
-lightning-whisper-mlx = { version = "^0.0.10", platform = "darwin" }
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "numpy < 2.0.0",
+    "pyarrow >= 5.0.0",
+    "transformers >= 4.0.0",
+    "accelerate >= 0.29.2",
+    "torch >= 2.2.0",
+    "modelscope >= 1.18.1",
+    "lightning-whisper-mlx =^0.0.10; sys_platform == darwin",
+]
+
 
 [project.scripts]
 dora-distil-whisper = "dora_distil_whisper.main:main"

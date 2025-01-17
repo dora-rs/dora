@@ -6,12 +6,13 @@ description = "dora-pyaudio"
 license = "MIT License"
 
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = ">= 1.0.0"
-pyarrow = ">= 5.0.0"
-python = ">= 3.8"
-pyaudio = ">= 0.1.0"
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "numpy >= 1.0.0",
+    "pyarrow >= 5.0.0",
+    "python >= 3.8",
+    "pyaudio >= 0.1.0",
+]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1,<9"]

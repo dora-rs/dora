@@ -10,11 +10,7 @@ authors = [
 ]
 
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-python = "^3.7"
-argostranslate = "^1.9.6"
+dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "argostranslate >= 1.9.6"]
 
 [project.scripts]
 dora-argotranslate = "dora_argotranslate.main:main"

@@ -9,18 +9,19 @@ description = "Dora Node for Text to speech with dora Parler-TTS"
 readme = "README.md"
 
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-parler_tts = { git = "https://github.com/huggingface/parler-tts.git" }
-transformers = ">=4.43.0,<=4.43.3"
-torch = "^2.2.0"
-torchaudio = "^2.2.2"
-sentencepiece = "^0.1.99"
-python = "^3.7"
-pyaudio = "^0.2.14"
-modelscope = "^1.18.1"
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "numpy < 2.0.0",
+    "torch >= 2.2.0",
+    "torchaudio >= 2.2.2",
+    "sentencepiece >= 0.1.99",
+    "pyaudio >= 0.2.14",
+    "modelscope >= 1.18.1",
+    "transformers >=4.43.0,<=4.43.3",
+]
 
+[tool.uv.sources]
+parler_tts = { git = "https://github.com/huggingface/parler-tts.git" }
 
 [project.scripts]
 dora-parler = "dora_parler.main:main"
