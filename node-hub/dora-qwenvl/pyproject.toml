@@ -20,7 +20,7 @@ dependencies = [
     "accelerate >= 0.33",
     "opencv-python >= 4.1.1",
     "modelscope >= 1.18.1",
-    "peft = 0.13.2",
+    "peft == 0.13.2",
 ]
 
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
