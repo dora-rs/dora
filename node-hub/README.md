@@ -30,16 +30,13 @@ And then you will need to adapt the following `pyproject.toml` file:
 [project]
 name = "[name of the node e.g. video-encoder, with '-' to replace spaces]"
 version = "0.1"
-authors = [{name= "[Pseudo/Name]", email="[email]"]
+authors = [{ name = "[Pseudo/Name]", email = "[email]" }]
 description = "Dora Node for []"
 readme = "README.md"
-
+license = { text = "MIT" }
 
 dependencies = [
-"dora-rs = "0.3.5",
-
-
-... [add your dependencies here] ...
+    "dora-rs >= 0.3.8",
 ]
 
 [project.scripts]
