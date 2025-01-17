@@ -6,8 +6,9 @@ authors = [
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for Text to speech with dora Parler-TTS"
+license = { text = "MIT" }
 readme = "README.md"
-
+requires-python = ">=3.7"
 
 dependencies = [
     "dora-rs >= 0.3.6",

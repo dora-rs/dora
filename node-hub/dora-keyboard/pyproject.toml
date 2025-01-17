@@ -6,7 +6,9 @@ authors = [
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora dora-keyboard"
-license = "MIT License"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.7"
 
 dependencies = [
     "dora-rs >= 0.3.6",

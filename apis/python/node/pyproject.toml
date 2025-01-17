@@ -4,8 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "dora-rs"
-dynamic = ["version", "readme"]
+dynamic = ["version"]
 # Install pyarrow at the same time of dora-rs
+requires-python = ">=3.7"
+license = { text = "MIT" }
+readme = "README.md"
 dependencies = ['pyarrow']
 
 [dependency-groups]
