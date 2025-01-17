@@ -18,7 +18,7 @@ dependencies = [
     "accelerate >= 0.29.2",
     "torch >= 2.2.0",
     "modelscope >= 1.18.1",
-    "lightning-whisper-mlx =^0.0.10; sys_platform == darwin",
+    "lightning-whisper-mlx >= 0.0.10; sys_platform == darwin",
 ]
 
 
