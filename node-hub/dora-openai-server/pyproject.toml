@@ -27,9 +27,6 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 [project.scripts]
 dora-openai-server = "dora_openai_server.main:main"
 
-[build-system]
-requires = ["poetry-core>=1.8.0"]
-build-backend = "poetry.core.masonry.api"
 
 [tool.ruff.lint]
 extend-select = ["I"]
