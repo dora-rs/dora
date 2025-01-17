@@ -5,8 +5,6 @@ description = "Dora Node for Text translating using Argostranslate"
 readme = "README.md"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 
-[tool.poetry]
-packages = [{ include = "dora_vad" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

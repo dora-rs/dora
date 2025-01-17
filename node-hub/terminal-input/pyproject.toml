@@ -9,8 +9,6 @@ description = "Dora terminal input"
 license = "MIT License"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "terminal_input" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

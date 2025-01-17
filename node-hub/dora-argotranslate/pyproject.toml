@@ -9,8 +9,6 @@ authors = [
     { name = "Félix Huang", email = "felix.huang.net@gmail.com" },
 ]
 
-[tool.poetry]
-packages = [{ include = "dora_argotranslate" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

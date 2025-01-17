@@ -8,8 +8,6 @@ authors = [
 description = "Dora Node for VLM"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_qwenvl" }]
 
 [tool.poetry.dependencies]
 python = "^3.7"

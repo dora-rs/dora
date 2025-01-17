@@ -5,8 +5,6 @@ authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "dora-pyaudio"
 license = "MIT License"
 
-[tool.poetry]
-packages = [{ include = "dora_pyaudio" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
@@ -15,9 +13,8 @@ pyarrow = ">= 5.0.0"
 python = ">= 3.8"
 pyaudio = ">= 0.1.0"
 
-[tool.poetry.dev-dependencies]
-pytest = ">= 6.3.4"
-ruff = ">= 0.9.1"
+[dependency-groups]
+dev = ["pytest >=8.1.1,<9"]
 
 
 [project.scripts]

@@ -8,8 +8,6 @@ authors = [
 description = "Dora Node for capturing video with OpenCV"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "opencv_video_capture" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
