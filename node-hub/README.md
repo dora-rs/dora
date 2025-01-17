@@ -45,9 +45,6 @@ dependencies = [
 [project.scripts]
 [name of the node with '-' to replace spaces] = "[name of the node with '_' to replace spaces].main:main"
 
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
 ```
 
 Finally, the README.md file should explicit all inputs/outputs of the node and how to configure it in the YAML file.
@@ -76,9 +73,6 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 [project.scripts]
 opencv-plot = "opencv_plot.main:main"
 
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
 ```
 
 ## License
