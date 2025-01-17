@@ -86,7 +86,6 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          uv pip install ruff pytest
 
       - name: Set up Rust
         if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))

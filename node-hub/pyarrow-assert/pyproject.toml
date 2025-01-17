@@ -11,6 +11,9 @@ license = "MIT License"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "pyarrow >= 5.0.0"]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 pyarrow-assert = "pyarrow_assert.main:main"
 
