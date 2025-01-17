@@ -8,8 +8,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 [tool.poetry]
-homepage = "https://github.com/dora-rs/dora.git"
-documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/dora-outtetts/README.md"
 packages = [{ include = "dora_outtetts" }]
 
 [tool.poetry.dependencies]

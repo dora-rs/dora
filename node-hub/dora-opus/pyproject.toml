@@ -1,14 +1,16 @@
-[tool.poetry]
+[project]
 name = "dora-opus"
 version = "0.3.8"
 description = "Dora Node for Text translating using Opus"
 readme = "README.md"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
-    "Félix Huang <felix.huang.net@gmail.com>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
+    { name = "Félix Huang", email = "felix.huang.net@gmail.com" },
 ]
 
+
+[tool.poetry]
 packages = [{ include = "dora_opus" }]
 
 [tool.poetry.dependencies]

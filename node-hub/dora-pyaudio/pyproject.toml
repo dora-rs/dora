@@ -1,12 +1,11 @@
-[tool.poetry]
+[project]
 name = "dora-pyaudio"
 version = "0.0.0"
-authors = ["author"]
+authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "dora-pyaudio"
 license = "MIT License"
-homepage = "https://github.com/dora-rs/dora.git"
-documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyaudio/README.md"
-readme = "README.md"
+
+[tool.poetry]
 packages = [{ include = "dora_pyaudio" }]
 
 [tool.poetry.dependencies]

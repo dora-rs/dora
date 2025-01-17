@@ -1,15 +1,14 @@
-[tool.poetry]
+[project]
+readme = "README.md"
 name = "pyarrow-assert"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for plotting text and bbox on image with OpenCV"
 license = "MIT License"
-homepage = "https://github.com/dora-rs/dora.git"
-documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/pyarrow-assert/README.md"
-readme = "README.md"
+[tool.poetry]
 packages = [{ include = "pyarrow_assert" }]
 
 [tool.poetry.dependencies]
