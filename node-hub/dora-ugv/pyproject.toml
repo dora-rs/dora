@@ -6,9 +6,7 @@ description = "Dora Node for using Agilex UGV"
 readme = "README.md"
 
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-python = "^3.7"
+dependencies = ["dora-rs >= 0.3.6", "python >= 3.7"]
 
 
 [project.scripts]

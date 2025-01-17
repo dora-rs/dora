@@ -10,11 +10,7 @@ license = "MIT License"
 
 readme = "README.md"
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-pyarrow = ">= 5.0.0"
-python = "^3.7"
+dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "pyarrow >= 5.0.0"]
 
 [project.scripts]
 pyarrow-sender = "pyarrow_sender.main:main"

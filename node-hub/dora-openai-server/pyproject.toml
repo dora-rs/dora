@@ -8,15 +8,16 @@ authors = [
 description = "Dora OpenAI API Server"
 license = "MIT License"
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-pyarrow = ">= 5.0.0"
-python = "^3.7"
-fastapi = "^0.115"
-asyncio = "^3.4"
-uvicorn = "^0.31"
-pydantic = "^2.9"
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "numpy < 2.0.0",
+    "pyarrow >= 5.0.0",
+
+    "fastapi >= 0.115",
+    "asyncio >= 3.4",
+    "uvicorn >= 0.31",
+    "pydantic >= 2.9",
+]
 
 [project.scripts]
 dora-openai-server = "dora_openai_server.main:main"

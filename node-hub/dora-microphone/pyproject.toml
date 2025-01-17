@@ -8,12 +8,13 @@ authors = [
 description = "Dora dora-microphone"
 license = "MIT License"
 
-[tool.poetry.dependencies]
-dora-rs = "^0.3.6"
-numpy = "< 2.0.0"
-pyarrow = ">= 5.0.0"
-sounddevice = "^0.4.6"
-python = "^3.7"
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "numpy < 2.0.0",
+    "pyarrow >= 5.0.0",
+    "sounddevice >= 0.4.6",
+
+]
 
 [project.scripts]
 dora-microphone = "dora_microphone.main:main"

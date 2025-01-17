@@ -27,23 +27,22 @@ def main():
 And then you will need to adapt the following `pyproject.toml` file:
 
 ```toml
-[tool.poetry]
+[project]
 name = "[name of the node e.g. video-encoder, with '-' to replace spaces]"
 version = "0.1"
-authors = ["[Pseudo/Name] <[email]>"]
+authors = [{name= "[Pseudo/Name]", email="[email]"]
 description = "Dora Node for []"
 readme = "README.md"
 
-packages = [
-    { include = "main.py", to = "[name of the node with '_' to replace spaces]" }
+
+dependencies = [
+"dora-rs = "0.3.5",
+
+
+... [add your dependencies here] ...
 ]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-dora-rs = "0.3.5"
-... [add your dependencies here] ...
-
-[tool.poetry.scripts]
+[project.scripts]
 [name of the node with '-' to replace spaces] = "[name of the node with '_' to replace spaces].main:main"
 
 [build-system]
@@ -56,7 +55,7 @@ Finally, the README.md file should explicit all inputs/outputs of the node and h
 # Example
 
 ```toml
-[tool.poetry]
+[project]
 name = "opencv-plot"
 version = "0.1"
 authors = [
@@ -70,12 +69,12 @@ packages = [
     { include = "main.py", to = "opencv_plot" }
 ]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-dora-rs = "^0.3.5"
-opencv-python = "^4.10.0.84"
+dependencies = [
+"dora-rs = ^0.3.8",
 
-[tool.poetry.scripts]
+]
+
+[project.scripts]
 opencv-plot = "opencv_plot.main:main"
 
 [build-system]
