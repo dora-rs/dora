@@ -65,14 +65,11 @@ authors = [
 description = "Dora Node for plotting data with OpenCV"
 readme = "README.md"
 
-packages = [
-    { include = "main.py", to = "opencv_plot" }
-]
-
 dependencies = [
-"dora-rs = ^0.3.8",
-
+    "dora-rs >= 0.3.8",
 ]
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 opencv-plot = "opencv_plot.main:main"
