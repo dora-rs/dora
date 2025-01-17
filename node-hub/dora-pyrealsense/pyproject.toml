@@ -5,8 +5,6 @@ authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for capturing video with Pyrealsense"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_pyrealsense" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

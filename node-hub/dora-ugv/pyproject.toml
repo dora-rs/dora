@@ -5,8 +5,6 @@ authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for using Agilex UGV"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_ugv" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

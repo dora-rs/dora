@@ -8,8 +8,6 @@ authors = [
 description = "Dora Node for capturing video with PyOrbbeck SDK"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_pyorbbecksdk" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

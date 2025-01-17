@@ -7,8 +7,6 @@ authors = [
 ]
 description = "Dora dora-keyboard"
 license = "MIT License"
-[tool.poetry]
-packages = [{ include = "dora_keyboard" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

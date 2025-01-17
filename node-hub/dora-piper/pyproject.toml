@@ -5,8 +5,6 @@ authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for using Agilex piper"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_piper" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
@@ -14,8 +12,8 @@ python = "^3.7"
 piper_sdk = "^0.0.8"
 numpy = "< 2.0.0"
 
-[tool.poetry.dev-dependencies]
-pytest = "^8.3.4"
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 dora-piper = "dora_piper.main:main"

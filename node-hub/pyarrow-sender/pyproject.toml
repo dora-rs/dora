@@ -9,8 +9,6 @@ description = "Dora pyarrow Sender"
 license = "MIT License"
 
 readme = "README.md"
-[tool.poetry]
-packages = [{ include = "pyarrow_sender" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

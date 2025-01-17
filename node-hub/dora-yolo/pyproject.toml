@@ -8,8 +8,6 @@ authors = [
 description = "Dora Node for object detection with dora YOLOv8"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_yolo" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

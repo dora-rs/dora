@@ -9,8 +9,6 @@ description = "Dora dora-distil-whisper"
 license = "MIT License"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_distil_whisper" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
@@ -26,9 +24,8 @@ lightning-whisper-mlx = { version = "^0.0.10", platform = "darwin" }
 [project.scripts]
 dora-distil-whisper = "dora_distil_whisper.main:main"
 
-[tool.poetry.dev-dependencies]
-pytest = ">= 6.3.4"
-ruff = ">= 0.9.1"
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

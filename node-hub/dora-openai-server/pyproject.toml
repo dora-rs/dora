@@ -7,8 +7,6 @@ authors = [
 ]
 description = "Dora OpenAI API Server"
 license = "MIT License"
-[tool.poetry]
-packages = [{ include = "dora_openai_server" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

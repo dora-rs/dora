@@ -5,8 +5,6 @@ authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for RDT 1B"
 readme = "README.md"
 
-[tool.poetry]
-packages = [{ include = "dora_rdt_1b" }]
 
 [tool.poetry.dependencies]
 python = "^3.7"
@@ -30,8 +28,8 @@ huggingface_hub = "0.23.5"
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
 
-[tool.poetry.dev-dependencies]
-pytest = "^8.3.4"
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 ruff = ">= 0.9.1"
 
 [tool.black]

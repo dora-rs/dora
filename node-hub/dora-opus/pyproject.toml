@@ -10,9 +10,6 @@ authors = [
 ]
 
 
-[tool.poetry]
-packages = [{ include = "dora_opus" }]
-
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
 numpy = "< 2.0.0"

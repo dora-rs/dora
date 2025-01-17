@@ -7,8 +7,6 @@ authors = [
 ]
 description = "Dora dora-microphone"
 license = "MIT License"
-[tool.poetry]
-packages = [{ include = "dora_microphone" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"

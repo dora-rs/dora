@@ -8,8 +8,6 @@ authors = [
 ]
 description = "Dora Node for plotting text and bbox on image with OpenCV"
 license = "MIT License"
-[tool.poetry]
-packages = [{ include = "pyarrow_assert" }]
 
 [tool.poetry.dependencies]
 dora-rs = "^0.3.6"
