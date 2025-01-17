@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest >=8.1.1,<9"]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 dora-outtetts = "dora_outtetts.main:main"

@@ -11,6 +11,9 @@ readme = "README.md"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "opencv-python >= 4.1.1"]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 opencv-plot = "opencv_plot.main:main"
 

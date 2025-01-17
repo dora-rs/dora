@@ -10,11 +10,13 @@ readme = "README.md"
 
 
 dependencies = [
-
     "dora-rs >= 0.3.6",
     "pillow >= 10.4.0",
     "opencv-python >= 4.1.1",
 ]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 llama-factory-recorder = "llama_factory_recorder.main:main"

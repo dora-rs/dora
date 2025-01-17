@@ -11,6 +11,9 @@ readme = "README.md"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "ultralytics >= 8.3.24"]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 dora-yolo = "dora_yolo.main:main"
 
