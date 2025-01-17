@@ -1,10 +1,11 @@
-[tool.poetry]
+[project]
 name = "dora-ugv"
 version = "0.3.6"
-authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for using Agilex UGV"
 readme = "README.md"
 
+[tool.poetry]
 packages = [{ include = "dora_ugv" }]
 
 [tool.poetry.dependencies]

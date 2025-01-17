@@ -1,13 +1,14 @@
-[tool.poetry]
+[project]
 name = "dora-yolo"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for object detection with dora YOLOv8"
 readme = "README.md"
 
+[tool.poetry]
 packages = [{ include = "dora_yolo" }]
 
 [tool.poetry.dependencies]

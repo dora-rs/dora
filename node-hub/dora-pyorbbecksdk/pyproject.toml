@@ -1,13 +1,14 @@
-[tool.poetry]
+[project]
 name = "dora-pyorbbecksdk"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Xiang Yang <Ryu-Yang@qq.com>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Xiang Yang", email = "Ryu-Yang@qq.com" },
 ]
 description = "Dora Node for capturing video with PyOrbbeck SDK"
 readme = "README.md"
 
+[tool.poetry]
 packages = [{ include = "dora_pyorbbecksdk" }]
 
 [tool.poetry.dependencies]

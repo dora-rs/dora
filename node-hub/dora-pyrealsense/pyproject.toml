@@ -1,10 +1,11 @@
-[tool.poetry]
+[project]
 name = "dora-pyrealsense"
 version = "0.3.8"
-authors = ["Haixuan Xavier Tao <tao.xavier@outlook.com>"]
+authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for capturing video with Pyrealsense"
 readme = "README.md"
 
+[tool.poetry]
 packages = [{ include = "dora_pyrealsense" }]
 
 [tool.poetry.dependencies]

@@ -1,13 +1,14 @@
-[tool.poetry]
+[project]
 name = "llama-factory-recorder"
 version = "0.3.8"
 authors = [
-    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
-    "Enzo Le Van <dev@enzo-le-van.fr>",
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for VLM"
 readme = "README.md"
 
+[tool.poetry]
 packages = [{ include = "llama_factory_recorder" }]
 
 [tool.poetry.dependencies]
