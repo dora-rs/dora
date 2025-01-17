@@ -1,5 +1,4 @@
 [project]
-readme = "README.md"
 name = "pyarrow-assert"
 version = "0.3.8"
 authors = [
@@ -7,7 +6,10 @@ authors = [
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for plotting text and bbox on image with OpenCV"
-license = "MIT License"
+license = { text = "MIT" }
+readme = "README.md"
+
+requires-python = ">=3.7"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "pyarrow >= 5.0.0"]
 

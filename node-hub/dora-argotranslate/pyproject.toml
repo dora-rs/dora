@@ -2,13 +2,14 @@
 name = "dora-argotranslate"
 version = "0.3.8"
 description = "Dora Node for Text translating using Argostranslate"
-readme = "README.md"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
     { name = "Félix Huang", email = "felix.huang.net@gmail.com" },
 ]
-
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.7"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "argostranslate >= 1.9.6"]
 

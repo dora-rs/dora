@@ -2,10 +2,10 @@
 name = "dora-outtetts"
 version = "0.0.0"
 authors = []
-license = "MIT License"
 description = "dora-outtetts"
+license = { text = "MIT" }
 readme = "README.md"
-
+requires-python = ">=3.7"
 
 dependencies = [
     "dora-rs >= 0.3.6",

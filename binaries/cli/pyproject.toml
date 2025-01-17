@@ -5,8 +5,10 @@ build-backend = "maturin"
 [project]
 name = "dora-rs-cli"
 dynamic = ["version"]
-
 scripts = { "dora" = "dora_cli:py_main" }
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.7"
 dependencies = ['dora-rs']
 
 [tool.maturin]

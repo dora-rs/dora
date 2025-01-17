@@ -64,6 +64,8 @@ authors = [
 ]
 description = "Dora Node for plotting data with OpenCV"
 readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.7"
 
 dependencies = [
     "dora-rs >= 0.3.8",

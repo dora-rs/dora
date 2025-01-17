@@ -3,9 +3,9 @@ name = "__node-name__"
 version = "0.0.0"
 authors = [{ name = "Your Name", email = "email@email.com" }]
 description = "Node Name"
-license = "MIT License"
+license = { text = "MIT" }
 readme = "README.md"
-
+requires-python = ">=3.7"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "pyarrow >= 15.0.0"]
 
