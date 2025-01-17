@@ -5,7 +5,7 @@ authors = [{ name = "Your Name", email = "email@email.com" }]
 description = "Node Name"
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "pyarrow >= 15.0.0"]
 

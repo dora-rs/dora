@@ -4,7 +4,7 @@ version = "0.0.1"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 description = "dora-pyaudio"
 
 dependencies = [

@@ -5,7 +5,7 @@ description = "Dora Node for Text translating using Argostranslate"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 
 dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "silero-vad >= 5.1"]
 

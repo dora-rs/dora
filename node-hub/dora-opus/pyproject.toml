@@ -10,7 +10,7 @@ authors = [
 
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 
 dependencies = [
     "dora-rs >= 0.3.6",
