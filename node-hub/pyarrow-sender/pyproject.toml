@@ -18,7 +18,7 @@ numpy = "< 2.0.0"
 pyarrow = ">= 5.0.0"
 python = "^3.7"
 
-[tool.poetry.scripts]
+[project.scripts]
 pyarrow-sender = "pyarrow_sender.main:main"
 
 [build-system]

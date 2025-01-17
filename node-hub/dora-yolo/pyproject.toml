@@ -17,7 +17,7 @@ numpy = "< 2.0.0"
 ultralytics = "^8.3.24"
 python = "^3.7"
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-yolo = "dora_yolo.main:main"
 
 [build-system]

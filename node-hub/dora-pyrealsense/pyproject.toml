@@ -20,7 +20,7 @@ pyrealsense2 = [
 pyrealsense2-macosx = { version = "2.54.2", platform = "darwin" }
 
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-pyrealsense = "dora_pyrealsense.main:main"
 
 [build-system]

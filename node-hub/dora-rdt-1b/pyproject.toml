@@ -38,7 +38,7 @@ ruff = ">= 0.9.1"
 extend-exclude = 'dora_rdt_1b/RoboticsDiffusionTransformer'
 
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-rdt-1b = "dora_rdt_1b.main:main"
 
 [build-system]

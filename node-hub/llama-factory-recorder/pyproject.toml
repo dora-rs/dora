@@ -17,7 +17,7 @@ dora-rs = "^0.3.6"
 pillow = "^10.4.0"
 opencv-python = ">= 4.1.1"
 
-[tool.poetry.scripts]
+[project.scripts]
 llama-factory-recorder = "llama_factory_recorder.main:main"
 
 [build-system]

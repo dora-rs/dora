@@ -1,12 +1,12 @@
-[tool.poetry]
+[project]
 name = "__node-name__"
 version = "0.0.0"
-authors = ["author"]
+authors = [{ name = "Your Name", email = "email@email.com" }]
 description = "Node Name"
 license = "MIT License"
-homepage = "https://github.com/dora-rs/dora.git"
-documentation = "https://github.com/dora-rs/dora/blob/main/node-hub/__node-name__/README.md"
 readme = "README.md"
+
+[tool.poetry]
 packages = [{ include = "__node_name__" }]
 
 [tool.poetry.dependencies]
@@ -19,7 +19,7 @@ python = "^3.7"
 pytest = ">= 6.3.4"
 ruff = ">= 0.9.1"
 
-[tool.poetry.scripts]
+[project.scripts]
 __node-name__ = "__node_name__.main:main"
 
 [build-system]

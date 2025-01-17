@@ -20,7 +20,7 @@ pytest = ">= 6.3.4"
 ruff = ">= 0.9.1"
 
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-pyaudio = "dora_pyaudio.main:main"
 
 [build-system]

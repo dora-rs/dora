@@ -17,7 +17,7 @@ numpy = "< 2.0.0"
 [tool.poetry.dev-dependencies]
 pytest = "^8.3.4"
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-piper = "dora_piper.main:main"
 
 [build-system]

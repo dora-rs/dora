@@ -25,7 +25,7 @@ einops-exts = "^0.0.4"
 timm = "^0.9.12"
 sentencepiece = "^0.1.99"
 
-[tool.poetry.scripts]
+[project.scripts]
 dora-internvl = "dora_internvl.main:main"
 
 [build-system]
