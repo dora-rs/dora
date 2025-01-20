@@ -58,7 +58,7 @@ async fn main() -> eyre::Result<()> {
                         let file =
                             tokio::fs::File::create(dataflow_dir.join(format!("{id}.parquet")))
                                 .await
-                                .context("Couldn't create write file")?;
+                                .context("Could not create write file")?;
                         let mut writer = AsyncArrowWriter::try_new(
                             file,
                             schema.clone(),
