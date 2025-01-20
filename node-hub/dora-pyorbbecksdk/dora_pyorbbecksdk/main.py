@@ -173,7 +173,7 @@ def main():
             color_frame = frames.get_color_frame()
             if color_frame is None:
                 continue
-            # covert to RGB format
+            # convert to RGB format
             color_image = frame_to_bgr_image(color_frame)
             if color_image is None:
                 print("failed to convert frame to image")
@@ -202,7 +202,7 @@ def main():
             # Send Depth data
             storage = pa.array(depth_data.ravel())
             node.send_output("depth", storage)
-            # Covert to Image
+            # Convert to Image
             depth_image = cv2.normalize(
                 depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U,
             )
