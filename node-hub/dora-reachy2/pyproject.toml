@@ -1,0 +1,19 @@
+[project]
+name = "dora-reachy2"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "dora-reachy2"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "reachy2-sdk",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-reachy2 = "dora_reachy2.main:main"
