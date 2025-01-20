@@ -46,7 +46,7 @@ impl Node {
             DoraNode::init_flexible(NodeId::from(node_id))
                 .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
         } else {
-            DoraNode::init_from_env().context("Couldn not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
+            DoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
         };
 
         let dataflow_id = *node.dataflow_id();
