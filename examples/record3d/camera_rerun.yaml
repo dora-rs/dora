@@ -1,0 +1,16 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-record3d
+    path: dora-record3d
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+      - depth
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      world/camera/image: camera/image
+      world/camera/depth: camera/depth
