@@ -116,8 +116,6 @@ pub async fn spawn_node(
                             let python = get_python_path().context("Could not get python path")?;
                             tracing::info!("spawning: {:?} {}", &python, resolved_path.display());
                             let mut cmd = tokio::process::Command::new(&python);
-                            // Force python to always flush stdout/stderr buffer
-                            cmd.arg("-u");
                             cmd.arg(&resolved_path);
                             cmd
                         }
@@ -160,6 +158,7 @@ pub async fn spawn_node(
             #[cfg(unix)]
             command.process_group(0);
 
+            command.env("PYTHONUNBUFFERED", "1");
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
