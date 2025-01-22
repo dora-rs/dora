@@ -30,7 +30,7 @@ class DemoApp:
         devs = Record3DStream.get_connected_devices()
         print("{} device(s) found".format(len(devs)))
         for dev in devs:
-            print("\tID: {}\n\tUDID: {}\n".format(dev.product_id, dev.udid))
+            print("\tID: {}\n".format(dev.product_id))
 
         if len(devs) <= dev_idx:
             raise RuntimeError(
