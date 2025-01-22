@@ -1,6 +1,6 @@
 //! Demonstrates the most barebone usage of the Rerun SDK.
 
-use std::env::VarError;
+use std::{collections::HashMap, env::VarError};
 
 use dora_node_api::{
     arrow::{
@@ -12,7 +12,8 @@ use dora_node_api::{
 use eyre::{eyre, Context, ContextCompat, Result};
 
 use rerun::{
-    components::ImageBuffer, external::re_types::ArrowBuffer, ImageFormat, SpawnOptions, Text,
+    components::ImageBuffer, external::re_types::ArrowBuffer, ImageFormat, Points3D, SpawnOptions,
+    Text,
 };
 pub mod series;
 pub mod urdf;
@@ -40,6 +41,9 @@ pub fn lib_main() -> Result<()> {
     };
 
     options.memory_limit = memory_limit;
+
+    // Setup an image cache to paint depth images.
+    let mut image_cache = HashMap::new();
 
     let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
         .spawn_opts(&options, None)
@@ -94,6 +98,7 @@ pub fn lib_main() -> Result<()> {
                     // Transpose values from BGR to RGB
                     let buffer: Vec<u8> =
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
+                    image_cache.insert(id.clone(), buffer.clone());
                     let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
@@ -107,6 +112,7 @@ pub fn lib_main() -> Result<()> {
                         .context("could not log image")?;
                 } else if encoding == "rgb8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                    image_cache.insert(id.clone(), buffer.values().to_vec());
                     let buffer: &[u8] = buffer.values();
                     let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
@@ -127,49 +133,49 @@ pub fn lib_main() -> Result<()> {
                         .context("could not log image")?;
                 };
             } else if id.as_str().contains("depth") {
-                let height =
-                    if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
-                        height
-                    } else {
-                        &480
-                    };
                 let width =
                     if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
                         width
                     } else {
                         &640
                     };
-                // let focal_length = if let Some(Parameter::ListInt(focals)) =
-                // metadata.parameters.get("focal_length")
-                // {
-                // focals
-                // } else {
-                // &vec![605, 605]
-                // };
-                // let resolutions = if let Some(Parameter::ListInt(resolutions)) =
-                // metadata.parameters.get("resolutions")
-                // {
-                // resolutions
-                // } else {
-                // &vec![640, 480]
-                // };
+                let focal_length =
+                    if let Some(Parameter::ListInt(focals)) = metadata.parameters.get("focal") {
+                        focals.to_vec()
+                    } else {
+                        vec![605, 605]
+                    };
+                let resolution = if let Some(Parameter::ListInt(resolution)) =
+                    metadata.parameters.get("resolution")
+                {
+                    resolution.to_vec()
+                } else {
+                    vec![640, 480]
+                };
                 let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
-                let buffer: &[u8] = bytemuck::cast_slice(buffer.values());
-                let image_buffer = ImageBuffer::try_from(buffer.to_vec())
-                    .context("Could not convert buffer to image buffer")?;
-                let image_format =
-                    ImageFormat::depth([*width as _, *height as _], rerun::ChannelDatatype::F64);
+                let points_3d = buffer.iter().enumerate().map(|(i, z)| {
+                    let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
+                    let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
+                    let z = z.unwrap_or_default() as f32;
 
-                let depth_image = rerun::DepthImage::new(image_buffer, image_format)
-                    .with_colormap(rerun::components::Colormap::Inferno);
-
-                rec.log(
-                    id.as_str().replace("/depth", ""),
-                    &rerun::Pinhole::from_focal_length_and_resolution(&[605., 605.], &[640., 480.]),
-                )?;
-
-                // If we log a pinhole camera model, the depth gets automatically back-projected to 3D
-                rec.log(id.as_str(), &depth_image)?;
+                    (
+                        (u - resolution[0] as f32) * z / focal_length[0] as f32,
+                        (v - resolution[1] as f32) * z / focal_length[1] as f32,
+                        z,
+                    )
+                });
+                let points_3d = Points3D::new(points_3d);
+                if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
+                    let colors = color_buffer
+                        .chunks(3)
+                        .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
+                        .collect::<Vec<_>>();
+                    rec.log(id.as_str(), &points_3d.with_colors(colors))
+                        .context("could not log points")?;
+                } else {
+                    rec.log(id.as_str(), &points_3d)
+                        .context("could not log points")?;
+                }
             } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {
