@@ -49,7 +49,11 @@ class TemporalFilter:
             result = frame
         else:
             result = cv2.addWeighted(
-                frame, self.alpha, self.previous_frame, 1 - self.alpha, 0,
+                frame,
+                self.alpha,
+                self.previous_frame,
+                1 - self.alpha,
+                0,
             )
         self.previous_frame = result
         return result
@@ -132,6 +136,7 @@ MIN_DEPTH_METERS = 0.01
 MAX_DEPTH_METERS = 15.0
 
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
+ENCODING = int(os.getenv("ENCODING", "jpeg"))
 
 
 def main():
@@ -145,7 +150,10 @@ def main():
     profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
     try:
         color_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
-            640, 480, OBFormat.RGB, 30,
+            640,
+            480,
+            OBFormat.RGB,
+            30,
         )
     except OBError as e:
         print(e)
@@ -154,7 +162,10 @@ def main():
     profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
     try:
         depth_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
-            640, 480, OBFormat.Y16, 30,
+            640,
+            480,
+            OBFormat.Y16,
+            30,
         )
     except OBError as e:
         print(e)
@@ -173,15 +184,32 @@ def main():
             color_frame = frames.get_color_frame()
             if color_frame is None:
                 continue
-            # convert to RGB format
-            color_image = frame_to_bgr_image(color_frame)
-            if color_image is None:
-                print("failed to convert frame to image")
-                continue
-            # Send Color Image
-            ret, frame = cv2.imencode("." + "jpeg", color_image)
-            if ret:
-                node.send_output("image", pa.array(frame), {"encoding": "jpeg"})
+
+            if ENCODING == "jpeg":
+                # convert to BGR format
+                color_image = frame_to_bgr_image(color_frame)
+                if color_image is None:
+                    print("failed to convert frame to image")
+                    continue
+                # Send Color Image
+                ret, frame = cv2.imencode("." + "jpeg", color_image)
+                if ret:
+                    node.send_output("image", pa.array(frame), {"encoding": "jpeg"})
+
+            elif ENCODING == "rgb8":
+                node.send_output(
+                    "image_depth", pa.array(color_image.ravel()), {"encoding": "rgb8"}
+                )
+
+            elif ENCODING == "bgr8":
+                # convert to BGR format
+                color_image = frame_to_bgr_image(color_frame)
+                if color_image is None:
+                    print("failed to convert frame to image")
+                    continue
+                node.send_output(
+                    "image_depth", pa.array(color_image.ravel()), {"encoding": "bgr8"}
+                )
 
             # Get Depth data
             depth_frame = frames.get_depth_frame()
@@ -204,13 +232,31 @@ def main():
             node.send_output("depth", storage)
             # Convert to Image
             depth_image = cv2.normalize(
-                depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U,
+                depth_data,
+                None,
+                0,
+                255,
+                cv2.NORM_MINMAX,
+                dtype=cv2.CV_8U,
             )
             # Send Depth Image
             depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
-            ret, frame = cv2.imencode("." + "jpeg", depth_image)
-            if ret:
-                node.send_output("image_depth", pa.array(frame), {"encoding": "jpeg"})
+
+            if ENCODING == "jpeg":
+                ret, frame = cv2.imencode("." + "jpeg", depth_image)
+                if ret:
+                    node.send_output(
+                        "image_depth", pa.array(frame), {"encoding": "jpeg"}
+                    )
+            elif ENCODING == "bgr8":
+                node.send_output(
+                    "image_depth", pa.array(depth_image.ravel()), {"encoding": "bgr8"}
+                )
+            elif ENCODING == "rgb8":
+                depth_image = cv2.cvtColor(depth_image, cv2.COLOR_BGR2RGB)
+                node.send_output(
+                    "image_depth", pa.array(depth_image.ravel()), {"encoding": "rgb8"}
+                )
 
         except KeyboardInterrupt:
             break
