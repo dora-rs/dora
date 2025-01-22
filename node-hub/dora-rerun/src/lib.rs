@@ -165,7 +165,7 @@ pub fn lib_main() -> Result<()> {
                     )
                 });
                 let points_3d = Points3D::new(points_3d);
-                if let Some(color_buffer) = image_cache.get(&id.replace("/depth", "/image")) {
+                if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
                     let colors = color_buffer
                         .chunks(3)
                         .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
