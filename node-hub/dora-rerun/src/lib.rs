@@ -129,6 +129,7 @@ pub fn lib_main() -> Result<()> {
                     let buffer: &[u8] = buffer.values();
 
                     let image = rerun::EncodedImage::from_file_contents(buffer.to_vec());
+
                     rec.log(id.as_str(), &image)
                         .context("could not log image")?;
                 };
@@ -159,9 +160,9 @@ pub fn lib_main() -> Result<()> {
                     let z = z.unwrap_or_default() as f32;
 
                     (
-                        (u - resolution[0] as f32) * z / focal_length[0] as f32,
-                        (v - resolution[1] as f32) * z / focal_length[1] as f32,
                         z,
+                        -(10. + (v - resolution[1] as f32) * z / focal_length[1] as f32),
+                        10. + (u - resolution[0] as f32) * z / focal_length[0] as f32,
                     )
                 });
                 let points_3d = Points3D::new(points_3d);
