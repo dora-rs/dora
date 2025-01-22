@@ -8,6 +8,9 @@
 pip install -e .
 ```
 
+- Make sure to install `record3d` app on your IOS device.
+- Buy the USB connection package to start streaming on USB.
+
 ## Contribution Guide
 
 - Format with [ruff](https://docs.astral.sh/ruff/):
