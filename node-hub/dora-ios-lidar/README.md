@@ -1,4 +1,4 @@
-# dora-record3d
+# dora-ios-lidar
 
 ## Getting started
 
@@ -34,4 +34,4 @@ pytest . # Test
 
 ## License
 
-dora-record3d's code are released under the MIT License
+dora-ios-lidar's code are released under the MIT License
