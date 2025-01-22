@@ -1,20 +1,16 @@
 nodes:
   - id: camera
-    build: pip install -e ../../node-hub/dora-pyrealsense
-    path: dora-pyrealsense
+    build: pip install -e ../../node-hub/dora-ios-lidar
+    path: dora-ios-lidar
     inputs:
       tick: dora/timer/millis/20
     outputs:
       - image
       - depth
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
       image: camera/image
-      world/camera/depth: camera/depth
-        
+      depth: camera/depth

@@ -1,0 +1,16 @@
+nodes:
+  - id: camera
+    build: pip install dora-ios-lidar
+    path: dora-ios-lidar
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+      - depth
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      image: camera/image
+      depth: camera/depth

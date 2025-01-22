@@ -1,0 +1,17 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-pyrealsense
+    path: sudo
+    args: dora-pyrealsense
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+      - depth
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      image: camera/image
+      world/camera/depth: camera/depth

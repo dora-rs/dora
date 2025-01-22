@@ -1,0 +1,20 @@
+[project]
+name = "dora-ios-lidar"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "dora-ios-lidar"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "opencv-python>=4.11.0.86",
+    "record3d>=1.4",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-ios-lidar = "dora_ios_lidar.main:main"
