@@ -7,7 +7,11 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
 
-dependencies = ["dora-rs >= 0.3.6", "record3d>=1.4"]
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "opencv-python>=4.11.0.86",
+    "record3d>=1.4",
+]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
