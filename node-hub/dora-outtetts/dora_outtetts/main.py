@@ -12,6 +12,7 @@ PATH_SPEAKER = os.getenv("PATH_SPEAKER", "speaker.json")
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 device = "cuda:0" if torch.cuda.is_available() else device
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+cache = {}
 
 
 def load_interface():
@@ -94,17 +95,21 @@ def main(arg_list: list[str] | None = None):
             elif event["id"] == "text":
                 # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                 text = event["value"][0].as_py()
-                output = interface.generate(
-                    text=text,
-                    temperature=0.1,
-                    repetition_penalty=1.1,
-                    speaker=speaker,  # Optional: speaker profile
-                )
+                if text in cache:
+                    output = cache[text]
+                else:
+                    output = interface.generate(
+                        text=text,
+                        temperature=0.1,
+                        repetition_penalty=1.1,
+                        speaker=speaker,  # Optional: speaker profile
+                    )
                 node.send_output(
                     "audio",
                     pa.array(output.audio.cpu().numpy().ravel()),
                     {"language": "en", "sample_rate": output.sr},
                 )
+                cache[text] = output
 
 
 if __name__ == "__main__":
