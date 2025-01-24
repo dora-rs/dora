@@ -1,7 +1,7 @@
 [package]
 name = "dora-operator-api-c"
 version.workspace = true
-edition = "2021"
+edition.workspace = true
 description = "C API implementation for Dora Operator"
 documentation.workspace = true
 license.workspace = true
