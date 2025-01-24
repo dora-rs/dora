@@ -42,6 +42,7 @@ members = [
 ]
 
 [workspace.package]
+edition = "2021"
 # Make sure to also bump `apis/node/python/__init__.py` version.
 version = "0.3.8"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
@@ -87,7 +88,7 @@ pythonize = "0.22"
 [package]
 name = "dora-examples"
 version = "0.0.0"
-edition = "2021"
+edition.workspace = true
 license = "Apache-2.0"
 publish = false
 

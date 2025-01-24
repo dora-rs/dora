@@ -2,7 +2,7 @@
 name = "dora-message"
 # versioned separately from the other dora crates
 version = "0.4.2"
-edition = "2021"
+edition.workspace = true
 documentation.workspace = true
 description.workspace = true
 license.workspace = true

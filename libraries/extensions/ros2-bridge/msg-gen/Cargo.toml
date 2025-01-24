@@ -1,7 +1,7 @@
 [package]
 name = "dora-ros2-bridge-msg-gen"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 license = "Apache-2.0"
 

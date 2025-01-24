@@ -1,7 +1,7 @@
 [package]
 version.workspace = true
 name = "dora-node-api-python"
-edition = "2021"
+edition.workspace = true
 documentation.workspace = true
 description.workspace = true
 license.workspace = true

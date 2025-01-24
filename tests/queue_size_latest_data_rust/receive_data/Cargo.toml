@@ -1,6 +1,6 @@
 [package]
 name = "receive_data"
-edition = "2021"
+edition.workspace = true
 version.workspace = true
 description.workspace = true
 documentation.workspace = true
