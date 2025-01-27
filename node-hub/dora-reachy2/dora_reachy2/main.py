@@ -12,7 +12,9 @@ def main():
 
     reachy = ReachySDK(ROBOT_IP)
 
-    reachy.turn_on()
+    # reachy.turn_on()
+    if reachy.mobile_base is not None:
+        reachy.mobile_base.turn_on()
 
     params = reachy.cameras.depth.get_parameters(CameraView.DEPTH)
 
@@ -22,6 +24,10 @@ def main():
         if event["type"] == "INPUT":
             if event["id"] == "tick":
                 (image_left, _) = reachy.cameras.teleop.get_frame(view=CameraView.LEFT)
+
+                if image_left is int:
+                    continue
+
                 node.send_output(
                     "image_left",
                     pa.array(image_left.ravel()),
@@ -35,6 +41,9 @@ def main():
                 (image_right, _) = reachy.cameras.teleop.get_frame(
                     view=CameraView.RIGHT
                 )
+
+                if image_right is int:
+                    continue
 
                 node.send_output(
                     "image_right",
@@ -86,17 +95,13 @@ def main():
                 node.send_output("position", pa.array(position), metadata={})
 
             elif event["id"] == "action_base":
-                # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                 [x, y, _z, _rx, _ry, rz] = event["value"].to_numpy()
                 reachy.mobile_base.rotate_by(np.rad2deg(rz))
                 reachy.mobile_base.translate_by(x, y)
 
-            elif event["id"] == "action_head":
-                # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
-                [x, y, _z, _rx, _ry, rz] = event["value"].to_numpy()
-                reachy.mobile_base.rotate_by(np.rad2deg(rz))
-                reachy.mobile_base.translate_by(x, y)
     reachy.turn_off_smoothly()
+    if reachy.mobile_base is not None:
+        reachy.mobile_base.turn_off()
 
 
 if __name__ == "__main__":
