@@ -18,10 +18,9 @@ nodes:
       image: camera/image_depth
       depth: camera/depth
       image_topview: topview/image
-      image_zoom: zoom/image
 
   - id: topview
-    build: pip install -e ../../node-hub/dora-pointcloud-projection
+    build: cargo build -p dora-pointcloud-projection --release
     path: dora-pointcloud-projection
     inputs:
       image: camera/image_depth
@@ -33,17 +32,3 @@ nodes:
       MAX_X: "1.5"
       MIN_Y: "-1.5"
       MAX_Y: "1.5"
-
-  - id: zoom
-    build: pip install -e ../../node-hub/dora-pointcloud-projection
-    path: dora-pointcloud-projection
-    inputs:
-      image: camera/image_depth
-      depth: camera/depth
-    outputs:
-      - image
-    env:
-      MIN_X: "0.2"
-      MAX_X: "0.5"
-      MIN_Y: "-0.5"
-      MAX_Y: "0.5"
