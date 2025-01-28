@@ -1,0 +1,74 @@
+nodes:
+  - id: reachy
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2
+    inputs:
+      tick: dora/timer/millis/100
+      action_base: interpolation/action
+      action_arm: interpolation/action_arm
+    outputs:
+      - image_right
+      - image_depth
+      - depth
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      image: topview/image
+      image_right: reachy/image_right
+      series_keyboard: keyboard/action
+    env:
+      README: |
+        # Visualization of QwenVL2
+      RERUN_MEMORY_LIMIT: 10%
+
+  - id: keyboard
+    build: pip install -e ../../node-hub/dora-keyboard
+    path: dora-keyboard
+    inputs:
+      tick: dora/timer/millis/1000
+    outputs:
+      - action
+      - char
+
+  - id: topview
+    build: pip install -e ../../node-hub/dora-pointcloud-projection
+    path: dora-pointcloud-projection
+    inputs:
+      image: reachy/image_depth
+      depth: reachy/depth
+    outputs:
+      - image
+    env:
+      MIN_X: "0.2"
+      MAX_X: "2.5"
+      MIN_Y: "-1.5"
+      MAX_Y: "1.5"
+
+  - id: dora-qwenvl-recorder
+    build: pip install -e ../../node-hub/llama-factory-recorder
+    path: llama-factory-recorder
+    inputs:
+      image_right: reachy/image_right
+      ground_truth: key-interpolation/text
+    outputs:
+      - text
+    env:
+      DEFAULT_QUESTION: Respond to people.
+      LLAMA_FACTORY_ROOT_PATH: $HOME/Documents/work/LLaMA-Factory
+
+  - id: key-interpolation
+    path: key_interpolation.py
+    inputs:
+      keyboard: keyboard/char
+    outputs:
+      - text
+
+  - id: interpolation
+    path: action_interpolation.py
+    inputs:
+      text: dora-qwenvl-recorder/text
+    outputs:
+      - action
+      - action_arm

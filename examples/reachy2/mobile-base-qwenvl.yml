@@ -1,0 +1,56 @@
+nodes:
+  - id: reachy
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2
+    inputs:
+      tick: dora/timer/millis/100
+      action_base: interpolation/action
+    outputs:
+      - image_right
+      - image_depth
+      - depth
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      image: topview/image
+      image_right: reachy/image_right
+      text: dora-qwenvl/tick
+    env:
+      README: |
+        # Visualization of QwenVL2
+      RERUN_MEMORY_LIMIT: 10%
+
+  - id: topview
+    build: pip install -e ../../node-hub/dora-pointcloud-projection
+    path: dora-pointcloud-projection
+    inputs:
+      image: reachy/image_depth
+      depth: reachy/depth
+    outputs:
+      - image
+    env:
+      MIN_X: "0.2"
+      MAX_X: "2.5"
+      MIN_Y: "-1.5"
+      MAX_Y: "1.5"
+
+  - id: dora-qwenvl
+    build: pip install -e ../../node-hub/dora-qwenvl
+    path: dora-qwenvl
+    inputs:
+      image_right: reachy/image_right
+      tick: dora/timer/millis/2000
+    outputs:
+      - tick
+    env:
+      ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2_vl-7b/lora/sft/checkpoint-369
+      DEFAULT_QUESTION: Do not touch walls. Respond with left, right, forward, back, stop.
+
+  - id: interpolation
+    path: action_interpolation.py
+    inputs:
+      text: dora-qwenvl/tick
+    outputs:
+      - action
