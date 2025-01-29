@@ -133,7 +133,7 @@ impl Daemon {
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path) -> eyre::Result<DataflowResult> {
+    pub async fn run_dataflow(dataflow_path: &Path, uv: bool) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canonicalize dataflow path")?
@@ -152,6 +152,7 @@ impl Daemon {
             nodes,
             machine_listen_ports: BTreeMap::new(),
             dataflow_descriptor: descriptor,
+            uv,
         };
 
         let clock = Arc::new(HLC::default());
@@ -384,6 +385,7 @@ impl Daemon {
                 nodes,
                 machine_listen_ports,
                 dataflow_descriptor,
+                uv,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
@@ -409,7 +411,7 @@ impl Daemon {
                 };
 
                 let result = self
-                    .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor)
+                    .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor, uv)
                     .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
@@ -625,6 +627,7 @@ impl Daemon {
         working_dir: PathBuf,
         nodes: Vec<ResolvedNode>,
         dataflow_descriptor: Descriptor,
+        uv: bool,
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
@@ -696,6 +699,7 @@ impl Daemon {
                     dataflow_descriptor.clone(),
                     self.clock.clone(),
                     node_stderr_most_recent,
+                    uv,
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
