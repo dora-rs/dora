@@ -18,10 +18,10 @@ This node is supposed to be used as follows:
 
 ## Examples
 
-- Speech to Text
+- speech to text
   - github: https://github.com/dora-rs/dora/blob/main/examples/speech-to-text
   - website: https://dora-rs.ai/docs/examples/stt
-- Vision Language Model
+- vision language model
   - github: https://github.com/dora-rs/dora/blob/main/examples/vlm
   - website: https://dora-rs.ai/docs/examples/vlm
 
