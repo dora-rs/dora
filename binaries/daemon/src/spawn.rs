@@ -47,6 +47,7 @@ pub async fn spawn_node(
     dataflow_descriptor: Descriptor,
     clock: Arc<HLC>,
     node_stderr_most_recent: Arc<ArrayQueue<String>>,
+    uv: bool,
 ) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
     tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
@@ -113,15 +114,42 @@ pub async fn spawn_node(
                     // If extension is .py, use python to run the script
                     let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
                         Some(Some("py")) => {
-                            let python = get_python_path().context("Could not get python path")?;
-                            tracing::info!("spawning: {:?} {}", &python, resolved_path.display());
-                            let mut cmd = tokio::process::Command::new(&python);
+                            let mut cmd = if uv {
+                                let mut cmd = tokio::process::Command::new("uv");
+                                cmd.arg("run");
+                                cmd.arg("python");
+                                tracing::info!(
+                                    "spawning: uv run python -u {}",
+                                    resolved_path.display()
+                                );
+                                cmd
+                            } else {
+                                let python = get_python_path().wrap_err(
+                                    "Could not find python path when spawning custom node",
+                                )?;
+                                tracing::info!(
+                                    "spawning: {:?} -u {}",
+                                    &python,
+                                    resolved_path.display()
+                                );
+                                let cmd = tokio::process::Command::new(python);
+                                cmd
+                            };
+                            // Force python to always flush stdout/stderr buffer
+                            cmd.arg("-u");
                             cmd.arg(&resolved_path);
                             cmd
                         }
                         _ => {
                             tracing::info!("spawning: {}", resolved_path.display());
-                            tokio::process::Command::new(&resolved_path)
+                            if uv {
+                                let mut cmd = tokio::process::Command::new(&"uv");
+                                cmd.arg("run");
+                                cmd.arg(&resolved_path);
+                                cmd
+                            } else {
+                                tokio::process::Command::new(&resolved_path)
+                            }
                         }
                     };
 
