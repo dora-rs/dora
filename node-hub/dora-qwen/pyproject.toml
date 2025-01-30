@@ -1,0 +1,16 @@
+[project]
+name = "dora-qwen"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "dora-qwen"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = ["dora-rs >= 0.3.6"]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-qwen = "dora_qwen.main:main"
