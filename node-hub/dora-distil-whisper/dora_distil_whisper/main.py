@@ -48,6 +48,8 @@ def load_model():
 
 BAD_SENTENCES = [
     "",
+    " so",
+    " so so",
     "字幕",
     "字幕志愿",
     "中文字幕",
