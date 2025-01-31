@@ -12,7 +12,9 @@ p = pyaudio.PyAudio()
 
 
 def play_audio(
-    audio_array: pa.array, sample_rate: int, stream: pyaudio.Stream = None,
+    audio_array: pa.array,
+    sample_rate: int,
+    stream: pyaudio.Stream = None,
 ) -> pyaudio.Stream:
     """Play audio using pyaudio and replace stream if already exists"""
     if np.issubdtype(audio_array.dtype, np.floating):
@@ -21,7 +23,10 @@ def play_audio(
         audio_array = audio_array.astype(np.int16)
     if stream is None:
         stream = p.open(
-            format=pyaudio.paInt16, channels=1, rate=sample_rate, output=True,
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=sample_rate,
+            output=True,
         )
     stream.write(audio_array.tobytes())
     return stream
@@ -38,9 +43,10 @@ def main():
                 sr = event["metadata"].get("sample_rate", SAMPLE_RATE)
                 stream = play_audio(audio, sr, stream)
 
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
+    if stream is not None:
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
 
 
 if __name__ == "__main__":
