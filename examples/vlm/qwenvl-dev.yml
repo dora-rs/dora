@@ -65,3 +65,17 @@ nodes:
       IMAGE_HEIGHT: 480
       README: |
         # Visualization of QwenVL2
+
+  - id: dora-outtetts
+    build: pip install -e ../../node-hub/dora-outtetts
+    path: dora-outtetts
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - audio
+
+  - id: dora-pyaudio
+    build: pip install -e ../../node-hub/dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-outtetts/audio
