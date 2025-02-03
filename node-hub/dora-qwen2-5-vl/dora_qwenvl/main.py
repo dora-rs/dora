@@ -23,6 +23,8 @@ SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "You're a very succinct AI assistant, that describes image with a very short sentence.",
 )
+ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
+
 DEFAULT_QUESTION = os.getenv(
     "DEFAULT_QUESTION",
     "Describe this image",
@@ -201,6 +203,11 @@ def main():
                     text = event["value"][0].as_py()
                 else:
                     text = ""
+                words = text.split()
+                if len(ACTIVATION_WORDS) > 0 and all(
+                    word not in ACTIVATION_WORDS for word in words
+                ):
+                    continue
 
                 if len(frames.keys()) == 0:
                     continue
