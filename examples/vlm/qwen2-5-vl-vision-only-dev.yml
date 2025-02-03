@@ -7,7 +7,7 @@ nodes:
     outputs:
       - image
     env:
-      CAPTURE_PATH: 1
+      CAPTURE_PATH: 0
 
   - id: dora-qwenvl
     build: pip install -e ../../node-hub/dora-qwen2-5-vl
