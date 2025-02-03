@@ -1,3 +1,5 @@
+import sys
+
 import pyarrow as pa
 from dora import Node
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -23,7 +25,7 @@ def get_model_huggingface():
 TRIGGER_WORDS = ["you", "wh", "tu"]
 
 
-def generate(model, tokenizer, prompt: str, history) -> str:
+def generate_hf(model, tokenizer, prompt: str, history) -> str:
     history += [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
         history, tokenize=False, add_generation_prompt=True
@@ -47,7 +49,8 @@ def main():
         },
     ]
 
-    if False:
+    # If OS is not Darwin, use Huggingface model
+    if sys.platform != "darwin":
         model, tokenizer = get_model_huggingface()
     else:
         model, tokenizer = get_model_darwin()
@@ -60,8 +63,8 @@ def main():
             text = event["value"][0].as_py()
             if True:
                 # On linux, Windows
-                if False:
-                    response, history = generate(text, history)
+                if sys.platform != "darwin":
+                    response, history = generate_hf(text, history)
                 else:
                     from mlx_lm import generate
 
