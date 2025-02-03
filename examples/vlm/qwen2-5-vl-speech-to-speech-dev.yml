@@ -1,0 +1,70 @@
+nodes:
+  - id: camera
+    build: pip install opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 1
+
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english
+
+  - id: dora-qwenvl
+    build: pip install -e ../../node-hub/dora-qwen2-5-vl
+    path: dora-qwenvl
+    inputs:
+      image: camera/image
+      text: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      DEFAULT_QUESTION: Describe the image in three words.
+      HISTORY: True
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      image: camera/image
+      text_qwenvl: dora-qwenvl/text
+      text_whisper: dora-distil-whisper/text
+
+  - id: dora-outtetts
+    build: pip install -e ../../node-hub/dora-outtetts
+    path: dora-outtetts
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - audio
+
+  - id: dora-pyaudio
+    build: pip install -e ../../node-hub/dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-outtetts/audio
