@@ -1,20 +1,29 @@
-import os
-
 import pyarrow as pa
 from dora import Node
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
-model = AutoModelForCausalLM.from_pretrained(
-    model_name, torch_dtype="auto", device_map="auto"
-)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+def get_model_darwin():
+    from mlx_lm import load  # noqa
+
+    model, tokenizer = load("mlx-community/Qwen2.5-0.5B-Instruct-8bit")
+    return model, tokenizer
+
+
+def get_model_huggingface():
+    model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype="auto", device_map="auto"
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    return model, tokenizer
+
 
 TRIGGER_WORDS = ["you", "wh", "tu"]
 
 
-def generate_response(prompt: str, history) -> str:
+def generate(model, tokenizer, prompt: str, history) -> str:
     history += [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
         history, tokenize=False, add_generation_prompt=True
@@ -37,14 +46,29 @@ def main():
             "content": "You are a Reachy robot, that gives extremely short answers only.",
         },
     ]
+
+    if False:
+        model, tokenizer = get_model_huggingface()
+    else:
+        model, tokenizer = get_model_darwin()
+
     node = Node()
 
     for event in node:
         if event["type"] == "INPUT":
             # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
             text = event["value"][0].as_py()
-            if any(word in text.lower() for word in TRIGGER_WORDS):
-                response, history = generate_response(text, history)
+            if True:
+                # On linux, Windows
+                if False:
+                    response, history = generate(text, history)
+                else:
+                    from mlx_lm import generate
+
+                    response = generate(
+                        model, tokenizer, prompt=text, verbose=False, max_tokens=50
+                    )
+
                 node.send_output(
                     output_id="text", data=pa.array([response]), metadata={}
                 )
