@@ -24,8 +24,7 @@ llama-cpp-python = [
     { marker = "sys_platform == 'darwin' and python_version == '3.10'", url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.5-metal/llama_cpp_python-0.3.5-cp310-cp310-macosx_11_0_arm64.whl" },
     { marker = "sys_platform == 'darwin' and python_version == '3.11'", url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.5-metal/llama_cpp_python-0.3.5-cp311-cp311-macosx_11_0_arm64.whl" },
     { marker = "sys_platform == 'darwin' and python_version == '3.12'", url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.5-metal/llama_cpp_python-0.3.5-cp312-cp312-macosx_11_0_arm64.whl" },
-    { marker = "sys_platform == 'linux'", index = "llama-cpp-python" },
-    { marker = "sys_platform == 'windows'", index = "llama-cpp-python" },
+    { marker = "sys_platform != 'darwin'", index = "llama-cpp-python" },
 ]
 
 [project.scripts]
