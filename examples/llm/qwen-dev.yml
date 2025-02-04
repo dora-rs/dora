@@ -25,52 +25,26 @@ nodes:
     env:
       TARGET_LANGUAGE: english
 
-  - id: camera
-    build: pip install -e ../../node-hub/opencv-video-capture
-    path: opencv-video-capture
+  - id: dora-qwen
+    build: pip install -e ../../node-hub/dora-qwen
+    path: dora-qwen
     inputs:
-      tick: dora/timer/millis/50
-    outputs:
-      - image
-    env:
-      CAPTURE_PATH: 0
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
-
-  - id: dora-qwenvl
-    build: pip install -e ../../node-hub/dora-qwenvl
-    path: dora-qwenvl
-    inputs:
-      image:
-        source: camera/image
-        queue_size: 1
       text: dora-distil-whisper/text
     outputs:
       - text
-    env:
-      DEFAULT_QUESTION: Describe the image in a very short sentence.
-      # USE_MODELSCOPE_HUB: true
 
   - id: plot
-    build: cargo build -p dora-rerun --release
+    build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      image:
-        source: camera/image
-        queue_size: 1
-      text_qwenvl: dora-qwenvl/text
+      text_qwen: dora-qwen/text
       text_whisper: dora-distil-whisper/text
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
-      README: |
-        # Visualization of QwenVL2
 
   - id: dora-outtetts
     build: pip install -e ../../node-hub/dora-outtetts
     path: dora-outtetts
     inputs:
-      text: dora-qwenvl/text
+      text: dora-qwen/text
     outputs:
       - audio
 
