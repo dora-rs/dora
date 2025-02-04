@@ -42,7 +42,7 @@ else
         else
             if [ -f "$dir/pyproject.toml" ]; then
             echo "CI: Installing in $dir..."
-            uv venv
+            uv venv --seed
             uv pip install .
             echo "CI: Running Linting in $dir..."
             uv run ruff check .
