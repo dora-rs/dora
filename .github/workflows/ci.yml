@@ -5,8 +5,8 @@ on:
     branches:
       - main
   pull_request:
-    paths-ignore:
-      - "node-hub/**"
+    paths:
+      - "!node-hub/**"
   workflow_dispatch:
 
 env:
