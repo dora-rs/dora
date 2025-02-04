@@ -68,7 +68,7 @@ if ADAPTER_PATH != "":
 processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
-def generate(frames: dict, question, history):
+def generate(frames: dict, question, history, past_key_values=None):
     """Generate the response to the question given the image using Qwen2 model."""
     messages = [
         {
@@ -104,10 +104,13 @@ def generate(frames: dict, question, history):
     inputs = inputs.to(model.device)
 
     # Inference: Generation of the output
-    generated_ids = model.generate(**inputs, max_new_tokens=128)
+    outputs = model.generate(
+        **inputs, max_new_tokens=128, past_key_values=past_key_values
+    )
+    past_key_values = outputs.past_key_values
+
     generated_ids_trimmed = [
-        out_ids[len(in_ids) :]
-        for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, outputs)
     ]
     output_text = processor.batch_decode(
         generated_ids_trimmed,
@@ -130,7 +133,7 @@ def generate(frames: dict, question, history):
             },
         ]
 
-    return output_text[0], history
+    return output_text[0], history, past_key_values
 
 
 def main():
@@ -153,6 +156,7 @@ def main():
         },
     ]
     cached_text = DEFAULT_QUESTION
+    past_key_values = None
 
     for event in node:
         event_type = event["type"]
@@ -215,7 +219,9 @@ def main():
                 if len(frames.keys()) == 0:
                     continue
                 # set the max number of tiles in `max_num`
-                response, history = generate(frames, text, history)
+                response, history, past_key_values = generate(
+                    frames, text, history, past_key_values
+                )
                 node.send_output(
                     "text",
                     pa.array([response]),
