@@ -1,5 +1,36 @@
 # Changelog
 
+## What's Changed
+
+- Making cli install the default api avoiding confusion on install by @haixuanTao in https://github.com/dora-rs/dora/pull/739
+- Add description within visualisation by @haixuanTao in https://github.com/dora-rs/dora/pull/742
+- Added depth image and data output for the dora-pyorbbecksdk node by @Ryu-Yang in https://github.com/dora-rs/dora/pull/740
+- Improve speech to text example within the macOS ecosystem by @haixuanTao in https://github.com/dora-rs/dora/pull/741
+- Rewrite python template to make them pip installable by @haixuanTao in https://github.com/dora-rs/dora/pull/744
+- bump rerun version by @haixuanTao in https://github.com/dora-rs/dora/pull/743
+- Replace pylint with ruff by @haixuanTao in https://github.com/dora-rs/dora/pull/756
+- Make unknown output acceptable by @haixuanTao in https://github.com/dora-rs/dora/pull/755
+- Improve Speech-to-Speech pipeline by better support for macOS and additional OutteTTS model by @haixuanTao in https://github.com/dora-rs/dora/pull/752
+- Daemon: React to ctrl-c during connection setup by @phil-opp in https://github.com/dora-rs/dora/pull/758
+- Use UV for the CI/CD by @haixuanTao in https://github.com/dora-rs/dora/pull/757
+- chore: fix some typos in comment by @sunxunle in https://github.com/dora-rs/dora/pull/759
+- Add ios lidar by @haixuanTao in https://github.com/dora-rs/dora/pull/762
+- Print python stdout without buffer even for script by @haixuanTao in https://github.com/dora-rs/dora/pull/761
+- chore: use workspace edition by @yjhmelody in https://github.com/dora-rs/dora/pull/764
+- Add a uv flag to make it possible to automatically replace `pip` with `uv pip` and prepend run command with `uv run` by @haixuanTao in https://github.com/dora-rs/dora/pull/765
+- Use mlx whisper instead of lightning-whisper by @haixuanTao in https://github.com/dora-rs/dora/pull/766
+- Reduce silence duration in VAD by @haixuanTao in https://github.com/dora-rs/dora/pull/768
+- Bump upload artifact version by @haixuanTao in https://github.com/dora-rs/dora/pull/769
+- Add qwenvl2 5 by @haixuanTao in https://github.com/dora-rs/dora/pull/767
+
+## New Contributors
+
+- @Ryu-Yang made their first contribution in https://github.com/dora-rs/dora/pull/740
+- @sunxunle made their first contribution in https://github.com/dora-rs/dora/pull/759
+- @yjhmelody made their first contribution in https://github.com/dora-rs/dora/pull/764
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.8...v0.3.9
+
 ## Breaking Change
 
 Inputs are now schedule fairly meaning that they will be now be received equally and not necessarily in chronological order. This enables to always be able to refresh input with the least latency between input.
