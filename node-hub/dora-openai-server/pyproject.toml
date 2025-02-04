@@ -1,6 +1,6 @@
 [project]
 name = "dora-openai-server"
-version = "0.3.9-rc1"
+version = "0.3.9-rc2"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
