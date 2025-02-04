@@ -54,7 +54,7 @@ jobs:
           sudo apt-get install portaudio19-dev
 
       - name: Install system-level dependencies for MacOS
-        if: runner.os == 'Mac' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
+        if: runner.os == 'Mac' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')))
         run: |
           brew install portaudio
 
@@ -152,7 +152,7 @@ jobs:
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_PASS }}
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_PASS }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TO(())KEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           dir=$(pwd)
           base_dir=$(basename "$dir")
