@@ -152,6 +152,7 @@ def main():
             ],
         },
     ]
+    cached_text = DEFAULT_QUESTION
 
     for event in node:
         event_type = event["type"]
@@ -198,16 +199,18 @@ def main():
                 image = Image.fromarray(frame)
                 frames[event_id] = image.resize((IMAGE_HEIGHT, IMAGE_WIDTH))
 
-            elif event_id == "text":
+            elif "text" in event_id:
                 if len(event["value"]) > 0:
                     text = event["value"][0].as_py()
                 else:
-                    text = ""
+                    text = cached_text
                 words = text.split()
                 if len(ACTIVATION_WORDS) > 0 and all(
                     word not in ACTIVATION_WORDS for word in words
                 ):
                     continue
+
+                cached_text = text
 
                 if len(frames.keys()) == 0:
                     continue
