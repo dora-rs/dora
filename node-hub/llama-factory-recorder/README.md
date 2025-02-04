@@ -40,7 +40,7 @@ Example:
 
 ```yaml,diff
 - model_name_or_path: Qwen/Qwen2-VL-7B-Instruct
-+ model_name_or_path: Qwen/Qwen2-VL-2B-Instruct
++ model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
 ```
 
 - Then

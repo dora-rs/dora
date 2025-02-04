@@ -43,8 +43,8 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 transformers = { git = "https://github.com/huggingface/transformers" }
 
 [project.scripts]
-dora-qwenvl = "dora_qwenvl.main:main"
+dora-qwen2-5-vl = "dora_qwen2_5_vl.main:main"
 
 [build-system]
-requires = ["setuptools", "setuptools-scm", "torch"]
+requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"

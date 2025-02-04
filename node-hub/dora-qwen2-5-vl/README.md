@@ -1,4 +1,4 @@
-# Dora QwenVL2 node
+# Dora QwenVL2.5 node
 
 Experimental node for using a VLM within dora.
 
@@ -8,8 +8,8 @@ This node is supposed to be used as follows:
 
 ```yaml
 - id: dora-qwenvl
-  build: pip install dora-qwenvl
-  path: dora-qwenvl
+  build: pip install dora-qwen2-5-vl
+  path: dora-qwen2-5-vl
   inputs:
     image:
       source: camera/image
