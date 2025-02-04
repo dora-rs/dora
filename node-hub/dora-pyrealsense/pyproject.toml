@@ -1,6 +1,6 @@
 [project]
 name = "dora-pyrealsense"
-version = "0.3.8"
+version = "0.3.9-rc1"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for capturing video with Pyrealsense"
 license = { text = "MIT" }
