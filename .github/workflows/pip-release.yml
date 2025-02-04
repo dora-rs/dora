@@ -17,6 +17,8 @@ on:
     branches:
       - main
   pull_request:
+    paths:
+      - "!node-hub/**"
 
 permissions:
   contents: write
