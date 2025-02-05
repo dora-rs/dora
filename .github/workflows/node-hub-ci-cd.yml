@@ -187,7 +187,7 @@ jobs:
               if [ -f "pyproject.toml" ]; then
                 echo "Publishing $dir using UV..."
                 uv build
-                uv publish
+                uv publish --check-url https://pypi.org/simple
               fi
 
               if [ -f "Cargo.toml" ]; then
