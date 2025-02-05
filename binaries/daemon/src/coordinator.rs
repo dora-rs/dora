@@ -28,10 +28,9 @@ pub struct CoordinatorEvent {
 
 pub async fn register(
     addr: SocketAddr,
-    machine_id: String,
-    listen_port: u16,
+    machine_id: Option<String>,
     clock: &HLC,
-) -> eyre::Result<impl Stream<Item = Timestamped<CoordinatorEvent>>> {
+) -> eyre::Result<(String, impl Stream<Item = Timestamped<CoordinatorEvent>>)> {
     let mut stream = loop {
         match TcpStream::connect(addr)
             .await
@@ -50,7 +49,7 @@ pub async fn register(
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
     let register = serde_json::to_vec(&Timestamped {
-        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, listen_port)),
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id)),
         timestamp: clock.new_timestamp(),
     })?;
     socket_stream_send(&mut stream, &register)
@@ -61,7 +60,7 @@ pub async fn register(
         .wrap_err("failed to register reply from dora-coordinator")?;
     let result: Timestamped<RegisterResult> = serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize dora-coordinator reply")?;
-    result.inner.to_result()?;
+    let daemon_id = result.inner.to_result()?;
     if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
         tracing::warn!("failed to update timestamp after register: {err}");
     }
@@ -135,5 +134,5 @@ pub async fn register(
         }
     });
 
-    Ok(ReceiverStream::new(rx))
+    Ok((daemon_id, ReceiverStream::new(rx)))
 }

@@ -18,7 +18,6 @@ pub struct DynamicNodeEventWrapper {
 
 pub async fn spawn_listener_loop(
     bind: SocketAddr,
-    machine_id: String,
     events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
 ) -> eyre::Result<u16> {
     let socket = match TcpListener::bind(bind).await {
@@ -34,7 +33,6 @@ pub async fn spawn_listener_loop(
 
     tokio::spawn(async move {
         listener_loop(socket, events_tx).await;
-        tracing::debug!("Local listener loop finished for machine `{machine_id}`");
     });
 
     Ok(listen_port)

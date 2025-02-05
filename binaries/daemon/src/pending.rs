@@ -205,7 +205,7 @@ impl PendingNodes {
 
         let msg = serde_json::to_vec(&Timestamped {
             inner: CoordinatorRequest::Event {
-                machine_id: self.machine_id.clone(),
+                daemon_id: self.machine_id.clone(),
                 event: DaemonEvent::AllNodesReady {
                     dataflow_id: self.dataflow_id,
                     exited_before_subscribe: self.exited_before_subscribe.clone(),

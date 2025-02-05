@@ -55,12 +55,14 @@ pub async fn handle_connection(
                     connection,
                     version_check_result: register_request.check_version(),
                     machine_id: register_request.machine_id,
-                    listen_port: register_request.listen_port,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
             }
-            CoordinatorRequest::Event { machine_id, event } => match event {
+            CoordinatorRequest::Event {
+                daemon_id: machine_id,
+                event,
+            } => match event {
                 DaemonEvent::AllNodesReady {
                     dataflow_id,
                     exited_before_subscribe,

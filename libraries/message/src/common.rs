@@ -129,6 +129,15 @@ pub struct Timestamped<T> {
     pub timestamp: uhlc::Timestamp,
 }
 
+impl<T> Timestamped<T>
+where
+    T: serde::Serialize,
+{
+    pub fn serialize(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap()
+    }
+}
+
 pub type SharedMemoryId = String;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
