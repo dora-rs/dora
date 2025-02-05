@@ -176,43 +176,43 @@ async fn start_inner(
                     machine_id,
                     mut connection,
                     version_check_result,
-                    listen_port,
                 } => {
-                    let peer_ip = connection
-                        .peer_addr()
-                        .map(|addr| addr.ip())
-                        .map_err(|err| format!("failed to get peer addr of connection: {err}"));
-                    let register_result = version_check_result.and(peer_ip);
+                    // assign a unique ID to the daemon
+                    let daemon_id = format!(
+                        "{}{}",
+                        machine_id.map(|id| format!("{id}-")).unwrap_or_default(),
+                        Uuid::new_v4()
+                    );
 
                     let reply: Timestamped<RegisterResult> = Timestamped {
-                        inner: match &register_result {
-                            Ok(_) => RegisterResult::Ok,
+                        inner: match &version_check_result {
+                            Ok(_) => RegisterResult::Ok {
+                                daemon_id: daemon_id.clone(),
+                            },
                             Err(err) => RegisterResult::Err(err.clone()),
                         },
                         timestamp: clock.new_timestamp(),
                     };
-                    let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?).await;
-                    match (register_result, send_result) {
-                        (Ok(ip), Ok(())) => {
+                    let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?)
+                        .await
+                        .context("tcp send failed");
+                    match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
+                        Ok(()) => {
                             let previous = daemon_connections.insert(
-                                machine_id.clone(),
+                                daemon_id.clone(),
                                 DaemonConnection {
                                     stream: connection,
-                                    listen_socket: (ip, listen_port).into(),
                                     last_heartbeat: Instant::now(),
                                 },
                             );
                             if let Some(_previous) = previous {
                                 tracing::info!(
-                                    "closing previous connection `{machine_id}` on new register"
+                                    "closing previous connection `{daemon_id}` on new register"
                                 );
                             }
                         }
-                        (Err(err), _) => {
-                            tracing::warn!("failed to register daemon connection for machine `{machine_id}`: {err}");
-                        }
-                        (Ok(_), Err(err)) => {
-                            tracing::warn!("failed to confirm daemon connection for machine `{machine_id}`: {err}");
+                        Err(err) => {
+                            tracing::warn!("failed to register daemon connection for daemon `{daemon_id}`: {err}");
                         }
                     }
                 }
@@ -659,7 +659,6 @@ fn dataflow_result(
 
 struct DaemonConnection {
     stream: TcpStream,
-    listen_socket: SocketAddr,
     last_heartbeat: Instant,
 }
 
@@ -1015,9 +1014,8 @@ pub enum DataflowEvent {
 pub enum DaemonRequest {
     Register {
         version_check_result: Result<(), String>,
-        machine_id: String,
+        machine_id: Option<String>,
         connection: TcpStream,
-        listen_port: u16,
     },
 }
 

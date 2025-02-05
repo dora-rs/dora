@@ -27,12 +27,7 @@ pub trait DescriptorExt {
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
-    fn check_in_daemon(
-        &self,
-        working_dir: &Path,
-        remote_machine_id: &[&str],
-        coordinator_is_remote: bool,
-    ) -> eyre::Result<()>;
+    fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()>;
 }
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
@@ -141,19 +136,9 @@ impl DescriptorExt for Descriptor {
             .wrap_err("Dataflow could not be validated.")
     }
 
-    fn check_in_daemon(
-        &self,
-        working_dir: &Path,
-        remote_machine_id: &[&str],
-        coordinator_is_remote: bool,
-    ) -> eyre::Result<()> {
-        validate::check_dataflow(
-            self,
-            working_dir,
-            Some(remote_machine_id),
-            coordinator_is_remote,
-        )
-        .wrap_err("Dataflow could not be validated.")
+    fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()> {
+        validate::check_dataflow(self, working_dir, None, coordinator_is_remote)
+            .wrap_err("Dataflow could not be validated.")
     }
 }
 

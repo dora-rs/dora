@@ -11,7 +11,7 @@ use dora_message::{
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     path::PathBuf,
 };
 use uuid::{NoContext, Timestamp, Uuid};
@@ -23,37 +23,17 @@ pub(super) async fn spawn_dataflow(
     daemon_connections: &mut HashMap<String, DaemonConnection>,
     clock: &HLC,
 ) -> eyre::Result<SpawnedDataflow> {
-    let remote_machine_id: Vec<_> = daemon_connections
-        .iter()
-        .filter_map(|(id, c)| {
-            if !c.listen_socket.ip().is_loopback() {
-                Some(id.as_str())
-            } else {
-                None
-            }
-        })
-        .collect();
-    dataflow.check_in_daemon(&working_dir, &remote_machine_id, false)?;
+    dataflow.check_in_daemon(&working_dir, false)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
     let machines: BTreeSet<_> = nodes.iter().map(|n| n.deploy.machine.clone()).collect();
-    let machine_listen_ports = machines
-        .iter()
-        .map(|m| {
-            daemon_connections
-                .get(m)
-                .ok_or_else(|| eyre!("no daemon listen port for machine `{m}`"))
-                .map(|c| (m.clone(), c.listen_socket))
-        })
-        .collect::<Result<BTreeMap<_, _>, _>>()?;
 
     let spawn_command = SpawnDataflowNodes {
         dataflow_id: uuid,
         working_dir,
         nodes: nodes.clone(),
-        machine_listen_ports,
         dataflow_descriptor: dataflow,
     };
     let message = serde_json::to_vec(&Timestamped {

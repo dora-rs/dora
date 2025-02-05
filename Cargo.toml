@@ -52,7 +52,6 @@ repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
 dora-node-api = { version = "0.3.8", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "0.3.8", path = "apis/python/node", default-features = false }
 dora-operator-api = { version = "0.3.8", path = "apis/rust/operator", default-features = false }
 dora-operator-api-macros = { version = "0.3.8", path = "apis/rust/operator/macros" }
 dora-operator-api-types = { version = "0.3.8", path = "apis/rust/operator/types" }
