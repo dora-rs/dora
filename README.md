@@ -1,4 +1,5 @@
 #
+
 <p align="center">
     <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/logo.svg" width="400"/>
 </p>
@@ -29,6 +30,9 @@
     <img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPi Latest Release"/>
   </a>
 </div>
+<div align="center">
+<a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</div>
 
 An extremely fast and simple **dataflow oriented robotic** framework to manage your projects and run complex **apps**, written in Rust.
 
@@ -46,6 +50,15 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
   </a>
 </p>
 
+## Latest News 🎉
+
+<details open>
+<summary><b>2025</b></summary>
+
+- \[2025/02\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
+
+</details>
+
 ## Highlights
 
 - 🚀 A single CLI to launch your Python and Rust robotic projects.
@@ -62,19 +75,28 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 
 Install dora with our standalone installers, or from [crates.io](https://crates.io/crates/dora-cli):
 
-### On macOS and Linux
+### With pip
+
+```bash
+pip install dora-rs-cli
+```
+
+### With cargo
+
+```bash
+cargo install dora-cli
+```
+
+### With Github release for macOS and Linux
+
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/dora-rs/dora/main/install.sh | bash
 ```
 
-### On Windows
+### With Github release for Windows
+
 ```powershell
 powershell -c "irm https://raw.githubusercontent.com/dora-rs/dora/main/install.ps1 | iex"
-```
-
-### With cargo
-```bash
-cargo install dora-cli
 ```
 
 ## Documentation
@@ -84,22 +106,13 @@ A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/)
 
 ## Getting Started
 
-1. Run the benchmark example (Rust must be installed):
+1. Run some Python examples (A venv must be activated):
 
 ```bash
-git clone https://github.com/dora-rs/dora
-cd dora
-cargo run --example benchmark --release
-```
-
-2. Run some Python examples (A venv must be activated):
-
-```bash
-# activate your venv here
 cd dora/examples/python-dataflow
-dora up
-dora build dataflow.yml
-dora start dataflow.yml
+uv venv --seed
+dora build dataflow.yml --uv
+dora run dataflow.yml --uv
 ```
 
 > Make sure to have a webcam
@@ -238,22 +251,22 @@ Cool hardware that we think might be good fit to try out dora-rs 🙋 We are not
 
 > For more: https://docs.google.com/spreadsheets/d/1YYeW2jfOIWDVgdEgqnMvltonHquQ7K8OZCrnJRELL6o/edit#gid=0
 
-
 ## Support Matrix
-|                                   | dora-rs                                                   | Hoped for                                                                                                                                |
-| --------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| **Tier 1 Support**                | Python, Rust                                              | C, C++, ROS 2                                                                                                                            |
-| **Tier 2 Support**                | C, C++, ROS2                                              |
-| **Hot-reloading**                 | Python                                                    | Rust (https://github.com/orgs/dora-rs/discussions/360)                                                                                   |
-| **Message Format**                | Arrow                                                     | Native                                                                                                                                   |
-| **Local Communication**           | Shared Memory                                             | Custom Middleware, [zero-copy GPU IPC](https://arrow.apache.org/docs/python/api/cuda.html), intra-process `tokio::channel` communication |
-| **Remote Communication**          | TCP    | Custom Middleware, [Zenoh](https://zenoh.io/)                                                                                            |
-| **Metrics, Tracing, and Logging** | Opentelemetry                                             | Native logging libraries into Opentelemetry                                                                                              |
+
+|                                   | dora-rs                                                                                 | Hoped for                                                                                                                                |
+| --------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tier 1 Support**                | Python, Rust                                                                            | C, C++, ROS 2                                                                                                                            |
+| **Tier 2 Support**                | C, C++, ROS2                                                                            |
+| **Hot-reloading**                 | Python                                                                                  | Rust (https://github.com/orgs/dora-rs/discussions/360)                                                                                   |
+| **Message Format**                | Arrow                                                                                   | Native                                                                                                                                   |
+| **Local Communication**           | Shared Memory                                                                           | Custom Middleware, [zero-copy GPU IPC](https://arrow.apache.org/docs/python/api/cuda.html), intra-process `tokio::channel` communication |
+| **Remote Communication**          | TCP                                                                                     | Custom Middleware, [Zenoh](https://zenoh.io/)                                                                                            |
+| **Metrics, Tracing, and Logging** | Opentelemetry                                                                           | Native logging libraries into Opentelemetry                                                                                              |
 | **Data archives**                 | Parquet ([dora-record](https://github.com/dora-rs/dora/tree/main/node-hub/dora-record)) |
-| **Visualization and annotation**  | OpenCV                                                    | [rerun.io](rerun.io)                                                                                                                     |
-| **Supported Platforms (x86)**     | Windows, macOS, Linux                                     |
-| **Supported Platforms (ARM)**     | macOS, Linux                                              |
-| **Configuration**                 | YAML                                                      |
+| **Visualization and annotation**  | OpenCV                                                                                  | [rerun.io](rerun.io)                                                                                                                     |
+| **Supported Platforms (x86)**     | Windows, macOS, Linux                                                                   |
+| **Supported Platforms (ARM)**     | macOS, Linux                                                                            |
+| **Configuration**                 | YAML                                                                                    |
 
 ## Contributing
 
