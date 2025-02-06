@@ -1,0 +1,122 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english
+
+  - id: reachy-mobile-base
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/mobile_base.py
+    inputs:
+      action_base: interpolation/action #
+
+  - id: reachy-right-arm
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/right_arm.py
+    inputs:
+      action_arm: interpolation/action_right_arm #
+
+  - id: reachy-left-arm
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/left_arm.py
+    inputs:
+      action_arm: interpolation/action_left_arm #
+      pose: box_coordinates/point
+
+  - id: reachy-camera
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/camera.py
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - image_right
+      - image_left
+      - image_depth
+      - depth
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      # image_right: reachy-camera/image_right
+      image_depth: reachy-camera/image_depth
+      text_response: dora-qwenvl/text
+      text_whisper: dora-distil-whisper/text
+      boxes2d: parse_bbox/bbox
+    env:
+      RERUN_MEMORY_LIMIT: 10%
+
+  - id: dora-qwenvl
+    build: pip install -e ../../node-hub/dora-qwen2-5-vl
+    path: dora-qwen2-5-vl
+    inputs:
+      image_right: reachy-camera/image_depth
+      text_1: dora/timer/millis/100
+      text_2: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
+      DEFAULT_QUESTION: Output the bounding box of the rubicks cube.
+      ACTIVATION_WORDS: Output
+      #SYSTEM_PROMPT: You're a robot.
+
+  - id: parse_bbox
+    path: parse_bbox.py
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - bbox
+
+  - id: interpolation
+    path: action_interpolation.py
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - action
+      - action_right_arm
+      - action_left_arm
+
+  - id: dora-outtetts
+    build: pip install -e ../../node-hub/dora-outtetts
+    path: dora-outtetts
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - audio
+
+  - id: dora-pyaudio
+    build: pip install -e ../../node-hub/dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-outtetts/audio
+
+  - id: box_coordinates
+    build: cargo build -p dora-pointcloud-projection --release
+    path: dora-pointcloud-projection
+    inputs:
+      depth: reachy-camera/depth
+      boxes2d: parse_bbox/bbox
+    outputs:
+      - point
