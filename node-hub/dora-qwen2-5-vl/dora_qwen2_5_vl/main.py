@@ -77,6 +77,8 @@ def generate(frames: dict, question, history, past_key_values=None):
                 {
                     "type": "image",
                     "image": image,
+                    "resized_height": 360,
+                    "resized_width": 640,
                 }
                 for image in frames.values()
             ]
