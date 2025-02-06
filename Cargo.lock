@@ -1228,7 +1228,7 @@ dependencies = [
 name = "benchmark-example-node"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "futures",
  "rand",
@@ -1241,7 +1241,7 @@ dependencies = [
 name = "benchmark-example-sink"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "tracing",
  "tracing-subscriber",
@@ -2377,7 +2377,9 @@ dependencies = [
 
 [[package]]
 name = "dora-arrow-convert"
-version = "0.3.9"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ec5c6d27c4d8f158ca9e262e0865cd59a637e7b440e983d08d4d1dc9756a11a"
 dependencies = [
  "arrow",
  "eyre",
@@ -2385,9 +2387,7 @@ dependencies = [
 
 [[package]]
 name = "dora-arrow-convert"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ec5c6d27c4d8f158ca9e262e0865cd59a637e7b440e983d08d4d1dc9756a11a"
+version = "0.3.9"
 dependencies = [
  "arrow",
  "eyre",
@@ -2403,14 +2403,14 @@ dependencies = [
  "communication-layer-request-reply",
  "ctrlc",
  "dora-coordinator",
- "dora-core 0.3.8",
+ "dora-core 0.3.9",
  "dora-daemon",
  "dora-download",
- "dora-message 0.4.2",
+ "dora-message 0.4.3",
  "dora-node-api-c",
  "dora-operator-api-c",
  "dora-runtime",
- "dora-tracing 0.3.8",
+ "dora-tracing 0.3.9",
  "duration-str",
  "env_logger 0.11.5",
  "eyre",
@@ -2436,9 +2436,9 @@ name = "dora-coordinator"
 version = "0.3.9"
 dependencies = [
  "ctrlc",
- "dora-core 0.3.8",
- "dora-message 0.4.2",
- "dora-tracing 0.3.8",
+ "dora-core 0.3.9",
+ "dora-message 0.4.3",
+ "dora-tracing 0.3.9",
  "eyre",
  "futures",
  "futures-concurrency",
@@ -2453,7 +2453,9 @@ dependencies = [
 
 [[package]]
 name = "dora-core"
-version = "0.3.9"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2512724f54e8c0188cdf8c4505efbf50a9fdc07cdd04799f19ce1cd3d2397040"
 dependencies = [
  "dora-message 0.4.2",
  "eyre",
@@ -2472,11 +2474,9 @@ dependencies = [
 
 [[package]]
 name = "dora-core"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2512724f54e8c0188cdf8c4505efbf50a9fdc07cdd04799f19ce1cd3d2397040"
+version = "0.3.9"
 dependencies = [
- "dora-message 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dora-message 0.4.3",
  "eyre",
  "log",
  "once_cell",
@@ -2501,19 +2501,19 @@ dependencies = [
  "crossbeam",
  "crossbeam-skiplist",
  "ctrlc",
- "dora-arrow-convert 0.3.8",
- "dora-core 0.3.8",
+ "dora-arrow-convert 0.3.9",
+ "dora-core 0.3.9",
  "dora-download",
- "dora-message 0.4.2",
- "dora-node-api 0.3.8",
- "dora-tracing 0.3.8",
+ "dora-message 0.4.3",
+ "dora-node-api 0.3.9",
+ "dora-tracing 0.3.9",
  "eyre",
  "flume 0.10.14",
  "futures",
  "futures-concurrency",
  "serde_json",
  "serde_yaml 0.8.26",
- "shared-memory-server 0.3.8",
+ "shared-memory-server 0.3.9",
  "sysinfo 0.30.13",
  "tokio",
  "tokio-stream",
@@ -2538,10 +2538,10 @@ name = "dora-examples"
 version = "0.0.0"
 dependencies = [
  "dora-coordinator",
- "dora-core 0.3.8",
+ "dora-core 0.3.9",
  "dora-download",
- "dora-message 0.4.2",
- "dora-tracing 0.3.8",
+ "dora-message 0.4.3",
+ "dora-tracing 0.3.9",
  "dunce",
  "eyre",
  "futures",
@@ -2556,7 +2556,7 @@ dependencies = [
 name = "dora-kit-car"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "dotenv",
  "eyre",
  "pyo3",
@@ -2568,7 +2568,9 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.4.3"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2711f476e7fb3c70e2edf398eb572464b6175b955ed4e7f99ed2ce3aefb87fd"
 dependencies = [
  "aligned-vec",
  "arrow-data",
@@ -2588,9 +2590,7 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2711f476e7fb3c70e2edf398eb572464b6175b955ed4e7f99ed2ce3aefb87fd"
+version = "0.4.3"
 dependencies = [
  "aligned-vec",
  "arrow-data",
@@ -2621,7 +2621,9 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api"
-version = "0.3.9"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cc9701c82c9dd3831e0d02a958647025eb21f66896ba727331c0e0333452e85"
 dependencies = [
  "aligned-vec",
  "arrow",
@@ -2639,23 +2641,20 @@ dependencies = [
  "serde_yaml 0.8.26",
  "shared-memory-server 0.3.8",
  "shared_memory_extended",
- "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "dora-node-api"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cc9701c82c9dd3831e0d02a958647025eb21f66896ba727331c0e0333452e85"
+version = "0.3.9"
 dependencies = [
  "aligned-vec",
  "arrow",
  "bincode",
- "dora-arrow-convert 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "dora-core 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "dora-message 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "dora-tracing 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dora-arrow-convert 0.3.9",
+ "dora-core 0.3.9",
+ "dora-message 0.4.3",
+ "dora-tracing 0.3.9",
  "eyre",
  "flume 0.10.14",
  "futures",
@@ -2663,8 +2662,9 @@ dependencies = [
  "futures-timer",
  "serde_json",
  "serde_yaml 0.8.26",
- "shared-memory-server 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "shared-memory-server 0.3.9",
  "shared_memory_extended",
+ "tokio",
  "tracing",
 ]
 
@@ -2673,7 +2673,7 @@ name = "dora-node-api-c"
 version = "0.3.9"
 dependencies = [
  "arrow-array",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "tracing",
 ]
@@ -2684,7 +2684,7 @@ version = "0.3.9"
 dependencies = [
  "cxx",
  "cxx-build",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "dora-ros2-bridge",
  "dora-ros2-bridge-msg-gen",
  "eyre",
@@ -2700,7 +2700,7 @@ name = "dora-node-api-python"
 version = "0.3.9"
 dependencies = [
  "arrow",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
  "dora-runtime",
@@ -2718,7 +2718,7 @@ name = "dora-openai-proxy-server"
 version = "0.3.9"
 dependencies = [
  "chrono",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "futures",
  "hyper 0.14.30",
@@ -2738,7 +2738,7 @@ dependencies = [
 name = "dora-operator-api"
 version = "0.3.9"
 dependencies = [
- "dora-arrow-convert 0.3.8",
+ "dora-arrow-convert 0.3.9",
  "dora-operator-api-macros",
  "dora-operator-api-types",
 ]
@@ -2775,7 +2775,7 @@ dependencies = [
  "aligned-vec",
  "arrow",
  "arrow-schema",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "flume 0.10.14",
  "futures",
@@ -2789,7 +2789,7 @@ name = "dora-operator-api-types"
 version = "0.3.9"
 dependencies = [
  "arrow",
- "dora-arrow-convert 0.3.8",
+ "dora-arrow-convert 0.3.9",
  "safer-ffi",
 ]
 
@@ -2797,7 +2797,7 @@ dependencies = [
 name = "dora-pointcloud-projection"
 version = "0.1.0"
 dependencies = [
- "dora-node-api 0.3.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dora-node-api 0.3.8",
 ]
 
 [[package]]
@@ -2805,8 +2805,8 @@ name = "dora-record"
 version = "0.3.9"
 dependencies = [
  "chrono",
- "dora-node-api 0.3.8",
- "dora-tracing 0.3.8",
+ "dora-node-api 0.3.9",
+ "dora-tracing 0.3.9",
  "eyre",
  "parquet",
  "tokio",
@@ -2817,7 +2817,7 @@ name = "dora-rerun"
 version = "0.3.9"
 dependencies = [
  "bytemuck",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "k",
  "ndarray 0.15.6",
@@ -2886,14 +2886,14 @@ version = "0.3.9"
 dependencies = [
  "aligned-vec",
  "arrow",
- "dora-core 0.3.8",
+ "dora-core 0.3.9",
  "dora-download",
- "dora-message 0.4.2",
+ "dora-message 0.4.3",
  "dora-metrics",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "dora-operator-api-python",
  "dora-operator-api-types",
- "dora-tracing 0.3.8",
+ "dora-tracing 0.3.9",
  "eyre",
  "flume 0.10.14",
  "futures",
@@ -2910,7 +2910,9 @@ dependencies = [
 
 [[package]]
 name = "dora-tracing"
-version = "0.3.9"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9af71abaff10a3cb45c505d340facf03efe350c93cafc6d5074d83c10ae49e3e"
 dependencies = [
  "eyre",
  "opentelemetry 0.18.0",
@@ -2922,9 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "dora-tracing"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9af71abaff10a3cb45c505d340facf03efe350c93cafc6d5074d83c10ae49e3e"
+version = "0.3.9"
 dependencies = [
  "eyre",
  "opentelemetry 0.18.0",
@@ -5607,7 +5607,7 @@ dependencies = [
 name = "multiple-daemons-example-node"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "futures",
  "rand",
@@ -5625,7 +5625,7 @@ dependencies = [
 name = "multiple-daemons-example-sink"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
 ]
 
@@ -9101,7 +9101,7 @@ name = "receive_data"
 version = "0.3.9"
 dependencies = [
  "chrono",
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
 ]
 
@@ -9510,7 +9510,7 @@ dependencies = [
 name = "rust-dataflow-example-node"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
  "futures",
  "rand",
@@ -9521,7 +9521,7 @@ dependencies = [
 name = "rust-dataflow-example-sink"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
 ]
 
@@ -9529,7 +9529,7 @@ dependencies = [
 name = "rust-dataflow-example-sink-dynamic"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
 ]
 
@@ -9537,7 +9537,7 @@ dependencies = [
 name = "rust-dataflow-example-status-node"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
 ]
 
@@ -9556,7 +9556,7 @@ dependencies = [
 name = "rust-ros2-dataflow-example-node"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "dora-ros2-bridge",
  "eyre",
  "futures",
@@ -10192,7 +10192,9 @@ dependencies = [
 
 [[package]]
 name = "shared-memory-server"
-version = "0.3.9"
+version = "0.3.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52022798f9f4a93bfa5066cd58b54a518e656d9ecce00816eec9e10b3edfebeb"
 dependencies = [
  "bincode",
  "eyre",
@@ -10204,9 +10206,7 @@ dependencies = [
 
 [[package]]
 name = "shared-memory-server"
-version = "0.3.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52022798f9f4a93bfa5066cd58b54a518e656d9ecce00816eec9e10b3edfebeb"
+version = "0.3.9"
 dependencies = [
  "bincode",
  "eyre",
@@ -10856,7 +10856,7 @@ dependencies = [
 name = "terminal-print"
 version = "0.3.9"
 dependencies = [
- "dora-node-api 0.3.8",
+ "dora-node-api 0.3.9",
  "eyre",
 ]
 
