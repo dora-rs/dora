@@ -10,10 +10,14 @@ from reachy2_sdk.media.camera import CameraView
 def main():
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
-    reachy = ReachySDK(ROBOT_IP)
-
-    reachy.cameras.teleop.get_frame(view=CameraView.LEFT)
-    params = reachy.cameras.depth.get_parameters(view=CameraView.DEPTH)
+    for _ in range(5):
+        reachy = ReachySDK(ROBOT_IP)
+        try:
+            reachy.cameras.teleop.get_frame(view=CameraView.LEFT)
+            params = reachy.cameras.depth.get_parameters(view=CameraView.DEPTH)
+            break
+        except Exception as e:
+            print(e)
 
     node = Node()
 
