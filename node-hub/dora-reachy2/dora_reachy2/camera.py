@@ -15,7 +15,8 @@ def main():
         try:
             reachy.cameras.teleop.get_frame(view=CameraView.LEFT)
             params = reachy.cameras.depth.get_parameters(view=CameraView.DEPTH)
-            break
+            if params is not None:
+                break
         except Exception as e:
             print(e)
 
