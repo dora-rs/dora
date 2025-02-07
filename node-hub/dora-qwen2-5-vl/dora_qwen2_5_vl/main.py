@@ -215,12 +215,20 @@ def main():
                     text = event["value"][0].as_py()
                 else:
                     text = cached_text
+
                 words = text.split()
                 if len(ACTIVATION_WORDS) > 0 and all(
                     word not in ACTIVATION_WORDS for word in words
                 ):
                     continue
-
+                text = (
+                    text.lower()
+                    .replace("grab", "")
+                    .replace("give", "")
+                    .replace("pick", "")
+                    .replace(" me", "")
+                )
+                text = "Output the bounding box of " + text
                 cached_text = text
 
                 if len(frames.keys()) == 0:
