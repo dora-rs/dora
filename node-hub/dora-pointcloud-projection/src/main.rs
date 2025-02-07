@@ -108,9 +108,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let y_min = data[1] as f32;
                         let x_max = data[2] as f32;
                         let y_max = data[3] as f32;
-                        let mut x_vec = vec![];
-                        let mut y_vec = vec![];
-                        let mut z_vec = vec![];
+                        let mut points = vec![];
+                        let mut z_min = 10.;
+                        let mut z_total = 0.;
 
                         if let Some(depth_frame) = &depth_frame {
                             depth_frame.iter().enumerate().for_each(|(i, z)| {
@@ -118,30 +118,53 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 let v = i as f32 / width as f32; // Calculate y-coordinate (v)
 
                                 if u > x_min && u < x_max && v > y_min && v < y_max {
-                                    let z = z.unwrap_or_default() as f32;
-                                    let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                                    let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                    let cos_theta = -0.78; // np.cos(np.deg2rad(180-38))
-                                    let sin_theta = 0.61; // np.sin(np.deg2rad(180-38))
+                                    if let Some(z) = z {
+                                        let z = z as f32;
+                                        let y =
+                                            (u - resolution[0] as f32) * z / focal_length[0] as f32;
+                                        let x =
+                                            (v - resolution[1] as f32) * z / focal_length[1] as f32;
+                                        let cos_theta = -0.78; // np.cos(np.deg2rad(180-38))
+                                        let sin_theta = 0.61; // np.sin(np.deg2rad(180-38))
 
-                                    let x = sin_theta * z + cos_theta * x;
-                                    let y = -y;
-                                    let z = cos_theta * z - sin_theta * x;
-                                    x_vec.push(x);
-                                    y_vec.push(y);
-                                    z_vec.push(z);
+                                        let x = sin_theta * z + cos_theta * x;
+                                        let y = -y;
+                                        let z = -cos_theta * z + sin_theta * x;
+                                        if z < z_min {
+                                            z_min = z;
+                                        }
+                                        points.push((x, y, z));
+                                        z_total += z;
+                                    }
                                 }
                             });
+                        } else {
+                            println!("No depth frame found");
+                            continue;
                         }
-                        let x_mean = x_vec.iter().sum::<f32>() / x_vec.len() as f32;
-                        let y_mean = y_vec.iter().sum::<f32>() / x_vec.len() as f32;
-                        let z_mean = z_vec.iter().sum::<f32>() / x_vec.len() as f32;
+                        if points.is_empty() {
+                            continue;
+                        }
+                        let threshold = (z_total / points.len() as f32 + 1. * z_min) / 2.;
+
+                        let (x, y, z) = points
+                            .iter()
+                            .filter(|(_x, _y, z)| z > &&threshold)
+                            .fold((0., 0., 0.), |(acc_x, acc_y, acc_z), (x, y, z)| {
+                                (acc_x + x, acc_y + y, acc_z + z)
+                            });
+                        let (x, y, z) = (
+                            x / points.len() as f32,
+                            y / points.len() as f32,
+                            z / points.len() as f32,
+                        );
 
                         let metadata = metadata.parameters.clone();
+
                         node.send_output(
                             DataId::from("point".to_string()),
                             metadata,
-                            vec![x_mean, y_mean, z_mean].into_arrow(),
+                            vec![x, y, z].into_arrow(),
                         )?;
                     }
                 }
