@@ -127,6 +127,16 @@ pick_pos4 = [
     10.177961995464896,
 ]
 
+init_pose = [
+    46.078474461805754,
+    -8.044685596900228,
+    -4.860684912932533,
+    -104.6900523524506,
+    -1.7181514813547498,
+    -21.771478988867642,
+    2.786325085818161,
+]
+
 
 def go_to_mixed_angles(reachy, x, y):
     for theta in range(-90, 0):
@@ -188,7 +198,6 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-
             # if event["id"] == "pose":
 
             # values = event["value"].to_numpy()
@@ -238,6 +247,24 @@ from dora import Node
 from reachy2_sdk import ReachySDK
 from reachy2_sdk.media.camera import CameraView
 
+ROBOT_IP = os.getenv("ROBOT_IP", "172.17.134.85")
+
+reachy = ReachySDK(ROBOT_IP)
+theta = 0
+x = 0.2477428
+y = 0.23162833
+z = 0.28
+cos = np.cos(np.deg2rad(theta))
+sin = np.sin(np.deg2rad(theta))
+a = np.array(
+    [
+        [sin, 0.0, -cos, x],
+        [0.0, 1.0, 0.0, y],
+        [cos, 0.0, sin, -0.38],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+)
+reachy.l_arm.inverse_kinematics(a)
 
 # 1th is front-back: go from 0.5 to 0.3
 # 2th is right-left: go from -0.5 to -0.03

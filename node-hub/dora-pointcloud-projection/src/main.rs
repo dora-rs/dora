@@ -104,7 +104,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "boxes2d" => {
                     if let Some(data) = data.as_primitive_opt::<Int64Type>() {
                         let data = data.values();
-                        println!("data: {data:#?}");
                         let x_min = data[0] as f32;
                         let y_min = data[1] as f32;
                         let x_max = data[2] as f32;
@@ -120,9 +119,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                                 if u > x_min && u < x_max && v > y_min && v < y_max {
                                     let z = z.unwrap_or_default() as f32;
-
                                     let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
                                     let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
+                                    let cos_theta = -0.78; // np.cos(np.deg2rad(180-38))
+                                    let sin_theta = 0.61; // np.sin(np.deg2rad(180-38))
+
+                                    let x = sin_theta * z + cos_theta * x;
+                                    let y = -y;
+                                    let z = cos_theta * z - sin_theta * x;
                                     x_vec.push(x);
                                     y_vec.push(y);
                                     z_vec.push(z);
@@ -133,17 +137,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let y_mean = y_vec.iter().sum::<f32>() / x_vec.len() as f32;
                         let z_mean = z_vec.iter().sum::<f32>() / x_vec.len() as f32;
 
-                        let cos_theta = -0.78; // np.cos(np.deg2rad(180-38))
-                        let sin_theta = 0.61; // np.sin(np.deg2rad(180-38))
-
-                        let adj_x = sin_theta * z_mean + cos_theta * x_mean;
-                        let adj_y = y_mean;
-                        let adj_z = cos_theta * z_mean + sin_theta * x_mean;
                         let metadata = metadata.parameters.clone();
                         node.send_output(
                             DataId::from("point".to_string()),
                             metadata,
-                            vec![adj_x, adj_y, adj_z].into_arrow(),
+                            vec![x_mean, y_mean, z_mean].into_arrow(),
                         )?;
                     }
                 }

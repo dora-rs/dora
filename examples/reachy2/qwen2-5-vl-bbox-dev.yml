@@ -30,12 +30,16 @@ nodes:
     path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/mobile_base.py
     inputs:
       action_base: interpolation/action #
+    env:
+      ROBOT_IP: 172.17.134.85
 
   - id: reachy-right-arm
     build: pip install -e ../../node-hub/dora-reachy2
     path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/right_arm.py
     inputs:
       action_arm: interpolation/action_right_arm #
+    env:
+      ROBOT_IP: 172.17.134.85
 
   - id: reachy-left-arm
     build: pip install -e ../../node-hub/dora-reachy2
@@ -43,6 +47,8 @@ nodes:
     inputs:
       action_arm: interpolation/action_left_arm #
       pose: box_coordinates/point
+    env:
+      ROBOT_IP: 172.17.134.85
 
   - id: reachy-camera
     build: pip install -e ../../node-hub/dora-reachy2
@@ -54,6 +60,8 @@ nodes:
       - image_left
       - image_depth
       - depth
+    env:
+      ROBOT_IP: 172.17.134.85
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
@@ -78,7 +86,7 @@ nodes:
       - text
     env:
       #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
-      DEFAULT_QUESTION: Output the bounding box of the rubicks cube.
+      DEFAULT_QUESTION: Output the bounding box of the coca cola can.
       ACTIVATION_WORDS: Output
       #SYSTEM_PROMPT: You're a robot.
 

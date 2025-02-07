@@ -127,29 +127,39 @@ pick_pos4 = [
     10.177961995464896,
 ]
 
+init_pose = [
+    46.078474461805754,
+    -8.044685596900228,
+    -4.860684912932533,
+    -104.6900523524506,
+    -1.7181514813547498,
+    -21.771478988867642,
+    2.786325085818161,
+]
+
 
 def go_to_mixed_angles(reachy, x, y):
-    for theta in range(-90, 20, 10):
-        cos = np.cos(np.deg2rad(theta))
-        sin = np.sin(np.deg2rad(theta))
+    for theta in range(-90, 0, 10):
+        cos = np.float64(np.cos(np.deg2rad(theta)))
+        sin = np.float64(np.sin(np.deg2rad(theta)))
         a = np.array(
             [
-                [sin, 0.0, -cos, -x],
-                [0.0, 1.0, 0.0, -y],
-                [cos, 0.0, sin, -0.38],
+                [sin, 0.0, -cos, np.float64(x)],
+                [0.0, 1.0, 0.0, np.float64(y)],
+                [cos, 0.0, sin, -0.32],
                 [0.0, 0.0, 0.0, 1.0],
             ]
         )
         try:
             return reachy.l_arm.inverse_kinematics(a)
         except ValueError:
-            pass
-    print(f"no solution for x: {x}, y: {y}")
-    return None
+            continue
+    print("could not solve for x: ", x, "y: ", y)
+    return []
 
 
 def main():
-    ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
+    ROBOT_IP = os.getenv("ROBOT_IP", "172.17.134.85")
 
     reachy = ReachySDK(ROBOT_IP)
 
@@ -210,14 +220,13 @@ def main():
                 values = event["value"].to_numpy()
                 x = values[0]
                 y = values[1]
-                joint = go_to_mixed_angles(reachy, x + 0.03, y - 0.03)
-                if joint:
-                    la_goto("pose", joint, time_sleep=2.0)
 
-                joint = go_to_mixed_angles(reachy, x - 0.06, y - 0.03)
-                if joint:
-                    la_goto("pose", joint, time_sleep=2.0)
-                    reachy.l_arm.gripper.close()
+                joint = go_to_mixed_angles(reachy, x + 0.06, y + 0.03)
+                if len(joint):
+                    la_goto("pose", joint, time_sleep=0.5)
+                    # reachy.l_arm.gripper.close()
+
+                la_goto("pose", init_pose, time_sleep=0.5)
 
             elif event["id"] == "action_arm":
                 text = event["value"][0].as_py()
