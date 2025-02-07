@@ -14,6 +14,8 @@ device = "cuda:0" if torch.cuda.is_available() else device
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 cache = {}
 
+ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
+
 
 def load_interface():
     if os.getenv("INTERFACE", "HF") == "HF":
@@ -95,6 +97,24 @@ def main(arg_list: list[str] | None = None):
             elif event["id"] == "text":
                 # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                 text = event["value"][0].as_py()
+                if len(event["value"]) > 0:
+                    text = event["value"][0].as_py()
+                else:
+                    continue
+
+                words = text.split()
+                if len(ACTIVATION_WORDS) > 0 and all(
+                    word not in ACTIVATION_WORDS for word in words
+                ):
+                    continue
+                text = (
+                    text.lower()
+                    .replace("grab", "")
+                    .replace("give", "")
+                    .replace("pick", "")
+                    .replace(" me", "")
+                )
+                text = "Grabbing " + text
                 if text in cache:
                     output = cache[text]
                 else:

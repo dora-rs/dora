@@ -86,8 +86,8 @@ nodes:
       - text
     env:
       #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
-      DEFAULT_QUESTION: Output the bounding box of the coca cola can.
-      ACTIVATION_WORDS: Output
+      DEFAULT_QUESTION: Output the bounding box of the red coca cola can.
+      ACTIVATION_WORDS: grab pick give
       #SYSTEM_PROMPT: You're a robot.
 
   - id: parse_bbox
@@ -110,9 +110,11 @@ nodes:
     build: pip install -e ../../node-hub/dora-outtetts
     path: dora-outtetts
     inputs:
-      text: dora-qwenvl/text
+      text: dora-distil-whisper/text
     outputs:
       - audio
+    env:
+      ACTIVATION_WORDS: grab pick give
 
   - id: dora-pyaudio
     build: pip install -e ../../node-hub/dora-pyaudio
