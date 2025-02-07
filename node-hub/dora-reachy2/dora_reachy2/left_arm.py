@@ -6,6 +6,7 @@ import pyarrow as pa
 from dora import Node
 from reachy2_sdk import ReachySDK
 from reachy2_sdk.media.camera import CameraView
+from scipy.spatial.transform import Rotation as R
 
 l_pos = [
     21.92770419820605,
@@ -128,30 +129,25 @@ pick_pos4 = [
 ]
 
 init_pose = [
-    46.078474461805754,
-    -8.044685596900228,
-    -4.860684912932533,
-    -104.6900523524506,
-    -1.7181514813547498,
-    -21.771478988867642,
-    2.786325085818161,
+    25.27648447656077,
+    6.6749167720635585,
+    22.38779769352916,
+    -102.41740252877725,
+    -11.262745446051015,
+    -7.058893358615574,
+    28.517429728299334,
 ]
 
 
 def go_to_mixed_angles(reachy, x, y):
-    for theta in range(-90, 0, 10):
-        cos = np.float64(np.cos(np.deg2rad(theta)))
-        sin = np.float64(np.sin(np.deg2rad(theta)))
-        a = np.array(
-            [
-                [sin, 0.0, -cos, np.float64(x)],
-                [0.0, 1.0, 0.0, np.float64(y)],
-                [cos, 0.0, sin, -0.32],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
+    for theta in range(30, 90, -10):
+        r = R.from_euler("zyx", [0, theta, 0], degrees=True)
+        transform = np.eye(4)
+        transform[:3, :3] = r.as_matrix()
+        transform[:3, 3] = [x, y, -0.12]
+
         try:
-            return reachy.l_arm.inverse_kinematics(a)
+            return reachy.l_arm.inverse_kinematics(transform)
         except ValueError:
             continue
     print("could not solve for x: ", x, "y: ", y)
@@ -166,7 +162,7 @@ def main():
     reachy.turn_on()
     if reachy.l_arm is not None:
         reachy.l_arm.turn_on()
-        reachy.l_arm.goto(middle_pos)
+        reachy.l_arm.goto(init_pose)
         reachy.l_arm.gripper.turn_on()
     node = Node()
 
