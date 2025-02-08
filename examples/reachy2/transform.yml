@@ -20,6 +20,11 @@ nodes:
     env:
       ROBOT_IP: 172.17.134.85
 
+  - id: reachy-head
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-head
+    inputs:
+      boxes2d: parse_bbox/bbox_face
   - id: plot
     # build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
@@ -28,6 +33,7 @@ nodes:
       image_depth: reachy-camera/image_depth
       text_response: dora-qwenvl/text
       boxes2d: parse_bbox/bbox
+      boxes2d: parse_bbox/bbox_face
     env:
       RERUN_MEMORY_LIMIT: 10%
 
@@ -51,6 +57,7 @@ nodes:
       text: dora-qwenvl/text
     outputs:
       - bbox
+      - bbox_face
 
   - id: box_coordinates
     build: cargo build -p dora-pointcloud-projection --release

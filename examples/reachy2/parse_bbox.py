@@ -31,8 +31,9 @@ def extract_bboxes(json_text):
 
         # Extract bounding boxes
         bboxes = [item["bbox_2d"] for item in data]
+        labels = [item["label"] for item in data]
 
-        return np.array(bboxes)
+        return np.array(bboxes), np.array(labels)
     except:
         pass
 
@@ -41,14 +42,10 @@ for event in node:
     if event["type"] == "INPUT":
         text = event["value"][0].as_py()
 
-        bboxes = extract_bboxes(text)
-        if bboxes is not None:
+        bboxes, labels = extract_bboxes(text)
+        if bboxes is not None and len(bboxes) > 0:
             bboxes = bboxes * 2
-            node.send_output("bbox", pa.array(bboxes.ravel()))
-            # 748 170 842 272
-            # Angle is -38
-            #  -0.116853796, 0.12726586, 0.57557464
-
-            # h: -0.38  == np.sin(np.deg2rad(-38)) * 0.11 + np.cos(np.deg2rad(-38)) * 0.57
-            # y: -0.12
-            # x: 0.26 == np.cos(np.deg2rad(-38)) * 0.11 + np.sin(np.deg2rad(-38)) * 0.57
+            if "human" in labels[0] or "head" in labels[0]:
+                node.send_output("bbox_face", pa.array(bboxes.ravel()))
+            else:
+                node.send_output("bbox", pa.array(bboxes.ravel()))

@@ -10,12 +10,8 @@ def main():
 
     reachy = ReachySDK(ROBOT_IP)
 
-    reachy.turn_on()
     if reachy.mobile_base is not None:
         reachy.mobile_base.turn_on()
-    if reachy.head is not None:
-        reachy.head.turn_on()
-        reachy.head.goto([0, 0, 0])
 
     node = Node()
     for event in node:
@@ -27,9 +23,6 @@ def main():
 
     if reachy.mobile_base is not None:
         reachy.mobile_base.turn_off()
-
-    if reachy.head is not None:
-        reachy.head.turn_off()
 
 
 if __name__ == "__main__":
