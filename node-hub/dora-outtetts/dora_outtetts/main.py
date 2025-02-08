@@ -30,7 +30,7 @@ def load_interface():
         model_config = outetts.GGUFModelConfig_v1(
             model_path=os.getenv(
                 "GGUF_MODEL_PATH",
-                "~/.cache/huggingface/hub/models--OuteAI--OuteTTS-0.2-500M-GGUF/snapshots/e6d78720d2a8edce2bc8f5c5c2d0332e57091930/OuteTTS-0.2-500M-Q4_0.gguf",
+                "/home/peter/.cache/huggingface/hub/models--OuteAI--OuteTTS-0.2-500M-GGUF/snapshots/e6d78720d2a8edce2bc8f5c5c2d0332e57091930/OuteTTS-0.2-500M-Q4_0.gguf",
             ),
             language="en",  # Supported languages in v0.2: en, zh, ja, ko
             n_gpu_layers=0,
@@ -60,6 +60,7 @@ def main(arg_list: list[str] | None = None):
     parser.add_argument("--create-speaker", type=str, help="Path to audio file")
     parser.add_argument("--test", action="store_true", help="Run tests")
     args = parser.parse_args(arg_list)
+    text = ""
     if args.test:
         import pytest
 
@@ -94,42 +95,98 @@ def main(arg_list: list[str] | None = None):
                 metadata: {event["metadata"]}""",
                 )
 
-            elif event["id"] == "text":
+            elif "text_ts" in event["id"]:
                 # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
-                text = event["value"][0].as_py()
-                if len(event["value"]) > 0:
+                step = event["value"][1].as_py()
+                speech = ""
+                if step == "new":
                     text = event["value"][0].as_py()
-                else:
-                    continue
-
-                words = text.split()
-                if len(ACTIVATION_WORDS) > 0 and all(
-                    word not in ACTIVATION_WORDS for word in words
-                ):
-                    continue
-                text = (
-                    text.lower()
-                    .replace("grab", "")
-                    .replace("give", "")
-                    .replace("pick", "")
-                    .replace(" me", "")
+                    if len(event["value"]) > 0:
+                        text = event["value"][0].as_py()
+                    else:
+                        continue
+                    speech = "Okay! I'm grabbing the " + text
+                elif step == "end":
+                    speech = "Here's your " + text + ", what else can I do for you?"
+                output = interface.generate(
+                    text=speech,
+                    temperature=0.1,
+                    repetition_penalty=1.1,
+                    speaker=speaker,  # Optional: speaker profile
                 )
-                text = "Grabbing " + text
-                if text in cache:
-                    output = cache[text]
-                else:
-                    output = interface.generate(
-                        text=text,
-                        temperature=0.1,
-                        repetition_penalty=1.1,
-                        speaker=speaker,  # Optional: speaker profile
-                    )
                 node.send_output(
                     "audio",
                     pa.array(output.audio.cpu().numpy().ravel()),
                     {"language": "en", "sample_rate": output.sr},
                 )
-                cache[text] = output
+
+            # elif event["id"] == "text":
+            #     # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
+            #     text = event["value"][0].as_py()
+            #     if len(event["value"]) > 0:
+            #         text = event["value"][0].as_py()
+            #     else:
+            #         continue
+
+            #     words = text.split()
+            #     if len(ACTIVATION_WORDS) > 0 and all(
+            #         word not in ACTIVATION_WORDS for word in words
+            #     ):
+            #         continue
+            #     text = (
+            #         text.lower()
+            #         .replace("grab", "")
+            #         .replace("give", "")
+            #         .replace("pick", "")
+            #         .replace(" me", "")
+            #         .replace("can you", "")
+            #         .replace("please", "")
+            #         .replace("could you", "")
+            #         .replace("would you", "")
+            #         .replace("the", "")
+            #         .replace("a", "")
+            #         .replace("an", "")
+            #         .replace("to", "")
+            #         .replace("for me", "")
+            #         .replace("and", "")
+            #         .replace("then", "")
+            #         .replace("it", "")
+            #         .replace("that", "")
+            #         .replace("this", "")
+            #         .replace("over", "")
+            #         .replace("from", "")
+            #         .replace("there", "")
+            #         .replace("here", "")
+            #         .replace("on", "")
+            #         .replace("off", "")
+            #         .replace("in", "")
+            #         .replace("out", "")
+            #         .replace("of", "")
+            #         .replace("with", "")
+            #         .replace("my", "")
+            #         .replace("your", "")
+            #         .replace("his", "")
+            #         .replace("her", "")
+            #         .replace("its", "")
+            #         .replace("their", "")
+            #         .replace("our", "")
+            #     )
+            #     text = "Grabbing " + text
+            #     if text in cache:
+            #         output = cache[text]
+            #     else:
+            #         output = interface.generate(
+            #             text=text,
+            #             temperature=0.1,
+            #             repetition_penalty=1.1,
+            #             speaker=speaker,  # Optional: speaker profile
+            #         )
+            #     node.send_output(
+            #         "audio",
+            #         pa.array(output.audio.cpu().numpy().ravel()),
+            #         {"language": "en", "sample_rate": output.sr},
+            #     )
+            #     cache[text] = output
 
 
 if __name__ == "__main__":

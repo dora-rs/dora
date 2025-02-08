@@ -19,6 +19,13 @@ def main():
                 break
         except Exception as e:
             print(e)
+        import time
+
+        time.sleep(1)
+
+    reachy.cameras.teleop.get_frame(view=CameraView.LEFT)
+    params = reachy.cameras.depth.get_parameters(view=CameraView.DEPTH)
+    height, width, _distortion_model, _D, K, _R, _P = params
 
     node = Node()
 
@@ -72,7 +79,6 @@ def main():
                 (depth_frame, _) = reachy.cameras.depth.get_depth_frame()
 
                 if params is not None and depth_frame is not None:
-                    height, width, _distortion_model, _D, K, _R, _P = params
                     depth_frame = depth_frame.ravel().astype(np.float64) / 1_000.0
 
                     node.send_output(

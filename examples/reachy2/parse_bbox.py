@@ -36,6 +36,7 @@ def extract_bboxes(json_text):
         return np.array(bboxes), np.array(labels)
     except:
         pass
+    return None, None
 
 
 for event in node:

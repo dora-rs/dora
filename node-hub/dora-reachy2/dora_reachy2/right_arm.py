@@ -146,11 +146,20 @@ def go_to_mixed_angles(reachy, x, y):
             [
                 [sin, 0.0, -cos, -x],
                 [0.0, 1.0, 0.0, -y],
-                [cos, 0.0, sin, -0.4],
+                [cos, 0.0, sin, 0.2],
                 [0.0, 0.0, 0.0, 1.0],
             ]
         )
         try:
+            reachy.r_arm.goto(reachy.r_arm.inverse_kinematics(a))
+            a = np.array(
+                [
+                    [sin, 0.0, -cos, -x],
+                    [0.0, 1.0, 0.0, -y],
+                    [cos, 0.0, sin, -0.4],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            )
             reachy.r_arm.goto(reachy.r_arm.inverse_kinematics(a))
             break
         except ValueError:
@@ -163,8 +172,8 @@ def main():
     reachy = ReachySDK(ROBOT_IP)
 
     if reachy.r_arm is not None:
-        reachy.r_arm.turn_on()
-        reachy.r_arm.goto(r_pos)
+        reachy.r_arm.turn_off()
+        # reachy.r_arm.goto(r_pos)
     node = Node()
 
     def ra_goto(action, pos, time_sleep=0.2, duration=2):
@@ -237,38 +246,38 @@ def main():
 if __name__ == "__main__":
     main()
 
-import os
-import time
+# import os
+# import time
 
-import numpy as np
-import pyarrow as pa
-from dora import Node
-from reachy2_sdk import ReachySDK
-from reachy2_sdk.media.camera import CameraView
+# import numpy as np
+# import pyarrow as pa
+# from dora import Node
+# from reachy2_sdk import ReachySDK
+# from reachy2_sdk.media.camera import CameraView
 
-ROBOT_IP = os.getenv("ROBOT_IP", "172.17.134.85")
+# ROBOT_IP = os.getenv("ROBOT_IP", "172.17.134.85")
 
-reachy = ReachySDK(ROBOT_IP)
+# reachy = ReachySDK(ROBOT_IP)
 
-reachy.l_arm.turn_off()
-reachy.r_arm.turn_off()
+# reachy.l_arm.turn_off()
+# reachy.r_arm.turn_off()
 
-print(reachy.l_arm.get_current_positions())
-theta = 0
-x = 0.2477428
-y = 0.23162833
-z = 0.28
-cos = np.cos(np.deg2rad(theta))
-sin = np.sin(np.deg2rad(theta))
-a = np.array(
-    [
-        [sin, 0.0, -cos, x],
-        [0.0, 1.0, 0.0, y],
-        [cos, 0.0, sin, -0.38],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
-)
-reachy.l_arm.inverse_kinematics(a)
+# print(reachy.l_arm.get_current_positions())
+# theta = 0
+# x = 0.2477428
+# y = 0.23162833
+# z = 0.28
+# cos = np.cos(np.deg2rad(theta))
+# sin = np.sin(np.deg2rad(theta))
+# a = np.array(
+#     [
+#         [sin, 0.0, -cos, x],
+#         [0.0, 1.0, 0.0, y],
+#         [cos, 0.0, sin, -0.38],
+#         [0.0, 0.0, 0.0, 1.0],
+#     ]
+# )
+# reachy.l_arm.inverse_kinematics(a)
 
 # 1th is front-back: go from 0.5 to 0.3
 # 2th is right-left: go from -0.5 to -0.03
