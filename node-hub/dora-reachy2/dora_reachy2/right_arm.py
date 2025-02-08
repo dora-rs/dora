@@ -128,13 +128,13 @@ pick_pos4 = [
 ]
 
 init_pose = [
-    46.078474461805754,
-    -8.044685596900228,
-    -4.860684912932533,
-    -104.6900523524506,
-    -1.7181514813547498,
-    -21.771478988867642,
-    2.786325085818161,
+    -7.0631310641087435,
+    -10.432298603362307,
+    24.429809104404114,
+    -132.15000828778648,
+    -1.5494749438811133,
+    -21.749917789205202,
+    8.099312596108344,
 ]
 
 
@@ -162,7 +162,6 @@ def main():
 
     reachy = ReachySDK(ROBOT_IP)
 
-    reachy.turn_on()
     if reachy.r_arm is not None:
         reachy.r_arm.turn_on()
         reachy.r_arm.goto(r_pos)
@@ -250,6 +249,11 @@ from reachy2_sdk.media.camera import CameraView
 ROBOT_IP = os.getenv("ROBOT_IP", "172.17.134.85")
 
 reachy = ReachySDK(ROBOT_IP)
+
+reachy.l_arm.turn_off()
+reachy.r_arm.turn_off()
+
+print(reachy.l_arm.get_current_positions())
 theta = 0
 x = 0.2477428
 y = 0.23162833

@@ -5,7 +5,6 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 from reachy2_sdk import ReachySDK
-from reachy2_sdk.media.camera import CameraView
 from scipy.spatial.transform import Rotation as R
 
 l_pos = [
@@ -129,22 +128,22 @@ pick_pos4 = [
 ]
 
 init_pose = [
-    25.27648447656077,
-    6.6749167720635585,
-    22.38779769352916,
-    -102.41740252877725,
-    -11.262745446051015,
-    -7.058893358615574,
-    28.517429728299334,
+    -7.0631310641087435,
+    -10.432298603362307,
+    24.429809104404114,
+    -132.15000828778648,
+    -1.5494749438811133,
+    -21.749917789205202,
+    8.099312596108344,
 ]
 
 
 def go_to_mixed_angles(reachy, x, y):
-    for theta in range(30, 90, -10):
+    for theta in range(-90, 0, 10):
         r = R.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
-        transform[:3, 3] = [x, y, -0.12]
+        transform[:3, 3] = [x, y, -0.17]
 
         try:
             return reachy.l_arm.inverse_kinematics(transform)
@@ -159,7 +158,6 @@ def main():
 
     reachy = ReachySDK(ROBOT_IP)
 
-    reachy.turn_on()
     if reachy.l_arm is not None:
         reachy.l_arm.turn_on()
         reachy.l_arm.goto(init_pose)
@@ -214,6 +212,8 @@ def main():
                     reachy.l_arm.gripper.open()
 
                 values = event["value"].to_numpy()
+                if values[0] != values[0]:
+                    continue
                 x = values[0]
                 y = values[1]
 
