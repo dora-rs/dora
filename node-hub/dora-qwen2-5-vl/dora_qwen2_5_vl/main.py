@@ -70,6 +70,11 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 def generate(frames: dict, question, history, past_key_values=None):
     """Generate the response to the question given the image using Qwen2 model."""
+    if "human" in question:
+
+        image = frames["image_left"]
+    else:
+        image = frames["image_depth"]
     messages = [
         {
             "role": "user",
@@ -80,7 +85,6 @@ def generate(frames: dict, question, history, past_key_values=None):
                     "resized_height": image.size[1] / 2,
                     "resized_width": image.size[0] / 2,
                 }
-                for image in frames.values()
             ]
             + [
                 {"type": "text", "text": question},
@@ -161,6 +165,7 @@ def main():
     ]
     cached_text = DEFAULT_QUESTION
     past_key_values = None
+    pause = False
 
     for event in node:
         event_type = event["type"]
@@ -210,26 +215,77 @@ def main():
                 else:
                     frames[event_id] = image
 
+            elif "pause" in event_id:
+                pause = event["value"][0].as_py()
+
             elif "text" in event_id:
+
                 if len(event["value"]) > 0:
                     text = event["value"][0].as_py()
                 else:
                     text = cached_text
-
-                words = text.split()
+                tts = False
+                print("text: ", text, flush=True)
+                words = text.lower().split()
                 if len(ACTIVATION_WORDS) > 0 and all(
                     word not in ACTIVATION_WORDS for word in words
                 ):
                     continue
-                text = (
-                    text.lower()
+                elif text != cached_text:
+                    tts = True
+                    pause = True
+                cached_text = text
+
+                if frames.get("image_left") is None:
+                    continue
+                elif frames.get("image_depth") is None:
+                    continue
+
+                print("pause: ", pause, flush=True)
+
+                text_tts = (
+                    cached_text.lower()
                     .replace("grab", "")
                     .replace("give", "")
                     .replace("pick", "")
                     .replace(" me", "")
+                    .replace("can you", "")
+                    .replace("please", "")
+                    .replace("could you", "")
+                    .replace("would you", "")
+                    .replace(" the ", "")
+                    .replace(" a ", "")
+                    .replace(" an ", "")
+                    .replace(" to ", "")
+                    .replace(" for me", "")
+                    .replace(" and ", "")
+                    .replace(" then ", "")
+                    .replace(" it", "")
+                    .replace(" that ", "")
+                    .replace(" this ", "")
+                    .replace(" over ", "")
+                    .replace(" from ", "")
+                    .replace(" there", "")
+                    .replace(" here", "")
+                    .replace(" on ", "")
+                    .replace(" off ", "")
+                    .replace(" in ", "")
+                    .replace(" out", "")
+                    .replace(" of ", "")
+                    .replace(" with ", "")
+                    .replace(" my ", "")
+                    .replace(" your ", "")
+                    .replace(" his ", "")
+                    .replace(" her ", "")
+                    .replace(" its ", "")
+                    .replace(" their ", "")
+                    .replace(" our ", "")
                 )
-                text = "Output the bounding box of " + text
-                cached_text = text
+                if tts:
+                    node.send_output("text_ts", pa.array([text_tts, "new"]))
+                if pause:
+                    text_tts = "human"
+                text = "Output the bounding box of " + text_tts
 
                 if len(frames.keys()) == 0:
                     continue

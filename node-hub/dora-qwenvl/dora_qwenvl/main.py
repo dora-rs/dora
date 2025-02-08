@@ -53,8 +53,7 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
 def generate(frames: dict, question):
-    """Generate the response to the question given the image using Qwen2 model.
-    """
+    """Generate the response to the question given the image using Qwen2 model."""
     messages = [
         {
             "role": "user",
@@ -73,7 +72,9 @@ def generate(frames: dict, question):
 
     # Preparation for inference
     text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True,
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
     )
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
@@ -112,7 +113,7 @@ def main():
 
     question = DEFAULT_QUESTION
     frames = {}
-
+    pause = False
     for event in node:
         event_type = event["type"]
 
@@ -126,7 +127,11 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                if (
+                    encoding == "bgr8"
+                    or encoding == "rgb8"
+                    or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]
+                ):
                     channels = 3
                     storage_type = np.uint8
                 else:
@@ -153,6 +158,12 @@ def main():
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
                 frames[event_id] = Image.fromarray(frame)
 
+            elif "pause" in event_id:
+                if event["value"][0].as_py() == "True":
+                    pause = True
+                elif event["value"][0].as_py() == "False":
+                    pause = False
+
             elif event_id == "tick":
                 if len(frames.keys()) == 0:
                     continue
@@ -167,15 +178,16 @@ def main():
                 text = event["value"][0].as_py()
                 if text != "":
                     question = text
-                if len(frames.keys()) == 0:
-                    continue
-                # set the max number of tiles in `max_num`
-                response = generate(frames, question)
-                node.send_output(
-                    "text",
-                    pa.array([response]),
-                    {},
-                )
+                if pause:
+                    if len(frames.keys()) == 0:
+                        continue
+                    # set the max number of tiles in `max_num`
+                    response = generate(frames, question)
+                    node.send_output(
+                        "text",
+                        pa.array([response]),
+                        {},
+                    )
 
         elif event_type == "ERROR":
             print("Event Error:" + event["error"])

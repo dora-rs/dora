@@ -1,7 +1,7 @@
 nodes:
   - id: camera
     build: pip install -e ../../node-hub/dora-reachy2
-    path: dora-reachy2
+    path: dora-reachy2-camera
     inputs:
       tick: dora/timer/millis/20
     outputs:
