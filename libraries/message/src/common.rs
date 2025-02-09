@@ -190,3 +190,34 @@ impl DropToken {
         Self(Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)))
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct DaemonId {
+    machine_id: Option<String>,
+    uuid: Uuid,
+}
+
+impl DaemonId {
+    pub fn new(machine_id: Option<String>) -> Self {
+        DaemonId {
+            machine_id,
+            uuid: Uuid::new_v4(),
+        }
+    }
+
+    pub fn matches_machine_id(&self, machine_id: &str) -> bool {
+        self.machine_id
+            .as_ref()
+            .map(|id| id == machine_id)
+            .unwrap_or_default()
+    }
+}
+
+impl std::fmt::Display for DaemonId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(id) = &self.machine_id {
+            write!(f, "{id}-")?;
+        }
+        write!(f, "{}", self.uuid)
+    }
+}

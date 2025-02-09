@@ -265,7 +265,7 @@ enum Lang {
 pub fn lib_main(args: Args) {
     if let Err(err) = run(args) {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
-        eprintln!("{err:#}");
+        eprintln!("{err:?}");
         std::process::exit(1);
     }
 }

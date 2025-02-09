@@ -7,10 +7,10 @@ use crate::{
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
     descriptor::{CoreNodeKind, OperatorSource, ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE},
-    id::{DataId, OperatorId},
+    id::{DataId, NodeId, OperatorId},
 };
 use eyre::{bail, eyre, Context};
-use std::{path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path, process::Command};
 use tracing::info;
 
 use super::{resolve_path, Descriptor, DescriptorExt};
@@ -26,7 +26,7 @@ pub fn check_dataflow(
     let mut has_python_operator = false;
 
     // check that nodes and operators exist
-    for node in &nodes {
+    for node in nodes.values() {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom) => match custom.source.as_str() {
                 SHELL_SOURCE => (),
@@ -35,10 +35,11 @@ pub fn check_dataflow(
                     if source_is_url(source) {
                         info!("{source} is a URL."); // TODO: Implement url check.
                     } else if let Some(remote_daemon_id) = remote_daemon_id {
-                        if remote_daemon_id.contains(&node.deploy.machine.as_str())
-                            || coordinator_is_remote
-                        {
-                            info!("skipping path check for remote node `{}`", node.id);
+                        if let Some(machine) = &node.deploy.machine {
+                            if remote_daemon_id.contains(&machine.as_str()) || coordinator_is_remote
+                            {
+                                info!("skipping path check for remote node `{}`", node.id);
+                            }
                         }
                     } else {
                         resolve_path(source, working_dir)
@@ -82,7 +83,7 @@ pub fn check_dataflow(
     }
 
     // check that all inputs mappings point to an existing output
-    for node in &nodes {
+    for node in nodes.values() {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom_node) => {
                 for (input_id, input) in &custom_node.run_config.inputs {
@@ -104,7 +105,7 @@ pub fn check_dataflow(
     }
 
     // Check that nodes can resolve `send_stdout_as`
-    for node in &nodes {
+    for node in nodes.values() {
         node.send_stdout_as()
             .context("Could not resolve `send_stdout_as` configuration")?;
     }
@@ -149,13 +150,13 @@ impl ResolvedNodeExt for ResolvedNode {
 
 fn check_input(
     input: &Input,
-    nodes: &[super::ResolvedNode],
+    nodes: &BTreeMap<NodeId, super::ResolvedNode>,
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
     match &input.mapping {
         InputMapping::Timer { interval: _ } => {}
         InputMapping::User(UserInputMapping { source, output }) => {
-            let source_node = nodes.iter().find(|n| &n.id == source).ok_or_else(|| {
+            let source_node = nodes.values().find(|n| &n.id == source).ok_or_else(|| {
                 eyre!("source node `{source}` mapped to input `{input_id_str}` does not exist",)
             })?;
             match &source_node.kind {

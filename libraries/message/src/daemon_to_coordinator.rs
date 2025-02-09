@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
-use crate::{current_crate_version, id::NodeId, versions_compatible, DataflowId};
+use crate::{common::DaemonId, current_crate_version, id::NodeId, versions_compatible, DataflowId};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
     Event {
-        daemon_id: String,
+        daemon_id: DaemonId,
         event: DaemonEvent,
     },
 }

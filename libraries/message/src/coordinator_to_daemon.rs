@@ -1,6 +1,11 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    time::Duration,
+};
 
 use crate::{
+    common::DaemonId,
     descriptor::{Descriptor, ResolvedNode},
     id::{NodeId, OperatorId},
     DataflowId,
@@ -16,8 +21,6 @@ pub enum RegisterResult {
     },
     Err(String),
 }
-
-type DaemonId = String;
 
 impl RegisterResult {
     pub fn to_result(self) -> eyre::Result<DaemonId> {
@@ -58,6 +61,7 @@ pub enum DaemonCoordinatorEvent {
 pub struct SpawnDataflowNodes {
     pub dataflow_id: DataflowId,
     pub working_dir: PathBuf,
-    pub nodes: Vec<ResolvedNode>,
+    pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub dataflow_descriptor: Descriptor,
+    pub spawn_nodes: BTreeSet<NodeId>,
 }

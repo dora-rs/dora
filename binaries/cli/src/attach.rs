@@ -40,7 +40,7 @@ pub fn attach_dataflow(
         .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
         .to_owned();
 
-    for node in nodes {
+    for node in nodes.into_values() {
         match node.kind {
             // Reloading Custom Nodes is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
             CoreNodeKind::Custom(_cn) => (),
