@@ -156,7 +156,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             continue;
                         }
                         let raw_mean_z = z_total / n as f32;
-                        let threshold = -100.; // (raw_mean_z + z_min) / 2.;
+                        let threshold = (raw_mean_z * 4. + z_min) / 5.;
 
                         let (x, y, z, sum_xy, sum_x2, sum_y2, n) =
                             points.iter().filter(|(_x, _y, z)| z > &&threshold).fold(
@@ -176,11 +176,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             );
 
                         let (mean_x, mean_y, mean_z) = (x / n as f32, y / n as f32, z / n as f32);
-
-                        println!("Raw z: {:?}", raw_mean_z);
-                        println!("Mean: ({}, {}, {})", mean_x, mean_y, mean_z);
-                        println!("Threshold: {}", threshold);
-                        println!("z_min: {}, z_mean: {}, n: {}", z_min, mean_z, n);
 
                         // Compute covariance and standard deviations
                         let cov = sum_xy / n - mean_x * mean_y;
