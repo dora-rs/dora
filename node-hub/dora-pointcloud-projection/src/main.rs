@@ -109,8 +109,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let x_max = data[2] as f32;
                         let y_max = data[3] as f32;
                         let mut points = vec![];
-                        let mut z_min = 10.;
+                        let mut z_min = 100.;
                         let mut z_total = 0.;
+                        let mut n = 0.;
 
                         if let Some(depth_frame) = &depth_frame {
                             depth_frame.iter().enumerate().for_each(|(i, z)| {
@@ -120,21 +121,30 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 if u > x_min && u < x_max && v > y_min && v < y_max {
                                     if let Some(z) = z {
                                         let z = z as f32;
+
+                                        // Skip points that have empty depth.
+                                        if z == 0. {
+                                            return;
+                                        // Skip points that are out of reach of reachy
+                                        } else if z > 5.0 {
+                                            return;
+                                        }
                                         let y =
                                             (u - resolution[0] as f32) * z / focal_length[0] as f32;
                                         let x =
                                             (v - resolution[1] as f32) * z / focal_length[1] as f32;
                                         let cos_theta = -0.78; // np.cos(np.deg2rad(180-38))
                                         let sin_theta = 0.61; // np.sin(np.deg2rad(180-38))
-
-                                        let x = sin_theta * z + cos_theta * x;
-                                        let y = -y;
-                                        let z = -cos_theta * z + sin_theta * x;
-                                        if z < z_min {
-                                            z_min = z;
+                                                              // (0.32489833, -0.25068134, 0.4761387)
+                                        let new_x = sin_theta * z + cos_theta * x;
+                                        let new_y = -y;
+                                        let new_z = cos_theta * z + sin_theta * x;
+                                        if new_z < z_min {
+                                            z_min = new_z;
                                         }
-                                        points.push((x, y, z));
-                                        z_total += z;
+                                        points.push((new_x, new_y, new_z));
+                                        z_total += new_z;
+                                        n += 1.;
                                     }
                                 }
                             });
@@ -145,26 +155,44 @@ fn main() -> Result<(), Box<dyn Error>> {
                         if points.is_empty() {
                             continue;
                         }
-                        let threshold = (z_total / points.len() as f32 + 1. * z_min) / 2.;
+                        let raw_mean_z = z_total / n as f32;
+                        let threshold = -100.; // (raw_mean_z + z_min) / 2.;
 
-                        let (x, y, z) = points
-                            .iter()
-                            .filter(|(_x, _y, z)| z > &&threshold)
-                            .fold((0., 0., 0.), |(acc_x, acc_y, acc_z), (x, y, z)| {
-                                (acc_x + x, acc_y + y, acc_z + z)
-                            });
-                        let (x, y, z) = (
-                            x / points.len() as f32,
-                            y / points.len() as f32,
-                            z / points.len() as f32,
-                        );
+                        let (x, y, z, sum_xy, sum_x2, sum_y2, n) =
+                            points.iter().filter(|(_x, _y, z)| z > &&threshold).fold(
+                                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                                |(acc_x, acc_y, acc_z, acc_xy, acc_x2, acc_y2, acc_n),
+                                 (x, y, z)| {
+                                    (
+                                        acc_x + x,
+                                        acc_y + y,
+                                        acc_z + z,
+                                        acc_xy + x * y,
+                                        acc_x2 + x * x,
+                                        acc_y2 + y * y,
+                                        acc_n + 1.,
+                                    )
+                                },
+                            );
 
+                        let (mean_x, mean_y, mean_z) = (x / n as f32, y / n as f32, z / n as f32);
+
+                        println!("Raw z: {:?}", raw_mean_z);
+                        println!("Mean: ({}, {}, {})", mean_x, mean_y, mean_z);
+                        println!("Threshold: {}", threshold);
+                        println!("z_min: {}, z_mean: {}, n: {}", z_min, mean_z, n);
+
+                        // Compute covariance and standard deviations
+                        let cov = sum_xy / n - mean_x * mean_y;
+                        let std_x = (sum_x2 / n - mean_x * mean_x).sqrt();
+                        let std_y = (sum_y2 / n - mean_y * mean_y).sqrt();
+                        let corr = cov / (std_x * std_y);
                         let metadata = metadata.parameters.clone();
 
                         node.send_output(
                             DataId::from("point".to_string()),
                             metadata,
-                            vec![x, y, z].into_arrow(),
+                            vec![mean_x, mean_y, mean_z, 0., 0., corr * 3.1415 / 2.].into_arrow(),
                         )?;
                     }
                 }
