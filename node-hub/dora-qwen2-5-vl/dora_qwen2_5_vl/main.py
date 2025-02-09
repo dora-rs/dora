@@ -224,7 +224,7 @@ def main():
                     text = event["value"][0].as_py()
                 else:
                     text = cached_text
-                tts = False
+                # tts = False
                 print("text: ", text, flush=True)
                 words = text.lower().split()
                 if len(ACTIVATION_WORDS) > 0 and all(
@@ -232,7 +232,7 @@ def main():
                 ):
                     continue
                 elif text != cached_text:
-                    tts = True
+                    # tts = True
                     pause = True
                 cached_text = text
 
@@ -245,44 +245,34 @@ def main():
 
                 text_tts = (
                     cached_text.lower()
-                    .replace("grab", "")
-                    .replace("give", "")
-                    .replace("pick", "")
-                    .replace(" me", "")
-                    .replace("can you", "")
+                    .replace("grab ", "")
+                    .replace("give ", "")
+                    .replace("pick ", "")
+                    .replace("me ", "")
+                    .replace("can you ", "")
                     .replace("please", "")
-                    .replace("could you", "")
-                    .replace("would you", "")
-                    .replace(" the ", "")
-                    .replace(" a ", "")
-                    .replace(" an ", "")
-                    .replace(" to ", "")
+                    .replace("could you ", "")
+                    .replace("would you ", "")
+                    .replace("to ", "")
                     .replace(" for me", "")
-                    .replace(" and ", "")
-                    .replace(" then ", "")
+                    .replace("and ", "")
+                    .replace("then ", "")
                     .replace(" it", "")
-                    .replace(" that ", "")
-                    .replace(" this ", "")
-                    .replace(" over ", "")
-                    .replace(" from ", "")
+                    .replace("from ", "")
                     .replace(" there", "")
                     .replace(" here", "")
-                    .replace(" on ", "")
-                    .replace(" off ", "")
-                    .replace(" in ", "")
+                    .replace("on ", "")
+                    .replace("off ", "")
+                    .replace("in ", "")
                     .replace(" out", "")
-                    .replace(" of ", "")
-                    .replace(" with ", "")
-                    .replace(" my ", "")
-                    .replace(" your ", "")
-                    .replace(" his ", "")
-                    .replace(" her ", "")
-                    .replace(" its ", "")
-                    .replace(" their ", "")
-                    .replace(" our ", "")
+                    .replace("of ", "")
+                    .replace("with ", "")
+                    .replace("have ", "")
+                    .replace("catch ", "")
+                    .replace("some ", "")
                 )
-                if tts:
-                    node.send_output("text_ts", pa.array([text_tts, "new"]))
+                # if tts:
+                #     node.send_output("text_ts", pa.array([text_tts]))
                 if pause:
                     text_tts = "human"
                 text = "Output the bounding box of " + text_tts
