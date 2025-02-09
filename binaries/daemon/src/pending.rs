@@ -5,6 +5,7 @@ use dora_core::{
     uhlc::{Timestamp, HLC},
 };
 use dora_message::{
+    common::DaemonId,
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, LogMessage, Timestamped},
     daemon_to_node::DaemonReply,
     DataflowId,
@@ -16,7 +17,7 @@ use crate::{socket_stream_utils::socket_stream_send, CascadingErrorCauses};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
-    machine_id: String,
+    daemon_id: DaemonId,
 
     /// The local nodes that are still waiting to start.
     local_nodes: HashSet<NodeId>,
@@ -38,10 +39,10 @@ pub struct PendingNodes {
 }
 
 impl PendingNodes {
-    pub fn new(dataflow_id: DataflowId, machine_id: String) -> Self {
+    pub fn new(dataflow_id: DataflowId, daemon_id: DaemonId) -> Self {
         Self {
             dataflow_id,
-            machine_id,
+            daemon_id,
             local_nodes: HashSet::new(),
             external_nodes: false,
             waiting_subscribers: HashMap::new(),
@@ -205,7 +206,7 @@ impl PendingNodes {
 
         let msg = serde_json::to_vec(&Timestamped {
             inner: CoordinatorRequest::Event {
-                daemon_id: self.machine_id.clone(),
+                daemon_id: self.daemon_id.clone(),
                 event: DaemonEvent::AllNodesReady {
                     dataflow_id: self.dataflow_id,
                     exited_before_subscribe: self.exited_before_subscribe.clone(),

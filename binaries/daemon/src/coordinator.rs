@@ -4,7 +4,7 @@ use crate::{
 };
 use dora_core::uhlc::HLC;
 use dora_message::{
-    common::Timestamped,
+    common::{DaemonId, Timestamped},
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
 };
@@ -30,7 +30,7 @@ pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
     clock: &HLC,
-) -> eyre::Result<(String, impl Stream<Item = Timestamped<CoordinatorEvent>>)> {
+) -> eyre::Result<(DaemonId, impl Stream<Item = Timestamped<CoordinatorEvent>>)> {
     let mut stream = loop {
         match TcpStream::connect(addr)
             .await

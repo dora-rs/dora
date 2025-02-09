@@ -11,7 +11,9 @@ use dora_core::{
     uhlc::{self, HLC},
 };
 use dora_message::{
-    common::{DataMessage, DropToken, LogLevel, NodeError, NodeErrorCause, NodeExitStatus},
+    common::{
+        DaemonId, DataMessage, DropToken, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
+    },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes},
     daemon_to_coordinator::{
@@ -78,7 +80,7 @@ pub struct Daemon {
 
     coordinator_connection: Option<TcpStream>,
     last_coordinator_heartbeat: Instant,
-    daemon_id: String,
+    daemon_id: DaemonId,
 
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
@@ -148,6 +150,7 @@ impl Daemon {
         let spawn_command = SpawnDataflowNodes {
             dataflow_id,
             working_dir,
+            spawn_nodes: nodes.keys().cloned().collect(),
             nodes,
             dataflow_descriptor: descriptor,
         };
@@ -158,7 +161,7 @@ impl Daemon {
 
         let exit_when_done = spawn_command
             .nodes
-            .iter()
+            .values()
             .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -176,7 +179,7 @@ impl Daemon {
         let run_result = Self::run_general(
             Box::pin(events),
             None,
-            "default".into(),
+            DaemonId::new(None),
             Some(exit_when_done),
             clock.clone(),
         );
@@ -206,7 +209,7 @@ impl Daemon {
     async fn run_general(
         external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
         coordinator_addr: Option<SocketAddr>,
-        daemon_id: String,
+        daemon_id: DaemonId,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
     ) -> eyre::Result<DaemonRunResult> {
@@ -387,6 +390,7 @@ impl Daemon {
                 working_dir,
                 nodes,
                 dataflow_descriptor,
+                spawn_nodes,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
@@ -400,7 +404,13 @@ impl Daemon {
                 };
 
                 let result = self
-                    .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor)
+                    .spawn_dataflow(
+                        dataflow_id,
+                        working_dir,
+                        nodes,
+                        dataflow_descriptor,
+                        spawn_nodes,
+                    )
                     .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
@@ -619,8 +629,9 @@ impl Daemon {
         &mut self,
         dataflow_id: uuid::Uuid,
         working_dir: PathBuf,
-        nodes: Vec<ResolvedNode>,
+        nodes: BTreeMap<NodeId, ResolvedNode>,
         dataflow_descriptor: Descriptor,
+        spawn_nodes: BTreeSet<NodeId>,
     ) -> eyre::Result<()> {
         let dataflow = RunningDataflow::new(dataflow_id, self.daemon_id.clone());
         let dataflow = match self.running.entry(dataflow_id) {
@@ -634,8 +645,8 @@ impl Daemon {
         };
 
         let mut log_messages = Vec::new();
-        for node in nodes {
-            let local = node.deploy.machine == self.daemon_id;
+        for node in nodes.into_values() {
+            let local = spawn_nodes.contains(&node.id);
 
             let inputs = node_inputs(&node);
             for (input_id, input) in inputs {
@@ -664,11 +675,7 @@ impl Daemon {
                 } else if let InputMapping::User(mapping) = input.mapping {
                     dataflow
                         .open_external_mappings
-                        .entry(OutputId(mapping.source, mapping.output))
-                        .or_default()
-                        .entry(node.deploy.machine.clone())
-                        .or_default()
-                        .insert((node.id.clone(), input_id));
+                        .insert(OutputId(mapping.source, mapping.output));
                 }
             }
             if local {
@@ -969,12 +976,8 @@ impl Daemon {
         .await?;
 
         let output_id = OutputId(node_id, output_id);
-        let remote_receivers: Vec<_> = dataflow
-            .open_external_mappings
-            .get(&output_id)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
-        if !remote_receivers.is_empty() {
+        let remote_receivers = dataflow.open_external_mappings.contains(&output_id);
+        if remote_receivers {
             let event = InterDaemonEvent::Output {
                 dataflow_id,
                 node_id: output_id.0.clone(),
@@ -1049,7 +1052,7 @@ impl Daemon {
         }
 
         let mut closed = Vec::new();
-        for output_id in dataflow.open_external_mappings.keys() {
+        for output_id in &dataflow.open_external_mappings {
             if output_id.0 == node_id && outputs.contains(&output_id.1) {
                 closed.push(output_id.clone());
             }
@@ -1393,7 +1396,7 @@ async fn set_up_event_stream(
     remote_daemon_events_rx: flume::Receiver<Timestamped<InterDaemonEvent>>,
     // used for dynamic nodes
     local_listen_port: u16,
-) -> eyre::Result<(String, impl Stream<Item = Timestamped<Event>> + Unpin)> {
+) -> eyre::Result<(DaemonId, impl Stream<Item = Timestamped<Event>> + Unpin)> {
     let remote_daemon_events = remote_daemon_events_rx.into_stream().map(|e| Timestamped {
         inner: Event::Daemon(e.inner),
         timestamp: e.timestamp,
@@ -1602,7 +1605,7 @@ pub struct RunningDataflow {
     /// to know which nodes are dynamic.
     dynamic_nodes: BTreeSet<NodeId>,
 
-    open_external_mappings: HashMap<OutputId, BTreeMap<String, BTreeSet<InputId>>>,
+    open_external_mappings: BTreeSet<OutputId>,
 
     pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
 
@@ -1625,10 +1628,10 @@ pub struct RunningDataflow {
 }
 
 impl RunningDataflow {
-    fn new(dataflow_id: Uuid, machine_id: String) -> RunningDataflow {
+    fn new(dataflow_id: Uuid, daemon_id: DaemonId) -> RunningDataflow {
         Self {
             id: dataflow_id,
-            pending_nodes: PendingNodes::new(dataflow_id, machine_id),
+            pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
@@ -1636,7 +1639,7 @@ impl RunningDataflow {
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeMap::new(),
             dynamic_nodes: BTreeSet::new(),
-            open_external_mappings: HashMap::new(),
+            open_external_mappings: Default::default(),
             pending_drop_tokens: HashMap::new(),
             _timer_handles: Vec::new(),
             stop_sent: false,

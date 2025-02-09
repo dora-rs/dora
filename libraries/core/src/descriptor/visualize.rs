@@ -11,16 +11,16 @@ use std::{
     time::Duration,
 };
 
-pub fn visualize_nodes(nodes: &[ResolvedNode]) -> String {
+pub fn visualize_nodes(nodes: &BTreeMap<NodeId, ResolvedNode>) -> String {
     let mut flowchart = "flowchart TB\n".to_owned();
     let mut all_nodes = HashMap::new();
 
-    for node in nodes {
+    for node in nodes.values() {
         visualize_node(node, &mut flowchart);
         all_nodes.insert(&node.id, node);
     }
 
-    let dora_timers = collect_dora_timers(nodes);
+    let dora_timers = collect_dora_timers(&nodes);
     if !dora_timers.is_empty() {
         writeln!(flowchart, "subgraph ___dora___ [dora]").unwrap();
         writeln!(flowchart, "  subgraph ___timer_timer___ [timer]").unwrap();
@@ -32,16 +32,16 @@ pub fn visualize_nodes(nodes: &[ResolvedNode]) -> String {
         flowchart.push_str("end\n");
     }
 
-    for node in nodes {
+    for node in nodes.values() {
         visualize_node_inputs(node, &mut flowchart, &all_nodes)
     }
 
     flowchart
 }
 
-pub fn collect_dora_timers(nodes: &[ResolvedNode]) -> BTreeSet<Duration> {
+pub fn collect_dora_timers(nodes: &BTreeMap<NodeId, ResolvedNode>) -> BTreeSet<Duration> {
     let mut dora_timers = BTreeSet::new();
-    for node in nodes {
+    for node in nodes.values() {
         match &node.kind {
             CoreNodeKind::Runtime(node) => {
                 for operator in &node.operators {

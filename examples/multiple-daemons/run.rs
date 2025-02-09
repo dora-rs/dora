@@ -160,7 +160,7 @@ async fn connected_machines(
         .await?;
     let result = reply.await??;
     let machines = match result {
-        ControlRequestReply::ConnectedMachines(machines) => machines,
+        ControlRequestReply::ConnectedDaemons(machines) => machines,
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     };
