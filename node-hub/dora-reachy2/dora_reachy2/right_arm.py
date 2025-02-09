@@ -246,39 +246,40 @@ def main():
 if __name__ == "__main__":
     main()
 
-# import os
-# import time
+import os
+import time
 
-# import numpy as np
-# import pyarrow as pa
-# from dora import Node
-# from reachy2_sdk import ReachySDK
-# from reachy2_sdk.media.camera import CameraView
+import numpy as np
+import pyarrow as pa
+from dora import Node
+from reachy2_sdk import ReachySDK
+from reachy2_sdk.media.camera import CameraView
+from scipy.spatial.transform import Rotation as R
 
-# ROBOT_IP = os.getenv("ROBOT_IP", "172.17.134.85")
+ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
-# reachy = ReachySDK(ROBOT_IP)
+reachy = ReachySDK(ROBOT_IP)
+reachy.l_arm.turn_on()
+reachy.l_arm.turn_off_smoothly()
 
-# reachy.l_arm.turn_off()
-# reachy.r_arm.turn_off()
+x = 0.29
+y = 0.10
+z = 0.51
 
-# print(reachy.l_arm.get_current_positions())
-# theta = 0
-# x = 0.2477428
-# y = 0.23162833
-# z = 0.28
-# cos = np.cos(np.deg2rad(theta))
-# sin = np.sin(np.deg2rad(theta))
-# a = np.array(
-#     [
-#         [sin, 0.0, -cos, x],
-#         [0.0, 1.0, 0.0, y],
-#         [cos, 0.0, sin, -0.38],
-#         [0.0, 0.0, 0.0, 1.0],
-#     ]
-# )
-# reachy.l_arm.inverse_kinematics(a)
+yaw = -30
+pitch = -90
+roll = 0
+r = (
+    R.from_euler("ZYX", (yaw, 0, 0), degrees=True)
+    * R.from_euler("ZYX", (0, pitch, 0), degrees=True)
+    * R.from_euler("ZYX", (0, 0, roll), degrees=True)
+)
+transform = np.eye(4)
+transform[:3, :3] = r.as_matrix()
+transform[:3, 3] = [x, y, -0.32]
 
+a = reachy.l_arm.inverse_kinematics(transform)
+reachy.l_arm.goto(a)
 # 1th is front-back: go from 0.5 to 0.3
 # 2th is right-left: go from -0.5 to -0.03
 # 3th s height -0.3 and -0.4 but does not seem to work going high

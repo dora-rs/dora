@@ -59,7 +59,7 @@ ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
 
 
 def go_to_mixed_angles(reachy, x, y, z):
-    for theta in range(-80, -70, 10):
+    for theta in range(-80, -60, 10):
         r = R.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
@@ -70,6 +70,43 @@ def go_to_mixed_angles(reachy, x, y, z):
 
         except ValueError:
             continue
+    for yaw in range(0, 30, 10):
+
+        ## First try turning left
+        pitch = -90
+        roll = 0
+        r = (
+            R.from_euler("ZYX", (yaw, 0, 0), degrees=True)
+            * R.from_euler("ZYX", (0, pitch, 0), degrees=True)
+            * R.from_euler("ZYX", (0, 0, roll), degrees=True)
+        )
+        transform = np.eye(4)
+        transform[:3, :3] = r.as_matrix()
+        transform[:3, 3] = [x, y, z]
+
+        try:
+            return reachy.l_arm.inverse_kinematics(transform)
+        except ValueError:
+            pass
+
+        ## Then try turning right
+        pitch = -90
+        roll = 0
+        r = (
+            R.from_euler("ZYX", (-yaw, 0, 0), degrees=True)
+            * R.from_euler("ZYX", (0, pitch, 0), degrees=True)
+            * R.from_euler("ZYX", (0, 0, roll), degrees=True)
+        )
+        transform = np.eye(4)
+        transform[:3, :3] = r.as_matrix()
+        transform[:3, 3] = [x, y, z]
+
+        try:
+            return reachy.l_arm.inverse_kinematics(transform)
+
+        except ValueError:
+            continue
+    print("No solution found")
     return []
 
 
@@ -91,29 +128,37 @@ def main():
                 if grabbed:
                     continue
                 else:
-                    # node.send_output("pause", pa.array([False]))
+                    node.send_output("pause", pa.array([False]))
                     reachy.l_arm.gripper.open()
                 values: np.array = event["value"].to_numpy()
                 x = values[0]
                 y = values[1]
+                z = values[2]
+                z = np.clip(z + 0.01, -0.33, -0.2)
                 print("pose: ", values, flush=True)
 
-                joint = go_to_mixed_angles(reachy, x + 0.06, y + 0.03, -0.15)
-                if len(joint):
-                    reachy.l_arm.goto(joint, duration=0.75, wait=True)
-                    joint = go_to_mixed_angles(reachy, x + 0.06, y + 0.03, -0.32)
-                    if len(joint):
-                        reachy.l_arm.goto(joint, duration=0.75, wait=True)
-                        reachy.l_arm.gripper.close()
-                        reachy.l_arm.goto(hold_pos, duration=1, wait=True)
+                joint_upper = go_to_mixed_angles(reachy, x + 0.06, y + 0.03, -0.15)
+                joint_lower = go_to_mixed_angles(reachy, x + 0.06, y + 0.03, z)
+                joint_higher = go_to_mixed_angles(reachy, x + 0.06, y + 0.03, -0.1)
+                if len(joint_upper) and len(joint_lower) and len(joint_higher):
+                    reachy.l_arm.goto(joint_upper, duration=0.75, wait=True)
+                    reachy.l_arm.goto(joint_lower, duration=0.75, wait=True)
+                    reachy.l_arm.gripper.close()
+                    time.sleep(0.5)
+                    if (
+                        reachy.l_arm.gripper.get_current_opening() > 2
+                        and reachy.l_arm.gripper.get_current_opening() < 97
+                    ):
+                        reachy.l_arm.goto(joint_higher, duration=0.75, wait=True)
                         if (
-                            reachy.l_arm.gripper.get_current_opening() > 3
-                            and reachy.l_arm.gripper.get_current_opening() < 96
+                            reachy.l_arm.gripper.get_current_opening() > 2
+                            and reachy.l_arm.gripper.get_current_opening() < 97
                         ):
                             grabbed = True
                             print("grabbed", flush=True)
+                            node.send_output("look", pa.array([0, 0, 0]))
                             node.send_output("rotate", pa.array(["right"]))
-                            reachy.l_arm.goto(release_pos, duration=2, wait=False)
+                            reachy.l_arm.goto(release_pos, duration=1.5, wait=False)
                             node.send_output("pause", pa.array([True]))
                             continue
 
@@ -130,6 +175,7 @@ def main():
                 ):
                     started = True
                     node.send_output("rotate", pa.array(["left"]))
+                    node.send_output("look", pa.array([0, 25, 0]))
                     reachy.l_arm.goto(init_pos, duration=1.0, wait=True)
 
             elif "action_arm" in event["id"]:

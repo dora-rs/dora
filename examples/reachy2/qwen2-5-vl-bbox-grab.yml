@@ -55,8 +55,9 @@ nodes:
     outputs:
       - pause
       - rotate
+      - look
     env:
-      ACTIVATION_WORDS: grab pick give output take
+      ACTIVATION_WORDS: grab pick give output take catch grabs picks gives outputs takes catches have
     #ROBOT_IP: 172.17.134.85
 
   - id: reachy-camera
@@ -77,6 +78,7 @@ nodes:
     path: dora-reachy2-head
     inputs:
       boxes2d: parse_bbox/bbox_face
+      look: reachy-left-arm/look
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
@@ -107,7 +109,7 @@ nodes:
     env:
       #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
       DEFAULT_QUESTION: grab human.
-      ACTIVATION_WORDS: grab pick give output take
+      ACTIVATION_WORDS: grab pick give output take catch grabs picks gives outputs takes catches have
       #SYSTEM_PROMPT: You're a robot.
 
   - id: parse_bbox

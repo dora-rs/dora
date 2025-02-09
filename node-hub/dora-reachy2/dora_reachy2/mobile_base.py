@@ -14,7 +14,7 @@ def main():
 
     if reachy.mobile_base is not None:
         reachy.mobile_base.turn_on()
-
+    reachy.mobile_base.reset_odometry()
     grabbing = False
 
     node = Node()
@@ -29,13 +29,13 @@ def main():
                 if text == "right":
                     if grabbing:
                         node.send_output("pause", pa.array([True]))
-                        node.send_output("text_ts", pa.array(["end", ""]))
-                        reachy.mobile_base.rotate_by(-90)
+                        # node.send_output("text_ts", pa.array([""]))
+                        reachy.mobile_base.goto(0, 0, 0)
                         node.send_output("action_arm", pa.array(["release"]))
                         grabbing = False
                 elif text == "left":
                     if not grabbing:
-                        reachy.mobile_base.rotate_by(90)
+                        reachy.mobile_base.goto(-0.4, 0, 90)
                         grabbing = True
                     node.send_output("pause", pa.array([False]))
     if reachy.mobile_base is not None:
