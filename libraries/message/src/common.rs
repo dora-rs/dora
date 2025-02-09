@@ -211,6 +211,10 @@ impl DaemonId {
             .map(|id| id == machine_id)
             .unwrap_or_default()
     }
+
+    pub fn machine_id(&self) -> Option<&str> {
+        self.machine_id.as_deref()
+    }
 }
 
 impl std::fmt::Display for DaemonId {

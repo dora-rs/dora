@@ -72,10 +72,17 @@ async fn spawn_dataflow_on_machine(
     machine: Option<&str>,
     message: &[u8],
 ) -> Result<DaemonId, eyre::ErrReport> {
-    let daemon_id = daemon_connections
-        .get_matching_daemon_id(machine)
-        .wrap_err_with(|| format!("no matching daemon for machine id {machine:?}"))?
-        .clone();
+    let daemon_id = match machine {
+        Some(machine) => daemon_connections
+            .get_matching_daemon_id(machine)
+            .wrap_err_with(|| format!("no matching daemon for machine id {machine:?}"))?
+            .clone(),
+        None => daemon_connections
+            .unnamed()
+            .next()
+            .wrap_err("no unnamed daemon connections")?
+            .clone(),
+    };
 
     let daemon_connection = daemon_connections
         .get_mut(&daemon_id)
