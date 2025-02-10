@@ -165,7 +165,7 @@ def main():
     ]
     cached_text = DEFAULT_QUESTION
     past_key_values = None
-    pause = False
+    pause = True
 
     for event in node:
         event_type = event["type"]
@@ -270,6 +270,7 @@ def main():
                     .replace("have ", "")
                     .replace("catch ", "")
                     .replace("some ", "")
+                    .replace("?", "")
                 )
                 # if tts:
                 #     node.send_output("text_ts", pa.array([text_tts]))
