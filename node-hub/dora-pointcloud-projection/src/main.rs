@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                                               // (0.32489833, -0.25068134, 0.4761387)
                                         let new_x = sin_theta * z + cos_theta * x;
                                         let new_y = -y;
-                                        let new_z = cos_theta * z + sin_theta * x;
+                                        let new_z = cos_theta * z - sin_theta * x;
                                         if new_z < z_min {
                                             z_min = new_z;
                                         }
