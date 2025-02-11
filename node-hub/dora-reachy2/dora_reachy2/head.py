@@ -37,14 +37,19 @@ def main():
                 y = (3 * y_min + y_max) / 4
                 ry = (x - resolution[1] / 2) * FOV_H / 2 / resolution[1]
                 rz = (y - resolution[0] / 2) * FOV_V / 2 / resolution[0]
-                if np.abs(yaw) > 60 and yaw * -ry > 0:
-                    reachy.head.rotate_by(pitch=rz, yaw=0, roll=0, wait=True)
+                if np.abs(yaw) > 45 and yaw * -ry > 0:
+                    reachy.head.cancel_all_goto()
+                    roll, _pitch, yaw = reachy.head.get_current_positions()
+                    reachy.head.rotate_by(pitch=0, yaw=0, roll=-roll, duration=1.5)
                 else:
-                    reachy.head.rotate_by(pitch=rz, yaw=-ry, roll=-roll, wait=True)
-                [roll, pitch, yaw] = reachy.head.get_current_positions()
+                    reachy.head.cancel_all_goto()
+                    roll, _pitch, yaw = reachy.head.get_current_positions()
+                    reachy.head.rotate_by(pitch=rz, yaw=-ry, roll=-roll, duration=1.5)
+                [roll, _pitch, yaw] = reachy.head.get_current_positions()
             if "look" in event["id"]:
                 [x, y, z] = event["value"].to_numpy()
-                reachy.head.look_at(x, y, z, duration=1, wait=True)
+                reachy.head.cancel_all_goto()
+                reachy.head.look_at(x, y, z, duration=0.5)
 
     if reachy.head is not None:
         reachy.head.turn_off()
