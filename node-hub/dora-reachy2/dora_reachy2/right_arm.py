@@ -5,165 +5,94 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 from reachy2_sdk import ReachySDK
-from reachy2_sdk.media.camera import CameraView
+from scipy.spatial.transform import Rotation as R
 
-l_pos = [
-    21.92770419820605,
-    -15.859152837636007,
-    1.933394967929064,
-    -84.40842032912303,
-    -4.907079399756668,
-    -14.262566237067908,
-    91.60527454434958,
-]
-r_pos = [
-    20.822557392383185,
-    11.04315827932969,
-    4.5280773253545386,
-    -89.76466150643621,
-    5.045636190372724,
-    -19.29307313154223,
-    -87.43405752765528,
-]
-grab_pos = [
-    -35.622223238797865,
-    -20.328451262540707,
-    -0.8628232733758905,
-    -79.19811297361636,
-    18.120519188800507,
-    21.44259513504777,
-    -13.68669505889756,
-]
-middle_pos = [
-    17.173603960384742,
-    -13.860769260084506,
-    5.1834147663102215,
-    -125.26299194387921,
-    -8.21038513239109,
-    23.27173004006094,
-    0.19036855126693597,
-]
-fistbump_pos = [
-    -60.50857072506209,
-    15.288403447569523,
-    -23.22067096092051,
-    -25.439633790170284,
-    -4.034621344143681,
-    -10.79858115798258,
-    -76.35394024095301,
-]
-hand_wave_pos1 = [
-    -55.72474038133101,
-    -12.946062642473581,
-    -38.32685520671785,
-    -105.7722343547366,
-    -5.224672523991683,
-    -4.172396504986594,
-    -5.414316568278495,
-]
-hand_wave_pos2 = [
-    -44.38270924562084,
-    -30.137864788128176,
-    20.102804010478287,
-    -114.34005097035727,
-    -5.214963836973333,
-    -4.169346825522183,
-    -5.413211358293423,
-]
-hand_shake_pos1 = [
-    -18.494675243986514,
-    -13.983687905708994,
-    1.8276602244826816,
-    -95.83702069746853,
-    1.614473692065599,
-    24.50849117609537,
-    -0.6833807035838743,
-]
-hand_shake_pos2 = [
-    -7.451341087285697,
-    -12.443260828044032,
-    2.233412948212578,
-    -74.49182576753243,
-    2.3681770628485728,
-    -11.323536690985067,
-    -0.9424216042721315,
-]
-pick_pos1 = [
-    9.844628273400764,
-    -19.463764681542727,
-    9.71784800957428,
-    -93.66575137164567,
-    -11.96666474191253,
-    -7.695120784047207,
-    85.23235287889085,
+init_pos = [
+    -5.60273587426976,
+    10.780818397272316,
+    -27.868146823156042,
+    -126.15650363072193,
+    3.961108018106834,
+    -35.43682799906162,
+    350.9236448374495,
 ]
 
-pick_pos2 = [
-    -82.72212858531692,
-    33.91639373887093,
-    -100.79539652543929,
-    -124.57793763050528,
-    -39.342354072137006,
-    -5.594463661411228,
-    83.75117854604939,
+release_pos = [
+    -27.671138554283488,
+    12.227397821967656,
+    -1.7328297713245189,
+    -98.23576947359867,
+    0.8473595116515701,
+    29.972034625269437,
+    0.5821498829257334,
 ]
-pick_pos3 = [
-    -56.39551276915045,
-    13.304733805037523,
-    -121.41232253512278,
-    -103.22085134122418,
-    -1.9579418140324436,
-    26.933823048475197,
-    58.16491425477727,
-]
-
-pick_pos4 = [
-    -18.26771488805616,
-    -10.94845599894017,
-    11.591648936664747,
-    -85.61138739669154,
-    2.060616419287249,
-    -13.576030626417722,
-    10.177961995464896,
-]
-
-init_pose = [
-    -7.0631310641087435,
-    -10.432298603362307,
-    24.429809104404114,
-    -132.15000828778648,
-    -1.5494749438811133,
-    -21.749917789205202,
-    8.099312596108344,
-]
+ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
 
 
-def go_to_mixed_angles(reachy, x, y):
-    for theta in range(-90, 0):
-        cos = np.cos(np.deg2rad(theta))
-        sin = np.sin(np.deg2rad(theta))
-        a = np.array(
-            [
-                [sin, 0.0, -cos, -x],
-                [0.0, 1.0, 0.0, -y],
-                [cos, 0.0, sin, 0.2],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
+def go_to_mixed_angles(reachy, x, y, z, no_angle=False):
+    for theta in range(-80, -50, 10):
+        if no_angle:
+            theta = -90
+        r = R.from_euler("zyx", [0, theta, 0], degrees=True)
+        transform = np.eye(4)
+        transform[:3, :3] = r.as_matrix()
+        transform[:3, 3] = [x, y, z]
+
         try:
-            reachy.r_arm.goto(reachy.r_arm.inverse_kinematics(a))
-            a = np.array(
-                [
-                    [sin, 0.0, -cos, -x],
-                    [0.0, 1.0, 0.0, -y],
-                    [cos, 0.0, sin, -0.4],
-                    [0.0, 0.0, 0.0, 1.0],
-                ]
-            )
-            reachy.r_arm.goto(reachy.r_arm.inverse_kinematics(a))
-            break
+            return reachy.r_arm.inverse_kinematics(transform)
+
+        except ValueError:
+            continue
+
+    for yaw in range(0, 30, 10):
+
+        ## First try turning left
+        pitch = -90
+        roll = 0
+        r = R.from_euler("ZYX", (yaw, 0, 0), degrees=True) * R.from_euler(
+            "ZYX", (0, pitch, 0), degrees=True
+        )
+        transform = np.eye(4)
+        transform[:3, :3] = r.as_matrix()
+        transform[:3, 3] = [x, y, z]
+
+        try:
+            return reachy.r_arm.inverse_kinematics(transform)
         except ValueError:
             pass
+
+        try:
+            return reachy.r_arm.inverse_kinematics(transform)
+
+        except ValueError:
+            continue
+    print("No solution found for x, y, z: ", x, y, z)
+    return []
+    # for theta in range(-90, 0):
+    #     cos = np.cos(np.deg2rad(theta))
+    #     sin = np.sin(np.deg2rad(theta))
+    #     a = np.array(
+    #         [
+    #             [sin, 0.0, -cos, -x],
+    #             [0.0, 1.0, 0.0, -y],
+    #             [cos, 0.0, sin, 0.2],
+    #             [0.0, 0.0, 0.0, 1.0],
+    #         ]
+    #     )
+    #     try:
+    #         reachy.r_arm.goto(reachy.r_arm.inverse_kinematics(a))
+    #         a = np.array(
+    #             [
+    #                 [sin, 0.0, -cos, -x],
+    #                 [0.0, 1.0, 0.0, -y],
+    #                 [cos, 0.0, sin, -0.4],
+    #                 [0.0, 0.0, 0.0, 1.0],
+    #             ]
+    #         )
+    #         reachy.r_arm.goto(reachy.r_arm.inverse_kinematics(a))
+    #         break
+    #     except ValueError:
+    #         pass
 
 
 def main():
@@ -172,73 +101,69 @@ def main():
     reachy = ReachySDK(ROBOT_IP)
 
     if reachy.r_arm is not None:
-        reachy.r_arm.turn_off()
-        # reachy.r_arm.goto(r_pos)
+        reachy.r_arm.turn_on()
+        reachy.r_arm.goto(init_pos)
+        reachy.r_arm.gripper.turn_on()
     node = Node()
-
-    def ra_goto(action, pos, time_sleep=0.2, duration=2):
-        reachy.r_arm.goto(pos, duration=duration)
-        move_time = time.time()
-        double_action = action
-        while time.time() - move_time < duration + time_sleep:
-            event = node.next(timeout=duration + time_sleep)
-
-            if (
-                event is not None
-                and event["type"] == "INPUT"
-                and event["id"] == "action_arm"
-                and (
-                    event["value"][0].as_py() == action
-                    or event["value"][0].as_py() == "wait"
-                )
-            ):
-                continue
-            elif event["type"] == "ERROR":
-                continue
-            else:
-                if double_action == event["value"][0].as_py():
-                    reachy.l_arm.cancel_all_goto()
-                    return False
-                else:
-                    double_action = event["value"][0].as_py()
-                    continue
-        return True
+    grabbed = False
 
     for event in node:
         if event["type"] == "INPUT":
-            # if event["id"] == "pose":
+            if event["id"] == "pose":
+                if grabbed:
+                    continue
+                else:
+                    node.send_output("pause", pa.array([False]))
+                    reachy.r_arm.gripper.open()
+                values: np.array = event["value"].to_numpy()
+                x = values[0]
+                y = values[1]
+                if y >= 0:
+                    continue
+                z = values[2]
+                node.send_output("look", pa.array([x, y, z]))
+                z = np.clip(z + 0.01, -0.32, -0.22)
 
-            # values = event["value"].to_numpy()
-            # x = values[0]
-            # y = values[1]
-            # go_to_mixed_angles(reachy, x - 0.1, y)
-            # reachy.r_arm.gripper.open()
-            # go_to_mixed_angles(reachy, x + 0.1, y)
-            # reachy.r_arm.gripper.close()
+                joint_upper = go_to_mixed_angles(reachy, x + 0.06, y + 0.03, -0.16)
+                joint_lower = go_to_mixed_angles(reachy, x + 0.06, y + 0.03, z)
 
-            if event["id"] == "action_arm":
+                if len(joint_upper) and len(joint_lower):
+                    node.send_output("pause", pa.array([True]))
+                    reachy.r_arm.goto(joint_upper, duration=0.75, wait=True)
+                    reachy.r_arm.goto(joint_lower, duration=0.75, wait=True)
+                    reachy.r_arm.gripper.close()
+                    time.sleep(0.5)
+                    if (
+                        reachy.r_arm.gripper.get_current_opening() > 2
+                        and reachy.r_arm.gripper.get_current_opening() < 97
+                    ):
+                        reachy.r_arm.goto(joint_upper, duration=0.75, wait=True)
+                        if (
+                            reachy.r_arm.gripper.get_current_opening() > 2
+                            and reachy.r_arm.gripper.get_current_opening() < 97
+                        ):
+                            grabbed = True
+                            node.send_output("look", pa.array([0.3, 0, 0.0]))
+                            node.send_output("rotate", pa.array(["right"]))
+                            reachy.r_arm.goto(release_pos, duration=1.5, wait=False)
+                            continue
+                    node.send_output("pause", pa.array([False]))
+                reachy.r_arm.goto(init_pos, duration=1.3, wait=True)
+                time.sleep(0.4)
+
+            if "action_arm" in event["id"]:
                 text = event["value"][0].as_py()
                 if reachy.r_arm.is_off():
                     reachy.r_arm.turn_on()
                     reachy.r_arm.gripper.turn_on()
                 if text == "cancel":
                     reachy.r_arm.cancel_all_goto()
-                elif len(reachy.r_arm.get_goto_queue()) == 0:
-                    if text == "handwave":
-                        ok = (
-                            ra_goto(text, hand_wave_pos1, duration=2)
-                            and ra_goto(text, hand_wave_pos2, duration=1)
-                            and ra_goto(text, hand_wave_pos1, duration=1)
-                            and ra_goto(text, r_pos)
-                        )
-                    # if text == "fistbump":
-                    #     if reachy.l_arm.gripper.get_current_opening() > 1:
-                    #         reachy.l_arm.gripper.close()
-                    #     ok = ra_goto(text, fistbump_pos, duration=1.5) and ra_goto(
-                    #         text, r_pos
-                    #     )
-                    if text == "wait":
-                        pass
+                if text == "release":
+                    time.sleep(0.5)
+                    reachy.r_arm.gripper.open()
+                    reachy.r_arm.goto(init_pos, duration=1)
+                if text == "wait":
+                    pass
 
     # reachy.r_arm.turn_off_smoothly()
 
@@ -259,27 +184,23 @@ from scipy.spatial.transform import Rotation as R
 ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
 reachy = ReachySDK(ROBOT_IP)
-reachy.l_arm.turn_on()
-reachy.l_arm.turn_off_smoothly()
+# reachy.r_arm.turn_on()
 
-x = 0.29
-y = 0.10
-z = 0.51
+# x = 0.25
+# y = -0.0
 
-yaw = -30
-pitch = -90
-roll = 0
-r = (
-    R.from_euler("ZYX", (yaw, 0, 0), degrees=True)
-    * R.from_euler("ZYX", (0, pitch, 0), degrees=True)
-    * R.from_euler("ZYX", (0, 0, roll), degrees=True)
-)
-transform = np.eye(4)
-transform[:3, :3] = r.as_matrix()
-transform[:3, 3] = [x, y, -0.32]
+# yaw = 30
+# pitch = -90
 
-a = reachy.l_arm.inverse_kinematics(transform)
-reachy.l_arm.goto(a)
+# r = R.from_euler("ZYX", (yaw, 0, 0), degrees=True) * R.from_euler(
+#     "ZYX", (0, pitch, 0), degrees=True
+# )
+# transform = np.eye(4)
+# transform[:3, :3] = r.as_matrix()
+# transform[:3, 3] = [x, y, -0.32]
+
+# a = reachy.r_arm.inverse_kinematics(transform)
+# reachy.r_arm.goto(a)
 # 1th is front-back: go from 0.5 to 0.3
 # 2th is right-left: go from -0.5 to -0.03
 # 3th s height -0.3 and -0.4 but does not seem to work going high
