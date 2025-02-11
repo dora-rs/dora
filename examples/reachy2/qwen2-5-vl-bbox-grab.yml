@@ -30,7 +30,8 @@ nodes:
     build: pip install -e ../../node-hub/dora-reachy2
     path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/mobile_base.py
     inputs:
-      rotate: reachy-left-arm/rotate
+      rotate: reachy-both-arms/rotate
+      pose: box_coordinates/point
     outputs:
       - pause
       - action_arm
@@ -39,15 +40,35 @@ nodes:
     #ROBOT_IP: 172.17.134.85
 
   # - id: reachy-right-arm
-  # build: pip install -e ../../node-hub/dora-reachy2
-  # path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/right_arm.py
-  #env:
-  #ROBOT_IP: 172.17.134.85
-  - id: reachy-left-arm
+  #   build: pip install -e ../../node-hub/dora-reachy2
+  #   path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/right_arm.py
+  #   inputs:
+  #     action_arm_base: reachy-mobile-base/action_arm
+  #     pose: box_coordinates/point
+  #   outputs:
+  #     - pause
+  #     - rotate
+  #     - look
+  # - id: reachy-left-arm
+  #   build: pip install -e ../../node-hub/dora-reachy2
+  #   path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/left_arm.py
+  #   inputs:
+  #     action_arm_base: reachy-mobile-base/action_arm #
+  #     pose: box_coordinates/point
+  #     text:
+  #       source: dora-distil-whisper/text
+  #       queue_size: 10
+  #   outputs:
+  #     - pause
+  #     - rotate
+  #     - look
+  #   env:
+  #     ACTIVATION_WORDS: grab pick give output take catch grabs picks gives outputs takes catches have
+  - id: reachy-both-arms
     build: pip install -e ../../node-hub/dora-reachy2
-    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/left_arm.py
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/both_arms.py
     inputs:
-      action_arm_base: reachy-mobile-base/action_arm #
+      action_arm: reachy-mobile-base/action_arm
       pose: box_coordinates/point
       text:
         source: dora-distil-whisper/text
@@ -58,7 +79,6 @@ nodes:
       - look
     env:
       ACTIVATION_WORDS: grab pick give output take catch grabs picks gives outputs takes catches have
-    #ROBOT_IP: 172.17.134.85
 
   - id: reachy-camera
     build: pip install -e ../../node-hub/dora-reachy2
@@ -78,7 +98,7 @@ nodes:
     path: dora-reachy2-head
     inputs:
       boxes2d: parse_bbox/bbox_face
-      look: reachy-left-arm/look
+      look: reachy-both-arms/look
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
@@ -86,6 +106,7 @@ nodes:
     inputs:
       camera_left/image_right: reachy-camera/image_right
       camera_torso/image_depth: reachy-camera/image_depth
+      camera_torso/depth: reachy-camera/depth
       text_response: dora-qwenvl/text
       text_whisper: dora-distil-whisper/text
       camera_torso/boxes2d: parse_bbox/bbox
@@ -98,7 +119,7 @@ nodes:
     path: dora-qwen2-5-vl
     inputs:
       pause_base: reachy-mobile-base/pause
-      pause_left: reachy-left-arm/pause
+      pause_arms: reachy-both-arms/pause
       image_depth: reachy-camera/image_depth
       image_left: reachy-camera/image_left
       text_1: dora/timer/millis/500

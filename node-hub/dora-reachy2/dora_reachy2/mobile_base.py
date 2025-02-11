@@ -24,7 +24,7 @@ def main():
                 [x, y, _z, _rx, _ry, rz] = event["value"].to_numpy()
                 reachy.mobile_base.rotate_by(np.rad2deg(rz))
                 reachy.mobile_base.translate_by(x, y)
-            if event["id"] == "rotate":
+            if "rotate" in event["id"]:
                 text = event["value"][0].as_py()
                 if text == "right":
                     if grabbing:

@@ -42,9 +42,9 @@ def main():
                 else:
                     reachy.head.rotate_by(pitch=rz, yaw=-ry, roll=-roll, wait=True)
                 [roll, pitch, yaw] = reachy.head.get_current_positions()
-            if event["id"] == "look":
+            if "look" in event["id"]:
                 [x, y, z] = event["value"].to_numpy()
-                reachy.head.look_at(x, y, z, wait=True)
+                reachy.head.look_at(x, y, z, duration=1, wait=True)
 
     if reachy.head is not None:
         reachy.head.turn_off()
