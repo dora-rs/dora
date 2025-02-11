@@ -66,6 +66,25 @@ l_default_pos = [
     2.1666679127563904,
 ]
 
+hand_wave_pos1 = [
+    -34.9845055514667,
+    -4.256103461472862,
+    37.1917528987426,
+    -132.63047111476183,
+    42.11556113932392,
+    5.328614342780937,
+    28.77740038848836,
+]
+hand_wave_pos2 = [
+    -39.50665085752708,
+    4.08569792564386,
+    -17.53783575070672,
+    -132.6317825110825,
+    -17.97474587643951,
+    -3.758287258250598,
+    -31.217505960042924,
+]
+
 
 def l_arm_go_to_mixed_angles(reachy, x, y, z, no_angle=False):
     for theta in range(-80, -50, 10):
@@ -145,6 +164,7 @@ def r_arm_go_to_mixed_angles(reachy, x, y, z, no_angle=False):
 def main():
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
     reachy = ReachySDK(ROBOT_IP)
+    last_handwave = time.time()
 
     if reachy.l_arm is not None:
         reachy.l_arm.turn_on()
@@ -230,16 +250,16 @@ def main():
                 ):
                     started = True
                     node.send_output("rotate", pa.array(["left"]))
-                    node.send_output("look", pa.array([0.3, 0, 0.0]))
+                    node.send_output("look", pa.array([0.3, 0, -0.1]))
                     reachy.l_arm.goto(l_init_pos, duration=1.0, wait=True)
                     reachy.r_arm.goto(r_init_pos, duration=1.0, wait=True)
 
-            elif event["id"] == "action_arm":
+            elif "action_arm" in event["id"]:
                 text = event["value"][0].as_py()
                 if text == "cancel":
                     reachy.l_arm.cancel_all_goto()
                     reachy.r_arm.cancel_all_goto()
-                if text == "release":
+                elif text == "release":
                     time.sleep(0.5)
                     reachy.l_arm.gripper.open()
                     reachy.r_arm.gripper.open()
@@ -248,6 +268,18 @@ def main():
 
                     started = False
                     grabbed = False
+                elif text == "handwave":
+                    if started:
+                        continue
+
+                    if time.time() - last_handwave < 5:
+                        continue
+                    last_handwave = time.time()
+
+                    reachy.l_arm.goto(hand_wave_pos1, duration=0.75, wait=True)
+                    reachy.l_arm.goto(hand_wave_pos2, duration=0.75, wait=True)
+                    reachy.l_arm.goto(hand_wave_pos1, duration=0.75, wait=True)
+                    reachy.l_arm.goto(l_init_pos, duration=1, wait=True)
 
 
 if __name__ == "__main__":

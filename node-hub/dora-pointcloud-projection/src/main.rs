@@ -156,7 +156,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             continue;
                         }
                         let raw_mean_z = z_total / n as f32;
-                        let threshold = (raw_mean_z * 4. + z_min) / 5.;
+                        let threshold = (raw_mean_z + z_min) / 2.;
 
                         let (x, y, z, sum_xy, sum_x2, sum_y2, n) =
                             points.iter().filter(|(_x, _y, z)| z > &&threshold).fold(

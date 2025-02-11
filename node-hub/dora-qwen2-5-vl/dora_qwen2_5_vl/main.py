@@ -268,6 +268,7 @@ def main():
                     .replace("of ", "")
                     .replace("with ", "")
                     .replace("have ", "")
+                    .replace("want ", "")
                     .replace("catch ", "")
                     .replace("some ", "")
                     .replace("?", "")
@@ -275,7 +276,7 @@ def main():
                 # if tts:
                 #     node.send_output("text_ts", pa.array([text_tts]))
                 if pause:
-                    text_tts = "human"
+                    text_tts = "human and hands"
                 text = "Output the bounding box of " + text_tts
 
                 if len(frames.keys()) == 0:
