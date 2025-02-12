@@ -64,4 +64,5 @@ pub struct SpawnDataflowNodes {
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub dataflow_descriptor: Descriptor,
     pub spawn_nodes: BTreeSet<NodeId>,
+    pub uv: bool,
 }

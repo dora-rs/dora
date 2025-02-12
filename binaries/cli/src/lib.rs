@@ -83,6 +83,9 @@ enum Command {
         /// Path to the dataflow descriptor file
         #[clap(value_name = "PATH")]
         dataflow: String,
+        // Use UV to build nodes.
+        #[clap(long, action)]
+        uv: bool,
     },
     /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
@@ -99,6 +102,9 @@ enum Command {
         /// Path to the dataflow descriptor file
         #[clap(value_name = "PATH")]
         dataflow: String,
+        // Use UV to run nodes.
+        #[clap(long, action)]
+        uv: bool,
     },
     /// Spawn coordinator and daemon in local mode (with default config)
     Up {
@@ -342,20 +348,20 @@ fn run(args: Args) -> eyre::Result<()> {
         } => {
             graph::create(dataflow, mermaid, open)?;
         }
-        Command::Build { dataflow } => {
-            build::build(dataflow)?;
+        Command::Build { dataflow, uv } => {
+            build::build(dataflow, uv)?;
         }
         Command::New {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Run { dataflow } => {
+        Command::Run { dataflow, uv } => {
             let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
-            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path))?;
+            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv))?;
             handle_dataflow_result(result, None)?
         }
         Command::Up { config } => {
@@ -515,7 +521,7 @@ fn run(args: Args) -> eyre::Result<()> {
                             );
                         }
 
-                        let result = Daemon::run_dataflow(&dataflow_path).await?;
+                        let result = Daemon::run_dataflow(&dataflow_path, false).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {

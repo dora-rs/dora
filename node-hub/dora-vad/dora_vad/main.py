@@ -7,8 +7,8 @@ from dora import Node
 from silero_vad import get_speech_timestamps, load_silero_vad
 
 model = load_silero_vad()
-MIN_SILENCE_DURATION_MS = int(os.getenv("MIN_SILENCE_DURATION_MS", "200"))
-MIN_SPEECH_DURATION_MS = int(os.getenv("MIN_SPEECH_DURATION_MS", "1000"))
+MIN_SILENCE_DURATION_MS = int(os.getenv("MIN_SILENCE_DURATION_MS", "100"))
+MIN_SPEECH_DURATION_MS = int(os.getenv("MIN_SPEECH_DURATION_MS", "300"))
 
 MIN_AUDIO_SAMPLING_DURAION_S = int(os.getenv("MAX_AUDIO_DURATION_S", "20"))
 MAX_AUDIO_DURAION_S = int(os.getenv("MAX_AUDIO_DURATION_S", "75"))
