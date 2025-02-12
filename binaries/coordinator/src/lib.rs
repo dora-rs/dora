@@ -288,11 +288,11 @@ async fn start_inner(
                                 .wrap_err("failed to serialize AllNodesReady message")?;
 
                                 // notify all machines that run parts of the dataflow
-                                for machine_id in &dataflow.daemons {
-                                    let Some(connection) = daemon_connections.get_mut(machine_id)
+                                for daemon_id in &dataflow.daemons {
+                                    let Some(connection) = daemon_connections.get_mut(daemon_id)
                                     else {
                                         tracing::warn!(
-                                            "no daemon connection found for machine `{machine_id}`"
+                                            "no daemon connection found for machine `{daemon_id}`"
                                         );
                                         continue;
                                     };
@@ -301,7 +301,7 @@ async fn start_inner(
                                         .wrap_err_with(|| {
                                             format!(
                                                 "failed to send AllNodesReady({uuid}) message \
-                                            to machine {machine_id}"
+                                            to machine {daemon_id}"
                                             )
                                         })?;
                                 }
@@ -313,6 +313,7 @@ async fn start_inner(
                     }
                 }
                 DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
+                    tracing::debug!("coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})");
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();

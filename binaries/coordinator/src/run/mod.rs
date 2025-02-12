@@ -37,7 +37,7 @@ pub(super) async fn spawn_dataflow(
     let mut daemons = BTreeSet::new();
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let spawn_nodes = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
-        tracing::trace!(
+        tracing::debug!(
             "Spawning dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})"
         );
 
