@@ -7,7 +7,9 @@ use std::{
     collections::{BTreeMap, HashMap},
     env::consts::EXE_EXTENSION,
     path::{Path, PathBuf},
+    process::Stdio,
 };
+use tokio::process::Command;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
@@ -191,6 +193,16 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     // Search path within $PATH
     } else if let Ok(abs_path) = which::which(&path) {
         Ok(abs_path)
+    } else if which::which("uv").is_ok() {
+        // spawn: uv run which <path>
+        let _output = Command::new("uv")
+            .arg("run")
+            .arg("which")
+            .arg(&path)
+            .stdout(Stdio::null())
+            .spawn()
+            .context("Could not find binary within uv")?;
+        Ok(path)
     } else {
         bail!("Could not find source path {}", path.display())
     }

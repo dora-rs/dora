@@ -1,6 +1,6 @@
 [project]
 name = "pyarrow-sender"
-version = "0.3.8"
+version = "0.3.9"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },

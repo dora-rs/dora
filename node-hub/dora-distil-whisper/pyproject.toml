@@ -1,6 +1,6 @@
 [project]
 name = "dora-distil-whisper"
-version = "0.3.8"
+version = "0.3.9"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
@@ -18,7 +18,7 @@ dependencies = [
     "accelerate >= 0.29.2",
     "torch >= 2.2.0",
     "modelscope >= 1.18.1",
-    "lightning-whisper-mlx >= 0.0.10; sys_platform == 'darwin'",
+    "mlx-whisper >= 0.4.1; sys_platform == 'darwin'",
 ]
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "dora-outtetts"
-version = "0.0.0"
+version = "0.3.9"
 authors = []
 description = "dora-outtetts"
 license = { text = "MIT" }
@@ -12,11 +12,18 @@ dependencies = [
     "numpy < 2.0.0",
     "pyarrow >= 5.0.0",
     "outetts >= 0.2.3",
-    "llama-cpp-python >= 0.3.5",
+    "llama-cpp-python",
 ]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[tool.uv.sources]
+llama-cpp-python = [
+    { marker = "sys_platform == 'darwin' and python_version == '3.9'", url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.5-metal/llama_cpp_python-0.3.5-cp39-cp39-macosx_11_0_arm64.whl" },
+    { marker = "sys_platform == 'darwin' and python_version == '3.10'", url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.5-metal/llama_cpp_python-0.3.5-cp310-cp310-macosx_11_0_arm64.whl" },
+    { marker = "sys_platform == 'darwin' and python_version == '3.11'", url = "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.5-metal/llama_cpp_python-0.3.5-cp311-cp311-macosx_11_0_arm64.whl" },
+]
 
 [project.scripts]
 dora-outtetts = "dora_outtetts.main:main"
