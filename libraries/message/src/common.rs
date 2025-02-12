@@ -2,9 +2,10 @@ use core::fmt;
 use std::borrow::Cow;
 
 use aligned_vec::{AVec, ConstAlign};
+use eyre::Context as _;
 use uuid::Uuid;
 
-use crate::{id::NodeId, DataflowId};
+use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, DataflowId};
 
 pub use log::Level as LogLevel;
 
@@ -135,6 +136,12 @@ where
 {
     pub fn serialize(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap()
+    }
+}
+
+impl Timestamped<InterDaemonEvent> {
+    pub fn deserialize_inter_daemon_event(bytes: &[u8]) -> eyre::Result<Self> {
+        bincode::deserialize(bytes).wrap_err("failed to deserialize InterDaemonEvent")
     }
 }
 
