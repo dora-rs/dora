@@ -435,6 +435,7 @@ impl Daemon {
                 dataflow_id,
                 exited_before_subscribe,
             } => {
+                tracing::debug!("daemon {} received AllNodesReady (dataflow id: {dataflow_id}, exited_before_subscribe: {exited_before_subscribe:?})", self.daemon_id);
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
                         let ready = exited_before_subscribe.is_empty();
@@ -1360,6 +1361,9 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
+                tracing::debug!(
+                    "handling node stop {dataflow_id}/{node_id} with exit status {exit_status:?}"
+                );
                 let node_result = match exit_status {
                     NodeExitStatus::Success => Ok(()),
                     exit_status => {
