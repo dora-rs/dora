@@ -85,7 +85,7 @@ pub struct Daemon {
 
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
-    /// used to record dataflow results when `exit_when_done` is used
+    /// used to record results of local nodes
     dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
 
     clock: Arc<uhlc::HLC>,
@@ -728,6 +728,19 @@ impl Daemon {
                             line: None,
                             message: format!("{err:?}"),
                         });
+                        self.dataflow_node_results
+                            .entry(dataflow_id)
+                            .or_default()
+                            .insert(
+                                node_id.clone(),
+                                Err(NodeError {
+                                    timestamp: self.clock.new_timestamp(),
+                                    cause: NodeErrorCause::Other {
+                                        stderr: format!("spawn failed: {err:?}"),
+                                    },
+                                    exit_status: NodeExitStatus::Unknown,
+                                }),
+                            );
                         stopped.push(node_id.clone());
                     }
                 }
