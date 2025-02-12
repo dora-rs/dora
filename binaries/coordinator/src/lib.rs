@@ -264,17 +264,18 @@ async fn start_inner(
             },
             Event::Dataflow { uuid, event } => match event {
                 DataflowEvent::ReadyOnDeamon {
-                    daemon_id: machine_id,
+                    daemon_id,
                     exited_before_subscribe,
                 } => {
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
-                            dataflow.pending_daemons.remove(&machine_id);
+                            dataflow.pending_daemons.remove(&daemon_id);
                             dataflow
                                 .exited_before_subscribe
                                 .extend(exited_before_subscribe);
                             if dataflow.pending_daemons.is_empty() {
+                                tracing::debug!("sending all nodes ready message to daemons");
                                 let message = serde_json::to_vec(&Timestamped {
                                     inner: DaemonCoordinatorEvent::AllNodesReady {
                                         dataflow_id: uuid,
