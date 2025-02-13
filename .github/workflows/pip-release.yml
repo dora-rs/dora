@@ -17,7 +17,7 @@ on:
     branches:
       - main
   pull_request:
-    paths:
+    paths-ignore:
       - "!node-hub/**"
 
 permissions:
