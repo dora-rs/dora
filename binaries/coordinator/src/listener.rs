@@ -66,7 +66,7 @@ pub async fn handle_connection(
                 } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
-                        event: DataflowEvent::ReadyOnDeamon {
+                        event: DataflowEvent::ReadyOnDaemon {
                             daemon_id,
                             exited_before_subscribe,
                         },
