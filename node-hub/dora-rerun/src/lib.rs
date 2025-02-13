@@ -1,6 +1,6 @@
 //! Demonstrates the most barebone usage of the Rerun SDK.
 
-use std::{collections::HashMap, env::VarError};
+use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
     arrow::array::{Array, Float32Array, Float64Array, StringArray, UInt8Array},
@@ -23,6 +23,7 @@ pub fn lib_main() -> Result<()> {
         .build()
         .expect("Failed to create tokio runtime");
     let _guard = rt.enter();
+    let (node, mut events) = DoraNode::init_from_env().context("Could not initialize dora node")?;
 
     // Setup an image cache to paint depth images.
     let mut image_cache = HashMap::new();
@@ -54,6 +55,16 @@ pub fn lib_main() -> Result<()> {
                 .context("Could not connect to rerun visualization")?;
             rec
         }
+        Ok("SAVE") => {
+            let id = node.dataflow_id();
+            let path = Path::new("out")
+                .join(id.to_string())
+                .join(format!("archive-{}.rerun", id));
+            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+                .save(path)
+                .context("Could not save rerun visualization")?;
+            rec
+        }
         Ok(_) => {
             return Err(eyre!(
                 "OPERATING_MODE env variable is not set to SPAWN or CONNECT"
@@ -68,9 +79,6 @@ pub fn lib_main() -> Result<()> {
     };
 
     let chains = init_urdf(&rec).context("Could not load urdf")?;
-
-    let (_node, mut events) =
-        DoraNode::init_from_env().context("Could not initialize dora node")?;
 
     match std::env::var("README") {
         Ok(readme) => {
