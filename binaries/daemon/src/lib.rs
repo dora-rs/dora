@@ -660,10 +660,12 @@ impl Daemon {
 
         let mut log_messages = Vec::new();
         let mut stopped = Vec::new();
-        for node in nodes.into_values() {
+
+        // calculate info about mappings
+        for node in nodes.values() {
             let local = spawn_nodes.contains(&node.id);
 
-            let inputs = node_inputs(&node);
+            let inputs = node_inputs(node);
             for (input_id, input) in inputs {
                 if local {
                     dataflow
@@ -693,6 +695,11 @@ impl Daemon {
                         .insert(OutputId(mapping.source, mapping.output));
                 }
             }
+        }
+
+        // spawn nodes and set up subscriptions
+        for node in nodes.into_values() {
+            let local = spawn_nodes.contains(&node.id);
             if local {
                 if node.kind.dynamic() {
                     dataflow.dynamic_nodes.insert(node.id.clone());
