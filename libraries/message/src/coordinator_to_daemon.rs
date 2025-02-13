@@ -25,9 +25,7 @@ pub enum RegisterResult {
 impl RegisterResult {
     pub fn to_result(self) -> eyre::Result<DaemonId> {
         match self {
-            RegisterResult::Ok {
-                daemon_id: deamon_id,
-            } => Ok(deamon_id),
+            RegisterResult::Ok { daemon_id } => Ok(daemon_id),
             RegisterResult::Err(err) => Err(eyre::eyre!(err)),
         }
     }

@@ -263,7 +263,7 @@ async fn start_inner(
                 }
             },
             Event::Dataflow { uuid, event } => match event {
-                DataflowEvent::ReadyOnDeamon {
+                DataflowEvent::ReadyOnDaemon {
                     daemon_id,
                     exited_before_subscribe,
                 } => {
@@ -1065,7 +1065,7 @@ pub enum DataflowEvent {
         daemon_id: DaemonId,
         result: DataflowDaemonResult,
     },
-    ReadyOnDeamon {
+    ReadyOnDaemon {
         daemon_id: DaemonId,
         exited_before_subscribe: Vec<NodeId>,
     },
