@@ -5,6 +5,7 @@ use dora_core::{
 };
 use dora_message::{
     cli_to_coordinator::ControlRequest,
+    common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
 use dora_tracing::set_up_tracing;
@@ -59,14 +60,20 @@ async fn main() -> eyre::Result<()> {
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
     tasks.spawn(coordinator);
-    tasks.spawn(daemon_a);
     tasks.spawn(daemon_b);
+    tasks.spawn(daemon_a);
 
     tracing::info!("waiting until daemons are connected to coordinator");
     let mut retries = 0;
     loop {
         let connected_machines = connected_machines(&coordinator_events_tx).await?;
-        if connected_machines.contains("A") && connected_machines.contains("B") {
+        if connected_machines
+            .iter()
+            .any(|id| id.matches_machine_id("A"))
+            && connected_machines
+                .iter()
+                .any(|id| id.matches_machine_id("B"))
+        {
             break;
         } else if retries > 20 {
             bail!("daemon not connected after {retries} retries");
@@ -150,7 +157,7 @@ async fn start_dataflow(
 
 async fn connected_machines(
     coordinator_events_tx: &Sender<Event>,
-) -> eyre::Result<BTreeSet<String>> {
+) -> eyre::Result<BTreeSet<DaemonId>> {
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
