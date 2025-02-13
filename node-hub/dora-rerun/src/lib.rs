@@ -24,7 +24,8 @@ pub fn lib_main() -> Result<()> {
         .expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
-    // Limit memory usage
+    // Setup an image cache to paint depth images.
+    let mut image_cache = HashMap::new();
     let mut options = SpawnOptions::default();
 
     let memory_limit = match std::env::var("RERUN_MEMORY_LIMIT") {
@@ -39,12 +40,32 @@ pub fn lib_main() -> Result<()> {
 
     options.memory_limit = memory_limit;
 
-    // Setup an image cache to paint depth images.
-    let mut image_cache = HashMap::new();
-
-    let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
-        .spawn_opts(&options, None)
-        .context("Could not spawn rerun visualization")?;
+    let rec = match std::env::var("OPERATING_MODE").as_deref() {
+        Ok("SPAWN") => {
+            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+                .spawn_opts(&options, None)
+                .context("Could not spawn rerun visualization")?;
+            rec
+        }
+        Ok("CONNECT") => {
+            let opt = std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
+            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+                .connect_tcp_opts(std::net::SocketAddr::V4(opt.parse()?), None)
+                .context("Could not connect to rerun visualization")?;
+            rec
+        }
+        Ok(_) => {
+            return Err(eyre!(
+                "OPERATING_MODE env variable is not set to SPAWN or CONNECT"
+            ));
+        }
+        Err(_) => {
+            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+                .spawn_opts(&options, None)
+                .context("Could not spawn rerun visualization")?;
+            rec
+        }
+    };
 
     let chains = init_urdf(&rec).context("Could not load urdf")?;
 
