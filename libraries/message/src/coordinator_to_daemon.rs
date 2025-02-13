@@ -1,6 +1,11 @@
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    time::Duration,
+};
 
 use crate::{
+    common::DaemonId,
     descriptor::{Descriptor, ResolvedNode},
     id::{NodeId, OperatorId},
     DataflowId,
@@ -10,14 +15,17 @@ pub use crate::common::Timestamped;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum RegisterResult {
-    Ok,
+    Ok {
+        /// unique ID assigned by the coordinator
+        daemon_id: DaemonId,
+    },
     Err(String),
 }
 
 impl RegisterResult {
-    pub fn to_result(self) -> eyre::Result<()> {
+    pub fn to_result(self) -> eyre::Result<DaemonId> {
         match self {
-            RegisterResult::Ok => Ok(()),
+            RegisterResult::Ok { daemon_id } => Ok(daemon_id),
             RegisterResult::Err(err) => Err(eyre::eyre!(err)),
         }
     }
@@ -51,8 +59,8 @@ pub enum DaemonCoordinatorEvent {
 pub struct SpawnDataflowNodes {
     pub dataflow_id: DataflowId,
     pub working_dir: PathBuf,
-    pub nodes: Vec<ResolvedNode>,
-    pub machine_listen_ports: BTreeMap<String, SocketAddr>,
+    pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub dataflow_descriptor: Descriptor,
+    pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
 }

@@ -202,9 +202,6 @@ enum Command {
         /// Unique identifier for the machine (required for distributed dataflows)
         #[clap(long)]
         machine_id: Option<String>,
-        /// The inter daemon IP address and port this daemon will bind to.
-        #[clap(long, default_value_t = SocketAddr::new(LISTEN_WILDCARD, 0))]
-        inter_daemon_addr: SocketAddr,
         /// Local listen port for event such as dynamic node.
         #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
         local_listen_port: u16,
@@ -274,7 +271,7 @@ enum Lang {
 pub fn lib_main(args: Args) {
     if let Err(err) = run(args) {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
-        eprintln!("{err:#}");
+        eprintln!("{err:?}");
         std::process::exit(1);
     }
 }
@@ -504,7 +501,6 @@ fn run(args: Args) -> eyre::Result<()> {
         Command::Daemon {
             coordinator_addr,
             coordinator_port,
-            inter_daemon_addr,
             local_listen_port,
             machine_id,
             run_dataflow,
@@ -529,7 +525,7 @@ fn run(args: Args) -> eyre::Result<()> {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id.unwrap_or_default(), inter_daemon_addr, local_listen_port).await
+                        Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id, local_listen_port).await
                     }
                 }
             })
