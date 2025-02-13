@@ -760,9 +760,11 @@ impl Daemon {
                         .clone()
                         .wrap_err("no remote_daemon_events_tx channel")?;
                     let mut finished_rx = dataflow.finished_tx.subscribe();
+                    let subscribe_topic = dataflow.output_publish_topic(output_id);
+                    tracing::debug!("declaring subscriber on {subscribe_topic}");
                     let subscriber = self
                         .zenoh_session
-                        .declare_subscriber(dataflow.output_publish_topic(output_id))
+                        .declare_subscriber(subscribe_topic)
                         .await
                         .map_err(|e| eyre!(e))
                         .wrap_err_with(|| format!("failed to subscribe to {output_id:?}"))?;
@@ -1078,9 +1080,11 @@ impl Daemon {
         let publisher = match dataflow.publishers.get(output_id) {
             Some(publisher) => publisher,
             None => {
+                let publish_topic = dataflow.output_publish_topic(output_id);
+                tracing::debug!("declaring publisher on {publish_topic}");
                 let publisher = self
                     .zenoh_session
-                    .declare_publisher(dataflow.output_publish_topic(output_id))
+                    .declare_publisher(publish_topic)
                     .await
                     .map_err(|e| eyre!(e))
                     .context("failed to create zenoh publisher")?;
