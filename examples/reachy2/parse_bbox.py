@@ -47,23 +47,8 @@ for event in node:
 
         bboxes, labels = extract_bboxes(text)
         if bboxes is not None and len(bboxes) > 0:
-            bboxes = bboxes * 2
+            bboxes = bboxes  # * 2
             if "human" in labels[0] or "head" in labels[0]:
-                if "hands" in labels[1]:
-                    y_min_hanmds = bboxes[1][1]
-                    y_max_hands = bboxes[1][3]
-                    y_min_head = bboxes[0][1]
-                    y_max_head = bboxes[0][3]
-
-                    y_avg_hands = (y_min_hanmds + y_max_hands) / 2
-                    y_avg_head = (4 * y_min_head + y_max_head) / 5
-
-                    if y_avg_hands < y_avg_head:
-                        node.send_output(
-                            "action_arm",
-                            pa.array(["handwave"]),
-                            metadata={"timestamp": time.time_ns()},
-                        )
                 node.send_output("bbox_face", pa.array(bboxes.ravel()))
             else:
                 node.send_output("bbox", pa.array(bboxes.ravel()))
