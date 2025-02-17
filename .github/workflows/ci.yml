@@ -357,6 +357,9 @@ jobs:
           # Run Python queue latency test 
           dora run tests/queue_size_latest_data_python/dataflow.yaml
 
+          # Run Python queue latency test + timeout
+          dora run tests/queue_size_and_timeout_python/dataflow.yaml
+
           # Run Rust queue latency test 
           dora build tests/queue_size_latest_data_rust/dataflow.yaml
           dora run tests/queue_size_latest_data_rust/dataflow.yaml
