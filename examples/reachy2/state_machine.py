@@ -9,6 +9,7 @@ from dora import Node
 node = Node()
 
 ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
+TABLE_HEIGHT = float(os.getenv("TABLE_HEIGHT", "-0.32"))
 
 r_init_pose = [
     -5.60273587426976,
@@ -183,7 +184,7 @@ while True:
         x = x + 0.04
 
         ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
-        z = np.clip(z, -0.32, -0.22)
+        z = np.clip(z, TABLE_HEIGHT, -0.22)
         node.send_output("look", pa.array([x, y, z]))
         trajectory = np.array(
             [
