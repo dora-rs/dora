@@ -7,7 +7,10 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 
-dependencies = ["dora-rs >= 0.3.6", "reachy2-sdk"]
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "reachy2-sdk==1.0.7",
+] # Make reachy2 sdk version configurable
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
