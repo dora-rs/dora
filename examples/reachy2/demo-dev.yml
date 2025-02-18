@@ -28,7 +28,7 @@ nodes:
 
   - id: reachy-mobile-base
     build: pip install -e ../../node-hub/dora-reachy2
-    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/mobile_base.py
+    path: dora-reachy2-mobile-base
     inputs:
       action_base: state_machine/action_base
     outputs:
@@ -38,7 +38,7 @@ nodes:
 
   - id: reachy-left-arm
     build: pip install -e ../../node-hub/dora-reachy2
-    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/left_arm.py
+    path: dora-reachy2-left-arm
     inputs:
       pose: state_machine/action_l_arm
     outputs:
@@ -48,7 +48,7 @@ nodes:
 
   - id: reachy-right-arm
     build: pip install -e ../../node-hub/dora-reachy2
-    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/right_arm.py
+    path: dora-reachy2-right-arm
     inputs:
       pose: state_machine/action_r_arm
     outputs:
@@ -58,7 +58,7 @@ nodes:
 
   - id: reachy-camera
     build: pip install -e ../../node-hub/dora-reachy2
-    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/camera.py
+    path: dora-reachy2-camera
     inputs:
       tick: dora/timer/millis/50
     outputs:
