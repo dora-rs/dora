@@ -34,7 +34,7 @@ nodes:
     outputs:
       - response_base
     env:
-      ROBOT_IP: 10.42.0.80
+      ROBOT_IP: 172.17.134.85
 
   - id: reachy-left-arm
     build: pip install -e ../../node-hub/dora-reachy2
@@ -44,7 +44,7 @@ nodes:
     outputs:
       - response_l_arm
     env:
-      ROBOT_IP: 10.42.0.80
+      ROBOT_IP: 172.17.134.85
 
   - id: reachy-right-arm
     build: pip install -e ../../node-hub/dora-reachy2
@@ -54,7 +54,7 @@ nodes:
     outputs:
       - response_r_arm
     env:
-      ROBOT_IP: 10.42.0.80
+      ROBOT_IP: 172.17.134.85
 
   - id: reachy-camera
     build: pip install -e ../../node-hub/dora-reachy2
@@ -67,7 +67,7 @@ nodes:
       - image_depth
       - depth
     env:
-      ROBOT_IP: 10.42.0.80
+      ROBOT_IP: 172.17.134.85
 
   - id: reachy-head
     build: pip install -e ../../node-hub/dora-reachy2
@@ -76,20 +76,20 @@ nodes:
       boxes2d: parse_bbox/bbox_face
       look: state_machine/look
     env:
-      ROBOT_IP: 10.42.0.80
+      ROBOT_IP: 172.17.134.85
 
-  - id: plot
-    build: pip install -e ../../node-hub/dora-rerun
-    path: dora-rerun
-    inputs:
-      camera_left/image_right: reachy-camera/image_right
-      camera_torso/image: reachy-camera/image_depth
-      text_response: dora-qwenvl/text
-      text_whisper: dora-distil-whisper/text
-      camera_torso/boxes2d: parse_bbox/bbox
-      camera_left/boxes2d_face: parse_bbox/bbox_face
-    env:
-      RERUN_MEMORY_LIMIT: 5%
+  #- id: plot
+  #build: pip install -e ../../node-hub/dora-rerun
+  #path: dora-rerun
+  #inputs:
+  #camera_left/image_right: reachy-camera/image_right
+  #camera_torso/image: reachy-camera/image_depth
+  #text_response: dora-qwenvl/text
+  #text_whisper: dora-distil-whisper/text
+  #camera_torso/boxes2d: parse_bbox/bbox
+  #camera_left/boxes2d_face: parse_bbox/bbox_face
+  #env:
+  #RERUN_MEMORY_LIMIT: 5%
 
   - id: dora-qwenvl
     build: pip install -e ../../node-hub/dora-qwen2-5-vl
@@ -104,6 +104,7 @@ nodes:
     env:
       #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
       DEFAULT_QUESTION: grab human.
+      IMAGE_RESIZE_RATIO: "0.5"
       # ACTIVATION_WORDS: grab pick give output take catch grabs picks gives output takes catches have
       #SYSTEM_PROMPT: You're a robot.
 
@@ -115,6 +116,8 @@ nodes:
       - bbox
       - bbox_face
       - action_arm
+    env:
+      IMAGE_RESIZE_RATIO: "0.5"
 
   - id: box_coordinates
     build: pip install -e ../../node-hub/dora-boxes2d-to-pose

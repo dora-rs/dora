@@ -1,10 +1,13 @@
 import json
+import os
 
 import numpy as np
 import pyarrow as pa
 from dora import Node
 
 node = Node()
+
+IMAGE_RESIZE_RATIO = float(os.getenv("IMAGE_RESIZE_RATIO", "1.0"))
 
 
 def extract_bboxes(json_text):
@@ -45,7 +48,7 @@ for event in node:
 
         bboxes, labels = extract_bboxes(text)
         if bboxes is not None and len(bboxes) > 0:
-            bboxes = bboxes  # * 2
+            bboxes = bboxes * int(1 / IMAGE_RESIZE_RATIO)
             if "human" in labels[0] or "head" in labels[0]:
                 node.send_output("bbox_face", pa.array(bboxes.ravel()))
             else:
