@@ -78,18 +78,18 @@ nodes:
     env:
       ROBOT_IP: 172.17.134.85
 
-  #- id: plot
-  #build: pip install -e ../../node-hub/dora-rerun
-  #path: dora-rerun
-  #inputs:
-  #camera_left/image_right: reachy-camera/image_right
-  #camera_torso/image: reachy-camera/image_depth
-  #text_response: dora-qwenvl/text
-  #text_whisper: dora-distil-whisper/text
-  #camera_torso/boxes2d: parse_bbox/bbox
-  #camera_left/boxes2d_face: parse_bbox/bbox_face
-  #env:
-  #RERUN_MEMORY_LIMIT: 5%
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      camera_left/image_right: reachy-camera/image_right
+      camera_torso/image: reachy-camera/image_depth
+      text_response: dora-qwenvl/text
+      text_whisper: dora-distil-whisper/text
+      camera_torso/boxes2d: parse_bbox/bbox
+      camera_left/boxes2d_face: parse_bbox/bbox_face
+    env:
+      RERUN_MEMORY_LIMIT: 5%
 
   - id: dora-qwenvl
     build: pip install -e ../../node-hub/dora-qwen2-5-vl
