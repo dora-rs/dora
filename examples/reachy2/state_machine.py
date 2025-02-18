@@ -1,4 +1,4 @@
-## State Machine
+# State Machine
 import os
 import time
 
@@ -105,18 +105,17 @@ def wait_for_events(ids: list[str]):
 
 
 while True:
-
     ### === IDLE ===
 
     node.send_output(
         "action_r_arm",
         pa.array(r_default_pose),
-        metadata={"encoding": "jointstate"},
+        metadata={"encoding": "jointstate", "duration": 2},
     )
     node.send_output(
         "action_l_arm",
         pa.array(l_default_pose),
-        metadata={"encoding": "jointstate"},
+        metadata={"encoding": "jointstate", "duration": 2},
     )
     wait_for_events(ids=["response_r_arm", "response_l_arm"])
 
@@ -182,7 +181,9 @@ while True:
         y = values[1]
         z = values[2]
         x = x + 0.04
-        z = np.clip(z, -0.31, -0.22)
+
+        ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
+        z = np.clip(z, -0.32, -0.22)
         node.send_output("look", pa.array([x, y, z]))
         trajectory = np.array(
             [
