@@ -23,6 +23,9 @@ pub fn lib_main() -> Result<()> {
         .unwrap_or("2.478".to_string())
         .parse::<f32>()
         .unwrap();
+    let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
+    let sin_theta = camera_pitch.sin(); // np.sin(np.deg2rad(180-38))
+                                        // (0.32489833, -0.25068134, 0.4761387)
 
     while let Some(event) = events.recv() {
         match event {
@@ -79,24 +82,17 @@ pub fn lib_main() -> Result<()> {
                                 let u = i as f32 % width as f32; // Calculate x-coordinate (u)
                                 let v = i as f32 / width as f32; // Calculate y-coordinate (v)
 
-                                if u > x_min && u < x_max && v > y_min && v < y_max {
-                                    if let Some(z) = z {
-                                        let z = z as f32;
-
-                                        // Skip points that have empty depth.
-                                        if z == 0. {
-                                            return;
-                                        // Skip points that are out of reach of reachy
-                                        } else if z > 5.0 {
-                                            return;
-                                        }
+                                if let Some(z) = z {
+                                    let z = z as f32;
+                                    // Skip points that have empty depth or is too far away
+                                    if z == 0. || z > 5.0 {
+                                        return;
+                                    }
+                                    if u > x_min && u < x_max && v > y_min && v < y_max {
                                         let y =
                                             (u - resolution[0] as f32) * z / focal_length[0] as f32;
                                         let x =
                                             (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                        let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
-                                        let sin_theta = camera_pitch.sin(); // np.sin(np.deg2rad(180-38))
-                                                                            // (0.32489833, -0.25068134, 0.4761387)
                                         let new_x = sin_theta * z + cos_theta * x;
                                         let new_y = -y;
                                         let new_z = cos_theta * z - sin_theta * x;
@@ -119,25 +115,64 @@ pub fn lib_main() -> Result<()> {
                         let raw_mean_z = z_total / n as f32;
                         let threshold = (raw_mean_z + z_min) / 2.;
 
-                        let (x, y, z, sum_xy, sum_x2, sum_y2, n) =
-                            points.iter().filter(|(_x, _y, z)| z > &threshold).fold(
-                                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
-                                |(acc_x, acc_y, acc_z, acc_xy, acc_x2, acc_y2, acc_n),
-                                 (x, y, z)| {
-                                    (
-                                        acc_x + x,
-                                        acc_y + y,
-                                        acc_z + z,
-                                        acc_xy + x * y,
-                                        acc_x2 + x * x,
-                                        acc_y2 + y * y,
-                                        acc_n + 1.,
-                                    )
-                                },
-                            );
+                        let (
+                            _x,
+                            _y,
+                            _z,
+                            sum_xy,
+                            sum_x2,
+                            sum_y2,
+                            n,
+                            x_min,
+                            x_max,
+                            y_min,
+                            y_max,
+                            z_max,
+                        ) = points.iter().filter(|(_x, _y, z)| z > &threshold).fold(
+                            (
+                                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, -10.0,
+                            ),
+                            |(
+                                acc_x,
+                                acc_y,
+                                acc_z,
+                                acc_xy,
+                                acc_x2,
+                                acc_y2,
+                                acc_n,
+                                acc_x_min,
+                                acc_x_max,
+                                acc_y_min,
+                                acc_y_max,
+                                acc_z_max,
+                            ),
+                             (x, y, z)| {
+                                (
+                                    acc_x + x,
+                                    acc_y + y,
+                                    acc_z + z,
+                                    acc_xy + x * y,
+                                    acc_x2 + x * x,
+                                    acc_y2 + y * y,
+                                    acc_n + 1.,
+                                    f32::min(acc_x_min, *x),
+                                    f32::max(acc_x_max, *x),
+                                    f32::min(acc_y_min, *y),
+                                    f32::max(acc_y_max, *y),
+                                    f32::max(acc_z_max, *z),
+                                )
+                            },
+                        );
+                        let (mean_x, mean_y, mean_z) = (
+                            (x_max + x_min) / 2.,
+                            (y_max + y_min) / 2.,
+                            (z_max + z_min) / 2.,
+                        );
 
-                        let (mean_x, mean_y, mean_z) = (x / n, y / n, z / n);
-
+                        println!(
+                            "new_mean_x: {}, new_mean_y: {}, new_mean_z: {}, n: {}",
+                            mean_x, mean_y, mean_z, n
+                        );
                         // Compute covariance and standard deviations
                         let cov = sum_xy / n - mean_x * mean_y;
                         let std_x = (sum_x2 / n - mean_x * mean_x).sqrt();
