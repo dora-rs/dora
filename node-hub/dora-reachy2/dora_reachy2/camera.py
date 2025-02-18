@@ -48,7 +48,7 @@ def main():
                 )
 
                 (image_right, _) = reachy.cameras.teleop.get_frame(
-                    view=CameraView.RIGHT
+                    view=CameraView.RIGHT,
                 )
 
                 if image_right is int:

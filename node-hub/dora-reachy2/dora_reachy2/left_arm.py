@@ -39,7 +39,7 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
         ## First try turning left
         pitch = -90
         r = R.from_euler("ZYX", (-yaw, 0, 0), degrees=True) * R.from_euler(
-            "ZYX", (0, pitch, 0), degrees=True
+            "ZYX", (0, pitch, 0), degrees=True,
         )
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
@@ -65,10 +65,7 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
 
 
 def manage_gripper(reachy, gripper, grasp):
-    if gripper == 100 and reachy.r_arm.gripper.get_current_opening() == 100:
-        return True
-    ## If the gripper is already half opened and we're trying to close it, it's probably already closed
-    elif (
+    if (gripper == 100 and reachy.r_arm.gripper.get_current_opening() == 100) or (
         gripper == 0.0
         and (
             reachy.r_arm.gripper.get_current_opening() < 98
