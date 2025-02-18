@@ -1,3 +1,4 @@
+use core::f32;
 use dora_node_api::{
     arrow::{
         array::{AsArray, Float64Array, UInt8Array},
@@ -118,8 +119,8 @@ pub fn lib_main() -> Result<()> {
                         let raw_mean_z = z_total / n as f32;
                         let threshold = (raw_mean_z + z_min) / 2.;
 
-                        let (x, y, _z, sum_xy, sum_x2, sum_y2, n) =
-                            points.iter().filter(|(_x, _y, z)| z > &&threshold).fold(
+                        let (x, y, z, sum_xy, sum_x2, sum_y2, n) =
+                            points.iter().filter(|(_x, _y, z)| z > &threshold).fold(
                                 (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                                 |(acc_x, acc_y, acc_z, acc_xy, acc_x2, acc_y2, acc_n),
                                  (x, y, z)| {
@@ -135,7 +136,7 @@ pub fn lib_main() -> Result<()> {
                                 },
                             );
 
-                        let (mean_x, mean_y, mean_z) = (x / n as f32, y / n as f32, raw_mean_z);
+                        let (mean_x, mean_y, mean_z) = (x / n, y / n, z / n);
 
                         // Compute covariance and standard deviations
                         let cov = sum_xy / n - mean_x * mean_y;
@@ -147,7 +148,8 @@ pub fn lib_main() -> Result<()> {
                         node.send_output(
                             DataId::from("pose".to_string()),
                             metadata,
-                            vec![mean_x, mean_y, mean_z, 0., 0., corr * 3.1415 / 2.].into_arrow(),
+                            vec![mean_x, mean_y, mean_z, 0., 0., corr * f32::consts::PI / 2.]
+                                .into_arrow(),
                         )?;
                     }
                 }
