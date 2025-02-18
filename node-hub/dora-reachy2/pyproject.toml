@@ -1,0 +1,20 @@
+[project]
+name = "dora-reachy2"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "dora-reachy2"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = ["dora-rs >= 0.3.6", "reachy2-sdk"]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-reachy2-camera = "dora_reachy2.camera:main"
+dora-reachy2-left-arm = "dora_reachy2.left_arm:main"
+dora-reachy2-right-arm = "dora_reachy2.right_arm:main"
+dora-reachy2-mobile-base = "dora_reachy2.mobile_base:main"
+dora-reachy2-head = "dora_reachy2.head:main"
