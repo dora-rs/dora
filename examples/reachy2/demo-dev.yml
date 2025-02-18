@@ -1,0 +1,151 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english
+      TRANSLATE: true
+
+  - id: reachy-mobile-base
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/mobile_base.py
+    inputs:
+      action_base: state_machine/action_base
+    outputs:
+      - response_base
+    env:
+      ROBOT_IP: 10.42.0.80
+
+  - id: reachy-left-arm
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/left_arm.py
+    inputs:
+      pose: state_machine/action_l_arm
+    outputs:
+      - response_l_arm
+    env:
+      ROBOT_IP: 10.42.0.80
+
+  - id: reachy-right-arm
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/right_arm.py
+    inputs:
+      pose: state_machine/action_r_arm
+    outputs:
+      - response_r_arm
+    env:
+      ROBOT_IP: 10.42.0.80
+
+  - id: reachy-camera
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: /home/peter/Documents/work/dora/node-hub/dora-reachy2/dora_reachy2/camera.py
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - image_right
+      - image_left
+      - image_depth
+      - depth
+    env:
+      ROBOT_IP: 10.42.0.80
+
+  - id: reachy-head
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-head
+    inputs:
+      boxes2d: parse_bbox/bbox_face
+      look: state_machine/look
+    env:
+      ROBOT_IP: 10.42.0.80
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      camera_left/image_right: reachy-camera/image_right
+      camera_torso/image: reachy-camera/image_depth
+      text_response: dora-qwenvl/text
+      text_whisper: dora-distil-whisper/text
+      camera_torso/boxes2d: parse_bbox/bbox
+      camera_left/boxes2d_face: parse_bbox/bbox_face
+    env:
+      RERUN_MEMORY_LIMIT: 5%
+
+  - id: dora-qwenvl
+    build: pip install -e ../../node-hub/dora-qwen2-5-vl
+    path: dora-qwen2-5-vl
+    inputs:
+      image_depth: reachy-camera/image_depth
+      image_left: reachy-camera/image_left
+      text_1: dora/timer/millis/500
+      text_2: state_machine/text_vlm
+    outputs:
+      - text
+    env:
+      #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
+      DEFAULT_QUESTION: grab human.
+      # ACTIVATION_WORDS: grab pick give output take catch grabs picks gives output takes catches have
+      #SYSTEM_PROMPT: You're a robot.
+
+  - id: parse_bbox
+    path: parse_bbox.py
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - bbox
+      - bbox_face
+      - action_arm
+
+  - id: box_coordinates
+    build: pip install -e ../../node-hub/dora-boxes2d-to-pose
+    path: dora-boxes2d-to-pose
+    inputs:
+      depth: reachy-camera/depth
+      boxes2d: parse_bbox/bbox
+    outputs:
+      - pose
+
+  - id: keyboard
+    build: pip install -e ../../node-hub/dora-keyboard
+    path: dora-keyboard
+    inputs:
+      tick: dora/timer/millis/1000
+    outputs:
+      - char
+
+  - id: state_machine
+    path: state_machine.py
+    inputs:
+      text: dora-distil-whisper/text
+      response_base: reachy-mobile-base/response_base
+      response_r_arm: reachy-right-arm/response_r_arm
+      response_l_arm: reachy-left-arm/response_l_arm
+      pose: box_coordinates/pose
+    outputs:
+      - text_vlm
+      - action_r_arm
+      - action_base
+      - look
+      - action_l_arm
+    env:
+      ACTIVATION_WORDS: grab pick give output take catch grabs picks gives output takes catches have

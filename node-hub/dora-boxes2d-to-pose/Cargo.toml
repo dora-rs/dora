@@ -1,0 +1,25 @@
+[package]
+name = "dora-boxes2d-to-pose"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dora-node-api = "0.3.8"
+eyre = "0.6.8"
+pyo3 = { workspace = true, features = [
+    "extension-module",
+    "abi3",
+    "eyre",
+], optional = true }
+
+[features]
+default = []
+python = ["pyo3"]
+
+
+[lib]
+name = "dora_boxes2d_to_pose"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]

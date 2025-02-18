@@ -29,20 +29,10 @@ DEFAULT_QUESTION = os.getenv(
     "DEFAULT_QUESTION",
     "Describe this image",
 )
-IMAGE_WIDTH = int(
-    os.getenv(
-        "IMAGE_WIDTH",
-        "0",
-    )
-)
-IMAGE_HEIGHT = int(
-    os.getenv(
-        "IMAGE_HEIGHT",
-        "0",
-    )
-)
+IMAGE_RESIZE_RATIO = float(os.getenv("IMAGE_RESIZE_RATIO", "1.0"))
 HISTORY = os.getenv("HISTORY", "False") in ["True", "true"]
 ADAPTER_PATH = os.getenv("ADAPTER_PATH", "")
+
 
 # Check if flash_attn is installed
 try:
@@ -68,8 +58,13 @@ if ADAPTER_PATH != "":
 processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
-def generate(frames: dict, question, history, past_key_values=None):
+def generate(frames: dict, question, history, past_key_values=None, select_image=None):
     """Generate the response to the question given the image using Qwen2 model."""
+
+    if select_image is not None:
+        images = [frames[select_image]]
+    else:
+        images = list(frames.values())
     messages = [
         {
             "role": "user",
@@ -77,8 +72,10 @@ def generate(frames: dict, question, history, past_key_values=None):
                 {
                     "type": "image",
                     "image": image,
+                    "resized_height": image.size[1] / IMAGE_RESIZE_RATIO,
+                    "resized_width": image.size[0] / IMAGE_RESIZE_RATIO,
                 }
-                for image in frames.values()
+                for image in images
             ]
             + [
                 {"type": "text", "text": question},
@@ -158,6 +155,7 @@ def main():
         },
     ]
     cached_text = DEFAULT_QUESTION
+    select_image = None
     past_key_values = None
 
     for event in node:
@@ -203,14 +201,12 @@ def main():
                 else:
                     raise RuntimeError(f"Unsupported image encoding: {encoding}")
                 image = Image.fromarray(frame)
-                if IMAGE_HEIGHT > 0 and IMAGE_WIDTH > 0:
-                    frames[event_id] = image.resize((IMAGE_HEIGHT, IMAGE_WIDTH))
-                else:
-                    frames[event_id] = image
+                frames[event_id] = image
 
             elif "text" in event_id:
                 if len(event["value"]) > 0:
                     text = event["value"][0].as_py()
+                    select_image = event["metadata"].get("select_image", None)
                 else:
                     text = cached_text
                 words = text.split()
@@ -225,7 +221,7 @@ def main():
                     continue
                 # set the max number of tiles in `max_num`
                 response, history, past_key_values = generate(
-                    frames, text, history, past_key_values
+                    frames, text, history, past_key_values, select_image
                 )
                 node.send_output(
                     "text",
