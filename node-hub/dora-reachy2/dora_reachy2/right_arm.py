@@ -122,7 +122,7 @@ def main():
 
                     if not response_ik:
                         node.send_output(
-                            "response_arm",
+                            "response_r_arm",
                             pa.array([False]),
                             metadata={"error": f"IK Failed for x: {x}, y: {y}, z: {z}"},
                         )
@@ -137,13 +137,13 @@ def main():
                             )
                             if not response_gripper:
                                 node.send_output(
-                                    "response_arm",
+                                    "response_r_arm",
                                     pa.array([False]),
                                     metadata={"error": "Failed to grasp"},
                                 )
                                 break
                         if response_gripper:
-                            node.send_output("response_arm", pa.array([True]))
+                            node.send_output("response_r_arm", pa.array([True]))
 
                 elif encoding == "jointstate":
                     values = values.reshape((-1, 8))
@@ -158,7 +158,7 @@ def main():
                             grasp,
                             reachy.r_arm.gripper.get_current_opening(),
                         )
-                    node.send_output("response_arm", pa.array([True]))
+                    node.send_output("response_r_arm", pa.array([True]))
 
 
 if __name__ == "__main__":

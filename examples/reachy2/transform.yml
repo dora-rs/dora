@@ -25,15 +25,16 @@ nodes:
     path: dora-reachy2-head
     inputs:
       boxes2d: parse_bbox/bbox_face
+
   - id: plot
     # build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      # image_right: reachy-camera/image_right
+      image_right: reachy-camera/image_right
       image_depth: reachy-camera/image_depth
       text_response: dora-qwenvl/text
       boxes2d: parse_bbox/bbox
-      boxes2d: parse_bbox/bbox_face
+      boxes2d_face: parse_bbox/bbox_face
     env:
       RERUN_MEMORY_LIMIT: 10%
 
@@ -41,13 +42,14 @@ nodes:
     build: pip install -e ../../node-hub/dora-qwen2-5-vl
     path: dora-qwen2-5-vl
     inputs:
-      image_right: reachy-camera/image_depth
+      image_depth: reachy-camera/image_depth
+      image_left: reachy-camera/image_left
       text_1: dora/timer/millis/100
     outputs:
       - text
     env:
       #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
-      DEFAULT_QUESTION: Output the bounding box of the coca cola can.
+      DEFAULT_QUESTION: grab human.
       ACTIVATION_WORDS: grab pick give
       #SYSTEM_PROMPT: You're a robot.
 

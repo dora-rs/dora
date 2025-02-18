@@ -8,7 +8,7 @@ from reachy2_sdk import ReachySDK
 def main():
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
-    for i in range(5):
+    for _i in range(5):
         reachy = ReachySDK(ROBOT_IP)
 
         if reachy.head is not None:
@@ -19,8 +19,7 @@ def main():
     FOV_V = 91
     resolution = [720, 960]
 
-    last_roll = 0
-    roll, pitch, yaw = reachy.head.get_current_positions()
+    roll, _pitch, yaw = reachy.head.get_current_positions()
     node = Node()
     for event in node:
         if event["type"] == "INPUT":

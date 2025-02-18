@@ -39,6 +39,38 @@ r_release_opened_pose = [
     100,
 ]
 
+l_release_opened_pose = [
+    -30.04330081906935,
+    -7.415231584691132,
+    3.6972339048071468,
+    -97.7274736257555,
+    12.996718740452982,
+    30.838020649757016,
+    -1.5572310505704858,
+    0,
+]
+
+l_release_closed_pose = [
+    -30.04330081906935,
+    -7.415231584691132,
+    3.6972339048071468,
+    -97.7274736257555,
+    12.996718740452982,
+    30.838020649757016,
+    -1.5572310505704858,
+    100,
+]
+
+l_default_pose = [
+    42.212611297240635,
+    -16.95827541661092,
+    15.241872783848812,
+    -131.11770715700908,
+    0.1682905250638251,
+    -1.6613469324618695,
+    2.1666679127563904,
+    100,
+]
 
 r_default_pose = [
     38.058172640242475,
@@ -59,16 +91,32 @@ def wait_for_event(id):
                 return event["value"]
 
 
+def wait_for_events(ids: list[str]):
+    response = {}
+    for event in node:
+        if event["type"] == "INPUT":
+            if event["id"] in ids:
+                response[event["id"]] = event["value"]
+                if len(response) == len(ids):
+                    return event["value"]
+
+
 while True:
 
     ### === IDLE ===
 
     node.send_output(
-        "action_arm",
+        "action_r_arm",
         pa.array(r_default_pose),
         metadata={"encoding": "jointstate"},
     )
-    wait_for_event(id="response_arm")
+    node.send_output(
+        "action_l_arm",
+        pa.array(l_default_pose),
+        metadata={"encoding": "jointstate"},
+    )
+    wait_for_events(ids=["response_r_arm", "response_l_arm"])
+
     node.send_output(
         "text_vlm",
         pa.array(["output the bounding box for human"]),
@@ -91,10 +139,10 @@ while True:
     ### === TURNING ===
 
     # Trigger action once text from whisper is received
-    # Move left. Overwrite this with movement if needed.
+    # Move left. Overwrite this with your desired movement..
     node.send_output("action_base", pa.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.57]))
     # Look straight
-    node.send_output("look", pa.array([0.3, 0, 0.0]))
+    node.send_output("look", pa.array([0.3, 0, -0.1]))
     # You can add additional actions here
     # ...
 
@@ -102,7 +150,7 @@ while True:
     if not event:
         # return to IDLE
         node.send_output("action_base", pa.array([0.0, 0.0, 0.0, 0.0, 0.0, -1.57]))
-        event = wait_for_event(id="response_base")
+        event = wait_for_event(id="response_base")[0].as_py()
         if event:
             continue
         else:
@@ -113,9 +161,11 @@ while True:
     # Trigger action once base is done moving
     node.send_output(
         "text_vlm",
-        pa.array(["output the bounding box for orange"]),
+        pa.array(["output the bounding box for the tennis ball"]),
         metadata={"select_image": "image_depth"},
     )
+
+    arm_holding_object = None
 
     # Try pose and until one is successful
     while True:
@@ -127,16 +177,9 @@ while True:
         y = values[1]
         z = values[2]
         x = x + 0.04
-        z = np.clip(z + 0.01, -0.32, -0.22)
-        if y > 0:
-            y = y + 0.03
-
+        z = np.clip(z + 0.01, -0.3, -0.22)
+        y += 0.03
         node.send_output("look", pa.array([x, y, z]))
-
-        # First pose is top
-        # second one is lower
-        # third one is top
-
         trajectory = np.array(
             [
                 [x, y, -0.16, 0, 0, 0, 100],
@@ -145,44 +188,79 @@ while True:
             ]
         ).ravel()
 
-        node.send_output(
-            "action_arm", pa.array(trajectory), metadata={"encoding": "xyzrpy"}
-        )
-        event = wait_for_event(id="response_arm")[0].as_py()
-        if event:
-            print("Success")
-            break
-        else:
-            print("Failed")
+        if y < 0:
             node.send_output(
-                "action_arm",
-                pa.array(r_default_pose),
-                metadata={"encoding": "jointstate"},
+                "action_r_arm", pa.array(trajectory), metadata={"encoding": "xyzrpy"}
             )
-            event = wait_for_event(id="response_arm")
+            event = wait_for_event(id="response_r_arm")[0].as_py()
+            if event:
+                print("Success")
+                arm_holding_object = "right"
+                break
+            else:
+                print("Failed")
+                node.send_output(
+                    "action_r_arm",
+                    pa.array(r_default_pose),
+                    metadata={"encoding": "jointstate"},
+                )
+                event = wait_for_event(id="response_r_arm")
+        else:
+            node.send_output(
+                "action_l_arm", pa.array(trajectory), metadata={"encoding": "xyzrpy"}
+            )
+            event = wait_for_event(id="response_l_arm")[0].as_py()
+            if event:
+                print("Success")
+                arm_holding_object = "left"
+                break
+            else:
+                print("Failed")
+                node.send_output(
+                    "action_l_arm",
+                    pa.array(l_default_pose),
+                    metadata={"encoding": "jointstate"},
+                )
+                event = wait_for_event(id="response_l_arm")
+
         time.sleep(0.3)
 
     ### === RELEASING ===
 
-    # Trigger action once arm is done moving
+    # Trigger action once r_arm is done moving
     node.send_output("action_base", pa.array([0.0, 0.0, 0.0, 0.0, 0.0, -1.57]))
+    event = wait_for_event(id="response_base")[0].as_py()
 
     if not event:
         print("Failed to move right")
 
     # Trigger action to release object
-    node.send_output(
-        "action_arm",
-        pa.array(r_release_closed_pose),
-        metadata={"encoding": "jointstate"},
-    )
-    event = wait_for_event(id="response_arm")
-    node.send_output(
-        "action_arm",
-        pa.array(r_release_opened_pose),
-        metadata={"encoding": "jointstate"},
-    )
-    event = wait_for_event(id="response_arm")
+    if arm_holding_object == "right":
+        node.send_output(
+            "action_r_arm",
+            pa.array(r_release_closed_pose),
+            metadata={"encoding": "jointstate"},
+        )
+        event = wait_for_event(id="response_r_arm")
+        node.send_output(
+            "action_r_arm",
+            pa.array(r_release_opened_pose),
+            metadata={"encoding": "jointstate"},
+        )
+        event = wait_for_event(id="response_r_arm")
+    else:
+        node.send_output(
+            "action_l_arm",
+            pa.array(l_release_closed_pose),
+            metadata={"encoding": "jointstate"},
+        )
+        event = wait_for_event(id="response_l_arm")
+        node.send_output(
+            "action_l_arm",
+            pa.array(l_release_opened_pose),
+            metadata={"encoding": "jointstate"},
+        )
+        event = wait_for_event(id="response_l_arm")
 
     if not event:
         print("Failed to release object")
