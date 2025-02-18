@@ -140,20 +140,18 @@ def main():
     node = Node()
 
     frames = {}
-    history = [
-        {
-            "role": "system",
-            "content": [
-                {"type": "text", "text": SYSTEM_PROMPT},
-            ],
-        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": DEFAULT_QUESTION},
-            ],
-        },
-    ]
+    if SYSTEM_PROMPT:
+        history = [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": SYSTEM_PROMPT},
+                ],
+            },
+        ]
+    else:
+        history = []
+
     cached_text = DEFAULT_QUESTION
     select_image = None
     past_key_values = None

@@ -98,11 +98,12 @@ nodes:
       image_depth: reachy-camera/image_depth
       image_left: reachy-camera/image_left
       text_1: dora/timer/millis/500
-      text_2: state_machine/text_vlm
+      text_2:
+        source: state_machine/text_vlm
+        queue_size: 10
     outputs:
       - text
     env:
-      #ADAPTER_PATH: /home/peter/Documents/work/LLaMA-Factory/saves/qwen2.5_vl-felix/lora/sft/checkpoint-558
       DEFAULT_QUESTION: grab human.
       IMAGE_RESIZE_RATIO: "0.5"
       # ACTIVATION_WORDS: grab pick give output take catch grabs picks gives output takes catches have

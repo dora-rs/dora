@@ -195,7 +195,9 @@ while True:
 
         if y < 0:
             node.send_output(
-                "action_r_arm", pa.array(trajectory), metadata={"encoding": "xyzrpy"}
+                "action_r_arm",
+                pa.array(trajectory),
+                metadata={"encoding": "xyzrpy", "duration": "0.75"},
             )
             event = wait_for_event(id="response_r_arm")[0].as_py()
             if event:
@@ -207,13 +209,15 @@ while True:
                 node.send_output(
                     "action_r_arm",
                     pa.array(r_default_pose),
-                    metadata={"encoding": "jointstate"},
+                    metadata={"encoding": "jointstate", "duration": "0.75"},
                 )
                 event = wait_for_event(id="response_r_arm")
         else:
             y += 0.03
             node.send_output(
-                "action_l_arm", pa.array(trajectory), metadata={"encoding": "xyzrpy"}
+                "action_l_arm",
+                pa.array(trajectory),
+                metadata={"encoding": "xyzrpy", "duration": "0.75"},
             )
             event = wait_for_event(id="response_l_arm")[0].as_py()
             if event:
@@ -225,7 +229,7 @@ while True:
                 node.send_output(
                     "action_l_arm",
                     pa.array(l_default_pose),
-                    metadata={"encoding": "jointstate"},
+                    metadata={"encoding": "jointstate", "duration": "0.75"},
                 )
                 event = wait_for_event(id="response_l_arm")
 
