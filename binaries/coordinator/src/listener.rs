@@ -99,6 +99,12 @@ pub async fn handle_connection(
                         break;
                     }
                 }
+                DaemonEvent::Exit => {
+                    let event = Event::DaemonExit { daemon_id };
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
             },
         };
     }

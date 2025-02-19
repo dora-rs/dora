@@ -353,6 +353,19 @@ impl Daemon {
             }
         }
 
+        if let Some(mut connection) = self.coordinator_connection.take() {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::Exit,
+                },
+                timestamp: self.clock.new_timestamp(),
+            })?;
+            socket_stream_send(&mut connection, &msg)
+                .await
+                .wrap_err("failed to send Exit message to dora-coordinator")?;
+        }
+
         Ok(self.dataflow_node_results)
     }
 
