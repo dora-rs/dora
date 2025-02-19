@@ -647,7 +647,8 @@ impl Daemon {
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
     ) -> eyre::Result<()> {
-        let dataflow = RunningDataflow::new(dataflow_id, self.daemon_id.clone());
+        let dataflow =
+            RunningDataflow::new(dataflow_id, self.daemon_id.clone(), &dataflow_descriptor);
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir.insert(dataflow_id, working_dir.clone());
@@ -1057,7 +1058,8 @@ impl Daemon {
         .await?;
 
         let output_id = OutputId(node_id, output_id);
-        let remote_receivers = dataflow.open_external_mappings.contains(&output_id);
+        let remote_receivers = dataflow.open_external_mappings.contains(&output_id)
+            || dataflow.publish_all_messages_to_zenoh;
         if remote_receivers {
             let event = InterDaemonEvent::Output {
                 dataflow_id,
@@ -1720,10 +1722,16 @@ pub struct RunningDataflow {
     publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
 
     finished_tx: broadcast::Sender<()>,
+
+    publish_all_messages_to_zenoh: bool,
 }
 
 impl RunningDataflow {
-    fn new(dataflow_id: Uuid, daemon_id: DaemonId) -> RunningDataflow {
+    fn new(
+        dataflow_id: Uuid,
+        daemon_id: DaemonId,
+        dataflow_descriptor: &Descriptor,
+    ) -> RunningDataflow {
         let (finished_tx, _) = broadcast::channel(1);
         Self {
             id: dataflow_id,
@@ -1745,6 +1753,7 @@ impl RunningDataflow {
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             finished_tx,
+            publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
         }
     }
 
