@@ -9,8 +9,18 @@ from dora import Node
 node = Node()
 
 ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
-TABLE_HEIGHT = float(os.getenv("TABLE_HEIGHT", "-0.32"))
+TABLE_HEIGHT = float(os.getenv("TABLE_HEIGHT", "-0.33"))
 
+l_init_pose = [
+    -7.0631310641087435,
+    -10.432298603362307,
+    24.429809104404114,
+    -132.15000828778648,
+    -1.5494749438811133,
+    -21.749917789205202,
+    8.099312596108344,
+    100,
+]
 r_init_pose = [
     -5.60273587426976,
     10.780818397272316,
@@ -65,28 +75,6 @@ l_release_closed_pose = [
     100,
 ]
 
-l_default_pose = [
-    42.212611297240635,
-    -16.95827541661092,
-    15.241872783848812,
-    -131.11770715700908,
-    0.1682905250638251,
-    -1.6613469324618695,
-    2.1666679127563904,
-    100,
-]
-
-r_default_pose = [
-    38.058172640242475,
-    0.07798708660299236,
-    2.0084781702579564,
-    -129.76629958820868,
-    4.428130313456095,
-    -9.272674208719419,
-    354.280491569214,
-    100,
-]
-
 
 def wait_for_event(id):
     for event in node:
@@ -110,12 +98,12 @@ while True:
 
     node.send_output(
         "action_r_arm",
-        pa.array(r_default_pose),
+        pa.array(r_init_pose),
         metadata={"encoding": "jointstate", "duration": 2},
     )
     node.send_output(
         "action_l_arm",
-        pa.array(l_default_pose),
+        pa.array(l_init_pose),
         metadata={"encoding": "jointstate", "duration": 2},
     )
     wait_for_events(ids=["response_r_arm", "response_l_arm"])
@@ -123,7 +111,7 @@ while True:
     node.send_output(
         "text_vlm",
         pa.array(["output the bounding box for human"]),
-        metadata={"select_image": "image_left"},
+        metadata={"image_id": "image_left"},
     )
 
     while True:
@@ -167,7 +155,7 @@ while True:
     node.send_output(
         "text_vlm",
         pa.array([f"Given the prompt: {text}. Output bounding box for this action"]),
-        metadata={"select_image": "image_depth"},
+        metadata={"image_id": "image_depth"},
     )
 
     arm_holding_object = None
@@ -206,15 +194,14 @@ while True:
                 arm_holding_object = "right"
                 break
             else:
-                print("Failed")
+                print("Failed: x: ", x, " y: ", y, " z: ", z)
                 node.send_output(
                     "action_r_arm",
-                    pa.array(r_default_pose),
-                    metadata={"encoding": "jointstate", "duration": "0.75"},
+                    pa.array(r_init_pose),
+                    metadata={"encoding": "jointstate", "duration": "1"},
                 )
                 event = wait_for_event(id="response_r_arm")
         else:
-            y += 0.03
             node.send_output(
                 "action_l_arm",
                 pa.array(trajectory),
@@ -229,8 +216,8 @@ while True:
                 print("Failed")
                 node.send_output(
                     "action_l_arm",
-                    pa.array(l_default_pose),
-                    metadata={"encoding": "jointstate", "duration": "0.75"},
+                    pa.array(l_init_pose),
+                    metadata={"encoding": "jointstate", "duration": "1"},
                 )
                 event = wait_for_event(id="response_l_arm")
 

@@ -58,11 +58,11 @@ if ADAPTER_PATH != "":
 processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
-def generate(frames: dict, question, history, past_key_values=None, select_image=None):
+def generate(frames: dict, question, history, past_key_values=None, image_id=None):
     """Generate the response to the question given the image using Qwen2 model."""
 
-    if select_image is not None:
-        images = [frames[select_image]]
+    if image_id is not None:
+        images = [frames[image_id]]
     else:
         images = list(frames.values())
     messages = [
@@ -153,7 +153,7 @@ def main():
         history = []
 
     cached_text = DEFAULT_QUESTION
-    select_image = None
+    image_id = None
     past_key_values = None
 
     for event in node:
@@ -204,7 +204,7 @@ def main():
             elif "text" in event_id:
                 if len(event["value"]) > 0:
                     text = event["value"][0].as_py()
-                    select_image = event["metadata"].get("select_image", None)
+                    image_id = event["metadata"].get("image_id", None)
                 else:
                     text = cached_text
                 words = text.split()
@@ -219,12 +219,12 @@ def main():
                     continue
                 # set the max number of tiles in `max_num`
                 response, history, past_key_values = generate(
-                    frames, text, history, past_key_values, select_image
+                    frames, text, history, past_key_values, image_id
                 )
                 node.send_output(
                     "text",
                     pa.array([response]),
-                    {},
+                    {"image_id": image_id if image_id is not None else "all"},
                 )
 
         elif event_type == "ERROR":

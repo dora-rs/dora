@@ -21,7 +21,7 @@ r_default_pose = [
 
 
 def r_arm_go_to_mixed_angles(reachy, x, y, z):
-    for theta in range(-80, -50, 10):
+    for theta in range(-80, -60, 10):
         r = R.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()

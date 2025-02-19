@@ -22,7 +22,7 @@ l_default_pose = [
 
 
 def l_arm_go_to_mixed_angles(reachy, x, y, z):
-    for theta in range(-80, -50, 10):
+    for theta in range(-80, -60, 10):
         r = R.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
@@ -39,7 +39,9 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
         ## First try turning left
         pitch = -90
         r = R.from_euler("ZYX", (-yaw, 0, 0), degrees=True) * R.from_euler(
-            "ZYX", (0, pitch, 0), degrees=True,
+            "ZYX",
+            (0, pitch, 0),
+            degrees=True,
         )
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
