@@ -56,6 +56,7 @@ pub enum DaemonEvent {
     },
     Heartbeat,
     Log(LogMessage),
+    Exit,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

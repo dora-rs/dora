@@ -678,6 +678,10 @@ async fn start_inner(
                     dataflow.log_subscribers.retain(|s| !s.is_closed());
                 }
             }
+            Event::DaemonExit { daemon_id } => {
+                tracing::info!("Daemon `{daemon_id}` exited");
+                daemon_connections.remove(&daemon_id);
+            }
         }
     }
 
@@ -1039,13 +1043,21 @@ async fn destroy_daemons(
 pub enum Event {
     NewDaemonConnection(TcpStream),
     DaemonConnectError(eyre::Report),
-    DaemonHeartbeat { daemon_id: DaemonId },
-    Dataflow { uuid: Uuid, event: DataflowEvent },
+    DaemonHeartbeat {
+        daemon_id: DaemonId,
+    },
+    Dataflow {
+        uuid: Uuid,
+        event: DataflowEvent,
+    },
     Control(ControlEvent),
     Daemon(DaemonRequest),
     DaemonHeartbeatInterval,
     CtrlC,
     Log(LogMessage),
+    DaemonExit {
+        daemon_id: dora_message::common::DaemonId,
+    },
 }
 
 impl Event {
