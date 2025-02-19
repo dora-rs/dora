@@ -85,6 +85,8 @@ pub struct Daemon {
 
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
+    /// set on ctrl-c
+    exit_when_all_finished: bool,
     /// used to record results of local nodes
     dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
 
@@ -256,6 +258,7 @@ impl Daemon {
             last_coordinator_heartbeat: Instant::now(),
             daemon_id,
             exit_when_done,
+            exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
             clock,
             zenoh_session,
@@ -334,6 +337,10 @@ impl Daemon {
                         dataflow
                             .stop_all(&mut self.coordinator_connection, &self.clock, None)
                             .await?;
+                    }
+                    self.exit_when_all_finished = true;
+                    if self.running.is_empty() {
+                        break;
                     }
                 }
                 Event::SecondCtrlC => {
@@ -1479,6 +1486,9 @@ impl Daemon {
                         );
                         return Ok(RunStatus::Exit);
                     }
+                }
+                if self.exit_when_all_finished && self.running.is_empty() {
+                    return Ok(RunStatus::Exit);
                 }
             }
         }
