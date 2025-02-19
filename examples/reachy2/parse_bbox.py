@@ -45,11 +45,20 @@ def extract_bboxes(json_text):
 for event in node:
     if event["type"] == "INPUT":
         text = event["value"][0].as_py()
+        image_id = event["metadata"]["image_id"]
 
         bboxes, labels = extract_bboxes(text)
         if bboxes is not None and len(bboxes) > 0:
             bboxes = bboxes * int(1 / IMAGE_RESIZE_RATIO)
             if "human" in labels[0] or "head" in labels[0]:
-                node.send_output("bbox_face", pa.array(bboxes.ravel()))
+                node.send_output(
+                    "bbox_face",
+                    pa.array(bboxes.ravel()),
+                    metadata={"encoding": "xyxy", "image_id": image_id},
+                )
             else:
-                node.send_output("bbox", pa.array(bboxes.ravel()))
+                node.send_output(
+                    "bbox",
+                    pa.array(bboxes.ravel()),
+                    metadata={"encoding": "xyxy", "image_id": image_id},
+                )

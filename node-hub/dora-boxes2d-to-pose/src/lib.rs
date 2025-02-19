@@ -169,10 +169,6 @@ pub fn lib_main() -> Result<()> {
                             (z_max + z_min) / 2.,
                         );
 
-                        println!(
-                            "new_mean_x: {}, new_mean_y: {}, new_mean_z: {}, n: {}",
-                            mean_x, mean_y, mean_z, n
-                        );
                         // Compute covariance and standard deviations
                         let cov = sum_xy / n - mean_x * mean_y;
                         let std_x = (sum_x2 / n - mean_x * mean_x).sqrt();
