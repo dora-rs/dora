@@ -11,6 +11,7 @@ dependencies = [
     "dora-rs >= 0.3.6",
     "reachy2-sdk==1.0.7",
     "reachy2-sdk-api==1.0.15",
+    "scipy",
 ] # Make reachy2 sdk version configurable
 
 [dependency-groups]

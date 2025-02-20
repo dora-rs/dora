@@ -1,5 +1,8 @@
 # dora-sam2
 
+> [!WARNING]  
+> SAM2 requires Nvidia GPU to be able to run.
+
 ## Getting started
 
 - Install it with pip:
