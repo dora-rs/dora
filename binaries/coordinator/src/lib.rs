@@ -230,11 +230,23 @@ async fn start_inner(
                     mut connection,
                     version_check_result,
                 } => {
+                    let existing = match &machine_id {
+                        Some(id) => daemon_connections.get_matching_daemon_id(id),
+                        None => daemon_connections.unnamed().next(),
+                    };
+                    let existing_result = if existing.is_some() {
+                        Err(format!(
+                            "There is already a connected daemon with machine ID `{machine_id:?}`"
+                        ))
+                    } else {
+                        Ok(())
+                    };
+
                     // assign a unique ID to the daemon
                     let daemon_id = DaemonId::new(machine_id);
 
                     let reply: Timestamped<RegisterResult> = Timestamped {
-                        inner: match &version_check_result {
+                        inner: match version_check_result.as_ref().and(existing_result.as_ref()) {
                             Ok(_) => RegisterResult::Ok {
                                 daemon_id: daemon_id.clone(),
                             },
