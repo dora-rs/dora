@@ -287,7 +287,7 @@ fn run(args: Args) -> eyre::Result<()> {
                 .as_ref()
                 .map(|id| format!("{name}-{id}"))
                 .unwrap_or(name.to_string());
-            let stdout = (!quiet).then_some(LevelFilter::WARN);
+            let stdout = (!quiet).then_some("info,zenoh=warn");
             let file = Some(FileLogging {
                 file_name: filename,
                 filter: LevelFilter::INFO,
@@ -300,7 +300,7 @@ fn run(args: Args) -> eyre::Result<()> {
         }
         Command::Coordinator { quiet, .. } => {
             let name = "dora-coordinator";
-            let stdout = (!quiet).then_some(LevelFilter::WARN);
+            let stdout = (!quiet).then_some("info");
             let file = Some(FileLogging {
                 file_name: name.to_owned(),
                 filter: LevelFilter::INFO,
@@ -309,7 +309,7 @@ fn run(args: Args) -> eyre::Result<()> {
                 .context("failed to set up tracing subscriber")?;
         }
         Command::Run { .. } => {
-            set_up_tracing_opts("run", Some(LevelFilter::INFO), None)
+            set_up_tracing_opts("run", Some("info"), None)
                 .context("failed to set up tracing subscriber")?;
         }
         _ => {
