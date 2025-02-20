@@ -180,7 +180,7 @@ while True:
         print("x: ", x, " y: ", y, " z: ", z)
 
         ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
-        z = np.clip(z, TABLE_HEIGHT, -0.22)
+        z = np.max((z, TABLE_HEIGHT))
         node.send_output("look", pa.array([x, y, z]))
         trajectory = np.array(
             [
