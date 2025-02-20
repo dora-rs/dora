@@ -1,0 +1,21 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-camera
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image_left
+      - image_right
+      - image_depth
+      - depth
+    env:
+      ROBOT_IP: 10.42.0.80
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      # image_left: camera/image_left
+      image: camera/image_depth
+      depth: camera/depth
