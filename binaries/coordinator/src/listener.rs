@@ -36,7 +36,7 @@ pub async fn handle_connection(
             }
         };
         let message: Timestamped<CoordinatorRequest> =
-            match serde_json::from_slice(&raw).wrap_err("failed to deserialize node message") {
+            match serde_json::from_slice(&raw).wrap_err("failed to deserialize message") {
                 Ok(e) => e,
                 Err(err) => {
                     tracing::warn!("{err:?}");
@@ -55,20 +55,19 @@ pub async fn handle_connection(
                     connection,
                     version_check_result: register_request.check_version(),
                     machine_id: register_request.machine_id,
-                    listen_port: register_request.listen_port,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
             }
-            CoordinatorRequest::Event { machine_id, event } => match event {
+            CoordinatorRequest::Event { daemon_id, event } => match event {
                 DaemonEvent::AllNodesReady {
                     dataflow_id,
                     exited_before_subscribe,
                 } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
-                        event: DataflowEvent::ReadyOnMachine {
-                            machine_id,
+                        event: DataflowEvent::ReadyOnDaemon {
+                            daemon_id,
                             exited_before_subscribe,
                         },
                     };
@@ -82,20 +81,26 @@ pub async fn handle_connection(
                 } => {
                     let event = Event::Dataflow {
                         uuid: dataflow_id,
-                        event: DataflowEvent::DataflowFinishedOnMachine { machine_id, result },
+                        event: DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result },
                     };
                     if events_tx.send(event).await.is_err() {
                         break;
                     }
                 }
                 DaemonEvent::Heartbeat => {
-                    let event = Event::DaemonHeartbeat { machine_id };
+                    let event = Event::DaemonHeartbeat { daemon_id };
                     if events_tx.send(event).await.is_err() {
                         break;
                     }
                 }
                 DaemonEvent::Log(message) => {
                     let event = Event::Log(message);
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                DaemonEvent::Exit => {
+                    let event = Event::DaemonExit { daemon_id };
                     if events_tx.send(event).await.is_err() {
                         break;
                     }

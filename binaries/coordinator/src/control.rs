@@ -119,7 +119,7 @@ async fn handle_requests(
             Err(err) => Err(err),
         };
 
-        let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err}")));
+        let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err:?}")));
         let serialized: Vec<u8> =
             match serde_json::to_vec(&reply).wrap_err("failed to serialize ControlRequestReply") {
                 Ok(s) => s,

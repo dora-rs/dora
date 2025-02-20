@@ -16,7 +16,7 @@ use tracing_subscriber::Registry;
 pub mod telemetry;
 
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
-    set_up_tracing_opts(name, Some(LevelFilter::WARN), None)
+    set_up_tracing_opts(name, Some("warn"), None)
 }
 
 pub struct FileLogging {
@@ -26,14 +26,15 @@ pub struct FileLogging {
 
 pub fn set_up_tracing_opts(
     name: &str,
-    stdout: Option<LevelFilter>,
+    stdout_filter: Option<impl AsRef<str>>,
     file: Option<FileLogging>,
 ) -> eyre::Result<()> {
     let mut layers = Vec::new();
 
-    if let Some(level) = stdout {
+    if let Some(filter) = stdout_filter {
+        let parsed = EnvFilter::builder().parse_lossy(filter);
         // Filter log using `RUST_LOG`. More useful for CLI.
-        let env_filter = EnvFilter::from_default_env().or(level);
+        let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
             .with_filter(env_filter);

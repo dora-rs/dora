@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
-use crate::{current_crate_version, id::NodeId, versions_compatible, DataflowId};
+use crate::{common::DaemonId, current_crate_version, id::NodeId, versions_compatible, DataflowId};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
     Event {
-        machine_id: String,
+        daemon_id: DaemonId,
         event: DaemonEvent,
     },
 }
@@ -17,16 +17,14 @@ pub enum CoordinatorRequest {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DaemonRegisterRequest {
     dora_version: semver::Version,
-    pub machine_id: String,
-    pub listen_port: u16,
+    pub machine_id: Option<String>,
 }
 
 impl DaemonRegisterRequest {
-    pub fn new(machine_id: String, listen_port: u16) -> Self {
+    pub fn new(machine_id: Option<String>) -> Self {
         Self {
             dora_version: current_crate_version(),
             machine_id,
-            listen_port,
         }
     }
 
@@ -58,6 +56,7 @@ pub enum DaemonEvent {
     },
     Heartbeat,
     Log(LogMessage),
+    Exit,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
