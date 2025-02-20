@@ -1,5 +1,5 @@
 [package]
-name = "dora-boxes2d-to-pose"
+name = "dora-object-to-pose"
 version = "0.1.0"
 edition = "2021"
 
@@ -20,6 +20,6 @@ python = ["pyo3"]
 
 
 [lib]
-name = "dora_boxes2d_to_pose"
+name = "dora_object_to_pose"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]

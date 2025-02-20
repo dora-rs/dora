@@ -1,6 +1,5 @@
 # State Machine
 import os
-import time
 
 import numpy as np
 import pyarrow as pa
@@ -76,21 +75,28 @@ l_release_closed_pose = [
 ]
 
 
-def wait_for_event(id):
-    for event in node:
+def wait_for_event(id, timeout=None):
+    while True:
+        event = node.next(timeout=timeout)
         if event["type"] == "INPUT":
             if event["id"] == id:
                 return event["value"]
 
+        elif event["type"] == "ERROR":
+            return None
 
-def wait_for_events(ids: list[str]):
+
+def wait_for_events(ids: list[str], timeout=None):
     response = {}
-    for event in node:
+    while True:
+        event = node.next(timeout=timeout)
         if event["type"] == "INPUT":
             if event["id"] in ids:
                 response[event["id"]] = event["value"]
                 if len(response) == len(ids):
                     return event["value"]
+        elif event["type"] == "ERROR":
+            return None
 
 
 while True:
@@ -106,7 +112,7 @@ while True:
         pa.array(l_init_pose),
         metadata={"encoding": "jointstate", "duration": 2},
     )
-    wait_for_events(ids=["response_r_arm", "response_l_arm"])
+    wait_for_events(ids=["response_r_arm", "response_l_arm"], timeout=5)
 
     node.send_output(
         "text_vlm",
@@ -161,7 +167,8 @@ while True:
     arm_holding_object = None
 
     # Try pose and until one is successful
-    while True:
+    for _ in range(3):
+
         values = wait_for_event(id="pose")
         if values is None:
             continue
@@ -169,7 +176,8 @@ while True:
         x = values[0]
         y = values[1]
         z = values[2]
-        x = x + 0.04
+        x = x + 0.03
+        print("x: ", x, " y: ", y, " z: ", z)
 
         ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
         z = np.clip(z, TABLE_HEIGHT, -0.22)
@@ -188,8 +196,8 @@ while True:
                 pa.array(trajectory),
                 metadata={"encoding": "xyzrpy", "duration": "0.75"},
             )
-            event = wait_for_event(id="response_r_arm")[0].as_py()
-            if event:
+            event = wait_for_event(id="response_r_arm", timeout=5)
+            if event is not None and event[0].as_py():
                 print("Success")
                 arm_holding_object = "right"
                 break
@@ -202,13 +210,14 @@ while True:
                 )
                 event = wait_for_event(id="response_r_arm")
         else:
+            y += 0.03
             node.send_output(
                 "action_l_arm",
                 pa.array(trajectory),
                 metadata={"encoding": "xyzrpy", "duration": "0.75"},
             )
-            event = wait_for_event(id="response_l_arm")[0].as_py()
-            if event:
+            event = wait_for_event(id="response_l_arm", timeout=5)
+            if event is not None and event[0].as_py():
                 print("Success")
                 arm_holding_object = "left"
                 break
@@ -220,8 +229,6 @@ while True:
                     metadata={"encoding": "jointstate", "duration": "1"},
                 )
                 event = wait_for_event(id="response_l_arm")
-
-        time.sleep(0.3)
 
     ### === RELEASING ===
 
