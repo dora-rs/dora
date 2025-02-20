@@ -19,9 +19,15 @@ pub struct DynamicNodeEventWrapper {
 pub async fn spawn_listener_loop(
     bind: SocketAddr,
     events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
-) -> eyre::Result<u16> {
+) -> eyre::Result<Option<u16>> {
     let socket = match TcpListener::bind(bind).await {
         Ok(socket) => socket,
+        Err(err) if err.kind() == ErrorKind::AddrInUse => {
+            tracing::warn!(
+                "Daemon listen port already in use. There might be another daemon running already."
+            );
+            return Ok(None);
+        }
         Err(err) => {
             return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
         }
@@ -35,7 +41,7 @@ pub async fn spawn_listener_loop(
         listener_loop(socket, events_tx).await;
     });
 
-    Ok(listen_port)
+    Ok(Some(listen_port))
 }
 
 async fn listener_loop(
