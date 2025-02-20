@@ -1,0 +1,21 @@
+[project]
+name = "dora-sam2"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "dora-sam2"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "dora-rs >= 0.3.6",
+    "huggingface-hub>=0.29.0",
+    "opencv-python>=4.11.0.86",
+    "sam2>=1.1.0",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-sam2 = "dora_sam2.main:main"

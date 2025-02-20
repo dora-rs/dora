@@ -2394,15 +2394,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-boxes2d-to-pose"
-version = "0.1.0"
-dependencies = [
- "dora-node-api 0.3.8",
- "eyre",
- "pyo3",
-]
-
-[[package]]
 name = "dora-cli"
 version = "0.3.9"
 dependencies = [
@@ -2720,6 +2711,15 @@ dependencies = [
  "pyo3_special_method_derive",
  "pythonize",
  "serde_yaml 0.8.26",
+]
+
+[[package]]
+name = "dora-object-to-pose"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api 0.3.8",
+ "eyre",
+ "pyo3",
 ]
 
 [[package]]
