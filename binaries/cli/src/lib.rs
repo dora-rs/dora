@@ -147,6 +147,9 @@ enum Command {
         /// Enable hot reloading (Python only)
         #[clap(long, action)]
         hot_reload: bool,
+        // Use UV to run nodes.
+        #[clap(long, action)]
+        uv: bool,
     },
     /// Stop the given dataflow UUID. If no id is provided, you will be able to choose between the running dataflows.
     Stop {
@@ -402,6 +405,7 @@ fn run(args: Args) -> eyre::Result<()> {
             attach,
             detach,
             hot_reload,
+            uv,
         } => {
             let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
             let dataflow_descriptor =
@@ -421,6 +425,7 @@ fn run(args: Args) -> eyre::Result<()> {
                 name,
                 working_dir,
                 &mut *session,
+                uv,
             )?;
 
             let attach = match (attach, detach) {
@@ -546,6 +551,7 @@ fn start_dataflow(
     name: Option<String>,
     local_working_dir: PathBuf,
     session: &mut TcpRequestReplyConnection,
+    uv: bool,
 ) -> Result<Uuid, eyre::ErrReport> {
     let reply_raw = session
         .request(
@@ -553,6 +559,7 @@ fn start_dataflow(
                 dataflow,
                 name,
                 local_working_dir,
+                uv,
             })
             .unwrap(),
         )
