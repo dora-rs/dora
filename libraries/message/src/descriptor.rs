@@ -236,7 +236,9 @@ pub enum EnvValue {
     #[serde(deserialize_with = "with_expand_envs")]
     Bool(bool),
     #[serde(deserialize_with = "with_expand_envs")]
-    Integer(u64),
+    Integer(i64),
+    #[serde(deserialize_with = "with_expand_envs")]
+    Float(f64),
     #[serde(deserialize_with = "with_expand_envs")]
     String(String),
 }
@@ -245,7 +247,8 @@ impl fmt::Display for EnvValue {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self {
             EnvValue::Bool(bool) => fmt.write_str(&bool.to_string()),
-            EnvValue::Integer(u64) => fmt.write_str(&u64.to_string()),
+            EnvValue::Integer(i64) => fmt.write_str(&i64.to_string()),
+            EnvValue::Float(f64) => fmt.write_str(&f64.to_string()),
             EnvValue::String(str) => fmt.write_str(str),
         }
     }
