@@ -21,7 +21,7 @@ Then, you will need to install the dependencies:
 
 ```bash
 cd examples/python-dataflow
-dora build ./dataflow.yml (or dora build ./dataflow_dynamic.yml)
+dora build ./dataflow.yml --uv (or dora build ./dataflow_dynamic.yml --uv)
 ```
 
 It will install the required dependencies for the Python nodes.
@@ -29,8 +29,7 @@ It will install the required dependencies for the Python nodes.
 Then you can run the dataflow:
 
 ```bash
-dora up
-dora start ./dataflow.yml (or dora start ./dataflow_dynamic.yml)
+dora run ./dataflow.yml --uv (or dora start ./dataflow_dynamic.yml --uv)
 ```
 
 **Note**: if you're running the dynamic dataflow, you will need to start manually the opencv-plot node:
