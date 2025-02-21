@@ -3,7 +3,7 @@
 Make sure to have, dora and pip installed.
 
 ```bash
-dora up
-dora build dataflow.yml
-dora start dataflow.yml
+uv venv -p 3.11 --seed
+dora build dataflow.yml --uv
+dora run dataflow.yml --uv
 ```
