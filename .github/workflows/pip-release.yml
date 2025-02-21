@@ -18,7 +18,10 @@ on:
       - main
   pull_request:
     paths-ignore:
-      - "!node-hub/**"
+      - "node-hub/**"
+    paths:
+      - "apis/python/node/**"
+      - "binaries/cli/**"
 
 permissions:
   contents: write
