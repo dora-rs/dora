@@ -32,7 +32,7 @@ def main():
                 y_max = boxes[3]
                 x = (
                     x_min + x_max
-                ) / 2 - 10  # Deviate a bit to take into accound the off centered camera
+                ) / 2 - 10  # Deviate a bit to take into account the off centered camera
                 y = (3 * y_min + y_max) / 4
                 ry = (x - resolution[1] / 2) * FOV_H / 2 / resolution[1]
                 rz = (y - resolution[0] / 2) * FOV_V / 2 / resolution[0]
