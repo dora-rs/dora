@@ -207,10 +207,16 @@ pub fn metadata_to_pydict<'a>(
             Parameter::Integer(int) => dict
                 .set_item(k, int)
                 .context("Could not insert metadata into python dictionary")?,
+            Parameter::Float(float) => dict
+                .set_item(k, float)
+                .context("Could not insert metadata into python dictionary")?,
             Parameter::String(s) => dict
                 .set_item(k, s)
                 .context("Could not insert metadata into python dictionary")?,
             Parameter::ListInt(l) => dict
+                .set_item(k, l)
+                .context("Could not insert metadata into python dictionary")?,
+            Parameter::ListFloat(l) => dict
                 .set_item(k, l)
                 .context("Could not insert metadata into python dictionary")?,
         }
