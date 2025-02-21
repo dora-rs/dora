@@ -56,6 +56,12 @@ pub fn get_pip_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
     Ok(python)
 }
 
+// Search for uv binary.
+pub fn get_uv_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
+    which::which("uv")
+        .context("failed to find `uv`. Make sure to install it using: https://docs.astral.sh/uv/getting-started/installation/")
+}
+
 // Helper function to run a program
 pub async fn run<S>(program: S, args: &[&str], pwd: Option<&Path>) -> eyre::Result<()>
 where

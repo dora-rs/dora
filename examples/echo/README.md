@@ -1,9 +1,9 @@
 # Dora echo example
 
-Make sure to have, dora, pip and cargo installed.
+Make sure to have, dora, uv and cargo installed.
 
 ```bash
-dora up
-dora build dataflow.yml
-dora start dataflow.yml
+uv venv -p 3.11 --seed
+dora build dataflow.yml --uv
+dora run dataflow.yml --uv
 ```
