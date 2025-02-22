@@ -1,6 +1,6 @@
 use dora_message::{
     config::{Input, InputMapping, NodeRunConfig},
-    id::{DataId, OperatorId},
+    id::{DataId, NodeId, OperatorId},
 };
 use eyre::{bail, Context, OptionExt, Result};
 use std::{
@@ -14,8 +14,8 @@ use tokio::process::Command;
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, Descriptor, Node, OperatorConfig, OperatorDefinition, OperatorSource,
-    PythonSource, ResolvedDeploy, ResolvedNode, RuntimeNode, SingleOperatorDefinition,
-    DYNAMIC_SOURCE, SHELL_SOURCE,
+    PythonSource, ResolvedNode, RuntimeNode, SingleOperatorDefinition, DYNAMIC_SOURCE,
+    SHELL_SOURCE,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
@@ -24,23 +24,18 @@ mod validate;
 mod visualize;
 
 pub trait DescriptorExt {
-    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<Vec<ResolvedNode>>;
+    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
     fn visualize_as_mermaid(&self) -> eyre::Result<String>;
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
-    fn check_in_daemon(
-        &self,
-        working_dir: &Path,
-        remote_machine_id: &[&str],
-        coordinator_is_remote: bool,
-    ) -> eyre::Result<()>;
+    fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()>;
 }
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl DescriptorExt for Descriptor {
-    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<Vec<ResolvedNode>> {
+    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
         let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
 
         let single_operator_nodes: HashMap<_, _> = self
@@ -53,7 +48,7 @@ impl DescriptorExt for Descriptor {
             })
             .collect();
 
-        let mut resolved = vec![];
+        let mut resolved = BTreeMap::new();
         for mut node in self.nodes.clone() {
             // adjust input mappings
             let mut node_kind = node_kind_mut(&mut node)?;
@@ -102,21 +97,17 @@ impl DescriptorExt for Descriptor {
                 }),
             };
 
-            resolved.push(ResolvedNode {
-                id: node.id,
-                name: node.name,
-                description: node.description,
-                env: node.env,
-                deploy: {
-                    let default_machine = self.deploy.machine.as_deref().unwrap_or_default();
-                    let machine = match node.deploy.machine {
-                        Some(m) => m,
-                        None => default_machine.to_owned(),
-                    };
-                    ResolvedDeploy { machine }
+            resolved.insert(
+                node.id.clone(),
+                ResolvedNode {
+                    id: node.id,
+                    name: node.name,
+                    description: node.description,
+                    env: node.env,
+                    deploy: node.deploy,
+                    kind,
                 },
-                kind,
-            });
+            );
         }
 
         Ok(resolved)
@@ -143,19 +134,9 @@ impl DescriptorExt for Descriptor {
             .wrap_err("Dataflow could not be validated.")
     }
 
-    fn check_in_daemon(
-        &self,
-        working_dir: &Path,
-        remote_machine_id: &[&str],
-        coordinator_is_remote: bool,
-    ) -> eyre::Result<()> {
-        validate::check_dataflow(
-            self,
-            working_dir,
-            Some(remote_machine_id),
-            coordinator_is_remote,
-        )
-        .wrap_err("Dataflow could not be validated.")
+    fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()> {
+        validate::check_dataflow(self, working_dir, None, coordinator_is_remote)
+            .wrap_err("Dataflow could not be validated.")
     }
 }
 
