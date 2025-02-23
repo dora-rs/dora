@@ -1,6 +1,6 @@
 [project]
 name = "dora-argotranslate"
-version = "0.3.9"
+version = "0.3.10-rc0"
 description = "Dora Node for Text translating using Argostranslate"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
