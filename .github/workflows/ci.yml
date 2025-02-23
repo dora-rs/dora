@@ -333,7 +333,7 @@ jobs:
           cd ..
 
           # Run Python Node Example
-
+          export OPERATING_MODE=SAVE
           dora build examples/python-dataflow/dataflow.yml
           dora start examples/python-dataflow/dataflow.yml --name ci-python --detach
           sleep 10
