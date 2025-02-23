@@ -13,7 +13,7 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
-    types::{IntoPyDict, PyBool, PyDict, PyInt, PyList, PyString, PyTuple},
+    types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple},
 };
 
 /// Dora Event
@@ -171,6 +171,8 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 parameters.insert(key, Parameter::Bool(value.extract()?))
             } else if value.is_instance_of::<PyInt>() {
                 parameters.insert(key, Parameter::Integer(value.extract::<i64>()?))
+            } else if value.is_instance_of::<PyFloat>() {
+                parameters.insert(key, Parameter::Float(value.extract::<f64>()?))
             } else if value.is_instance_of::<PyString>() {
                 parameters.insert(key, Parameter::String(value.extract()?))
             } else if value.is_instance_of::<PyTuple>()
@@ -185,6 +187,18 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
             {
                 let list: Vec<i64> = value.extract()?;
                 parameters.insert(key, Parameter::ListInt(list))
+            } else if value.is_instance_of::<PyTuple>()
+                && value.len()? > 0
+                && value.get_item(0)?.is_exact_instance_of::<PyFloat>()
+            {
+                let list: Vec<f64> = value.extract()?;
+                parameters.insert(key, Parameter::ListFloat(list))
+            } else if value.is_instance_of::<PyList>()
+                && value.len()? > 0
+                && value.get_item(0)?.is_exact_instance_of::<PyFloat>()
+            {
+                let list: Vec<f64> = value.extract()?;
+                parameters.insert(key, Parameter::ListFloat(list))
             } else {
                 println!("could not convert type {value}");
                 parameters.insert(key, Parameter::String(value.str()?.to_string()))
@@ -207,10 +221,16 @@ pub fn metadata_to_pydict<'a>(
             Parameter::Integer(int) => dict
                 .set_item(k, int)
                 .context("Could not insert metadata into python dictionary")?,
+            Parameter::Float(float) => dict
+                .set_item(k, float)
+                .context("Could not insert metadata into python dictionary")?,
             Parameter::String(s) => dict
                 .set_item(k, s)
                 .context("Could not insert metadata into python dictionary")?,
             Parameter::ListInt(l) => dict
+                .set_item(k, l)
+                .context("Could not insert metadata into python dictionary")?,
+            Parameter::ListFloat(l) => dict
                 .set_item(k, l)
                 .context("Could not insert metadata into python dictionary")?,
         }
