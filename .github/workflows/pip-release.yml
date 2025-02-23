@@ -22,6 +22,7 @@ on:
     paths:
       - "apis/python/node/**"
       - "binaries/cli/**"
+      - "Cargo.toml"
 
 permissions:
   contents: write
