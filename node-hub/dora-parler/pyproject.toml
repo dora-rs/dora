@@ -18,7 +18,7 @@ dependencies = [
     "sentencepiece >= 0.1.99",
     "pyaudio >= 0.2.14",
     "modelscope >= 1.18.1",
-    "transformers >=4.43.0,<=4.43.3",
+    "transformers >=4.48.0,<=4.48.0",
 ]
 
 [tool.uv.sources]
