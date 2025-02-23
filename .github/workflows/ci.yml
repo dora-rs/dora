@@ -173,8 +173,8 @@ jobs:
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
-      - name: "Install pyarrow for testing"
-        run: pip install numpy pyarrow
+      - name: "Install uv for testing"
+        run: pip install uv
       - name: "Test"
         run: cargo test -p dora-ros2-bridge-python
       - name: "Rust ROS2 Bridge example"
