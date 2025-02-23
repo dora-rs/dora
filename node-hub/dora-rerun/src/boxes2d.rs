@@ -34,6 +34,12 @@ pub fn update_boxes2d(
             .context("Could not get bbox value as list")?
             .values();
 
+        if bbox.len() == 0 {
+            rec.log(id.as_str(), &rerun::Clear::flat())
+                .wrap_err("Could not log Boxes2D")?;
+            return Ok(());
+        }
+
         // Cast Labels
         let labels_buffer = bbox_struct
             .column_by_name("labels")
@@ -77,11 +83,17 @@ pub fn update_boxes2d(
                 }
             });
         }
-        rec.log(
-            id.as_str(),
-            &rerun::Boxes2D::from_centers_and_sizes(centers, sizes).with_labels(labels),
-        )
-        .wrap_err("Could not log Boxes2D")?;
+        if bbox.len() == 0 {
+            rec.log(id.as_str(), &rerun::Clear::flat())
+                .wrap_err("Could not log Boxes2D")?;
+            return Ok(());
+        } else {
+            rec.log(
+                id.as_str(),
+                &rerun::Boxes2D::from_centers_and_sizes(centers, sizes).with_labels(labels),
+            )
+            .wrap_err("Could not log Boxes2D")?;
+        }
     } else if let Some(buffer_array) = data.as_primitive_opt::<Float32Type>() {
         let values = buffer_array.values();
         let mut centers = vec![];
@@ -101,11 +113,18 @@ pub fn update_boxes2d(
                 }
             });
         }
-        rec.log(
-            id.as_str(),
-            &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
-        )
-        .wrap_err("Could not log Boxes2D")?;
+
+        if values.len() == 0 {
+            rec.log(id.as_str(), &rerun::Clear::flat())
+                .wrap_err("Could not log Boxes2D")?;
+            return Ok(());
+        } else {
+            rec.log(
+                id.as_str(),
+                &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
+            )
+            .wrap_err("Could not log Boxes2D")?;
+        }
     } else if let Some(buffer_array) = data.as_primitive_opt::<Float64Type>() {
         let values = buffer_array.values();
         let mut centers = vec![];
@@ -125,11 +144,18 @@ pub fn update_boxes2d(
                 }
             });
         }
-        rec.log(
-            id.as_str(),
-            &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
-        )
-        .wrap_err("Could not log Boxes2D")?;
+
+        if values.len() == 0 {
+            rec.log(id.as_str(), &rerun::Clear::flat())
+                .wrap_err("Could not log Boxes2D")?;
+            return Ok(());
+        } else {
+            rec.log(
+                id.as_str(),
+                &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
+            )
+            .wrap_err("Could not log Boxes2D")?;
+        }
     } else if let Some(buffer_array) = data.as_primitive_opt::<Int64Type>() {
         let values = buffer_array.values();
         let mut centers = vec![];
@@ -149,11 +175,18 @@ pub fn update_boxes2d(
                 }
             });
         }
-        rec.log(
-            id.as_str(),
-            &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
-        )
-        .wrap_err("Could not log Boxes2D")?;
+
+        if values.len() == 0 {
+            rec.log(id.as_str(), &rerun::Clear::flat())
+                .wrap_err("Could not log Boxes2D")?;
+            return Ok(());
+        } else {
+            rec.log(
+                id.as_str(),
+                &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
+            )
+            .wrap_err("Could not log Boxes2D")?;
+        }
     } else if let Some(buffer_array) = data.as_primitive_opt::<Int32Type>() {
         let values = buffer_array.values();
         let mut centers = vec![];
@@ -173,11 +206,17 @@ pub fn update_boxes2d(
                 }
             });
         }
-        rec.log(
-            id.as_str(),
-            &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
-        )
-        .wrap_err("Could not log Boxes2D")?;
+        if values.len() == 0 {
+            rec.log(id.as_str(), &rerun::Clear::flat())
+                .wrap_err("Could not log Boxes2D")?;
+            return Ok(());
+        } else {
+            rec.log(
+                id.as_str(),
+                &rerun::Boxes2D::from_centers_and_sizes(centers, sizes),
+            )
+            .wrap_err("Could not log Boxes2D")?;
+        }
     }
     Ok(())
 }
