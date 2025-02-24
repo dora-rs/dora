@@ -10,7 +10,11 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
 
-dependencies = ["dora-rs >= 0.3.6", "numpy < 2.0.0", "opencv-python >= 4.1.1"]
+dependencies = [
+    "dora-rs >= 0.3.10rc1",
+    "numpy < 2.0.0",
+    "opencv-python >= 4.1.1",
+]
 
 
 [dependency-groups]
