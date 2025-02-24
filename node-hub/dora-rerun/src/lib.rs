@@ -248,6 +248,7 @@ pub fn lib_main() -> Result<()> {
             }
         }
     }
+    println!("ok");
 
     Ok(())
 }
