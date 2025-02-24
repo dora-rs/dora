@@ -8,7 +8,7 @@ requires-python = ">=3.8"
 description = "dora-pyaudio"
 
 dependencies = [
-    "dora-rs >= 0.3.6",
+    "dora-rs >= 0.3.10rc1",
     "numpy >= 1.0.0",
     "pyarrow >= 5.0.0",
     "pyaudio >= 0.1.0",
