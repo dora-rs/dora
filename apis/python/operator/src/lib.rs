@@ -199,6 +199,12 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
             {
                 let list: Vec<f64> = value.extract()?;
                 parameters.insert(key, Parameter::ListFloat(list))
+            } else if value.is_instance_of::<PyList>()
+                && value.len()? > 0
+                && value.get_item(0)?.is_exact_instance_of::<PyString>()
+            {
+                let list: Vec<String> = value.extract()?;
+                parameters.insert(key, Parameter::ListString(list))
             } else {
                 println!("could not convert type {value}");
                 parameters.insert(key, Parameter::String(value.str()?.to_string()))
@@ -231,6 +237,9 @@ pub fn metadata_to_pydict<'a>(
                 .set_item(k, l)
                 .context("Could not insert metadata into python dictionary")?,
             Parameter::ListFloat(l) => dict
+                .set_item(k, l)
+                .context("Could not insert metadata into python dictionary")?,
+            Parameter::ListString(l) => dict
                 .set_item(k, l)
                 .context("Could not insert metadata into python dictionary")?,
         }
