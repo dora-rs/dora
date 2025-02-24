@@ -5,10 +5,8 @@ This crate corresponds to the Node API for Dora.
 To build the Python module for development:
 
 ```bash
-python -m venv .env
-source .env/bin/activate
-pip install maturin
-maturin develop
+uv venv --seed -p 3.11
+uv run pip install -e .
 ```
 
 ## Type hinting

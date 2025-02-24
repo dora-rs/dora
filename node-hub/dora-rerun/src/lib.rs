@@ -9,7 +9,9 @@ use dora_node_api::{
 use eyre::{eyre, Context, ContextCompat, Result};
 
 use rerun::{
-    components::ImageBuffer, external::re_types::ArrowBuffer, ImageFormat, Points3D, SpawnOptions,
+    components::ImageBuffer,
+    external::{log::warn, re_types::ArrowBuffer},
+    ImageFormat, Points3D, SpawnOptions,
 };
 pub mod boxes2d;
 pub mod series;
@@ -66,9 +68,11 @@ pub fn lib_main() -> Result<()> {
             rec
         }
         Ok(_) => {
-            return Err(eyre!(
-                "OPERATING_MODE env variable is not set to SPAWN or CONNECT"
-            ));
+            warn!("Invalid operating mode, defaulting to SPAWN mode.");
+            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+                .spawn_opts(&options, None)
+                .context("Could not spawn rerun visualization")?;
+            rec
         }
         Err(_) => {
             let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
