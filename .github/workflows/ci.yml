@@ -307,14 +307,8 @@ jobs:
         shell: bash
         run: |
           # Test Python template Project
-          python3 -m venv .venv
-          if [ ! -d ".venv/bin" ]; then
-            mv .venv/Scripts .venv/bin    # venv is placed under `Scripts` on Windows
-          fi
-          source .venv/bin/activate
-          pip3 install maturin ruff pytest
-          maturin build -m apis/python/node/Cargo.toml
-          pip3 install target/wheels/*
+          uv venv --seed -p 3.11
+          uv run pip install -e apis/python/node
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
 
@@ -326,43 +320,43 @@ jobs:
           export OPERATING_MODE=SAVE
           dora up
           dora list
-          dora build dataflow.yml
-          dora start dataflow.yml --name ci-python-test --detach
+          dora build dataflow.yml --uv
+          dora start dataflow.yml --name ci-python-test --detach --uv
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
 
           cd ..
 
           # Run Python Node Example
-          dora build examples/python-dataflow/dataflow.yml
-          dora start examples/python-dataflow/dataflow.yml --name ci-python --detach
+          dora build examples/python-dataflow/dataflow.yml --uv
+          dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
           sleep 80
           dora stop --name ci-python  --grace-duration 5s
 
           # Run Python Dynamic Node Example
 
-          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
-          opencv-plot --name plot
+          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
+          uv run opencv-plot --name plot
           sleep 80
           dora stop --name ci-python-dynamic  --grace-duration 5s
 
           # Run Python Operator Example
 
-          dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach
+          dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
           sleep 80
           dora stop --name ci-python-operator  --grace-duration 5s
 
           dora destroy
 
           # Run Python queue latency test 
-          dora run tests/queue_size_latest_data_python/dataflow.yaml
+          dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
 
           # Run Python queue latency test + timeout
-          dora run tests/queue_size_and_timeout_python/dataflow.yaml
+          dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
           # Run Rust queue latency test 
-          dora build tests/queue_size_latest_data_rust/dataflow.yaml
-          dora run tests/queue_size_latest_data_rust/dataflow.yaml
+          dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
       - name: "Test CLI (C)"
         timeout-minutes: 30
