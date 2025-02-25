@@ -5,7 +5,8 @@
 - Install it with pip:
 
 ```bash
-pip install -e .
+uv venv -p 3.11 --seed
+uv pip install -e .
 ```
 
 ## Contribution Guide
@@ -13,19 +14,19 @@ pip install -e .
 - Format with [ruff](https://docs.astral.sh/ruff/):
 
 ```bash
-ruff check . --fix
+uv run ruff check . --fix
 ```
 
 - Lint with ruff:
 
 ```bash
-ruff check .
+uv run ruff check .
 ```
 
 - Test with [pytest](https://github.com/pytest-dev/pytest)
 
 ```bash
-pytest . # Test
+uv run pytest . # Test
 ```
 
 ## YAML Specification
