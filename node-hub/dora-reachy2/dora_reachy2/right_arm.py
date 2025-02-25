@@ -77,14 +77,14 @@ def manage_gripper(reachy, gripper, grasp):
         return True
     if gripper == 0.0:
         reachy.r_arm.gripper.close()
-        time.sleep(0.5)
+        time.sleep(0.3)
         if grasp:
             half_open = reachy.r_arm.gripper.get_current_opening() > 2
             if not half_open:
                 return False
     elif gripper == 100.0:
         reachy.r_arm.gripper.open()
-        time.sleep(0.5)
+        time.sleep(0.3)
     return True
 
 
