@@ -133,7 +133,12 @@ def main():
                         )
                     else:
                         for joint, gripper in joint_values:
-                            reachy.l_arm.goto(joint, duration=duration, wait=wait)
+                            reachy.l_arm.goto(
+                                joint,
+                                duration=duration,
+                                wait=wait,
+                                interpolation_mode="linear",
+                            )
                             response_gripper = manage_gripper(reachy, gripper, grasp)
                             if not response_gripper:
                                 node.send_output(
@@ -151,7 +156,12 @@ def main():
                         joints = value[:7].tolist()
                         gripper = value[7]
 
-                        reachy.l_arm.goto(joints, duration=duration, wait=wait)
+                        reachy.l_arm.goto(
+                            joints,
+                            duration=duration,
+                            wait=wait,
+                            interpolation_mode="linear",
+                        )
                         manage_gripper(reachy, gripper, grasp)
                     node.send_output("response_l_arm", pa.array([True]))
 

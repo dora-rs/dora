@@ -1,7 +1,9 @@
 use dora_node_api::{
     arrow::{
         array::AsArray,
-        datatypes::{Float32Type, Float64Type, Int32Type, Int64Type},
+        datatypes::{
+            DataType, Float16Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type,
+        },
     },
     dora_core::config::DataId,
     ArrowData, Metadata, Parameter,
@@ -29,10 +31,53 @@ pub fn update_boxes2d(
             .as_list_opt::<i32>()
             .context("Could not deserialize bbox as list")?
             .values();
-        let bbox = bbox
-            .as_primitive_opt::<Float32Type>()
-            .context("Could not get bbox value as list")?
-            .values();
+        let bbox = match bbox.data_type() {
+            DataType::Float16 => bbox
+                .as_primitive_opt::<Float16Type>()
+                .context("Failed to deserialize bbox")?
+                .values()
+                .iter()
+                .map(|x| f32::from(*x))
+                .collect(),
+            DataType::Float32 => bbox
+                .as_primitive_opt::<Float32Type>()
+                .context("Failed to deserialize bbox")?
+                .values()
+                .to_vec(),
+            DataType::Float64 => bbox
+                .as_primitive_opt::<Float64Type>()
+                .context("Failed to deserialize bbox")?
+                .values()
+                .iter()
+                .map(|x| *x as f32)
+                .collect(),
+            DataType::Int16 => bbox
+                .as_primitive_opt::<Int16Type>()
+                .context("Failed to deserialize bbox")?
+                .values()
+                .iter()
+                .map(|x| *x as f32)
+                .collect(),
+            DataType::Int32 => bbox
+                .as_primitive_opt::<Int32Type>()
+                .context("Failed to deserialize bbox")?
+                .values()
+                .iter()
+                .map(|x| *x as f32)
+                .collect(),
+            DataType::Int64 => bbox
+                .as_primitive_opt::<Int64Type>()
+                .context("Failed to deserialize bbox")?
+                .values()
+                .iter()
+                .map(|x| *x as f32)
+                .collect(),
+            _ => {
+                return Err(eyre::eyre!(
+                    "Could not deserialize bbox as float32, float64, int32 or int64"
+                ))
+            }
+        };
 
         if bbox.len() == 0 {
             rec.log(id.as_str(), &rerun::Clear::flat())
@@ -52,18 +97,6 @@ pub fn update_boxes2d(
             .as_string_opt::<i32>()
             .context("Could not deserialize labels as string")?;
         let labels: Vec<Text> = labels.iter().map(|x| Text::from(x.unwrap())).collect();
-
-        // Cast confidence
-        let conf_buffer = bbox_struct
-            .column_by_name("conf")
-            .context("Did not find conf field within bbox struct")?;
-        let conf = conf_buffer
-            .as_list_opt::<i32>()
-            .context("Could not deserialize conf as list")?
-            .values();
-        let _conf = conf
-            .as_primitive_opt::<Float32Type>()
-            .context("Could not deserialize conf as string")?;
 
         let mut centers = vec![];
         let mut sizes = vec![];

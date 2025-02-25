@@ -13,6 +13,10 @@ def main():
     pa.array([])  # initialize pyarrow array
     node = Node()
     frames = {}
+    last_pred = None
+    labels = None
+    return_type = pa.Array
+    image_id = None
     for event in node:
         event_type = event["type"]
 
@@ -59,37 +63,142 @@ def main():
                 image = Image.fromarray(frame)
                 frames[event_id] = image
 
+                # TODO: Fix the tracking code for SAM2.
+                continue
+                if last_pred is not None:
+                    with (
+                        torch.inference_mode(),
+                        torch.autocast(
+                            "cuda",
+                            dtype=torch.bfloat16,
+                        ),
+                    ):
+                        predictor.set_image(frames[image_id])
+
+                        new_logits = []
+                        new_masks = []
+
+                        if len(last_pred.shape) < 3:
+                            last_pred = np.expand_dims(last_pred, 0)
+
+                        for mask in last_pred:
+                            mask = np.expand_dims(mask, 0)  # Make shape: 1x256x256
+                            masks, _, new_logit = predictor.predict(
+                                mask_input=mask,
+                                multimask_output=False,
+                            )
+                            if len(masks.shape) == 4:
+                                masks = masks[:, 0, :, :]
+                            else:
+                                masks = masks[0, :, :]
+
+                            masks = masks > 0
+                            new_masks.append(masks)
+                            new_logits.append(new_logit)
+                            ## Mask to 3 channel image
+
+                        last_pred = np.concatenate(new_logits, axis=0)
+                        masks = np.concatenate(new_masks, axis=0)
+
+                        match return_type:
+                            case pa.Array:
+                                node.send_output(
+                                    "masks",
+                                    pa.array(masks.ravel()),
+                                    metadata={
+                                        "image_id": image_id,
+                                        "width": frames[image_id].width,
+                                        "height": frames[image_id].height,
+                                    },
+                                )
+                            case pa.StructArray:
+                                node.send_output(
+                                    "masks",
+                                    pa.array(
+                                        [
+                                            {
+                                                "masks": masks.ravel(),
+                                                "labels": event["value"]["labels"],
+                                            }
+                                        ]
+                                    ),
+                                    metadata={
+                                        "image_id": image_id,
+                                        "width": frames[image_id].width,
+                                        "height": frames[image_id].height,
+                                    },
+                                )
+
             elif "boxes2d" in event_id:
-                boxes2d = event["value"].to_numpy()
+
+                if isinstance(event["value"], pa.StructArray):
+                    boxes2d = event["value"][0].get("bbox").values.to_numpy()
+                    labels = (
+                        event["value"][0]
+                        .get("labels")
+                        .values.to_numpy(zero_copy_only=False)
+                    )
+                    return_type = pa.Array
+                else:
+                    boxes2d = event["value"].to_numpy()
+                    labels = None
+                    return_type = pa.Array
+
                 metadata = event["metadata"]
                 encoding = metadata["encoding"]
                 if encoding != "xyxy":
                     raise RuntimeError(f"Unsupported boxes2d encoding: {encoding}")
                 boxes2d = boxes2d.reshape(-1, 4)
                 image_id = metadata["image_id"]
-                with torch.inference_mode(), torch.autocast(
-                    "cuda",
-                    dtype=torch.bfloat16,
+                with (
+                    torch.inference_mode(),
+                    torch.autocast(
+                        "cuda",
+                        dtype=torch.bfloat16,
+                    ),
                 ):
                     predictor.set_image(frames[image_id])
-                    masks, _, _ = predictor.predict(box=boxes2d)
+                    masks, _scores, last_pred = predictor.predict(
+                        box=boxes2d, point_labels=labels, multimask_output=False
+                    )
+
                     if len(masks.shape) == 4:
                         masks = masks[:, 0, :, :]
+                        last_pred = last_pred[:, 0, :, :]
                     else:
                         masks = masks[0, :, :]
+                        last_pred = last_pred[0, :, :]
 
-                    # masks = masks > 0
+                    masks = masks > 0
                     ## Mask to 3 channel image
-
-                    node.send_output(
-                        "masks",
-                        pa.array(masks.ravel()),
-                        metadata={
-                            "image_id": image_id,
-                            "width": frames[image_id].width,
-                            "height": frames[image_id].height,
-                        },
-                    )
+                    match return_type:
+                        case pa.Array:
+                            node.send_output(
+                                "masks",
+                                pa.array(masks.ravel()),
+                                metadata={
+                                    "image_id": image_id,
+                                    "width": frames[image_id].width,
+                                    "height": frames[image_id].height,
+                                },
+                            )
+                        case pa.StructArray:
+                            node.send_output(
+                                "masks",
+                                pa.array(
+                                    [
+                                        {
+                                            "masks": masks.ravel(),
+                                            "labels": event["value"]["labels"],
+                                        }
+                                    ]
+                                ),
+                                metadata={
+                                    "image_id": image_id,
+                                    "width": frames[image_id].width,
+                                    "height": frames[image_id].height,
+                                },
+                            )
 
         elif event_type == "ERROR":
             print("Event Error:" + event["error"])
