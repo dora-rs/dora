@@ -174,7 +174,7 @@ jobs:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       - name: "Install uv for testing"
-        run: pip install uv
+        run: pip install uv pyarrow
       - name: "Test"
         run: cargo test -p dora-ros2-bridge-python
       - name: "Rust ROS2 Bridge example"
@@ -301,6 +301,10 @@ jobs:
         with:
           # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
           python-version: "3.12"
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v5
+
       - name: "Test CLI (Python)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
