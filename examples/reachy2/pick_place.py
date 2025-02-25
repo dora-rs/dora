@@ -10,7 +10,7 @@ IMAGE_RESIZE_RATIO = float(os.getenv("IMAGE_RESIZE_RATIO", "1.0"))
 node = Node()
 
 ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
-TABLE_HEIGHT = float(os.getenv("TABLE_HEIGHT", "-0.33"))
+TABLE_HEIGHT = float(os.getenv("TABLE_HEIGHT", "-0.41"))
 
 l_init_pose = [
     -7.0631310641087435,
@@ -76,6 +76,8 @@ l_release_closed_pose = [
     100,
 ]
 
+stop = True
+
 
 def extract_bboxes(json_text) -> (np.ndarray, np.ndarray):
     """
@@ -110,6 +112,7 @@ def extract_bboxes(json_text) -> (np.ndarray, np.ndarray):
 
 
 def handle_speech(last_text):
+    global stop
     words = last_text.lower().split()
     if len(ACTIVATION_WORDS) > 0 and any(word in ACTIVATION_WORDS for word in words):
 
@@ -127,7 +130,8 @@ def handle_speech(last_text):
             pa.array([cache["text"]]),
             metadata={"image_id": "image_depth"},
         )
-        print("sending text")
+        print(f"sending: {cache['text']}")
+        stop = False
 
 
 def wait_for_event(id, timeout=None, cache={}):
@@ -135,6 +139,7 @@ def wait_for_event(id, timeout=None, cache={}):
     while True:
         event = node.next(timeout=timeout)
         if event is None:
+            cache["finished"] = True
             return None, cache
         if event["type"] == "INPUT":
             cache[event["id"]] = event["value"]
@@ -153,6 +158,7 @@ def wait_for_events(ids: list[str], timeout=None, cache={}):
     while True:
         event = node.next(timeout=timeout)
         if event is None:
+            cache["finished"] = True
             return None, cache
         if event["type"] == "INPUT":
             cache[event["id"]] = event["value"]
@@ -183,7 +189,7 @@ def get_prompt():
 
 
 last_text = ""
-cache = {"text": "Put the yellow cube in the box"}
+cache = {"text": "Put the orange in the metal box"}
 
 while True:
     ### === IDLE ===
@@ -201,7 +207,7 @@ while True:
     _, cache = wait_for_events(
         ids=["response_r_arm", "response_l_arm"], timeout=2, cache=cache
     )
-    handle_speech(cache["text"])
+    # handle_speech(cache["text"])
 
     ### === TURNING ===
 
@@ -234,6 +240,10 @@ while True:
     arm_holding_object = None
     # Try pose and until one is successful
     text, cache = wait_for_event(id="text", timeout=0.3, cache=cache)
+
+    if stop:
+        continue
+
     while True:
         values, cache = wait_for_event(id="pose", cache=cache)
 
@@ -249,6 +259,7 @@ while True:
         dest_y = values[1][1]
         dest_z = values[1][2]
         x = x + 0.01
+        dest_x = dest_x - 0.05
         print("x: ", x, " y: ", y, " z: ", z)
 
         ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
@@ -266,7 +277,7 @@ while True:
             node.send_output(
                 "action_r_arm",
                 pa.array(trajectory),
-                metadata={"encoding": "xyzrpy", "duration": "0.75"},
+                metadata={"encoding": "xyzrpy", "duration": "0.5"},
             )
             event, cache = wait_for_event(id="response_r_arm", timeout=5, cache=cache)
             if event is not None and event[0].as_py():
@@ -286,7 +297,7 @@ while True:
             node.send_output(
                 "action_l_arm",
                 pa.array(trajectory),
-                metadata={"encoding": "xyzrpy", "duration": "0.75"},
+                metadata={"encoding": "xyzrpy", "duration": "0.5"},
             )
             event, cache = wait_for_event(id="response_l_arm", timeout=5, cache=cache)
             if event is not None and event[0].as_py():
@@ -318,7 +329,7 @@ while True:
                 [
                     dest_x,
                     dest_y,
-                    dest_z + 0.15,
+                    -0.16,
                     0,
                     0,
                     0,
@@ -335,7 +346,7 @@ while True:
                 [
                     dest_x,
                     dest_y,
-                    dest_z + 0.15,
+                    -0.16,
                     0,
                     0,
                     0,
@@ -346,5 +357,45 @@ while True:
         )
         event, cache = wait_for_event(id="response_l_arm", cache=cache)
 
-    if not event:
+    if event is None or not event[0].as_py():
         print("Failed to release object")
+        if arm_holding_object == "right":
+            node.send_output(
+                "action_r_arm",
+                pa.array(
+                    [
+                        x,
+                        y,
+                        z,
+                        0,
+                        0,
+                        0,
+                        100,
+                    ],
+                ),
+                metadata={"encoding": "xyzrpy", "duration": "0.75"},
+            )
+            event, cache = wait_for_event(id="response_r_arm", cache=cache)
+        else:
+            node.send_output(
+                "action_l_arm",
+                pa.array(
+                    [
+                        x,
+                        y,
+                        z,
+                        0,
+                        0,
+                        0,
+                        100,
+                    ]
+                ),
+                metadata={"encoding": "xyzrpy", "duration": "0.75"},
+            )
+            event, cache = wait_for_event(id="response_l_arm", cache=cache)
+    else:
+        stop = True
+
+    if cache.get("finished", False):
+        break
+    # Move object back to initial position

@@ -76,6 +76,6 @@ for event in node:
                     continue
                 node.send_output(
                     "bbox",
-                    pa.array(bboxes.ravel()),
+                    pa.array([{"bbox": bboxes.ravel(), "labels": labels[idx]}]),
                     metadata={"encoding": "xyxy", "image_id": image_id},
                 )

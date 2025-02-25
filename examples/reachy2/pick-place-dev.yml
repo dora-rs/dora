@@ -65,8 +65,6 @@ nodes:
     inputs:
       tick: dora/timer/millis/50
     outputs:
-      - image_right
-      - image_left
       - image_depth
       - depth
 
@@ -95,11 +93,9 @@ nodes:
     path: dora-qwen2-5-vl
     inputs:
       image_depth: reachy-camera/image_depth
-      image_left: reachy-camera/image_left
-      text_1: dora/timer/millis/500
-      text_2:
-        source: state_machine/text_vlm
-        queue_size: 10
+      # image_left: reachy-camera/image_left
+      text_1: dora/timer/millis/600
+      text_2: state_machine/text_vlm
     outputs:
       - text
     env:

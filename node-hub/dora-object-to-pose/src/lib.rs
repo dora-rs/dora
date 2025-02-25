@@ -2,13 +2,13 @@ use core::f32;
 use dora_node_api::{
     arrow::{
         array::{AsArray, Float64Array, UInt8Array},
-        datatypes::{BooleanType, Float32Type, Int64Type},
+        datatypes::{Float32Type, Int64Type},
     },
     dora_core::config::DataId,
     DoraNode, Event, IntoArrow, Parameter,
 };
 use eyre::Result;
-use std::{collections::HashMap, result};
+use std::collections::HashMap;
 
 fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
     let (_x, _y, _z, sum_xy, sum_x2, sum_y2, n, x_min, x_max, y_min, y_max, z_min, z_max) =
@@ -74,7 +74,7 @@ pub fn lib_main() -> Result<()> {
     let mut focal_length = vec![605, 605];
     let mut resolution = vec![605, 605];
     let camera_pitch = std::env::var("CAMERA_PITCH")
-        .unwrap_or("2.44".to_string())
+        .unwrap_or("2.47".to_string())
         .parse::<f32>()
         .unwrap();
     let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
@@ -136,10 +136,6 @@ pub fn lib_main() -> Result<()> {
                         println!("Got unexpected data type: {}", data.data_type());
                         continue;
                     };
-                    println!(
-                        "Got masks shape: {:?}",
-                        masks.len() / (height * width) as usize
-                    );
 
                     let outputs: Vec<Vec<f32>> = masks
                         .chunks(height as usize * width as usize)
@@ -194,6 +190,7 @@ pub fn lib_main() -> Result<()> {
                         "encoding".to_string(),
                         Parameter::String("xyzrpy".to_string()),
                     );
+                    println!("Got data: {:?}", flatten_data);
 
                     node.send_output(
                         DataId::from("pose".to_string()),
