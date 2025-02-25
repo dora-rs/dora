@@ -65,7 +65,7 @@ def main():
                 encoding = metadata["encoding"]
                 if encoding != "xyxy":
                     raise RuntimeError(f"Unsupported boxes2d encoding: {encoding}")
-
+                boxes2d = boxes2d.reshape(-1, 4)
                 image_id = metadata["image_id"]
                 with torch.inference_mode(), torch.autocast(
                     "cuda",
@@ -73,7 +73,12 @@ def main():
                 ):
                     predictor.set_image(frames[image_id])
                     masks, _, _ = predictor.predict(box=boxes2d)
-                    masks = masks[0]
+                    if len(masks.shape) == 4:
+                        masks = masks[:, 0, :, :]
+                    else:
+                        masks = masks[0, :, :]
+
+                    # masks = masks > 0
                     ## Mask to 3 channel image
 
                     node.send_output(
