@@ -40,16 +40,18 @@ nodes:
       text_qwen: dora-qwen/text
       text_whisper: dora-distil-whisper/text
 
-  - id: dora-outtetts
-    build: pip install -e ../../node-hub/dora-outtetts
-    path: dora-outtetts
+  - id: dora-kokoro-tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
     inputs:
       text: dora-qwen/text
     outputs:
       - audio
+    env:
+      ACTIVATION_WORDS: you
 
   - id: dora-pyaudio
     build: pip install -e ../../node-hub/dora-pyaudio
     path: dora-pyaudio
     inputs:
-      audio: dora-outtetts/audio
+      audio: dora-kokoro-tts/audio

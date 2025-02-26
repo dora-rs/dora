@@ -1,8 +1,14 @@
+import os
 import sys
 
 import pyarrow as pa
 from dora import Node
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+SYSTEM_PROMPT = os.getenv(
+    "SYSTEM_PROMPT",
+    "You're a very succinct AI assistant with short answers.",
+)
 
 
 def get_model_darwin():
@@ -42,12 +48,13 @@ def generate_hf(model, tokenizer, prompt: str, history) -> str:
 
 
 def main():
-    history = [
-        {
-            "role": "system",
-            "content": "You are a Reachy robot, that gives extremely short answers only.",
-        },
-    ]
+    if SYSTEM_PROMPT != "":
+        history = [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT,
+            },
+        ]
 
     # If OS is not Darwin, use Huggingface model
     if sys.platform != "darwin":
