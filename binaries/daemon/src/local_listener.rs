@@ -29,7 +29,9 @@ pub async fn spawn_listener_loop(
             return Ok(None);
         }
         Err(err) => {
-            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
+            let kind = err.kind();
+            return Err(eyre::Report::new(err)
+                .wrap_err(format!("failed to create local TCP listener ({kind:?})")));
         }
     };
     let listen_port = socket
