@@ -9,11 +9,12 @@ use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, DataflowId};
 
 pub use log::Level as LogLevel;
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct LogMessage {
     pub dataflow_id: DataflowId,
     pub node_id: Option<NodeId>,
+    pub daemon_id: Option<DaemonId>,
     pub level: LogLevel,
     pub target: Option<String>,
     pub module_path: Option<String>,

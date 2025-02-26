@@ -1,6 +1,7 @@
 use crate::{
-    log, node_communication::spawn_listener_loop, node_inputs, CoreNodeKindExt, DoraEvent, Event,
-    OutputId, RunningNode,
+    log::{self, NodeLogger},
+    node_communication::spawn_listener_loop,
+    node_inputs, CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
 };
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
@@ -16,6 +17,7 @@ use dora_core::{
 };
 use dora_download::download_file;
 use dora_message::{
+    common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
     DataflowId,
@@ -48,9 +50,16 @@ pub async fn spawn_node(
     clock: Arc<HLC>,
     node_stderr_most_recent: Arc<ArrayQueue<String>>,
     uv: bool,
+    logger: &mut NodeLogger<'_>,
 ) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
-    tracing::debug!("Spawning node `{dataflow_id}/{node_id}`");
+    logger
+        .log(
+            LogLevel::Debug,
+            Some("daemon::spawner".into()),
+            "spawning node",
+        )
+        .await;
 
     let queue_sizes = node_inputs(&node)
         .into_iter()
@@ -118,20 +127,32 @@ pub async fn spawn_node(
                                 let mut cmd = tokio::process::Command::new("uv");
                                 cmd.arg("run");
                                 cmd.arg("python");
-                                tracing::info!(
-                                    "spawning: uv run python -u {}",
-                                    resolved_path.display()
-                                );
+                                logger
+                                    .log(
+                                        LogLevel::Info,
+                                        Some("spawner".into()),
+                                        format!(
+                                            "spawning: uv run python -u {}",
+                                            resolved_path.display()
+                                        ),
+                                    )
+                                    .await;
                                 cmd
                             } else {
                                 let python = get_python_path().wrap_err(
                                     "Could not find python path when spawning custom node",
                                 )?;
-                                tracing::info!(
-                                    "spawning: {:?} -u {}",
-                                    &python,
-                                    resolved_path.display()
-                                );
+                                logger
+                                    .log(
+                                        LogLevel::Info,
+                                        Some("spawner".into()),
+                                        format!(
+                                            "spawning: {:?} -u {}",
+                                            &python,
+                                            resolved_path.display()
+                                        ),
+                                    )
+                                    .await;
                                 let cmd = tokio::process::Command::new(python);
                                 cmd
                             };
@@ -141,7 +162,13 @@ pub async fn spawn_node(
                             cmd
                         }
                         _ => {
-                            tracing::info!("spawning: {}", resolved_path.display());
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    Some("spawner".into()),
+                                    format!("spawning: {}", resolved_path.display()),
+                                )
+                                .await;
                             if uv {
                                 let mut cmd = tokio::process::Command::new(&"uv");
                                 cmd.arg("run");
@@ -304,7 +331,13 @@ pub async fn spawn_node(
     let pid = crate::ProcessId::new(child.id().context(
         "Could not get the pid for the just spawned node and indicate that there is an error",
     )?);
-    tracing::debug!("Spawned node `{dataflow_id}/{node_id}` with pid {pid:?}");
+    logger
+        .log(
+            LogLevel::Debug,
+            Some("spawner".into()),
+            format!("spawned node with pid {pid:?}"),
+        )
+        .await;
 
     let dataflow_dir: PathBuf = working_dir.join("out").join(dataflow_id.to_string());
     if !dataflow_dir.exists() {
@@ -368,11 +401,6 @@ pub async fn spawn_node(
 
             // send the buffered lines
             let lines = std::mem::take(&mut buffer);
-            if std::env::var("DORA_QUIET").is_err() {
-                if lines.len() > 1 {
-                    tracing::info!("log_{}: {}", node_id, &lines[..lines.len() - 1]);
-                }
-            }
             let sent = stdout_tx.send(lines.clone()).await;
             if sent.is_err() {
                 println!("Could not log: {lines}");
@@ -450,6 +478,14 @@ pub async fn spawn_node(
     });
 
     let node_id = node.id.clone();
+    let daemon_id = logger.inner().inner().daemon_id().clone();
+    let mut cloned_logger = logger
+        .inner()
+        .inner()
+        .inner()
+        .try_clone()
+        .await
+        .context("failed to clone logger")?;
     // Log to file stream.
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -488,12 +524,24 @@ pub async fn spawn_node(
                 .await
                 .map_err(|err| error!("Could not log {message} to file due to {err}"));
             let formatted = message.lines().fold(String::default(), |mut output, line| {
-                output.push_str("      ");
                 output.push_str(line);
-                output.push('\n');
                 output
             });
-            tracing::trace!("{dataflow_id}/{} logged:\n{formatted}", node.id.clone());
+            if std::env::var("DORA_QUIET").is_err() {
+                cloned_logger
+                    .log(LogMessage {
+                        daemon_id: Some(daemon_id.clone()),
+                        dataflow_id,
+                        level: LogLevel::Info,
+                        node_id: Some(node_id.clone()),
+                        target: Some("stdout".into()),
+                        message: formatted,
+                        file: None,
+                        line: None,
+                        module_path: None,
+                    })
+                    .await;
+            }
             // Make sure that all data has been synced to disk.
             let _ = file
                 .sync_all()
