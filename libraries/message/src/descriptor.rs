@@ -26,12 +26,21 @@ pub struct Descriptor {
     #[serde(default, rename = "_unstable_deploy")]
     pub deploy: Deploy,
     pub nodes: Vec<Node>,
+    #[schemars(skip)]
+    #[serde(default, rename = "_unstable_debug")]
+    pub debug: Debug,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Debug {
+    #[serde(default)]
+    pub publish_all_messages_to_zenoh: bool,
 }
 
 /// Dora Node
@@ -81,15 +90,10 @@ pub struct ResolvedNode {
     pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(default)]
-    pub deploy: ResolvedDeploy,
+    pub deploy: Deploy,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ResolvedDeploy {
-    pub machine: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

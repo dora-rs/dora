@@ -2,9 +2,10 @@ use core::fmt;
 use std::borrow::Cow;
 
 use aligned_vec::{AVec, ConstAlign};
+use eyre::Context as _;
 use uuid::Uuid;
 
-use crate::{id::NodeId, DataflowId};
+use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, DataflowId};
 
 pub use log::Level as LogLevel;
 
@@ -69,7 +70,8 @@ impl std::fmt::Display for NodeError {
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
                 let line: &str = "---------------------------------------------------------------------------------\n";
-                write!(f, " with stderr output:\n{line}{stderr}{line}")?
+                let stderr = stderr.trim_end();
+                write!(f, " with stderr output:\n{line}{stderr}\n{line}")?
             },
         }
 
@@ -129,6 +131,21 @@ pub struct Timestamped<T> {
     pub timestamp: uhlc::Timestamp,
 }
 
+impl<T> Timestamped<T>
+where
+    T: serde::Serialize,
+{
+    pub fn serialize(&self) -> Vec<u8> {
+        bincode::serialize(self).unwrap()
+    }
+}
+
+impl Timestamped<InterDaemonEvent> {
+    pub fn deserialize_inter_daemon_event(bytes: &[u8]) -> eyre::Result<Self> {
+        bincode::deserialize(bytes).wrap_err("failed to deserialize InterDaemonEvent")
+    }
+}
+
 pub type SharedMemoryId = String;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -179,5 +196,40 @@ pub struct DropToken(Uuid);
 impl DropToken {
     pub fn generate() -> Self {
         Self(Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct DaemonId {
+    machine_id: Option<String>,
+    uuid: Uuid,
+}
+
+impl DaemonId {
+    pub fn new(machine_id: Option<String>) -> Self {
+        DaemonId {
+            machine_id,
+            uuid: Uuid::new_v4(),
+        }
+    }
+
+    pub fn matches_machine_id(&self, machine_id: &str) -> bool {
+        self.machine_id
+            .as_ref()
+            .map(|id| id == machine_id)
+            .unwrap_or_default()
+    }
+
+    pub fn machine_id(&self) -> Option<&str> {
+        self.machine_id.as_deref()
+    }
+}
+
+impl std::fmt::Display for DaemonId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(id) = &self.machine_id {
+            write!(f, "{id}-")?;
+        }
+        write!(f, "{}", self.uuid)
     }
 }

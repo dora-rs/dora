@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use aligned_vec::{AVec, ConstAlign};
 
 use crate::{
@@ -17,8 +15,9 @@ pub enum InterDaemonEvent {
         metadata: Metadata,
         data: Option<AVec<u8, ConstAlign<128>>>,
     },
-    InputsClosed {
+    OutputClosed {
         dataflow_id: DataflowId,
-        inputs: BTreeSet<(NodeId, DataId)>,
+        node_id: NodeId,
+        output_id: DataId,
     },
 }
