@@ -11,7 +11,9 @@ use dora_core::{
     uhlc::{self, HLC},
 };
 use dora_message::{
-    common::{DataMessage, DropToken, LogLevel, NodeError, NodeErrorCause, NodeExitStatus},
+    common::{
+        DaemonId, DataMessage, DropToken, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
+    },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes},
     daemon_to_coordinator::{
@@ -27,7 +29,6 @@ use dora_node_api::{arrow::datatypes::DataType, Parameter};
 use eyre::{bail, eyre, Context, ContextCompat, Result};
 use futures::{future, stream, FutureExt, TryFutureExt};
 use futures_concurrency::stream::Merge;
-use inter_daemon::InterDaemonConnection;
 use local_listener::DynamicNodeEventWrapper;
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
@@ -46,6 +47,7 @@ use tokio::{
     io::AsyncReadExt,
     net::TcpStream,
     sync::{
+        broadcast,
         mpsc::{self, UnboundedSender},
         oneshot::{self, Sender},
     },
@@ -55,7 +57,6 @@ use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
 
 mod coordinator;
-mod inter_daemon;
 mod local_listener;
 mod log;
 mod node_communication;
@@ -80,15 +81,19 @@ pub struct Daemon {
 
     coordinator_connection: Option<TcpStream>,
     last_coordinator_heartbeat: Instant,
-    inter_daemon_connections: BTreeMap<String, InterDaemonConnection>,
-    machine_id: String,
+    daemon_id: DaemonId,
 
     /// used for testing and examples
     exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
-    /// used to record dataflow results when `exit_when_done` is used
+    /// set on ctrl-c
+    exit_when_all_finished: bool,
+    /// used to record results of local nodes
     dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
 
     clock: Arc<uhlc::HLC>,
+
+    zenoh_session: zenoh::Session,
+    remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -96,20 +101,20 @@ type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 impl Daemon {
     pub async fn run(
         coordinator_addr: SocketAddr,
-        machine_id: String,
-        inter_daemon_addr: SocketAddr,
+        machine_id: Option<String>,
         local_listen_port: u16,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
-        let incoming_events = {
+        let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(10);
+        let (daemon_id, incoming_events) = {
             let incoming_events = set_up_event_stream(
                 coordinator_addr,
                 &machine_id,
-                inter_daemon_addr,
-                local_listen_port,
                 &clock,
+                remote_daemon_events_rx,
+                local_listen_port,
             );
 
             // finish early if ctrl-c is is pressed during event stream setup
@@ -125,9 +130,10 @@ impl Daemon {
         Self::run_general(
             (ReceiverStream::new(ctrlc_events), incoming_events).merge(),
             Some(coordinator_addr),
-            machine_id,
+            daemon_id,
             None,
             clock,
+            Some(remote_daemon_events_tx),
         )
         .await
         .map(|_| ())
@@ -149,8 +155,8 @@ impl Daemon {
         let spawn_command = SpawnDataflowNodes {
             dataflow_id,
             working_dir,
+            spawn_nodes: nodes.keys().cloned().collect(),
             nodes,
-            machine_listen_ports: BTreeMap::new(),
             dataflow_descriptor: descriptor,
             uv,
         };
@@ -161,7 +167,7 @@ impl Daemon {
 
         let exit_when_done = spawn_command
             .nodes
-            .iter()
+            .values()
             .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -179,9 +185,10 @@ impl Daemon {
         let run_result = Self::run_general(
             Box::pin(events),
             None,
-            "".to_string(),
+            DaemonId::new(None),
             Some(exit_when_done),
             clock.clone(),
+            None,
         );
 
         let spawn_result = reply_rx
@@ -209,9 +216,10 @@ impl Daemon {
     async fn run_general(
         external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
         coordinator_addr: Option<SocketAddr>,
-        machine_id: String,
+        daemon_id: DaemonId,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
+        remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -226,6 +234,21 @@ impl Daemon {
             None => None,
         };
 
+        let zenoh_config = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
+            Ok(path) => zenoh::Config::from_file(&path)
+                .map_err(|e| eyre!(e))
+                .wrap_err_with(|| format!("failed to read zenoh config from {path}"))?,
+            Err(std::env::VarError::NotPresent) => zenoh::Config::default(),
+            Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
+                "{} env variable is not valid unicode",
+                zenoh::Config::DEFAULT_CONFIG_PATH_ENV
+            ),
+        };
+        let zenoh_session = zenoh::open(zenoh_config)
+            .await
+            .map_err(|e| eyre!(e))
+            .context("failed to open zenoh session")?;
+
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             running: HashMap::new(),
@@ -233,11 +256,13 @@ impl Daemon {
             events_tx: dora_events_tx,
             coordinator_connection,
             last_coordinator_heartbeat: Instant::now(),
-            inter_daemon_connections: BTreeMap::new(),
-            machine_id,
+            daemon_id,
             exit_when_done,
+            exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
             clock,
+            zenoh_session,
+            remote_daemon_events_tx,
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -253,7 +278,7 @@ impl Daemon {
         daemon.run_inner(events).await
     }
 
-    #[tracing::instrument(skip(incoming_events, self), fields(%self.machine_id))]
+    #[tracing::instrument(skip(incoming_events, self), fields(?self.daemon_id))]
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
@@ -292,7 +317,7 @@ impl Daemon {
                     if let Some(connection) = &mut self.coordinator_connection {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
-                                machine_id: self.machine_id.clone(),
+                                daemon_id: self.daemon_id.clone(),
                                 event: DaemonEvent::Heartbeat,
                             },
                             timestamp: self.clock.new_timestamp(),
@@ -313,12 +338,32 @@ impl Daemon {
                             .stop_all(&mut self.coordinator_connection, &self.clock, None)
                             .await?;
                     }
+                    self.exit_when_all_finished = true;
+                    if self.running.is_empty() {
+                        break;
+                    }
                 }
                 Event::SecondCtrlC => {
                     tracing::warn!("received second ctrlc signal -> exit immediately");
                     bail!("received second ctrl-c signal");
                 }
+                Event::DaemonError(err) => {
+                    tracing::error!("Daemon error: {err:?}");
+                }
             }
+        }
+
+        if let Some(mut connection) = self.coordinator_connection.take() {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::Exit,
+                },
+                timestamp: self.clock.new_timestamp(),
+            })?;
+            socket_stream_send(&mut connection, &msg)
+                .await
+                .wrap_err("failed to send Exit message to dora-coordinator")?;
         }
 
         Ok(self.dataflow_node_results)
@@ -328,7 +373,7 @@ impl Daemon {
         if let Some(connection) = &mut self.coordinator_connection {
             let msg = serde_json::to_vec(&Timestamped {
                 inner: CoordinatorRequest::Event {
-                    machine_id: self.machine_id.clone(),
+                    daemon_id: self.daemon_id.clone(),
                     event: DaemonEvent::Log(message),
                 },
                 timestamp: self.clock.new_timestamp(),
@@ -383,24 +428,12 @@ impl Daemon {
                 dataflow_id,
                 working_dir,
                 nodes,
-                machine_listen_ports,
                 dataflow_descriptor,
+                spawn_nodes,
                 uv,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
-                }
-                for (machine_id, socket) in machine_listen_ports {
-                    match self.inter_daemon_connections.entry(machine_id) {
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            entry.insert(InterDaemonConnection::new(socket));
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut entry) => {
-                            if entry.get().socket() != socket {
-                                entry.insert(InterDaemonConnection::new(socket));
-                            }
-                        }
-                    }
                 }
 
                 // Use the working directory if it exists, otherwise use the working directory where the daemon is spawned
@@ -411,7 +444,14 @@ impl Daemon {
                 };
 
                 let result = self
-                    .spawn_dataflow(dataflow_id, working_dir, nodes, dataflow_descriptor, uv)
+                    .spawn_dataflow(
+                        dataflow_id,
+                        working_dir,
+                        nodes,
+                        dataflow_descriptor,
+                        spawn_nodes,
+                        uv,
+                    )
                     .await;
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
@@ -427,6 +467,7 @@ impl Daemon {
                 dataflow_id,
                 exited_before_subscribe,
             } => {
+                tracing::debug!("received AllNodesReady (dataflow id: {dataflow_id}, exited_before_subscribe: {exited_before_subscribe:?})");
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
                         let ready = exited_before_subscribe.is_empty();
@@ -596,17 +637,22 @@ impl Daemon {
                 }
                 Ok(())
             }
-            InterDaemonEvent::InputsClosed {
+            InterDaemonEvent::OutputClosed {
                 dataflow_id,
-                inputs,
+                node_id,
+                output_id,
             } => {
-                tracing::debug!(?dataflow_id, ?inputs, "received InputsClosed event");
+                let output_id = OutputId(node_id, output_id);
+                tracing::debug!(?dataflow_id, ?output_id, "received OutputClosed event");
                 let inner = async {
                     let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                         format!("send out failed: no running dataflow with ID `{dataflow_id}`")
                     })?;
-                    for (receiver_id, input_id) in &inputs {
-                        close_input(dataflow, receiver_id, input_id, &self.clock);
+
+                    if let Some(inputs) = dataflow.mappings.get(&output_id).cloned() {
+                        for (receiver_id, input_id) in &inputs {
+                            close_input(dataflow, receiver_id, input_id, &self.clock);
+                        }
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };
@@ -625,11 +671,13 @@ impl Daemon {
         &mut self,
         dataflow_id: uuid::Uuid,
         working_dir: PathBuf,
-        nodes: Vec<ResolvedNode>,
+        nodes: BTreeMap<NodeId, ResolvedNode>,
         dataflow_descriptor: Descriptor,
+        spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
     ) -> eyre::Result<()> {
-        let dataflow = RunningDataflow::new(dataflow_id, self.machine_id.clone());
+        let dataflow =
+            RunningDataflow::new(dataflow_id, self.daemon_id.clone(), &dataflow_descriptor);
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir.insert(dataflow_id, working_dir.clone());
@@ -641,10 +689,13 @@ impl Daemon {
         };
 
         let mut log_messages = Vec::new();
-        for node in nodes {
-            let local = node.deploy.machine == self.machine_id;
+        let mut stopped = Vec::new();
 
-            let inputs = node_inputs(&node);
+        // calculate info about mappings
+        for node in nodes.values() {
+            let local = spawn_nodes.contains(&node.id);
+
+            let inputs = node_inputs(node);
             for (input_id, input) in inputs {
                 if local {
                     dataflow
@@ -671,13 +722,14 @@ impl Daemon {
                 } else if let InputMapping::User(mapping) = input.mapping {
                     dataflow
                         .open_external_mappings
-                        .entry(OutputId(mapping.source, mapping.output))
-                        .or_default()
-                        .entry(node.deploy.machine.clone())
-                        .or_default()
-                        .insert((node.id.clone(), input_id));
+                        .insert(OutputId(mapping.source, mapping.output));
                 }
             }
+        }
+
+        // spawn nodes and set up subscriptions
+        for node in nodes.into_values() {
+            let local = spawn_nodes.contains(&node.id);
             if local {
                 if node.kind.dynamic() {
                     dataflow.dynamic_nodes.insert(node.id.clone());
@@ -718,21 +770,79 @@ impl Daemon {
                             line: None,
                             message: format!("{err:?}"),
                         });
-                        let messages = dataflow
-                            .pending_nodes
-                            .handle_node_stop(
-                                &node_id,
-                                &mut self.coordinator_connection,
-                                &self.clock,
-                                &mut dataflow.cascading_error_causes,
-                            )
-                            .await?;
-                        log_messages.extend(messages);
+                        self.dataflow_node_results
+                            .entry(dataflow_id)
+                            .or_default()
+                            .insert(
+                                node_id.clone(),
+                                Err(NodeError {
+                                    timestamp: self.clock.new_timestamp(),
+                                    cause: NodeErrorCause::Other {
+                                        stderr: format!("spawn failed: {err:?}"),
+                                    },
+                                    exit_status: NodeExitStatus::Unknown,
+                                }),
+                            );
+                        stopped.push(node_id.clone());
                     }
                 }
             } else {
+                // wait until node is ready before starting
                 dataflow.pending_nodes.set_external_nodes(true);
+
+                // subscribe to all node outputs that are mapped to some local inputs
+                for output_id in dataflow.mappings.keys().filter(|o| o.0 == node.id) {
+                    let tx = self
+                        .remote_daemon_events_tx
+                        .clone()
+                        .wrap_err("no remote_daemon_events_tx channel")?;
+                    let mut finished_rx = dataflow.finished_tx.subscribe();
+                    let subscribe_topic = dataflow.output_publish_topic(output_id);
+                    tracing::debug!("declaring subscriber on {subscribe_topic}");
+                    let subscriber = self
+                        .zenoh_session
+                        .declare_subscriber(subscribe_topic)
+                        .await
+                        .map_err(|e| eyre!(e))
+                        .wrap_err_with(|| format!("failed to subscribe to {output_id:?}"))?;
+                    tokio::spawn(async move {
+                        let mut finished = pin!(finished_rx.recv());
+                        loop {
+                            let finished_or_next =
+                                futures::future::select(finished, subscriber.recv_async());
+                            match finished_or_next.await {
+                                future::Either::Left((finished, _)) => {
+                                    match finished {
+                                        Err(broadcast::error::RecvError::Closed) => {
+                                            tracing::debug!("dataflow finished, breaking from zenoh subscribe task");
+                                            break;
+                                        }
+                                        other => {
+                                            tracing::warn!("unexpected return value of dataflow finished_rx channel: {other:?}");
+                                            break;
+                                        }
+                                    }
+                                }
+                                future::Either::Right((sample, f)) => {
+                                    finished = f;
+                                    let event = sample.map_err(|e| eyre!(e)).and_then(|s| {
+                                        Timestamped::deserialize_inter_daemon_event(
+                                            &s.payload().to_bytes(),
+                                        )
+                                    });
+                                    if tx.send_async(event).await.is_err() {
+                                        // daemon finished
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
             }
+        }
+        for node_id in stopped {
+            self.handle_node_stop(dataflow_id, &node_id).await?;
         }
 
         for log_message in log_messages {
@@ -868,32 +978,15 @@ impl Daemon {
             } => {
                 // notify downstream nodes
                 let inner = async {
-                    let dataflow = self
-                        .running
-                        .get_mut(&dataflow_id)
-                        .wrap_err_with(|| format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"))?;
-                    send_input_closed_events(
-                        dataflow,
-                        &mut self.inter_daemon_connections,
-                        |OutputId(source_id, output_id)| {
-                            source_id == &node_id && outputs.contains(output_id)
-                        },
-                        &self.clock,
-                    )
-                    .await
+                    self.send_output_closed_events(dataflow_id, node_id, outputs)
+                        .await
                 };
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
             DaemonNodeEvent::OutputsDone { reply_sender } => {
-                let result = match self.running.get_mut(&dataflow_id) {
-                    Some(dataflow) => {
-                        Self::handle_outputs_done(dataflow, &mut self.inter_daemon_connections, &node_id, &self.clock)
-                    .await
-                    },
-                    None => Err(eyre!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")),
-                };
+                let result = self.handle_outputs_done(dataflow_id, &node_id).await;
 
                 let _ = reply_sender.send(DaemonReply::Result(
                     result.map_err(|err| format!("{err:?}")),
@@ -994,29 +1087,99 @@ impl Daemon {
         .await?;
 
         let output_id = OutputId(node_id, output_id);
-        let remote_receivers: Vec<_> = dataflow
-            .open_external_mappings
-            .get(&output_id)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
-        if !remote_receivers.is_empty() {
-            let event = Timestamped {
-                inner: InterDaemonEvent::Output {
-                    dataflow_id,
-                    node_id: output_id.0,
-                    output_id: output_id.1,
-                    metadata,
-                    data: data_bytes,
-                },
-                timestamp: self.clock.new_timestamp(),
+        let remote_receivers = dataflow.open_external_mappings.contains(&output_id)
+            || dataflow.publish_all_messages_to_zenoh;
+        if remote_receivers {
+            let event = InterDaemonEvent::Output {
+                dataflow_id,
+                node_id: output_id.0.clone(),
+                output_id: output_id.1.clone(),
+                metadata,
+                data: data_bytes,
             };
-            inter_daemon::send_inter_daemon_event(
-                &remote_receivers,
-                &mut self.inter_daemon_connections,
-                &event,
-            )
+            self.send_to_remote_receivers(dataflow_id, &output_id, event)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_to_remote_receivers(
+        &mut self,
+        dataflow_id: Uuid,
+        output_id: &OutputId,
+        event: InterDaemonEvent,
+    ) -> Result<(), eyre::Error> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        // publish via zenoh
+        let publisher = match dataflow.publishers.get(output_id) {
+            Some(publisher) => publisher,
+            None => {
+                let publish_topic = dataflow.output_publish_topic(output_id);
+                tracing::debug!("declaring publisher on {publish_topic}");
+                let publisher = self
+                    .zenoh_session
+                    .declare_publisher(publish_topic)
+                    .await
+                    .map_err(|e| eyre!(e))
+                    .context("failed to create zenoh publisher")?;
+                dataflow.publishers.insert(output_id.clone(), publisher);
+                dataflow.publishers.get(output_id).unwrap()
+            }
+        };
+
+        let serialized_event = Timestamped {
+            inner: event,
+            timestamp: self.clock.new_timestamp(),
+        }
+        .serialize();
+        publisher
+            .put(serialized_event)
             .await
-            .wrap_err("failed to forward output to remote receivers")?;
+            .map_err(|e| eyre!(e))
+            .context("zenoh put failed")?;
+        Ok(())
+    }
+
+    async fn send_output_closed_events(
+        &mut self,
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        outputs: Vec<DataId>,
+    ) -> eyre::Result<()> {
+        let dataflow = self
+            .running
+            .get_mut(&dataflow_id)
+            .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
+        let local_node_inputs: BTreeSet<_> = dataflow
+            .mappings
+            .iter()
+            .filter(|(k, _)| k.0 == node_id && outputs.contains(&k.1))
+            .flat_map(|(_, v)| v)
+            .cloned()
+            .collect();
+        for (receiver_id, input_id) in &local_node_inputs {
+            close_input(dataflow, receiver_id, input_id, &self.clock);
+        }
+
+        let mut closed = Vec::new();
+        for output_id in &dataflow.open_external_mappings {
+            if output_id.0 == node_id && outputs.contains(&output_id.1) {
+                closed.push(output_id.clone());
+            }
+        }
+
+        for output_id in closed {
+            let event = InterDaemonEvent::OutputClosed {
+                dataflow_id,
+                node_id: output_id.0.clone(),
+                output_id: output_id.1.clone(),
+            };
+            self.send_to_remote_receivers(dataflow_id, &output_id, event)
+                .await?;
         }
 
         Ok(())
@@ -1064,20 +1227,31 @@ impl Daemon {
         dataflow.subscribe_channels.insert(node_id, event_sender);
     }
 
-    #[tracing::instrument(skip(dataflow, inter_daemon_connections, clock), fields(uuid = %dataflow.id), level = "trace")]
+    #[tracing::instrument(skip(self), level = "trace")]
     async fn handle_outputs_done(
-        dataflow: &mut RunningDataflow,
-        inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
+        &mut self,
+        dataflow_id: DataflowId,
         node_id: &NodeId,
-        clock: &HLC,
     ) -> eyre::Result<()> {
-        send_input_closed_events(
-            dataflow,
-            inter_daemon_connections,
-            |OutputId(source_id, _)| source_id == node_id,
-            clock,
-        )
-        .await?;
+        let dataflow = self
+            .running
+            .get_mut(&dataflow_id)
+            .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+
+        let outputs = dataflow
+            .mappings
+            .keys()
+            .filter(|m| &m.0 == node_id)
+            .map(|m| &m.1)
+            .cloned()
+            .collect();
+        self.send_output_closed_events(dataflow_id, node_id.clone(), outputs)
+            .await?;
+
+        let dataflow = self
+            .running
+            .get_mut(&dataflow_id)
+            .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
         dataflow.drop_channels.remove(node_id);
         Ok(())
     }
@@ -1097,14 +1271,11 @@ impl Daemon {
             )
             .await?;
 
-        Self::handle_outputs_done(
-            dataflow,
-            &mut self.inter_daemon_connections,
-            node_id,
-            &self.clock,
-        )
-        .await?;
+        self.handle_outputs_done(dataflow_id, node_id).await?;
 
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
+        })?;
         if let Some(mut pid) = dataflow.running_nodes.remove(node_id).and_then(|n| n.pid) {
             pid.mark_as_stopped()
         }
@@ -1124,12 +1295,12 @@ impl Daemon {
 
             tracing::info!(
                 "Dataflow `{dataflow_id}` finished on machine `{}`",
-                self.machine_id
+                self.daemon_id
             );
             if let Some(connection) = &mut self.coordinator_connection {
                 let msg = serde_json::to_vec(&Timestamped {
                     inner: CoordinatorRequest::Event {
-                        machine_id: self.machine_id.clone(),
+                        daemon_id: self.daemon_id.clone(),
                         event: DaemonEvent::AllNodesFinished {
                             dataflow_id,
                             result,
@@ -1245,6 +1416,9 @@ impl Daemon {
                 node_id,
                 exit_status,
             } => {
+                tracing::debug!(
+                    "handling node stop {dataflow_id}/{node_id} with exit status {exit_status:?}"
+                );
                 let node_result = match exit_status {
                     NodeExitStatus::Success => Ok(()),
                     exit_status => {
@@ -1326,6 +1500,9 @@ impl Daemon {
                         return Ok(RunStatus::Exit);
                     }
                 }
+                if self.exit_when_all_finished && self.running.is_empty() {
+                    return Ok(RunStatus::Exit);
+                }
             }
         }
         Ok(RunStatus::Continue)
@@ -1334,44 +1511,51 @@ impl Daemon {
 
 async fn set_up_event_stream(
     coordinator_addr: SocketAddr,
-    machine_id: &String,
-    inter_daemon_addr: SocketAddr,
-    local_listen_port: u16,
+    machine_id: &Option<String>,
     clock: &Arc<HLC>,
-) -> eyre::Result<(impl Stream<Item = Timestamped<Event>> + Unpin)> {
-    let (events_tx, events_rx) = flume::bounded(10);
-    let listen_port =
-        inter_daemon::spawn_listener_loop(inter_daemon_addr, machine_id.clone(), events_tx).await?;
-    let daemon_events = events_rx.into_stream().map(|e| Timestamped {
-        inner: Event::Daemon(e.inner),
-        timestamp: e.timestamp,
+    remote_daemon_events_rx: flume::Receiver<eyre::Result<Timestamped<InterDaemonEvent>>>,
+    // used for dynamic nodes
+    local_listen_port: u16,
+) -> eyre::Result<(DaemonId, impl Stream<Item = Timestamped<Event>> + Unpin)> {
+    let clock_cloned = clock.clone();
+    let remote_daemon_events = remote_daemon_events_rx.into_stream().map(move |e| match e {
+        Ok(e) => Timestamped {
+            inner: Event::Daemon(e.inner),
+            timestamp: e.timestamp,
+        },
+        Err(err) => Timestamped {
+            inner: Event::DaemonError(err),
+            timestamp: clock_cloned.new_timestamp(),
+        },
     });
-    let coordinator_events =
-        coordinator::register(coordinator_addr, machine_id.clone(), listen_port, clock)
+    let (daemon_id, coordinator_events) =
+        coordinator::register(coordinator_addr, machine_id.clone(), clock)
             .await
-            .wrap_err("failed to connect to dora-coordinator")?
-            .map(
-                |Timestamped {
-                     inner: event,
-                     timestamp,
-                 }| Timestamped {
-                    inner: Event::Coordinator(event),
-                    timestamp,
-                },
-            );
+            .wrap_err("failed to connect to dora-coordinator")?;
+    let coordinator_events = coordinator_events.map(
+        |Timestamped {
+             inner: event,
+             timestamp,
+         }| Timestamped {
+            inner: Event::Coordinator(event),
+            timestamp,
+        },
+    );
     let (events_tx, events_rx) = flume::bounded(10);
-    let _listen_port = local_listener::spawn_listener_loop(
-        (LOCALHOST, local_listen_port).into(),
-        machine_id.clone(),
-        events_tx,
-    )
-    .await?;
+    let _listen_port =
+        local_listener::spawn_listener_loop((LOCALHOST, local_listen_port).into(), events_tx)
+            .await?;
     let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
         inner: Event::DynamicNode(e.inner),
         timestamp: e.timestamp,
     });
-    let incoming = (coordinator_events, daemon_events, dynamic_node_events).merge();
-    Ok(incoming)
+    let incoming = (
+        coordinator_events,
+        remote_daemon_events,
+        dynamic_node_events,
+    )
+        .merge();
+    Ok((daemon_id, incoming))
 }
 
 async fn send_output_to_local_receivers(
@@ -1457,53 +1641,6 @@ fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
         CoreNodeKind::Custom(n) => n.run_config.inputs.clone(),
         CoreNodeKind::Runtime(n) => runtime_node_inputs(n),
     }
-}
-
-async fn send_input_closed_events<F>(
-    dataflow: &mut RunningDataflow,
-    inter_daemon_connections: &mut BTreeMap<String, InterDaemonConnection>,
-    mut filter: F,
-    clock: &HLC,
-) -> eyre::Result<()>
-where
-    F: FnMut(&OutputId) -> bool,
-{
-    let local_node_inputs: BTreeSet<_> = dataflow
-        .mappings
-        .iter()
-        .filter(|(k, _)| filter(k))
-        .flat_map(|(_, v)| v)
-        .cloned()
-        .collect();
-    for (receiver_id, input_id) in &local_node_inputs {
-        close_input(dataflow, receiver_id, input_id, clock);
-    }
-
-    let mut external_node_inputs = BTreeMap::new();
-    for (output_id, mapping) in &mut dataflow.open_external_mappings {
-        if filter(output_id) {
-            external_node_inputs.append(mapping);
-        }
-    }
-    if !external_node_inputs.is_empty() {
-        for (target_machine, inputs) in external_node_inputs {
-            let event = Timestamped {
-                inner: InterDaemonEvent::InputsClosed {
-                    dataflow_id: dataflow.id,
-                    inputs,
-                },
-                timestamp: clock.new_timestamp(),
-            };
-            inter_daemon::send_inter_daemon_event(
-                &[target_machine],
-                inter_daemon_connections,
-                &event,
-            )
-            .await
-            .wrap_err("failed to sent InputClosed event to remote receiver")?;
-        }
-    }
-    Ok(())
 }
 
 fn close_input(
@@ -1595,7 +1732,7 @@ pub struct RunningDataflow {
     /// to know which nodes are dynamic.
     dynamic_nodes: BTreeSet<NodeId>,
 
-    open_external_mappings: HashMap<OutputId, BTreeMap<String, BTreeSet<InputId>>>,
+    open_external_mappings: BTreeSet<OutputId>,
 
     pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
 
@@ -1613,13 +1750,24 @@ pub struct RunningDataflow {
     grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
 
     node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
+
+    publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
+
+    finished_tx: broadcast::Sender<()>,
+
+    publish_all_messages_to_zenoh: bool,
 }
 
 impl RunningDataflow {
-    fn new(dataflow_id: Uuid, machine_id: String) -> RunningDataflow {
+    fn new(
+        dataflow_id: Uuid,
+        daemon_id: DaemonId,
+        dataflow_descriptor: &Descriptor,
+    ) -> RunningDataflow {
+        let (finished_tx, _) = broadcast::channel(1);
         Self {
             id: dataflow_id,
-            pending_nodes: PendingNodes::new(dataflow_id, machine_id),
+            pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
@@ -1627,7 +1775,7 @@ impl RunningDataflow {
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeMap::new(),
             dynamic_nodes: BTreeSet::new(),
-            open_external_mappings: HashMap::new(),
+            open_external_mappings: Default::default(),
             pending_drop_tokens: HashMap::new(),
             _timer_handles: Vec::new(),
             stop_sent: false,
@@ -1635,6 +1783,9 @@ impl RunningDataflow {
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
             node_stderr_most_recent: BTreeMap::new(),
+            publishers: Default::default(),
+            finished_tx,
+            publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
         }
     }
 
@@ -1773,6 +1924,13 @@ impl RunningDataflow {
 
         Ok(())
     }
+
+    fn output_publish_topic(&self, output_id: &OutputId) -> String {
+        let network_id = "default";
+        let dataflow_id = self.id;
+        let OutputId(node_id, output_id) = output_id;
+        format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
+    }
 }
 
 fn empty_type_info() -> ArrowTypeInfo {
@@ -1787,7 +1945,7 @@ fn empty_type_info() -> ArrowTypeInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(NodeId, DataId);
 type InputId = (NodeId, DataId);
 
@@ -1813,6 +1971,7 @@ pub enum Event {
     HeartbeatInterval,
     CtrlC,
     SecondCtrlC,
+    DaemonError(eyre::Report),
 }
 
 impl From<DoraEvent> for Event {

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub use crate::common::{LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::id::NodeId;
+use crate::{common::DaemonId, id::NodeId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
@@ -15,7 +15,7 @@ pub enum ControlRequestReply {
     DataflowList(DataflowList),
     DestroyOk,
     DaemonConnected(bool),
-    ConnectedMachines(BTreeSet<String>),
+    ConnectedDaemons(BTreeSet<DaemonId>),
     Logs(Vec<u8>),
 }
 
