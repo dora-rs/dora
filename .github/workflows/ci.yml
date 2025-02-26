@@ -311,10 +311,10 @@ jobs:
         shell: bash
         run: |
           # Test Python template Project
-          uv venv --seed -p 3.11
-          uv run pip install -e apis/python/node
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
+          uv venv --seed -p 3.11
+          uv run pip install -e ../apis/python/node
 
           # Check Compliancy
           uv pip install -e ./*/
