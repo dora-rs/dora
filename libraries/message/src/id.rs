@@ -8,10 +8,24 @@ use serde::{Deserialize, Serialize};
 )]
 pub struct NodeId(pub(crate) String);
 
+#[derive(Debug)]
+pub struct NodeIdContainsSlash;
+
+impl std::fmt::Display for NodeIdContainsSlash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NodeId must not contain `/`")
+    }
+}
+
+impl std::error::Error for NodeIdContainsSlash {}
+
 impl FromStr for NodeId {
-    type Err = Infallible;
+    type Err = NodeIdContainsSlash;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.contains('/') {
+            return Err(NodeIdContainsSlash);
+        }
         Ok(Self(s.to_owned()))
     }
 }

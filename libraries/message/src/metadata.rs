@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use arrow_schema::DataType;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     metadata_version: u16,
     timestamp: uhlc::Timestamp,
@@ -55,12 +55,14 @@ pub struct ArrowTypeInfo {
     pub child_data: Vec<ArrowTypeInfo>,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Parameter {
     Bool(bool),
     Integer(i64),
+    Float(f64),
     String(String),
     ListInt(Vec<i64>),
+    ListFloat(Vec<f64>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
