@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use uuid::Uuid;
 
-pub use crate::common::{LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
+pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
 use crate::{common::DaemonId, id::NodeId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
