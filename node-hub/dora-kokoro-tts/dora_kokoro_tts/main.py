@@ -21,8 +21,6 @@ def main():
                 )
                 for i, (gs, ps, audio) in enumerate(generator):
                     audio = audio.numpy()
-                    print("audio detected")
-                    sf.write(f"text_{i}.wav", audio, 24000)  # save each audio file
                     node.send_output("audio", pa.array(audio), {"sample_rate": 24000})
 
 
