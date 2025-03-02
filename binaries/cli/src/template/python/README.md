@@ -1,12 +1,16 @@
-# Node Name
-
 ## Getting started
 
-- Install it with uv:
+- Install it with:
 
 ```bash
 uv venv -p 3.11 --seed
-uv pip install -e .
+dora build dataflow.yml --uv
+```
+
+- Run it with:
+
+```bash
+dora run dataflow.yml --uv
 ```
 
 ## Contribution Guide

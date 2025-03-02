@@ -100,6 +100,7 @@ fn create_custom_node(
 
 fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
+    const WORKSPACE_README: &str = include_str!("README.md");
 
     if name.contains('/') {
         bail!("dataflow name must not contain `/` separators");
@@ -117,6 +118,10 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     let dataflow_yml_path = root.join("dataflow.yml");
     fs::write(&dataflow_yml_path, dataflow_yml)
         .with_context(|| format!("failed to write `{}`", dataflow_yml_path.display()))?;
+
+    let readme_path = root.join("README.md");
+    fs::write(&readme_path, WORKSPACE_README)
+        .with_context(|| format!("failed to write `{}`", readme_path.display()))?;
 
     create_custom_node("talker 1".into(), Some(root.join("talker-1")), TALKER_PY)?;
     create_custom_node("talker 2".into(), Some(root.join("talker-2")), TALKER_PY)?;
