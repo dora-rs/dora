@@ -333,6 +333,7 @@ jobs:
           cd ..
 
           # Run Python Node Example
+          uv venv --seed -p 3.11
           dora build examples/python-dataflow/dataflow.yml --uv
           dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
           sleep 80
@@ -360,8 +361,8 @@ jobs:
           dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
           # Run Rust queue latency test 
-          dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
-          dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          dora build tests/queue_size_latest_data_rust/dataflow.yaml
+          dora run tests/queue_size_latest_data_rust/dataflow.yaml
 
       - name: "Test CLI (C)"
         timeout-minutes: 30
