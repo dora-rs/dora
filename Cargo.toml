@@ -85,6 +85,7 @@ pyo3 = { version = "0.22.2", features = [
     "multiple-pymethods",
 ] }
 pythonize = "0.22"
+chrono = ">=0.4.34,<0.4.40"
 
 [package]
 name = "dora-examples"
