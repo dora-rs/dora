@@ -75,16 +75,17 @@ dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
 dora-message = { version = "0.4.3", path = "libraries/message" }
-arrow = { version = "53" }
-arrow-schema = { version = "53" }
-arrow-data = { version = "53" }
-arrow-array = { version = "53" }
-pyo3 = { version = "0.22.2", features = [
+arrow = { version = "54.2.1" }
+arrow-schema = { version = "54.2.1" }
+arrow-data = { version = "54.2.1" }
+arrow-array = { version = "54.2.1" }
+parquet = { version = "54.2.1" }
+pyo3 = { version = "0.23", features = [
     "eyre",
     "abi3-py37",
     "multiple-pymethods",
 ] }
-pythonize = "0.22"
+pythonize = "0.23"
 
 [package]
 name = "dora-examples"

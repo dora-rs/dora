@@ -13,7 +13,7 @@ use eyre::Context;
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
+/// use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 
 /// The custom node API lets you integrate `dora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
@@ -28,7 +28,7 @@ use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 ///
 /// :type node_id: str, optional
 #[pyclass]
-#[derive(Dir, Dict, Str, Repr)]
+/// #[derive(Dir, Dict, Str, Repr)]
 pub struct Node {
     events: Events,
     node: DelayedCleanup<DoraNode>,
