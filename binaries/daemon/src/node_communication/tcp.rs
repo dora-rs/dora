@@ -75,7 +75,7 @@ impl Connection for TcpConnection {
             },
         };
         bincode::deserialize(&raw)
-            .with_context(|| "failed to deserialize abc DaemonRequest")
+            .wrap_err("failed to deserialize DaemonRequest")
             .map(Some)
     }
 
