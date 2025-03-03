@@ -3,7 +3,7 @@ nodes:
     build: pip install opencv-video-capture
     path: opencv-video-capture
     inputs:
-      tick: dora/timer/millis/100
+      tick: dora/timer/millis/1000
     outputs:
       - image
     env:
@@ -37,7 +37,7 @@ nodes:
 
   - id: dora-qwenvl
     build: pip install -e ../../node-hub/dora-qwen2-5-vl
-    path: dora-qwenvl
+    path: dora-qwen2-5-vl
     inputs:
       image: camera/image
       text: dora-distil-whisper/text
@@ -45,7 +45,7 @@ nodes:
       - text
     env:
       DEFAULT_QUESTION: Describe the image in three words.
-      HISTORY: True
+      IMAGE_RESIZE_RATIO: "0.5"
 
   - id: plot
     build: pip install dora-rerun
@@ -55,9 +55,9 @@ nodes:
       text_qwenvl: dora-qwenvl/text
       text_whisper: dora-distil-whisper/text
 
-  - id: dora-outtetts
-    build: pip install -e ../../node-hub/dora-outtetts
-    path: dora-outtetts
+  - id: dora-kokoro-tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
     inputs:
       text: dora-qwenvl/text
     outputs:
@@ -67,4 +67,4 @@ nodes:
     build: pip install -e ../../node-hub/dora-pyaudio
     path: dora-pyaudio
     inputs:
-      audio: dora-outtetts/audio
+      audio: dora-kokoro-tts/audio

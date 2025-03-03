@@ -14,7 +14,6 @@ nodes:
       audio: dora-microphone/audio
     outputs:
       - audio
-      - timestamp_start
 
   - id: dora-distil-whisper
     build: pip install -e ../../node-hub/dora-distil-whisper
@@ -26,34 +25,22 @@ nodes:
     env:
       TARGET_LANGUAGE: english
 
-  - id: dora-qwen
-    build: pip install -e ../../node-hub/dora-qwen
-    path: dora-qwen
-    inputs:
-      text: dora-distil-whisper/text
-    outputs:
-      - text
-
-  - id: plot
-    build: pip install -e ../../node-hub/dora-rerun
-    path: dora-rerun
-    inputs:
-      text_qwen: dora-qwen/text
-      text_whisper: dora-distil-whisper/text
-
   - id: dora-kokoro-tts
     build: pip install -e ../../node-hub/dora-kokoro-tts
     path: dora-kokoro-tts
     inputs:
-      text: dora-qwen/text
+      text: dora-distil-whisper/text
     outputs:
       - audio
-    env:
-      ACTIVATION_WORDS: you
 
   - id: dora-pyaudio
     build: pip install -e ../../node-hub/dora-pyaudio
     path: dora-pyaudio
     inputs:
       audio: dora-kokoro-tts/audio
-      timestamp_start: dora-vad/timestamp_start
+
+  - id: dora-rerun
+    build: pip install dora-rerun==0.3.10rc1
+    path: dora-rerun
+    inputs:
+      text_original: dora-distil-whisper/text
