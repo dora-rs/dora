@@ -247,16 +247,31 @@ pub async fn spawn_node(
                     ]);
                     command
                 } else {
-                    let python = get_python_path()
-                        .context("Could not find python path when spawning runtime node")?;
-                    let mut command = tokio::process::Command::new(python);
+                    let mut cmd = if uv {
+                        let mut cmd = tokio::process::Command::new("uv");
+                        cmd.arg("run");
+                        cmd.arg("python");
+                        tracing::info!(
+                            "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
+                            node.id
+                        );
+                        cmd
+                    } else {
+                        let python = get_python_path()
+                            .wrap_err("Could not find python path when spawning custom node")?;
+                        tracing::info!(
+                            "spawning: python -uc import dora; dora.start_runtime() # {}",
+                            node.id
+                        );
+                        let cmd = tokio::process::Command::new(python);
+                        cmd
+                    };
                     // Force python to always flush stdout/stderr buffer
-                    command.arg("-u");
-                    command.args([
+                    cmd.args([
                         "-c",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
                     ]);
-                    command
+                    cmd
                 }
             } else if python_operators.is_empty() && other_operators {
                 let mut cmd = tokio::process::Command::new(
