@@ -55,6 +55,7 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 <details open>
 <summary><b>2025</b></summary>
 
+- \[2025/03\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
 - \[2025/02\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
 
 </details>
