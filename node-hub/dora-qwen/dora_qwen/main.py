@@ -37,7 +37,7 @@ def get_model_huggingface():
     return model, tokenizer
 
 
-ACTIVATION_WORDS = ["what", "how", "who", "where", "you"]
+ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split()
 
 
 def generate_hf(model, tokenizer, prompt: str, history) -> str:

@@ -35,7 +35,10 @@ def main():
 
     # Start recording
     with sd.InputStream(
-        callback=callback, dtype=np.int16, channels=1, samplerate=SAMPLE_RATE,
+        callback=callback,
+        dtype=np.int16,
+        channels=1,
+        samplerate=SAMPLE_RATE,
     ):
         while not finished:
             sd.sleep(1000)

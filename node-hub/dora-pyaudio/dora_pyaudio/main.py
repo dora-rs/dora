@@ -18,8 +18,7 @@ def play_audio(
 ) -> pyaudio.Stream:
     """Play audio using pyaudio and replace stream if already exists"""
     if np.issubdtype(audio_array.dtype, np.floating):
-        max_val = np.max(np.abs(audio_array))
-        audio_array = (audio_array / max_val) * 32767
+        audio_array = audio_array * 70_000
         audio_array = audio_array.astype(np.int16)
     if stream is None:
         stream = p.open(
@@ -36,12 +35,27 @@ def main():
     """Main function for the node"""
     node = Node()
     stream = None
-    for event in node:
-        if event["type"] == "INPUT":
+    audio = np.array([])
+    sr = SAMPLE_RATE
+    i = 0
+    while True:
+        event = node.next(timeout=0.01)
+        if event is None:
+            break
+        elif event["type"] == "INPUT":
             if event["id"] == "audio":
                 audio = event["value"].to_numpy()
                 sr = event["metadata"].get("sample_rate", SAMPLE_RATE)
-                stream = play_audio(audio, sr, stream)
+                stream = play_audio(audio[0 : sr // 10], sr, stream)
+                i = sr // 10
+
+            else:
+                audio = np.array([])
+                i = 0
+        elif event["type"] == "ERROR":
+            if i < len(audio):
+                stream = play_audio(audio[i : i + sr // 10], sr, stream)
+                i += sr // 10
 
     if stream is not None:
         stream.stop_stream()
