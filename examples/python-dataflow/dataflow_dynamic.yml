@@ -1,6 +1,6 @@
 nodes:
   - id: camera
-    build: pip install ../../node-hub/opencv-video-capture
+    build: pip install -e ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     inputs:
       tick: dora/timer/millis/16
@@ -12,7 +12,7 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: plot
-    build: pip install ../../node-hub/opencv-plot
+    build: pip install -e ../../node-hub/opencv-plot
     path: dynamic
     inputs:
       image: camera/image
