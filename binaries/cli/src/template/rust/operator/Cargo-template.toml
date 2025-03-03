@@ -10,4 +10,3 @@ crate-type = ["cdylib"]
 
 [dependencies]
 dora-operator-api = {}
-chrono = ">=0.4.34,<0.4.40"
