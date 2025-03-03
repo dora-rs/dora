@@ -14,6 +14,7 @@ nodes:
       audio: dora-microphone/audio
     outputs:
       - audio
+      - timestamp_start
 
   - id: dora-distil-whisper
     build: pip install -e ../../node-hub/dora-distil-whisper
@@ -55,3 +56,4 @@ nodes:
     path: dora-pyaudio
     inputs:
       audio: dora-kokoro-tts/audio
+      timestamp_start: dora-vad/timestamp_start
