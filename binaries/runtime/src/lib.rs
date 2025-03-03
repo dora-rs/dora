@@ -29,7 +29,7 @@ pub fn main() -> eyre::Result<()> {
     let config: RuntimeConfig = {
         let raw = std::env::var("DORA_RUNTIME_CONFIG")
             .wrap_err("env variable DORA_RUNTIME_CONFIG must be set")?;
-        serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
+        serde_yaml::from_str(&raw).context("failed to deserialize runtime config")?
     };
     let RuntimeConfig {
         node: config,
