@@ -69,7 +69,7 @@ impl DoraNode {
             let raw = std::env::var("DORA_NODE_CONFIG").wrap_err(
                 "env variable DORA_NODE_CONFIG must be set. Are you sure your using `dora start`?",
             )?;
-            serde_yaml::from_str(&raw).context("failed to deserialize operator config")?
+            serde_yaml::from_str(&raw).context("failed to deserialize node config")?
         };
         #[cfg(feature = "tracing")]
         set_up_tracing(node_config.node_id.as_ref())
