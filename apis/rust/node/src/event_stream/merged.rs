@@ -36,8 +36,8 @@ pub trait MergeExternalSend<'a, E> {
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = E> + Unpin + Send + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + 'a>;
+        external_events: impl Stream<Item = E> + Unpin + Send + Sync + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a>;
 }
 
 impl<'a, E> MergeExternal<'a, E> for super::EventStream
@@ -64,8 +64,8 @@ where
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = E> + Unpin + Send + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + 'a> {
+        external_events: impl Stream<Item = E> + Unpin + Send + Sync + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         let dora = self.map(MergedEvent::Dora);
         let external = external_events.map(MergedEvent::External);
         Box::new((dora, external).merge())
@@ -95,7 +95,7 @@ where
 
 impl<'a, E, F, S> MergeExternalSend<'a, F> for S
 where
-    S: Stream<Item = MergedEvent<E>> + Unpin + Send + 'a,
+    S: Stream<Item = MergedEvent<E>> + Unpin + Send + Sync + 'a,
     E: 'a,
     F: 'a,
 {
@@ -103,8 +103,8 @@ where
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = F> + Unpin + Send + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + 'a> {
+        external_events: impl Stream<Item = F> + Unpin + Send + Sync + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         let first = self.map(|e| match e {
             MergedEvent::Dora(d) => MergedEvent::Dora(d),
             MergedEvent::External(e) => MergedEvent::External(Either::First(e)),

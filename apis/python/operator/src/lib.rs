@@ -66,8 +66,8 @@ where
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = E> + Unpin + Send + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + 'a> {
+        external_events: impl Stream<Item = E> + Unpin + Send + Sync + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         let dora = self.map(MergedEvent::Dora);
         let external = external_events.map(MergedEvent::External);
         Box::new((dora, external).merge())
