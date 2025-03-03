@@ -17,24 +17,13 @@ async fn main() -> eyre::Result<()> {
         .await
         .context("failed to create venv")?;
 
-    run(&uv, &["pip", "install", "maturin"], None)
-        .await
-        .context("uv pip install maturin failed")?;
-
     run(
         &uv,
-        &[
-            "run",
-            "maturin",
-            "develop",
-            "-m",
-            "../../apis/python/node/Cargo.toml",
-            "--uv",
-        ],
+        &["pip", "install", "-e", "../../apis/python/node"],
         None,
     )
     .await
-    .context("maturin develop failed")?;
+    .context("Unable to install develop dora-rs API")?;
 
     let dataflow = Path::new("dataflow.yml");
     run_dataflow(dataflow).await?;
