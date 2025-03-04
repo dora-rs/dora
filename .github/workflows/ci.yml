@@ -33,6 +33,7 @@ jobs:
       - run: rustup self update
 
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
@@ -84,6 +85,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
@@ -146,6 +148,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
       - uses: r7kamura/rust-problem-matchers@v1.1.0
 
       - name: Free Disk Space (Ubuntu)
@@ -225,6 +228,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - uses: Swatinem/rust-cache@v2
@@ -249,6 +253,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
@@ -360,13 +365,13 @@ jobs:
 
           dora destroy
 
-          # Run Python queue latency test 
+          # Run Python queue latency test
           dora run tests/queue_size_latest_data_python/dataflow.yaml
 
           # Run Python queue latency test + timeout
           dora run tests/queue_size_and_timeout_python/dataflow.yaml
 
-          # Run Rust queue latency test 
+          # Run Rust queue latency test
           dora build tests/queue_size_latest_data_rust/dataflow.yaml
           dora run tests/queue_size_latest_data_rust/dataflow.yaml
 
@@ -414,6 +419,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
@@ -433,6 +439,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - name: "rustfmt"
         run: cargo fmt --all -- --check
@@ -443,6 +450,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
@@ -493,6 +501,7 @@ jobs:
     steps:
       - run: rustup self update
       - uses: actions/checkout@v3
+      - run: rustup toolchain install
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - name: "Add toolchains"
         run: rustup target add ${{ matrix.platform.target }}
