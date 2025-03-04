@@ -55,9 +55,6 @@ pub struct ArrowTypeInfo {
     pub child_data: Vec<ArrowTypeInfo>,
 }
 
-// WARNING
-// Any change of parameters should be appended at the end of the enum
-// otherwise it will break compatibility with previous dora version
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Parameter {
     Bool(bool),
