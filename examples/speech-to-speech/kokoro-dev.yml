@@ -40,7 +40,7 @@ nodes:
       audio: dora-kokoro-tts/audio
 
   - id: dora-rerun
-    build: pip install dora-rerun==0.3.10rc1
+    build: pip install dora-rerun
     path: dora-rerun
     inputs:
       text_original: dora-distil-whisper/text

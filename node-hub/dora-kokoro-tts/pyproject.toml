@@ -7,11 +7,7 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
 
-dependencies = [
-    "dora-rs >= 0.3.10rc1",
-    "kokoro>=0.2.2",
-    "soundfile>=0.13.1",
-]
+dependencies = ["dora-rs >= 0.3.10rc3", "kokoro>=0.2.2", "soundfile>=0.13.1"]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
