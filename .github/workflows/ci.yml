@@ -30,6 +30,8 @@ jobs:
         shell: bash
         if: runner.os == 'Windows'
 
+      - run: rustup self update
+
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
@@ -80,6 +82,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
@@ -141,6 +144,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
 
@@ -219,6 +223,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
@@ -242,6 +247,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
@@ -406,6 +412,7 @@ jobs:
     name: "Clippy"
     runs-on: ubuntu-latest
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -424,6 +431,7 @@ jobs:
     name: "Formatting"
     runs-on: ubuntu-latest
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - name: "rustfmt"
@@ -433,6 +441,7 @@ jobs:
     name: "License Checks"
     runs-on: ubuntu-latest
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
 
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -482,6 +491,7 @@ jobs:
             target: x86_64-apple-darwin
       fail-fast: false
     steps:
+      - run: rustup self update
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - name: "Add toolchains"
