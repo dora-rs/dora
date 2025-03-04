@@ -7,7 +7,7 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
 
-dependencies = ["dora-rs >= 0.3.10", "piper_sdk >= 0.0.8", "numpy < 2.0.0"]
+dependencies = ["dora-rs >= 0.3.9", "piper_sdk >= 0.0.8", "numpy < 2.0.0"]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
