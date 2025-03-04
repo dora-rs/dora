@@ -110,9 +110,9 @@ A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/)
 1. Run some Python examples (A venv must be activated):
 
 ```bash
-cd dora/examples/python-dataflow
+cd examples/python-dataflow
 uv venv --seed
-uv pip install -e ../../apis/python/node
+uv pip install -e ../../apis/python/node --reinstall
 dora build dataflow.yml --uv
 dora run dataflow.yml --uv
 ```

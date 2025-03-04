@@ -59,9 +59,9 @@ pub struct ArrowTypeInfo {
 pub enum Parameter {
     Bool(bool),
     Integer(i64),
-    Float(f64),
     String(String),
     ListInt(Vec<i64>),
+    Float(f64),
     ListFloat(Vec<f64>),
     ListString(Vec<String>),
 }
