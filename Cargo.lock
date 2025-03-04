@@ -2887,7 +2887,7 @@ dependencies = [
 
 [[package]]
 name = "dora-object-to-pose"
-version = "0.1.0"
+version = "0.3.10-rc3"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "dora-ros2-bridge"
-version = "0.1.0"
+version = "0.3.10-rc3"
 dependencies = [
  "array-init",
  "dora-daemon",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "dora-ros2-bridge-msg-gen"
-version = "0.1.0"
+version = "0.3.10-rc3"
 dependencies = [
  "anyhow",
  "glob",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "dora-ros2-bridge-python"
-version = "0.1.0"
+version = "0.3.10-rc3"
 dependencies = [
  "arrow 54.2.1",
  "dora-ros2-bridge",
