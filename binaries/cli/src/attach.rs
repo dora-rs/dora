@@ -156,8 +156,9 @@ pub fn attach_dataflow(
             Ok(AttachEvent::Control(control_request)) => control_request,
             Ok(AttachEvent::Log(Ok(log_message))) => {
                 let LogMessage {
-                    dataflow_id: _,
+                    dataflow_id,
                     node_id,
+                    daemon_id,
                     level,
                     target,
                     module_path: _,
@@ -171,6 +172,12 @@ pub fn attach_dataflow(
                     log::Level::Info => "INFO ".green(),
                     other => format!("{other:5}").normal(),
                 };
+                let dataflow = format!(" dataflow `{dataflow_id}`").cyan();
+                let daemon = match daemon_id {
+                    Some(id) => format!(" on daemon `{id}`"),
+                    None => " on default daemon".to_string(),
+                }
+                .bright_black();
                 let node = match node_id {
                     Some(node_id) => format!(" {node_id}").bold(),
                     None => "".normal(),
@@ -180,7 +187,7 @@ pub fn attach_dataflow(
                     None => "".normal(),
                 };
 
-                println!("{level}{node}{target}: {message}");
+                println!("{level}{dataflow}{daemon}{node}{target}: {message}");
                 continue;
             }
             Ok(AttachEvent::Log(Err(err))) => {
