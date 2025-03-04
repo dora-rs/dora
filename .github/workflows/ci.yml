@@ -336,11 +336,13 @@ jobs:
           dora start dataflow.yml --name ci-python-test --detach --uv
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
+          dora destroy
 
           cd ..
 
           # Run Python Node Example
           echo "Running Python Node Example"
+          dora up
           uv venv --seed -p 3.11
           uv pip install -e apis/python/node
           dora build examples/python-dataflow/dataflow.yml --uv
