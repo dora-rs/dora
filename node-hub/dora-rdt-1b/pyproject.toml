@@ -1,6 +1,6 @@
 [project]
 name = "dora-rdt-1b"
-version = "0.3.10-rc1"
+version = "0.3.10-rc3"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for RDT 1B"
 license = { text = "MIT" }
@@ -8,7 +8,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 
 dependencies = [
-    "dora-rs >= 0.3.10rc1",
+    "dora-rs >= 0.3.10rc3",
     "numpy > 1.24.4",
     "torch >= 2.4.0",
     "torchvision >= 0.19",

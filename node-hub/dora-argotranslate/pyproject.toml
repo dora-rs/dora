@@ -1,6 +1,6 @@
 [project]
 name = "dora-argotranslate"
-version = "0.3.10-rc1"
+version = "0.3.10-rc3"
 description = "Dora Node for Text translating using Argostranslate"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
@@ -12,7 +12,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 
 dependencies = [
-    "dora-rs >= 0.3.10rc1",
+    "dora-rs >= 0.3.10rc3",
     "numpy < 2.0.0",
     "argostranslate >= 1.9.6",
 ]

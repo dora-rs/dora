@@ -1,13 +1,13 @@
 [project]
 name = "dora-ugv"
-version = "0.3.10-rc1"
+version = "0.3.10-rc3"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for using Agilex UGV"
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
 
-dependencies = ["dora-rs >= 0.3.10rc1"]
+dependencies = ["dora-rs >= 0.3.10rc3"]
 
 
 [dependency-groups]

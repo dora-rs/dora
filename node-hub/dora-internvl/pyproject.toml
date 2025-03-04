@@ -1,6 +1,6 @@
 [project]
 name = "dora-internvl"
-version = "0.3.10-rc1"
+version = "0.3.10-rc3"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
@@ -12,7 +12,7 @@ requires-python = ">=3.8"
 
 dependencies = [
 
-    "dora-rs >= 0.3.10rc1",
+    "dora-rs >= 0.3.10rc3",
     "numpy < 2.0.0",
     "torch >= 2.2.0",
     "torchvision >= 0.17",
