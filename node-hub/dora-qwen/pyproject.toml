@@ -31,7 +31,7 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [[tool.uv.index]]
 name = "llama_cpp_python_cu121"
-url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu121"
 explicit = true
 
 [[tool.uv.index]]
