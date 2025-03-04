@@ -1,5 +1,4 @@
 import pyarrow as pa
-import soundfile as sf
 from dora import Node
 from kokoro import KPipeline
 

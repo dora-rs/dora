@@ -13,7 +13,7 @@ use eyre::Context;
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
+/// use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 
 /// The custom node API lets you integrate `dora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
@@ -28,7 +28,7 @@ use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 ///
 /// :type node_id: str, optional
 #[pyclass]
-#[derive(Dir, Dict, Str, Repr)]
+/// #[derive(Dir, Dict, Str, Repr)]
 pub struct Node {
     events: Events,
     node: DelayedCleanup<DoraNode>,
@@ -265,7 +265,7 @@ impl Events {
 
 enum EventsInner {
     Dora(DelayedCleanup<EventStream>),
-    Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send>),
+    Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send + Sync>),
 }
 
 impl<'a> MergeExternalSend<'a, PyObject> for EventsInner {
@@ -273,8 +273,8 @@ impl<'a> MergeExternalSend<'a, PyObject> for EventsInner {
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = PyObject> + Unpin + Send + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + 'a> {
+        external_events: impl Stream<Item = PyObject> + Unpin + Send + Sync + 'a,
+    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         match self {
             EventsInner::Dora(events) => events.merge_external_send(external_events),
             EventsInner::Merged(events) => {
