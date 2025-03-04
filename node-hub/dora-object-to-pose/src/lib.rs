@@ -10,7 +10,7 @@ use dora_node_api::{
 use eyre::Result;
 use std::collections::HashMap;
 
-fn points_to_pose(points: &[(f32, f32, f32)]) -> (f32, f32, f32, f32, f32, f32) {
+fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
     let (_x, _y, _z, sum_xy, sum_x2, sum_y2, n, x_min, x_max, y_min, y_max, z_min, z_max) =
         points.iter().fold(
             (
@@ -61,7 +61,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> (f32, f32, f32, f32, f32, f32) 
     let std_y = (sum_y2 / n - mean_y * mean_y).sqrt();
     let corr = cov / (std_x * std_y);
 
-    return (mean_x, mean_y, mean_z, 0., 0., corr * f32::consts::PI / 2.);
+    return vec![mean_x, mean_y, mean_z, 0., 0., corr * f32::consts::PI / 2.];
 }
 
 pub fn lib_main() -> Result<()> {
@@ -74,7 +74,7 @@ pub fn lib_main() -> Result<()> {
     let mut focal_length = vec![605, 605];
     let mut resolution = vec![605, 605];
     let camera_pitch = std::env::var("CAMERA_PITCH")
-        .unwrap_or("2.478".to_string())
+        .unwrap_or("2.47".to_string())
         .parse::<f32>()
         .unwrap();
     let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
@@ -120,114 +120,147 @@ pub fn lib_main() -> Result<()> {
                     depth_frame = Some(buffer.clone());
                 }
                 "masks" => {
-                    if let Some(data) = data.as_primitive_opt::<Float32Type>() {
-                        let data = data.values();
-                        let mut points = vec![];
-                        let mut z_total = 0.;
-                        let mut n = 0.;
+                    let masks = if let Some(data) = data.as_primitive_opt::<Float32Type>() {
+                        let data = data
+                            .iter()
+                            .map(|x| if let Some(x) = x { x > 0. } else { false })
+                            .collect::<Vec<_>>();
+                        data
+                    } else if let Some(data) = data.as_boolean_opt() {
+                        let data = data
+                            .iter()
+                            .map(|x| if let Some(x) = x { x } else { false })
+                            .collect::<Vec<_>>();
+                        data
+                    } else {
+                        println!("Got unexpected data type: {}", data.data_type());
+                        continue;
+                    };
 
-                        if let Some(depth_frame) = &depth_frame {
-                            depth_frame.iter().enumerate().for_each(|(i, z)| {
-                                let u = i as f32 % width as f32; // Calculate x-coordinate (u)
-                                let v = i as f32 / width as f32; // Calculate y-coordinate (v)
+                    let outputs: Vec<Vec<f32>> = masks
+                        .chunks(height as usize * width as usize)
+                        .into_iter()
+                        .map(|data| {
+                            let mut points = vec![];
+                            let mut z_total = 0.;
+                            let mut n = 0.;
 
-                                if let Some(z) = z {
-                                    let z = z as f32;
-                                    // Skip points that have empty depth or is too far away
-                                    if z == 0. || z > 5.0 {
-                                        return;
+                            if let Some(depth_frame) = &depth_frame {
+                                depth_frame.iter().enumerate().for_each(|(i, z)| {
+                                    let u = i as f32 % width as f32; // Calculate x-coordinate (u)
+                                    let v = i as f32 / width as f32; // Calculate y-coordinate (v)
+
+                                    if let Some(z) = z {
+                                        let z = z as f32;
+                                        // Skip points that have empty depth or is too far away
+                                        if z == 0. || z > 20.0 {
+                                            return;
+                                        }
+                                        if data[i] {
+                                            let y = (u - resolution[0] as f32) * z
+                                                / focal_length[0] as f32;
+                                            let x = (v - resolution[1] as f32) * z
+                                                / focal_length[1] as f32;
+                                            let new_x = sin_theta * z + cos_theta * x;
+                                            let new_y = -y;
+                                            let new_z = cos_theta * z - sin_theta * x;
+
+                                            points.push((new_x, new_y, new_z));
+                                            z_total += new_z;
+                                            n += 1.;
+                                        }
                                     }
-                                    if data[i] > 0. {
-                                        let y =
-                                            (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                                        let x =
-                                            (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                        let new_x = sin_theta * z + cos_theta * x;
-                                        let new_y = -y;
-                                        let new_z = cos_theta * z - sin_theta * x;
+                                });
+                            } else {
+                                println!("No depth frame found");
+                                return None;
+                            }
+                            if points.is_empty() {
+                                println!("No points in mask found");
+                                return None;
+                            }
+                            Some(points_to_pose(&points))
+                        })
+                        .filter(|x| x.is_some())
+                        .map(|x| x.unwrap())
+                        .collect();
+                    let flatten_data = outputs.into_iter().flatten().collect::<Vec<_>>();
+                    let mut metadata = metadata.parameters.clone();
+                    metadata.insert(
+                        "encoding".to_string(),
+                        Parameter::String("xyzrpy".to_string()),
+                    );
+                    println!("Got data: {:?}", flatten_data);
 
-                                        points.push((new_x, new_y, new_z));
-                                        z_total += new_z;
-                                        n += 1.;
-                                    }
-                                }
-                            });
-                        } else {
-                            println!("No depth frame found");
-                            continue;
-                        }
-                        if points.is_empty() {
-                            println!("No points in mask found");
-                            continue;
-                        }
-                        let (mean_x, mean_y, mean_z, rx, ry, rz) = points_to_pose(&points);
-                        let mut metadata = metadata.parameters.clone();
-                        metadata.insert(
-                            "encoding".to_string(),
-                            Parameter::String("xyzrpy".to_string()),
-                        );
-
-                        node.send_output(
-                            DataId::from("pose".to_string()),
-                            metadata,
-                            vec![mean_x, mean_y, mean_z, rx, ry, rz].into_arrow(),
-                        )?;
-                    }
+                    node.send_output(
+                        DataId::from("pose".to_string()),
+                        metadata,
+                        flatten_data.into_arrow(),
+                    )?;
                 }
                 "boxes2d" => {
                     if let Some(data) = data.as_primitive_opt::<Int64Type>() {
-                        let data = data.values();
-                        let x_min = data[0] as f32;
-                        let y_min = data[1] as f32;
-                        let x_max = data[2] as f32;
-                        let y_max = data[3] as f32;
-                        let mut points = vec![];
-                        let mut z_min = 100.;
-                        let mut z_total = 0.;
-                        let mut n = 0.;
-
-                        if let Some(depth_frame) = &depth_frame {
-                            depth_frame.iter().enumerate().for_each(|(i, z)| {
-                                let u = i as f32 % width as f32; // Calculate x-coordinate (u)
-                                let v = i as f32 / width as f32; // Calculate y-coordinate (v)
-
-                                if let Some(z) = z {
-                                    let z = z as f32;
-                                    // Skip points that have empty depth or is too far away
-                                    if z == 0. || z > 5.0 {
-                                        return;
-                                    }
-                                    if u > x_min && u < x_max && v > y_min && v < y_max {
-                                        let y =
-                                            (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                                        let x =
-                                            (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                        let new_x = sin_theta * z + cos_theta * x;
-                                        let new_y = -y;
-                                        let new_z = cos_theta * z - sin_theta * x;
-                                        if new_z < z_min {
-                                            z_min = new_z;
-                                        }
-                                        points.push((new_x, new_y, new_z));
-                                        z_total += new_z;
-                                        n += 1.;
-                                    }
-                                }
-                            });
-                        } else {
-                            println!("No depth frame found");
-                            continue;
-                        }
-                        if points.is_empty() {
-                            continue;
-                        }
-                        let raw_mean_z = z_total / n as f32;
-                        let threshold = (raw_mean_z + z_min) / 2.;
-                        let points = points
+                        let values = data.values();
+                        let outputs: Vec<Vec<f32>> = values
+                            .chunks(4)
                             .into_iter()
-                            .filter(|(_x, _y, z)| z > &threshold)
-                            .collect::<Vec<_>>();
-                        let (mean_x, mean_y, mean_z, rx, ry, rz) = points_to_pose(&points);
+                            .map(|data| {
+                                let x_min = data[0] as f32;
+                                let y_min = data[1] as f32;
+                                let x_max = data[2] as f32;
+                                let y_max = data[3] as f32;
+                                let mut points = vec![];
+                                let mut z_min = 100.;
+                                let mut z_total = 0.;
+                                let mut n = 0.;
+
+                                if let Some(depth_frame) = &depth_frame {
+                                    depth_frame.iter().enumerate().for_each(|(i, z)| {
+                                        let u = i as f32 % width as f32; // Calculate x-coordinate (u)
+                                        let v = i as f32 / width as f32; // Calculate y-coordinate (v)
+
+                                        if let Some(z) = z {
+                                            let z = z as f32;
+                                            // Skip points that have empty depth or is too far away
+                                            if z == 0. || z > 5.0 {
+                                                return;
+                                            }
+                                            if u > x_min && u < x_max && v > y_min && v < y_max {
+                                                let y = (u - resolution[0] as f32) * z
+                                                    / focal_length[0] as f32;
+                                                let x = (v - resolution[1] as f32) * z
+                                                    / focal_length[1] as f32;
+                                                let new_x = sin_theta * z + cos_theta * x;
+                                                let new_y = -y;
+                                                let new_z = cos_theta * z - sin_theta * x;
+                                                if new_z < z_min {
+                                                    z_min = new_z;
+                                                }
+                                                points.push((new_x, new_y, new_z));
+                                                z_total += new_z;
+                                                n += 1.;
+                                            }
+                                        }
+                                    });
+                                } else {
+                                    println!("No depth frame found");
+                                    return None;
+                                }
+                                if points.is_empty() {
+                                    return None;
+                                }
+                                let raw_mean_z = z_total / n as f32;
+                                let threshold = (raw_mean_z + z_min) / 2.;
+                                let points = points
+                                    .into_iter()
+                                    .filter(|(_x, _y, z)| z > &threshold)
+                                    .collect::<Vec<_>>();
+                                Some(points_to_pose(&points))
+                            })
+                            .filter(|x| x.is_some())
+                            .map(|x| x.unwrap())
+                            .collect();
+                        let flatten_data = outputs.into_iter().flatten().collect::<Vec<_>>();
                         let mut metadata = metadata.parameters.clone();
                         metadata.insert(
                             "encoding".to_string(),
@@ -237,7 +270,7 @@ pub fn lib_main() -> Result<()> {
                         node.send_output(
                             DataId::from("pose".to_string()),
                             metadata,
-                            vec![mean_x, mean_y, mean_z, rx, ry, rz].into_arrow(),
+                            flatten_data.into_arrow(),
                         )?;
                     }
                 }

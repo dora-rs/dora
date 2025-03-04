@@ -63,6 +63,7 @@ pub enum Parameter {
     String(String),
     ListInt(Vec<i64>),
     ListFloat(Vec<f64>),
+    ListString(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

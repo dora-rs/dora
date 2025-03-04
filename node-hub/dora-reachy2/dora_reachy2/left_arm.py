@@ -78,14 +78,14 @@ def manage_gripper(reachy, gripper, grasp):
         return True
     if gripper == 0.0:
         reachy.l_arm.gripper.close()
-        time.sleep(0.5)
+        time.sleep(0.3)
         if grasp:
             half_open = reachy.l_arm.gripper.get_current_opening() > 2
             if not half_open:
                 return False
     elif gripper == 100.0:
         reachy.l_arm.gripper.open()
-        time.sleep(0.5)
+        time.sleep(0.3)
     return True
 
 
@@ -133,7 +133,12 @@ def main():
                         )
                     else:
                         for joint, gripper in joint_values:
-                            reachy.l_arm.goto(joint, duration=duration, wait=wait)
+                            reachy.l_arm.goto(
+                                joint,
+                                duration=duration,
+                                wait=wait,
+                                interpolation_mode="linear",
+                            )
                             response_gripper = manage_gripper(reachy, gripper, grasp)
                             if not response_gripper:
                                 node.send_output(
@@ -151,7 +156,12 @@ def main():
                         joints = value[:7].tolist()
                         gripper = value[7]
 
-                        reachy.l_arm.goto(joints, duration=duration, wait=wait)
+                        reachy.l_arm.goto(
+                            joints,
+                            duration=duration,
+                            wait=wait,
+                            interpolation_mode="linear",
+                        )
                         manage_gripper(reachy, gripper, grasp)
                     node.send_output("response_l_arm", pa.array([True]))
 

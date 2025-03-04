@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = "0.3.8"
+dora-node-api = { workspace = true }
 eyre = "0.6.8"
 pyo3 = { workspace = true, features = [
     "extension-module",
