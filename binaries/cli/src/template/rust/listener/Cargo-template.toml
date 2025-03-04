@@ -7,4 +7,3 @@ edition = "2021"
 
 [dependencies]
 dora-node-api = {}
-chrono = ">=0.4.34,<0.4.40"

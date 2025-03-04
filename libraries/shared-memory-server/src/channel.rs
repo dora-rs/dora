@@ -217,6 +217,7 @@ fn offset_ptrs(next_free: *mut u8) -> (*mut AtomicBool, *mut AtomicU64, *mut u8)
 }
 
 unsafe impl Send for ShmemChannel {}
+unsafe impl Sync for ShmemChannel {}
 
 impl Drop for ShmemChannel {
     fn drop(&mut self) {
