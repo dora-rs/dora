@@ -27,12 +27,19 @@ pub async fn handle_connection(
         // receive the next message and parse it
         let raw = match tcp_receive(&mut connection).await {
             Ok(data) => data,
-            Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    ErrorKind::UnexpectedEof
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::ConnectionReset
+                ) =>
+            {
                 break;
             }
             Err(err) => {
                 tracing::error!("{err:?}");
-                continue;
+                break;
             }
         };
         let message: Timestamped<CoordinatorRequest> =

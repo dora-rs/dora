@@ -13,7 +13,7 @@ use dora_message::{
 use eyre::{bail, Context};
 use tokio::{net::TcpStream, sync::oneshot};
 
-use crate::{socket_stream_utils::socket_stream_send, CascadingErrorCauses};
+use crate::{log::DataflowLogger, socket_stream_utils::socket_stream_send, CascadingErrorCauses};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
@@ -66,12 +66,13 @@ impl PendingNodes {
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<DataflowStatus> {
         self.waiting_subscribers
             .insert(node_id.clone(), reply_sender);
         self.local_nodes.remove(&node_id);
 
-        self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
+        self.update_dataflow_status(coordinator_connection, clock, cascading_errors, logger)
             .await
     }
 
@@ -81,24 +82,22 @@ impl PendingNodes {
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
-    ) -> eyre::Result<Vec<LogMessage>> {
-        let mut log = Vec::new();
+        logger: &mut DataflowLogger<'_>,
+    ) -> eyre::Result<()> {
         if self.local_nodes.remove(node_id) {
-            log.push(LogMessage {
-                dataflow_id: self.dataflow_id,
-                node_id: Some(node_id.clone()),
-                level: LogLevel::Warn,
-                target: None,
-                module_path: None,
-                file: None,
-                line: None,
-                message: "node exited before initializing dora connection".into(),
-            });
+            logger
+                .log(
+                    LogLevel::Warn,
+                    Some(node_id.clone()),
+                    Some("daemon::pending".into()),
+                    "node exited before initializing dora connection",
+                )
+                .await;
             self.exited_before_subscribe.push(node_id.clone());
-            self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
+            self.update_dataflow_status(coordinator_connection, clock, cascading_errors, logger)
                 .await?;
         }
-        Ok(log)
+        Ok(())
     }
 
     pub async fn handle_dataflow_stop(
@@ -107,12 +106,18 @@ impl PendingNodes {
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         dynamic_nodes: &BTreeSet<NodeId>,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<Vec<LogMessage>> {
         // remove all local dynamic nodes that are not yet started
         for node_id in dynamic_nodes {
             if self.local_nodes.remove(node_id) {
-                self.update_dataflow_status(coordinator_connection, clock, cascading_errors)
-                    .await?;
+                self.update_dataflow_status(
+                    coordinator_connection,
+                    clock,
+                    cascading_errors,
+                    logger,
+                )
+                .await?;
             }
         }
 
@@ -139,11 +144,12 @@ impl PendingNodes {
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
                 if !self.reported_init_to_coordinator {
-                    self.report_nodes_ready(coordinator_connection, clock.new_timestamp())
+                    self.report_nodes_ready(coordinator_connection, clock.new_timestamp(), logger)
                         .await?;
                     self.reported_init_to_coordinator = true;
                 }
@@ -194,15 +200,23 @@ impl PendingNodes {
         &self,
         coordinator_connection: &mut Option<TcpStream>,
         timestamp: Timestamp,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
         let Some(connection) = coordinator_connection else {
             bail!("no coordinator connection to send AllNodesReady");
         };
 
-        tracing::info!(
-            "all local nodes are ready (exit before subscribe: {:?}), waiting for remote nodes",
-            self.exited_before_subscribe
-        );
+        logger
+            .log(
+                LogLevel::Info,
+                None,
+                Some("daemon".into()),
+                format!(
+                "all local nodes are ready (exit before subscribe: {:?}), waiting for remote nodes",
+                self.exited_before_subscribe
+            ),
+            )
+            .await;
 
         let msg = serde_json::to_vec(&Timestamped {
             inner: CoordinatorRequest::Event {
