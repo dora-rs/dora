@@ -31,13 +31,13 @@ pip install -r requirements_llm.txt
 - Start the object detection dataflow alone:
 
 ```bash
-dora start dataflow.yml
+dora run dataflow.yml
 ```
 
 - Start the llm dataflow (Only works on Windows and Linux):
 
 ```bash
-dora start dataflow_llm.yml
+dora run dataflow_llm.yml
 ```
 
 Within the window you can ask question such as:
