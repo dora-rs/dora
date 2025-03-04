@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.3.10 (2025-03-04)
+
+## What's Changed
+
+- Enables array based bounding boxes by @haixuanTao in https://github.com/dora-rs/dora/pull/772
+- Fix typo in node version by @haixuanTao in https://github.com/dora-rs/dora/pull/773
+- CI: Use `paths-ignore` instead of negated `paths` by @phil-opp in https://github.com/dora-rs/dora/pull/781
+- Adding rerun connect options by @haixuanTao in https://github.com/dora-rs/dora/pull/782
+- Forbid `/` in node IDs by @phil-opp in https://github.com/dora-rs/dora/pull/785
+- Adding reachy and dora reachy demo by @haixuanTao in https://github.com/dora-rs/dora/pull/784
+- Fix typo in reachy node by @haixuanTao in https://github.com/dora-rs/dora/pull/789
+- Update dependency transformers to >=4.48.0,<=4.48.0 [SECURITY] - abandoned by @renovate in https://github.com/dora-rs/dora/pull/778
+- Fix bounding box for rerun viewer and clear the viewer if no bounding box is detected by @haixuanTao in https://github.com/dora-rs/dora/pull/787
+- Adding float for env variable and metadata parameters by @haixuanTao in https://github.com/dora-rs/dora/pull/786
+- Limit pip release ci to strict minimum by @haixuanTao in https://github.com/dora-rs/dora/pull/791
+- Add uv flag within start cli command by @haixuanTao in https://github.com/dora-rs/dora/pull/788
+- Adding a test for checking on the latency when used timeout and queue at the same time by @haixuanTao in https://github.com/dora-rs/dora/pull/783
+- Use zenoh for inter-daemon communication by @phil-opp in https://github.com/dora-rs/dora/pull/779
+- Pin chrono version by @haixuanTao in https://github.com/dora-rs/dora/pull/797
+- Add kokoro tts by @haixuanTao in https://github.com/dora-rs/dora/pull/794
+- Pick place demo by @haixuanTao in https://github.com/dora-rs/dora/pull/793
+- Bump pyo3 to 0.23 by @haixuanTao in https://github.com/dora-rs/dora/pull/798
+- Faster node hub CI/CD by removing `free disk space on ubuntu` by @haixuanTao in https://github.com/dora-rs/dora/pull/801
+
+## v0.3.9 (2025-02-06)
+
 ## What's Changed
 
 - Making cli install the default api avoiding confusion on install by @haixuanTao in https://github.com/dora-rs/dora/pull/739
