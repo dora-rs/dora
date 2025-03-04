@@ -19,7 +19,13 @@ async fn main() -> eyre::Result<()> {
 
     run(
         &uv,
-        &["pip", "install", "-e", "../../apis/python/node"],
+        &[
+            "pip",
+            "install",
+            "-e",
+            "../../apis/python/node",
+            "--reinstall",
+        ],
         None,
     )
     .await

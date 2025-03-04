@@ -19,6 +19,7 @@ After installing Rust, `dora-cli` and `uv` (if you installed the cli without pip
 
 ```bash
 cd examples/python-dataflow
+uv pip install -e ../../apis/python/node --reinstall
 dora build ./dataflow.yml --uv (or dora build ./dataflow_dynamic.yml --uv)
 ```
 

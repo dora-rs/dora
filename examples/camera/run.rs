@@ -18,7 +18,13 @@ async fn main() -> eyre::Result<()> {
         .context("failed to create venv")?;
     run(
         &uv,
-        &["pip", "install", "-e", "../../apis/python/node"],
+        &[
+            "pip",
+            "install",
+            "-e",
+            "../../apis/python/node",
+            "--reinstall",
+        ],
         None,
     )
     .await

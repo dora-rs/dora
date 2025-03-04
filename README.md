@@ -112,7 +112,7 @@ A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/)
 ```bash
 cd examples/python-dataflow
 uv venv --seed
-uv pip install -e ../../apis/python/node
+uv pip install -e ../../apis/python/node --reinstall
 dora build dataflow.yml --uv
 dora run dataflow.yml --uv
 ```

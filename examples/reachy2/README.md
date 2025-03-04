@@ -20,7 +20,7 @@ cd dora/examples/reachy2
 ```bash
 # Make sure to not be in a virtual environment
 uv venv --seed -p 3.11
-uv pip install -e ../../apis/python/node
+uv pip install -e ../../apis/python/node --reinstall
 dora build demo-dev.yml --uv
 dora run demo-dev.yml --uv
 

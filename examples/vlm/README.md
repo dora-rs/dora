@@ -5,7 +5,7 @@ Make sure to have, dora, uv and cargo installed.
 ```bash
 cd examples/vlm
 uv venv -p 3.11 --seed
-uv pip install -e ../../apis/python/node
+uv pip install -e ../../apis/python/node --reinstall
 dora build qwen2-5-vl-vision-only-dev.yml --uv
 dora run qwen2-5-vl-vision-only-dev.yml --uv
 ```
