@@ -1,11 +1,19 @@
 # Quick example on using a VLM with dora-rs
 
-Make sure to have, dora, pip and cargo installed.
+Make sure to have, dora, uv and cargo installed.
 
 ```bash
-dora build https://raw.githubusercontent.com/dora-rs/dora/main/examples/vlm/qwenvl.yml
+cd examples/vlm
+uv venv -p 3.11 --seed
+uv pip install -e ../../apis/python/node --reinstall
+dora build qwen2-5-vl-vision-only-dev.yml --uv
+dora run qwen2-5-vl-vision-only-dev.yml --uv
+```
 
-dora run https://raw.githubusercontent.com/dora-rs/dora/main/examples/vlm/qwenvl.yml
+- Without cloning the repository:
 
-# Wait for the qwenvl, whisper model to download which can takes a bit of time.
+```bash
+uv venv -p 3.11 --seed
+dora build https://raw.githubusercontent.com/dora-rs/dora/main/examples/vlm/qwenvl.yml --uv
+dora run https://raw.githubusercontent.com/dora-rs/dora/main/examples/vlm/qwenvl.yml --uv
 ```

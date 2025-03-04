@@ -173,8 +173,12 @@ jobs:
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
-      - name: "Install pyarrow for testing"
-        run: pip install numpy pyarrow
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install pyarrow
+        run: pip install pyarrow
       - name: "Test"
         run: cargo test -p dora-ros2-bridge-python
       - name: "Rust ROS2 Bridge example"
@@ -301,68 +305,79 @@ jobs:
         with:
           # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
           python-version: "3.12"
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
       - name: "Test CLI (Python)"
         timeout-minutes: 30
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
           # Test Python template Project
-          python3 -m venv .venv
-          if [ ! -d ".venv/bin" ]; then
-            mv .venv/Scripts .venv/bin    # venv is placed under `Scripts` on Windows
-          fi
-          source .venv/bin/activate
-          pip3 install maturin ruff pytest
-          maturin build -m apis/python/node/Cargo.toml
-          pip3 install target/wheels/*
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
+          uv venv --seed -p 3.11
+          uv pip install -e ../apis/python/node
+          dora build dataflow.yml --uv
+          uv pip install ruff pytest
 
           # Check Compliancy
-          ruff check .
-          pip install -e ./*/
-          pytest
+          uv run ruff check .
+          uv run pytest
 
+          export OPERATING_MODE=SAVE
           dora up
           dora list
-          dora build dataflow.yml
-          dora start dataflow.yml --name ci-python-test --detach
+          dora build dataflow.yml --uv
+          echo "Running CI Python Test"
+          dora start dataflow.yml --name ci-python-test --detach --uv
           sleep 10
           dora stop --name ci-python-test  --grace-duration 5s
+          dora destroy
 
           cd ..
 
           # Run Python Node Example
-
-          dora build examples/python-dataflow/dataflow.yml
-          dora start examples/python-dataflow/dataflow.yml --name ci-python --detach
+          echo "Running Python Node Example"
+          dora up
+          uv venv --seed -p 3.11
+          uv pip install -e apis/python/node
+          dora build examples/python-dataflow/dataflow.yml --uv
+          dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
           sleep 10
-          dora stop --name ci-python  --grace-duration 10s
+          dora stop --name ci-python  --grace-duration 30s
 
           # Run Python Dynamic Node Example
-
-          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach
-          opencv-plot --name plot
+          echo "Running Python Node Dynamic Example"
+          dora build examples/python-dataflow/dataflow_dynamic.yml --uv
+          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
+          uv run opencv-plot --name plot
           sleep 10
-          dora stop --name ci-python-dynamic  --grace-duration 10s
+          dora stop --name ci-python-dynamic  --grace-duration 30s
 
           # Run Python Operator Example
-
-          dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach
+          echo "Running CI Operator Test"
+          dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
           sleep 10
-          dora stop --name ci-python-operator  --grace-duration 10s
+          dora stop --name ci-python-operator  --grace-duration 30s
 
           dora destroy
 
           # Run Python queue latency test 
-          dora run tests/queue_size_latest_data_python/dataflow.yaml
+          echo "Running CI Queue Latency Test"
+          dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
 
           # Run Python queue latency test + timeout
-          dora run tests/queue_size_and_timeout_python/dataflow.yaml
+          echo "Running CI Queue + Timeout Test"
+          dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
           # Run Rust queue latency test 
-          dora build tests/queue_size_latest_data_rust/dataflow.yaml
-          dora run tests/queue_size_latest_data_rust/dataflow.yaml
+          echo "Running CI Queue Size Latest Data Rust Test"
+          dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
       - name: "Test CLI (C)"
         timeout-minutes: 30

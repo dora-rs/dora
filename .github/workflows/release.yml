@@ -99,6 +99,9 @@ jobs:
           publish_if_not_exists dora-daemon
           publish_if_not_exists dora-cli
 
+          # Publish ROS2 bridge 
+          publish_if_not_exists dora-ros2-bridge-msg-gen
+          publish_if_not_exists dora-ros2-bridge
   unix:
     runs-on: ${{ matrix.platform.runner }}
     strategy:

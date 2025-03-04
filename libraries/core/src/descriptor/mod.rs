@@ -191,18 +191,19 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
         Ok(abs_path)
     // Search path within $PATH
-    } else if let Ok(abs_path) = which::which(&path) {
-        Ok(abs_path)
     } else if which::which("uv").is_ok() {
         // spawn: uv run which <path>
+        let which = if cfg!(windows) { "where" } else { "which" };
         let _output = Command::new("uv")
             .arg("run")
-            .arg("which")
+            .arg(which)
             .arg(&path)
             .stdout(Stdio::null())
             .spawn()
             .context("Could not find binary within uv")?;
         Ok(path)
+    } else if let Ok(abs_path) = which::which(&path) {
+        Ok(abs_path)
     } else {
         bail!("Could not find source path {}", path.display())
     }

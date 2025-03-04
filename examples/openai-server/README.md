@@ -4,12 +4,13 @@ This is a quick example to showcase how use the `dora-openai-server` to receive 
 
 Dora Openai Server is still experimental and may change in the future.
 
-Make sure to have, dora, pip and cargo installed.
+Make sure to have, dora, uv and cargo installed.
 
 ```bash
-dora up
-dora build dataflow.yml
-dora start dataflow.yml
+uv venv -p 3.11 --seed
+uv pip install -e ../../apis/python/node --reinstall
+dora build dataflow.yml --uv
+dora run dataflow.yml --uv
 
 # In a separate terminal
 python openai_api_client.py

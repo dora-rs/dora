@@ -1,6 +1,6 @@
 nodes:
   - id: camera
-    build: pip install ../../node-hub/opencv-video-capture
+    build: pip install -e ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     inputs:
       tick: dora/timer/millis/20
@@ -12,22 +12,16 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: object-detection
-    build: pip install ../../node-hub/dora-yolo
+    build: pip install -e ../../node-hub/dora-yolo
     path: dora-yolo
     inputs:
-      image:
-        source: camera/image
-        queue_size: 1
+      image: camera/image
     outputs:
       - bbox
-    env:
-      MODEL: yolov8n.pt
 
   - id: plot
-    build: pip install ../../node-hub/opencv-plot
-    path: opencv-plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
     inputs:
-      image:
-        source: camera/image
-        queue_size: 1
-      bbox: object-detection/bbox
+      image: camera/image
+      boxes2d: object-detection/bbox

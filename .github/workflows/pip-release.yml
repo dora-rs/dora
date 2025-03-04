@@ -17,11 +17,10 @@ on:
     branches:
       - main
   pull_request:
-    paths-ignore:
-      - "node-hub/**"
     paths:
       - "apis/python/node/**"
       - "binaries/cli/**"
+      - "Cargo.toml"
 
 permissions:
   contents: write
