@@ -39,7 +39,7 @@ pub async fn handle_connection(
             }
             Err(err) => {
                 tracing::error!("{err:?}");
-                continue;
+                break;
             }
         };
         let message: Timestamped<CoordinatorRequest> =
