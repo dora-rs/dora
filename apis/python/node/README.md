@@ -6,7 +6,7 @@ To build the Python module for development:
 
 ```bash
 uv venv --seed -p 3.11
-uv run pip install -e .
+uv pip install -e .
 ```
 
 ## Type hinting
