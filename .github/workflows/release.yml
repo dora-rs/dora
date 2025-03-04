@@ -15,7 +15,7 @@ jobs:
 
     strategy:
       matrix:
-        platform: [ubuntu-20.04]
+        platform: [ubuntu-22.04]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
 
@@ -104,15 +104,15 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: ubuntu-20.04
+          - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-20.04
+          - runner: ubuntu-22.04
             target: i686-unknown-linux-gnu
-          - runner: ubuntu-20.04
+          - runner: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
-          - runner: ubuntu-20.04
+          - runner: ubuntu-22.04
             target: aarch64-unknown-linux-musl
-          - runner: ubuntu-20.04
+          - runner: ubuntu-22.04
             target: armv7-unknown-linux-musleabihf
           - runner: macos-13
             target: aarch64-apple-darwin
