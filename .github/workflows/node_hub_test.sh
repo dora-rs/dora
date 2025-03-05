@@ -57,10 +57,10 @@ else
 
         # x86_64-pc-windows-gnu
         rustup target add x86_64-pc-windows-gnu
-        maturin build --target x86_64-pc-windows-gnu --zig  --release
+        maturin build --target x86_64-pc-windows-gnu --release
         # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
-            maturin publish --target x86_64-pc-windows-gnu --skip-existing --zig
+            maturin publish --target x86_64-pc-windows-gnu --skip-existing 
         fi
 
     elif [[ -f "Cargo.toml" && -f "pyproject.toml" &&  "$(uname)" = "Darwin" ]]; then
