@@ -65,6 +65,7 @@ else
 
     elif [[ -f "Cargo.toml" && -f "pyproject.toml" &&  "$(uname)" = "Darwin" ]]; then
         # x86_64-apple-darwin
+        pip install "maturin[zig]"
         rustup target add x86_64-apple-darwin
         maturin build --target x86_64-apple-darwin --zig  --release
         # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
