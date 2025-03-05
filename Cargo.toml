@@ -70,8 +70,8 @@ communication-layer-request-reply = { version = "0.3.10", path = "libraries/comm
 dora-runtime = { version = "0.3.10", path = "binaries/runtime" }
 dora-daemon = { version = "0.3.10", path = "binaries/daemon" }
 dora-coordinator = { version = "0.3.10", path = "binaries/coordinator" }
-dora-ros2-bridge = { path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-ros2-bridge = { version = "0.3.10", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "0.3.10", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
 dora-message = { version = "0.4.4", path = "libraries/message" }

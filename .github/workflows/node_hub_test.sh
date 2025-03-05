@@ -2,7 +2,10 @@
 set -euo
 
 # List of ignored modules 
-ignored_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input")
+ignored_folders=("dora-parler")
+
+# Skip test
+skip_test_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input")
 
 # Get current working directory
 dir=$(pwd)
@@ -23,15 +26,27 @@ else
         cargo test
 
         pip install "maturin[zig]"
-        maturin build --zig
-                
+        maturin build --zig --release
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            maturin publish --skip-existing --zig
+        fi
+
         # aarch64-unknown-linux-gnu
         rustup target add aarch64-unknown-linux-gnu
         maturin build --target aarch64-unknown-linux-gnu --zig
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            maturin publish --target aarch64-unknown-linux-gnu --skip-existing --zig
+        fi
                 
         # armv7-unknown-linux-musleabihf
         rustup target add armv7-unknown-linux-musleabihf
         maturin build --target armv7-unknown-linux-musleabihf --zig
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            maturin publish --target armv7-unknown-linux-musleabihf --skip-existing --zig
+        fi
     else
         if [ -f "$dir/Cargo.toml" ]; then
             echo "Running build and tests for Rust project in $dir..."
@@ -39,6 +54,10 @@ else
             cargo clippy
             cargo build
             cargo test
+
+            if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+                cargo publish
+            fi
         else
             if [ -f "$dir/pyproject.toml" ]; then
             echo "CI: Installing in $dir..."
@@ -47,7 +66,15 @@ else
             echo "CI: Running Linting in $dir..."
             uv run ruff check .
             echo "CI: Running Pytest in $dir..."
-            uv run pytest
+            # Skip test for some folders
+            if [[ " ${skip_test_folders[@]} " =~ " ${base_dir} " ]]; then
+                echo "Skipping tests for $base_dir..."
+            else
+                uv run pytest
+            fi
+            if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+                uv publish --check-url https://pypi.org/simple
+            fi
             fi
         fi 
     fi 
