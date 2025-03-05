@@ -102,8 +102,11 @@
         },
         {
           "type": "integer",
-          "format": "uint64",
-          "minimum": 0.0
+          "format": "int64"
+        },
+        {
+          "type": "number",
+          "format": "double"
         },
         {
           "type": "string"
@@ -127,8 +130,7 @@
           "format": "uint",
           "minimum": 0.0
         }
-      },
-      "additionalProperties": true
+      }
     },
     "InputMapping": {
       "oneOf": [
@@ -367,8 +369,7 @@
         "source": {
           "type": "string"
         }
-      },
-      "additionalProperties": true
+      }
     },
     "SingleOperatorDefinition": {
       "type": "object",
