@@ -12,6 +12,7 @@ pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
     "eyre",
+    "generate-import-lib",
 ], optional = true }
 
 [features]
