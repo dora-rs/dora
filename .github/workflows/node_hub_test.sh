@@ -17,7 +17,8 @@ base_dir=$(basename "$dir")
 if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then
     echo "Skipping $base_dir as we cannot test it on the CI..."
 else
-    if [[ -f "Cargo.toml" && -f "pyproject.toml" ]]; then
+    # IF job is mixed rust-python job and is on linux 
+    if [[ -f "Cargo.toml" && -f "pyproject.toml" &&  "$(uname)" = "Linux" ]]; then
         echo "Running build and tests for Rust project in $dir..."
 
         cargo check
@@ -29,12 +30,18 @@ else
         maturin build --zig --release
         # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            # Free up ubuntu space
+            sudo apt-get clean
+            sudo rm -rf /usr/local/lib/android/ 
+            sudo rm -rf /usr/share/dotnet/
+            sudo rm -rf /opt/ghc/
+
             maturin publish --skip-existing --zig
         fi
 
         # aarch64-unknown-linux-gnu
         rustup target add aarch64-unknown-linux-gnu
-        maturin build --target aarch64-unknown-linux-gnu --zig
+        maturin build --target aarch64-unknown-linux-gnu --zig --release
         # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
             maturin publish --target aarch64-unknown-linux-gnu --skip-existing --zig
@@ -42,11 +49,38 @@ else
                 
         # armv7-unknown-linux-musleabihf
         rustup target add armv7-unknown-linux-musleabihf
-        maturin build --target armv7-unknown-linux-musleabihf --zig
+        maturin build --target armv7-unknown-linux-musleabihf --zig --release
         # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
             maturin publish --target armv7-unknown-linux-musleabihf --skip-existing --zig
         fi
+
+        # x86_64-pc-windows-gnu
+        rustup target add x86_64-pc-windows-gnu
+        maturin build --target x86_64-pc-windows-gnu --release
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            maturin publish --target x86_64-pc-windows-gnu --skip-existing 
+        fi
+
+    elif [[ -f "Cargo.toml" && -f "pyproject.toml" &&  "$(uname)" = "Darwin" ]]; then
+        # x86_64-apple-darwin
+        pip install "maturin[zig]"
+        rustup target add x86_64-apple-darwin
+        maturin build --target x86_64-apple-darwin --zig  --release
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            maturin publish --target x86_64-apple-darwin --skip-existing --zig
+        fi
+
+        # aarch64-apple-darwin
+        rustup target add aarch64-apple-darwin
+        maturin build --target aarch64-apple-darwin --zig  --release
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            maturin publish --target aarch64-apple-darwin --skip-existing --zig
+        fi
+
     else
         if [ -f "$dir/Cargo.toml" ]; then
             echo "Running build and tests for Rust project in $dir..."

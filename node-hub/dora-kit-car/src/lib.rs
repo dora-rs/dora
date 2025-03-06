@@ -81,8 +81,6 @@ use pyo3::{
 #[cfg(feature = "python")]
 #[pyfunction]
 fn py_main(_py: Python) -> eyre::Result<()> {
-    pyo3::prepare_freethreaded_python();
-
     lib_main()
 }
 
