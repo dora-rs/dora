@@ -34,7 +34,7 @@
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
-An extremely fast and simple **dataflow oriented robotic** framework to manage your projects and run complex **apps**, written in Rust.
+An extremely fast and simple **dataflow oriented robotic** framework to manage your projects and run realtime multi-AI and multi-hardware **applications**, written in Rust.
 
 <p align="center">
   <picture align="center">
@@ -55,32 +55,157 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 <details open>
 <summary><b>2025</b></summary>
 
-- \[2025/03\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
-- \[2025/02\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
-
+- \[2025/03/05\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
+- \[2025/03/04\] Add support for Zenoh for distributed dataflow.
+- \[2025/03/04\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
+- \[2025/02/25\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
 </details>
 
 ## Highlights
 
-- 🚀 A single CLI to launch your Python and Rust robotic projects.
-- ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark) than `ros2`.
-- 🐍 Easy and Fast prototyping with a clean [Python API](https://dora-rs.ai/docs/guides/getting-started/conversation_py/).
+- 🚀 A single CLI to run multiple AI models and hardware drivers in parallel.
+- 🦀 dora-rs is 100% Rust project.
 - 🖥️ Supports macOS, Linux, and Windows.
-- ⏬ Installable without Rust via `curl` or `powershell`.
+- ⚙️ Support Python, C, C++, and ROS2, while ensuring low-latency communication with zero-copy Arrow messages.
+- ⏬ Everything is `pip`, `cargo`, or `curl` installable.
 - ❇️ Includes a large set of pre-packaged nodes for fast prototyping.
 - 🛠️ Build and Run applications **without compilation step** beyond the native compiler of your favourite language.
 - 🤖 Simplifies building robotic applications by integrating hardware, algorithms, and AI models to facilitate seamless communication.
-- ⚙️ Eases integration of hardware and software by supporting Python, C, C++, and ROS2, while ensuring low-latency communication with zero-copy Arrow messages.
+- ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark) than `ros2`.
 
-## Installation
+## Node Hub
 
-Install dora with our standalone installers, or from [crates.io](https://crates.io/crates/dora-cli):
+### Camera
 
-### With pip
+| Title                                                                                    | Description                         | Downloads                                                         | License                                                        | Release                                                        |
+| ---------------------------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
+| [PyOrbbeckSDK](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyorbbecksdk)     | Image and depth from Orbbeck Camera | ![Downloads](https://img.shields.io/pypi/dm/dora-pyorbbecksdk)    | ![License](https://img.shields.io/pypi/l/dora-pyorbbecksdk)    | ![Release](https://img.shields.io/pypi/v/dora-pyorbbecksdk)    |
+| [PyRealsense](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyrealsense)       | Image and depth from Realsense      | ![Downloads](https://img.shields.io/pypi/dm/dora-pyrealsense)     | ![License](https://img.shields.io/pypi/l/dora-pyrealsense)     | ![Release](https://img.shields.io/pypi/v/dora-pyrealsense)     |
+| [Video Capture](https://github.com/dora-rs/dora/blob/main/node-hub/opencv-video-capture) | Image stream from Camera            | ![Downloads](https://img.shields.io/pypi/dm/opencv-video-capture) | ![License](https://img.shields.io/pypi/l/opencv-video-capture) | ![Release](https://img.shields.io/pypi/v/opencv-video-capture) |
+
+### Peripheral
+
+| Title                                                                               | Description               | Downloads                                                    | License                                                   | Release                                                   |
+| ----------------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------------- |
+| [PyAudio(Speaker)](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyaudio) | Output audio from speaker | ![Downloads](https://img.shields.io/pypi/dm/dora-pyaudio)    | ![License](https://img.shields.io/pypi/l/dora-pyaudio)    | ![Release](https://img.shields.io/pypi/v/dora-pyaudio)    |
+| [Microphone](https://github.com/dora-rs/dora/blob/main/node-hub/dora-microphone)    | Audio from microphone     | ![Downloads](https://img.shields.io/pypi/dm/dora-microphone) | ![License](https://img.shields.io/pypi/l/dora-microphone) | ![Release](https://img.shields.io/pypi/v/dora-microphone) |
+| [Keyboard](https://github.com/dora-rs/dora/blob/main/node-hub/dora-keyboard)        | Keyboard char listener    | ![Downloads](https://img.shields.io/pypi/dm/dora-keyboard)   | ![License](https://img.shields.io/pypi/l/dora-keyboard)   | ![Release](https://img.shields.io/pypi/v/dora-keyboard)   |
+
+### Actuator
+
+| Title                                                                                    | Description      | Downloads | License | Release |
+| ---------------------------------------------------------------------------------------- | ---------------- | --------- | ------- | ------- |
+| [Feetech](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/feetech-client)     | Feetech Client   |           |         |         |
+| [Dynamixel](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dynamixel-client) | Dynamixel Client |           |         |         |
+
+### Chassis
+
+| Title                                                                           | Description         | Downloads                                                 | License                                                | Release                                                |
+| ------------------------------------------------------------------------------- | ------------------- | --------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------ |
+| [Dora Kit Car](https://github.com/dora-rs/dora/blob/main/node-hub/dora-kit-car) | Open Source Chassis | ![Downloads](https://img.shields.io/pypi/dm/dora-kit-car) | ![License](https://img.shields.io/pypi/l/dora-kit-car) | ![Release](https://img.shields.io/pypi/v/dora-kit-car) |
+| [Agilex - UGV](https://github.com/dora-rs/dora/blob/main/node-hub/dora-ugv)     | Robomaster Client   | ![Downloads](https://img.shields.io/pypi/dm/dora-ugv)     | ![License](https://img.shields.io/pypi/l/dora-ugv)     | ![Release](https://img.shields.io/pypi/v/dora-ugv)     |
+| [DJI - Robomaster S1](https://huggingface.co/datasets/dora-rs/dora-robomaster)  | Robomaster Client   |                                                           |                                                        |                                                        |
+
+### Arm
+
+| Title                                                                                            | Description                       | Downloads                                               | License                                              | Release                                              |
+| ------------------------------------------------------------------------------------------------ | --------------------------------- | ------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
+| [Alex Koch - Low Cost Robot](https://github.com/dora-rs/dora-lerobot/blob/main/robots/alexk-lcr) | Alex Koch - Low Cost Robot Client |                                                         |                                                      |                                                      |
+| [Lebai - LM3](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/lebai-client)           | Lebai client                      |                                                         |                                                      |                                                      |
+| [Agilex - Piper](https://github.com/dora-rs/dora/blob/main/node-hub/dora-piper)                  | Agilex arm client                 | ![Downloads](https://img.shields.io/pypi/dm/dora-piper) | ![License](https://img.shields.io/pypi/l/dora-piper) | ![Release](https://img.shields.io/pypi/v/dora-piper) |
+
+### Robot
+
+| Title                                                                                        | Description     | Downloads                                                 | License                                                | Release                                                |
+| -------------------------------------------------------------------------------------------- | --------------- | --------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------ |
+| [Pollen - Reachy 2](https://github.com/dora-rs/dora/blob/main/node-hub/dora-reachy2)         | Reachy 2 client | ![Downloads](https://img.shields.io/pypi/dm/dora-reachy2) | ![License](https://img.shields.io/pypi/l/dora-reachy2) | ![Release](https://img.shields.io/pypi/v/dora-reachy2) |
+| [Trossen - Aloha](https://github.com/dora-rs/dora-lerobot/blob/main/robots/aloha)            | Aloha client    |                                                           |                                                        |                                                        |
+| [Pollen - Reachy 1](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dora-reachy1) | Reachy 1 Client |                                                           |                                                        |                                                        |
+
+### Voice Activity Detection
+
+| Title                                                                     | Description                     | Downloads                                             | License                                            | Release                                            |
+| ------------------------------------------------------------------------- | ------------------------------- | ----------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| [Silero VAD](https://github.com/dora-rs/dora/blob/main/node-hub/dora-vad) | Silero Voice activity detection | ![Downloads](https://img.shields.io/pypi/dm/dora-vad) | ![License](https://img.shields.io/pypi/l/dora-vad) | ![Release](https://img.shields.io/pypi/v/dora-vad) |
+
+### Speech to Text
+
+| Title                                                                             | Description              | Downloads                                                        | License                                                       | Release                                                       |
+| --------------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
+| [Whisper](https://github.com/dora-rs/dora/blob/main/node-hub/dora-distil-whisper) | Transcribe audio to text | ![Downloads](https://img.shields.io/pypi/dm/dora-distil-whisper) | ![License](https://img.shields.io/pypi/l/dora-distil-whisper) | ![Release](https://img.shields.io/pypi/v/dora-distil-whisper) |
+
+### Object Detection
+
+| Title                                                                  | Description      | Downloads                                              | License                                             | Release                                             |
+| ---------------------------------------------------------------------- | ---------------- | ------------------------------------------------------ | --------------------------------------------------- | --------------------------------------------------- |
+| [Yolov8](https://github.com/dora-rs/dora/blob/main/node-hub/dora-yolo) | Object detection | ![Downloads](https://img.shields.io/pypi/dm/dora-yolo) | ![License](https://img.shields.io/pypi/l/dora-yolo) | ![Release](https://img.shields.io/pypi/v/dora-yolo) |
+
+### Vision Language Model
+
+| Title                                                                            | Description                            | Downloads                                                    | License                                                   | Release                                                   |
+| -------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------------- |
+| [Qwen2.5-vl](https://github.com/dora-rs/dora/blob/main/node-hub/dora-qwen2-5-vl) | Vision Language Model using Qwen2.5 VL | ![Downloads](https://img.shields.io/pypi/dm/dora-qwen2-5-vl) | ![License](https://img.shields.io/pypi/l/dora-qwen2-5-vl) | ![Release](https://img.shields.io/pypi/v/dora-qwen2-5-vl) |
+| [InternVL](https://github.com/dora-rs/dora/blob/main/node-hub/dora-internvl)     | InternVL is a vision language model    | ![Downloads](https://img.shields.io/pypi/dm/dora-internvl)   | ![License](https://img.shields.io/pypi/l/dora-internvl)   | ![Release](https://img.shields.io/pypi/v/dora-internvl)   |
+
+### Large Language Model
+
+| Title                                                                   | Description                     | Downloads                                              | License                                             | Release                                             |
+| ----------------------------------------------------------------------- | ------------------------------- | ------------------------------------------------------ | --------------------------------------------------- | --------------------------------------------------- |
+| [Qwen2.5](https://github.com/dora-rs/dora/blob/main/node-hub/dora-qwen) | Large Language Model using Qwen | ![Downloads](https://img.shields.io/pypi/dm/dora-qwen) | ![License](https://img.shields.io/pypi/l/dora-qwen) | ![Release](https://img.shields.io/pypi/v/dora-qwen) |
+
+### Vision Language Action
+
+| Title                                                                    | Description                                      | Downloads                                                | License                                               | Release                                               |
+| ------------------------------------------------------------------------ | ------------------------------------------------ | -------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------- |
+| [RDT-1B](https://github.com/dora-rs/dora/blob/main/node-hub/dora-rdt-1b) | Infer policy using Robotic Diffusion Transformer | ![Downloads](https://img.shields.io/pypi/dm/dora-rdt-1b) | ![License](https://img.shields.io/pypi/l/dora-rdt-1b) | ![Release](https://img.shields.io/pypi/v/dora-rdt-1b) |
+
+### Translation
+
+| Title                                                                                   | Description                     | Downloads                                                       | License                                                      | Release                                                      |
+| --------------------------------------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| [Opus MT](https://github.com/dora-rs/dora/blob/main/node-hub/dora-opus)                 | Translate text between language | ![Downloads](https://img.shields.io/pypi/dm/dora-opus)          | ![License](https://img.shields.io/pypi/l/dora-opus)          | ![Release](https://img.shields.io/pypi/v/dora-opus)          |
+| [ArgosTranslate](https://github.com/dora-rs/dora/blob/main/node-hub/dora-argotranslate) | Open Source translation engine  | ![Downloads](https://img.shields.io/pypi/dm/dora-argotranslate) | ![License](https://img.shields.io/pypi/l/dora-argotranslate) | ![Release](https://img.shields.io/pypi/v/dora-argotranslate) |
+
+### Text to Speech
+
+| Title                                                                            | Description              | Downloads                                                    | License                                                   | Release                                                   |
+| -------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------ | --------------------------------------------------------- | --------------------------------------------------------- |
+| [Kokoro TTS](https://github.com/dora-rs/dora/blob/main/node-hub/dora-kokoro-tts) | Efficient Text to Speech | ![Downloads](https://img.shields.io/pypi/dm/dora-kokoro-tts) | ![License](https://img.shields.io/pypi/l/dora-kokoro-tts) | ![Release](https://img.shields.io/pypi/v/dora-kokoro-tts) |
+
+### Recorder
+
+| Title                                                                                               | Description                      | Downloads                                                           | License                                                          | Release                                                          |
+| --------------------------------------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------- |
+| [Llama Factory Recorder](https://github.com/dora-rs/dora/blob/main/node-hub/llama-factory-recorder) | Record data to train LLM and VLM | ![Downloads](https://img.shields.io/pypi/dm/llama-factory-recorder) | ![License](https://img.shields.io/pypi/l/llama-factory-recorder) | ![Release](https://img.shields.io/pypi/v/llama-factory-recorder) |
+| [LeRobot Recorder](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/lerobot-dashboard)    | LeRobot Recorder helper          |                                                                     |                                                                  |                                                                  |
+
+### Visualization
+
+| Title                                                                  | Description                      | Downloads                                               | License                                               | Release                                               |
+| ---------------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------- |
+| [Plot](https://github.com/dora-rs/dora/blob/main/node-hub/opencv-plot) | Simple OpenCV plot visualization | ![Downloads](https://img.shields.io/pypi/dm/dora-yolo)  | ![License](https://img.shields.io/pypi/l/opencv-plot) | ![Release](https://img.shields.io/pypi/v/opencv-plot) |
+| [Rerun](https://github.com/dora-rs/dora/blob/main/node-hub/dora-rerun) | Visualization tool               | ![Downloads](https://img.shields.io/pypi/dm/dora-rerun) | ![License](https://img.shields.io/pypi/l/dora-rerun)  | ![Release](https://img.shields.io/pypi/v/dora-rerun)  |
+
+### Simulator
+
+| Title                                                                              | Description                          | Downloads | License | Release |
+| ---------------------------------------------------------------------------------- | ------------------------------------ | --------- | ------- | ------- |
+| [Mujoco](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/mujoco-client) | Mujoco Simulator                     |           |         |         |
+| [Carla](https://github.com/dora-rs/dora-drives)                                    | Carla Simulator                      |           |         |         |
+| [Gymnasium](https://github.com/dora-rs/dora-lerobot/blob/main/gym_dora)            | Experimental OpenAI Gymnasium bridge |           |         |         |
+
+## Getting Started
+
+### Installation
 
 ```bash
 pip install dora-rs-cli
 ```
+
+<details close>
+<summary><b>Additional installation methods</b></summary>
+
+Install dora with our standalone installers, or from [crates.io](https://crates.io/crates/dora-cli):
 
 ### With cargo
 
@@ -100,26 +225,35 @@ curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/dora-rs/d
 powershell -c "irm https://raw.githubusercontent.com/dora-rs/dora/main/install.ps1 | iex"
 ```
 
-## Documentation
-
-The full documentation is available on [our website](https://dora-rs.ai/).
-A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/) of our website.
-
-## Getting Started
-
-1. Run some Python examples (A venv must be activated):
+### With Source
 
 ```bash
-cd examples/python-dataflow
-uv venv --seed
-uv pip install -e ../../apis/python/node --reinstall
-dora build dataflow.yml --uv
-dora run dataflow.yml --uv
+git clone https://github.com/dora-rs/dora.git
+cd dora
+cargo build --release -p dora-cli
+PATH=$PATH:$(pwd)/target/release
+```
+
+</details>
+
+### Run
+
+1. Run some Python examples:
+
+```bash
+uv venv --seed -p 3.11
+dora build https://raw.githubusercontent.com/dora-rs/dora/refs/heads/main/examples/object-detection/yolo.yml --uv
+dora run yolo.yml --uv
 ```
 
 > Make sure to have a webcam
 
 To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
+
+### Documentation
+
+The full documentation is available on [our website](https://dora-rs.ai/).
+A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/) of our website.
 
 ## What is Dora? And what features does Dora offer?
 
@@ -137,7 +271,6 @@ nodes:
       tick: dora/timer/millis/20
     outputs:
       - image
-      -
   - id: plot
     path: opencv-plot
     inputs:
@@ -175,16 +308,6 @@ dora-rs uses Opentelemetry to record all your logs, metrics and traces. This mea
 [Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectable by most backends such as elasticsearch, prometheus, Datadog...
 
 Opentelemetry is language independent, backend agnostic, and easily collect distributed data, making it perfect for dora-rs applications.
-
-### Hot-Reloading
-
-dora-rs implements Hot-Reloading for python which means you can change code at runtime in Python while keeping your state intact.
-
-Using the feature flag: `--attach --hot-reload`, dora-rs watch for code change and reload nodes that has been modified.
-
-You can check fail-safe mechanism at: https://github.com/dora-rs/dora/pull/239.
-
-See [this demo](http://www.youtube.com/watch?v=NvvTEP8Jak8).
 
 ### ROS2 Bridge
 
@@ -236,38 +359,18 @@ Self-Coding Robot is just the tip of the iceberg of robotics combined with llm, 
 - [memory](https://github.com/cpacker/MemGPT)
 - [function calling](https://github.com/ShishirPatil/gorilla)
 
-### Cool Hardwares
-
-Cool hardware that we think might be good fit to try out dora-rs 🙋 We are not sponsored by manufacturers:
-
-|                                   | Price | Open Source        | Github                                               | type       | Dora Project                                            |
-| --------------------------------- | ----- | ------------------ | ---------------------------------------------------- | ---------- | ------------------------------------------------------- |
-| DJI Robomaster S1                 | 550$  | SDK                | https://github.com/dji-sdk/RoboMaster-SDK            | Rover      | https://huggingface.co/datasets/dora-rs/dora-robomaster |
-| DJI Robomaster EP Core            | 950$  | SDK                | https://github.com/dji-sdk/RoboMaster-SDK            | Rover, Arm |                                                         |
-| DJI Tello                         | 100$  |                    |                                                      | Drone      |                                                         |
-| BitCraze Crazyflies               | 225$  | Firmware, Lib, SDK | https://github.com/bitcraze                          | Drone      |                                                         |
-| AlexanderKoch-Koch/low_cost_robot | 250$  | Everything         | https://github.com/AlexanderKoch-Koch/low_cost_robot | Arm        |                                                         |
-| xArm 1S                           | 200$  |                    |                                                      | Arm        |                                                         |
-| Wavego                            | 250$  |                    |                                                      | Quadruplet |                                                         |
-| AINex                             | 800$  |                    |                                                      | Humanoid   |                                                         |
-
-> For more: https://docs.google.com/spreadsheets/d/1YYeW2jfOIWDVgdEgqnMvltonHquQ7K8OZCrnJRELL6o/edit#gid=0
-
 ## Support Matrix
 
-|                                   | dora-rs                                                                                 | Hoped for                                                                                                                                |
-| --------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| **Tier 1 Support**                | Python, Rust                                                                            | C, C++, ROS 2                                                                                                                            |
+|                                   | dora-rs                                                                                 | Hoped for                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Tier 1 Support**                | Python, Rust                                                                            | C, C++, ROS 2                                                   |
 | **Tier 2 Support**                | C, C++, ROS2                                                                            |
-| **Hot-reloading**                 | Python                                                                                  | Rust (https://github.com/orgs/dora-rs/discussions/360)                                                                                   |
-| **Message Format**                | Arrow                                                                                   | Native                                                                                                                                   |
-| **Local Communication**           | Shared Memory                                                                           | Custom Middleware, [zero-copy GPU IPC](https://arrow.apache.org/docs/python/api/cuda.html), intra-process `tokio::channel` communication |
-| **Remote Communication**          | TCP                                                                                     | Custom Middleware, [Zenoh](https://zenoh.io/)                                                                                            |
-| **Metrics, Tracing, and Logging** | Opentelemetry                                                                           | Native logging libraries into Opentelemetry                                                                                              |
-| **Data archives**                 | Parquet ([dora-record](https://github.com/dora-rs/dora/tree/main/node-hub/dora-record)) |
-| **Visualization and annotation**  | OpenCV                                                                                  | [rerun.io](rerun.io)                                                                                                                     |
-| **Supported Platforms (x86)**     | Windows, macOS, Linux                                                                   |
-| **Supported Platforms (ARM)**     | macOS, Linux                                                                            |
+| **Message Format**                | Arrow                                                                                   | Native                                                          |
+| **Local Communication**           | Shared Memory, [Cuda zero-copy IPC](https://arrow.apache.org/docs/python/api/cuda.html) | Custom Middleware, intra-process `tokio::channel` communication |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/)                                                              | Custom Middleware                                               |
+| **Metrics, Tracing, and Logging** | Opentelemetry                                                                           | Native logging libraries into Opentelemetry                     |
+| **Supported Platforms (x86)**     | Windows, MacOS, Linux                                                                   |
+| **Supported Platforms (ARM)**     | MacOS, Linux                                                                            |
 | **Configuration**                 | YAML                                                                                    |
 
 ## Contributing
