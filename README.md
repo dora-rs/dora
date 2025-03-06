@@ -34,7 +34,7 @@
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
-An extremely fast and simple **dataflow oriented robotic** framework to manage your projects and run complex **apps**, written in Rust.
+An extremely fast and simple **dataflow oriented robotic** framework to manage your projects and run realtime multi-AI and multi-hardware **applications**, written in Rust.
 
 <p align="center">
   <picture align="center">
@@ -63,7 +63,7 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 
 ## Highlights
 
-- 🚀 A single CLI to launch your Python and Rust robotic projects.
+- 🚀 A single CLI to run multiple AI models and hardware drivers in parallel.
 - 🦀 dora-rs is 100% Rust project.
 - 🖥️ Supports macOS, Linux, and Windows.
 - ⚙️ Support Python, C, C++, and ROS2, while ensuring low-latency communication with zero-copy Arrow messages.
@@ -271,7 +271,6 @@ nodes:
       tick: dora/timer/millis/20
     outputs:
       - image
-      -
   - id: plot
     path: opencv-plot
     inputs:
