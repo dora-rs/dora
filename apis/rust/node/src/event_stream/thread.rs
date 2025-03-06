@@ -3,6 +3,7 @@ use dora_core::{
     uhlc::{self, Timestamp},
 };
 use dora_message::{
+    common::{DataMessage, DropTokenState, DropTokenStatus},
     daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
@@ -14,6 +15,8 @@ use std::{
 };
 
 use crate::daemon_connection::DaemonChannel;
+
+use super::{event::SharedMemoryData, Event, MappedInputData, RawData};
 
 pub fn init(
     node_id: NodeId,
@@ -28,10 +31,7 @@ pub fn init(
 
 #[derive(Debug)]
 pub enum EventItem {
-    NodeEvent {
-        event: NodeEvent,
-        ack_channel: flume::Sender<()>,
-    },
+    NodeEvent { event: super::Event },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
 }
@@ -130,25 +130,60 @@ fn event_stream_loop(
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            let drop_token = match &inner {
-                NodeEvent::Input {
-                    data: Some(data), ..
-                } => data.drop_token(),
+
+            let event = match inner {
+                NodeEvent::Stop => Event::Stop,
+                NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
+                NodeEvent::InputClosed { id } => Event::InputClosed { id },
+                NodeEvent::Input { id, metadata, data } => {
+                    let data = match data {
+                        None => Ok(None),
+                        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
+                        Some(DataMessage::SharedMemory {
+                            shared_memory_id,
+                            len,
+                            drop_token,
+                        }) => unsafe {
+                            let (drop_tx, drop_rx) = flume::bounded(0);
+                            let data = MappedInputData::map(&shared_memory_id, len).map(|data| {
+                                Some(RawData::SharedMemory(SharedMemoryData {
+                                    data,
+                                    _drop: drop_tx,
+                                }))
+                            });
+                            drop_tokens.push(DropTokenStatus {
+                                token: drop_token,
+                                state: DropTokenState::Mapped,
+                            });
+                            pending_drop_tokens.push((drop_token, drop_rx, Instant::now(), 1));
+                            data
+                        },
+                    };
+                    let data = data.and_then(|data| {
+                        let raw_data = data.unwrap_or(RawData::Empty);
+                        raw_data
+                            .into_arrow_array(&metadata.type_info)
+                            .map(arrow::array::make_array)
+                    });
+                    match data {
+                        Ok(data) => Event::Input {
+                            id,
+                            metadata,
+                            data: data.into(),
+                        },
+                        Err(err) => Event::Error(format!("{err:?}")),
+                    }
+                }
                 NodeEvent::AllInputsClosed => {
                     // close the event stream
                     tx = None;
                     // skip this internal event
                     continue;
                 }
-                _ => None,
             };
 
             if let Some(tx) = tx.as_ref() {
-                let (drop_tx, drop_rx) = flume::bounded(0);
-                match tx.send(EventItem::NodeEvent {
-                    event: inner,
-                    ack_channel: drop_tx,
-                }) {
+                match tx.send(EventItem::NodeEvent { event }) {
                     Ok(()) => {}
                     Err(send_error) => {
                         let event = send_error.into_inner();
@@ -159,12 +194,8 @@ fn event_stream_loop(
                         break 'outer Ok(());
                     }
                 }
-
-                if let Some(token) = drop_token {
-                    pending_drop_tokens.push((token, drop_rx, Instant::now(), 1));
-                }
             } else {
-                tracing::warn!("dropping event because event `tx` was already closed: `{inner:?}`");
+                tracing::warn!("dropping event because event `tx` was already closed: `{event:?}`");
             }
         }
     };
@@ -196,7 +227,7 @@ fn event_stream_loop(
 
 fn handle_pending_drop_tokens(
     pending_drop_tokens: &mut Vec<(DropToken, flume::Receiver<()>, Instant, u64)>,
-    drop_tokens: &mut Vec<DropToken>,
+    drop_tokens: &mut Vec<DropTokenStatus>,
 ) -> eyre::Result<()> {
     let mut still_pending = Vec::new();
     for (token, rx, since, warn) in pending_drop_tokens.drain(..) {
@@ -204,7 +235,10 @@ fn handle_pending_drop_tokens(
             Ok(()) => return Err(eyre!("Node API should not send anything on ACK channel")),
             Err(flume::TryRecvError::Disconnected) => {
                 // the event was dropped -> add the drop token to the list
-                drop_tokens.push(token);
+                drop_tokens.push(DropTokenStatus {
+                    token,
+                    state: DropTokenState::Dropped,
+                });
             }
             Err(flume::TryRecvError::Empty) => {
                 let duration = Duration::from_secs(30 * warn);
@@ -221,7 +255,7 @@ fn handle_pending_drop_tokens(
 
 fn report_remaining_drop_tokens(
     mut channel: DaemonChannel,
-    mut drop_tokens: Vec<DropToken>,
+    mut drop_tokens: Vec<DropTokenStatus>,
     mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)>,
     timestamp: Timestamp,
 ) -> eyre::Result<()> {
@@ -234,7 +268,10 @@ fn report_remaining_drop_tokens(
                 Ok(()) => return Err(eyre!("Node API should not send anything on ACK channel")),
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     // the event was dropped -> add the drop token to the list
-                    drop_tokens.push(token);
+                    drop_tokens.push(DropTokenStatus {
+                        token,
+                        state: DropTokenState::Dropped,
+                    });
                 }
                 Err(flume::RecvTimeoutError::Timeout) => {
                     let duration = Duration::from_secs(1);
@@ -259,7 +296,7 @@ fn report_remaining_drop_tokens(
 }
 
 fn report_drop_tokens(
-    drop_tokens: &mut Vec<DropToken>,
+    drop_tokens: &mut Vec<DropTokenStatus>,
     channel: &mut DaemonChannel,
     timestamp: Timestamp,
 ) -> Result<(), eyre::ErrReport> {
