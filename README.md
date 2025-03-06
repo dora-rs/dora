@@ -67,16 +67,21 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 - 🦀 dora-rs is 100% Rust project making it extremely fast compared to alternative, such as ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark) than `ros2`.
 - ❇️ Includes a large set of pre-packaged nodes for fast prototyping and simplifies integration hardware, algorithms, and AI models to facilitate seamless communication.
 
-| Support Matrix                    | dora-rs                                                                                 |
-| --------------------------------- | --------------------------------------------------------------------------------------- |
-| **APIs**                          | Python, Rust, C/C++ (Best Effort), ROS2 (Best Effort)                                   |
-| **OS**                            | Windows (x64_86), MacOS (Arm/x64_86), Linux (Arm/x64_86)                                |
-| **Message Format**                | Arrow                                                                                   |
-| **Local Communication**           | Shared Memory, [Cuda zero-copy IPC](https://arrow.apache.org/docs/python/api/cuda.html) |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/)                                                              |
-| **Metrics, Tracing, and Logging** | Opentelemetry                                                                           |
-| **Configuration**                 | YAML                                                                                    |
-| **Package Manager**               | [pip](https://pypi.org/), [cargo](https://crates.io/)                                   |
+| Support Matrix                    | dora-rs &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;                                |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **APIs**                          | Python >= 3.7 ✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                           |
+| **OS**                            | Linux: Arm 32 ✅ Arm 64 ✅ x64_86 ✅ <br>MacOS: Arm 64 ✅ x64_86 ✅<br>Windows: x64_86 🆗<br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
+| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                  |
+| **Local Communication**           | Shared Memory ✅ <br> [Cuda zero-copy IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                        |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                            |
+| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                         |
+| **Configuration**                 | YAML ✅                                                                                                                                                                                  |
+| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                        |
+
+> - ✅ = First Class Support
+> - 🆗 = Downlevel/Best Effort Support
+> - 📐 = Experimental
+> - 🛠️ = Unsupported, though open to contributions
 
 ## Node Hub
 
