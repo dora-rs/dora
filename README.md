@@ -73,7 +73,7 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 - 🤖 Simplifies building robotic applications by integrating hardware, algorithms, and AI models to facilitate seamless communication.
 - ⚙️ Eases integration of hardware and software by supporting Python, C, C++, and ROS2, while ensuring low-latency communication with zero-copy Arrow messages.
 
-## Packaged Nodes
+## Node Hub
 
 ### Camera
 
@@ -116,11 +116,11 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 
 ### Robot
 
-| Title                                                                                        | Description     | Shields |
-| -------------------------------------------------------------------------------------------- | --------------- | ------- |
-| [Pollen - Reachy 1](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dora-reachy1) | Reachy 1 Client |         |
-| [Pollen - Reachy 2](https://github.com/dora-rs/dora-lerobot/blob/main/robots/reachy)         | Reachy 2 client |         |
-| [Trossen - Aloha](https://github.com/dora-rs/dora-lerobot/blob/main/robots/aloha)            | Aloha client    |         |
+| Title                                                                                        | Description     | Shields                                                                                                                                                                 |
+| -------------------------------------------------------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Pollen - Reachy 1](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dora-reachy1) | Reachy 1 Client |                                                                                                                                                                         |
+| [Pollen - Reachy 2](https://github.com/dora-rs/dora/blob/main/node-hub/dora-reachy2)         | Reachy 2 client | ![Downloads](https://img.shields.io/pypi/dm/dora-reachy2) ![License](https://img.shields.io/pypi/l/dora-reachy2) ![Release](https://img.shields.io/pypi/v/dora-reachy2) |
+| [Trossen - Aloha](https://github.com/dora-rs/dora-lerobot/blob/main/robots/aloha)            | Aloha client    |                                                                                                                                                                         |
 
 ### Voice Activity Detection
 
@@ -208,7 +208,7 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 pip install dora-rs-cli
 ```
 
-<details open>
+<details close>
 <summary><b>Additional installation methods</b></summary>
 
 Install dora with our standalone installers, or from [crates.io](https://crates.io/crates/dora-cli):
@@ -376,8 +376,8 @@ Self-Coding Robot is just the tip of the iceberg of robotics combined with llm, 
 | **Local Communication**           | Shared Memory, [Cuda zero-copy IPC](https://arrow.apache.org/docs/python/api/cuda.html) | Custom Middleware, intra-process `tokio::channel` communication |
 | **Remote Communication**          | [Zenoh](https://zenoh.io/)                                                              | Custom Middleware                                               |
 | **Metrics, Tracing, and Logging** | Opentelemetry                                                                           | Native logging libraries into Opentelemetry                     |
-| **Supported Platforms (x86)**     | Windows, macOS, Linux                                                                   |
-| **Supported Platforms (ARM)**     | macOS, Linux                                                                            |
+| **Supported Platforms (x86)**     | Windows, MacOS, Linux                                                                   |
+| **Supported Platforms (ARM)**     | MacOS, Linux                                                                            |
 | **Configuration**                 | YAML                                                                                    |
 
 ## Contributing
