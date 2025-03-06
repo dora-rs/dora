@@ -194,6 +194,20 @@ An extremely fast and simple **dataflow oriented robotic** framework to manage y
 | [Carla](https://github.com/dora-rs/dora-drives)                                    | Carla Simulator                      |           |         |         |
 | [Gymnasium](https://github.com/dora-rs/dora-lerobot/blob/main/gym_dora)            | Experimental OpenAI Gymnasium bridge |           |         |         |
 
+## Support Matrix
+
+|                                   | dora-rs                                                                                 | Hoped for                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Tier 1 Support**                | Python, Rust                                                                            | C, C++, ROS 2                                                   |
+| **Tier 2 Support**                | C, C++, ROS2                                                                            |
+| **Supported OS**                  | Windows (x86), MacOS (Arm/x86), Linux (Arm/x86)                                         | Android, IOS                                                    |
+| **Message Format**                | Arrow                                                                                   | Native Types, Standardised specification                        |
+| **Local Communication**           | Shared Memory, [Cuda zero-copy IPC](https://arrow.apache.org/docs/python/api/cuda.html) | Custom Middleware, intra-process `tokio::channel` communication |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/)                                                              | Custom Middleware                                               |
+| **Metrics, Tracing, and Logging** | Opentelemetry                                                                           | Native logging libraries into Opentelemetry                     |
+| **Configuration**                 | YAML                                                                                    | Python                                                          |
+| **Dora Node Package Manager**     | [pip](https://pypi.org/), [cargo](https://crates.io/)                                   | apt, brew, ...                                                  |
+
 ## Getting Started
 
 ### Installation
@@ -242,7 +256,7 @@ PATH=$PATH:$(pwd)/target/release
 
 ```bash
 uv venv --seed -p 3.11
-dora build https://raw.githubusercontent.com/dora-rs/dora/refs/heads/main/examples/object-detection/yolo.yml --uv
+dora build https://raw.githubusercontent.com/dora-rs/dora/refs/heads/readme-with-node-table/examples/object-detection/yolo.yml --uv
 dora run yolo.yml --uv
 ```
 
@@ -358,20 +372,6 @@ Self-Coding Robot is just the tip of the iceberg of robotics combined with llm, 
 - [self-debugging](https://arxiv.org/pdf/2304.05128.pdf)
 - [memory](https://github.com/cpacker/MemGPT)
 - [function calling](https://github.com/ShishirPatil/gorilla)
-
-## Support Matrix
-
-|                                   | dora-rs                                                                                 | Hoped for                                                       |
-| --------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| **Tier 1 Support**                | Python, Rust                                                                            | C, C++, ROS 2                                                   |
-| **Tier 2 Support**                | C, C++, ROS2                                                                            |
-| **Message Format**                | Arrow                                                                                   | Native                                                          |
-| **Local Communication**           | Shared Memory, [Cuda zero-copy IPC](https://arrow.apache.org/docs/python/api/cuda.html) | Custom Middleware, intra-process `tokio::channel` communication |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/)                                                              | Custom Middleware                                               |
-| **Metrics, Tracing, and Logging** | Opentelemetry                                                                           | Native logging libraries into Opentelemetry                     |
-| **Supported Platforms (x86)**     | Windows, MacOS, Linux                                                                   |
-| **Supported Platforms (ARM)**     | MacOS, Linux                                                                            |
-| **Configuration**                 | YAML                                                                                    |
 
 ## Contributing
 
