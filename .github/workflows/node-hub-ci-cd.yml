@@ -53,6 +53,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install portaudio19-dev
+          # Install mingw-w64 cross-compilers
+          sudo apt install g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
 
       - name: Install system-level dependencies for MacOS
         if: runner.os == 'MacOS' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')))
