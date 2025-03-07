@@ -1,21 +1,17 @@
-import argparse
 import os
-import time
-
+import argparse
 import cv2
+
 import numpy as np
 import pyarrow as pa
+
 from dora import Node
-
-RUNNER_CI = True if os.getenv("CI") == "true" else False
-
-FLIP = os.getenv("FLIP", "")
 
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
-        description="OpenCV Video Capture: This node is used to capture video from a camera.",
+        description="OpenCV Video Capture: This node is used to capture video from a camera."
     )
 
     parser.add_argument(
@@ -50,36 +46,29 @@ def main():
     args = parser.parse_args()
 
     video_capture_path = os.getenv("CAPTURE_PATH", args.path)
-    encoding = os.getenv("ENCODING", "bgr8")
 
     if isinstance(video_capture_path, str) and video_capture_path.isnumeric():
         video_capture_path = int(video_capture_path)
 
-    video_capture = cv2.VideoCapture(video_capture_path)
+    print(type(video_capture_path))
 
     image_width = os.getenv("IMAGE_WIDTH", args.image_width)
+    image_height = os.getenv("IMAGE_HEIGHT", args.image_height)
 
     if image_width is not None:
         if isinstance(image_width, str) and image_width.isnumeric():
             image_width = int(image_width)
-        video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, image_width)
 
-    image_height = os.getenv("IMAGE_HEIGHT", args.image_height)
     if image_height is not None:
         if isinstance(image_height, str) and image_height.isnumeric():
             image_height = int(image_height)
-        video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, image_height)
 
+    video_capture = cv2.VideoCapture(video_capture_path)
     node = Node(args.name)
-    start_time = time.time()
 
     pa.array([])  # initialize pyarrow array
 
     for event in node:
-        # Run this example in the CI for 10 seconds only.
-        if RUNNER_CI and time.time() - start_time > 10:
-            break
-
         event_type = event["type"]
 
         if event_type == "INPUT":
@@ -92,8 +81,8 @@ def main():
                     frame = np.zeros((480, 640, 3), dtype=np.uint8)
                     cv2.putText(
                         frame,
-                        f"Error: no frame for camera at path {video_capture_path}.",
-                        (30, 30),
+                        f"Error: Could not read frame from camera at path {video_capture_path}.",
+                        (int(30), int(30)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.50,
                         (255, 255, 255),
@@ -101,45 +90,21 @@ def main():
                         1,
                     )
 
-                if FLIP == "VERTICAL":
-                    frame = cv2.flip(frame, 0)
-                elif FLIP == "HORIZONTAL":
-                    frame = cv2.flip(frame, 1)
-                elif FLIP == "BOTH":
-                    frame = cv2.flip(frame, -1)
-
                 # resize the frame
-                if (
-                    image_width is not None
-                    and image_height is not None
-                    and (
-                        frame.shape[1] != image_width or frame.shape[0] != image_height
-                    )
-                ):
+                if image_width is not None and image_height is not None:
                     frame = cv2.resize(frame, (image_width, image_height))
 
-                metadata = event["metadata"]
-                metadata["encoding"] = encoding
-                metadata["width"] = int(frame.shape[1])
-                metadata["height"] = int(frame.shape[0])
+                image = {
+                    "width": pa.scalar(frame.shape[1], type=pa.uint32()),
+                    "height": pa.scalar(frame.shape[0], type=pa.uint32()),
+                    "channels": pa.scalar(frame.shape[2], type=pa.uint8()),
+                    "data": frame.ravel(),
+                }
 
-                # Get the right encoding
-                if encoding == "rgb8":
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                elif encoding == "yuv420":
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2YUV_I420)
-                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
-                    ret, frame = cv2.imencode("." + encoding, frame)
-                    if not ret:
-                        print("Error encoding image...")
-                        continue
-
-                storage = pa.array(frame.ravel())
-
-                node.send_output("image", storage, metadata)
+                node.send_output("image", pa.array([image]), event["metadata"])
 
         elif event_type == "ERROR":
-            raise RuntimeError(event["error"])
+            raise Exception(event["error"])
 
 
 if __name__ == "__main__":

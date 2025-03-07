@@ -1,0 +1,20 @@
+{
+  "shoulder_pan": {
+    "id": 1,
+    "model": "x_series",
+    "torque": true,
+    "P": 800,
+    "I": 0,
+    "D": 0,
+    "goal_current": null
+  },
+  "shoulder_lift": {
+    "id": 2,
+    "model": "x_series",
+    "torque": true,
+    "P": 800,
+    "I": 0,
+    "D": 0,
+    "goal_current": null
+  }
+}
