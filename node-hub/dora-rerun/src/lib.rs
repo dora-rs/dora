@@ -45,40 +45,40 @@ pub fn lib_main() -> Result<()> {
 
     let rec = match std::env::var("OPERATING_MODE").as_deref() {
         Ok("SPAWN") => {
-            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+            
+            rerun::RecordingStreamBuilder::new("dora-rerun")
                 .spawn_opts(&options, None)
-                .context("Could not spawn rerun visualization")?;
-            rec
+                .context("Could not spawn rerun visualization")?
         }
         Ok("CONNECT") => {
             let opt = std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
-            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+            
+            rerun::RecordingStreamBuilder::new("dora-rerun")
                 .connect_tcp_opts(std::net::SocketAddr::V4(opt.parse()?), None)
-                .context("Could not connect to rerun visualization")?;
-            rec
+                .context("Could not connect to rerun visualization")?
         }
         Ok("SAVE") => {
             let id = node.dataflow_id();
             let path = Path::new("out")
                 .join(id.to_string())
                 .join(format!("archive-{}.rerun", id));
-            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+            
+            rerun::RecordingStreamBuilder::new("dora-rerun")
                 .save(path)
-                .context("Could not save rerun visualization")?;
-            rec
+                .context("Could not save rerun visualization")?
         }
         Ok(_) => {
             warn!("Invalid operating mode, defaulting to SPAWN mode.");
-            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+            
+            rerun::RecordingStreamBuilder::new("dora-rerun")
                 .spawn_opts(&options, None)
-                .context("Could not spawn rerun visualization")?;
-            rec
+                .context("Could not spawn rerun visualization")?
         }
         Err(_) => {
-            let rec = rerun::RecordingStreamBuilder::new("dora-rerun")
+            
+            rerun::RecordingStreamBuilder::new("dora-rerun")
                 .spawn_opts(&options, None)
-                .context("Could not spawn rerun visualization")?;
-            rec
+                .context("Could not spawn rerun visualization")?
         }
     };
 
@@ -241,7 +241,7 @@ pub fn lib_main() -> Result<()> {
                         }
                     }
 
-                    update_visualization(&rec, &chain, &id, &positions)?;
+                    update_visualization(&rec, chain, &id, &positions)?;
                 } else {
                     println!("Could not find chain for {}", id);
                 }

@@ -47,7 +47,7 @@ pub fn run(
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(download_file(&python_source.source, &target_path))
+        rt.block_on(download_file(&python_source.source, target_path))
             .wrap_err("failed to download Python operator")?
     } else {
         Path::new(&python_source.source).to_owned()

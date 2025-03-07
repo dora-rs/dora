@@ -20,7 +20,7 @@ pub fn visualize_nodes(nodes: &BTreeMap<NodeId, ResolvedNode>) -> String {
         all_nodes.insert(&node.id, node);
     }
 
-    let dora_timers = collect_dora_timers(&nodes);
+    let dora_timers = collect_dora_timers(nodes);
     if !dora_timers.is_empty() {
         writeln!(flowchart, "subgraph ___dora___ [dora]").unwrap();
         writeln!(flowchart, "  subgraph ___timer_timer___ [timer]").unwrap();

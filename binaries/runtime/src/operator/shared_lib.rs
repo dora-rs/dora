@@ -40,7 +40,7 @@ pub fn run(
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(download_file(source, &target_path))
+        rt.block_on(download_file(source, target_path))
             .wrap_err("failed to download shared library operator")?
     } else {
         adjust_shared_library_path(Path::new(source))?
