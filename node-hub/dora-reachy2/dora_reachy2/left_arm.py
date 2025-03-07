@@ -62,11 +62,10 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
     if x < 0.3 and z > -0.2:
         return l_default_pose
 
-    print("Left arm: No solution found for x, y, z: ", x, y, z)
     return []
 
 
-def manage_gripper(reachy, gripper, grasp):
+def manage_gripper(reachy, gripper, grasp) -> bool:
     if (gripper == 100 and reachy.r_arm.gripper.get_current_opening() == 100) or (
         gripper == 0.0
         and (
@@ -89,7 +88,7 @@ def manage_gripper(reachy, gripper, grasp):
     return True
 
 
-def main():
+def main() -> None:
     reachy = ReachySDK(ROBOT_IP)
 
     if reachy.l_arm is not None:
@@ -98,72 +97,71 @@ def main():
     node = Node()
 
     for event in node:
-        if event["type"] == "INPUT":
-            if event["id"] == "pose":
+        if event["type"] == "INPUT" and event["id"] == "pose":
 
-                values: np.array = event["value"].to_numpy(zero_copy_only=False)
-                encoding = event["metadata"]["encoding"]
-                wait = event["metadata"].get("wait", True)
-                duration = float(event["metadata"].get("duration", 1))
-                grasp = event["metadata"].get("grasp", True)
-                if encoding == "xyzrpy":
-                    values = values.reshape((-1, 7))
-                    joint_values = []
-                    for value in values:
-                        x = value[0]
-                        y = value[1]
-                        z = value[2]
-                        _r = value[3]
-                        _p = value[4]
-                        _y = value[5]
-                        gripper = value[6]
-                        joints = l_arm_go_to_mixed_angles(reachy, x, y, z)
-                        response_ik = len(joints) > 0
-                        if response_ik:
-                            joint_values.append((joints, gripper))
-                        else:
-
-                            break
-
-                    if not response_ik:
-                        node.send_output(
-                            "response_l_arm",
-                            pa.array([False]),
-                            metadata={"error": f"IK Failed for x: {x}, y: {y}, z: {z}"},
-                        )
+            values: np.array = event["value"].to_numpy(zero_copy_only=False)
+            encoding = event["metadata"]["encoding"]
+            wait = event["metadata"].get("wait", True)
+            duration = float(event["metadata"].get("duration", 1))
+            grasp = event["metadata"].get("grasp", True)
+            if encoding == "xyzrpy":
+                values = values.reshape((-1, 7))
+                joint_values = []
+                for value in values:
+                    x = value[0]
+                    y = value[1]
+                    z = value[2]
+                    _r = value[3]
+                    _p = value[4]
+                    _y = value[5]
+                    gripper = value[6]
+                    joints = l_arm_go_to_mixed_angles(reachy, x, y, z)
+                    response_ik = len(joints) > 0
+                    if response_ik:
+                        joint_values.append((joints, gripper))
                     else:
-                        for joint, gripper in joint_values:
-                            reachy.l_arm.goto(
-                                joint,
-                                duration=duration,
-                                wait=wait,
-                                interpolation_mode="linear",
-                            )
-                            response_gripper = manage_gripper(reachy, gripper, grasp)
-                            if not response_gripper:
-                                node.send_output(
-                                    "response_l_arm",
-                                    pa.array([False]),
-                                    metadata={"error": "Failed to grasp"},
-                                )
-                                break
-                        if response_gripper:
-                            node.send_output("response_l_arm", pa.array([True]))
 
-                elif encoding == "jointstate":
-                    values = values.reshape((-1, 8))
-                    for value in values:
-                        joints = value[:7].tolist()
-                        gripper = value[7]
+                        break
 
+                if not response_ik:
+                    node.send_output(
+                        "response_l_arm",
+                        pa.array([False]),
+                        metadata={"error": f"IK Failed for x: {x}, y: {y}, z: {z}"},
+                    )
+                else:
+                    for joint, gripper in joint_values:
                         reachy.l_arm.goto(
-                            joints,
+                            joint,
                             duration=duration,
                             wait=wait,
                             interpolation_mode="linear",
                         )
-                        manage_gripper(reachy, gripper, grasp)
-                    node.send_output("response_l_arm", pa.array([True]))
+                        response_gripper = manage_gripper(reachy, gripper, grasp)
+                        if not response_gripper:
+                            node.send_output(
+                                "response_l_arm",
+                                pa.array([False]),
+                                metadata={"error": "Failed to grasp"},
+                            )
+                            break
+                    if response_gripper:
+                        node.send_output("response_l_arm", pa.array([True]))
+
+            elif encoding == "jointstate":
+                values = values.reshape((-1, 8))
+                for value in values:
+                    joints = value[:7].tolist()
+                    gripper = value[7]
+
+                    reachy.l_arm.goto(
+                        joints,
+                        duration=duration,
+                        wait=wait,
+                        interpolation_mode="linear",
+                    )
+                    manage_gripper(reachy, gripper, grasp)
+                node.send_output("response_l_arm", pa.array([True]))
 
 
 if __name__ == "__main__":

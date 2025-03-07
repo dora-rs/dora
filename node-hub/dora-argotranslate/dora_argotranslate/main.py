@@ -21,7 +21,7 @@ package_to_install = next(
 argostranslate.package.install_from_path(package_to_install.download())
 
 
-def main():
+def main() -> None:
     node = Node()
     while True:
         event = node.next()
@@ -34,8 +34,6 @@ def main():
                 from_code,
                 to_code,
             )
-            print(text, flush=True)
-            print("translated: " + translatedText, flush=True)
             node.send_output(
                 "text",
                 pa.array([translatedText]),

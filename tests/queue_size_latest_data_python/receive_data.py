@@ -15,7 +15,6 @@ for event in node:
         send_time = event["value"][0].as_py()
 
         duration = (time.perf_counter_ns() - send_time) / 1_000_000_000
-        print("Duration: ", duration)
         assert (
             duration < 2
         ), f"Duration: {duration} should be less than 1 as we should always pull latest data."

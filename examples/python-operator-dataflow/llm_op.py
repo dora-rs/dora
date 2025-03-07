@@ -31,7 +31,7 @@ You're a json expert. Format your response as a json with a topic and a data fie
 The schema for those json are:
 - line: Int[4]
 
-The response should look like this: 
+The response should look like this:
 ```json
   {{ "topic": "line", "data": [10, 10, 90, 10] }}
 ```
@@ -43,8 +43,8 @@ The response should look like this:
 
 ASSISTANT_TEMPLATE = """
 ### Instruction
-You're a helpuf assistant named dora. 
-Reply with a short message. No code needed. 
+You're a helpuf assistant named dora.
+Reply with a short message. No code needed.
 
 User {user_message}
 
@@ -135,8 +135,7 @@ def calculate_similarity(source, target):
     edit_distance = pylcs.edit_distance(source, target)
     max_length = max(len(source), len(target))
     # Normalize the score by the maximum possible edit distance (the length of the longer string)
-    similarity = 1 - (edit_distance / max_length)
-    return similarity
+    return 1 - (edit_distance / max_length)
 
 
 def find_best_match_location(source_code, target_block):
@@ -170,16 +169,14 @@ def find_best_match_location(source_code, target_block):
 
 
 def replace_code_in_source(source_code, replacement_block: str):
-    """Replace the best matching block in the source_code with the replacement_block, considering variable block lengths.
-    """
+    """Replace the best matching block in the source_code with the replacement_block, considering variable block lengths."""
     replacement_block = extract_python_code_blocks(replacement_block)[0]
     start_index, end_index = find_best_match_location(source_code, replacement_block)
     if start_index != -1 and end_index != -1:
         # Replace the best matching part with the replacement block
-        new_source = (
+        return (
             source_code[:start_index] + replacement_block + source_code[end_index:]
         )
-        return new_source
     return source_code
 
 
@@ -197,13 +194,12 @@ class Operator:
                 code = f.read()
 
             user_message = input["user_message"]
-            start_llm = time.time()
+            time.time()
             output = self.ask_llm(
                 CODE_MODIFIER_TEMPLATE.format(code=code, user_message=user_message),
             )
 
             source_code = replace_code_in_source(code, output)
-            print("response time:", time.time() - start_llm, flush=True)
             send_output(
                 "modified_file",
                 pa.array(
@@ -218,7 +214,6 @@ class Operator:
                 ),
                 dora_event["metadata"],
             )
-            print("response: ", output, flush=True)
             send_output(
                 "assistant_message",
                 pa.array([output]),
@@ -244,9 +239,9 @@ class Operator:
                         dora_event["metadata"],
                     )
                 else:
-                    print("Could not find the topic: {}".format(output["topic"]))
+                    pass
             except:
-                print("Could not parse json")
+                pass
             # if data is not iterable, put data in a list
         elif dora_event["type"] == "INPUT" and dora_event["id"] == "assistant":
             user_message = dora_event["value"][0].as_py()

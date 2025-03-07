@@ -14,7 +14,7 @@ DEFAULT_QUESTION = os.getenv(
 )
 
 
-def write_dict_to_json(file_path, key: str, new_data):
+def write_dict_to_json(file_path, key: str, new_data) -> None:
     """Writes a dictionary to a JSON file. If the file already contains a list of entries,
     the new data will be appended to that list. Otherwise, it will create a new list.
 
@@ -46,7 +46,7 @@ def write_dict_to_json(file_path, key: str, new_data):
 
 def save_image_and_add_to_json(
     frame_dict: dict, root_path, llama_root_path, jsonl_file, messages,
-):
+) -> None:
     """Saves an image from a NumPy array and adds a new JSON object as a line to a JSONL file.
     The function generates a sequential numeric image filename starting from 0 and
     follows the provided template structure.
@@ -92,7 +92,7 @@ def save_image_and_add_to_json(
         f.write(json_line + "\n")
 
 
-def main():
+def main() -> None:
     pa.array([])  # initialize pyarrow array
     node = Node()
 
@@ -143,11 +143,12 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8" or encoding == "rgb8" or encoding == "jpeg":
+                if encoding in ("bgr8", "rgb8", "jpeg"):
                     channels = 3
                     storage_type = np.uint8
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
                 if encoding == "bgr8":
                     frame = (
@@ -169,7 +170,8 @@ def main():
                     frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
                 frames[event_id] = frame
 

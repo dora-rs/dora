@@ -14,7 +14,7 @@ DEVICE = torch.device(DEVICE)
 DTYPE = torch.float16 if DEVICE != "cpu" else torch.float32
 
 
-def test_import_main():
+def test_import_main() -> None:
     # from dora_rdt_1b.main import main
 
     # Check that everything is working, and catch dora Runtime Exception as we're not running in a dora dataflow.
@@ -24,7 +24,7 @@ def test_import_main():
     import dora_rdt_1b as _  # noqa
 
 
-def test_download_policy():
+def test_download_policy() -> None:
     from dora_rdt_1b.main import get_policy
 
     ## in the future we should add this test within CI
@@ -35,7 +35,7 @@ def test_download_policy():
     pytest.rdt = rdt
 
 
-def test_download_vision_model():
+def test_download_vision_model() -> None:
     # Skip vision test as it is currently failing on macOS
     # See: https://github.com/dora-rs/dora/actions/runs/13484462433/job/37673857429
     from dora_rdt_1b.main import get_vision_model
@@ -45,7 +45,7 @@ def test_download_vision_model():
     pytest.image_processor = image_processor
 
 
-def test_download_language_embeddings():
+def test_download_language_embeddings() -> None:
     ## in the future we should add this test within CI
     if CI:
         return
@@ -55,7 +55,7 @@ def test_download_language_embeddings():
     pytest.lang_embeddings = get_language_embeddings()
 
 
-def test_load_dummy_image():
+def test_load_dummy_image() -> None:
     from dora_rdt_1b.main import config
 
     # Load pretrained model (in HF style)
@@ -154,7 +154,7 @@ def test_load_dummy_image():
     ).unsqueeze(0)
 
 
-def test_dummy_states():
+def test_dummy_states() -> None:
     from dora_rdt_1b.main import config
 
     ## in the future we should add this test within CI
@@ -207,7 +207,7 @@ def test_dummy_states():
     pytest.STATE_INDICES = STATE_INDICES
 
 
-def test_dummy_input():
+def test_dummy_input() -> None:
     ## in the future we should add this test within CI
     if CI:
         return
@@ -233,9 +233,8 @@ def test_dummy_input():
     )  # (1, chunk_size, 128)
 
     # select the meaning action via STATE_INDICES
-    action = actions[
+    actions[
         :,
         :,
         STATE_INDICES,
     ]  # (1, chunk_size, len(STATE_INDICES)) = (1, chunk_size, 7+ 1)
-    print(action)

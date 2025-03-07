@@ -113,7 +113,7 @@ def extract_bboxes(json_text) -> (np.ndarray, np.ndarray):
     return None, None
 
 
-def handle_speech(last_text):
+def handle_speech(last_text) -> None:
     global stop
     words = last_text.lower().split()
     if len(ACTIVATION_WORDS) > 0 and any(word in ACTIVATION_WORDS for word in words):
@@ -132,12 +132,13 @@ def handle_speech(last_text):
             pa.array([cache["text"]]),
             metadata={"image_id": "image_depth"},
         )
-        print(f"sending: {cache['text']}")
         stop = False
 
 
-def wait_for_event(id, timeout=None, cache={}):
+def wait_for_event(id, timeout=None, cache=None):
 
+    if cache is None:
+        cache = {}
     while True:
         event = node.next(timeout=timeout)
         if event is None:
@@ -155,7 +156,9 @@ def wait_for_event(id, timeout=None, cache={}):
             return None, cache
 
 
-def wait_for_events(ids: list[str], timeout=None, cache={}):
+def wait_for_events(ids: list[str], timeout=None, cache=None):
+    if cache is None:
+        cache = {}
     response = {}
     while True:
         event = node.next(timeout=timeout)
@@ -261,7 +264,6 @@ while True:
         dest_z = values[1][2]
         x = x + 0.01
         dest_x = dest_x - 0.05
-        print("x: ", x, " y: ", y, " z: ", z)
 
         ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
         z = np.max((z, TABLE_HEIGHT))
@@ -282,11 +284,9 @@ while True:
             )
             event, cache = wait_for_event(id="response_r_arm", timeout=5, cache=cache)
             if event is not None and event[0].as_py():
-                print("Success")
                 arm_holding_object = "right"
                 break
             else:
-                print("Failed: x: ", x, " y: ", y, " z: ", z)
                 node.send_output(
                     "action_r_arm",
                     pa.array(r_init_pose),
@@ -302,11 +302,9 @@ while True:
             )
             event, cache = wait_for_event(id="response_l_arm", timeout=5, cache=cache)
             if event is not None and event[0].as_py():
-                print("Success")
                 arm_holding_object = "left"
                 break
             else:
-                print("Failed")
                 node.send_output(
                     "action_l_arm",
                     pa.array(l_init_pose),
@@ -359,7 +357,6 @@ while True:
         event, cache = wait_for_event(id="response_l_arm", cache=cache)
 
     if event is None or not event[0].as_py():
-        print("Failed to release object")
         if arm_holding_object == "right":
             node.send_output(
                 "action_r_arm",

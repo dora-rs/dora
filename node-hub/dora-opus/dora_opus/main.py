@@ -53,7 +53,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
     return text
 
 
-def main():
+def main() -> None:
     node = Node()
     while True:
         event = node.next()

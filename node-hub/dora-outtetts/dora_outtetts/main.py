@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse  # Add argparse import
 import os
 import pathlib
@@ -38,7 +40,7 @@ def load_interface():
     return interface
 
 
-def create_speaker(interface, path):
+def create_speaker(interface, path) -> None:
     speaker = interface.create_speaker(
         audio_path=path,
         # If transcript is not provided, it will be automatically transcribed using Whisper
@@ -48,10 +50,9 @@ def create_speaker(interface, path):
     )
     interface.save_speaker(speaker, "speaker.json")
 
-    print("saved speaker.json")
 
 
-def main(arg_list: list[str] | None = None):
+def main(arg_list: list[str] | None = None) -> None:
     # Parse cli args
     parser = argparse.ArgumentParser(description="Dora Outetts Node")
     parser.add_argument("--create-speaker", type=str, help="Path to audio file")
@@ -72,7 +73,6 @@ def main(arg_list: list[str] | None = None):
         return
 
     if os.path.exists(PATH_SPEAKER):
-        print(f"Loading speaker from {PATH_SPEAKER}")
         # speaker = interface.load_speaker(PATH_SPEAKER)
         speaker = interface.load_default_speaker(name="male_1")
     else:
@@ -84,12 +84,7 @@ def main(arg_list: list[str] | None = None):
     for event in node:
         if event["type"] == "INPUT":
             if event["id"] == "TICK":
-                print(
-                    f"""Node received:
-                id: {event["id"]},
-                value: {event["value"]},
-                metadata: {event["metadata"]}""",
-                )
+                pass
 
             elif event["id"] == "text":
                 # Warning: Make sure to add my_output_id and my_input_id within the dataflow.

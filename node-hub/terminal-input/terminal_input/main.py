@@ -1,15 +1,16 @@
 import argparse
 import ast
+import contextlib
 import os
 import time
 
 import pyarrow as pa
 from dora import Node
 
-RUNNER_CI = True if os.getenv("CI") == "true" else False
+RUNNER_CI = os.getenv("CI") == "true"
 
 
-def main():
+def main() -> None:
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(description="Simple arrow sender")
 
@@ -39,9 +40,7 @@ def main():
             )  # provide the name to connect to the dataflow if dynamic node
         except RuntimeError as err:
             if err != last_err:
-                print(err)
                 last_err = err
-            print("Waiting for dataflow to be spawned")
             time.sleep(1)
 
         if data is None and os.getenv("DORA_NODE_CONFIG") is None:
@@ -52,12 +51,12 @@ def main():
                 try:
                     data = ast.literal_eval(data)
                 except ValueError:
-                    print("Passing input as string")
+                    pass
                 except SyntaxError:
-                    print("Passing input as string")
+                    pass
                 if isinstance(data, list):
                     data = pa.array(data)  # initialize pyarrow array
-                elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
+                elif isinstance(data, (str, int, float, dict)):
                     data = pa.array([data])
                 else:
                     data = pa.array(data)  # initialize pyarrow array
@@ -65,17 +64,15 @@ def main():
                 while True:
                     event = node.next(timeout=0.2)
                     if event is not None and event["type"] == "INPUT":
-                        print(f"Received: {event['value'].to_pylist()}")
+                        pass
                     else:
                         break
         else:
-            try:
+            with contextlib.suppress(ValueError):
                 data = ast.literal_eval(data)
-            except ValueError:
-                print("Passing input as string")
             if isinstance(data, list):
                 data = pa.array(data)  # initialize pyarrow array
-            elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
+            elif isinstance(data, (str, int, float, dict)):
                 data = pa.array([data])
             else:
                 data = pa.array(data)  # initialize pyarrow array

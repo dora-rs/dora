@@ -14,10 +14,9 @@ SYSTEM_PROMPT = os.getenv(
 def get_model_gguf():
     from llama_cpp import Llama
 
-    llm = Llama.from_pretrained(
+    return Llama.from_pretrained(
         repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF", filename="*fp16.gguf", verbose=False,
     )
-    return llm
 
 
 def get_model_darwin():
@@ -56,7 +55,7 @@ def generate_hf(model, tokenizer, prompt: str, history) -> str:
     return response, history
 
 
-def main():
+def main() -> None:
     history = []
     # If OS is not Darwin, use Huggingface model
     if sys.platform != "":

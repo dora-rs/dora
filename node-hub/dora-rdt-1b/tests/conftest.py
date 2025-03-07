@@ -1,7 +1,7 @@
 import pytest
 
 
-def pytest_configure():
+def pytest_configure() -> None:
     pytest.rdt = None
     pytest.lang_embeddings = None
     pytest.image_processor = None

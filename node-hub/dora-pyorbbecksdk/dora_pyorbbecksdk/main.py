@@ -32,15 +32,12 @@ try:
         VideoFrame,
         VideoStreamProfile,
     )
-except ImportError as err:
-    print(
-        "Please install pyorbbecsdk first by following the instruction at: https://github.com/orbbec/pyorbbecsdk",
-    )
-    raise err
+except ImportError:
+    raise
 
 
 class TemporalFilter:
-    def __init__(self, alpha):
+    def __init__(self, alpha) -> None:
         self.alpha = alpha
         self.previous_frame = None
 
@@ -57,14 +54,12 @@ class TemporalFilter:
 
 def yuyv_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     yuyv = frame.reshape((height, width, 2))
-    bgr_image = cv2.cvtColor(yuyv, cv2.COLOR_YUV2BGR_YUY2)
-    return bgr_image
+    return cv2.cvtColor(yuyv, cv2.COLOR_YUV2BGR_YUY2)
 
 
 def uyvy_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     uyvy = frame.reshape((height, width, 2))
-    bgr_image = cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
-    return bgr_image
+    return cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
 
 
 def i420_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -72,24 +67,21 @@ def i420_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     u = frame[height : height + height // 4].reshape(height // 2, width // 2)
     v = frame[height + height // 4 :].reshape(height // 2, width // 2)
     yuv_image = cv2.merge([y, u, v])
-    bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_I420)
-    return bgr_image
+    return cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_I420)
 
 
 def nv21_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     y = frame[0:height, :]
     uv = frame[height : height + height // 2].reshape(height // 2, width)
     yuv_image = cv2.merge([y, uv])
-    bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV21)
-    return bgr_image
+    return cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV21)
 
 
 def nv12_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     y = frame[0:height, :]
     uv = frame[height : height + height // 2].reshape(height // 2, width)
     yuv_image = cv2.merge([y, uv])
-    bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV12)
-    return bgr_image
+    return cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV12)
 
 
 def frame_to_bgr_image(frame: VideoFrame):
@@ -110,19 +102,15 @@ def frame_to_bgr_image(frame: VideoFrame):
     elif color_format == OBFormat.MJPG:
         image = cv2.imdecode(data, cv2.IMREAD_COLOR)
     elif color_format == OBFormat.I420:
-        image = i420_to_bgr(data, width, height)
-        return image
+        return i420_to_bgr(data, width, height)
     elif color_format == OBFormat.NV12:
-        image = nv12_to_bgr(data, width, height)
-        return image
+        return nv12_to_bgr(data, width, height)
     elif color_format == OBFormat.NV21:
-        image = nv21_to_bgr(data, width, height)
-        return image
+        return nv21_to_bgr(data, width, height)
     elif color_format == OBFormat.UYVY:
         image = np.resize(data, (height, width, 2))
         image = cv2.cvtColor(image, cv2.COLOR_YUV2BGR_UYVY)
     else:
-        print(f"Unsupported color format: {color_format}")
         return None
     return image
 
@@ -134,7 +122,7 @@ MAX_DEPTH_METERS = 15.0
 DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
 
 
-def main():
+def main() -> None:
     node = Node()
     config = Config()
     ctx = Context()
@@ -147,19 +135,15 @@ def main():
         color_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
             640, 480, OBFormat.RGB, 30,
         )
-    except OBError as e:
-        print(e)
+    except OBError:
         color_profile = profile_list.get_default_video_stream_profile()
-        print("color profile: ", color_profile)
     profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
     try:
         depth_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
             640, 480, OBFormat.Y16, 30,
         )
-    except OBError as e:
-        print(e)
+    except OBError:
         depth_profile = profile_list.get_default_video_stream_profile()
-        print("depth profile: ", depth_profile)
     config.enable_stream(color_profile)
     config.enable_stream(depth_profile)
     pipeline.start(config)
@@ -176,7 +160,6 @@ def main():
             # convert to RGB format
             color_image = frame_to_bgr_image(color_frame)
             if color_image is None:
-                print("failed to convert frame to image")
                 continue
             # Send Color Image
             ret, frame = cv2.imencode("." + "jpeg", color_image)

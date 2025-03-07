@@ -34,7 +34,7 @@ def load_model():
     model.to(device)
 
     processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
-    pipe = pipeline(
+    return pipeline(
         "automatic-speech-recognition",
         model=model,
         tokenizer=processor.tokenizer,
@@ -43,7 +43,6 @@ def load_model():
         torch_dtype=torch_dtype,
         device=device,
     )
-    return pipe
 
 
 BAD_SENTENCES = [
@@ -102,7 +101,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
     return text
 
 
-def main():
+def main() -> None:
     node = Node()
 
     # For macos use mlx:

@@ -1,4 +1,4 @@
-def test_import_main():
+def test_import_main() -> None:
     from piper_sdk import C_PiperInterface
 
     ## Test piper installation

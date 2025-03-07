@@ -125,7 +125,6 @@ while True:
         if text is None:
             continue
         text = text[0].as_py()
-        print(text)
 
         words = text.lower().split()
         if len(ACTIVATION_WORDS) > 0 and all(
@@ -177,7 +176,6 @@ while True:
         y = values[1]
         z = values[2]
         x = x + 0.03
-        print("x: ", x, " y: ", y, " z: ", z)
 
         ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
         z = np.max((z, TABLE_HEIGHT))
@@ -198,11 +196,9 @@ while True:
             )
             event = wait_for_event(id="response_r_arm", timeout=5)
             if event is not None and event[0].as_py():
-                print("Success")
                 arm_holding_object = "right"
                 break
             else:
-                print("Failed: x: ", x, " y: ", y, " z: ", z)
                 node.send_output(
                     "action_r_arm",
                     pa.array(r_init_pose),
@@ -218,11 +214,9 @@ while True:
             )
             event = wait_for_event(id="response_l_arm", timeout=5)
             if event is not None and event[0].as_py():
-                print("Success")
                 arm_holding_object = "left"
                 break
             else:
-                print("Failed")
                 node.send_output(
                     "action_l_arm",
                     pa.array(l_init_pose),
@@ -237,7 +231,7 @@ while True:
     event = wait_for_event(id="response_base")[0].as_py()
 
     if not event:
-        print("Failed to move right")
+        pass
 
     # Trigger action to release object
     if arm_holding_object == "right":
@@ -268,4 +262,4 @@ while True:
         event = wait_for_event(id="response_l_arm")
 
     if not event:
-        print("Failed to release object")
+        pass

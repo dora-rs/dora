@@ -9,7 +9,7 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
 
 
-def main():
+def main() -> None:
     pa.array([])  # initialize pyarrow array
     node = Node()
     frames = {}
@@ -31,9 +31,7 @@ def main():
                 height = metadata["height"]
 
                 if (
-                    encoding == "bgr8"
-                    or encoding == "rgb8"
-                    or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]
+                    encoding in ("bgr8", "rgb8") or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]
                 ):
                     channels = 3
                     storage_type = np.uint8
@@ -59,7 +57,8 @@ def main():
                     frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
                 image = Image.fromarray(frame)
                 frames[event_id] = image
 
@@ -147,7 +146,8 @@ def main():
                 metadata = event["metadata"]
                 encoding = metadata["encoding"]
                 if encoding != "xyxy":
-                    raise RuntimeError(f"Unsupported boxes2d encoding: {encoding}")
+                    msg = f"Unsupported boxes2d encoding: {encoding}"
+                    raise RuntimeError(msg)
                 boxes2d = boxes2d.reshape(-1, 4)
                 image_id = metadata["image_id"]
                 with (
@@ -201,7 +201,7 @@ def main():
                             )
 
         elif event_type == "ERROR":
-            print("Event Error:" + event["error"])
+            pass
 
 
 if __name__ == "__main__":

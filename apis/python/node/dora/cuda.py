@@ -50,8 +50,7 @@ def ipc_buffer_to_ipc_handle(handle_buffer: pa.array) -> cuda.IpcMemHandle:
     ```
     """
     handle_buffer = handle_buffer.buffers()[1]
-    ipc_handle = pa.cuda.IpcMemHandle.from_buffer(handle_buffer)
-    return ipc_handle
+    return pa.cuda.IpcMemHandle.from_buffer(handle_buffer)
 
 
 def cudabuffer_to_numba(buffer: cuda.CudaBuffer, metadata: dict) -> DeviceNDArray:
@@ -74,8 +73,7 @@ def cudabuffer_to_numba(buffer: cuda.CudaBuffer, metadata: dict) -> DeviceNDArra
     shape = metadata["shape"]
     strides = metadata["strides"]
     dtype = metadata["dtype"]
-    device_arr = DeviceNDArray(shape, strides, dtype, gpu_data=buffer.to_numba())
-    return device_arr
+    return DeviceNDArray(shape, strides, dtype, gpu_data=buffer.to_numba())
 
 
 def cudabuffer_to_torch(buffer: cuda.CudaBuffer, metadata: dict) -> torch.Tensor:
@@ -96,5 +94,4 @@ def cudabuffer_to_torch(buffer: cuda.CudaBuffer, metadata: dict) -> torch.Tensor
     ```
     """
     device_arr = cudabuffer_to_numba(buffer, metadata)
-    torch_tensor = torch.as_tensor(device_arr, device="cuda")
-    return torch_tensor
+    return torch.as_tensor(device_arr, device="cuda")

@@ -31,7 +31,6 @@ dora_node = Node()
 # Listen for both stream on the same loop as Python does not handle well multiprocessing
 dora_node.merge_external_events(pose_reader)
 
-print("looping", flush=True)
 
 # take track of minimum and maximum coordinates of turtle
 min_x = 1000
@@ -39,7 +38,7 @@ max_x = 0
 min_y = 1000
 max_y = 0
 
-for i in range(500):
+for _i in range(500):
     event = dora_node.next()
     if event is None:
         break

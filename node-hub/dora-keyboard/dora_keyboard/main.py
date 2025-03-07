@@ -4,7 +4,7 @@ from pynput import keyboard
 from pynput.keyboard import Events
 
 
-def main():
+def main() -> None:
     node = Node()
 
     always_none = node.next(timeout=0.001) is None

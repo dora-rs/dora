@@ -17,7 +17,7 @@ SHOULD_BE_INCLUDED = [
 def get_all_functions(path):
     raw = []
     paths = []
-    for root, dirs, files in os.walk(path):
+    for root, _dirs, files in os.walk(path):
         for file in files:
             if file.endswith(".py"):
                 if file not in SHOULD_BE_INCLUDED:
@@ -45,7 +45,7 @@ def search(query_embedding, corpus_embeddings, paths, raw, k=5, file_extension=N
 class Operator:
     """ """
 
-    def __init__(self):
+    def __init__(self) -> None:
         ## TODO: Add a initialisation step
         self.model = SentenceTransformer("BAAI/bge-large-en-v1.5")
         self.encoding = []

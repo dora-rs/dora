@@ -15,7 +15,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 def build_transform(input_size):
     MEAN, STD = IMAGENET_MEAN, IMAGENET_STD
-    transform = T.Compose(
+    return T.Compose(
         [
             T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
             T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
@@ -23,7 +23,6 @@ def build_transform(input_size):
             T.Normalize(mean=MEAN, std=STD),
         ],
     )
-    return transform
 
 
 def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
@@ -49,13 +48,13 @@ def dynamic_preprocess(
     aspect_ratio = orig_width / orig_height
 
     # calculate the existing image aspect ratio
-    target_ratios = set(
+    target_ratios = {
         (i, j)
         for n in range(min_num, max_num + 1)
         for i in range(1, n + 1)
         for j in range(1, n + 1)
         if i * j <= max_num and i * j >= min_num
-    )
+    }
     target_ratios = sorted(target_ratios, key=lambda x: x[0] * x[1])
 
     # find the closest aspect ratio to the target
@@ -95,11 +94,10 @@ def load_image(image_array: np.array, input_size=448, max_num=12):
         image, image_size=input_size, use_thumbnail=True, max_num=max_num,
     )
     pixel_values = [transform(image) for image in images]
-    pixel_values = torch.stack(pixel_values)
-    return pixel_values
+    return torch.stack(pixel_values)
 
 
-def main():
+def main() -> None:
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     model_path = os.getenv("MODEL", "OpenGVLab/InternVL2-1B")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -139,11 +137,12 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8" or encoding == "rgb8":
+                if encoding in ("bgr8", "rgb8"):
                     channels = 3
                     storage_type = np.uint8
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
                 frame = (
                     storage.to_numpy()
@@ -155,7 +154,8 @@ def main():
                 elif encoding == "rgb8":
                     pass
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
             elif event_id == "text":
                 question = "<image>\n" + event["value"][0].as_py()
@@ -164,7 +164,7 @@ def main():
                     pixel_values = (
                         load_image(frame, max_num=12).to(torch.bfloat16).cuda()
                     )
-                    generation_config = dict(max_new_tokens=1024, do_sample=True)
+                    generation_config = {"max_new_tokens": 1024, "do_sample": True}
                     response = model.chat(
                         tokenizer, pixel_values, question, generation_config,
                     )

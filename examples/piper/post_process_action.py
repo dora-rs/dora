@@ -29,4 +29,3 @@ for event in node:
                 "jointstate_right", pa.array(action[7:], type=pa.float32()),
             )
             time.sleep(0.02)
-        print(actions)

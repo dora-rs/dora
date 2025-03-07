@@ -10,7 +10,7 @@ MAX_DURATION = float(os.getenv("MAX_DURATION", "0.1"))
 SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 
 
-def main():
+def main() -> None:
     # Initialize buffer and recording flag
     buffer = []
     start_recording_time = tm.time()
@@ -19,7 +19,7 @@ def main():
     always_none = node.next(timeout=0.001) is None
     finished = False
 
-    def callback(indata, frames, time, status):
+    def callback(indata, frames, time, status) -> None:
         nonlocal buffer, node, start_recording_time, finished
 
         if tm.time() - start_recording_time > MAX_DURATION:

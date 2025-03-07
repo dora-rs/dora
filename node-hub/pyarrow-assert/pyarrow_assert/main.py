@@ -5,10 +5,10 @@ import os
 import pyarrow as pa
 from dora import Node
 
-RUNNER_CI = True if os.getenv("CI") == "true" else False
+RUNNER_CI = os.getenv("CI") == "true"
 
 
-def main():
+def main() -> None:
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(description="Simple arrow sender")
 
@@ -39,7 +39,7 @@ def main():
 
     if isinstance(data, list):
         data = pa.array(data)  # initialize pyarrow array
-    elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float):
+    elif isinstance(data, (str, int, float)):
         data = pa.array([data])
     else:
         data = pa.array(data)  # initialize pyarrow array

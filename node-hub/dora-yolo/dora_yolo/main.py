@@ -7,7 +7,7 @@ from dora import Node
 from ultralytics import YOLO
 
 
-def main():
+def main() -> None:
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
         description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model.",
@@ -51,11 +51,12 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8" or encoding == "rgb8":
+                if encoding in ("bgr8", "rgb8"):
                     channels = 3
                     storage_type = np.uint8
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
                 frame = (
                     storage.to_numpy()
@@ -67,7 +68,8 @@ def main():
                 elif encoding == "rgb8":
                     pass
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
                 results = model(frame, verbose=False)  # includes NMS
 
@@ -76,7 +78,8 @@ def main():
                 elif bbox_format == "xywh":
                     bboxes = np.array(results[0].boxes.xywh.cpu())
                 else:
-                    raise RuntimeError(f"Unsupported bbox format: {bbox_format}")
+                    msg = f"Unsupported bbox format: {bbox_format}"
+                    raise RuntimeError(msg)
 
                 conf = np.array(results[0].boxes.conf.cpu())
                 labels = np.array(results[0].boxes.cls.cpu())
@@ -100,7 +103,7 @@ def main():
                 )
 
         elif event_type == "ERROR":
-            print(f"Received dora error: {event['error']}")
+            pass
 
 
 if __name__ == "__main__":

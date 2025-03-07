@@ -5,7 +5,7 @@ import pytest
 CI = os.getenv("CI", "false") in ["True", "true"]
 
 
-def test_import_main():
+def test_import_main() -> None:
     if CI:
         # Skip test as test requires Nvidia GPU
         return

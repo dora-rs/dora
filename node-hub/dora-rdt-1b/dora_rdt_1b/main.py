@@ -182,7 +182,7 @@ def get_states(proprio):
     return states, state_elem_mask, STATE_INDICES
 
 
-def main():
+def main() -> None:
     rdt = get_policy()
     lang_embeddings = get_language_embeddings()
     vision_encoder, image_processor = get_vision_model()
@@ -205,11 +205,12 @@ def main():
                     metadata = event["metadata"]
                     encoding = metadata["encoding"]
 
-                    if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    if encoding in ("bgr8", "rgb8") or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                         channels = 3
                         storage_type = np.uint8
                     else:
-                        raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                        msg = f"Unsupported image encoding: {encoding}"
+                        raise RuntimeError(msg)
 
                     if encoding == "bgr8":
                         width = metadata["width"]
@@ -233,7 +234,8 @@ def main():
                         frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
                         frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                     else:
-                        raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                        msg = f"Unsupported image encoding: {encoding}"
+                        raise RuntimeError(msg)
                     frames[f"last_{event_id}"] = frames.get(
                         event_id, Image.fromarray(frame),
                     )

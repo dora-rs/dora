@@ -111,7 +111,7 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
 
-def save_data(data_dict, dataset_path, data_size):
+def save_data(data_dict, dataset_path, data_size) -> None:
     with h5py.File(dataset_path + ".hdf5", "w", rdcc_nbytes=1024**2 * 2) as root:
         root.attrs["sim"] = False
         root.attrs["compress"] = False
@@ -140,7 +140,6 @@ def save_data(data_dict, dataset_path, data_size):
 
         # data_dict write into h5py.File
         for name, array in data_dict.items():
-            print(name)
             if "images" in name:
                 image[name][...] = array
             else:
@@ -170,7 +169,7 @@ for event in node:
         if "save" in event["id"]:
             char = event["value"][0].as_py()
             if char == "p":
-                if start == False:
+                if start is False:
                     continue
 
                 save_data(
@@ -219,7 +218,7 @@ for event in node:
         # Check if tmp dict is full
         if len(tmp_dict) != 7:
             continue
-        elif event["id"] == LEAD_CAMERA and start == True:
+        elif event["id"] == LEAD_CAMERA and start is True:
             values = np.concatenate(
                 [
                     tmp_dict["/observations/qpos_left"],

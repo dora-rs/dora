@@ -2,18 +2,13 @@ import pyarrow as pa
 from dora import Node
 
 
-def main():
+def main() -> None:
     node = Node()
 
     for event in node:
         if event["type"] == "INPUT":
             if event["id"] == "TICK":
-                print(
-                    f"""Node received:
-                id: {event["id"]},
-                value: {event["value"]},
-                metadata: {event["metadata"]}""",
-                )
+                pass
 
             elif event["id"] == "my_input_id":
                 # Warning: Make sure to add my_output_id and my_input_id within the dataflow.

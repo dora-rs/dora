@@ -9,9 +9,8 @@ from piper_sdk import C_PiperInterface
 TEACH_MODE = os.getenv("TEACH_MODE", "False") in ["True", "true"]
 
 
-def enable_fun(piper: C_PiperInterface):
-    """使能机械臂并检测使能状态,尝试5s,如果使能超时则退出程序
-    """
+def enable_fun(piper: C_PiperInterface) -> None:
+    """使能机械臂并检测使能状态,尝试5s,如果使能超时则退出程序."""
     enable_flag = False
     # 设置超时时间（秒）
     timeout = 5
@@ -20,7 +19,6 @@ def enable_fun(piper: C_PiperInterface):
     elapsed_time_flag = False
     while not (enable_flag):
         elapsed_time = time.time() - start_time
-        print("--------------------")
         enable_flag = (
             piper.GetArmLowSpdInfoMsgs().motor_1.foc_status.driver_enable_status
             and piper.GetArmLowSpdInfoMsgs().motor_2.foc_status.driver_enable_status
@@ -29,21 +27,18 @@ def enable_fun(piper: C_PiperInterface):
             and piper.GetArmLowSpdInfoMsgs().motor_5.foc_status.driver_enable_status
             and piper.GetArmLowSpdInfoMsgs().motor_6.foc_status.driver_enable_status
         )
-        print("使能状态:", enable_flag)
-        print("--------------------")
         # 检查是否超过超时时间
         if elapsed_time > timeout:
-            print("超时....")
             elapsed_time_flag = True
             enable_flag = True
             break
         time.sleep(1)
     if elapsed_time_flag:
-        print("程序自动使能超时,退出程序")
-        raise ConnectionError("程序自动使能超时,退出程序")
+        msg = "程序自动使能超时,退出程序"
+        raise ConnectionError(msg)
 
 
-def main():
+def main() -> None:
     elapsed_time = time.time()
     CAN_BUS = os.getenv("CAN_BUS", "")
     piper = C_PiperInterface(CAN_BUS)

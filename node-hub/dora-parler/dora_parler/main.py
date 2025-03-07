@@ -57,7 +57,7 @@ frame_rate = model.audio_encoder.config.frame_rate
 stream = p.open(format=pyaudio.paInt16, channels=1, rate=sampling_rate, output=True)
 
 
-def play_audio(audio_array):
+def play_audio(audio_array) -> None:
     if np.issubdtype(audio_array.dtype, np.floating):
         max_val = np.max(np.abs(audio_array))
         audio_array = (audio_array / max_val) * 32767
@@ -67,7 +67,7 @@ def play_audio(audio_array):
 
 
 class InterruptStoppingCriteria(StoppingCriteria):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.stop_signal = False
 
@@ -76,7 +76,7 @@ class InterruptStoppingCriteria(StoppingCriteria):
     ) -> bool:
         return self.stop_signal
 
-    def stop(self):
+    def stop(self) -> None:
         self.stop_signal = True
 
 
@@ -85,8 +85,8 @@ def generate_base(
     text=default_text,
     description=default_description,
     play_steps_in_s=0.5,
-):
-    prev_time = time.time()
+) -> None:
+    time.time()
     play_steps = int(frame_rate * play_steps_in_s)
     inputs = tokenizer(description, return_tensors="pt").to(device)
     prompt = tokenizer(text, return_tensors="pt").to(device)
@@ -94,24 +94,22 @@ def generate_base(
 
     stopping_criteria = InterruptStoppingCriteria()
 
-    generation_kwargs = dict(
-        input_ids=inputs.input_ids,
-        prompt_input_ids=prompt.input_ids,
-        streamer=streamer,
-        do_sample=True,
-        temperature=1.0,
-        min_new_tokens=10,
-        stopping_criteria=StoppingCriteriaList([stopping_criteria]),
-    )
+    generation_kwargs = {
+        "input_ids": inputs.input_ids,
+        "prompt_input_ids": prompt.input_ids,
+        "streamer": streamer,
+        "do_sample": True,
+        "temperature": 1.0,
+        "min_new_tokens": 10,
+        "stopping_criteria": StoppingCriteriaList([stopping_criteria]),
+    }
     set_seed(SEED)
     thread = Thread(target=model.generate, kwargs=generation_kwargs)
     thread.start()
 
     for new_audio in streamer:
-        current_time = time.time()
+        time.time()
 
-        print(f"Time between iterations: {round(current_time - prev_time, 2)} seconds")
-        prev_time = current_time
         play_audio(new_audio)
 
         if node is None:
@@ -132,7 +130,7 @@ def generate_base(
                 generate_base(node, text, default_description, 0.5)
 
 
-def main():
+def main() -> None:
     generate_base(None, "Ready !", default_description, 0.5)
     node = Node()
     while True:

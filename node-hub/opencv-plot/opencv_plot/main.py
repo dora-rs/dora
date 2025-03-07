@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 
-RUNNER_CI = True if os.getenv("CI") == "true" else False
+RUNNER_CI = os.getenv("CI") == "true"
 
 
 class Plot:
@@ -24,7 +24,7 @@ class Plot:
     height: np.uint32 = None
 
 
-def plot_frame(plot):
+def plot_frame(plot) -> None:
     for bbox in zip(plot.bboxes["bbox"], plot.bboxes["conf"], plot.bboxes["labels"]):
         [
             [min_x, min_y, max_x, max_y],
@@ -64,9 +64,8 @@ def plot_frame(plot):
     if plot.width is not None and plot.height is not None:
         plot.frame = cv2.resize(plot.frame, (plot.width, plot.height))
 
-    if not RUNNER_CI:
-        if len(plot.frame.shape) >= 3:
-            cv2.imshow("Dora Node: opencv-plot", plot.frame)
+    if not RUNNER_CI and len(plot.frame.shape) >= 3:
+        cv2.imshow("Dora Node: opencv-plot", plot.frame)
 
 
 def yuv420p_to_bgr_opencv(yuv_array, width, height):
@@ -74,7 +73,7 @@ def yuv420p_to_bgr_opencv(yuv_array, width, height):
     return cv2.cvtColor(yuv, cv2.COLOR_YUV420p2RGB)
 
 
-def main():
+def main() -> None:
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
         description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image.",
@@ -175,12 +174,12 @@ def main():
 
                     plot.frame = img_bgr_restored
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
                 plot_frame(plot)
-                if not RUNNER_CI:
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
+                if not RUNNER_CI and cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
             elif event_id == "bbox":
                 arrow_bbox = event["value"][0]
                 bbox_format = event["metadata"]["format"]
@@ -201,7 +200,8 @@ def main():
                         ],
                     )
                 else:
-                    raise RuntimeError(f"Unsupported bbox format: {bbox_format}")
+                    msg = f"Unsupported bbox format: {bbox_format}"
+                    raise RuntimeError(msg)
 
                 plot.bboxes = {
                     "bbox": bbox,

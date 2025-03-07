@@ -7,12 +7,12 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 
-RUNNER_CI = True if os.getenv("CI") == "true" else False
+RUNNER_CI = os.getenv("CI") == "true"
 
 FLIP = os.getenv("FLIP", "")
 
 
-def main():
+def main() -> None:
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     parser = argparse.ArgumentParser(
         description="OpenCV Video Capture: This node is used to capture video from a camera.",
@@ -131,7 +131,6 @@ def main():
                 elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     ret, frame = cv2.imencode("." + encoding, frame)
                     if not ret:
-                        print("Error encoding image...")
                         continue
 
                 storage = pa.array(frame.ravel())

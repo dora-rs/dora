@@ -107,9 +107,7 @@ LEFT_UNI_STATE_INDICES = [
 RIGHT_UNI_STATE_INDICES = [
     STATE_VEC_IDX_MAPPING[f"right_arm_joint_{i}_pos"] for i in range(6)
 ] + [STATE_VEC_IDX_MAPPING["right_gripper_open"]]
-MOBILE_BASE_UNI_STATE_INDICES = [STATE_VEC_IDX_MAPPING["base_vel_x"]] + [
-    STATE_VEC_IDX_MAPPING["base_angular_vel"],
-]
+MOBILE_BASE_UNI_STATE_INDICES = [STATE_VEC_IDX_MAPPING["base_vel_x"], STATE_VEC_IDX_MAPPING["base_angular_vel"]]
 
 for joint in data:
     node.send_output(

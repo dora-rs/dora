@@ -53,8 +53,7 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
 def generate(frames: dict, question):
-    """Generate the response to the question given the image using Qwen2 model.
-    """
+    """Generate the response to the question given the image using Qwen2 model."""
     messages = [
         {
             "role": "user",
@@ -106,7 +105,7 @@ def generate(frames: dict, question):
     return output_text[0]
 
 
-def main():
+def main() -> None:
     pa.array([])  # initialize pyarrow array
     node = Node()
 
@@ -126,11 +125,12 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                if encoding in ("bgr8", "rgb8") or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     channels = 3
                     storage_type = np.uint8
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
 
                 if encoding == "bgr8":
                     frame = (
@@ -150,7 +150,8 @@ def main():
                     frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
                     frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
                 else:
-                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                    msg = f"Unsupported image encoding: {encoding}"
+                    raise RuntimeError(msg)
                 frames[event_id] = Image.fromarray(frame)
 
             elif event_id == "tick":
@@ -178,7 +179,7 @@ def main():
                 )
 
         elif event_type == "ERROR":
-            print("Event Error:" + event["error"])
+            pass
 
 
 if __name__ == "__main__":

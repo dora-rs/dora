@@ -1,2 +1,2 @@
-def test_import_main():
+def test_import_main() -> None:
     pass

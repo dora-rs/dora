@@ -1,4 +1,4 @@
-def test_import_main():
+def test_import_main() -> None:
     return  # Remove this if you want to test pyorbbecksdk installation
     # import pyorbbecksdk
 

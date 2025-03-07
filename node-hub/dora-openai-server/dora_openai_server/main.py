@@ -51,12 +51,12 @@ async def create_chat_completion(request: ChatCompletionRequest):
     try:
         data = ast.literal_eval(data)
     except ValueError:
-        print("Passing input as string")
+        pass
     except SyntaxError:
-        print("Passing input as string")
+        pass
     if isinstance(data, list):
         data = pa.array(data)  # initialize pyarrow array
-    elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
+    elif isinstance(data, (str, int, float, dict)):
         data = pa.array([data])
     else:
         data = pa.array(data)  # initialize pyarrow array
@@ -108,7 +108,7 @@ async def list_models():
     }
 
 
-async def run_fastapi():
+async def run_fastapi() -> None:
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
 
@@ -120,7 +120,7 @@ async def run_fastapi():
             break
 
 
-def main():
+def main() -> None:
     asyncio.run(run_fastapi())
 
 

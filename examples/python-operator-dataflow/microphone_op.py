@@ -9,8 +9,7 @@ MAX_DURATION = 5
 
 
 class Operator:
-    """Microphone operator that records the audio
-    """
+    """Microphone operator that records the audio."""
 
     def on_event(
         self,

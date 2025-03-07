@@ -2,11 +2,10 @@ from dora import DoraStatus
 
 
 class Operator:
-    """Template docstring
-    """
+    """Template docstring."""
 
-    def __init__(self):
-        """Called on initialisation"""
+    def __init__(self) -> None:
+        """Called on initialisation."""
 
     def on_event(
         self,
@@ -20,7 +19,7 @@ class Operator:
                 - First argument is the `output_id`
                 - Second argument is the data as either bytes or `pa.Array`
                 - Third argument is dora metadata dict
-                e.g.: `send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`
+                e.g.: `send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"])`.
 
         Returns:
             DoraStatus:
@@ -30,11 +29,9 @@ class Operator:
 
         """
         if dora_event["type"] == "INPUT":
-            print(
-                f"Received input {dora_event['id']}, with data: {dora_event['value']}",
-            )
+            pass
 
         return DoraStatus.CONTINUE
 
-    def __del__(self):
-        """Called before being deleted"""
+    def __del__(self) -> None:
+        """Called before being deleted."""

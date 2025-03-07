@@ -74,7 +74,6 @@ for event in node:
                 bboxes = bboxes[idx]
                 # Check for duplicated box
                 if len(np.unique(bboxes, axis=0)) != len(bboxes):
-                    print("Duplicated box")
                     continue
                 node.send_output(
                     "bbox",

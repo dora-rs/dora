@@ -7,7 +7,7 @@ from dora import Node
 node = Node()
 
 i = 0
-for event in node:
+for _event in node:
     if i == 1000:
         break
     else:

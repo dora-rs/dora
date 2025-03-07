@@ -15,10 +15,9 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """Sending image from webcam to the dataflow
-    """
+    """Sending image from webcam to the dataflow."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
         self.start_time = time.time()
         self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -59,13 +58,13 @@ class Operator:
                 dora_event["metadata"],
             )
         elif event_type == "STOP":
-            print("received stop")
+            pass
         else:
-            print("received unexpected event:", event_type)
+            pass
 
         if time.time() - self.start_time < 20 or CI != "true":
             return DoraStatus.CONTINUE
         return DoraStatus.STOP
 
-    def __del__(self):
+    def __del__(self) -> None:
         self.video_capture.release()

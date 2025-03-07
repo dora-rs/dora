@@ -6,12 +6,12 @@ from dora_outtetts.main import load_interface, main
 CI = os.getenv("CI", "false") in ["True", "true"]
 
 
-def test_import_main():
+def test_import_main() -> None:
     with pytest.raises(RuntimeError):
         main([])
 
 
-def test_load_interface():
+def test_load_interface() -> None:
     try:
         interface = load_interface()
     except RuntimeError:

@@ -1,11 +1,8 @@
 try:
     import ugv_sdk_py
     from ugv_sdk_py import hunter_robot
-except ImportError as err:
-    print(
-        "Please install ugv_sdk_py first by following the instruction at: https://github.com/westonrobot/ugv_sdk/tree/main?tab=readme-ov-file#build-the-package-as-a-python-package",
-    )
-    raise err
+except ImportError:
+    raise
 
 import os
 
@@ -13,17 +10,14 @@ import pyarrow as pa
 from dora import Node
 
 
-def main():
+def main() -> None:
     # Create an instance of HunterRobot
     robot = hunter_robot.HunterRobot(ugv_sdk_py.ProtocolVersion.AGX_V2)
 
     # Connect to the robot
     can = os.getenv("CAN_BUS", "can0")
     robot.connect(can)
-    print("Connection to the robot established.")
 
-    print("protocol version: ", robot.get_parser_protocol_version())
-    print("robot version: ", robot.request_version())
 
     # Enable commanded mode
     robot.enable_commanded_mode()

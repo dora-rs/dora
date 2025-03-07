@@ -2,23 +2,20 @@ import os
 import shutil
 
 
-def clear_screen():
+def clear_screen() -> None:
     # Clear the screen based on the operating system
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def print_centered(texts):
+def print_centered(texts) -> None:
     # Get terminal size
-    terminal_size = shutil.get_terminal_size()
+    shutil.get_terminal_size()
 
     # Print newlines to move cursor to the middle vertically
-    for k, v in texts.items():
-        print(k)
-        print("\n" * 1)
+    for v in texts.values():
         # Calculate horizontal padding and print the centered text
-        for l in v:
-            print(l.center(terminal_size.columns))
-        print("\n" * 1)
+        for _l in v:
+            pass
 
 
 from dora import Node
@@ -28,7 +25,6 @@ node = Node("pretty-print")
 previous_texts = {}
 
 clear_screen()
-print("Waiting for speech...")
 for event in node:
     if event["type"] == "INPUT":
         # The sentence to be printed

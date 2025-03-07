@@ -1,7 +1,7 @@
 # import pytest
 
 
-def test_pass():
+def test_pass() -> None:
     pass
 
 

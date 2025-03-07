@@ -1,10 +1,9 @@
-""" 
-# dora-rs
+"""# dora-rs
 This is the dora python client for interacting with dora dataflow.
 You can install it via:
 ```bash
 pip install dora-rs
-```
+```.
 """
 
 from enum import Enum

@@ -26,7 +26,7 @@ LOG_HEADER = [
 ]
 
 
-def record_results(name, current_size, latencies):
+def record_results(name, current_size, latencies) -> None:
 
     avg_latency = np.array(latencies).mean()
 

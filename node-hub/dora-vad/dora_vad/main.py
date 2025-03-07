@@ -14,7 +14,7 @@ MAX_AUDIO_DURATION_S = float(os.getenv("MAX_AUDIO_DURATION_S", "75"))
 MIN_AUDIO_SAMPLING_DURATION_MS = int(os.getenv("MIN_AUDIO_SAMPLING_DURATION_MS", "500"))
 
 
-def main():
+def main() -> None:
     node = Node()
     last_audios = []
     while True:

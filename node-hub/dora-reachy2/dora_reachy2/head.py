@@ -5,7 +5,7 @@ from dora import Node
 from reachy2_sdk import ReachySDK
 
 
-def main():
+def main() -> None:
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
     for _i in range(5):

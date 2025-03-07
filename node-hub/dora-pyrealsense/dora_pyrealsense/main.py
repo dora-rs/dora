@@ -7,10 +7,10 @@ import pyarrow as pa
 import pyrealsense2 as rs
 from dora import Node
 
-RUNNER_CI = True if os.getenv("CI") == "true" else False
+RUNNER_CI = os.getenv("CI") == "true"
 
 
-def main():
+def main() -> None:
     FLIP = os.getenv("FLIP", "")
     DEVICE_SERIAL = os.getenv("DEVICE_SERIAL", "")
     image_height = int(os.getenv("IMAGE_HEIGHT", "480"))
@@ -19,13 +19,15 @@ def main():
     ctx = rs.context()
     devices = ctx.query_devices()
     if devices.size() == 0:
-        raise ConnectionError("No realsense camera connected.")
+        msg = "No realsense camera connected."
+        raise ConnectionError(msg)
 
     # Serial list
     serials = [device.get_info(rs.camera_info.serial_number) for device in devices]
     if DEVICE_SERIAL and (DEVICE_SERIAL in serials):
+        msg = f"Device with serial {DEVICE_SERIAL} not found within: {serials}."
         raise ConnectionError(
-            f"Device with serial {DEVICE_SERIAL} not found within: {serials}.",
+            msg,
         )
 
     pipeline = rs.pipeline()
@@ -104,7 +106,6 @@ def main():
                 elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
                     ret, frame = cv2.imencode("." + encoding, frame)
                     if not ret:
-                        print("Error encoding image...")
                         continue
 
                 storage = pa.array(frame.ravel())

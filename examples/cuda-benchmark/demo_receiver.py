@@ -29,18 +29,12 @@ NAME = f"dora torch {DEVICE}"
 
 ctx = pa.cuda.Context()
 
-print()
-print("Receiving 40MB packets using default dora-rs")
 
 while True:
     event = node.next()
 
     if event["type"] == "INPUT":
-        if i == 0:
-            pbar = tqdm(total=100)
-        elif i == 100:
-            print("vs")
-            print("Receiving 40MB packets using dora-rs CUDA->CUDA")
+        if i in (0, 100):
             pbar = tqdm(total=100)
         t_send = event["metadata"]["time"]
 
@@ -77,11 +71,5 @@ pbar.close()
 
 time.sleep(2)
 
-print()
-print("----")
-print(f"Node communication duration with default dora-rs: {mean_cpu/1000:.1f}ms")
-print(f"Node communication duration with dora CUDA->CUDA: {mean_cuda/1000:.1f}ms")
 
-print("----")
-print(f"Speed Up: {(mean_cpu)/(mean_cuda):.0f}")
 record_results(NAME, current_size, latencies)
