@@ -18,7 +18,7 @@ use pyo3::{
     types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
     Bound, PyAny, PyObject, PyResult, Python,
 };
-//// use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
+/// use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
 
 pub mod qos;

@@ -31,7 +31,7 @@ pub fn update_series(rec: &RecordingStream, id: DataId, data: ArrowData) -> Resu
             for (i, value) in series.iter().enumerate() {
                 rec.log(
                     format!("{}_{}", id.as_str(), i),
-                    &rerun::Scalar::new(*value as f64),
+                    &rerun::Scalar::new(*value),
                 )
                 .wrap_err("could not log series")?;
             }

@@ -111,7 +111,7 @@ pub async fn spawn_node(
                     let resolved_path = if source_is_url(source) {
                         // try to download the shared library
                         let target_dir = Path::new("build");
-                        download_file(source, &target_dir)
+                        download_file(source, target_dir)
                             .await
                             .wrap_err("failed to download custom node")?
                     } else {
@@ -153,8 +153,8 @@ pub async fn spawn_node(
                                         ),
                                     )
                                     .await;
-                                let cmd = tokio::process::Command::new(python);
-                                cmd
+
+                                tokio::process::Command::new(python)
                             };
                             // Force python to always flush stdout/stderr buffer
                             cmd.arg("-u");
@@ -170,7 +170,7 @@ pub async fn spawn_node(
                                 )
                                 .await;
                             if uv {
-                                let mut cmd = tokio::process::Command::new(&"uv");
+                                let mut cmd = tokio::process::Command::new("uv");
                                 cmd.arg("run");
                                 cmd.arg(&resolved_path);
                                 cmd
@@ -290,8 +290,8 @@ pub async fn spawn_node(
                             "spawning: python -uc import dora; dora.start_runtime() # {}",
                             node.id
                         );
-                        let cmd = tokio::process::Command::new(python);
-                        cmd
+
+                        tokio::process::Command::new(python)
                     };
                     // Force python to always flush stdout/stderr buffer
                     cmd.args([
