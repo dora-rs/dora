@@ -2,8 +2,6 @@
 name = "dora-ros2-bridge"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-description = "ROS2 bridge for dora-rs"
 links = "dora-ros2-bridge"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -23,7 +21,7 @@ ros2-client = "0.8.0"
 rustdds = "0.11.0"
 eyre = { version = "0.6.8", optional = true }
 tokio = { version = "1.29.1", features = ["full"], optional = true }
-dora-daemon = { workspace = true, optional = true }
+dora-daemon = { path = "../../../binaries/daemon", optional = true }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
 flume = "0.11.0"

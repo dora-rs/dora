@@ -2,7 +2,6 @@
 name = "dora-ros2-bridge-msg-gen"
 version.workspace = true
 edition.workspace = true
-description = "Message generation for ROS2 bridge"
 authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
 license = "Apache-2.0"
 
