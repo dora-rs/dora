@@ -1,9 +1,10 @@
 import io
-import torch
 from urllib.request import urlopen
+
 import pyarrow as pa
 import requests
 import soundfile as sf
+import torch
 from dora import Node
 from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
@@ -30,10 +31,10 @@ try:
         MODEL_PATH,
         torch_dtype=torch_dtype,
         trust_remote_code=True,
-        _attn_implementation="eager",
+        _attn_implementation="flash_attention_2" if device == "cuda" else "eager",
         low_cpu_mem_usage=True,  # Reduce memory usage
     ).to(device)
-except RuntimeError as e:
+except RuntimeError:
     print(f"⚠️ {device.upper()} ran out of memory! Switching to CPU.")
     device = "cpu"
     model = AutoModelForCausalLM.from_pretrained(
