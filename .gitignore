@@ -176,7 +176,8 @@ out/
 # MacOS DS_Store
 .DS_Store
 
-~*
-
 # Miscellaneous
 yolo.yml
+
+~*
+
