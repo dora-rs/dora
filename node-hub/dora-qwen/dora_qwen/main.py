@@ -15,13 +15,13 @@ def get_model_gguf():
     from llama_cpp import Llama
 
     llm = Llama.from_pretrained(
-        repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF", filename="*fp16.gguf", verbose=False
+        repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF", filename="*fp16.gguf", verbose=False,
     )
     return llm
 
 
 def get_model_darwin():
-    from mlx_lm import load  # noqa
+    from mlx_lm import load
 
     model, tokenizer = load("mlx-community/Qwen2.5-0.5B-Instruct-8bit")
     return model, tokenizer
@@ -31,7 +31,7 @@ def get_model_huggingface():
     model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype="auto", device_map="auto"
+        model_name, torch_dtype="auto", device_map="auto",
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
@@ -43,7 +43,7 @@ ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split
 def generate_hf(model, tokenizer, prompt: str, history) -> str:
     history += [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
-        history, tokenize=False, add_generation_prompt=True
+        history, tokenize=False, add_generation_prompt=True,
     )
     model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
     generated_ids = model.generate(**model_inputs, max_new_tokens=512)
@@ -91,11 +91,11 @@ def main():
                     from mlx_lm import generate
 
                     response = generate(
-                        model, tokenizer, prompt=text, verbose=False, max_tokens=50
+                        model, tokenizer, prompt=text, verbose=False, max_tokens=50,
                     )
 
                 node.send_output(
-                    output_id="text", data=pa.array([response]), metadata={}
+                    output_id="text", data=pa.array([response]), metadata={},
                 )
 
 

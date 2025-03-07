@@ -22,7 +22,7 @@ def main() -> None:
 
         i += 1
         print(
-            f"[{i}, {j}] Sent: {sent_in_s}, Received: {received_in_s}, Difference: {received_in_s - sent_in_s}"
+            f"[{i}, {j}] Sent: {sent_in_s}, Received: {received_in_s}, Difference: {received_in_s - sent_in_s}",
         )
         assert received_in_s - sent_in_s < 1.0
         time.sleep(0.1)

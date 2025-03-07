@@ -33,7 +33,7 @@ for event in node:
     if event["type"] == "INPUT":
         # The sentence to be printed
         sentence = event["value"][0].as_py()
-        if event["id"] not in previous_texts.keys():
+        if event["id"] not in previous_texts:
 
             previous_texts[event["id"]] = ["", "", sentence]
         else:
