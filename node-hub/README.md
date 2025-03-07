@@ -2,6 +2,33 @@
 
 This hub contains useful pre-built nodes for Dora.
 
+## Add a new python node
+
+- To work on a new node, start by:
+
+```bash
+cd node-hub
+dora new your-node-name --lang python --kind node
+cd ./your-node-name
+uv venv --seed -p 3.11
+uv pip install -e . # Install
+uv run ruff check . --fix # Format
+uv run ruff check . # Lint
+uv run pytest . # Test
+```
+
+- To add a python dependency just do:
+
+```bash
+uv add numpy # for example
+```
+
+> The package is then added to your `pyproject.toml`
+
+- Modify the code within `main.py` in your liking.
+
+- Create a PR and let the CI/CD run test on it 🙋
+
 # Structure
 
 The structure of the node hub is as follows (please use the same structure if you need to add a new node):
