@@ -1,12 +1,12 @@
-from dora import Node
+import io
+from urllib.request import urlopen
+
 import pyarrow as pa
 import requests
-import torch
-import io
-from PIL import Image
 import soundfile as sf
+from dora import Node
+from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
-from urllib.request import urlopen
 
 # Load the model and processor
 MODEL_PATH = "microsoft/Phi-4-multimodal-instruct"
@@ -41,7 +41,7 @@ def process_image(image_url):
     # Generate response
     generate_ids = model.generate(**inputs, max_new_tokens=1000, generation_config=generation_config)
     generate_ids = generate_ids[:, inputs["input_ids"].shape[1]:]
-    
+
     response = processor.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     return response
 
@@ -60,7 +60,7 @@ def process_audio(audio_url):
     # Generate response
     generate_ids = model.generate(**inputs, max_new_tokens=1000, generation_config=generation_config)
     generate_ids = generate_ids[:, inputs["input_ids"].shape[1]:]
-    
+
     response = processor.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     return response
 
