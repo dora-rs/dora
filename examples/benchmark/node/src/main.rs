@@ -1,5 +1,5 @@
 use dora_node_api::{self, dora_core::config::DataId, DoraNode};
-use eyre::{Context, ContextCompat, Error};
+use eyre::{Context, ContextCompat};
 use rand::Rng;
 use std::collections::HashMap;
 use std::time::Duration;

@@ -31,7 +31,7 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
 fn replace_space(file: &str, name: &str) -> String {
     let mut file = file.replace("__node-name__", &name.replace(" ", "-"));
     file = file.replace("__node_name__", &name.replace("-", "_").replace(" ", "_"));
-    file.replace("Node Name", &name)
+    file.replace("Node Name", name)
 }
 fn create_custom_node(
     name: String,
@@ -47,7 +47,7 @@ fn create_custom_node(
     fs::create_dir(&module_path)
         .with_context(|| format!("failed to create module directory `{}`", &root.display()))?;
 
-    fs::create_dir(&root.join("tests"))
+    fs::create_dir(root.join("tests"))
         .with_context(|| format!("failed to create tests directory `{}`", &root.display()))?;
 
     // PYPROJECT.toml
