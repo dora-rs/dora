@@ -29,8 +29,8 @@ pub type DataflowId = uuid::Uuid;
 
 fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
-    let crate_version = semver::Version::parse(crate_version_raw).unwrap();
-    crate_version
+
+    semver::Version::parse(crate_version_raw).unwrap()
 }
 
 fn versions_compatible(
@@ -46,6 +46,6 @@ fn versions_compatible(
                 "failed to parse specified dora version `{specified_version}` as `VersionReq`: {error}",
             )
         })?;
-    let matches = req.matches(&specified_version) || specified_dora_req.matches(crate_version);
+    let matches = req.matches(specified_version) || specified_dora_req.matches(crate_version);
     Ok(matches)
 }

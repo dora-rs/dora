@@ -27,7 +27,6 @@ impl Scheduler {
         let topic = VecDeque::from_iter(
             event_queues
                 .keys()
-                .into_iter()
                 .filter(|t| **t != DataId::from(NON_INPUT_EVENT.to_string()))
                 .cloned(),
         );

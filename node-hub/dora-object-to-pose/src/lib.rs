@@ -61,7 +61,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
     let std_y = (sum_y2 / n - mean_y * mean_y).sqrt();
     let corr = cov / (std_x * std_y);
 
-    return vec![mean_x, mean_y, mean_z, 0., 0., corr * f32::consts::PI / 2.];
+    vec![mean_x, mean_y, mean_z, 0., 0., corr * f32::consts::PI / 2.]
 }
 
 pub fn lib_main() -> Result<()> {
@@ -82,8 +82,8 @@ pub fn lib_main() -> Result<()> {
                                         // (0.32489833, -0.25068134, 0.4761387)
 
     while let Some(event) = events.recv() {
-        match event {
-            Event::Input { id, metadata, data } => match id.as_str() {
+        if let Event::Input { id, metadata, data } = event {
+            match id.as_str() {
                 "image" => {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     image_cache.insert(id.clone(), buffer.values().to_vec());
@@ -129,7 +129,7 @@ pub fn lib_main() -> Result<()> {
                     } else if let Some(data) = data.as_boolean_opt() {
                         let data = data
                             .iter()
-                            .map(|x| if let Some(x) = x { x } else { false })
+                            .map(|x| x.unwrap_or_default())
                             .collect::<Vec<_>>();
                         data
                     } else {
@@ -139,8 +139,7 @@ pub fn lib_main() -> Result<()> {
 
                     let outputs: Vec<Vec<f32>> = masks
                         .chunks(height as usize * width as usize)
-                        .into_iter()
-                        .map(|data| {
+                        .filter_map(|data| {
                             let mut points = vec![];
                             let mut z_total = 0.;
                             let mut n = 0.;
@@ -181,8 +180,6 @@ pub fn lib_main() -> Result<()> {
                             }
                             Some(points_to_pose(&points))
                         })
-                        .filter(|x| x.is_some())
-                        .map(|x| x.unwrap())
                         .collect();
                     let flatten_data = outputs.into_iter().flatten().collect::<Vec<_>>();
                     let mut metadata = metadata.parameters.clone();
@@ -203,8 +200,7 @@ pub fn lib_main() -> Result<()> {
                         let values = data.values();
                         let outputs: Vec<Vec<f32>> = values
                             .chunks(4)
-                            .into_iter()
-                            .map(|data| {
+                            .filter_map(|data| {
                                 let x_min = data[0] as f32;
                                 let y_min = data[1] as f32;
                                 let x_max = data[2] as f32;
@@ -257,8 +253,6 @@ pub fn lib_main() -> Result<()> {
                                     .collect::<Vec<_>>();
                                 Some(points_to_pose(&points))
                             })
-                            .filter(|x| x.is_some())
-                            .map(|x| x.unwrap())
                             .collect();
                         let flatten_data = outputs.into_iter().flatten().collect::<Vec<_>>();
                         let mut metadata = metadata.parameters.clone();
@@ -275,8 +269,7 @@ pub fn lib_main() -> Result<()> {
                     }
                 }
                 other => eprintln!("Received input `{other}`"),
-            },
-            _ => {}
+            }
         }
     }
 
