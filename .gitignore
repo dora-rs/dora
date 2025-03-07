@@ -177,3 +177,6 @@ out/
 .DS_Store
 
 ~*
+
+# Miscellanea
+yolo.yml
