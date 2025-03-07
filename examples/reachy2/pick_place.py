@@ -80,14 +80,16 @@ stop = True
 
 
 def extract_bboxes(json_text) -> (np.ndarray, np.ndarray):
-    """
-    Extracts bounding boxes from a JSON string with markdown markers and returns them as a NumPy array.
+    """Extracts bounding boxes from a JSON string with markdown markers and returns them as a NumPy array.
 
-    Parameters:
+    Parameters
+    ----------
     json_text (str): JSON string containing bounding box data, including ```json markers.
 
-    Returns:
+    Returns
+    -------
     np.ndarray: NumPy array of bounding boxes.
+
     """
     # Ensure all lines are stripped of whitespace and markers
     lines = json_text.strip().splitlines()
@@ -120,8 +122,8 @@ def handle_speech(last_text):
             "text_vlm",
             pa.array(
                 [
-                    f"Given the prompt: {cache['text']}. Output the two bounding boxes for the two objects"
-                ]
+                    f"Given the prompt: {cache['text']}. Output the two bounding boxes for the two objects",
+                ],
             ),
             metadata={"image_id": "image_depth"},
         )
@@ -176,16 +178,15 @@ def wait_for_events(ids: list[str], timeout=None, cache={}):
 def get_prompt():
     text = wait_for_event(id="text", timeout=0.3)
     if text is None:
-        return
+        return None
     text = text[0].as_py()
 
     words = text.lower().split()
     if len(ACTIVATION_WORDS) > 0 and all(
         word not in ACTIVATION_WORDS for word in words
     ):
-        return
-    else:
-        return text
+        return None
+    return text
 
 
 last_text = ""
@@ -205,7 +206,7 @@ while True:
         metadata={"encoding": "jointstate", "duration": 1},
     )
     _, cache = wait_for_events(
-        ids=["response_r_arm", "response_l_arm"], timeout=2, cache=cache
+        ids=["response_r_arm", "response_l_arm"], timeout=2, cache=cache,
     )
     # handle_speech(cache["text"])
 
@@ -270,7 +271,7 @@ while True:
                 [x, y, -0.16, 0, 0, 0, 100],
                 [x, y, z, 0, 0, 0, 0],
                 [x, y, -0.16, 0, 0, 0, 0],
-            ]
+            ],
         ).ravel()
 
         if y < 0:
@@ -351,7 +352,7 @@ while True:
                     0,
                     0,
                     100,
-                ]
+                ],
             ),
             metadata={"encoding": "xyzrpy", "duration": "0.75"},
         )
@@ -388,7 +389,7 @@ while True:
                         0,
                         0,
                         100,
-                    ]
+                    ],
                 ),
                 metadata={"encoding": "xyzrpy", "duration": "0.75"},
             )

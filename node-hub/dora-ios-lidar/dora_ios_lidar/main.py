@@ -16,8 +16,7 @@ class DemoApp:
         self.stop = False
 
     def on_new_frame(self):
-        """
-        This method is called from non-main thread, therefore cannot be used for presenting UI.
+        """This method is called from non-main thread, therefore cannot be used for presenting UI.
         """
         self.event.set()  # Notify the main thread to stop waiting and process new frame.
 
@@ -28,13 +27,13 @@ class DemoApp:
     def connect_to_device(self, dev_idx):
         print("Searching for devices")
         devs = Record3DStream.get_connected_devices()
-        print("{} device(s) found".format(len(devs)))
+        print(f"{len(devs)} device(s) found")
         for dev in devs:
-            print("\tID: {}\n".format(dev.product_id))
+            print(f"\tID: {dev.product_id}\n")
 
         if len(devs) <= dev_idx:
             raise RuntimeError(
-                "Cannot connect to device #{}, try different index.".format(dev_idx)
+                f"Cannot connect to device #{dev_idx}, try different index.",
             )
 
         dev = devs[dev_idx]
@@ -45,7 +44,7 @@ class DemoApp:
 
     def get_intrinsic_mat_from_coeffs(self, coeffs):
         return np.array(
-            [[coeffs.fx, 0, coeffs.tx], [0, coeffs.fy, coeffs.ty], [0, 0, 1]]
+            [[coeffs.fx, 0, coeffs.tx], [0, coeffs.fy, coeffs.ty], [0, 0, 1]],
         )
 
     def start_processing_stream(self):
@@ -62,7 +61,7 @@ class DemoApp:
                     depth = self.session.get_depth_frame()
                     rgb = self.session.get_rgb_frame()
                     intrinsic_mat = self.get_intrinsic_mat_from_coeffs(
-                        self.session.get_intrinsic_mat()
+                        self.session.get_intrinsic_mat(),
                     )
 
                     if depth.shape != rgb.shape:

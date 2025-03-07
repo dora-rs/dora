@@ -38,7 +38,6 @@ def test_download_policy():
 def test_download_vision_model():
     # Skip vision test as it is currently failing on macOS
     # See: https://github.com/dora-rs/dora/actions/runs/13484462433/job/37673857429
-    pass
     from dora_rdt_1b.main import get_vision_model
 
     (vision_encoder, image_processor) = get_vision_model()

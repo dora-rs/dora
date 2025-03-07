@@ -1,7 +1,8 @@
-from dora import Node
 import time
-import pyarrow as pa
+
 import numpy as np
+import pyarrow as pa
+from dora import Node
 
 node = Node()
 
