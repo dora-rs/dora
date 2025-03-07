@@ -5,7 +5,7 @@ authors = [{ name = "Somay", email = "ssomay2002@gmail.com" }]
 description = "DORA node for Phi-4 multimodal model"
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 
 dependencies = [
     "dora-rs >=0.3.9",
