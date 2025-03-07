@@ -1,15 +1,12 @@
 import pyarrow as pa
 import whisper
-
 from dora import DoraStatus
-
 
 model = whisper.load_model("base")
 
 
 class Operator:
-    """
-    Transforming Speech to Text using OpenAI Whisper model
+    """Transforming Speech to Text using OpenAI Whisper model
     """
 
     def on_event(

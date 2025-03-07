@@ -1,7 +1,5 @@
-from dora import Node
-
-
 import h5py
+from dora import Node
 
 f = h5py.File("data/episode_0.hdf5", "r")
 
@@ -10,19 +8,19 @@ data = f["action"][:]
 
 STATE_VEC_IDX_MAPPING = {
     # [0, 10): right arm joint positions
-    **{"arm_joint_{}_pos".format(i): i for i in range(10)},
-    **{"right_arm_joint_{}_pos".format(i): i for i in range(10)},
+    **{f"arm_joint_{i}_pos": i for i in range(10)},
+    **{f"right_arm_joint_{i}_pos": i for i in range(10)},
     # [10, 15): right gripper joint positions
-    **{"gripper_joint_{}_pos".format(i): i + 10 for i in range(5)},
-    **{"right_gripper_joint_{}_pos".format(i): i + 10 for i in range(5)},
+    **{f"gripper_joint_{i}_pos": i + 10 for i in range(5)},
+    **{f"right_gripper_joint_{i}_pos": i + 10 for i in range(5)},
     "gripper_open": 10,  # alias of right_gripper_joint_0_pos
     "right_gripper_open": 10,
     # [15, 25): right arm joint velocities
-    **{"arm_joint_{}_vel".format(i): i + 15 for i in range(10)},
-    **{"right_arm_joint_{}_vel".format(i): i + 15 for i in range(10)},
+    **{f"arm_joint_{i}_vel": i + 15 for i in range(10)},
+    **{f"right_arm_joint_{i}_vel": i + 15 for i in range(10)},
     # [25, 30): right gripper joint velocities
-    **{"gripper_joint_{}_vel".format(i): i + 25 for i in range(5)},
-    **{"right_gripper_joint_{}_vel".format(i): i + 25 for i in range(5)},
+    **{f"gripper_joint_{i}_vel": i + 25 for i in range(5)},
+    **{f"right_gripper_joint_{i}_vel": i + 25 for i in range(5)},
     "gripper_open_vel": 25,  # alias of right_gripper_joint_0_vel
     "right_gripper_open_vel": 25,
     # [30, 33): right end effector positions
@@ -61,14 +59,14 @@ STATE_VEC_IDX_MAPPING = {
     "right_eef_angular_vel_yaw": 44,
     # [45, 50): reserved
     # [50, 60): left arm joint positions
-    **{"left_arm_joint_{}_pos".format(i): i + 50 for i in range(10)},
+    **{f"left_arm_joint_{i}_pos": i + 50 for i in range(10)},
     # [60, 65): left gripper joint positions
-    **{"left_gripper_joint_{}_pos".format(i): i + 60 for i in range(5)},
+    **{f"left_gripper_joint_{i}_pos": i + 60 for i in range(5)},
     "left_gripper_open": 60,  # alias of left_gripper_joint_0_pos
     # [65, 75): left arm joint velocities
-    **{"left_arm_joint_{}_vel".format(i): i + 65 for i in range(10)},
+    **{f"left_arm_joint_{i}_vel": i + 65 for i in range(10)},
     # [75, 80): left gripper joint velocities
-    **{"left_gripper_joint_{}_vel".format(i): i + 75 for i in range(5)},
+    **{f"left_gripper_joint_{i}_vel": i + 75 for i in range(5)},
     "left_gripper_open_vel": 75,  # alias of left_gripper_joint_0_vel
     # [80, 83): left end effector positions
     "left_eef_pos_x": 80,
@@ -99,6 +97,7 @@ STATE_VEC_IDX_MAPPING = {
 }
 
 import time
+
 import pyarrow as pa
 
 node = Node()
@@ -109,17 +108,17 @@ RIGHT_UNI_STATE_INDICES = [
     STATE_VEC_IDX_MAPPING[f"right_arm_joint_{i}_pos"] for i in range(6)
 ] + [STATE_VEC_IDX_MAPPING["right_gripper_open"]]
 MOBILE_BASE_UNI_STATE_INDICES = [STATE_VEC_IDX_MAPPING["base_vel_x"]] + [
-    STATE_VEC_IDX_MAPPING["base_angular_vel"]
+    STATE_VEC_IDX_MAPPING["base_angular_vel"],
 ]
 
 for joint in data:
     node.send_output(
-        "jointstate_left", pa.array(joint[LEFT_UNI_STATE_INDICES], type=pa.float32())
+        "jointstate_left", pa.array(joint[LEFT_UNI_STATE_INDICES], type=pa.float32()),
     )
     node.send_output(
-        "jointstate_right", pa.array(joint[RIGHT_UNI_STATE_INDICES], type=pa.float32())
+        "jointstate_right", pa.array(joint[RIGHT_UNI_STATE_INDICES], type=pa.float32()),
     )
     node.send_output(
-        "mobile_base", pa.array(joint[MOBILE_BASE_UNI_STATE_INDICES], type=pa.float32())
+        "mobile_base", pa.array(joint[MOBILE_BASE_UNI_STATE_INDICES], type=pa.float32()),
     )
     time.sleep(0.05)

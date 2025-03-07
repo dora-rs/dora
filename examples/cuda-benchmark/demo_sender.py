@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 
-import time
 import os
+import time
+
 import numpy as np
 import pyarrow as pa
+import torch
 from dora import Node
 from dora.cuda import torch_to_ipc_buffer
-import torch
 
 torch.tensor([], device="cuda")
 
@@ -24,7 +24,7 @@ time.sleep(1)
 
 # test latency first
 for size in SIZES:
-    for _ in range(0, 100):
+    for _ in range(100):
         now = time.time()
         random_data = np.random.randint(1000, size=size, dtype=np.int64)
         torch_tensor = torch.tensor(random_data, dtype=torch.int64, device="cuda")
@@ -51,7 +51,7 @@ DEVICE = "cuda"
 
 time.sleep(1)
 for size in SIZES:
-    for _ in range(0, 100):
+    for _ in range(100):
         now = time.time()
         random_data = np.random.randint(1000, size=size, dtype=np.int64)
         torch_tensor = torch.tensor(random_data, dtype=torch.int64, device="cuda")

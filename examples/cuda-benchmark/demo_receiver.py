@@ -1,17 +1,15 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 
 import os
 import time
 
-
-import pyarrow as pa
-from tqdm import tqdm
-from dora import Node
-from dora.cuda import ipc_buffer_to_ipc_handle, cudabuffer_to_torch
-from helper import record_results
-import torch
 import numpy as np
+import pyarrow as pa
+import torch
+from dora import Node
+from dora.cuda import cudabuffer_to_torch, ipc_buffer_to_ipc_handle
+from helper import record_results
+from tqdm import tqdm
 
 torch.tensor([], device="cuda")
 
@@ -31,7 +29,7 @@ NAME = f"dora torch {DEVICE}"
 
 ctx = pa.cuda.Context()
 
-print("")
+print()
 print("Receiving 40MB packets using default dora-rs")
 
 while True:
@@ -79,7 +77,7 @@ pbar.close()
 
 time.sleep(2)
 
-print("")
+print()
 print("----")
 print(f"Node communication duration with default dora-rs: {mean_cpu/1000:.1f}ms")
 print(f"Node communication duration with dora CUDA->CUDA: {mean_cuda/1000:.1f}ms")

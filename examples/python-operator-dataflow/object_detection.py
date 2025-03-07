@@ -1,9 +1,7 @@
 import numpy as np
 import pyarrow as pa
-
 from dora import DoraStatus
 from ultralytics import YOLO
-
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
@@ -13,8 +11,7 @@ model = YOLO("yolov8n.pt")
 
 
 class Operator:
-    """
-    Inferring object from images
+    """Inferring object from images
     """
 
     def on_event(

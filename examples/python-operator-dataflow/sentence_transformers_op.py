@@ -1,11 +1,10 @@
-from sentence_transformers import SentenceTransformer
-from sentence_transformers import util
-
-from dora import DoraStatus
 import os
 import sys
-import torch
+
 import pyarrow as pa
+import torch
+from dora import DoraStatus
+from sentence_transformers import SentenceTransformer, util
 
 SHOULD_BE_INCLUDED = [
     "webcam.py",
@@ -24,7 +23,7 @@ def get_all_functions(path):
                 if file not in SHOULD_BE_INCLUDED:
                     continue
                 path = os.path.join(root, file)
-                with open(path, "r", encoding="utf8") as f:
+                with open(path, encoding="utf8") as f:
                     ## add file folder to system path
                     sys.path.append(root)
                     ## import module from path

@@ -119,8 +119,8 @@ def main():
                                             {
                                                 "masks": masks.ravel(),
                                                 "labels": event["value"]["labels"],
-                                            }
-                                        ]
+                                            },
+                                        ],
                                     ),
                                     metadata={
                                         "image_id": image_id,
@@ -129,7 +129,7 @@ def main():
                                     },
                                 )
 
-            elif "boxes2d" in event_id:
+            if "boxes2d" in event_id:
 
                 if isinstance(event["value"], pa.StructArray):
                     boxes2d = event["value"][0].get("bbox").values.to_numpy()
@@ -159,7 +159,7 @@ def main():
                 ):
                     predictor.set_image(frames[image_id])
                     masks, _scores, last_pred = predictor.predict(
-                        box=boxes2d, point_labels=labels, multimask_output=False
+                        box=boxes2d, point_labels=labels, multimask_output=False,
                     )
 
                     if len(masks.shape) == 4:
@@ -190,8 +190,8 @@ def main():
                                         {
                                             "masks": masks.ravel(),
                                             "labels": event["value"]["labels"],
-                                        }
-                                    ]
+                                        },
+                                    ],
                                 ),
                                 metadata={
                                     "image_id": image_id,
