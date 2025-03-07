@@ -29,7 +29,7 @@ pub type DataflowId = uuid::Uuid;
 
 fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
-    
+
     semver::Version::parse(crate_version_raw).unwrap()
 }
 

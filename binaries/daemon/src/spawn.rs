@@ -153,7 +153,7 @@ pub async fn spawn_node(
                                         ),
                                     )
                                     .await;
-                                
+
                                 tokio::process::Command::new(python)
                             };
                             // Force python to always flush stdout/stderr buffer
@@ -290,7 +290,7 @@ pub async fn spawn_node(
                             "spawning: python -uc import dora; dora.start_runtime() # {}",
                             node.id
                         );
-                        
+
                         tokio::process::Command::new(python)
                     };
                     // Force python to always flush stdout/stderr buffer

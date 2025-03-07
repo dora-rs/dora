@@ -44,15 +44,12 @@ pub fn lib_main() -> Result<()> {
     options.memory_limit = memory_limit;
 
     let rec = match std::env::var("OPERATING_MODE").as_deref() {
-        Ok("SPAWN") => {
-            
-            rerun::RecordingStreamBuilder::new("dora-rerun")
-                .spawn_opts(&options, None)
-                .context("Could not spawn rerun visualization")?
-        }
+        Ok("SPAWN") => rerun::RecordingStreamBuilder::new("dora-rerun")
+            .spawn_opts(&options, None)
+            .context("Could not spawn rerun visualization")?,
         Ok("CONNECT") => {
             let opt = std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
-            
+
             rerun::RecordingStreamBuilder::new("dora-rerun")
                 .connect_tcp_opts(std::net::SocketAddr::V4(opt.parse()?), None)
                 .context("Could not connect to rerun visualization")?
@@ -62,24 +59,21 @@ pub fn lib_main() -> Result<()> {
             let path = Path::new("out")
                 .join(id.to_string())
                 .join(format!("archive-{}.rerun", id));
-            
+
             rerun::RecordingStreamBuilder::new("dora-rerun")
                 .save(path)
                 .context("Could not save rerun visualization")?
         }
         Ok(_) => {
             warn!("Invalid operating mode, defaulting to SPAWN mode.");
-            
+
             rerun::RecordingStreamBuilder::new("dora-rerun")
                 .spawn_opts(&options, None)
                 .context("Could not spawn rerun visualization")?
         }
-        Err(_) => {
-            
-            rerun::RecordingStreamBuilder::new("dora-rerun")
-                .spawn_opts(&options, None)
-                .context("Could not spawn rerun visualization")?
-        }
+        Err(_) => rerun::RecordingStreamBuilder::new("dora-rerun")
+            .spawn_opts(&options, None)
+            .context("Could not spawn rerun visualization")?,
     };
 
     let chains = init_urdf(&rec).context("Could not load urdf")?;

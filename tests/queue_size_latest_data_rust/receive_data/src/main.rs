@@ -17,10 +17,11 @@ fn main() -> eyre::Result<()> {
 
     while let Some(event) = events.recv() {
         if let dora_node_api::Event::Input {
-                id: _,
-                metadata,
-                data,
-            } = event {
+            id: _,
+            metadata,
+            data,
+        } = event
+        {
             let data: &PrimitiveArray<UInt64Type> = data.as_primitive();
             let _time: u64 = data.values()[0];
             let time_metadata = metadata.timestamp();
