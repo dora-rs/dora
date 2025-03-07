@@ -90,10 +90,10 @@ fn create_custom_node(
         Path::new(".").join(&root).display()
     );
     println!("   cd {}", Path::new(".").join(&root).display());
-    println!("   pip install -e . # Install",);
-    println!("   ruff check . --fix # Format");
-    println!("   ruff check . # Lint",);
-    println!("   pytest . # Test");
+    println!("   uv pip install -e . # Install",);
+    println!("   uv run ruff check . --fix # Format");
+    println!("   uv run ruff check . # Lint",);
+    println!("   uv run pytest . # Test");
 
     Ok(())
 }
