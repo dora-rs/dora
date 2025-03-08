@@ -1,6 +1,6 @@
-from dora import Node
 import time
 
+from dora import Node
 
 node = Node()
 

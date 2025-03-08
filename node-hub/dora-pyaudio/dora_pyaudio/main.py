@@ -42,7 +42,7 @@ def main():
         event = node.next(timeout=0.01)
         if event is None:
             break
-        elif event["type"] == "INPUT":
+        if event["type"] == "INPUT":
             if event["id"] == "audio":
                 audio = event["value"].to_numpy()
                 sr = event["metadata"].get("sample_rate", SAMPLE_RATE)

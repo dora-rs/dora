@@ -215,11 +215,12 @@ pred = np.array(
                 0.0913,
                 0.1221,
             ],
-        ]
-    ]
+        ],
+    ],
 )
 
 import time
+
 import pyarrow as pa
 
 data = pred[0]

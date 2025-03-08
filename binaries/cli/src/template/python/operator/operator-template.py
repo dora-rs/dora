@@ -2,22 +2,18 @@ from dora import DoraStatus
 
 
 class Operator:
-    """
-    Template docstring
+    """Template docstring
     """
 
     def __init__(self):
         """Called on initialisation"""
-        pass
 
     def on_event(
         self,
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """
-
-        Args:
+        """Args:
             dora_event: Event containing an `id`, `data` and `metadata`.
             send_output Callable[[str, bytes | pa.Array, Optional[dict]], None]:
                 Function for sending output to the dataflow:
@@ -35,11 +31,10 @@ class Operator:
         """
         if dora_event["type"] == "INPUT":
             print(
-                f"Received input {dora_event['id']}, with data: {dora_event['value']}"
+                f"Received input {dora_event['id']}, with data: {dora_event['value']}",
             )
 
         return DoraStatus.CONTINUE
 
     def __del__(self):
         """Called before being deleted"""
-        pass

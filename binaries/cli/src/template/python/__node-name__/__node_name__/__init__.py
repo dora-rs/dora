@@ -5,7 +5,7 @@ readme_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "README.m
 
 # Read the content of the README file
 try:
-    with open(readme_path, "r", encoding="utf-8") as f:
+    with open(readme_path, encoding="utf-8") as f:
         __doc__ = f.read()
 except FileNotFoundError:
     __doc__ = "README file not found."
