@@ -1,6 +1,4 @@
 import os
-import sys
-from typing import Dict, List, Optional, Tuple, Any, Union
 
 import pyarrow as pa
 from dora import Node
@@ -29,16 +27,19 @@ def get_model() -> Llama:
     )
     
     if VERBOSE:
-        print(f"Model loaded successfully")
+        print("Model loaded successfully")
     
     return llm
 
 def format_prompt(text: str) -> str:
-    """Format prompt using Qwen chat template"""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": text}
-    ]
+    """Format prompt using Qwen chat template.
+    
+    Args:
+        text: User input text to be formatted
+        
+    Returns:
+        Formatted prompt string using Qwen's special tokens and template
+    """
     # Qwen chat template format
     prompt = "<|im_start|>system\n{system_message}<|im_end|>\n<|im_start|>user\n{user_message}<|im_end|>\n<|im_start|>assistant\n"
     return prompt.format(
