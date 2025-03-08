@@ -1,0 +1,54 @@
+[tool.ruff]
+# Line length configuration
+line-length = 100
+
+[tool.ruff.lint]
+# Enable all rules by default
+select = ["ALL"]
+# Exclude some directories
+exclude = [
+    ".git",
+    ".github",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "target",
+    "__pycache__",
+]
+# Ignore specific rules that might be too strict or require manual intervention
+ignore = [
+    # Docstring related rules that might require manual intervention
+    "D203",  # one-blank-line-before-class
+    "D213",  # multi-line-summary-second-line
+    # Rules that might be too strict for the current codebase
+    "ANN",   # Type annotations (can be enabled later)
+    "D100",  # Missing docstrings in public module
+    "D101",  # Missing docstrings in public class
+    "D102",  # Missing docstrings in public method
+    "D103",  # Missing docstrings in public function
+    "D104",  # Missing docstrings in public package
+]
+
+# Allow autofix for all enabled rules (when `--fix` is passed)
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore specific rules in test files
+"tests/**/*.py" = [
+    "D",     # Docstring rules
+    "ANN",   # Type annotations
+    "S101",  # Use of assert
+]
+# Ignore specific rules in template files
+"**/template/**/*.py" = [
+    "D",     # Docstring rules
+    "ANN",   # Type annotations
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10 
