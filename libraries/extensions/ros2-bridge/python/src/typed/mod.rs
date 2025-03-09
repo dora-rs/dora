@@ -25,6 +25,7 @@ const DUMMY_STRUCT_NAME: &str = "struct";
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::CString;
     use std::path::PathBuf;
 
     use crate::typed::deserialize::StructDeserializer;
@@ -65,13 +66,19 @@ mod tests {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path
-            py.run_bound(
-                "import sys; sys.path.append(str(path))",
-                Some(&[("path", path)].into_py_dict_bound(py)),
+            let run_arg = CString::new("import sys; sys.path.append(str(path))")
+                .map_err(|e| eyre::eyre!("Failed to create CString: {}", e))?;
+            py.run(
+                run_arg.as_c_str(),
+                Some(
+                    &[("path", path)]
+                        .into_py_dict(py)
+                        .map_err(|e| eyre::eyre!("Failed to create Python dictionary: {}", e))?,
+                ),
                 None,
             )?;
 
-            let my_module = PyModule::import_bound(py, "test_utils")?;
+            let my_module = PyModule::import(py, "test_utils")?;
 
             let arrays = my_module.getattr("TEST_ARRAYS")?;
             let arrays = arrays
@@ -108,19 +115,17 @@ mod tests {
 
                 let out_pyarrow = out_value.to_pyarrow(py)?;
 
-                let test_utils = PyModule::import_bound(py, "test_utils")?;
-                let context = PyDict::new_bound(py);
+                let test_utils = PyModule::import(py, "test_utils")?;
+                let context = PyDict::new(py);
 
                 context.set_item("test_utils", test_utils)?;
                 context.set_item("in_pyarrow", in_pyarrow)?;
                 context.set_item("out_pyarrow", out_pyarrow)?;
 
+                let eval_arg = CString::new("test_utils.is_subset(in_pyarrow, out_pyarrow)")
+                    .map_err(|e| eyre::eyre!("Failed to create CString: {}", e))?;
                 let _ = py
-                    .eval_bound(
-                        "test_utils.is_subset(in_pyarrow, out_pyarrow)",
-                        Some(&context),
-                        None,
-                    )
+                    .eval(eval_arg.as_c_str(), Some(&context), None)
                     .context("could not check if it is a subset")?;
             }
             Ok(())

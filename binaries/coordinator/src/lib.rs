@@ -127,6 +127,7 @@ struct DaemonConnections {
     daemons: BTreeMap<DaemonId, DaemonConnection>,
 }
 
+#[allow(dead_code)]
 impl DaemonConnections {
     fn add(&mut self, daemon_id: DaemonId, connection: DaemonConnection) {
         let previous = self.daemons.insert(daemon_id.clone(), connection);

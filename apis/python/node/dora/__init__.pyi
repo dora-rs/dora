@@ -142,7 +142,7 @@ class Ros2Context:
         """
 
     def new_node(self, name: str, namespace: str, options: dora.Ros2NodeOptions) -> dora.Ros2Node:
-        """Create a new ROS2 node
+        """Create a new ROS2 node.
 
         ```python
         ros2_node = ros2_context.new_node(
@@ -159,7 +159,7 @@ class Ros2Context:
 
 @typing.final
 class Ros2Durability:
-    """DDS 2.2.3.4 DURABILITY"""
+    """DDS 2.2.3.4 DURABILITY."""
 
     def __eq__(self, value: object) -> bool:
         """Return self==value."""
@@ -171,7 +171,7 @@ class Ros2Durability:
         """Return self>value."""
 
     def __int__(self) -> None:
-        """int(self)"""
+        """int(self)."""
 
     def __le__(self, value: typing.Any) -> bool:
         """Return self<=value."""
@@ -189,7 +189,7 @@ class Ros2Durability:
 
 @typing.final
 class Ros2Liveliness:
-    """DDS 2.2.3.11 LIVELINESS"""
+    """DDS 2.2.3.11 LIVELINESS."""
 
     def __eq__(self, value: object) -> bool:
         """Return self==value."""
@@ -201,7 +201,7 @@ class Ros2Liveliness:
         """Return self>value."""
 
     def __int__(self) -> None:
-        """int(self)"""
+        """int(self)."""
 
     def __le__(self, value: typing.Any) -> bool:
         """Return self<=value."""
@@ -218,7 +218,7 @@ class Ros2Liveliness:
 
 @typing.final
 class Ros2Node:
-    """ROS2 Node
+    """ROS2 Node.
 
     warnings::
     - dora Ros2 bridge functionality is considered **unstable**. It may be changed
@@ -228,7 +228,7 @@ class Ros2Node:
     """
 
     def create_publisher(self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies=None) -> dora.Ros2Publisher:
-        """Create a ROS2 publisher
+        """Create a ROS2 publisher.
 
         ```python
         pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
@@ -239,7 +239,7 @@ class Ros2Node:
         """
 
     def create_subscription(self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies=None) -> dora.Ros2Subscription:
-        """Create a ROS2 subscription
+        """Create a ROS2 subscription.
 
         ```python
         pose_reader = ros2_node.create_subscription(turtle_pose_topic)
@@ -263,14 +263,14 @@ class Ros2Node:
 
 @typing.final
 class Ros2NodeOptions:
-    """ROS2 Node Options"""
+    """ROS2 Node Options."""
 
     def __init__(self, rosout: bool=None) -> None:
-        """ROS2 Node Options"""
+        """ROS2 Node Options."""
 
 @typing.final
 class Ros2Publisher:
-    """ROS2 Publisher
+    """ROS2 Publisher.
 
     Warnings:
     - dora Ros2 bridge functionality is considered **unstable**. It may be changed
@@ -300,14 +300,14 @@ class Ros2Publisher:
 
 @typing.final
 class Ros2QosPolicies:
-    """ROS2 QoS Policy"""
+    """ROS2 QoS Policy."""
 
     def __init__(self, durability: dora.Ros2Durability=None, liveliness: dora.Ros2Liveliness=None, reliable: bool=None, keep_all: bool=None, lease_duration: float=None, max_blocking_time: float=None, keep_last: int=None) -> dora.Ros2QoSPolicies:
-        """ROS2 QoS Policy"""
+        """ROS2 QoS Policy."""
 
 @typing.final
 class Ros2Subscription:
-    """ROS2 Subscription
+    """ROS2 Subscription.
 
     Warnings:
     - dora Ros2 bridge functionality is considered **unstable**. It may be changed
@@ -319,7 +319,7 @@ class Ros2Subscription:
 
 @typing.final
 class Ros2Topic:
-    """ROS2 Topic
+    """ROS2 Topic.
 
     Warnings:
     - dora Ros2 bridge functionality is considered **unstable**. It may be changed
@@ -328,4 +328,4 @@ class Ros2Topic:
     """
 
 def start_runtime() -> None:
-    """Start a runtime for Operators"""
+    """Start a runtime for Operators."""

@@ -124,8 +124,7 @@ pub fn lib_main() -> Result<()> {
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
                     image_cache.insert(id.clone(), buffer.clone());
                     let buffer = ArrowBuffer::from(buffer);
-                    let image_buffer = ImageBuffer::try_from(buffer)
-                        .context("Could not convert buffer to image buffer")?;
+                    let image_buffer = ImageBuffer::from(buffer);
                     // let tensordata = ImageBuffer(buffer);
 
                     let image = rerun::Image::new(
@@ -139,9 +138,7 @@ pub fn lib_main() -> Result<()> {
                     image_cache.insert(id.clone(), buffer.values().to_vec());
                     let buffer: &[u8] = buffer.values();
                     let buffer = ArrowBuffer::from(buffer);
-                    let image_buffer = ImageBuffer::try_from(buffer)
-                        .context("Could not convert buffer to image buffer")?;
-
+                    let image_buffer = ImageBuffer::from(buffer);
                     let image = rerun::Image::new(
                         image_buffer,
                         ImageFormat::rgb8([*width as u32, *height as u32]),
@@ -230,9 +227,7 @@ pub fn lib_main() -> Result<()> {
                     if dof < positions.len() {
                         positions.truncate(dof);
                     } else {
-                        for _ in 0..(dof - positions.len()) {
-                            positions.push(0.);
-                        }
+                        positions.resize(dof, 0.);
                     }
 
                     update_visualization(&rec, chain, &id, &positions)?;

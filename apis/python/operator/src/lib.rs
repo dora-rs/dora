@@ -81,15 +81,42 @@ impl PyEvent {
     pub fn to_py_dict(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut pydict = HashMap::new();
         match &self.event {
-            MergedEvent::Dora(_) => pydict.insert("kind", "dora".to_object(py)),
-            MergedEvent::External(_) => pydict.insert("kind", "external".to_object(py)),
+            MergedEvent::Dora(_) => pydict.insert(
+                "kind",
+                "dora"
+                    .into_pyobject(py)
+                    .map_err(|e| eyre::eyre!("Failed to create Python String: {}", e))?
+                    .unbind()
+                    .into(),
+            ),
+            MergedEvent::External(_) => pydict.insert(
+                "kind",
+                "external"
+                    .into_pyobject(py)
+                    .map_err(|e| eyre::eyre!("Failed to create Python String: {}", e))?
+                    .unbind()
+                    .into(),
+            ),
         };
         match &self.event {
             MergedEvent::Dora(event) => {
                 if let Some(id) = Self::id(event) {
-                    pydict.insert("id", id.into_py(py));
+                    pydict.insert(
+                        "id",
+                        id.into_pyobject(py)
+                            .map_err(|e| eyre::eyre!("Failed to create Python String: {}", e))?
+                            .unbind()
+                            .into(),
+                    );
                 }
-                pydict.insert("type", Self::ty(event).to_object(py));
+                pydict.insert(
+                    "type",
+                    Self::ty(event)
+                        .into_pyobject(py)
+                        .map_err(|e| eyre::eyre!("Failed to create Python String: {}", e))?
+                        .unbind()
+                        .into(),
+                );
 
                 if let Some(value) = self.value(py)? {
                     pydict.insert("value", value);
@@ -98,7 +125,14 @@ impl PyEvent {
                     pydict.insert("metadata", metadata);
                 }
                 if let Some(error) = Self::error(event) {
-                    pydict.insert("error", error.to_object(py));
+                    pydict.insert(
+                        "error",
+                        error
+                            .into_pyobject(py)
+                            .map_err(|e| eyre::eyre!("Failed to create Python dictionary: {}", e))?
+                            .unbind()
+                            .into(),
+                    );
                 }
             }
             MergedEvent::External(event) => {
@@ -110,7 +144,10 @@ impl PyEvent {
             pydict.insert("_cleanup", cleanup.into_py(py));
         }
 
-        Ok(pydict.into_py_dict_bound(py).unbind())
+        Ok(pydict
+            .into_py_dict(py)
+            .map_err(|e| eyre::eyre!("Failed to create Python dictionary: {}", e))?
+            .unbind())
     }
 
     fn ty(event: &Event) -> &str {
@@ -148,7 +185,10 @@ impl PyEvent {
             Event::Input { metadata, .. } => Ok(Some(
                 metadata_to_pydict(metadata, py)
                     .context("Issue deserializing metadata")?
-                    .to_object(py),
+                    .into_pyobject(py)
+                    .map_err(|e| eyre::eyre!("Failed to create Python Object: {}", e))?
+                    .unbind()
+                    .into(),
             )),
             _ => Ok(None),
         }
@@ -175,25 +215,13 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 parameters.insert(key, Parameter::Float(value.extract::<f64>()?))
             } else if value.is_instance_of::<PyString>() {
                 parameters.insert(key, Parameter::String(value.extract()?))
-            } else if value.is_instance_of::<PyTuple>()
+            } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyInt>()
             {
                 let list: Vec<i64> = value.extract()?;
                 parameters.insert(key, Parameter::ListInt(list))
-            } else if value.is_instance_of::<PyList>()
-                && value.len()? > 0
-                && value.get_item(0)?.is_exact_instance_of::<PyInt>()
-            {
-                let list: Vec<i64> = value.extract()?;
-                parameters.insert(key, Parameter::ListInt(list))
-            } else if value.is_instance_of::<PyTuple>()
-                && value.len()? > 0
-                && value.get_item(0)?.is_exact_instance_of::<PyFloat>()
-            {
-                let list: Vec<f64> = value.extract()?;
-                parameters.insert(key, Parameter::ListFloat(list))
-            } else if value.is_instance_of::<PyList>()
+            } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyFloat>()
             {
@@ -218,7 +246,7 @@ pub fn metadata_to_pydict<'a>(
     metadata: &'a Metadata,
     py: Python<'a>,
 ) -> Result<pyo3::Bound<'a, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (k, v) in metadata.parameters.iter() {
         match v {
             Parameter::Bool(bool) => dict
