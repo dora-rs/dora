@@ -41,3 +41,9 @@ explicit = true
 
 [project.scripts]
 dora-qwen = "dora_qwen.main:main"
+
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+]
