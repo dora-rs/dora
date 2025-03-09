@@ -3,8 +3,7 @@ from scipy.spatial.transform import Rotation as R
 
 
 def convert_quaternion_to_euler(quat):
-    """Convert Quaternion (xyzw) to Euler angles (rpy)
-    """
+    """Convert Quaternion (xyzw) to Euler angles (rpy)."""
     # Normalize
     quat = quat / np.linalg.norm(quat)
     euler = R.from_quat(quat).as_euler("xyz")
@@ -13,24 +12,21 @@ def convert_quaternion_to_euler(quat):
 
 
 def convert_euler_to_quaternion(euler):
-    """Convert Euler angles (rpy) to Quaternion (xyzw)
-    """
+    """Convert Euler angles (rpy) to Quaternion (xyzw)."""
     quat = R.from_euler("xyz", euler).as_quat()
 
     return quat
 
 
 def convert_euler_to_rotation_matrix(euler):
-    """Convert Euler angles (rpy) to rotation matrix (3x3).
-    """
+    """Convert Euler angles (rpy) to rotation matrix (3x3)."""
     quat = R.from_euler("xyz", euler).as_matrix()
 
     return quat
 
 
 def convert_rotation_matrix_to_euler(rotmat):
-    """Convert rotation matrix (3x3) to Euler angles (rpy).
-    """
+    """Convert rotation matrix (3x3) to Euler angles (rpy)."""
     r = R.from_matrix(rotmat)
     euler = r.as_euler("xyz", degrees=False)
 

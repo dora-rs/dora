@@ -170,8 +170,7 @@ def find_best_match_location(source_code, target_block):
 
 
 def replace_code_in_source(source_code, replacement_block: str):
-    """Replace the best matching block in the source_code with the replacement_block, considering variable block lengths.
-    """
+    """Replace the best matching block in the source_code with the replacement_block, considering variable block lengths."""
     replacement_block = extract_python_code_blocks(replacement_block)[0]
     start_index, end_index = find_best_match_location(source_code, replacement_block)
     if start_index != -1 and end_index != -1:

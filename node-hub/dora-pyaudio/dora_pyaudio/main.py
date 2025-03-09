@@ -16,7 +16,7 @@ def play_audio(
     sample_rate: int,
     stream: pyaudio.Stream = None,
 ) -> pyaudio.Stream:
-    """Play audio using pyaudio and replace stream if already exists"""
+    """Play audio using pyaudio and replace stream if already exists."""
     if np.issubdtype(audio_array.dtype, np.floating):
         audio_array = audio_array * 70_000
         audio_array = audio_array.astype(np.int16)
@@ -32,7 +32,7 @@ def play_audio(
 
 
 def main():
-    """Main function for the node"""
+    """Main function for the node."""
     node = Node()
     stream = None
     audio = np.array([])
