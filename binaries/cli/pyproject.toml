@@ -12,3 +12,8 @@ dependencies = ['dora-rs >= 0.3.9', 'uv']
 
 [tool.maturin]
 features = ["python", "pyo3/extension-module"]
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+]

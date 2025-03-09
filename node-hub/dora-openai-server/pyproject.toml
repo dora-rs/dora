@@ -29,4 +29,5 @@ dora-openai-server = "dora_openai_server.main:main"
 
 
 [tool.ruff.lint]
-extend-select = ["I"]
+extend-select = ["I","D"]
+
