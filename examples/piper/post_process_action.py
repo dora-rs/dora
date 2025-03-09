@@ -4,6 +4,7 @@ node = Node()
 
 
 import time
+
 import pyarrow as pa
 
 for event in node:
@@ -25,7 +26,7 @@ for event in node:
 
             node.send_output("jointstate_left", pa.array(action[:7], type=pa.float32()))
             node.send_output(
-                "jointstate_right", pa.array(action[7:], type=pa.float32())
+                "jointstate_right", pa.array(action[7:], type=pa.float32()),
             )
             time.sleep(0.02)
         print(actions)

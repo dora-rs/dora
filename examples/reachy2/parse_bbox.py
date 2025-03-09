@@ -11,14 +11,16 @@ IMAGE_RESIZE_RATIO = float(os.getenv("IMAGE_RESIZE_RATIO", "1.0"))
 
 
 def extract_bboxes(json_text):
-    """
-    Extracts bounding boxes from a JSON string with markdown markers and returns them as a NumPy array.
+    """Extracts bounding boxes from a JSON string with markdown markers and returns them as a NumPy array.
 
-    Parameters:
+    Parameters
+    ----------
     json_text (str): JSON string containing bounding box data, including ```json markers.
 
-    Returns:
+    Returns
+    -------
     np.ndarray: NumPy array of bounding boxes.
+
     """
     # Ensure all lines are stripped of whitespace and markers
     lines = json_text.strip().splitlines()

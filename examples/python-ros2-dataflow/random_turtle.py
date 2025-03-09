@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 
 from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
 
@@ -18,7 +17,7 @@ topic_qos = Ros2QosPolicies(reliable=True, max_blocking_time=0.1)
 
 # Create a publisher to cmd_vel topic
 turtle_twist_topic = ros2_node.create_topic(
-    "/turtle1/cmd_vel", "geometry_msgs/Twist", topic_qos
+    "/turtle1/cmd_vel", "geometry_msgs/Twist", topic_qos,
 )
 twist_writer = ros2_node.create_publisher(turtle_twist_topic)
 

@@ -1,7 +1,6 @@
 import numpy as np
 import pyarrow as pa
 
-
 # Marker Message Example
 TEST_ARRAYS = [
     ("std_msgs", "UInt8", pa.array([{"data": np.uint8(2)}])),
@@ -23,12 +22,12 @@ TEST_ARRAYS = [
                                 "label": "a",
                                 "size": np.uint32(10),
                                 "stride": np.uint32(20),
-                            }
+                            },
                         ],
                         "data_offset": np.uint32(30),
                     },
-                }
-            ]
+                },
+            ],
         ),
     ),
     (
@@ -44,12 +43,12 @@ TEST_ARRAYS = [
                                 "label": "a",
                                 "size": np.uint32(10),
                                 "stride": np.uint32(20),
-                            }
+                            },
                         ],
                         "data_offset": np.uint32(30),
                     },
-                }
-            ]
+                },
+            ],
         ),
     ),
     (
@@ -99,7 +98,7 @@ TEST_ARRAYS = [
                             "x": np.float64(1.0),  # Numpy type
                             "y": np.float64(1.0),  # Numpy type
                             "z": np.float64(1.0),  # Numpy type
-                        }
+                        },
                     ],
                     "colors": [
                         {
@@ -107,15 +106,15 @@ TEST_ARRAYS = [
                             "g": np.float32(1.0),  # Numpy type
                             "b": np.float32(1.0),  # Numpy type
                             "a": np.float32(1.0),  # Numpy type (alpha)
-                        }  # Numpy array for colors
+                        },  # Numpy array for colors
                     ],
                     "texture_resource": "",
                     "uv_coordinates": [{}],
                     "text": "",
                     "mesh_resource": "",
                     "mesh_use_embedded_materials": False,  # Boolean type, no numpy equivalent
-                }
-            ]
+                },
+            ],
         ),
     ),
     (
@@ -167,7 +166,7 @@ TEST_ARRAYS = [
                                     "x": np.float64(1.0),  # Numpy type
                                     "y": np.float64(1.0),  # Numpy type
                                     "z": np.float64(1.0),  # Numpy type
-                                }
+                                },
                             ],
                             "colors": [
                                 {
@@ -175,17 +174,17 @@ TEST_ARRAYS = [
                                     "g": np.float32(1.0),  # Numpy type
                                     "b": np.float32(1.0),  # Numpy type
                                     "a": np.float32(1.0),  # Numpy type (alpha)
-                                }  # Numpy array for colors
+                                },  # Numpy array for colors
                             ],
                             "texture_resource": "",
                             "uv_coordinates": [{}],
                             "text": "",
                             "mesh_resource": "",
                             "mesh_use_embedded_materials": False,  # Boolean type, no numpy equivalent
-                        }
-                    ]
-                }
-            ]
+                        },
+                    ],
+                },
+            ],
         ),
     ),
     (
@@ -254,16 +253,15 @@ TEST_ARRAYS = [
                             "a": np.float32(1.0),  # 32-bit float
                         },
                     ],
-                }
-            ]
+                },
+            ],
         ),
     ),
 ]
 
 
 def is_subset(subset, superset):
-    """
-    Check if subset is a subset of superset, to avoid false negatives linked to default values.
+    """Check if subset is a subset of superset, to avoid false negatives linked to default values.
     """
     if isinstance(subset, pa.Array):
         return is_subset(subset.to_pylist(), superset.to_pylist())
