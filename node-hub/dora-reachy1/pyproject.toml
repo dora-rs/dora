@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "dora-reachy1"
+version = "0.3.6"
+authors = [
+    "Haixuan Xavier Tao <tao.xavier@outlook.com>",
+    "Enzo Le Van <dev@enzo-le-van.fr>",
+]
+description = "Dora Node for controlling reachy1"
+readme = "README.md"
+
+packages = [{ include = "dora_reachy1" }, { include = "dora_reachy1_vision" }]
+
+[tool.poetry.dependencies]
+dora-rs = "^0.3.6"
+reachy-sdk = "^0.7.0"
+
+[tool.poetry.scripts]
+dora-reachy1 = "dora_reachy1.main:main"
+dora-reachy1-vision = "dora_reachy1_vision.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"

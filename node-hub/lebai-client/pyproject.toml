@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "lebai-client"
+version = "0.1"
+authors = ["dora-rs team"]
+description = "Dora Node client for lebai robotic arms."
+readme = "README.md"
+
+packages = [{ include = "lebai_client" }]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+dora-rs = "^0.3.6rc0"
+lebai-sdk = "^0.2.17"
+
+[tool.poetry.scripts]
+lebai-client = "lebai_client.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
