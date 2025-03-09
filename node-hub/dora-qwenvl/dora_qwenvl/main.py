@@ -53,8 +53,7 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
 def generate(frames: dict, question):
-    """Generate the response to the question given the image using Qwen2 model.
-    """
+    """Generate the response to the question given the image using Qwen2 model."""
     messages = [
         {
             "role": "user",

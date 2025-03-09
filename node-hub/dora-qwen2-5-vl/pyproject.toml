@@ -48,3 +48,9 @@ dora-qwen2-5-vl = "dora_qwen2_5_vl.main:main"
 [build-system]
 requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
+
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+]

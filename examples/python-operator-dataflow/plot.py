@@ -13,8 +13,7 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """Plot image and bounding box
-    """
+    """Plot image and bounding box."""
 
     def __init__(self):
         self.bboxs = []

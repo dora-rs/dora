@@ -15,8 +15,7 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """Sending image from webcam to the dataflow
-    """
+    """Sending image from webcam to the dataflow."""
 
     def __init__(self):
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
