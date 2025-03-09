@@ -3,8 +3,7 @@ from dora import DoraStatus
 
 
 class Operator:
-    """Inferring object from images
-    """
+    """Inferring object from images."""
 
     def __init__(self):
         self.last_file = ""

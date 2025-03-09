@@ -8,6 +8,17 @@ use eyre::Context;
 pub trait ArrowTypeInfoExt {
     fn empty() -> Self;
     fn byte_array(data_len: usize) -> Self;
+    /// Creates an instance of `Self` from an `ArrayData`
+    ///
+    /// # Safety
+    /// This function is unsafe because it operates on raw pointers and performs pointer arithmetic.
+    /// The caller must ensure that:
+    /// - The `region_start` pointer is within valid memory and points to a region that is sufficiently large (at least `region_len` bytes).
+    /// - The `region_len` is the length of a valid memory region.
+    /// - The buffers' pointers (from `array.buffers()`) must point within the valid memory region defined by `region_start` and `region_len`.
+    /// - The caller must guarantee that all child data pointers also obey these rules.
+    ///
+    /// Any violation of these invariants may lead to undefined behavior.
     unsafe fn from_array(
         array: &ArrayData,
         region_start: *const u8,
