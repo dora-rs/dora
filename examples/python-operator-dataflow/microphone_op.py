@@ -1,7 +1,6 @@
 import numpy as np
 import pyarrow as pa
 import sounddevice as sd
-
 from dora import DoraStatus
 
 # Set the parameters for recording
@@ -10,8 +9,7 @@ MAX_DURATION = 5
 
 
 class Operator:
-    """
-    Microphone operator that records the audio
+    """Microphone operator that records the audio
     """
 
     def on_event(

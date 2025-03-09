@@ -1,5 +1,5 @@
-from dora import Node
 import pyarrow as pa
+from dora import Node
 
 
 def main():
@@ -11,7 +11,7 @@ def main():
                 f"""Node received:
             id: {event["id"]},
             value: {event["value"]},
-            metadata: {event["metadata"]}"""
+            metadata: {event["metadata"]}""",
             )
             node.send_output("speech", pa.array(["Hello World"]))
 

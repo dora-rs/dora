@@ -1,30 +1,29 @@
-import h5py
-
-import os
 import datetime
+import os
 
-from dora import Node
+import h5py
 import numpy as np
 from convert import (
-    convert_euler_to_rotation_matrix,
     compute_ortho6d_from_rotation_matrix,
+    convert_euler_to_rotation_matrix,
 )
+from dora import Node
 
 STATE_VEC_IDX_MAPPING = {
     # [0, 10): right arm joint positions
-    **{"arm_joint_{}_pos".format(i): i for i in range(10)},
-    **{"right_arm_joint_{}_pos".format(i): i for i in range(10)},
+    **{f"arm_joint_{i}_pos": i for i in range(10)},
+    **{f"right_arm_joint_{i}_pos": i for i in range(10)},
     # [10, 15): right gripper joint positions
-    **{"gripper_joint_{}_pos".format(i): i + 10 for i in range(5)},
-    **{"right_gripper_joint_{}_pos".format(i): i + 10 for i in range(5)},
+    **{f"gripper_joint_{i}_pos": i + 10 for i in range(5)},
+    **{f"right_gripper_joint_{i}_pos": i + 10 for i in range(5)},
     "gripper_open": 10,  # alias of right_gripper_joint_0_pos
     "right_gripper_open": 10,
     # [15, 25): right arm joint velocities
-    **{"arm_joint_{}_vel".format(i): i + 15 for i in range(10)},
-    **{"right_arm_joint_{}_vel".format(i): i + 15 for i in range(10)},
+    **{f"arm_joint_{i}_vel": i + 15 for i in range(10)},
+    **{f"right_arm_joint_{i}_vel": i + 15 for i in range(10)},
     # [25, 30): right gripper joint velocities
-    **{"gripper_joint_{}_vel".format(i): i + 25 for i in range(5)},
-    **{"right_gripper_joint_{}_vel".format(i): i + 25 for i in range(5)},
+    **{f"gripper_joint_{i}_vel": i + 25 for i in range(5)},
+    **{f"right_gripper_joint_{i}_vel": i + 25 for i in range(5)},
     "gripper_open_vel": 25,  # alias of right_gripper_joint_0_vel
     "right_gripper_open_vel": 25,
     # [30, 33): right end effector positions
@@ -63,14 +62,14 @@ STATE_VEC_IDX_MAPPING = {
     "right_eef_angular_vel_yaw": 44,
     # [45, 50): reserved
     # [50, 60): left arm joint positions
-    **{"left_arm_joint_{}_pos".format(i): i + 50 for i in range(10)},
+    **{f"left_arm_joint_{i}_pos": i + 50 for i in range(10)},
     # [60, 65): left gripper joint positions
-    **{"left_gripper_joint_{}_pos".format(i): i + 60 for i in range(5)},
+    **{f"left_gripper_joint_{i}_pos": i + 60 for i in range(5)},
     "left_gripper_open": 60,  # alias of left_gripper_joint_0_pos
     # [65, 75): left arm joint velocities
-    **{"left_arm_joint_{}_vel".format(i): i + 65 for i in range(10)},
+    **{f"left_arm_joint_{i}_vel": i + 65 for i in range(10)},
     # [75, 80): left gripper joint velocities
-    **{"left_gripper_joint_{}_vel".format(i): i + 75 for i in range(5)},
+    **{f"left_gripper_joint_{i}_vel": i + 75 for i in range(5)},
     "left_gripper_open_vel": 75,  # alias of left_gripper_joint_0_vel
     # [80, 83): left end effector positions
     "left_eef_pos_x": 80,
@@ -193,9 +192,7 @@ for event in node:
             elif char == "s":
                 start = True
 
-        elif "image" in event["id"]:
-            tmp_dict[event["id"]] = event["value"].to_numpy()
-        elif "qpos" in event["id"]:
+        elif "image" in event["id"] or "qpos" in event["id"]:
             tmp_dict[event["id"]] = event["value"].to_numpy()
         elif "pose" in event["id"]:
             value = event["value"].to_numpy()
@@ -213,7 +210,7 @@ for event in node:
                     ortho6d[3],
                     ortho6d[4],
                     ortho6d[5],
-                ]
+                ],
             )
             tmp_dict[event["id"]] = values
         elif "base_vel" in event["id"]:
@@ -230,7 +227,7 @@ for event in node:
                     tmp_dict["/observations/pose_left"],
                     tmp_dict["/observations/pose_right"],
                     # tmp_dict["/observations/base_vel"],
-                ]
+                ],
             )
             UNI_STATE_INDICES = (
                 [STATE_VEC_IDX_MAPPING[f"left_arm_joint_{i}_pos"] for i in range(6)]
@@ -264,11 +261,11 @@ for event in node:
             # We reproduce obs and action
             data_dict["/action"].append(universal_vec)
             data_dict["/observations/images/cam_high"].append(
-                tmp_dict["/observations/images/cam_high"]
+                tmp_dict["/observations/images/cam_high"],
             )
             data_dict["/observations/images/cam_left_wrist"].append(
-                tmp_dict["/observations/images/cam_left_wrist"]
+                tmp_dict["/observations/images/cam_left_wrist"],
             )
             data_dict["/observations/images/cam_right_wrist"].append(
-                tmp_dict["/observations/images/cam_right_wrist"]
+                tmp_dict["/observations/images/cam_right_wrist"],
             )
