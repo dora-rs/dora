@@ -14,17 +14,37 @@ ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 
 def get_model() -> Llama:
-    """Load a GGUF model using llama-cpp-python"""
+    """Load a GGUF model using llama-cpp-python with GPU/CPU fallback"""
     if VERBOSE:
         print(f"Loading model from {MODEL_REPO_ID}")
     
-    llm = Llama.from_pretrained(
-        repo_id=MODEL_REPO_ID,
-        filename=MODEL_FILENAME,
-        verbose=VERBOSE,
-        n_ctx=2048,
-        n_gpu_layers=-1  # Auto-detect GPU layers
-    )
+    use_gpu = os.getenv('USE_GPU', 'auto').lower()
+    n_gpu_layers = {
+        'auto': -1,
+        'cpu': 0,
+        'gpu': -1
+    }.get(use_gpu, -1)
+    
+    try:
+        llm = Llama.from_pretrained(
+            repo_id=MODEL_REPO_ID,
+            filename=MODEL_FILENAME,
+            verbose=VERBOSE,
+            n_ctx=2048,
+            n_gpu_layers=n_gpu_layers
+        )
+    except RuntimeError as e:
+        if 'cuda' in str(e).lower() and n_gpu_layers != 0:
+            if VERBOSE:
+                print('GPU loading failed, falling back to CPU')
+            # Retry with CPU
+            llm = Llama.from_pretrained(
+                repo_id=MODEL_REPO_ID,
+                filename=MODEL_FILENAME,
+                verbose=VERBOSE,
+                n_ctx=2048,
+                n_gpu_layers=0
+            )
     
     if VERBOSE:
         print("Model loaded successfully")
