@@ -333,7 +333,7 @@ impl Ros2Publisher {
     /// :rtype: None
     ///
     pub fn publish(&self, data: Bound<'_, PyAny>) -> eyre::Result<()> {
-        let pyarrow = PyModule::import_bound(data.py(), "pyarrow")?;
+        let pyarrow = PyModule::import(data.py(), "pyarrow")?;
 
         let data = if data.is_instance_of::<PyDict>() {
             // convert to arrow struct scalar
@@ -344,7 +344,12 @@ impl Ros2Publisher {
 
         let data = if data.is_instance(&pyarrow.getattr("StructScalar")?)? {
             // convert to arrow array
-            let list = PyList::new_bound(data.py(), [data]);
+            let list = match PyList::new(data.py(), [data]) {
+                Ok(list) => list,
+                Err(err) => {
+                    return Err(eyre::eyre!("Failed to create PyList: {}", err));
+                }
+            };
             pyarrow.getattr("array")?.call1((list,))?
         } else {
             data
