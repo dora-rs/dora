@@ -1,20 +1,20 @@
-[tool.poetry]
+[project]
 name = "video-encoder"
 version = "0.1"
-authors = ["Hennzau <dev@enzo-le-van.fr>"]
+authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>"}]
 description = "Dora Node for video encoding (LeRobot compatible)."
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.9"
 
-packages = [{ include = "video_encoder" }]
+dependencies = [
+"dora-rs == 0.3.5",
+"numpy <=  2.0.0",
+"opencv-python >=  4.1.1",
+"python-ffmpeg ~= 2.0.12",
+]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-dora-rs = "0.3.5"
-numpy = "< 2.0.0"
-opencv-python = ">= 4.1.1"
-python-ffmpeg = "~2.0.12"
-
-[tool.poetry.scripts]
+[project.scripts]
 video-encoder = "video_encoder.main:main"
 
 [build-system]
