@@ -82,7 +82,7 @@ stop = True
 
 
 def extract_bboxes(json_text) -> (np.ndarray, np.ndarray):
-    """Extracts bounding boxes from a JSON string with markdown markers and returns them as a NumPy array.
+    """Extract bounding boxes from a JSON string with markdown markers and return them as a NumPy array.
 
     Parameters
     ----------
