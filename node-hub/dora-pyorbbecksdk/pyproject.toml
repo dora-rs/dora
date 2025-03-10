@@ -19,7 +19,6 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 [project.scripts]
 dora-pyorbbecksdk = "dora_pyorbbecksdk.main:main"
 
-
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
