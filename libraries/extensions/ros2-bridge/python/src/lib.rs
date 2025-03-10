@@ -349,7 +349,7 @@ impl Ros2Publisher {
                 Err(err) => {
                     eprintln!("Failed to create PyList: {}", err);
                     return Err(eyre!("Failed to create PyList from data: {}", err));
-                },
+                }
             };
             pyarrow.getattr("array")?.call1((list,))?
         } else {
