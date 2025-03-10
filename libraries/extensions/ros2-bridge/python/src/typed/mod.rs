@@ -45,6 +45,7 @@ mod tests {
     use pyo3::types::PyListMethods;
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
+    use pyo3::ffi::c_str;
 
     use pyo3::Python;
     use serde::de::DeserializeSeed;
@@ -67,8 +68,7 @@ mod tests {
 
             // Add the Python module's directory to sys.path
             py.run(
-                &CString::new("import sys; sys.path.append(str(path))")
-                    .expect("Unable to build CString"),
+                c_str!("import sys; sys.path.append(str(path))"),
                 Some(&[("path", path)].into_py_dict_bound(py)),
                 None,
             )?;
@@ -119,8 +119,7 @@ mod tests {
 
                 let _ = py
                     .eval(
-                        &CString::new("test_utils.is_subset(in_pyarrow, out_pyarrow)")
-                            .expect("CString not created"),
+                        c_str!("import sys; sys.path.append(str(path))"),
                         Some(&context),
                         None,
                     )
