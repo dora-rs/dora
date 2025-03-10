@@ -1,9 +1,10 @@
-from reachy_sdk import ReachySDK
-from reachy_sdk.trajectory import goto, goto_async
 import os
-from dora import Node
-import numpy as np
 import time
+
+import numpy as np
+from dora import Node
+from reachy_sdk import ReachySDK
+from reachy_sdk.trajectory import goto
 
 
 def r_arm_inverse_kinematics(reachy, pose, action) -> list:
@@ -50,7 +51,6 @@ def main():
     node = Node()
 
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.24")
-    MAX_R_ARM_POSE = [0.35, -0.46, -0.42]
 
     reachy = ReachySDK(ROBOT_IP, with_mobile_base=False)
     reachy.turn_on("r_arm")

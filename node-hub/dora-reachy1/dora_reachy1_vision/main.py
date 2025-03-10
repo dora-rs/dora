@@ -1,8 +1,6 @@
 from reachy_sdk import ReachySDK
-from reachy_sdk.trajectory import goto, goto_async
 import os
 from dora import Node
-import numpy as np
 import pyarrow as pa
 
 

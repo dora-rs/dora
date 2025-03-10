@@ -1,6 +1,5 @@
 import lebai_sdk
 import numpy as np
-import pyarrow as pa
 from dora import Node
 import json
 import os
