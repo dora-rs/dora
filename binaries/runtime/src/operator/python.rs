@@ -16,7 +16,6 @@ use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyTracebackMethods},
     Py, PyAny, Python,
 };
-use std::ffi::CString;
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,

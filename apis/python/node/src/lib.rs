@@ -218,9 +218,9 @@ impl Node {
                         value
                             .to_pyarrow(py)
                             .context("failed to convert value to pyarrow")
-                            .unwrap_or_else(|err| PyErr::from(err).to_object(py))
+                            .unwrap_or_else(|err| PyErr::from(err).into_pyobject(py).unwrap().unbind().into())
                     }),
-                    Err(err) => Python::with_gil(|py| PyErr::from(err).to_object(py)),
+                    Err(err) => Python::with_gil(|py| PyErr::from(err).into_pyobject(py).unwrap().unbind().into()),
                 }
             });
             futures::pin_mut!(s);

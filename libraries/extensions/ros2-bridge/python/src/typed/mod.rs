@@ -25,7 +25,7 @@ const DUMMY_STRUCT_NAME: &str = "struct";
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::CString;
+    
     use std::path::PathBuf;
 
     use crate::typed::deserialize::StructDeserializer;
