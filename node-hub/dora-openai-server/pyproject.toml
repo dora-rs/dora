@@ -27,7 +27,6 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 [project.scripts]
 dora-openai-server = "dora_openai_server.main:main"
 
-
 [tool.ruff.lint]
 extend-select = ["I","D"]
 
