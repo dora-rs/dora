@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 import numpy as np
@@ -20,11 +22,13 @@ def test_import_main():
     # Check that everything is working, and catch dora Runtime Exception as we're not running in a dora dataflow.
     # with pytest.raises(RuntimeError):
     # main()
+    """TODO: Add docstring."""
     import dora_rdt_1b.RoboticsDiffusionTransformer as _  # noqa
     import dora_rdt_1b as _  # noqa
 
 
 def test_download_policy():
+    """TODO: Add docstring."""
     from dora_rdt_1b.main import get_policy
 
     ## in the future we should add this test within CI
@@ -38,6 +42,7 @@ def test_download_policy():
 def test_download_vision_model():
     # Skip vision test as it is currently failing on macOS
     # See: https://github.com/dora-rs/dora/actions/runs/13484462433/job/37673857429
+    """TODO: Add docstring."""
     from dora_rdt_1b.main import get_vision_model
 
     (vision_encoder, image_processor) = get_vision_model()
@@ -47,6 +52,7 @@ def test_download_vision_model():
 
 def test_download_language_embeddings():
     ## in the future we should add this test within CI
+    """TODO: Add docstring."""
     if CI:
         return
 
@@ -56,6 +62,7 @@ def test_download_language_embeddings():
 
 
 def test_load_dummy_image():
+    """TODO: Add docstring."""
     from dora_rdt_1b.main import config
 
     # Load pretrained model (in HF style)
@@ -117,6 +124,7 @@ def test_load_dummy_image():
             if config["dataset"].get("image_aspect_ratio", "pad") == "pad":
 
                 def expand2square(pil_img, background_color):
+                    """TODO: Add docstring."""
                     width, height = pil_img.size
                     if width == height:
                         return pil_img
@@ -155,6 +163,7 @@ def test_load_dummy_image():
 
 
 def test_dummy_states():
+    """TODO: Add docstring."""
     from dora_rdt_1b.main import config
 
     ## in the future we should add this test within CI
@@ -209,6 +218,7 @@ def test_dummy_states():
 
 def test_dummy_input():
     ## in the future we should add this test within CI
+    """TODO: Add docstring."""
     if CI:
         return
 

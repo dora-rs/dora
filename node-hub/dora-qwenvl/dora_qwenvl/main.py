@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 from pathlib import Path
 
@@ -106,6 +108,7 @@ def generate(frames: dict, question):
 
 
 def main():
+    """TODO: Add docstring."""
     pa.array([])  # initialize pyarrow array
     node = Node()
 

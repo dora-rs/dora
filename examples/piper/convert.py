@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
@@ -34,12 +36,14 @@ def convert_rotation_matrix_to_euler(rotmat):
 
 
 def normalize_vector(v):
+    """TODO: Add docstring."""
     v_mag = np.linalg.norm(v, axis=-1, keepdims=True)
     v_mag = np.maximum(v_mag, 1e-8)
     return v / v_mag
 
 
 def cross_product(u, v):
+    """TODO: Add docstring."""
     i = u[:, 1] * v[:, 2] - u[:, 2] * v[:, 1]
     j = u[:, 2] * v[:, 0] - u[:, 0] * v[:, 2]
     k = u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]
@@ -49,6 +53,7 @@ def cross_product(u, v):
 
 
 def compute_rotation_matrix_from_ortho6d(ortho6d):
+    """TODO: Add docstring."""
     x_raw = ortho6d[:, 0:3]
     y_raw = ortho6d[:, 3:6]
 
@@ -69,5 +74,6 @@ def compute_ortho6d_from_rotation_matrix(matrix):
     # rotation matrix: [ | , |,  | ]
     #                  [ a1, a2, a3]
     #                  [ | , |,  | ]
+    """TODO: Add docstring."""
     ortho6d = matrix[:, :, :2].transpose(0, 2, 1).reshape(matrix.shape[0], -1)
     return ortho6d

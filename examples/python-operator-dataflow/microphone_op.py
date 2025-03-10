@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import numpy as np
 import pyarrow as pa
 import sounddevice as sd
@@ -16,6 +18,7 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT":
             audio_data = sd.rec(
                 int(SAMPLE_RATE * MAX_DURATION),

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse
 import os
 
@@ -10,6 +12,8 @@ RUNNER_CI = True if os.getenv("CI") == "true" else False
 
 
 class Plot:
+    """TODO: Add docstring."""
+
     frame: np.array = np.array([])
 
     bboxes: dict = {
@@ -25,6 +29,7 @@ class Plot:
 
 
 def plot_frame(plot):
+    """TODO: Add docstring."""
     for bbox in zip(plot.bboxes["bbox"], plot.bboxes["conf"], plot.bboxes["labels"]):
         [
             [min_x, min_y, max_x, max_y],
@@ -70,12 +75,14 @@ def plot_frame(plot):
 
 
 def yuv420p_to_bgr_opencv(yuv_array, width, height):
+    """TODO: Add docstring."""
     yuv = yuv_array.reshape((height * 3 // 2, width))
     return cv2.cvtColor(yuv, cv2.COLOR_YUV420p2RGB)
 
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
         description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image.",
     )

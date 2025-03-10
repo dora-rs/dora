@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 
@@ -8,6 +10,7 @@ from reachy2_sdk import ReachySDK
 
 
 def main():
+    """TODO: Add docstring."""
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
     reachy = ReachySDK(ROBOT_IP)

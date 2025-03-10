@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 LABELS = [
     "person",
     "bicycle",

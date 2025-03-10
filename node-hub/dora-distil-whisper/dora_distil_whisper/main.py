@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import sys
 from pathlib import Path
@@ -12,6 +14,7 @@ TRANSLATE = bool(os.getenv("TRANSLATE", "False") in ["True", "true"])
 
 
 def load_model():
+    """TODO: Add docstring."""
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
     MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
@@ -70,6 +73,7 @@ BAD_SENTENCES = [
 
 
 def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
+    """TODO: Add docstring."""
     if len(text) == 0:
         return text
     # Check if the text is primarily Chinese (you may need to adjust this threshold)
@@ -103,6 +107,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
 
     # For macos use mlx:

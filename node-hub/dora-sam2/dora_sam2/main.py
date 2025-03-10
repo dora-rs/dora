@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import cv2
 import numpy as np
 import pyarrow as pa
@@ -10,6 +12,7 @@ predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
 
 
 def main():
+    """TODO: Add docstring."""
     pa.array([])  # initialize pyarrow array
     node = Node()
     frames = {}
