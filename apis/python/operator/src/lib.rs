@@ -99,7 +99,10 @@ impl PyEvent {
         match &self.event {
             MergedEvent::Dora(event) => {
                 if let Some(id) = Self::id(event) {
-                    pydict.insert("id", id.into_py(py));
+                    pydict.insert("id", match id.into_pyobject(py){
+                        Ok(py_object) => py_object.into(),
+                        Err(_) => py.None(),
+                    });
                 }
                 pydict.insert(
                     "type",
@@ -119,7 +122,7 @@ impl PyEvent {
                     pydict.insert(
                         "error",
                         match error.into_pyobject(py) {
-                            Ok(py_object) => py_object.unbind().into(),
+                            Ok(py_object) => py_object.into(),
                             Err(_) => py.None(),
                         },
                     );
@@ -209,25 +212,13 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 parameters.insert(key, Parameter::Float(value.extract::<f64>()?))
             } else if value.is_instance_of::<PyString>() {
                 parameters.insert(key, Parameter::String(value.extract()?))
-            } else if value.is_instance_of::<PyTuple>()
+            } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyInt>()
             {
                 let list: Vec<i64> = value.extract()?;
                 parameters.insert(key, Parameter::ListInt(list))
-            } else if value.is_instance_of::<PyList>()
-                && value.len()? > 0
-                && value.get_item(0)?.is_exact_instance_of::<PyInt>()
-            {
-                let list: Vec<i64> = value.extract()?;
-                parameters.insert(key, Parameter::ListInt(list))
-            } else if value.is_instance_of::<PyTuple>()
-                && value.len()? > 0
-                && value.get_item(0)?.is_exact_instance_of::<PyFloat>()
-            {
-                let list: Vec<f64> = value.extract()?;
-                parameters.insert(key, Parameter::ListFloat(list))
-            } else if value.is_instance_of::<PyList>()
+            } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyFloat>()
             {
