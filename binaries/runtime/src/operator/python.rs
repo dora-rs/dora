@@ -15,6 +15,7 @@ use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyTracebackMethods},
     Py, PyAny, Python,
 };
+use std::ffi::CString;
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -23,7 +24,7 @@ use tokio::sync::{mpsc::Sender, oneshot};
 use tracing::{error, field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
-    let traceback = Python::with_gil(|py| err.traceback_bound(py).and_then(|t| t.format().ok()));
+    let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
     if let Some(traceback) = traceback {
         eyre::eyre!("{traceback}\n{err}")
     } else {
@@ -75,9 +76,7 @@ pub fn run(
             let parent_path = parent_path
                 .to_str()
                 .ok_or_else(|| eyre!("module path is not valid utf8"))?;
-            let sys = py
-                .import_bound("sys")
-                .wrap_err("failed to import `sys` module")?;
+            let sys = py.import("sys").wrap_err("failed to import `sys` module")?;
             let sys_path = sys
                 .getattr("path")
                 .wrap_err("failed to import `sys.path` module")?;
@@ -89,14 +88,18 @@ pub fn run(
                 .wrap_err("failed to append module path to python search path")?;
         }
 
-        let module = py.import_bound(module_name).map_err(traceback)?;
+        let module = py.import(module_name).map_err(traceback)?;
         let operator_class = module
             .getattr("Operator")
             .wrap_err("no `Operator` class found in module")?;
 
         let locals = [("Operator", operator_class)].into_py_dict_bound(py);
         let operator = py
-            .eval_bound("Operator()", None, Some(&locals))
+            .eval(
+                &CString::new("Operator()").expect("CString creation failed"),
+                None,
+                Some(&locals),
+            )
             .map_err(traceback)?;
         operator.setattr(
             "dataflow_descriptor",
@@ -141,11 +144,11 @@ pub fn run(
                         })?;
                     // Reload module
                     let module = py
-                        .import_bound(module_name)
+                        .import(module_name)
                         .map_err(traceback)
                         .wrap_err(format!("Could not retrieve {module_name} while reloading"))?;
                     let importlib = py
-                        .import_bound("importlib")
+                        .import("importlib")
                         .wrap_err("failed to import `importlib` module")?;
                     let module = importlib
                         .call_method("reload", (module,), None)
@@ -157,7 +160,11 @@ pub fn run(
                     // Create a new reloaded operator
                     let locals = [("Operator", reloaded_operator_class)].into_py_dict_bound(py);
                     let operator: Py<pyo3::PyAny> = py
-                        .eval_bound("Operator()", None, Some(&locals))
+                        .eval(
+                            &CString::new("Operator()").expect("CString creation failed"),
+                            None,
+                            Some(&locals),
+                        )
                         .map_err(traceback)
                         .wrap_err("Could not initialize reloaded operator")?
                         .into();
