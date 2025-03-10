@@ -15,7 +15,6 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 [project.scripts]
 dora-ios-lidar = "dora_ios_lidar.main:main"
 
-
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle

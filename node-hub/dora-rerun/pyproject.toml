@@ -19,7 +19,6 @@ scripts = { "dora-rerun" = "dora_rerun:py_main" }
 [tool.maturin]
 features = ["python", "pyo3/extension-module"]
 
-
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
