@@ -24,7 +24,6 @@ pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
     "eyre",
-    "generate-import-lib",
 ], optional = true }
 bytemuck = "1.20.0"
 
