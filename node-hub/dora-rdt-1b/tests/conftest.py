@@ -1,7 +1,10 @@
+"""TODO: Add docstring."""
+
 import pytest
 
 
 def pytest_configure():
+    """TODO: Add docstring."""
     pytest.rdt = None
     pytest.lang_embeddings = None
     pytest.image_processor = None

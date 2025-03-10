@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 
@@ -22,6 +24,7 @@ l_default_pose = [
 
 
 def l_arm_go_to_mixed_angles(reachy, x, y, z):
+    """TODO: Add docstring."""
     for theta in range(-80, -60, 10):
         r = R.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
@@ -67,6 +70,7 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
 
 
 def manage_gripper(reachy, gripper, grasp):
+    """TODO: Add docstring."""
     if (gripper == 100 and reachy.r_arm.gripper.get_current_opening() == 100) or (
         gripper == 0.0
         and (
@@ -90,6 +94,7 @@ def manage_gripper(reachy, gripper, grasp):
 
 
 def main():
+    """TODO: Add docstring."""
     reachy = ReachySDK(ROBOT_IP)
 
     if reachy.l_arm is not None:

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import json
 import os
 
@@ -11,11 +13,12 @@ IMAGE_RESIZE_RATIO = float(os.getenv("IMAGE_RESIZE_RATIO", "1.0"))
 
 
 def extract_bboxes(json_text) -> (np.ndarray, np.ndarray):
-    """Extracts bounding boxes from a JSON string with markdown markers and returns them as a NumPy array.
+    """Extract bounding boxes from a JSON string with markdown markers and return them as a NumPy array.
 
     Parameters
     ----------
-    json_text (str): JSON string containing bounding box data, including ```json markers.
+    json_text : str
+        JSON string containing bounding box data, including ```json markers.
 
     Returns
     -------

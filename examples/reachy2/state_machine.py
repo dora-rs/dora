@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 # State Machine
 import os
 
@@ -76,6 +78,7 @@ l_release_closed_pose = [
 
 
 def wait_for_event(id, timeout=None):
+    """TODO: Add docstring."""
     while True:
         event = node.next(timeout=timeout)
         if event["type"] == "INPUT":
@@ -87,6 +90,7 @@ def wait_for_event(id, timeout=None):
 
 
 def wait_for_events(ids: list[str], timeout=None):
+    """TODO: Add docstring."""
     response = {}
     while True:
         event = node.next(timeout=timeout)

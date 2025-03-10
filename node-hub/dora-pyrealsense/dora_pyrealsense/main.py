@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 
@@ -11,6 +13,7 @@ RUNNER_CI = True if os.getenv("CI") == "true" else False
 
 
 def main():
+    """TODO: Add docstring."""
     FLIP = os.getenv("FLIP", "")
     DEVICE_SERIAL = os.getenv("DEVICE_SERIAL", "")
     image_height = int(os.getenv("IMAGE_HEIGHT", "480"))

@@ -23,3 +23,8 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 dora-keyboard = "dora_keyboard.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+]

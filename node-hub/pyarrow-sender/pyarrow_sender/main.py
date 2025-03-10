@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse
 import ast
 import os
@@ -10,6 +12,7 @@ RUNNER_CI = True if os.getenv("CI") == "true" else False
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    """TODO: Add docstring."""
     parser = argparse.ArgumentParser(description="Simple arrow sender")
 
     parser.add_argument(

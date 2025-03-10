@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import pyarrow as pa
 from dora import Node
 from kokoro import KPipeline
@@ -6,6 +8,7 @@ pipeline = KPipeline(lang_code="a")  # <= make sure lang_code matches voice
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
 
     for event in node:

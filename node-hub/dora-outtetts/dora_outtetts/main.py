@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse  # Add argparse import
 import os
 import pathlib
@@ -15,6 +17,7 @@ torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
 
 def load_interface():
+    """TODO: Add docstring."""
     if os.getenv("INTERFACE", "HF") == "HF":
         model_config = outetts.HFModelConfig_v1(
             model_path="OuteAI/OuteTTS-0.2-500M",
@@ -39,6 +42,7 @@ def load_interface():
 
 
 def create_speaker(interface, path):
+    """TODO: Add docstring."""
     speaker = interface.create_speaker(
         audio_path=path,
         # If transcript is not provided, it will be automatically transcribed using Whisper
@@ -53,6 +57,7 @@ def create_speaker(interface, path):
 
 def main(arg_list: list[str] | None = None):
     # Parse cli args
+    """TODO: Add docstring."""
     parser = argparse.ArgumentParser(description="Dora Outetts Node")
     parser.add_argument("--create-speaker", type=str, help="Path to audio file")
     parser.add_argument("--test", action="store_true", help="Run tests")

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 try:
     import ugv_sdk_py
     from ugv_sdk_py import hunter_robot
@@ -15,6 +17,7 @@ from dora import Node
 
 def main():
     # Create an instance of HunterRobot
+    """TODO: Add docstring."""
     robot = hunter_robot.HunterRobot(ugv_sdk_py.ProtocolVersion.AGX_V2)
 
     # Connect to the robot

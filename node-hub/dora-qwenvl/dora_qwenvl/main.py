@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 from pathlib import Path
 
@@ -53,8 +55,7 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 
 def generate(frames: dict, question):
-    """Generate the response to the question given the image using Qwen2 model.
-    """
+    """Generate the response to the question given the image using Qwen2 model."""
     messages = [
         {
             "role": "user",
@@ -107,6 +108,7 @@ def generate(frames: dict, question):
 
 
 def main():
+    """TODO: Add docstring."""
     pa.array([])  # initialize pyarrow array
     node = Node()
 
