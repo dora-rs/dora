@@ -47,7 +47,7 @@ def search(query_embedding, corpus_embeddings, paths, raw, k=5, file_extension=N
 
 
 class Operator:
-    """ """
+    """TODO: Add docstring."""
 
     def __init__(self):
         ## TODO: Add a initialisation step

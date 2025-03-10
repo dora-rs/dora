@@ -16,6 +16,7 @@ class Enum:
 @typing.final
 class Node:
     """The custom node API lets you integrate `dora` into your application.
+    
     It allows you to retrieve input and send output in any fashion you want.
 
     Use with:
@@ -28,7 +29,8 @@ class Node:
     """
 
     def __init__(self, node_id: str=None) -> None:
-        """The custom node API lets you integrate `dora` into your application.
+        """Use the custom node API to embed `dora` into your application.
+
         It allows you to retrieve input and send output in any fashion you want.
 
         Use with:
@@ -41,21 +43,23 @@ class Node:
         """
 
     def dataflow_descriptor(self) -> dict:
-        """Returns the full dataflow descriptor that this node is part of.
+        """Return the full dataflow descriptor that this node is part of.
 
         This method returns the parsed dataflow YAML file.
         """
 
     def dataflow_id(self) -> str:
-        """Returns the dataflow id."""
+        """Return the dataflow id."""
 
     def merge_external_events(self, subscription: dora.Ros2Subscription) -> None:
         """Merge an external event stream with dora main loop.
+
         This currently only work with ROS2.
         """
 
     def next(self, timeout: float=None) -> dict:
         """`.next()` gives you the next input that the node has received.
+
         It blocks until the next event becomes available.
         You can use timeout in seconds to return if no input is available.
         It will return `None` when all senders has been dropped.

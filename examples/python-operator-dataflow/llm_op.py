@@ -66,7 +66,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH, use_fast=True)
 
 
 def extract_python_code_blocks(text):
-    """Extracts Python code blocks from the given text that are enclosed in triple backticks with a python language identifier.
+    """Extract Python code blocks from the given text that are enclosed in triple backticks with a python language identifier.
 
     Parameters
     ----------
@@ -90,7 +90,7 @@ def extract_python_code_blocks(text):
 
 
 def extract_json_code_blocks(text):
-    """Extracts json code blocks from the given text that are enclosed in triple backticks with a json language identifier.
+    """Extract json code blocks from the given text that are enclosed in triple backticks with a json language identifier.
 
     Parameters
     ----------
@@ -113,7 +113,7 @@ def extract_json_code_blocks(text):
 
 
 def remove_last_line(python_code):
-    """Removes the last line from a given string of Python code.
+    """Remove the last line from a given string of Python code.
 
     Parameters
     ----------
@@ -132,6 +132,7 @@ def remove_last_line(python_code):
 
 def calculate_similarity(source, target):
     """Calculate a similarity score between the source and target strings.
+
     This uses the edit distance relative to the length of the strings.
     """
     edit_distance = pylcs.edit_distance(source, target)
@@ -142,9 +143,7 @@ def calculate_similarity(source, target):
 
 
 def find_best_match_location(source_code, target_block):
-    """Find the best match for the target_block within the source_code by searching line by line,
-    considering blocks of varying lengths.
-    """
+    """Find the best match for the target_block within the source_code by searching line by line, considering blocks of varying lengths."""
     source_lines = source_code.split("\n")
     target_lines = target_block.split("\n")
 

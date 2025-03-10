@@ -7,14 +7,16 @@ class Operator:
     """Template docstring."""
 
     def __init__(self):
-        """Called on initialisation."""
+        """Perform initialization tasks."""
 
     def on_event(
         self,
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """Args:
+        """TODO :Description.
+        
+        Args:
             dora_event: Event containing an `id`, `data` and `metadata`.
             send_output Callable[[str, bytes | pa.Array, Optional[dict]], None]:
                 Function for sending output to the dataflow:
@@ -38,4 +40,4 @@ class Operator:
         return DoraStatus.CONTINUE
 
     def __del__(self):
-        """Called before being deleted."""
+        """Perform actions before being deleted."""

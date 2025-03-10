@@ -34,7 +34,7 @@ def play_audio(
 
 
 def main():
-    """Main function for the node."""
+    """Run main function for the node."""
     node = Node()
     stream = None
     audio = np.array([])
