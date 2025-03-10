@@ -14,7 +14,7 @@ from pyarrow import cuda
 
 
 def torch_to_ipc_buffer(tensor: torch.TensorType) -> tuple[pa.array, dict]:
-    """Converts a Pytorch tensor into a pyarrow buffer containing the IPC handle and its metadata.
+    """Convert a Pytorch tensor into a pyarrow buffer containing the IPC handle and its metadata.
 
     Example Use:
     ```python
@@ -35,7 +35,7 @@ def torch_to_ipc_buffer(tensor: torch.TensorType) -> tuple[pa.array, dict]:
 
 
 def ipc_buffer_to_ipc_handle(handle_buffer: pa.array) -> cuda.IpcMemHandle:
-    """Converts a buffer containing a serialized handler into cuda IPC MemHandle.
+    """Convert a buffer containing a serialized handler into cuda IPC MemHandle.
 
     example use:
     ```python
@@ -57,7 +57,7 @@ def ipc_buffer_to_ipc_handle(handle_buffer: pa.array) -> cuda.IpcMemHandle:
 
 
 def cudabuffer_to_numba(buffer: cuda.CudaBuffer, metadata: dict) -> DeviceNDArray:
-    """Converts a pyarrow CUDA buffer to numba.
+    """Convert a pyarrow CUDA buffer to numba.
 
     example use:
     ```python
@@ -81,7 +81,7 @@ def cudabuffer_to_numba(buffer: cuda.CudaBuffer, metadata: dict) -> DeviceNDArra
 
 
 def cudabuffer_to_torch(buffer: cuda.CudaBuffer, metadata: dict) -> torch.Tensor:
-    """Converts a pyarrow CUDA buffer to a torch tensor.
+    """Convert a pyarrow CUDA buffer to a torch tensor.
 
     example use:
     ```python
