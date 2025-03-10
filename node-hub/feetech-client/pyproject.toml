@@ -13,6 +13,9 @@ dependencies = [
 "feetech-servo-sdk == 1.0.0", 
 ]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 feetech-client = "feetech_client.main:main"
 

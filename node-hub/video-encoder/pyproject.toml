@@ -14,6 +14,9 @@ dependencies = [
 "python-ffmpeg ~= 2.0.12",
 ]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 video-encoder = "video_encoder.main:main"
 
