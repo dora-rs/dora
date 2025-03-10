@@ -60,7 +60,7 @@ impl Ros2Context {
     pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
         Python::with_gil(|py| -> Result<()> {
             let warnings = py
-                .import_bound("warnings")
+                .import("warnings")
                 .wrap_err("failed to import `warnings` module")?;
             warnings
             .call_method1("warn", ("dora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
