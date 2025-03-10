@@ -109,7 +109,7 @@ mod tests {
                 let out_pyarrow = out_value.to_pyarrow(py)?;
 
                 let test_utils = PyModule::import(py, "test_utils")?;
-                let context = PyDict::new_bound(py);
+                let context = PyDict::new(py);
 
                 context.set_item("test_utils", test_utils)?;
                 context.set_item("in_pyarrow", in_pyarrow)?;

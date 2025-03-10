@@ -344,7 +344,13 @@ impl Ros2Publisher {
 
         let data = if data.is_instance(&pyarrow.getattr("StructScalar")?)? {
             // convert to arrow array
-            let list = PyList::new_bound(data.py(), [data]);
+            let list = match PyList::new(data.py(), [data]) {
+                Ok(list) => Some(list),
+                Err(err) => {
+                    eprintln!("Failed to create PyList: {}", err);
+                    return Err(eyre!("Failed to create PyList from data: {}", err));
+                },
+            };
             pyarrow.getattr("array")?.call1((list,))?
         } else {
             data
