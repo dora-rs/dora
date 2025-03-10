@@ -1,17 +1,19 @@
 import enum
-
-import pyarrow as pa
-
 from typing import Union
 
+import numpy as np
+import pyarrow as pa
 from scservo_sdk import (
-    PacketHandler,
-    PortHandler,
     COMM_SUCCESS,
+    SCS_HIBYTE,
+    SCS_HIWORD,
+    SCS_LOBYTE,
+    SCS_LOWORD,
     GroupSyncRead,
     GroupSyncWrite,
+    PacketHandler,
+    PortHandler,
 )
-from scservo_sdk import SCS_HIBYTE, SCS_HIWORD, SCS_LOBYTE, SCS_LOWORD
 
 PROTOCOL_VERSION = 0
 BAUD_RATE = 1_000_000

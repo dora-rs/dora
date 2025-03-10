@@ -5,7 +5,6 @@ This Dora node is a minimalistic interface that shows two images and text in a P
 import os
 import argparse
 
-import numpy as np
 import pygame
 
 import pyarrow as pa
