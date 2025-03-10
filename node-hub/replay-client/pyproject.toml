@@ -12,6 +12,9 @@ dependencies = [
 "pandas ~= 2.2.2",
 ]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 replay-client = "replay_client.main:main"
 

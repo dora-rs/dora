@@ -14,6 +14,9 @@ dependencies = [
 "pygame ~= 2.6.0",
 ]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 lerobot-dashboard = "lerobot_dashboard.main:main"
 

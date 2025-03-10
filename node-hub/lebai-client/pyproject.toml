@@ -12,6 +12,9 @@ dependencies = [
 "lebai-sdk >= 0.2.17",
 ]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 lebai-client = "lebai_client.main:main"
 
