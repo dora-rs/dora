@@ -33,6 +33,19 @@ We're currently running the following kind of checks:
 - **CI / Formatting:** Ensures that the code is formatted using `rustfmt` (see [below](#style))
 - **CI / License Checks:** Scans the dependency tree and tries to detect possible license incompatibilities.
 
+## Issue Management
+
+### Dora Bot
+
+We use a custom Github Action to help manage issue assignments. You can interact with this action using the following:
+
+- `@dora-bot assign me` - Assigns the current issue to you.
+- `@dora-bot unassign me` - Removes yourself from the issue assignment.
+
+For maintainers only:
+- `dora-bot unassign @username` - Allows maintainers to unassign other contributors
+Note: All issue assignments will be removed automatically after 2 weeks of inactivity.
+
 ## Style
 
 We use [`rustfmt`](https://github.com/rust-lang/rustfmt) with its default settings to format our code.
