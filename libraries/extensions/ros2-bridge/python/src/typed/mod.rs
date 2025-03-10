@@ -44,6 +44,7 @@ mod tests {
     use pyo3::types::PyListMethods;
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
+    use pyo3::PyErr;
 
     use pyo3::ffi::c_str;
 
@@ -67,9 +68,15 @@ mod tests {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path
+            let run_path_arg = match vec![("path", path)].into_py_dict(py) {
+                Ok(dict) => dict,
+                Err(e) => {
+                    return Err(e.into());
+                }
+            };
             py.run(
                 c_str!("import sys; sys.path.append(str(path))"),
-                Some(&[("path", path)].into_py_dict_bound(py)),
+                Some(&run_path_arg),
                 None,
             )?;
 

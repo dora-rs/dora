@@ -8,7 +8,7 @@ use dora_node_api::{
     merged::{MergeExternalSend, MergedEvent},
     DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter,
 };
-use eyre::{Context, Result};
+use eyre::{eyre, Context, Result};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
@@ -110,7 +110,13 @@ impl PyEvent {
             pydict.insert("_cleanup", cleanup.into_py(py));
         }
 
-        Ok(pydict.into_py_dict_bound(py).unbind())
+        Ok(match pydict.into_py_dict(py) {
+            Ok(dict) => dict,
+            Err(e) => {
+                return Err(eyre!("Failed to create Python dictionary: {}", e).into());
+            }
+        }
+        .unbind())
     }
 
     fn ty(event: &Event) -> &str {

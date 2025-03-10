@@ -24,7 +24,7 @@ use tokio::sync::{mpsc::Sender, oneshot};
 use tracing::{error, field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
-    let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
+    let traceback = Python::with_gil(|py| err.traceback_bound(py).and_then(|t| t.format().ok()));
     if let Some(traceback) = traceback {
         eyre::eyre!("{traceback}\n{err}")
     } else {
@@ -93,7 +93,15 @@ pub fn run(
             .getattr("Operator")
             .wrap_err("no `Operator` class found in module")?;
 
-        let locals = [("Operator", operator_class)].into_py_dict_bound(py);
+        let locals = match [("Operator", operator_class)].into_py_dict(py) {
+            Ok(dict) => dict,
+            Err(e) => {
+                return Err(eyre!(
+                    "failed to create Python dictionary for locals: {}",
+                    e
+                ));
+            }
+        };
         let operator = py
             .eval(c_str!("Operator()"), None, Some(&locals))
             .map_err(traceback)?;
@@ -154,7 +162,15 @@ pub fn run(
                         .wrap_err("no `Operator` class found in module")?;
 
                     // Create a new reloaded operator
-                    let locals = [("Operator", reloaded_operator_class)].into_py_dict_bound(py);
+                    let locals = match [("Operator", reloaded_operator_class)].into_py_dict(py) {
+                        Ok(dict) => dict,
+                        Err(e) => {
+                            return Err(eyre!(
+                                "failed to create Python dictionary for locals: {}",
+                                e
+                            ));
+                        }
+                    };
                     let operator: Py<pyo3::PyAny> = py
                         .eval(c_str!("Operator()"), None, Some(&locals))
                         .map_err(traceback)
