@@ -71,7 +71,7 @@ mod tests {
                 None,
             )?;
 
-            let my_module = PyModule::import_bound(py, "test_utils")?;
+            let my_module = PyModule::import(py, "test_utils")?;
 
             let arrays = my_module.getattr("TEST_ARRAYS")?;
             let arrays = arrays
@@ -108,7 +108,7 @@ mod tests {
 
                 let out_pyarrow = out_value.to_pyarrow(py)?;
 
-                let test_utils = PyModule::import_bound(py, "test_utils")?;
+                let test_utils = PyModule::import(py, "test_utils")?;
                 let context = PyDict::new_bound(py);
 
                 context.set_item("test_utils", test_utils)?;
