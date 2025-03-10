@@ -44,7 +44,6 @@ mod tests {
     use pyo3::types::PyListMethods;
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
-    use pyo3::PyErr;
 
     use pyo3::ffi::c_str;
 

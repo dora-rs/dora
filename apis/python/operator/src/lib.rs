@@ -81,15 +81,33 @@ impl PyEvent {
     pub fn to_py_dict(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut pydict = HashMap::new();
         match &self.event {
-            MergedEvent::Dora(_) => pydict.insert("kind", "dora".to_object(py)),
-            MergedEvent::External(_) => pydict.insert("kind", "external".to_object(py)),
+            MergedEvent::Dora(_) => pydict.insert(
+                "kind",
+                match "dora".into_pyobject(py) {
+                    Ok(py_object) => py_object.unbind().into(),
+                    Err(_) => py.None(),
+                },
+            ),
+            MergedEvent::External(_) => pydict.insert(
+                "kind",
+                match "external".into_pyobject(py) {
+                    Ok(py_object) => py_object.unbind().into(),
+                    Err(_) => py.None(),
+                },
+            ),
         };
         match &self.event {
             MergedEvent::Dora(event) => {
                 if let Some(id) = Self::id(event) {
                     pydict.insert("id", id.into_py(py));
                 }
-                pydict.insert("type", Self::ty(event).to_object(py));
+                pydict.insert(
+                    "type",
+                    match Self::ty(event).into_pyobject(py) {
+                        Ok(py_object) => py_object.unbind().into(),
+                        Err(_) => py.None(),
+                    },
+                );
 
                 if let Some(value) = self.value(py)? {
                     pydict.insert("value", value);
@@ -98,7 +116,13 @@ impl PyEvent {
                     pydict.insert("metadata", metadata);
                 }
                 if let Some(error) = Self::error(event) {
-                    pydict.insert("error", error.to_object(py));
+                    pydict.insert(
+                        "error",
+                        match error.into_pyobject(py) {
+                            Ok(py_object) => py_object.unbind().into(),
+                            Err(_) => py.None(),
+                        },
+                    );
                 }
             }
             MergedEvent::External(event) => {
@@ -152,9 +176,13 @@ impl PyEvent {
     fn metadata(event: &Event, py: Python<'_>) -> Result<Option<PyObject>> {
         match event {
             Event::Input { metadata, .. } => Ok(Some(
-                metadata_to_pydict(metadata, py)
+                match metadata_to_pydict(metadata, py)
                     .context("Issue deserializing metadata")?
-                    .to_object(py),
+                    .into_pyobject(py)
+                {
+                    Ok(py_object) => py_object.unbind().into(),
+                    Err(_) => py.None(),
+                },
             )),
             _ => Ok(None),
         }
