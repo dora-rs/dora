@@ -1,0 +1,16 @@
+[project]
+name = "dora-transformers"
+version = "0.1.0"
+description = "Generic Transformer Node for integration of multiple AI models"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+    "dora-rs>=0.3.9",
+    "torch",
+    "transformers",
+]
+
+[project.scripts]
+dora-transformers = "dora_transformers.main:main"
