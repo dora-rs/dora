@@ -1,18 +1,18 @@
-[tool.poetry]
+[project]
 name = "lebai-client"
 version = "0.1"
-authors = ["dora-rs team"]
+authors = [{ name = "dora-rs team"}]
 description = "Dora Node client for lebai robotic arms."
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.9"
 
-packages = [{ include = "lebai_client" }]
+dependencies = [
+"dora-rs >= 0.3.6rc0",
+"lebai-sdk >= 0.2.17",
+]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-dora-rs = "^0.3.6rc0"
-lebai-sdk = "^0.2.17"
-
-[tool.poetry.scripts]
+[project.scripts]
 lebai-client = "lebai_client.main:main"
 
 [build-system]

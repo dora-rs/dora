@@ -1,18 +1,18 @@
-[tool.poetry]
+[project]
 name = "replay-client"
 version = "0.1"
-authors = ["Hennzau <dev@enzo-le-van.fr>"]
+authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>"}]
 description = "Dora Node client for replaying recorded data."
+license = { text = "MIT" }
 readme = "README.md"
+requires-python = ">=3.9"
 
-packages = [{ include = "replay_client" }]
+dependencies = [
+"dora-rs == 0.3.5",
+"pandas ~= 2.2.2",
+]
 
-[tool.poetry.dependencies]
-python = "^3.9"
-dora-rs = "0.3.5"
-pandas = "~2.2.2"
-
-[tool.poetry.scripts]
+[project.scripts]
 replay-client = "replay_client.main:main"
 
 [build-system]
