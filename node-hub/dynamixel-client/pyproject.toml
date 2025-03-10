@@ -12,6 +12,9 @@ dependencies = [
 "dynamixel-sdk == 3.7.31",
 ]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 dynamixel-client = "dynamixel_client.main:main"
 
