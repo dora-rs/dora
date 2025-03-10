@@ -45,6 +45,8 @@ mod tests {
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
 
+    use pyo3::ffi::c_str;
+
     use pyo3::Python;
     use serde::de::DeserializeSeed;
     use serde::Serialize;
@@ -116,8 +118,8 @@ mod tests {
                 context.set_item("out_pyarrow", out_pyarrow)?;
 
                 let _ = py
-                    .eval_bound(
-                        "test_utils.is_subset(in_pyarrow, out_pyarrow)",
+                    .eval(
+                        c_str!("test_utils.is_subset(in_pyarrow, out_pyarrow)"),
                         Some(&context),
                         None,
                     )

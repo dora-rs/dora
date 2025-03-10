@@ -10,6 +10,7 @@ use dora_node_api::{merged::MergedEvent, Event, Parameter};
 use dora_operator_api_python::PyEvent;
 use dora_operator_api_types::DoraStatus;
 use eyre::{bail, eyre, Context, Result};
+use pyo3::ffi::c_str;
 use pyo3::{
     pyclass,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyTracebackMethods},
@@ -94,7 +95,7 @@ pub fn run(
 
         let locals = [("Operator", operator_class)].into_py_dict_bound(py);
         let operator = py
-            .eval_bound("Operator()", None, Some(&locals))
+            .eval(c_str!("Operator()"), None, Some(&locals))
             .map_err(traceback)?;
         operator.setattr(
             "dataflow_descriptor",
@@ -155,7 +156,7 @@ pub fn run(
                     // Create a new reloaded operator
                     let locals = [("Operator", reloaded_operator_class)].into_py_dict_bound(py);
                     let operator: Py<pyo3::PyAny> = py
-                        .eval_bound("Operator()", None, Some(&locals))
+                        .eval(c_str!("Operator()"), None, Some(&locals))
                         .map_err(traceback)
                         .wrap_err("Could not initialize reloaded operator")?
                         .into();
