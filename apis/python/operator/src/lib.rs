@@ -218,7 +218,7 @@ pub fn metadata_to_pydict<'a>(
     metadata: &'a Metadata,
     py: Python<'a>,
 ) -> Result<pyo3::Bound<'a, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (k, v) in metadata.parameters.iter() {
         match v {
             Parameter::Bool(bool) => dict
