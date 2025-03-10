@@ -99,13 +99,7 @@ impl PyEvent {
         match &self.event {
             MergedEvent::Dora(event) => {
                 if let Some(id) = Self::id(event) {
-                    pydict.insert(
-                        "id",
-                        match id.into_pyobject(py) {
-                            Ok(py_object) => py_object.into(),
-                            Err(_) => py.None(),
-                        },
-                    );
+                    pydict.insert("id", id.into_py(py));
                 }
                 pydict.insert(
                     "type",
