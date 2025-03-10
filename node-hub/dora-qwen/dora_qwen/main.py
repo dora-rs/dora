@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import sys
 
@@ -12,6 +14,7 @@ SYSTEM_PROMPT = os.getenv(
 
 
 def get_model_gguf():
+    """TODO: Add docstring."""
     from llama_cpp import Llama
 
     llm = Llama.from_pretrained(
@@ -21,6 +24,7 @@ def get_model_gguf():
 
 
 def get_model_darwin():
+    """TODO: Add docstring."""
     from mlx_lm import load
 
     model, tokenizer = load("mlx-community/Qwen2.5-0.5B-Instruct-8bit")
@@ -28,6 +32,7 @@ def get_model_darwin():
 
 
 def get_model_huggingface():
+    """TODO: Add docstring."""
     model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -41,6 +46,7 @@ ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split
 
 
 def generate_hf(model, tokenizer, prompt: str, history) -> str:
+    """TODO: Add docstring."""
     history += [{"role": "user", "content": prompt}]
     text = tokenizer.apply_chat_template(
         history, tokenize=False, add_generation_prompt=True,
@@ -57,6 +63,7 @@ def generate_hf(model, tokenizer, prompt: str, history) -> str:
 
 
 def main():
+    """TODO: Add docstring."""
     history = []
     # If OS is not Darwin, use Huggingface model
     if sys.platform != "":

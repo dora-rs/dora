@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import time
 
 import numpy as np

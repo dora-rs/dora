@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 os.environ["ARGOS_DEVICE_TYPE"] = "auto"
@@ -22,6 +24,7 @@ argostranslate.package.install_from_path(package_to_install.download())
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
     while True:
         event = node.next()

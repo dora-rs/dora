@@ -1,9 +1,12 @@
+"""TODO: Add docstring."""
+
 import time
 
 from dora import Node
 
 
 def main() -> None:
+    """TODO: Add docstring."""
     dora_node = Node()
 
     i = 0

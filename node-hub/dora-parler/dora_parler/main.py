@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 from pathlib import Path
@@ -58,6 +60,7 @@ stream = p.open(format=pyaudio.paInt16, channels=1, rate=sampling_rate, output=T
 
 
 def play_audio(audio_array):
+    """TODO: Add docstring."""
     if np.issubdtype(audio_array.dtype, np.floating):
         max_val = np.max(np.abs(audio_array))
         audio_array = (audio_array / max_val) * 32767
@@ -67,16 +70,21 @@ def play_audio(audio_array):
 
 
 class InterruptStoppingCriteria(StoppingCriteria):
+    """TODO: Add docstring."""
+
     def __init__(self):
+        """TODO: Add docstring."""
         super().__init__()
         self.stop_signal = False
 
     def __call__(
         self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs,
     ) -> bool:
+        """TODO: Add docstring."""
         return self.stop_signal
 
     def stop(self):
+        """TODO: Add docstring."""
         self.stop_signal = True
 
 
@@ -86,6 +94,7 @@ def generate_base(
     description=default_description,
     play_steps_in_s=0.5,
 ):
+    """TODO: Add docstring."""
     prev_time = time.time()
     play_steps = int(frame_rate * play_steps_in_s)
     inputs = tokenizer(description, return_tensors="pt").to(device)
@@ -133,6 +142,7 @@ def generate_base(
 
 
 def main():
+    """TODO: Add docstring."""
     generate_base(None, "Ready !", default_description, 0.5)
     node = Node()
     while True:

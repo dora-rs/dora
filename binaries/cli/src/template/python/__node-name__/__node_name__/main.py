@@ -1,8 +1,11 @@
+"""TODO: Add docstring."""
+
 import pyarrow as pa
 from dora import Node
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
 
     for event in node:

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import json
 import os
 import re
@@ -183,12 +185,14 @@ def replace_code_in_source(source_code, replacement_block: str):
 
 
 class Operator:
+    """TODO: Add docstring."""
 
     def on_event(
         self,
         dora_event,
         send_output,
     ) -> DoraStatus:
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT" and dora_event["id"] == "code_modifier":
             input = dora_event["value"][0].as_py()
 
@@ -261,6 +265,7 @@ class Operator:
 
         # Generate output
         # prompt = PROMPT_TEMPLATE.format(system_message=system_message, prompt=prompt))
+        """TODO: Add docstring."""
         input = tokenizer(prompt, return_tensors="pt")
         input_ids = input.input_ids.cuda()
 

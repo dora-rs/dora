@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 # State Machine
 import json
 import os
@@ -114,6 +116,7 @@ def extract_bboxes(json_text) -> (np.ndarray, np.ndarray):
 
 
 def handle_speech(last_text):
+    """TODO: Add docstring."""
     global stop
     words = last_text.lower().split()
     if len(ACTIVATION_WORDS) > 0 and any(word in ACTIVATION_WORDS for word in words):
@@ -137,7 +140,7 @@ def handle_speech(last_text):
 
 
 def wait_for_event(id, timeout=None, cache={}):
-
+    """TODO: Add docstring."""
     while True:
         event = node.next(timeout=timeout)
         if event is None:
@@ -156,6 +159,7 @@ def wait_for_event(id, timeout=None, cache={}):
 
 
 def wait_for_events(ids: list[str], timeout=None, cache={}):
+    """TODO: Add docstring."""
     response = {}
     while True:
         event = node.next(timeout=timeout)
@@ -176,6 +180,7 @@ def wait_for_events(ids: list[str], timeout=None, cache={}):
 
 
 def get_prompt():
+    """TODO: Add docstring."""
     text = wait_for_event(id="text", timeout=0.3)
     if text is None:
         return None

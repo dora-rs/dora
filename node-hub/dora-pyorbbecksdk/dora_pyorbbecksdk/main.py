@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 # ******************************************************************************
 #  Copyright (c) 2023 Orbbec 3D Technology, Inc
 #
@@ -40,11 +42,15 @@ except ImportError as err:
 
 
 class TemporalFilter:
+    """TODO: Add docstring."""
+
     def __init__(self, alpha):
+        """TODO: Add docstring."""
         self.alpha = alpha
         self.previous_frame = None
 
     def process(self, frame):
+        """TODO: Add docstring."""
         if self.previous_frame is None:
             result = frame
         else:
@@ -56,18 +62,21 @@ class TemporalFilter:
 
 
 def yuyv_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """TODO: Add docstring."""
     yuyv = frame.reshape((height, width, 2))
     bgr_image = cv2.cvtColor(yuyv, cv2.COLOR_YUV2BGR_YUY2)
     return bgr_image
 
 
 def uyvy_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """TODO: Add docstring."""
     uyvy = frame.reshape((height, width, 2))
     bgr_image = cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
     return bgr_image
 
 
 def i420_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """TODO: Add docstring."""
     y = frame[0:height, :]
     u = frame[height : height + height // 4].reshape(height // 2, width // 2)
     v = frame[height + height // 4 :].reshape(height // 2, width // 2)
@@ -77,6 +86,7 @@ def i420_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
 
 
 def nv21_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """TODO: Add docstring."""
     y = frame[0:height, :]
     uv = frame[height : height + height // 2].reshape(height // 2, width)
     yuv_image = cv2.merge([y, uv])
@@ -85,6 +95,7 @@ def nv21_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
 
 
 def nv12_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    """TODO: Add docstring."""
     y = frame[0:height, :]
     uv = frame[height : height + height // 2].reshape(height // 2, width)
     yuv_image = cv2.merge([y, uv])
@@ -93,6 +104,7 @@ def nv12_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
 
 
 def frame_to_bgr_image(frame: VideoFrame):
+    """TODO: Add docstring."""
     width = frame.get_width()
     height = frame.get_height()
     color_format = frame.get_format()
@@ -135,6 +147,7 @@ DEVICE_INDEX = int(os.getenv("DEVICE_INDEX", "0"))
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
     config = Config()
     ctx = Context()

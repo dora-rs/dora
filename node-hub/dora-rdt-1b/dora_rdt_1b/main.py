@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 # install dependencies as shown in the README here https://github.com/alik-git/RoboticsDiffusionTransformer?tab=readme-ov-file#installation
 import os
 from pathlib import Path
@@ -39,6 +41,7 @@ with open(config_path, encoding="utf-8") as fp:
 
 
 def get_policy():
+    """TODO: Add docstring."""
     from dora_rdt_1b.RoboticsDiffusionTransformer.models.rdt_runner import RDTRunner
 
     pretrained_model_name_or_path = ROBOTIC_MODEL_NAME_OR_PATH
@@ -51,6 +54,7 @@ def get_policy():
 
 
 def get_vision_model():
+    """TODO: Add docstring."""
     from dora_rdt_1b.RoboticsDiffusionTransformer.models.multimodal_encoder.siglip_encoder import (
         SiglipVisionTower,
     )
@@ -67,6 +71,7 @@ def get_vision_model():
 
 
 def get_language_embeddings():
+    """TODO: Add docstring."""
     device = torch.device("cuda:0")
 
     lang_embeddings = torch.load(
@@ -80,6 +85,7 @@ def get_language_embeddings():
 
 
 def expand2square(pil_img, background_color):
+    """TODO: Add docstring."""
     width, height = pil_img.size
     if width == height:
         return pil_img
@@ -111,7 +117,7 @@ def process_image(rgbs_lst, image_processor, vision_encoder):
 
     # image pre-processing
     # The background image used for padding
-
+    """TODO: Add docstring."""
     image_tensor_list = []
     for step in range(config["common"]["img_history_size"]):
         rgbs = rgbs_lst[step]
@@ -137,6 +143,7 @@ def process_image(rgbs_lst, image_processor, vision_encoder):
 
 def get_states(proprio):
     # suppose you control in 7DOF joint position
+    """TODO: Add docstring."""
     STATE_INDICES = [
         STATE_VEC_IDX_MAPPING["left_arm_joint_0_pos"],
         STATE_VEC_IDX_MAPPING["left_arm_joint_1_pos"],
@@ -183,6 +190,7 @@ def get_states(proprio):
 
 
 def main():
+    """TODO: Add docstring."""
     rdt = get_policy()
     lang_embeddings = get_language_embeddings()
     vision_encoder, image_processor = get_vision_model()

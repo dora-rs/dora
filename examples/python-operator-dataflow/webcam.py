@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 
@@ -18,6 +20,7 @@ class Operator:
     """Sending image from webcam to the dataflow."""
 
     def __init__(self):
+        """TODO: Add docstring."""
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
         self.start_time = time.time()
         self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -29,6 +32,7 @@ class Operator:
         dora_event: str,
         send_output,
     ) -> DoraStatus:
+        """TODO: Add docstring."""
         event_type = dora_event["type"]
         if event_type == "INPUT":
             ret, frame = self.video_capture.read()
@@ -67,4 +71,5 @@ class Operator:
         return DoraStatus.STOP
 
     def __del__(self):
+        """TODO: Add docstring."""
         self.video_capture.release()
