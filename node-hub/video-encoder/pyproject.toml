@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "video-encoder"
+version = "0.1"
+authors = ["Hennzau <dev@enzo-le-van.fr>"]
+description = "Dora Node for video encoding (LeRobot compatible)."
+readme = "README.md"
+
+packages = [{ include = "video_encoder" }]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+dora-rs = "0.3.5"
+numpy = "< 2.0.0"
+opencv-python = ">= 4.1.1"
+python-ffmpeg = "~2.0.12"
+
+[tool.poetry.scripts]
+video-encoder = "video_encoder.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
