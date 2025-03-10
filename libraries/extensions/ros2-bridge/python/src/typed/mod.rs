@@ -38,6 +38,7 @@ mod tests {
     use arrow::pyarrow::ToPyArrow;
 
     use eyre::eyre;
+    use pyo3::ffi::c_str;
     use pyo3::types::IntoPyDict;
     use pyo3::types::PyAnyMethods;
     use pyo3::types::PyDict;
@@ -45,7 +46,6 @@ mod tests {
     use pyo3::types::PyListMethods;
     use pyo3::types::PyModule;
     use pyo3::types::PyTuple;
-    use pyo3::ffi::c_str;
 
     use pyo3::Python;
     use serde::de::DeserializeSeed;
