@@ -17,7 +17,8 @@ def extract_bboxes(json_text):
 
     Parameters
     ----------
-    json_text (str): JSON string containing bounding box data, including ```json markers.
+    json_text : str
+        JSON string containing bounding box data, including ```json markers.
 
     Returns
     -------

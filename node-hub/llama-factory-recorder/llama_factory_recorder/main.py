@@ -18,13 +18,19 @@ DEFAULT_QUESTION = os.getenv(
 
 def write_dict_to_json(file_path, key: str, new_data):
     """Write a dictionary to a JSON file.
-    
-    If the file already contains a list of entries,the new data will be appended to that list. Otherwise, it will create a new list.
+
+    If the JSON file already contains an object with the given key mapping to a list of entries,
+    the new data will be appended to that list. Otherwise, a new key is created with a list
+    containing the provided dictionary.
 
     Parameters
     ----------
-    - file_path: str, the path to the JSON file.
-    - new_data: dict, the dictionary to add to the JSON file.
+    file_path : str
+        The path to the JSON file.
+    key : str
+        The key under which the new dictionary entry will be stored.
+    new_data : dict
+        The dictionary to add to the JSON file.
 
     """
     try:

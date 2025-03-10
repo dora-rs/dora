@@ -70,7 +70,8 @@ def extract_python_code_blocks(text):
 
     Parameters
     ----------
-    - text: A string that may contain one or more Python code blocks.
+    text : str
+        A string that may contain one or more Python code blocks.
 
     Returns
     -------
@@ -94,11 +95,13 @@ def extract_json_code_blocks(text):
 
     Parameters
     ----------
-    - text: A string that may contain one or more json code blocks.
+    text : str
+        A string that may contain one or more json code blocks.
 
     Returns
     -------
-    - A list of strings, where each string is a block of json code extracted from the text.
+    list of str
+        A list of strings, where each string is a block of json code extracted from the text.
 
     """
     pattern = r"```json\n(.*?)\n```"
@@ -117,11 +120,13 @@ def remove_last_line(python_code):
 
     Parameters
     ----------
-    - python_code: A string representing Python source code.
+    python_code : str
+        A string representing Python source code.
 
     Returns
     -------
-    - A string with the last line removed.
+    str
+        A string with the last line removed.
 
     """
     lines = python_code.split("\n")  # Split the string into lines
