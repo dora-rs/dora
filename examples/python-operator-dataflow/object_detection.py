@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import numpy as np
 import pyarrow as pa
 from dora import DoraStatus
@@ -18,6 +20,7 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT":
             frame = (
                 dora_event["value"].to_numpy().reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))

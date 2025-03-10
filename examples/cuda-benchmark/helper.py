@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import csv
 import os
 import platform
@@ -27,7 +29,7 @@ LOG_HEADER = [
 
 
 def record_results(name, current_size, latencies):
-
+    """TODO: Add docstring."""
     avg_latency = np.array(latencies).mean()
 
     # Calculate Q1 (25th percentile), median (50th percentile), and Q3 (75th percentile)

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import datetime
 import os
 
@@ -112,6 +114,7 @@ if not os.path.exists(DATA_DIR):
 
 
 def save_data(data_dict, dataset_path, data_size):
+    """TODO: Add docstring."""
     with h5py.File(dataset_path + ".hdf5", "w", rdcc_nbytes=1024**2 * 2) as root:
         root.attrs["sim"] = False
         root.attrs["compress"] = False

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 
@@ -43,6 +45,7 @@ def enable_fun(piper: C_PiperInterface):
 
 
 def main():
+    """TODO: Add docstring."""
     elapsed_time = time.time()
     CAN_BUS = os.getenv("CAN_BUS", "")
     piper = C_PiperInterface(CAN_BUS)

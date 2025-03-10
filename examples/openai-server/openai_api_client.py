@@ -1,9 +1,12 @@
+"""TODO: Add docstring."""
+
 from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy_api_key")
 
 
 def test_list_models():
+    """TODO: Add docstring."""
     try:
         models = client.models.list()
         print("Available models:")
@@ -14,6 +17,7 @@ def test_list_models():
 
 
 def test_chat_completion(user_input):
+    """TODO: Add docstring."""
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",

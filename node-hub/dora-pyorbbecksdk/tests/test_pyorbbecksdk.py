@@ -1,4 +1,7 @@
+"""TODO: Add docstring."""
+
 def test_import_main():
+    """TODO: Add docstring."""
     return  # Remove this if you want to test pyorbbecksdk installation
     # import pyorbbecksdk
 

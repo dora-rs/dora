@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import json
 import os
 from pathlib import Path
@@ -15,8 +17,9 @@ DEFAULT_QUESTION = os.getenv(
 
 
 def write_dict_to_json(file_path, key: str, new_data):
-    """Writes a dictionary to a JSON file. If the file already contains a list of entries,
-    the new data will be appended to that list. Otherwise, it will create a new list.
+    """Write a dictionary to a JSON file.
+    
+    If the file already contains a list of entries,the new data will be appended to that list. Otherwise, it will create a new list.
 
     Parameters
     ----------
@@ -47,16 +50,23 @@ def write_dict_to_json(file_path, key: str, new_data):
 def save_image_and_add_to_json(
     frame_dict: dict, root_path, llama_root_path, jsonl_file, messages,
 ):
-    """Saves an image from a NumPy array and adds a new JSON object as a line to a JSONL file.
+    """Save an image from a NumPy array and add a new JSON object as a line to a JSONL file.
+
     The function generates a sequential numeric image filename starting from 0 and
     follows the provided template structure.
 
     Parameters
     ----------
-    - image_array: numpy.ndarray, the image data as a NumPy array.
-    - root_path: str, the root directory where the image will be saved.
-    - jsonl_file: str, the path to the JSONL file.
-    - messages: list of dicts, each containing 'content' and 'role'.
+    frame_dict : dict
+        Dictionary containing the image data as a numpy.ndarray.
+    root_path : str
+        The root directory where the image will be saved.
+    llama_root_path : str
+        TODO
+    jsonl_file : str
+        The path to the JSONL file.
+    messages : list of dict
+        List of dictionaries, each containing 'content' and 'role'.
 
     The image is saved as a PNG file, and the JSONL entry includes the 'messages' and 'images' keys.
 
@@ -93,6 +103,7 @@ def save_image_and_add_to_json(
 
 
 def main():
+    """TODO: Add docstring."""
     pa.array([])  # initialize pyarrow array
     node = Node()
 
