@@ -67,8 +67,8 @@ mod tests {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path
-            py.run_bound(
-                "import sys; sys.path.append(str(path))",
+            py.run(
+                c_str!("import sys; sys.path.append(str(path))"),
                 Some(&[("path", path)].into_py_dict_bound(py)),
                 None,
             )?;
