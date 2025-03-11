@@ -218,9 +218,9 @@ impl Node {
                         value
                             .to_pyarrow(py)
                             .context("failed to convert value to pyarrow")
-                            .unwrap_or_else(|err| PyErr::from(err).to_object(py))
+                            .unwrap_or_else(|err| err_to_pyany(err, py))
                     }),
-                    Err(err) => Python::with_gil(|py| PyErr::from(err).to_object(py)),
+                    Err(err) => Python::with_gil(|py| err_to_pyany(err, py)),
                 }
             });
             futures::pin_mut!(s);
@@ -237,6 +237,14 @@ impl Node {
 
         Ok(())
     }
+}
+
+fn err_to_pyany(err: eyre::Report, gil: Python<'_>) -> Py<PyAny> {
+    PyErr::from(err)
+        .into_pyobject(gil)
+        .unwrap_or_else(|infallible| match infallible {})
+        .into_any()
+        .unbind()
 }
 
 struct Events {
