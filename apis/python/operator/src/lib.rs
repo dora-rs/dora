@@ -140,7 +140,14 @@ impl PyEvent {
         }
 
         if let Some(cleanup) = self._cleanup.clone() {
-            pydict.insert("_cleanup", cleanup.into_py(py));
+            pydict.insert(
+                "_cleanup",
+                cleanup
+                    .into_pyobject(py)
+                    .context("failed to convert cleanup handle to pyobject")?
+                    .into_any()
+                    .unbind(),
+            );
         }
 
         Ok(pydict
