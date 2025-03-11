@@ -254,6 +254,25 @@ cargo build --release -p dora-cli
 PATH=$PATH:$(pwd)/target/release
 ```
 
+### With Docker
+
+You can also run `dora-rs` using Docker. Here are the steps to get started:
+
+1. Build the Docker image using Dockerfile:
+
+```bash
+# Inside your dora repo
+docker build -t dora-rs/dora-rs-cli .
+```
+
+2. Run the Docker container:
+
+```bash
+docker run -it --rm dora-rs/dora-cli
+```
+
+3. Inside the Docker container, you can run the yolo python example:
+
 </details>
 
 ### Run
@@ -263,6 +282,8 @@ PATH=$PATH:$(pwd)/target/release
 ```bash
 ## Create a virtual environment
 uv venv --seed -p 3.11
+```
+> Note: If you are using Docker, you do not need to create a virtual environment.
 
 ## Install nodes dependencies of a remote graph
 dora build https://raw.githubusercontent.com/dora-rs/dora/refs/heads/main/examples/object-detection/yolo.yml --uv
