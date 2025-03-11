@@ -1,0 +1,12 @@
+{
+  "shoulder_pan": {
+    "id": 1,
+    "model": "scs_series",
+    "torque": true
+  },
+  "shoulder_lift": {
+    "id": 2,
+    "model": "scs_series",
+    "torque": true
+  }
+}

@@ -1,14 +1,18 @@
+"""TODO: Add docstring."""
+
 import os
 import shutil
 
 
 def clear_screen():
     # Clear the screen based on the operating system
+    """TODO: Add docstring."""
     os.system("cls" if os.name == "nt" else "clear")
 
 
 def print_centered(texts):
     # Get terminal size
+    """TODO: Add docstring."""
     terminal_size = shutil.get_terminal_size()
 
     # Print newlines to move cursor to the middle vertically
@@ -33,7 +37,7 @@ for event in node:
     if event["type"] == "INPUT":
         # The sentence to be printed
         sentence = event["value"][0].as_py()
-        if event["id"] not in previous_texts.keys():
+        if event["id"] not in previous_texts:
 
             previous_texts[event["id"]] = ["", "", sentence]
         else:

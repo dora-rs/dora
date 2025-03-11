@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 from threading import Event
 
 import cv2
@@ -8,7 +10,10 @@ from record3d import Record3DStream
 
 
 class DemoApp:
+    """TODO: Add docstring."""
+
     def __init__(self):
+        """TODO: Add docstring."""
         self.event = Event()
         self.session = None
         self.DEVICE_TYPE__TRUEDEPTH = 0
@@ -16,25 +21,25 @@ class DemoApp:
         self.stop = False
 
     def on_new_frame(self):
-        """
-        This method is called from non-main thread, therefore cannot be used for presenting UI.
-        """
+        """on_new_frame method is called from non-main thread, therefore cannot be used for presenting UI."""
         self.event.set()  # Notify the main thread to stop waiting and process new frame.
 
     def on_stream_stopped(self):
+        """TODO: Add docstring."""
         self.stop = True
         print("Stream stopped")
 
     def connect_to_device(self, dev_idx):
+        """TODO: Add docstring."""
         print("Searching for devices")
         devs = Record3DStream.get_connected_devices()
-        print("{} device(s) found".format(len(devs)))
+        print(f"{len(devs)} device(s) found")
         for dev in devs:
-            print("\tID: {}\n".format(dev.product_id))
+            print(f"\tID: {dev.product_id}\n")
 
         if len(devs) <= dev_idx:
             raise RuntimeError(
-                "Cannot connect to device #{}, try different index.".format(dev_idx)
+                f"Cannot connect to device #{dev_idx}, try different index.",
             )
 
         dev = devs[dev_idx]
@@ -44,11 +49,13 @@ class DemoApp:
         self.session.connect(dev)  # Initiate connection and start capturing
 
     def get_intrinsic_mat_from_coeffs(self, coeffs):
+        """TODO: Add docstring."""
         return np.array(
-            [[coeffs.fx, 0, coeffs.tx], [0, coeffs.fy, coeffs.ty], [0, 0, 1]]
+            [[coeffs.fx, 0, coeffs.tx], [0, coeffs.fy, coeffs.ty], [0, 0, 1]],
         )
 
     def start_processing_stream(self):
+        """TODO: Add docstring."""
         node = Node()
 
         for event in node:
@@ -62,7 +69,7 @@ class DemoApp:
                     depth = self.session.get_depth_frame()
                     rgb = self.session.get_rgb_frame()
                     intrinsic_mat = self.get_intrinsic_mat_from_coeffs(
-                        self.session.get_intrinsic_mat()
+                        self.session.get_intrinsic_mat(),
                     )
 
                     if depth.shape != rgb.shape:
@@ -100,6 +107,7 @@ class DemoApp:
 
 
 def main():
+    """TODO: Add docstring."""
     app = DemoApp()
     app.connect_to_device(dev_idx=0)
     app.start_processing_stream()

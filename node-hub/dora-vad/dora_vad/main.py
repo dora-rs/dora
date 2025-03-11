@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 import numpy as np
@@ -15,6 +17,7 @@ MIN_AUDIO_SAMPLING_DURATION_MS = int(os.getenv("MIN_AUDIO_SAMPLING_DURATION_MS",
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
     last_audios = []
     while True:

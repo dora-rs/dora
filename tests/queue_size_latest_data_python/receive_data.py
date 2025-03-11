@@ -1,6 +1,8 @@
-from dora import Node
+"""TODO: Add docstring."""
+
 import time
 
+from dora import Node
 
 node = Node()
 

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 import pytest
@@ -7,11 +9,13 @@ CI = os.getenv("CI", "false") in ["True", "true"]
 
 
 def test_import_main():
+    """TODO: Add docstring."""
     with pytest.raises(RuntimeError):
         main([])
 
 
 def test_load_interface():
+    """TODO: Add docstring."""
     try:
         interface = load_interface()
     except RuntimeError:

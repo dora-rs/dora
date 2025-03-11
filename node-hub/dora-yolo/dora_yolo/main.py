@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse
 import os
 
@@ -9,6 +11,7 @@ from ultralytics import YOLO
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
         description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model.",
     )

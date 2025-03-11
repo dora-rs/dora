@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 from pathlib import Path
 
@@ -46,7 +48,7 @@ try:
     )
 except (ImportError, ModuleNotFoundError):
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        MODEL_NAME_OR_PATH, torch_dtype="auto", device_map="auto"
+        MODEL_NAME_OR_PATH, torch_dtype="auto", device_map="auto",
     )
 
 
@@ -60,7 +62,6 @@ processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
 
 def generate(frames: dict, question, history, past_key_values=None, image_id=None):
     """Generate the response to the question given the image using Qwen2 model."""
-
     if image_id is not None:
         images = [frames[image_id]]
     else:
@@ -136,6 +137,7 @@ def generate(frames: dict, question, history, past_key_values=None, image_id=Non
 
 
 def main():
+    """TODO: Add docstring."""
     pa.array([])  # initialize pyarrow array
     node = Node()
 
@@ -219,7 +221,7 @@ def main():
                     continue
                 # set the max number of tiles in `max_num`
                 response, history, past_key_values = generate(
-                    frames, text, history, past_key_values, image_id
+                    frames, text, history, past_key_values, image_id,
                 )
                 node.send_output(
                     "text",

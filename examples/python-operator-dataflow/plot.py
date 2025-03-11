@@ -1,9 +1,10 @@
-import os
-import cv2
+"""TODO: Add docstring."""
 
+import os
+
+import cv2
 from dora import DoraStatus
 from utils import LABELS
-
 
 CI = os.environ.get("CI")
 
@@ -14,11 +15,10 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """
-    Plot image and bounding box
-    """
+    """Plot image and bounding box."""
 
     def __init__(self):
+        """TODO: Add docstring."""
         self.bboxs = []
         self.buffer = ""
         self.submitted = []
@@ -29,6 +29,7 @@ class Operator:
         dora_event,
         send_output,
     ):
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT":
             id = dora_event["id"]
             value = dora_event["value"]
@@ -63,7 +64,7 @@ class Operator:
                     )
 
                 cv2.putText(
-                    image, self.buffer, (20, 14 + 21 * 14), FONT, 0.5, (190, 250, 0), 1
+                    image, self.buffer, (20, 14 + 21 * 14), FONT, 0.5, (190, 250, 0), 1,
                 )
 
                 i = 0
@@ -111,7 +112,7 @@ class Operator:
                     {
                         "role": id,
                         "content": value[0].as_py(),
-                    }
+                    },
                 ]
 
         return DoraStatus.CONTINUE
