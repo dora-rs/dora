@@ -5,6 +5,7 @@ import pyarrow as pa
 import requests
 import soundfile as sf
 import torch
+from accelerate import infer_auto_device_map
 from dora import Node
 from PIL import Image
 from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
@@ -25,25 +26,37 @@ else:
 MODEL_PATH = "microsoft/Phi-4-multimodal-instruct"
 
 processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+# bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
 
-try:
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH,
-        torch_dtype=torch_dtype,
-        trust_remote_code=True,
-        _attn_implementation="eager",
-        low_cpu_mem_usage=True,  # Reduce memory usage
-    ).to(device)
-except RuntimeError:
-    print(f"⚠️ {device.upper()} ran out of memory! Switching to CPU.")
-    device = "cpu"
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH,
-        torch_dtype=torch.float32,  # Use float32 for CPU
-        trust_remote_code=True,
-        _attn_implementation="eager",
-        low_cpu_mem_usage=True,
-    ).to("cpu")
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_PATH,
+    # quantization_config=bnb_config,
+    torch_dtype=torch.float16
+    if device == "cuda"
+    else torch.bfloat16,  # Use bfloat16 for CPU
+    trust_remote_code=True,
+    _attn_implementation="flash_attention_2"
+    if device == "cuda" and torch.cuda.get_device_properties(0).total_memory > 16e9
+    else "eager",
+    low_cpu_mem_usage=True,
+)
+
+# Infer and apply the device map before moving model
+device_map = infer_auto_device_map(model)
+
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_PATH,
+    # quantization_config=bnb_config,
+    torch_dtype=torch.float16
+    if device == "cuda"
+    else torch.bfloat16,  # Use bfloat16 for CPU
+    trust_remote_code=True,
+    _attn_implementation="flash_attention_2"
+    if device == "cuda" and torch.cuda.get_device_properties(0).total_memory > 16e9
+    else "eager",
+    low_cpu_mem_usage=True,
+    device_map=device_map,
+)
 
 generation_config = GenerationConfig.from_pretrained(MODEL_PATH)
 
@@ -61,12 +74,12 @@ def process_image(image_url):
     image = Image.open(requests.get(image_url, stream=True).raw)
 
     # Process input
-    inputs = processor(text=prompt, images=image, return_tensors="pt").to(device)
+    inputs = processor(text=prompt, images=image, return_tensors="pt").to(model.device)
 
     # Generate response
     with torch.no_grad():
         generate_ids = model.generate(
-            **inputs, max_new_tokens=1000, generation_config=generation_config
+            **inputs, max_new_tokens=512, generation_config=generation_config
         )
         generate_ids = generate_ids[:, inputs["input_ids"].shape[1] :]
 
@@ -87,12 +100,12 @@ def process_audio(audio_url):
     # Process input
     inputs = processor(
         text=prompt, audios=[(audio, samplerate)], return_tensors="pt"
-    ).to(device)
+    ).to(model.device)
 
     # Generate response
     with torch.no_grad():
         generate_ids = model.generate(
-            **inputs, max_new_tokens=1000, generation_config=generation_config
+            **inputs, max_new_tokens=512, generation_config=generation_config
         )
         generate_ids = generate_ids[:, inputs["input_ids"].shape[1] :]
 
