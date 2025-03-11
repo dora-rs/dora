@@ -1,0 +1,28 @@
+[project]
+name = "dora-reachy1"
+version = "0.3.6"
+authors = [
+    { name = "Haixuan Xavier Tao", email = "<tao.xavier@outlook.com>" },
+    { name = "Enzo Le Van", email = "<dev@enzo-le-van.fr>" },
+]
+description = "Dora Node for controlling reachy1"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+"dora-rs >= 0.3.6",
+"reachy-sdk >= 0.7.0",
+"grpcio-tools >= 1.50.0"
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-reachy1 = "dora_reachy1.main:main"
+dora-reachy1-vision = "dora_reachy1_vision.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
