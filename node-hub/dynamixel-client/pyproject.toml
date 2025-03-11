@@ -1,0 +1,23 @@
+[project]
+name = "dynamixel-client"
+version = "0.1"
+authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>"}]
+description = "Dora Node client for dynamixel motors."
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+"dora-rs == 0.3.5",
+"dynamixel-sdk == 3.7.31",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dynamixel-client = "dynamixel_client.main:main"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
