@@ -1,8 +1,11 @@
-from dora import Node
+"""TODO: Add docstring."""
+
 import pyarrow as pa
+from dora import Node
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
 
     for event in node:
@@ -12,13 +15,13 @@ def main():
                     f"""Node received:
                 id: {event["id"]},
                 value: {event["value"]},
-                metadata: {event["metadata"]}"""
+                metadata: {event["metadata"]}""",
                 )
 
             elif event["id"] == "my_input_id":
                 # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                 node.send_output(
-                    output_id="my_output_id", data=pa.array([1, 2, 3]), metadata={}
+                    output_id="my_output_id", data=pa.array([1, 2, 3]), metadata={},
                 )
 
 

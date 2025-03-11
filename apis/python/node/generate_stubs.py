@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse
 import ast
 import importlib
@@ -5,11 +7,13 @@ import inspect
 import logging
 import re
 import subprocess
+from collections.abc import Mapping
 from functools import reduce
-from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
 def path_to_type(*elements: str) -> ast.AST:
+    """TODO: Add docstring."""
     base: ast.AST = ast.Name(id=elements[0], ctx=ast.Load())
     for e in elements[1:]:
         base = ast.Attribute(value=base, attr=e, ctx=ast.Load())
@@ -65,18 +69,17 @@ BUILTINS: Dict[str, Union[None, Tuple[List[ast.AST], ast.AST]]] = {
 
 
 def module_stubs(module: Any) -> ast.Module:
+    """TODO: Add docstring."""
     types_to_import = {"typing"}
     classes = []
     functions = []
     for member_name, member_value in inspect.getmembers(module):
         element_path = [module.__name__, member_name]
-        if member_name.startswith("__"):
-            pass
-        elif member_name.startswith("DoraStatus"):
+        if member_name.startswith("__") or member_name.startswith("DoraStatus"):
             pass
         elif inspect.isclass(member_value):
             classes.append(
-                class_stubs(member_name, member_value, element_path, types_to_import)
+                class_stubs(member_name, member_value, element_path, types_to_import),
             )
         elif inspect.isbuiltin(member_value):
             functions.append(
@@ -86,7 +89,7 @@ def module_stubs(module: Any) -> ast.Module:
                     element_path,
                     types_to_import,
                     in_class=False,
-                )
+                ),
             )
         else:
             logging.warning(f"Unsupported root construction {member_name}")
@@ -99,8 +102,9 @@ def module_stubs(module: Any) -> ast.Module:
 
 
 def class_stubs(
-    cls_name: str, cls_def: Any, element_path: List[str], types_to_import: Set[str]
+    cls_name: str, cls_def: Any, element_path: List[str], types_to_import: Set[str],
 ) -> ast.ClassDef:
+    """TODO: Add docstring."""
     attributes: List[ast.AST] = []
     methods: List[ast.AST] = []
     magic_methods: List[ast.AST] = []
@@ -123,7 +127,7 @@ def class_stubs(
             except ValueError as e:
                 if "no signature found" not in str(e):
                     raise ValueError(
-                        f"Error while parsing signature of {cls_name}.__init_"
+                        f"Error while parsing signature of {cls_name}.__init_",
                     ) from e
         elif (
             member_value == OBJECT_MEMBERS.get(member_name)
@@ -133,8 +137,8 @@ def class_stubs(
         elif inspect.isdatadescriptor(member_value):
             attributes.extend(
                 data_descriptor_stub(
-                    member_name, member_value, current_element_path, types_to_import
-                )
+                    member_name, member_value, current_element_path, types_to_import,
+                ),
             )
         elif inspect.isroutine(member_value):
             (magic_methods if member_name.startswith("__") else methods).append(
@@ -144,7 +148,7 @@ def class_stubs(
                     current_element_path,
                     types_to_import,
                     in_class=True,
-                )
+                ),
             )
         elif member_name == "__match_args__":
             constants.append(
@@ -153,28 +157,28 @@ def class_stubs(
                     annotation=ast.Subscript(
                         value=path_to_type("tuple"),
                         slice=ast.Tuple(
-                            elts=[path_to_type("str"), ast.Ellipsis()], ctx=ast.Load()
+                            elts=[path_to_type("str"), ast.Ellipsis()], ctx=ast.Load(),
                         ),
                         ctx=ast.Load(),
                     ),
                     value=ast.Constant(member_value),
                     simple=1,
-                )
+                ),
             )
         elif member_value is not None:
             constants.append(
                 ast.AnnAssign(
                     target=ast.Name(id=member_name, ctx=ast.Store()),
                     annotation=concatenated_path_to_type(
-                        member_value.__class__.__name__, element_path, types_to_import
+                        member_value.__class__.__name__, element_path, types_to_import,
                     ),
                     value=ast.Ellipsis(),
                     simple=1,
-                )
+                ),
             )
         else:
             logging.warning(
-                f"Unsupported member {member_name} of class {'.'.join(element_path)}"
+                f"Unsupported member {member_name} of class {'.'.join(element_path)}",
             )
 
     doc = inspect.getdoc(cls_def)
@@ -201,6 +205,7 @@ def data_descriptor_stub(
     element_path: List[str],
     types_to_import: Set[str],
 ) -> Union[Tuple[ast.AnnAssign, ast.Expr], Tuple[ast.AnnAssign]]:
+    """TODO: Add docstring."""
     annotation = None
     doc_comment = None
 
@@ -212,7 +217,7 @@ def data_descriptor_stub(
             doc_comment = m[0]
         elif len(m) > 1:
             raise ValueError(
-                f"Multiple return annotations found with :return: in {'.'.join(element_path)} documentation"
+                f"Multiple return annotations found with :return: in {'.'.join(element_path)} documentation",
             )
 
     assign = ast.AnnAssign(
@@ -232,6 +237,7 @@ def function_stub(
     *,
     in_class: bool,
 ) -> ast.FunctionDef:
+    """TODO: Add docstring."""
     body: List[ast.AST] = []
     doc = inspect.getdoc(fn_def)
     if doc is not None:
@@ -262,8 +268,9 @@ def arguments_stub(
     element_path: List[str],
     types_to_import: Set[str],
 ) -> ast.arguments:
+    """TODO: Add docstring."""
     real_parameters: Mapping[str, inspect.Parameter] = inspect.signature(
-        callable_def
+        callable_def,
     ).parameters
     if callable_name == "__init__":
         real_parameters = {
@@ -285,19 +292,19 @@ def arguments_stub(
 
     # Types from comment
     for match in re.findall(
-        r"^ *:type *([a-zA-Z0-9_]+): ([^\n]*) *$", doc, re.MULTILINE
+        r"^ *:type *([a-zA-Z0-9_]+): ([^\n]*) *$", doc, re.MULTILINE,
     ):
         if match[0] not in real_parameters:
             raise ValueError(
                 f"The parameter {match[0]} of {'.'.join(element_path)} "
-                "is defined in the documentation but not in the function signature"
+                "is defined in the documentation but not in the function signature",
             )
         type = match[1]
         if type.endswith(", optional"):
             optional_params.add(match[0])
             type = type[:-10]
         parsed_param_types[match[0]] = convert_type_from_doc(
-            type, element_path, types_to_import
+            type, element_path, types_to_import,
         )
 
     # we parse the parameters
@@ -312,10 +319,10 @@ def arguments_stub(
         if param.name != "self" and param.name not in parsed_param_types:
             raise ValueError(
                 f"The parameter {param.name} of {'.'.join(element_path)} "
-                "has no type definition in the function documentation"
+                "has no type definition in the function documentation",
             )
         param_ast = ast.arg(
-            arg=param.name, annotation=parsed_param_types.get(param.name)
+            arg=param.name, annotation=parsed_param_types.get(param.name),
         )
 
         default_ast = None
@@ -324,12 +331,12 @@ def arguments_stub(
             if param.name not in optional_params:
                 raise ValueError(
                     f"Parameter {param.name} of {'.'.join(element_path)} "
-                    "is optional according to the type but not flagged as such in the doc"
+                    "is optional according to the type but not flagged as such in the doc",
                 )
         elif param.name in optional_params:
             raise ValueError(
                 f"Parameter {param.name} of {'.'.join(element_path)} "
-                "is optional according to the documentation but has no default value"
+                "is optional according to the documentation but has no default value",
             )
 
         if param.kind == param.POSITIONAL_ONLY:
@@ -359,8 +366,9 @@ def arguments_stub(
 
 
 def returns_stub(
-    callable_name: str, doc: str, element_path: List[str], types_to_import: Set[str]
+    callable_name: str, doc: str, element_path: List[str], types_to_import: Set[str],
 ) -> Optional[ast.AST]:
+    """TODO: Add docstring."""
     m = re.findall(r"^ *:rtype: *([^\n]*) *$", doc, re.MULTILINE)
     if len(m) == 0:
         builtin = BUILTINS.get(callable_name)
@@ -368,26 +376,28 @@ def returns_stub(
             return builtin[1]
         raise ValueError(
             f"The return type of {'.'.join(element_path)} "
-            "has no type definition using :rtype: in the function documentation"
+            "has no type definition using :rtype: in the function documentation",
         )
     if len(m) > 1:
         raise ValueError(
-            f"Multiple return type annotations found with :rtype: for {'.'.join(element_path)}"
+            f"Multiple return type annotations found with :rtype: for {'.'.join(element_path)}",
         )
     return convert_type_from_doc(m[0], element_path, types_to_import)
 
 
 def convert_type_from_doc(
-    type_str: str, element_path: List[str], types_to_import: Set[str]
+    type_str: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
+    """TODO: Add docstring."""
     type_str = type_str.strip()
     return parse_type_to_ast(type_str, element_path, types_to_import)
 
 
 def parse_type_to_ast(
-    type_str: str, element_path: List[str], types_to_import: Set[str]
+    type_str: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
     # let's tokenize
+    """TODO: Add docstring."""
     tokens = []
     current_token = ""
     for c in type_str:
@@ -417,12 +427,11 @@ def parse_type_to_ast(
     # then it's easy
     def parse_sequence(sequence: List[Any]) -> ast.AST:
         # we split based on "or"
+        """TODO: Add docstring."""
         or_groups: List[List[str]] = [[]]
         print(sequence)
         # TODO: Fix sequence
-        if "Ros" in sequence and "2" in sequence:
-            sequence = ["".join(sequence)]
-        elif "dora.Ros" in sequence and "2" in sequence:
+        if ("Ros" in sequence and "2" in sequence) or ("dora.Ros" in sequence and "2" in sequence):
             sequence = ["".join(sequence)]
 
         for e in sequence:
@@ -432,14 +441,14 @@ def parse_type_to_ast(
                 or_groups[-1].append(e)
         if any(not g for g in or_groups):
             raise ValueError(
-                f"Not able to parse type '{type_str}' used by {'.'.join(element_path)}"
+                f"Not able to parse type '{type_str}' used by {'.'.join(element_path)}",
             )
 
         new_elements: List[ast.AST] = []
         for group in or_groups:
             if len(group) == 1 and isinstance(group[0], str):
                 new_elements.append(
-                    concatenated_path_to_type(group[0], element_path, types_to_import)
+                    concatenated_path_to_type(group[0], element_path, types_to_import),
                 )
             elif (
                 len(group) == 2
@@ -449,15 +458,15 @@ def parse_type_to_ast(
                 new_elements.append(
                     ast.Subscript(
                         value=concatenated_path_to_type(
-                            group[0], element_path, types_to_import
+                            group[0], element_path, types_to_import,
                         ),
                         slice=parse_sequence(group[1]),
                         ctx=ast.Load(),
-                    )
+                    ),
                 )
             else:
                 raise ValueError(
-                    f"Not able to parse type '{type_str}' used by {'.'.join(element_path)}"
+                    f"Not able to parse type '{type_str}' used by {'.'.join(element_path)}",
                 )
         return reduce(
             lambda left, right: ast.BinOp(left=left, op=ast.BitOr(), right=right),
@@ -468,12 +477,13 @@ def parse_type_to_ast(
 
 
 def concatenated_path_to_type(
-    path: str, element_path: List[str], types_to_import: Set[str]
+    path: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
+    """TODO: Add docstring."""
     parts = path.split(".")
     if any(not p for p in parts):
         raise ValueError(
-            f"Not able to parse type '{path}' used by {'.'.join(element_path)}"
+            f"Not able to parse type '{path}' used by {'.'.join(element_path)}",
         )
     if len(parts) > 1:
         types_to_import.add(".".join(parts[:-1]))
@@ -481,6 +491,7 @@ def concatenated_path_to_type(
 
 
 def build_doc_comment(doc: str) -> Optional[ast.Expr]:
+    """TODO: Add docstring."""
     lines = [line.strip() for line in doc.split("\n")]
     clean_lines = []
     for line in lines:
@@ -492,15 +503,16 @@ def build_doc_comment(doc: str) -> Optional[ast.Expr]:
 
 
 def format_with_ruff(file: str) -> None:
+    """TODO: Add docstring."""
     subprocess.check_call(["python", "-m", "ruff", "format", file])
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Extract Python type stub from a python module."
+        description="Extract Python type stub from a python module.",
     )
     parser.add_argument(
-        "module_name", help="Name of the Python module for which generate stubs"
+        "module_name", help="Name of the Python module for which generate stubs",
     )
     parser.add_argument(
         "out",
@@ -508,7 +520,7 @@ if __name__ == "__main__":
         type=argparse.FileType("wt"),
     )
     parser.add_argument(
-        "--ruff", help="Formats the generated stubs using Ruff", action="store_true"
+        "--ruff", help="Formats the generated stubs using Ruff", action="store_true",
     )
     args = parser.parse_args()
     stub_content = ast.unparse(module_stubs(importlib.import_module(args.module_name)))

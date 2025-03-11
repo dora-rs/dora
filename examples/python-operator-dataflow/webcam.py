@@ -1,10 +1,11 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 
 import cv2
 import numpy as np
 import pyarrow as pa
-
 from dora import DoraStatus
 
 CAMERA_WIDTH = 640
@@ -16,11 +17,10 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """
-    Sending image from webcam to the dataflow
-    """
+    """Sending image from webcam to the dataflow."""
 
     def __init__(self):
+        """TODO: Add docstring."""
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
         self.start_time = time.time()
         self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -32,6 +32,7 @@ class Operator:
         dora_event: str,
         send_output,
     ) -> DoraStatus:
+        """TODO: Add docstring."""
         event_type = dora_event["type"]
         if event_type == "INPUT":
             ret, frame = self.video_capture.read()
@@ -39,22 +40,21 @@ class Operator:
                 frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
                 self.failure_count = 0
             ## Push an error image in case the camera is not available.
+            elif self.failure_count > 10:
+                frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
+                cv2.putText(
+                    frame,
+                    "No Webcam was found at index %d" % (CAMERA_INDEX),
+                    (30, 30),
+                    font,
+                    0.75,
+                    (255, 255, 255),
+                    2,
+                    1,
+                )
             else:
-                if self.failure_count > 10:
-                    frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
-                    cv2.putText(
-                        frame,
-                        "No Webcam was found at index %d" % (CAMERA_INDEX),
-                        (int(30), int(30)),
-                        font,
-                        0.75,
-                        (255, 255, 255),
-                        2,
-                        1,
-                    )
-                else:
-                    self.failure_count += 1
-                    return DoraStatus.CONTINUE
+                self.failure_count += 1
+                return DoraStatus.CONTINUE
 
             send_output(
                 "image",
@@ -68,8 +68,8 @@ class Operator:
 
         if time.time() - self.start_time < 20 or CI != "true":
             return DoraStatus.CONTINUE
-        else:
-            return DoraStatus.STOP
+        return DoraStatus.STOP
 
     def __del__(self):
+        """TODO: Add docstring."""
         self.video_capture.release()

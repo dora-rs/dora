@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 from pathlib import Path
 
@@ -26,6 +28,7 @@ model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME_OR_PATH)
 
 def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
     # Check if the text is primarily Chinese (you may need to adjust this threshold)
+    """TODO: Add docstring."""
     if sum(1 for char in text if "\u4e00" <= char <= "\u9fff") / len(text) > 0.5:
         # Chinese text processing
         for repeat_length in range(
@@ -54,6 +57,7 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
     while True:
         event = node.next()

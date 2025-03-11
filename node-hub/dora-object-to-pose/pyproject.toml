@@ -14,3 +14,8 @@ scripts = { "dora-object-to-pose" = "dora_object_to_pose:py_main" }
 
 [tool.maturin]
 features = ["python", "pyo3/extension-module"]
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+]

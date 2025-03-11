@@ -1,16 +1,16 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
+"""TODO: Add docstring."""
+
 
 import os
 import time
 
-
 import pyarrow as pa
-from tqdm import tqdm
-from dora import Node
-from dora.cuda import ipc_buffer_to_ipc_handle, cudabuffer_to_torch
-from helper import record_results
 import torch
+from dora import Node
+from dora.cuda import cudabuffer_to_torch, ipc_buffer_to_ipc_handle
+from helper import record_results
+from tqdm import tqdm
 
 torch.tensor([], device="cuda")
 

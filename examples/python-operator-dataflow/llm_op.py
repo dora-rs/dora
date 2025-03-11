@@ -1,12 +1,14 @@
-from dora import DoraStatus
-import pylcs
-import os
-import pyarrow as pa
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import json
+"""TODO: Add docstring."""
 
+import json
+import os
 import re
 import time
+
+import pyarrow as pa
+import pylcs
+from dora import DoraStatus
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_NAME_OR_PATH = "TheBloke/deepseek-coder-6.7B-instruct-GPTQ"
 # MODEL_NAME_OR_PATH = "hanspeterlyngsoeraaschoujensen/deepseek-math-7b-instruct-GPTQ"
@@ -64,14 +66,17 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH, use_fast=True)
 
 
 def extract_python_code_blocks(text):
-    """
-    Extracts Python code blocks from the given text that are enclosed in triple backticks with a python language identifier.
+    """Extract Python code blocks from the given text that are enclosed in triple backticks with a python language identifier.
 
-    Parameters:
-    - text: A string that may contain one or more Python code blocks.
+    Parameters
+    ----------
+    text : str
+        A string that may contain one or more Python code blocks.
 
-    Returns:
+    Returns
+    -------
     - A list of strings, where each string is a block of Python code extracted from the text.
+
     """
     pattern = r"```python\n(.*?)\n```"
     matches = re.findall(pattern, text, re.DOTALL)
@@ -80,21 +85,24 @@ def extract_python_code_blocks(text):
         matches = re.findall(pattern, text, re.DOTALL)
         if len(matches) == 0:
             return [text]
-        else:
-            matches = [remove_last_line(matches[0])]
+        matches = [remove_last_line(matches[0])]
 
     return matches
 
 
 def extract_json_code_blocks(text):
-    """
-    Extracts json code blocks from the given text that are enclosed in triple backticks with a json language identifier.
+    """Extract json code blocks from the given text that are enclosed in triple backticks with a json language identifier.
 
-    Parameters:
-    - text: A string that may contain one or more json code blocks.
+    Parameters
+    ----------
+    text : str
+        A string that may contain one or more json code blocks.
 
-    Returns:
-    - A list of strings, where each string is a block of json code extracted from the text.
+    Returns
+    -------
+    list of str
+        A list of strings, where each string is a block of json code extracted from the text.
+
     """
     pattern = r"```json\n(.*?)\n```"
     matches = re.findall(pattern, text, re.DOTALL)
@@ -108,14 +116,18 @@ def extract_json_code_blocks(text):
 
 
 def remove_last_line(python_code):
-    """
-    Removes the last line from a given string of Python code.
+    """Remove the last line from a given string of Python code.
 
-    Parameters:
-    - python_code: A string representing Python source code.
+    Parameters
+    ----------
+    python_code : str
+        A string representing Python source code.
 
-    Returns:
-    - A string with the last line removed.
+    Returns
+    -------
+    str
+        A string with the last line removed.
+
     """
     lines = python_code.split("\n")  # Split the string into lines
     if lines:  # Check if there are any lines to remove
@@ -124,8 +136,8 @@ def remove_last_line(python_code):
 
 
 def calculate_similarity(source, target):
-    """
-    Calculate a similarity score between the source and target strings.
+    """Calculate a similarity score between the source and target strings.
+
     This uses the edit distance relative to the length of the strings.
     """
     edit_distance = pylcs.edit_distance(source, target)
@@ -136,10 +148,7 @@ def calculate_similarity(source, target):
 
 
 def find_best_match_location(source_code, target_block):
-    """
-    Find the best match for the target_block within the source_code by searching line by line,
-    considering blocks of varying lengths.
-    """
+    """Find the best match for the target_block within the source_code by searching line by line, considering blocks of varying lengths."""
     source_lines = source_code.split("\n")
     target_lines = target_block.split("\n")
 
@@ -167,9 +176,7 @@ def find_best_match_location(source_code, target_block):
 
 
 def replace_code_in_source(source_code, replacement_block: str):
-    """
-    Replace the best matching block in the source_code with the replacement_block, considering variable block lengths.
-    """
+    """Replace the best matching block in the source_code with the replacement_block, considering variable block lengths."""
     replacement_block = extract_python_code_blocks(replacement_block)[0]
     start_index, end_index = find_best_match_location(source_code, replacement_block)
     if start_index != -1 and end_index != -1:
@@ -178,27 +185,28 @@ def replace_code_in_source(source_code, replacement_block: str):
             source_code[:start_index] + replacement_block + source_code[end_index:]
         )
         return new_source
-    else:
-        return source_code
+    return source_code
 
 
 class Operator:
+    """TODO: Add docstring."""
 
     def on_event(
         self,
         dora_event,
         send_output,
     ) -> DoraStatus:
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT" and dora_event["id"] == "code_modifier":
             input = dora_event["value"][0].as_py()
 
-            with open(input["path"], "r", encoding="utf8") as f:
+            with open(input["path"], encoding="utf8") as f:
                 code = f.read()
 
             user_message = input["user_message"]
             start_llm = time.time()
             output = self.ask_llm(
-                CODE_MODIFIER_TEMPLATE.format(code=code, user_message=user_message)
+                CODE_MODIFIER_TEMPLATE.format(code=code, user_message=user_message),
             )
 
             source_code = replace_code_in_source(code, output)
@@ -212,8 +220,8 @@ class Operator:
                             "path": input["path"],
                             "response": output,
                             "prompt": input["user_message"],
-                        }
-                    ]
+                        },
+                    ],
                 ),
                 dora_event["metadata"],
             )
@@ -226,7 +234,7 @@ class Operator:
         elif dora_event["type"] == "INPUT" and dora_event["id"] == "message_sender":
             user_message = dora_event["value"][0].as_py()
             output = self.ask_llm(
-                MESSAGE_SENDER_TEMPLATE.format(user_message=user_message)
+                MESSAGE_SENDER_TEMPLATE.format(user_message=user_message),
             )
             outputs = extract_json_code_blocks(output)[0]
             try:
@@ -261,6 +269,7 @@ class Operator:
 
         # Generate output
         # prompt = PROMPT_TEMPLATE.format(system_message=system_message, prompt=prompt))
+        """TODO: Add docstring."""
         input = tokenizer(prompt, return_tensors="pt")
         input_ids = input.input_ids.cuda()
 
@@ -293,7 +302,7 @@ if __name__ == "__main__":
     current_directory = os.path.dirname(current_file_path)
 
     path = current_directory + "object_detection.py"
-    with open(path, "r", encoding="utf8") as f:
+    with open(path, encoding="utf8") as f:
         raw = f.read()
 
     op.on_event(
@@ -306,7 +315,7 @@ if __name__ == "__main__":
                         "path": path,
                         "user_message": "send a star ",
                     },
-                ]
+                ],
             ),
             "metadata": [],
         },

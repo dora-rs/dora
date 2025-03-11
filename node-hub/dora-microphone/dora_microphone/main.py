@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time as tm
 
@@ -12,6 +14,7 @@ SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 
 def main():
     # Initialize buffer and recording flag
+    """TODO: Add docstring."""
     buffer = []
     start_recording_time = tm.time()
     node = Node()
@@ -20,6 +23,7 @@ def main():
     finished = False
 
     def callback(indata, frames, time, status):
+        """TODO: Add docstring."""
         nonlocal buffer, node, start_recording_time, finished
 
         if tm.time() - start_recording_time > MAX_DURATION:

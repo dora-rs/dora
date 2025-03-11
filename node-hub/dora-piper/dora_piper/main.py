@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import time
 
@@ -10,8 +12,7 @@ TEACH_MODE = os.getenv("TEACH_MODE", "False") in ["True", "true"]
 
 
 def enable_fun(piper: C_PiperInterface):
-    """使能机械臂并检测使能状态,尝试5s,如果使能超时则退出程序
-    """
+    """使能机械臂并检测使能状态,尝试5s,如果使能超时则退出程序."""
     enable_flag = False
     # 设置超时时间（秒）
     timeout = 5
@@ -44,6 +45,7 @@ def enable_fun(piper: C_PiperInterface):
 
 
 def main():
+    """TODO: Add docstring."""
     elapsed_time = time.time()
     CAN_BUS = os.getenv("CAN_BUS", "")
     piper = C_PiperInterface(CAN_BUS)

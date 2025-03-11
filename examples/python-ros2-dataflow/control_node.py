@@ -1,9 +1,11 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
+"""TODO: Add docstring."""
+
 
 import random
-from dora import Node
+
 import pyarrow as pa
+from dora import Node
 
 node = Node()
 
@@ -16,8 +18,8 @@ for i in range(500):
         if event_id == "turtle_pose":
             print(
                 f"""Pose: {event["value"].tolist()}""".replace("\r", "").replace(
-                    "\n", " "
-                )
+                    "\n", " ",
+                ),
             )
         elif event_id == "tick":
             direction = {
