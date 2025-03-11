@@ -17,7 +17,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN pip install --no-cache-dir uv
 
 # Install latest Dora
-RUN pip install --no-cache-dir dora-rs
+RUN pip install --no-cache-dir dora-rs-cli
 
 # Create a working directory
 WORKDIR /app
