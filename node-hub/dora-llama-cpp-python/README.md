@@ -46,7 +46,7 @@ The node can be configured in your dataflow YAML file:
 - `SYSTEM_PROMPT`: Customize the AI assistant's personality/behavior
 - `ACTIVATION_WORDS`: Space-separated list of words that trigger model response
 
-## Examples
+## Example yml
 
 ### Basic Speech-to-Text-to-Speech Pipeline
 
