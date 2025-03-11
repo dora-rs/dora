@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 import cv2
@@ -13,10 +15,10 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """Plot image and bounding box
-    """
+    """Plot image and bounding box."""
 
     def __init__(self):
+        """TODO: Add docstring."""
         self.bboxs = []
         self.buffer = ""
         self.submitted = []
@@ -27,6 +29,7 @@ class Operator:
         dora_event,
         send_output,
     ):
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT":
             id = dora_event["id"]
             value = dora_event["value"]

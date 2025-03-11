@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import sys
 
@@ -15,6 +17,7 @@ SHOULD_BE_INCLUDED = [
 
 ## Get all python files path in given directory
 def get_all_functions(path):
+    """TODO: Add docstring."""
     raw = []
     paths = []
     for root, dirs, files in os.walk(path):
@@ -34,6 +37,7 @@ def get_all_functions(path):
 
 
 def search(query_embedding, corpus_embeddings, paths, raw, k=5, file_extension=None):
+    """TODO: Add docstring."""
     cos_scores = util.cos_sim(query_embedding, corpus_embeddings)[0]
     top_results = torch.topk(cos_scores, k=min(k, len(cos_scores)), sorted=True)
     out = []
@@ -43,10 +47,11 @@ def search(query_embedding, corpus_embeddings, paths, raw, k=5, file_extension=N
 
 
 class Operator:
-    """ """
+    """TODO: Add docstring."""
 
     def __init__(self):
         ## TODO: Add a initialisation step
+        """TODO: Add docstring."""
         self.model = SentenceTransformer("BAAI/bge-large-en-v1.5")
         self.encoding = []
         # file directory
@@ -61,6 +66,7 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT":
             if dora_event["id"] == "query":
                 values = dora_event["value"].to_pylist()

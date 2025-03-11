@@ -35,3 +35,8 @@ transformers = { git = "https://github.com/huggingface/transformers" }
 
 [project.scripts]
 dora-qwenvl = "dora_qwenvl.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+]

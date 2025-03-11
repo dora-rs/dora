@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import numpy as np
 import pyarrow as pa
 
@@ -261,8 +263,7 @@ TEST_ARRAYS = [
 
 
 def is_subset(subset, superset):
-    """Check if subset is a subset of superset, to avoid false negatives linked to default values.
-    """
+    """Check if subset is a subset of superset, to avoid false negatives linked to default values."""
     if isinstance(subset, pa.Array):
         return is_subset(subset.to_pylist(), superset.to_pylist())
 

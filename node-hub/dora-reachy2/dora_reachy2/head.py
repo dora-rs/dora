@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 import numpy as np
@@ -6,6 +8,7 @@ from reachy2_sdk import ReachySDK
 
 
 def main():
+    """TODO: Add docstring."""
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
     for _i in range(5):

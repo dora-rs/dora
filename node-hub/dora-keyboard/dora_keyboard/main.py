@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import pyarrow as pa
 from dora import Node
 from pynput import keyboard
@@ -5,6 +7,7 @@ from pynput.keyboard import Events
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
 
     always_none = node.next(timeout=0.001) is None

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import time
 
 import pyarrow as pa
@@ -7,6 +9,7 @@ start = time.time()
 
 
 def main() -> None:
+    """TODO: Add docstring."""
     dora_node = Node()
     i = 0
     while time.time() - start < 10:
