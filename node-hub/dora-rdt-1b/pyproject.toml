@@ -47,3 +47,8 @@ exclude = ["dora_rdt_1b/RoboticsDiffusionTransformer"]
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+]

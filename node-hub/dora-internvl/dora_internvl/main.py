@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 import numpy as np
@@ -14,6 +16,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 def build_transform(input_size):
+    """TODO: Add docstring."""
     MEAN, STD = IMAGENET_MEAN, IMAGENET_STD
     transform = T.Compose(
         [
@@ -27,6 +30,7 @@ def build_transform(input_size):
 
 
 def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
+    """TODO: Add docstring."""
     best_ratio_diff = float("inf")
     best_ratio = (1, 1)
     area = width * height
@@ -45,6 +49,7 @@ def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_
 def dynamic_preprocess(
     image, min_num=1, max_num=12, image_size=448, use_thumbnail=False,
 ):
+    """TODO: Add docstring."""
     orig_width, orig_height = image.size
     aspect_ratio = orig_width / orig_height
 
@@ -89,6 +94,7 @@ def dynamic_preprocess(
 
 
 def load_image(image_array: np.array, input_size=448, max_num=12):
+    """TODO: Add docstring."""
     image = Image.fromarray(image_array).convert("RGB")
     transform = build_transform(input_size=input_size)
     images = dynamic_preprocess(
@@ -101,6 +107,7 @@ def load_image(image_array: np.array, input_size=448, max_num=12):
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    """TODO: Add docstring."""
     model_path = os.getenv("MODEL", "OpenGVLab/InternVL2-1B")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
 

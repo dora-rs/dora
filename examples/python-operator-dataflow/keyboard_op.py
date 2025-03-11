@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import pyarrow as pa
 from dora import Node
 from pynput import keyboard

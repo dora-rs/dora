@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 
 import pytest
@@ -6,6 +8,7 @@ CI = os.getenv("CI", "false") in ["True", "true"]
 
 
 def test_import_main():
+    """TODO: Add docstring."""
     if CI:
         # Skip test as test requires Nvidia GPU
         return

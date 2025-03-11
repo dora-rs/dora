@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse
 import ast
 import importlib
@@ -11,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
 def path_to_type(*elements: str) -> ast.AST:
+    """TODO: Add docstring."""
     base: ast.AST = ast.Name(id=elements[0], ctx=ast.Load())
     for e in elements[1:]:
         base = ast.Attribute(value=base, attr=e, ctx=ast.Load())
@@ -66,6 +69,7 @@ BUILTINS: Dict[str, Union[None, Tuple[List[ast.AST], ast.AST]]] = {
 
 
 def module_stubs(module: Any) -> ast.Module:
+    """TODO: Add docstring."""
     types_to_import = {"typing"}
     classes = []
     functions = []
@@ -100,6 +104,7 @@ def module_stubs(module: Any) -> ast.Module:
 def class_stubs(
     cls_name: str, cls_def: Any, element_path: List[str], types_to_import: Set[str],
 ) -> ast.ClassDef:
+    """TODO: Add docstring."""
     attributes: List[ast.AST] = []
     methods: List[ast.AST] = []
     magic_methods: List[ast.AST] = []
@@ -200,6 +205,7 @@ def data_descriptor_stub(
     element_path: List[str],
     types_to_import: Set[str],
 ) -> Union[Tuple[ast.AnnAssign, ast.Expr], Tuple[ast.AnnAssign]]:
+    """TODO: Add docstring."""
     annotation = None
     doc_comment = None
 
@@ -231,6 +237,7 @@ def function_stub(
     *,
     in_class: bool,
 ) -> ast.FunctionDef:
+    """TODO: Add docstring."""
     body: List[ast.AST] = []
     doc = inspect.getdoc(fn_def)
     if doc is not None:
@@ -261,6 +268,7 @@ def arguments_stub(
     element_path: List[str],
     types_to_import: Set[str],
 ) -> ast.arguments:
+    """TODO: Add docstring."""
     real_parameters: Mapping[str, inspect.Parameter] = inspect.signature(
         callable_def,
     ).parameters
@@ -360,6 +368,7 @@ def arguments_stub(
 def returns_stub(
     callable_name: str, doc: str, element_path: List[str], types_to_import: Set[str],
 ) -> Optional[ast.AST]:
+    """TODO: Add docstring."""
     m = re.findall(r"^ *:rtype: *([^\n]*) *$", doc, re.MULTILINE)
     if len(m) == 0:
         builtin = BUILTINS.get(callable_name)
@@ -379,6 +388,7 @@ def returns_stub(
 def convert_type_from_doc(
     type_str: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
+    """TODO: Add docstring."""
     type_str = type_str.strip()
     return parse_type_to_ast(type_str, element_path, types_to_import)
 
@@ -387,6 +397,7 @@ def parse_type_to_ast(
     type_str: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
     # let's tokenize
+    """TODO: Add docstring."""
     tokens = []
     current_token = ""
     for c in type_str:
@@ -416,6 +427,7 @@ def parse_type_to_ast(
     # then it's easy
     def parse_sequence(sequence: List[Any]) -> ast.AST:
         # we split based on "or"
+        """TODO: Add docstring."""
         or_groups: List[List[str]] = [[]]
         print(sequence)
         # TODO: Fix sequence
@@ -467,6 +479,7 @@ def parse_type_to_ast(
 def concatenated_path_to_type(
     path: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
+    """TODO: Add docstring."""
     parts = path.split(".")
     if any(not p for p in parts):
         raise ValueError(
@@ -478,6 +491,7 @@ def concatenated_path_to_type(
 
 
 def build_doc_comment(doc: str) -> Optional[ast.Expr]:
+    """TODO: Add docstring."""
     lines = [line.strip() for line in doc.split("\n")]
     clean_lines = []
     for line in lines:
@@ -489,6 +503,7 @@ def build_doc_comment(doc: str) -> Optional[ast.Expr]:
 
 
 def format_with_ruff(file: str) -> None:
+    """TODO: Add docstring."""
     subprocess.check_call(["python", "-m", "ruff", "format", file])
 
 

@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import ast
 import asyncio
 from typing import List, Optional
@@ -13,11 +15,15 @@ app = FastAPI()
 
 
 class ChatCompletionMessage(BaseModel):
+    """TODO: Add docstring."""
+
     role: str
     content: str
 
 
 class ChatCompletionRequest(BaseModel):
+    """TODO: Add docstring."""
+
     model: str
     messages: List[ChatCompletionMessage]
     temperature: Optional[float] = 1.0
@@ -25,6 +31,8 @@ class ChatCompletionRequest(BaseModel):
 
 
 class ChatCompletionResponse(BaseModel):
+    """TODO: Add docstring."""
+
     id: str
     object: str
     created: int
@@ -38,6 +46,7 @@ node = Node()  # provide the name to connect to the dataflow if dynamic node
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
+    """TODO: Add docstring."""
     data = next(
         (msg.content for msg in request.messages if msg.role == "user"),
         "No user message found.",
@@ -95,6 +104,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
 @app.get("/v1/models")
 async def list_models():
+    """TODO: Add docstring."""
     return {
         "object": "list",
         "data": [
@@ -109,6 +119,7 @@ async def list_models():
 
 
 async def run_fastapi():
+    """TODO: Add docstring."""
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
 
@@ -121,6 +132,7 @@ async def run_fastapi():
 
 
 def main():
+    """TODO: Add docstring."""
     asyncio.run(run_fastapi())
 
 
