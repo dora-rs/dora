@@ -110,7 +110,10 @@ impl PyEvent {
             pydict.insert("_cleanup", cleanup.into_py(py));
         }
 
-        Ok(pydict.into_py_dict_bound(py).unbind())
+        Ok(pydict
+            .into_py_dict(py)
+            .context("Failed to create py_dict")?
+            .unbind())
     }
 
     fn ty(event: &Event) -> &str {
@@ -218,7 +221,7 @@ pub fn metadata_to_pydict<'a>(
     metadata: &'a Metadata,
     py: Python<'a>,
 ) -> Result<pyo3::Bound<'a, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (k, v) in metadata.parameters.iter() {
         match v {
             Parameter::Bool(bool) => dict
