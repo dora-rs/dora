@@ -9,6 +9,8 @@ on:
 jobs:
   assign-unassign:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     if: github.event_name == 'issue_comment'
     steps:
       - name: Checkout repository
@@ -83,6 +85,8 @@ jobs:
 
   stale-unassign:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     if: github.event_name == 'schedule'
     steps:
       - name: Unassign stale issues
