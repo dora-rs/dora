@@ -12,7 +12,7 @@ dependencies = [
     "dora-rs>=0.3.9",
     "torch",
     "transformers",
-]
+]w
 
 [project.scripts]
 dora-transformers = "main:main"
