@@ -19,12 +19,11 @@ jobs:
       - name: Parses comment then assign/unassign user
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: "${{ github.event.comment.body }}"
+          ISSUE_NUMBER: "${{ github.event.issue.number }}"
+          COMMENT_AUTHOR: "${{ github.event.comment.user.login }}"
+          AUTHOR_ASSOCIATION: "${{ github.event.comment.author_association }}"
         run: |
-          COMMENT_BODY="${{ github.event.comment.body }}"
-          ISSUE_NUMBER="${{ github.event.issue.number }}"
-          COMMENT_AUTHOR="${{ github.event.comment.user.login }}"
-          AUTHOR_ASSOCIATION="${{ github.event.comment.author_association }}"
-
           # For assigning
           if [[ "$COMMENT_BODY" == "@dora-bot assign me" ]]; then
             echo "Assigning $COMMENT_AUTHOR to issue #$ISSUE_NUMBER"
