@@ -8,7 +8,11 @@ import torch
 from accelerate import infer_auto_device_map
 from dora import Node
 from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoProcessor,
+    GenerationConfig,
+)
 
 # 🔍 Detect the best available device
 if torch.cuda.is_available():
