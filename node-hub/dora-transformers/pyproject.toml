@@ -5,12 +5,14 @@ description = "Generic Transformer Node for integration of multiple AI models"
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
+py_modules = ["dora", "main"]
 
 dependencies = [
+    "pyarrow>=23.0.0", 
     "dora-rs>=0.3.9",
     "torch",
     "transformers",
 ]
 
 [project.scripts]
-dora-transformers = "dora_transformers.main:main"
+dora-transformers = "main:main"
