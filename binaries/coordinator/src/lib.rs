@@ -157,6 +157,7 @@ impl DaemonConnections {
         self.daemons.keys()
     }
 
+    #[allow(dead_code)] //Added this line here to silence the warning
     fn iter(&self) -> impl Iterator<Item = (&DaemonId, &DaemonConnection)> {
         self.daemons.iter()
     }

@@ -57,3 +57,16 @@ nodes:
     inputs:
       audio: dora-kokoro-tts/audio
       timestamp_start: dora-vad/timestamp_start
+
+  - id: dora-transformers
+    build: pip install -e ../../node-hub/dora-transformers
+    path: dora-transformers
+    inputs:
+      text: some/source/text
+    outputs:
+      - text
+    env:
+      MODEL_NAME: "gpt‑neo‑125M"
+      DEVICE: "cpu"
+      MAX_LENGTH: "50"
+      ADAPTER_PATH: ""
