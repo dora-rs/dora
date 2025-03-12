@@ -33,7 +33,7 @@ use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
 
 mod attach;
-mod build;
+pub(crate) mod build;
 mod check;
 mod formatting;
 mod graph;
