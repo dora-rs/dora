@@ -9,6 +9,7 @@ A Dora node that provides access to LLaMA-based models using either llama.cpp or
 - Configurable system prompts and activation words
 - Chat history support with Hugging Face models
 - Lightweight CPU inference with GGUF models
+- Multiple model support (Qwen, LLaMA, etc.)
 
 ## Getting started
 
@@ -33,8 +34,12 @@ The node can be configured in your dataflow YAML file:
     - text  # Generated response text
   env:
     MODEL_BACKEND: "llama-cpp"  # or "huggingface"
+    MODEL_REPO_ID: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"  # For llama-cpp backend
+    MODEL_FILENAME: "*fp16.gguf"  # For llama-cpp backend
+    HF_MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct"  # For huggingface backend
     SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
-    ACTIVATION_WORDS: "what how who where you" # Space-separated activation words
+    ACTIVATION_WORDS: "what how who where you"
+    MAX_TOKENS: "512"
 ```
 
 ### Configuration Options
@@ -92,6 +97,8 @@ nodes:
       - text
     env:
       MODEL_BACKEND: llama-cpp
+      MODEL_REPO_ID: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+      MODEL_FILENAME: "*fp16.gguf"
       SYSTEM_PROMPT: "You're a helpful assistant."
       ACTIVATION_WORDS: "hey help what how"
 
