@@ -3,14 +3,16 @@ import pyarrow as pa
 from dora import Node
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# System prompt
+# Environment variables for model configuration
 SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "You're a very succinct AI assistant with short answers.",
 )
-
-# Model selection based on ENV variable
-MODEL_BACKEND = os.getenv("MODEL_BACKEND", "llama-cpp")  # Default to CPU-based Llama
+MODEL_BACKEND = os.getenv("MODEL_BACKEND", "llama-cpp")
+MODEL_REPO_ID = os.getenv("MODEL_REPO_ID", "Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+MODEL_FILENAME = os.getenv("MODEL_FILENAME", "*fp16.gguf")
+HF_MODEL_NAME = os.getenv("HF_MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
 
 
 def get_model_llama_cpp():
@@ -18,19 +20,21 @@ def get_model_llama_cpp():
     from llama_cpp import Llama
 
     llm = Llama.from_pretrained(
-        repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF", filename="*fp16.gguf", verbose=False
+        repo_id=MODEL_REPO_ID,
+        filename=MODEL_FILENAME,
+        verbose=False
     )
     return llm
 
 
 def get_model_huggingface():
     """Load a Hugging Face transformers model."""
-    model_name = "Qwen/Qwen2.5-0.5B-Instruct"
-
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype="auto", device_map="cpu"
+        HF_MODEL_NAME,
+        torch_dtype="auto",
+        device_map="cpu"
     )
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
     return model, tokenizer
 
 
@@ -44,9 +48,9 @@ def generate_hf(model, tokenizer, prompt: str, history) -> str:
         history, tokenize=False, add_generation_prompt=True
     )
     model_inputs = tokenizer([text], return_tensors="pt").to("cpu")  
-    generated_ids = model.generate(**model_inputs, max_new_tokens=512)
+    generated_ids = model.generate(**model_inputs, max_new_tokens=MAX_TOKENS)
     generated_ids = [
-        output_ids[len(input_ids) :]
+        output_ids[len(input_ids):]
         for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
     ]
     response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
@@ -69,21 +73,19 @@ def main():
         if event["type"] == "INPUT":
             text = event["value"][0].as_py()
             words = text.lower().split()
-            print(words)
+            # print(f"Input text: {text}")
 
             if any(word in ACTIVATION_WORDS for word in words):
-                print("")
                 if MODEL_BACKEND == "llama-cpp":
                     response = model(
                         f"Q: {text} A: ",
-                        max_tokens=24,
+                        max_tokens=MAX_TOKENS,
                         stop=["Q:", "\n"],
                     )["choices"][0]["text"]
                 else:
                     response, history = generate_hf(model, tokenizer, text, history)
                 
-                # log output 
-                print(response)
+                # print(f"Generated response: {response}")
                 node.send_output(
                     output_id="text", data=pa.array([response]), metadata={}
                 )

@@ -34,7 +34,13 @@ nodes:
     outputs:
       - text
     env:
-      MODEL_BACKEND: llama-cpp  # Can be changed to "huggingface" if needed
+      MODEL_BACKEND: "llama-cpp"  # or "huggingface"
+      MODEL_REPO_ID: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"  # For llama-cpp backend
+      MODEL_FILENAME: "*fp16.gguf"  # For llama-cpp backend
+      HF_MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct"  # For huggingface backend
+      SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
+      ACTIVATION_WORDS: "what how who where you"
+      MAX_TOKENS: "512"
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
