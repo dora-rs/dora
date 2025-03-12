@@ -1,5 +1,6 @@
 use dora_message::{
     config::{Input, InputMapping, NodeRunConfig},
+    descriptor::{GitRepoRev, NodeSource},
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{bail, Context, OptionExt, Result};
@@ -53,7 +54,7 @@ impl DescriptorExt for Descriptor {
             // adjust input mappings
             let mut node_kind = node_kind_mut(&mut node)?;
             let input_mappings: Vec<_> = match &mut node_kind {
-                NodeKindMut::Standard { path: _, inputs } => inputs.values_mut().collect(),
+                NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
                 NodeKindMut::Runtime(node) => node
                     .operators
                     .iter_mut()
@@ -76,8 +77,13 @@ impl DescriptorExt for Descriptor {
 
             // resolve nodes
             let kind = match node_kind {
-                NodeKindMut::Standard { path, inputs: _ } => CoreNodeKind::Custom(CustomNode {
-                    source: path.clone(),
+                NodeKindMut::Standard {
+                    path,
+                    source,
+                    inputs: _,
+                } => CoreNodeKind::Custom(CustomNode {
+                    path: path.clone(),
+                    source,
                     args: node.args,
                     build: node.build,
                     send_stdout_as: node.send_stdout_as,
@@ -149,14 +155,34 @@ pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
 
 fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut> {
     match node.kind()? {
-        NodeKind::Standard(_) => node
-            .path
-            .as_ref()
-            .map(|path| NodeKindMut::Standard {
-                path,
+        NodeKind::Standard(_) => {
+            let source = match (&node.git, &node.branch, &node.tag, &node.rev) {
+                (None, None, None, None) => NodeSource::Local,
+                (Some(repo), branch, tag, rev) => {
+                    let rev = match (branch, tag, rev) {
+                        (Some(branch), None, None) => Some(GitRepoRev::Branch(branch.clone())),
+                        (None, Some(tag), None) => Some(GitRepoRev::Tag(tag.clone())),
+                        (None, None, Some(rev)) => Some(GitRepoRev::Rev(rev.clone())),
+                        (_, _, _) => {
+                            eyre::bail!("only one of `branch`, `tag`, and `rev` are allowed")
+                        }
+                    };
+                    NodeSource::GitBranch {
+                        repo: repo.clone(),
+                        rev,
+                    }
+                }
+                (None, _, _, _) => {
+                    eyre::bail!("`git` source required when using branch, tag, or rev")
+                }
+            };
+
+            Ok(NodeKindMut::Standard {
+                path: node.path.as_ref().ok_or_eyre("missing `path` attribute")?,
+                source,
                 inputs: &mut node.inputs,
             })
-            .ok_or_eyre("no path"),
+        }
         NodeKind::Runtime(_) => node
             .operators
             .as_mut()
@@ -249,6 +275,7 @@ pub enum NodeKind<'a> {
 enum NodeKindMut<'a> {
     Standard {
         path: &'a String,
+        source: NodeSource,
         inputs: &'a mut BTreeMap<DataId, Input>,
     },
     /// Dora runtime node

@@ -21,6 +21,7 @@ use dora_message::{
     },
     daemon_to_daemon::InterDaemonEvent,
     daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    descriptor::NodeSource,
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
     DataflowId,
@@ -2176,7 +2177,9 @@ impl CoreNodeKindExt for CoreNodeKind {
     fn dynamic(&self) -> bool {
         match self {
             CoreNodeKind::Runtime(_n) => false,
-            CoreNodeKind::Custom(n) => n.source == DYNAMIC_SOURCE,
+            CoreNodeKind::Custom(n) => {
+                matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
+            }
         }
     }
 }

@@ -28,23 +28,30 @@ pub fn check_dataflow(
     // check that nodes and operators exist
     for node in nodes.values() {
         match &node.kind {
-            descriptor::CoreNodeKind::Custom(custom) => match custom.source.as_str() {
-                SHELL_SOURCE => (),
-                DYNAMIC_SOURCE => (),
-                source => {
-                    if source_is_url(source) {
-                        info!("{source} is a URL."); // TODO: Implement url check.
-                    } else if let Some(remote_daemon_id) = remote_daemon_id {
-                        if let Some(machine) = &node.deploy.machine {
-                            if remote_daemon_id.contains(&machine.as_str()) || coordinator_is_remote
-                            {
-                                info!("skipping path check for remote node `{}`", node.id);
+            descriptor::CoreNodeKind::Custom(custom) => match &custom.source {
+                dora_message::descriptor::NodeSource::Local => match custom.path.as_str() {
+                    SHELL_SOURCE => (),
+                    DYNAMIC_SOURCE => (),
+                    source => {
+                        if source_is_url(source) {
+                            info!("{source} is a URL."); // TODO: Implement url check.
+                        } else if let Some(remote_daemon_id) = remote_daemon_id {
+                            if let Some(machine) = &node.deploy.machine {
+                                if remote_daemon_id.contains(&machine.as_str())
+                                    || coordinator_is_remote
+                                {
+                                    info!("skipping path check for remote node `{}`", node.id);
+                                }
                             }
-                        }
-                    } else {
-                        resolve_path(source, working_dir)
-                            .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
-                    };
+                        } else {
+                            resolve_path(source, working_dir).wrap_err_with(|| {
+                                format!("Could not find source path `{}`", source)
+                            })?;
+                        };
+                    }
+                },
+                dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
+                    // TODO: implement git repo check
                 }
             },
             descriptor::CoreNodeKind::Runtime(node) => {

@@ -20,6 +20,7 @@ use dora_message::{
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
+    descriptor::GitRepoRev,
     DataflowId,
 };
 use dora_node_api::{
@@ -89,102 +90,51 @@ pub async fn spawn_node(
 
     let mut child = match node.kind {
         dora_core::descriptor::CoreNodeKind::Custom(n) => {
-            let mut command = match n.source.as_str() {
-                DYNAMIC_SOURCE => {
-                    return Ok(RunningNode {
-                        pid: None,
-                        node_config,
-                    });
+            let command = match &n.source {
+                dora_message::descriptor::NodeSource::Local => {
+                    spawn_command_from_path(working_dir, uv, logger, &n, true).await?
                 }
-                SHELL_SOURCE => {
-                    if cfg!(target_os = "windows") {
-                        let mut cmd = tokio::process::Command::new("cmd");
-                        cmd.args(["/C", &n.args.clone().unwrap_or_default()]);
-                        cmd
-                    } else {
-                        let mut cmd = tokio::process::Command::new("sh");
-                        cmd.args(["-c", &n.args.clone().unwrap_or_default()]);
-                        cmd
-                    }
-                }
-                source => {
-                    let resolved_path = if source_is_url(source) {
-                        // try to download the shared library
-                        let target_dir = Path::new("build");
-                        download_file(source, target_dir)
-                            .await
-                            .wrap_err("failed to download custom node")?
-                    } else {
-                        resolve_path(source, working_dir).wrap_err_with(|| {
-                            format!("failed to resolve node source `{}`", source)
-                        })?
-                    };
+                dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
+                    let target_dir = Path::new("build");
 
-                    // If extension is .py, use python to run the script
-                    let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
-                        Some(Some("py")) => {
-                            let mut cmd = if uv {
-                                let mut cmd = tokio::process::Command::new("uv");
-                                cmd.arg("run");
-                                cmd.arg("python");
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        Some("spawner".into()),
-                                        format!(
-                                            "spawning: uv run python -u {}",
-                                            resolved_path.display()
-                                        ),
-                                    )
-                                    .await;
-                                cmd
-                            } else {
-                                let python = get_python_path().wrap_err(
-                                    "Could not find python path when spawning custom node",
-                                )?;
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        Some("spawner".into()),
-                                        format!(
-                                            "spawning: {:?} -u {}",
-                                            &python,
-                                            resolved_path.display()
-                                        ),
-                                    )
-                                    .await;
-
-                                tokio::process::Command::new(python)
+                    let repo = repo.clone();
+                    let rev = rev.clone();
+                    let task = tokio::task::spawn_blocking(move || {
+                        let repo =
+                            git2::Repository::clone(&repo, target_dir.join(node_id.as_ref()))
+                                .context("failed to clone repo")?;
+                        if let Some(rev) = rev {
+                            let refname = match rev {
+                                GitRepoRev::Branch(branch) => branch,
+                                GitRepoRev::Tag(tag) => tag,
+                                GitRepoRev::Rev(rev) => rev,
                             };
-                            // Force python to always flush stdout/stderr buffer
-                            cmd.arg("-u");
-                            cmd.arg(&resolved_path);
-                            cmd
-                        }
-                        _ => {
-                            logger
-                                .log(
-                                    LogLevel::Info,
-                                    Some("spawner".into()),
-                                    format!("spawning: {}", resolved_path.display()),
-                                )
-                                .await;
-                            if uv {
-                                let mut cmd = tokio::process::Command::new("uv");
-                                cmd.arg("run");
-                                cmd.arg(&resolved_path);
-                                cmd
-                            } else {
-                                tokio::process::Command::new(&resolved_path)
+                            let (object, reference) =
+                                repo.revparse_ext(&refname).context("failed to parse ref")?;
+                            repo.checkout_tree(&object, None)
+                                .context("failed to checkout ref")?;
+                            match reference {
+                                Some(reference) => repo
+                                    .set_head(
+                                        reference.name().context("failed to get reference_name")?,
+                                    )
+                                    .context("failed to set head")?,
+                                None => repo
+                                    .set_head_detached(object.id())
+                                    .context("failed to set detached head")?,
                             }
                         }
-                    };
-
-                    if let Some(args) = &n.args {
-                        cmd.args(args.split_ascii_whitespace());
-                    }
-                    cmd
+                        Result::<_, eyre::Error>::Ok(())
+                    });
+                    task.await?;
+                    spawn_command_from_path(working_dir, uv, logger, &n, true).await?
                 }
+            };
+            let Some(mut command) = command else {
+                return Ok(RunningNode {
+                    pid: None,
+                    node_config,
+                });
             };
 
             command.current_dir(working_dir);
@@ -222,7 +172,7 @@ pub async fn spawn_node(
                 .wrap_err_with(move || {
                     format!(
                         "failed to run `{}` with args `{}`",
-                        n.source,
+                        n.path,
                         n.args.as_deref().unwrap_or_default(),
                     )
                 })?
@@ -359,7 +309,7 @@ pub async fn spawn_node(
         std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
     }
     let (tx, mut rx) = mpsc::channel(10);
-    let mut file = File::create(log::log_path(working_dir, &dataflow_id, &node_id))
+    let mut file = File::create(log::log_path(working_dir, &dataflow_id, &node.id))
         .await
         .expect("Failed to create log file");
     let mut child_stdout =
@@ -568,4 +518,101 @@ pub async fn spawn_node(
             .map_err(|_| error!("Could not inform that log file thread finished"));
     });
     Ok(running_node)
+}
+
+async fn spawn_command_from_path(
+    working_dir: &Path,
+    uv: bool,
+    logger: &mut NodeLogger<'_>,
+    node: &dora_core::descriptor::CustomNode,
+    permit_url: bool,
+) -> eyre::Result<Option<tokio::process::Command>> {
+    let cmd = match node.path.as_str() {
+        DYNAMIC_SOURCE => return Ok(None),
+        SHELL_SOURCE => {
+            if cfg!(target_os = "windows") {
+                let mut cmd = tokio::process::Command::new("cmd");
+                cmd.args(["/C", &node.args.clone().unwrap_or_default()]);
+                cmd
+            } else {
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.args(["-c", &node.args.clone().unwrap_or_default()]);
+                cmd
+            }
+        }
+        source => {
+            let resolved_path = if source_is_url(source) {
+                if !permit_url {
+                    eyre::bail!("URL paths are not supported in this case");
+                }
+                // try to download the shared library
+                let target_dir = Path::new("build");
+                download_file(source, target_dir)
+                    .await
+                    .wrap_err("failed to download custom node")?
+            } else {
+                resolve_path(source, working_dir)
+                    .wrap_err_with(|| format!("failed to resolve node source `{}`", source))?
+            };
+
+            // If extension is .py, use python to run the script
+            let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
+                Some(Some("py")) => {
+                    let mut cmd = if uv {
+                        let mut cmd = tokio::process::Command::new("uv");
+                        cmd.arg("run");
+                        cmd.arg("python");
+                        logger
+                            .log(
+                                LogLevel::Info,
+                                Some("spawner".into()),
+                                format!("spawning: uv run python -u {}", resolved_path.display()),
+                            )
+                            .await;
+                        cmd
+                    } else {
+                        let python = get_python_path()
+                            .wrap_err("Could not find python path when spawning custom node")?;
+                        logger
+                            .log(
+                                LogLevel::Info,
+                                Some("spawner".into()),
+                                format!("spawning: {:?} -u {}", &python, resolved_path.display()),
+                            )
+                            .await;
+
+                        tokio::process::Command::new(python)
+                    };
+                    // Force python to always flush stdout/stderr buffer
+                    cmd.arg("-u");
+                    cmd.arg(&resolved_path);
+                    cmd
+                }
+                _ => {
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("spawner".into()),
+                            format!("spawning: {}", resolved_path.display()),
+                        )
+                        .await;
+                    if uv {
+                        let mut cmd = tokio::process::Command::new("uv");
+                        cmd.arg("run");
+                        cmd.arg(&resolved_path);
+                        cmd
+                    } else {
+                        tokio::process::Command::new(&resolved_path)
+                    }
+                }
+            };
+
+            if let Some(args) = &node.args {
+                cmd.args(args.split_ascii_whitespace());
+            }
+            cmd
+        }
+    };
+
+    Ok(Some(cmd))
 }
