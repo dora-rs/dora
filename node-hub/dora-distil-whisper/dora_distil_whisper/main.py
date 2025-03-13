@@ -223,7 +223,7 @@ def main():
                 if time.time() - noise_timestamp > (len(text_noise.split()) / 2):  # WPS
                     text_noise = ""
 
-                ## Remove text noise independantly of casing
+                ## Remove text noise independently of casing
                 text = remove_text_noise(text, text_noise)
 
                 if text.strip() == "" or text.strip() == ".":
