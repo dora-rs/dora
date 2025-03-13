@@ -15,7 +15,17 @@ TARGET_LANGUAGE = os.getenv("TARGET_LANGUAGE", "english")
 TRANSLATE = bool(os.getenv("TRANSLATE", "False") in ["True", "true"])
 
 
-def remove_text_noise(text, text_noise):
+def remove_text_noise(text: str, text_noise="") -> str:
+    """Remove noise from text.
+
+    Args:
+        text (str): Original text
+        text_noise (str): text to remove from the original text
+
+    Returns:
+        str: Cleaned text
+
+    """
     # Handle the case where text_noise is empty
     if not text_noise.strip():
         return (
