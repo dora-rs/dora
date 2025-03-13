@@ -507,7 +507,7 @@ jobs:
         if: runner.target == 'x86_64-pc-windows-gnu'
         run: |
           sudo apt install g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
-      - name: "Build"
+      - name: "Check"
         uses: actions-rs/cargo@v1
         with:
           use-cross: true
