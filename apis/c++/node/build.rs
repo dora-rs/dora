@@ -40,16 +40,15 @@ fn origin_dir() -> PathBuf {
         .join("cxxbridge")
         .join("dora-node-api-cxx")
         .join("src");
-    let target_dir = if cross_target.exists() {
+
+    if cross_target.exists() {
         cross_target
     } else {
         default_target
             .join("cxxbridge")
             .join("dora-node-api-cxx")
             .join("src")
-    };
-
-    target_dir
+    }
 }
 
 #[cfg(feature = "ros2-bridge")]
