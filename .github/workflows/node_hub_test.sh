@@ -27,8 +27,8 @@ else
         cargo test
 
         pip install "maturin[zig]"
-        maturin build --zig --release
-        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        maturin build --zig 
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel on multiple platforms
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
             # Free up ubuntu space
             sudo apt-get clean
@@ -37,29 +37,18 @@ else
             sudo rm -rf /opt/ghc/
 
             maturin publish --skip-existing --zig
-        fi
-
-        # aarch64-unknown-linux-gnu
-        rustup target add aarch64-unknown-linux-gnu
-        maturin build --target aarch64-unknown-linux-gnu --zig --release
-        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
-        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            # aarch64-unknown-linux-gnu
+            rustup target add aarch64-unknown-linux-gnu
             maturin publish --target aarch64-unknown-linux-gnu --skip-existing --zig
-        fi
                 
-        # armv7-unknown-linux-musleabihf
-        rustup target add armv7-unknown-linux-musleabihf
-        maturin build --target armv7-unknown-linux-musleabihf --zig --release
-        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
-        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            # armv7-unknown-linux-musleabihf
+            rustup target add armv7-unknown-linux-musleabihf
+            # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
             maturin publish --target armv7-unknown-linux-musleabihf --skip-existing --zig
-        fi
 
-        # x86_64-pc-windows-gnu
-        rustup target add x86_64-pc-windows-gnu
-        maturin build --target x86_64-pc-windows-gnu --release
-        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
-        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            # x86_64-pc-windows-gnu
+            rustup target add x86_64-pc-windows-gnu
+            # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
             maturin publish --target x86_64-pc-windows-gnu --skip-existing 
         fi
 
