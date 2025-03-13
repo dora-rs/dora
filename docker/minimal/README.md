@@ -11,11 +11,27 @@ This Dockerfile provides a minimal environment for running Dora applications wit
 
 ## Building the Image
 
-docker build -t dora-minimal 
+```bash
+docker build . -t dora-minimal
+```
 
 ## Running the Container
 
-docker run -it --rm -v $(pwd):/app dora-minimal
+```bash
+docker run -it --rm dora-minimal
+```
+
+## Running not in interactive
+
+```bash
+docker run --rm dora-minimal dora --help
+```
+
+## Running with privilege as well as USB connection
+
+```bash
+docker run --rm  --device=/dev/ttyUSB0 dora-minimal dora --help
+```
 
 ## Usage
 
