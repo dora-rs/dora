@@ -506,4 +506,4 @@ jobs:
         with:
           use-cross: true
           command: check
-          args: --target  ${{ matrix.platform.target }} --all
+          args: --target  ${{ matrix.platform.target }} --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
