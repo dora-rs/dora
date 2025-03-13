@@ -491,6 +491,8 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: ubuntu-22.04
             target: armv7-unknown-linux-musleabihf
+          - runner: ubuntu-22.04
+            target: x86_64-pc-windows-gnu
           - runner: macos-13
             target: aarch64-apple-darwin
           - runner: macos-13
@@ -501,6 +503,10 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - name: "Add toolchains"
         run: rustup target add ${{ matrix.platform.target }}
+      - name: Install system-level dependencies
+        if: runner.target == 'x86_64-pc-windows-gnu'
+        run: |
+          sudo apt install g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
       - name: "Build"
         uses: actions-rs/cargo@v1
         with:
