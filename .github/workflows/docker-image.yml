@@ -1,0 +1,21 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "docker/**"
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "docker/**"
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build the Docker image
+      run: docker build docker/minimal --tag dora-minimal:$(date +%s)
