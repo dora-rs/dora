@@ -54,7 +54,7 @@ fn origin_dir() -> PathBuf {
 
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
-    use super::target_dir;
+    use super::origin_dir;
     use std::{
         io::{BufRead, BufReader},
         path::{Component, Path, PathBuf},
@@ -125,10 +125,7 @@ mod ros2 {
             .join("ros2_bindings.rs.cc");
 
         // copy message files to target directory
-        let target_path = origin_dir()
-            .join("cxxbridge")
-            .join("dora-node-api-cxx")
-            .join("dora-ros2-bindings.h");
+        let target_path = origin_dir().parent().unwrap().join("dora-ros2-bindings.h");
 
         std::fs::copy(&header_path, &target_path).unwrap();
         println!("cargo:rerun-if-changed={}", header_path.display());
