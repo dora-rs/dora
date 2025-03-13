@@ -506,4 +506,4 @@ jobs:
         with:
           use-cross: true
           command: check
-          args: --target  ${{ matrix.platform.target }} -p dora-cli
+          args: --target  ${{ matrix.platform.target }} --all
