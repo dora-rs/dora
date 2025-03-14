@@ -1,3 +1,6 @@
 [submodule "node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer"]
 	path = node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer
-	url = https://github.com/thu-ml/RoboticsDiffusionTransformer
+  	url = https://github.com/thu-ml/RoboticsDiffusionTransformer
+[submodule "node-hub/dora-magma/dora_magma/Magma"]
+	path = node-hub/dora-magma/dora_magma/Magma
+	url = https://github.com/microsoft/Magma
