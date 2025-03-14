@@ -139,6 +139,14 @@ mod tests {
     }
 
 
+    fn test_string_round_trip() -> Result<(), Report> {
+        let arrow_array = "Hello, Arrow!".to_string().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        //let result_string: String = TryFrom::try_from(&data)?;
+        //assert_eq!(value_string, "Hello, Arrow!");
+        Ok(())
+    }
+
     // #[test]
     // fn test_vec_u16_round_trip() -> Result<(), Report> {
     //     let value_vec_u16: Vec<u16> = vec![1, 2, 3, 4, 5];
