@@ -30,37 +30,22 @@ else:
 MODEL_PATH = "microsoft/Phi-4-multimodal-instruct"
 
 processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
-# bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
 
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH,
-    # quantization_config=bnb_config,
-    torch_dtype=torch.float16
-    if device == "cuda"
-    else torch.bfloat16,  # Use bfloat16 for CPU
-    trust_remote_code=True,
-    _attn_implementation="flash_attention_2"
+# Define model config
+MODEL_CONFIG = {
+    "torch_dtype": torch_dtype,
+    "trust_remote_code": True,
+    "_attn_implementation": "flash_attention_2"
     if device == "cuda" and torch.cuda.get_device_properties(0).total_memory > 16e9
     else "eager",
-    low_cpu_mem_usage=True,
-)
+    "low_cpu_mem_usage": True,
+}
 
-# Infer and apply the device map before moving model
-device_map = infer_auto_device_map(model)
+# Infer device map without full initialization
+device_map = infer_auto_device_map(AutoModelForCausalLM.from_pretrained(MODEL_PATH, **MODEL_CONFIG))
 
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH,
-    # quantization_config=bnb_config,
-    torch_dtype=torch.float16
-    if device == "cuda"
-    else torch.bfloat16,  # Use bfloat16 for CPU
-    trust_remote_code=True,
-    _attn_implementation="flash_attention_2"
-    if device == "cuda" and torch.cuda.get_device_properties(0).total_memory > 16e9
-    else "eager",
-    low_cpu_mem_usage=True,
-    device_map=device_map,
-)
+# Load the model directly with the inferred device map
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, **MODEL_CONFIG, device_map=device_map)
 
 generation_config = GenerationConfig.from_pretrained(MODEL_PATH)
 
@@ -83,12 +68,12 @@ def process_image(image_url):
     # Generate response
     with torch.no_grad():
         generate_ids = model.generate(
-            **inputs, max_new_tokens=512, generation_config=generation_config
+            **inputs, max_new_tokens=512, generation_config=generation_config,
         )
         generate_ids = generate_ids[:, inputs["input_ids"].shape[1] :]
 
     response = processor.batch_decode(
-        generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False,
     )[0]
     return response
 
@@ -103,18 +88,18 @@ def process_audio(audio_url):
 
     # Process input
     inputs = processor(
-        text=prompt, audios=[(audio, samplerate)], return_tensors="pt"
+        text=prompt, audios=[(audio, samplerate)], return_tensors="pt",
     ).to(model.device)
 
     # Generate response
     with torch.no_grad():
         generate_ids = model.generate(
-            **inputs, max_new_tokens=512, generation_config=generation_config
+            **inputs, max_new_tokens=512, generation_config=generation_config,
         )
         generate_ids = generate_ids[:, inputs["input_ids"].shape[1] :]
 
     response = processor.batch_decode(
-        generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False,
     )[0]
     return response
 
@@ -133,14 +118,14 @@ def main():
             if input_id == "image_input":
                 image_response = process_image(value.as_py())  # Convert from PyArrow
                 node.send_output(
-                    output_id="image_output", data=pa.array([image_response])
+                    output_id="image_output", data=pa.array([image_response]),
                 )
 
             # Check if it's an audio URL
             elif input_id == "audio_input":
                 audio_response = process_audio(value.as_py())  # Convert from PyArrow
                 node.send_output(
-                    output_id="audio_output", data=pa.array([audio_response])
+                    output_id="audio_output", data=pa.array([audio_response]),
                 )
 
 
