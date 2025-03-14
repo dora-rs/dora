@@ -27,5 +27,5 @@ jobs:
 
       - name: Build the Docker image
         run: |
-          docker build docker/slim --tag ghcr.io/dora-rs/dora-slim:latest
+          docker build docker/slim --platform linux/amd64,linux/arm64,linux/arm32v6,linux/arm32v7 -t multi-platform --tag ghcr.io/dora-rs/dora-slim:latest
           docker push ghcr.io/dora-rs/dora-slim:latest
