@@ -1,7 +1,6 @@
-use arrow::array::{PrimitiveArray, StringArray, ArrayRef, NullArray};
+use arrow::array::{PrimitiveArray, StringArray, ArrayRef, Array };
 use arrow_convert::serialize::TryIntoArrow;
 use crate::IntoArrow;
-use std::sync::Arc;
 
 impl IntoArrow for bool {
     type A = arrow::array::BooleanArray;
@@ -149,16 +148,24 @@ impl IntoArrow for () {
 
 impl IntoArrow for String {
     type A = StringArray;
-    fn into_arrow(self) -> Self::A {
-        return StringArray::from(vec![self]);
-        let array_ref:ArrayRef = match vec![self].try_into_arrow() {
-            Ok(array_ref) => array_ref,
-            Err(err) => {
-                println!("Failed to Create String Array {}",err);
-                return StringArray::from(vec![""])
-            }
-        };
-        array_ref.as_any().downcast_ref::<arrow::array::StringArray>().unwrap().clone()
 
+    fn into_arrow(self) -> Self::A {
+        match vec![self.clone()].try_into_arrow() {
+            Ok(array_ref) => {
+                let array_ref: ArrayRef = array_ref; // Ensuring explicit type annotation
+                let array: &dyn Array = array_ref.as_ref(); // Dereference Arc<dyn Array>
+                
+                if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
+                    string_array.clone()
+                } else {
+                    eprintln!("Failed to downcast to StringArray.");
+                    StringArray::from(vec![self]) // Fallback in case of failure
+                }
+            }
+            Err(err) => {
+                eprintln!("Failed to Create String Array: {}", err);
+                StringArray::from(vec![""]) // Safe fallback
+            }
+        }
     }
 }
