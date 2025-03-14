@@ -1,6 +1,7 @@
-use arrow::array::{PrimitiveArray, StringArray};
-
+use arrow::array::{PrimitiveArray, StringArray, ArrayRef, NullArray};
+use arrow_convert::serialize::TryIntoArrow;
 use crate::IntoArrow;
+use std::sync::Arc;
 
 impl IntoArrow for bool {
     type A = arrow::array::BooleanArray;
@@ -143,5 +144,21 @@ impl IntoArrow for () {
 
     fn into_arrow(self) -> Self::A {
         arrow::array::NullArray::new(0)
+    }
+}
+
+impl IntoArrow for String {
+    type A = StringArray;
+    fn into_arrow(self) -> Self::A {
+        return StringArray::from(vec![self]);
+        let array_ref:ArrayRef = match vec![self].try_into_arrow() {
+            Ok(array_ref) => array_ref,
+            Err(err) => {
+                println!("Failed to Create String Array {}",err);
+                return StringArray::from(vec![""])
+            }
+        };
+        array_ref.as_any().downcast_ref::<arrow::array::StringArray>().unwrap().clone()
+
     }
 }

@@ -11,4 +11,5 @@ repository.workspace = true
 
 [dependencies]
 arrow = { workspace = true }
+arrow_convert = "0.8.1"
 eyre = "0.6.8"
