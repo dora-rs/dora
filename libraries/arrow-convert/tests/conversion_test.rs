@@ -138,85 +138,104 @@ mod tests {
         Ok(())
     }
 
-
+    #[test]
     fn test_string_round_trip() -> Result<(), Report> {
         let arrow_array = "Hello, Arrow!".to_string().into_arrow();
         let data: ArrowData = ArrowData(Arc::new(arrow_array));
-        //let result_string: String = TryFrom::try_from(&data)?;
-        //assert_eq!(value_string, "Hello, Arrow!");
+        let result_string: String = TryFrom::try_from(&data)?;
+        assert_eq!(result_string, "Hello, Arrow!");
         Ok(())
     }
 
-    // #[test]
-    // fn test_vec_u16_round_trip() -> Result<(), Report> {
-    //     let value_vec_u16: Vec<u16> = vec![1, 2, 3, 4, 5];
-    //     let arrow_array = value_vec_u16.clone().into_arrow();
-    //     let data: ArrowData = ArrowData(Arc::new(arrow_array));
-    //     let result_vec_u16: Vec<u16> = TryFrom::try_from(&data)?;
-    //     assert_eq!(value_vec_u16, result_vec_u16);
-    //     Ok(())
-    // }
+    #[test]
+    fn test_vec_u16_round_trip() -> Result<(), Report> {
+        let value_vec_u16: Vec<u16> = vec![1, 2, 3, 4, 5];
+        let arrow_array = value_vec_u16.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_u16: Vec<u16> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_u16, result_vec_u16);
+        Ok(())
+    }
 
-    // #[test]
-    // fn test_vec_u32_round_trip() -> Result<(), Report> {
-    //     let value_vec_u32: Vec<u32> = vec![1, 2, 3, 4, 5];
-    //     let arrow_array = value_vec_u32.clone().into_arrow();
-    //     let data: ArrowData = ArrowData(Arc::new(arrow_array));
-    //     let result_vec_u32: Vec<u32> = TryFrom::try_from(&data)?;
-    //     assert_eq!(value_vec_u32, result_vec_u32);
-    //     Ok(())
-    // }
+    #[test]
+    fn test_vec_u32_round_trip() -> Result<(), Report> {
+        let value_vec_u32: Vec<u32> = vec![1, 2, 3, 4, 5];
+        let arrow_array = value_vec_u32.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_u32: Vec<u32> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_u32, result_vec_u32);
+        Ok(())
+    }
 
-    // #[test]
-    // fn test_vec_u64_round_trip() -> Result<(), Report> {
-    //     let value_vec_u64: Vec<u64> = vec![1, 2, 3, 4, 5];
-    //     let arrow_array = value_vec_u64.clone().into_arrow();
-    //     let data: ArrowData = ArrowData(Arc::new(arrow_array));
-    //     let result_vec_u64: Vec<u64> = TryFrom::try_from(&data)?;
-    //     assert_eq!(value_vec_u64, result_vec_u64);
-    //     Ok(())
-    // }
+    #[test]
+    fn test_vec_u64_round_trip() -> Result<(), Report> {
+        let value_vec_u64: Vec<u64> = vec![1, 2, 3, 4, 5];
+        let arrow_array = value_vec_u64.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_u64: Vec<u64> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_u64, result_vec_u64);
+        Ok(())
+    }
 
     
-    // #[test]
-    // fn test_vec_i8_round_trip() -> Result<(), Report> {
-    //     let value_vec_i8: Vec<i8> = vec![-1, -2, -3, -4, -5];
-    //     let arrow_array = value_vec_i8.clone().into_arrow();
-    //     let data: ArrowData = ArrowData(Arc::new(arrow_array));
-    //     let result_vec_i8: Vec<i8> = TryFrom::try_from(&data)?;
-    //     assert_eq!(value_vec_i8, result_vec_i8);
-    //     Ok(())
-    // }
+    #[test]
+    fn test_vec_i8_round_trip() -> Result<(), Report> {
+        let value_vec_i8: Vec<i8> = vec![-1, -2, -3, -4, -5];
+        let arrow_array = value_vec_i8.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_i8: Vec<i8> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_i8, result_vec_i8);
+        Ok(())
+    }
 
-    // #[test]
-    // fn test_vec_i16_round_trip() -> Result<(), Report> {
-    //     let value_vec_i16: Vec<i16> = vec![-1, -2, -3, -4, -5];
-    //     let arrow_array = value_vec_i16.clone().into_arrow();
-    //     let data: ArrowData = ArrowData(Arc::new(arrow_array));
-    //     let result_vec_i16: Vec<i16> = TryFrom::try_from(&data)?;
-    //     assert_eq!(value_vec_i16, result_vec_i16);
-    //     Ok(())
-    // }
+    #[test]
+    fn test_vec_i16_round_trip() -> Result<(), Report> {
+        let value_vec_i16: Vec<i16> = vec![-1, -2, -3, -4, -5];
+        let arrow_array = value_vec_i16.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_i16: Vec<i16> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_i16, result_vec_i16);
+        Ok(())
+    }
 
-    // #[test]
-    // fn test_vec_i32_round_trip() -> Result<(), Report> {
-    //     let value_vec_i32: Vec<i32> = vec![-1, -2, -3, -4, -5];
-    //     let arrow_array = value_vec_i32.clone().into_arrow();
-    //     let data: ArrowData = ArrowData(Arc::new(arrow_array));
-    //     let result_vec_i32: Vec<i32> = TryFrom::try_from(&data)?;
-    //     assert_eq!(value_vec_i32, result_vec_i32);
-    //     Ok(())
-    // }
+    #[test]
+    fn test_vec_i32_round_trip() -> Result<(), Report> {
+        let value_vec_i32: Vec<i32> = vec![-1, -2, -3, -4, -5];
+        let arrow_array = value_vec_i32.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_i32: Vec<i32> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_i32, result_vec_i32);
+        Ok(())
+    }
 
-    // #[test]
-    // fn test_vec_i64_round_trip() -> Result<(), Report> {
-    //     let value_vec_i64: Vec<i64> = vec![-1, -2, -3, -4, -5];
-    //     let arrow_array = value_vec_i64.clone().into_arrow();
-    //     let data: ArrowData = ArrowData(Arc::new(arrow_array));
-    //     let result_vec_i64: Vec<i64> = TryFrom::try_from(&data)?;
-    //     assert_eq!(value_vec_i64, result_vec_i64);
-    //     Ok(())
-    // }
+    #[test]
+    fn test_vec_i64_round_trip() -> Result<(), Report> {
+        let value_vec_i64: Vec<i64> = vec![-1, -2, -3, -4, -5];
+        let arrow_array = value_vec_i64.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_i64: Vec<i64> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_i64, result_vec_i64);
+        Ok(())
+    }
 
+    #[test]
+    fn test_vec_f32_round_trip() -> Result<(), Report> {
+        let value_vec_f32 : Vec<f32> = vec![-1.5, -2.6, -3.2, -4.5, -5.1];
+        let arrow_array = value_vec_f32.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_f32: Vec<f32> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_f32, result_vec_f32);
+        Ok(())
+    }
+
+    #[test]
+    fn test_vec_f64_round_trip() -> Result<(), Report> {
+        let value_vec_f64: Vec<f64> = vec![-1.5, -2.6, -3.2, -4.5, -5.1];
+        let arrow_array = value_vec_f64.clone().into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_vec_f64: Vec<f64> = TryFrom::try_from(&data)?;
+        assert_eq!(value_vec_f64, result_vec_f64);
+        Ok(())
+    }
 }
 
