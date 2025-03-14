@@ -137,27 +137,66 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
     }
 }
 
-fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
+use dora_node_api::arrow::array::{
+    Array, UInt8Array, UInt16Array, UInt32Array, Int32Array, Float32Array, Float64Array, StringArray, BooleanArray,
+};
+use dora_node_api::arrow::datatypes::DataType;
+use eyre::{bail, eyre, Result};
+use some_module::{DoraEvent, Event, ffi};  // यह मानकर चल रहे हैं कि ये दूसरे मॉड्यूल से आ रहे हैं
+
+fn event_as_input(event: Box<DoraEvent>) -> Result<ffi::DoraInput> {
     let Some(Event::Input { id, metadata, data }) = event.0 else {
-        bail!("not an input event");
+        bail!("Not an input event");
     };
-    let data = match metadata.type_info.data_type {
-        dora_node_api::arrow::datatypes::DataType::UInt8 => {
-            let array: &UInt8Array = data.as_primitive();
+
+    let extracted_data: Vec<u8> = match metadata.type_info.data_type {
+        DataType::UInt8 => {
+            let array = data.as_any().downcast_ref::<UInt8Array>()
+                .ok_or_else(|| eyre!("Expected UInt8Array"))?;
             array.values().to_vec()
         }
-        dora_node_api::arrow::datatypes::DataType::Null => {
-            vec![]
+        DataType::UInt16 => {
+            let array = data.as_any().downcast_ref::<UInt16Array>()
+                .ok_or_else(|| eyre!("Expected UInt16Array"))?;
+            array.values().iter().flat_map(|&x| x.to_le_bytes()).collect()
         }
-        _ => {
-            todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8. 
-                The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
+        DataType::UInt32 => {
+            let array = data.as_any().downcast_ref::<UInt32Array>()
+                .ok_or_else(|| eyre!("Expected UInt32Array"))?;
+            array.values().iter().flat_map(|&x| x.to_le_bytes()).collect()
         }
+        DataType::Int32 => {
+            let array = data.as_any().downcast_ref::<Int32Array>()
+                .ok_or_else(|| eyre!("Expected Int32Array"))?;
+            array.values().iter().flat_map(|&x| x.to_le_bytes()).collect()
+        }
+        DataType::Float32 => {
+            let array = data.as_any().downcast_ref::<Float32Array>()
+                .ok_or_else(|| eyre!("Expected Float32Array"))?;
+            array.values().iter().flat_map(|&x| x.to_bits().to_le_bytes()).collect()
+        }
+        DataType::Float64 => {
+            let array = data.as_any().downcast_ref::<Float64Array>()
+                .ok_or_else(|| eyre!("Expected Float64Array"))?;
+            array.values().iter().flat_map(|&x| x.to_bits().to_le_bytes()).collect()
+        }
+        DataType::Utf8 => {
+            let array = data.as_any().downcast_ref::<StringArray>()
+                .ok_or_else(|| eyre!("Expected StringArray"))?;
+            array.iter().filter_map(|s| s.map(|s| s.as_bytes().to_vec())).flatten().collect()
+        }
+        DataType::Boolean => {
+            let array = data.as_any().downcast_ref::<BooleanArray>()
+                .ok_or_else(|| eyre!("Expected BooleanArray"))?;
+            array.iter().map(|x| x.unwrap_or(false) as u8).collect()
+        }
+        DataType::Null => vec![],
+        _ => bail!("Unsupported Arrow data type: {:?}", metadata.type_info.data_type),
     };
 
     Ok(ffi::DoraInput {
         id: id.into(),
-        data,
+        data: extracted_data,
     })
 }
 
