@@ -2,6 +2,8 @@ use arrow::{
     array::{Array, AsArray, PrimitiveArray, StringArray},
     datatypes::ArrowPrimitiveType,
 };
+
+use arrow_convert::deserialize::TryIntoCollection;
 use eyre::ContextCompat;
 
 use crate::ArrowData;
@@ -163,6 +165,14 @@ impl<'a> TryFrom<&'a ArrowData> for Vec<u8> {
     }
 }
 
+
+impl<'a> TryFrom<&'a ArrowData> for String {
+    type Error = eyre::Report;
+    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
+        let string_array: Vec<String> = value.clone().try_into_collection()?;
+        return Ok(string_array[0].clone());
+    }
+}
 fn extract_single_primitive<T>(array: &PrimitiveArray<T>) -> Result<T::Native, eyre::Error>
 where
     T: ArrowPrimitiveType,
