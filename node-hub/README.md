@@ -98,6 +98,28 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 opencv-plot = "opencv_plot.main:main"
 
 ```
+## Adding git dependency
+- If a git repository is added as submodule. Proper path should be added in `pyproject.toml` inorder to make sure that linting and testing are exempted for that dependency. 
+- A very good example of how this can be done is as follows
+
+Correct approach:
+```toml
+[tool.ruff]
+exclude = ["dora_magma/Magma"]
+
+[tool.black]
+extend.exclude = "dora_magma/Magma"
+```
+Incorrect Approach:
+```toml
+[tool.ruff]
+exclude = ["dora-magma/dora_magma/Magma"]
+
+[tool.black]
+extend.exclude = "dora_magma/Magma"
+```
+##### Note: 
+- `dora-magma` is root folder of the node. 
 
 ## License
 
