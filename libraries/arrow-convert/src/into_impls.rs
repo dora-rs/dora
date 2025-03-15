@@ -1,7 +1,6 @@
 use crate::IntoArrow;
 use arrow::array::{Array, ArrayRef, PrimitiveArray, StringArray};
 use arrow_convert::serialize::TryIntoArrow;
-use crate::IntoArrow;
 use chrono::{NaiveDate, NaiveTime};
 
 impl IntoArrow for bool {
@@ -158,11 +157,13 @@ impl IntoArrow for NaiveDate {
 impl IntoArrow for NaiveTime {
     type A = arrow::array::Time64NanosecondArray;
     fn into_arrow(self) -> Self::A {
-        arrow::array::Time64NanosecondArray::from(vec![arrow::array::temporal_conversions::time_to_time64ns(self)])
+        arrow::array::Time64NanosecondArray::from(vec![
+            arrow::array::temporal_conversions::time_to_time64ns(self),
+        ])
     }
 }
 
-impl IntoArrow for String {
+impl IntoArrow for &String {
     type A = StringArray;
 
     fn into_arrow(self) -> Self::A {
