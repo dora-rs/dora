@@ -1,0 +1,43 @@
+nodes:
+  - id: lcr-leader
+    build: pip install ../../../../../node-hub/dynamixel-client
+    path: dynamixel-client
+    inputs:
+      pull_position: simu-lcr-follower/tick
+      write_goal_position: lcr-to-simu-lcr/leader_goal
+      end: simu-lcr-follower/end
+    outputs:
+      - position
+    env:
+      PORT: /dev/tty.usbmodem575E0030111
+      CONFIG: ../configs/leader.left.json
+
+  - id: lcr-to-simu-lcr
+    build: pip install git+https://github.com/Hennzau/pwm-position-control
+    path: ../nodes/interpolate_lcr_to_simu_lcr.py
+    inputs:
+      leader_position: lcr-leader/position
+    outputs:
+      - follower_goal
+      - leader_goal
+    env:
+      LEADER_CONTROL: ../configs/leader.left.json
+
+  - id: simu-lcr-follower
+    build: pip install ../../../../../node-hub/mujoco-client
+    # for windows
+    # path: mujoco-client
+    # for macos
+    path: mjpython
+    args: ../../../../../node-hub/mujoco-client/mujoco_client/main.py
+    inputs:
+      write_goal_position: lcr-to-simu-lcr/follower_goal
+      tick: dora/timer/millis/10
+    outputs:
+      - position
+      - tick
+      - end
+
+    env:
+      SCENE: ../assets/simulation/reach_cube.xml
+      CONFIG: ../configs/follower.left.json
