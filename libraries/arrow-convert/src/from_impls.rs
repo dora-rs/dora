@@ -356,7 +356,6 @@ impl<'a> TryFrom<&'a ArrowData> for String {
     }
 }
 
-
 impl TryFrom<&ArrowData> for NaiveDate {
     type Error = eyre::Report;
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
@@ -372,7 +371,9 @@ impl TryFrom<&ArrowData> for NaiveDate {
         if array.null_count() != 0 {
             eyre::bail!("array has nulls");
         }
-        Ok(array.value_as_date(0).context("data type cannot be converted to NaiveDate")?)
+        Ok(array
+            .value_as_date(0)
+            .context("data type cannot be converted to NaiveDate")?)
     }
 }
 
@@ -391,7 +392,9 @@ impl TryFrom<&ArrowData> for NaiveTime {
         if array.null_count() != 0 {
             eyre::bail!("array has nulls");
         }
-        Ok(array.value_as_time(0).context("data type cannot be converted to NaiveTime")?)
+        Ok(array
+            .value_as_time(0)
+            .context("data type cannot be converted to NaiveTime")?)
     }
 }
 
