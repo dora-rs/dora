@@ -1,6 +1,7 @@
-use arrow::array::{PrimitiveArray, StringArray};
-
 use crate::IntoArrow;
+use arrow::array::{Array, ArrayRef, PrimitiveArray, StringArray};
+use arrow_convert::serialize::TryIntoArrow;
+use chrono::{NaiveDate, NaiveTime};
 
 impl IntoArrow for bool {
     type A = arrow::array::BooleanArray;
@@ -143,5 +144,45 @@ impl IntoArrow for () {
 
     fn into_arrow(self) -> Self::A {
         arrow::array::NullArray::new(0)
+    }
+}
+
+impl IntoArrow for NaiveDate {
+    type A = arrow::array::Date32Array;
+    fn into_arrow(self) -> Self::A {
+        arrow::array::Date32Array::from(vec![arrow::datatypes::Date32Type::from_naive_date(self)])
+    }
+}
+
+impl IntoArrow for NaiveTime {
+    type A = arrow::array::Time64NanosecondArray;
+    fn into_arrow(self) -> Self::A {
+        arrow::array::Time64NanosecondArray::from(vec![
+            arrow::array::temporal_conversions::time_to_time64ns(self),
+        ])
+    }
+}
+
+impl IntoArrow for &String {
+    type A = StringArray;
+
+    fn into_arrow(self) -> Self::A {
+        match vec![self.clone()].try_into_arrow() {
+            Ok(array_ref) => {
+                let array_ref: ArrayRef = array_ref; // Ensuring explicit type annotation
+                let array: &dyn Array = array_ref.as_ref(); // Dereference Arc<dyn Array>
+
+                if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
+                    string_array.clone()
+                } else {
+                    eprintln!("Failed to downcast to StringArray.");
+                    StringArray::from(vec![""]) // Fallback in case of failure
+                }
+            }
+            Err(err) => {
+                eprintln!("Failed to Create String Array: {}", err);
+                StringArray::from(vec![""]) // Safe fallback
+            }
+        }
     }
 }
