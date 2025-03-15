@@ -1,6 +1,6 @@
-use arrow::array::{PrimitiveArray, StringArray, ArrayRef, Array };
-use arrow_convert::serialize::TryIntoArrow;
 use crate::IntoArrow;
+use arrow::array::{Array, ArrayRef, PrimitiveArray, StringArray};
+use arrow_convert::serialize::TryIntoArrow;
 
 impl IntoArrow for bool {
     type A = arrow::array::BooleanArray;
@@ -146,7 +146,7 @@ impl IntoArrow for () {
     }
 }
 
-impl IntoArrow for String {
+impl IntoArrow for &String {
     type A = StringArray;
 
     fn into_arrow(self) -> Self::A {
@@ -154,12 +154,12 @@ impl IntoArrow for String {
             Ok(array_ref) => {
                 let array_ref: ArrayRef = array_ref; // Ensuring explicit type annotation
                 let array: &dyn Array = array_ref.as_ref(); // Dereference Arc<dyn Array>
-                
+
                 if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
                     string_array.clone()
                 } else {
                     eprintln!("Failed to downcast to StringArray.");
-                    StringArray::from(vec![self]) // Fallback in case of failure
+                    StringArray::from(vec![""]) // Fallback in case of failure
                 }
             }
             Err(err) => {
