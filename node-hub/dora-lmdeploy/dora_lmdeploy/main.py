@@ -114,7 +114,7 @@ def generate(frames: dict, question: str, history: list, image_id: str = None) -
         return f"Error during inference: {e!s}", history
 
 def main():
-    """Main entry point for the Dora LMDeploy node."""
+    """Execute the main entry point for the Dora LMDeploy node."""
     pa.array([])  # initialize pyarrow array
     node = Node()
     frames = {}
