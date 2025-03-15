@@ -26,6 +26,9 @@ uv pip install -e .
 The node can be configured in your dataflow YAML file:
 
 ```yaml
+
+# Using a local model
+
 - id: dora-llama-cpp-python
   build: pip install -e path/to/dora-llama-cpp-python
   path: dora-llama-cpp-python
@@ -34,7 +37,27 @@ The node can be configured in your dataflow YAML file:
   outputs:
     - text  # Generated response text
   env:
-    MODEL_PATH: "./models/llama-2-7b-chat.Q4_K_M.gguf"
+    MODEL_LOCAL_PATH: "./models/my-local-model.gguf"
+    SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
+    ACTIVATION_WORDS: "what how who where you"
+    MAX_TOKENS: "512"
+    N_GPU_LAYERS: "35"     # Enable GPU acceleration
+    N_THREADS: "4"         # CPU threads
+    CONTEXT_SIZE: "4096"   # Maximum context window
+
+
+
+# Using a HuggingFace model
+- id: dora-llama-cpp-python
+  build: pip install -e path/to/dora-llama-cpp-python
+  path: dora-llama-cpp-python
+  inputs:
+    text: source_node/text  # Input text to generate response for
+  outputs:
+    - text  # Generated response text
+  env:
+    MODEL_NAME: "TheBloke/Llama-2-7B-Chat-GGUF"
+    MODEL_FILE_PATTERN: "*Q4_K_M.gguf"
     SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
     ACTIVATION_WORDS: "what how who where you"
     MAX_TOKENS: "512"
@@ -96,7 +119,8 @@ nodes:
     outputs:
       - text
     env:
-      MODEL_PATH: "./models/llama-2-7b-chat.Q4_K_M.gguf"
+      MODEL_NAME: "TheBloke/Llama-2-7B-Chat-GGUF"
+      MODEL_FILE_PATTERN: "*Q4_K_M.gguf"
       SYSTEM_PROMPT: "You're a helpful assistant."
       ACTIVATION_WORDS: "hey help what how"
       MAX_TOKENS: "512"
