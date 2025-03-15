@@ -1,14 +1,12 @@
-"""
-Feetech Client: This node is used to represent a chain of feetech motors. It can be used to read positions,
+"""Feetech Client: This node is used to represent a chain of feetech motors. It can be used to read positions,
 velocities, currents, and set goal positions and currents.
 """
 
-import os
 import argparse
 import json
+import os
 
 import pyarrow as pa
-
 from dora import Node
 
 from .bus import FeetechBus, TorqueMode, wrap_joints_and_values
@@ -59,7 +57,7 @@ class Client:
             wrap_joints_and_values(
                 self.config["joints"],
                 [TorqueMode.DISABLED.value] * len(self.config["joints"]),
-            )
+            ),
         )
 
     def pull_position(self, node, metadata):
@@ -105,7 +103,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Feetech Client: This node is used to represent a chain of feetech motors. "
         "It can be used to read "
-        "positions, velocities, currents, and set goal positions and currents."
+        "positions, velocities, currents, and set goal positions and currents.",
     )
 
     parser.add_argument(
@@ -135,7 +133,7 @@ def main():
     if not os.environ.get("PORT") and args.port is None:
         raise ValueError(
             "The port is not set. Please set the port of the feetech motors in the environment variables or as an "
-            "argument."
+            "argument.",
         )
 
     port = os.environ.get("PORT") if args.port is None else args.port
@@ -144,7 +142,7 @@ def main():
     if not os.environ.get("CONFIG") and args.config is None:
         raise ValueError(
             "The configuration is not set. Please set the configuration of the feetech motors in the environment "
-            "variables or as an argument."
+            "variables or as an argument.",
         )
 
     with open(os.environ.get("CONFIG") if args.config is None else args.config) as file:

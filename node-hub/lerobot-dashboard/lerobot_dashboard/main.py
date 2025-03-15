@@ -1,21 +1,18 @@
-"""
-This Dora node is a minimalistic interface that shows two images and text in a Pygame window.
+"""This Dora node is a minimalistic interface that shows two images and text in a Pygame window.
 """
 
-import os
 import argparse
-
-import pygame
+import os
 
 import pyarrow as pa
-
+import pygame
 from dora import Node
 
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow
     parser = argparse.ArgumentParser(
-        description="LeRobot Record: This node is used to record episodes of a robot interacting with the environment."
+        description="LeRobot Record: This node is used to record episodes of a robot interacting with the environment.",
     )
 
     parser.add_argument(
@@ -68,7 +65,7 @@ def main():
         if event_type == "STOP":
             break
 
-        elif event_type == "INPUT":
+        if event_type == "INPUT":
             event_id = event["id"]
 
             if event_id == "image_left":
@@ -82,7 +79,7 @@ def main():
                 }
 
                 image_left = pygame.image.frombuffer(
-                    image["data"], (image["width"], image["height"]), "BGR"
+                    image["data"], (image["width"], image["height"]), "BGR",
                 )
 
             elif event_id == "image_right":
@@ -95,7 +92,7 @@ def main():
                 }
 
                 image_right = pygame.image.frombuffer(
-                    image["data"], (image["width"], image["height"]), "BGR"
+                    image["data"], (image["width"], image["height"]), "BGR",
                 )
 
             elif event_id == "tick":
@@ -106,7 +103,7 @@ def main():
                     if pygame_event.type == pygame.QUIT:
                         running = False
                         break
-                    elif pygame_event.type == pygame.KEYDOWN:
+                    if pygame_event.type == pygame.KEYDOWN:
                         key = pygame.key.name(pygame_event.key)
 
                         if key == "space":

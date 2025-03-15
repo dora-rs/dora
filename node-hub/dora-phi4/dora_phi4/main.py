@@ -25,7 +25,7 @@ else:
 MODEL_PATH = "microsoft/Phi-4-multimodal-instruct"
 
 processor = AutoProcessor.from_pretrained(
-    MODEL_PATH, trust_remote_code=True, use_fast=True
+    MODEL_PATH, trust_remote_code=True, use_fast=True,
 )
 
 # Define model config
@@ -40,12 +40,12 @@ MODEL_CONFIG = {
 
 # Infer device map without full initialization
 device_map = infer_auto_device_map(
-    AutoModelForCausalLM.from_pretrained(MODEL_PATH, **MODEL_CONFIG)
+    AutoModelForCausalLM.from_pretrained(MODEL_PATH, **MODEL_CONFIG),
 )
 
 # Load the model directly with the inferred device map
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH, **MODEL_CONFIG, device_map=device_map
+    MODEL_PATH, **MODEL_CONFIG, device_map=device_map,
 )
 
 generation_config = GenerationConfig.from_pretrained(MODEL_PATH)

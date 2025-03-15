@@ -14,7 +14,7 @@ def r_arm_inverse_kinematics(reachy, pose, action) -> list:
             [0, 1, 0, pose[1] + action[1]],
             [1, 0, 0, pose[2] + action[2]],
             [0, 0, 0, 1],
-        ]
+        ],
     )
     return reachy.r_arm.inverse_kinematics(A)
 
@@ -114,7 +114,7 @@ def main():
                     {
                         joint: pos
                         for joint, pos in zip(
-                            reachy.r_arm.joints.values(), default_pose
+                            reachy.r_arm.joints.values(), default_pose,
                         )
                     },
                     duration=3,
