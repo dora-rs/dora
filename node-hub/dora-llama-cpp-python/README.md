@@ -1,15 +1,15 @@
 # dora-llama-cpp-python
 
-A Dora node that provides access to LLaMA-based models using either llama.cpp or Hugging Face backends for text generation.
+A Dora node that provides access to LLaMA models using llama-cpp-python for efficient CPU/GPU inference.
 
 ## Features
 
-- Supports both llama.cpp (CPU) and Hugging Face (CPU/GPU) backends
+- GPU acceleration support (CUDA on Linux, Metal on macOS)
 - Easy integration with speech-to-text and text-to-speech pipelines  
 - Configurable system prompts and activation words
-- Chat history support with Hugging Face models
 - Lightweight CPU inference with GGUF models
-- Multiple model support (Qwen, LLaMA, etc.)
+- Thread-level CPU optimization
+- Adjustable context window size
 
 ## Getting started
 
@@ -19,6 +19,7 @@ A Dora node that provides access to LLaMA-based models using either llama.cpp or
 uv venv -p 3.11 --seed
 uv pip install -e .
 ```
+
 
 ## Usage
 
@@ -33,27 +34,26 @@ The node can be configured in your dataflow YAML file:
   outputs:
     - text  # Generated response text
   env:
-    MODEL_BACKEND: "llama-cpp"  # or "huggingface"
-    MODEL_REPO_ID: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"  # For llama-cpp backend
-    MODEL_FILENAME: "*fp16.gguf"  # For llama-cpp backend
-    HF_MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct"  # For huggingface backend
+    MODEL_PATH: "./models/llama-2-7b-chat.Q4_K_M.gguf"
     SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
     ACTIVATION_WORDS: "what how who where you"
     MAX_TOKENS: "512"
+    N_GPU_LAYERS: "35"     # Enable GPU acceleration
+    N_THREADS: "4"         # CPU threads
+    CONTEXT_SIZE: "4096"   # Maximum context window
 ```
 
 ### Configuration Options
 
-- `MODEL_BACKEND`: Choose between:
-  - `llama-cpp`: Uses GGUF models via llama.cpp (CPU-optimized, default)
-  - `huggingface`: Uses Hugging Face Transformers models
-
+- `MODEL_PATH`: Path to your GGUF model file (default: "./models/llama-2-7b-chat.Q4_K_M.gguf")
 - `SYSTEM_PROMPT`: Customize the AI assistant's personality/behavior
 - `ACTIVATION_WORDS`: Space-separated list of words that trigger model response
+- `MAX_TOKENS`: Maximum number of tokens to generate (default: 512)
+- `N_GPU_LAYERS`: Number of layers to offload to GPU (default: 0, set to 35 for GPU acceleration)
+- `N_THREADS`: Number of CPU threads to use (default: 4)
+- `CONTEXT_SIZE`: Maximum context window size (default: 4096)
 
-## Example yml
-
-### Basic Speech-to-Text-to-Speech Pipeline
+## Example: Speech Assistant Pipeline
 
 This example shows how to create a conversational AI pipeline that:
 1. Captures audio from microphone
@@ -96,11 +96,13 @@ nodes:
     outputs:
       - text
     env:
-      MODEL_BACKEND: llama-cpp
-      MODEL_REPO_ID: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
-      MODEL_FILENAME: "*fp16.gguf"
+      MODEL_PATH: "./models/llama-2-7b-chat.Q4_K_M.gguf"
       SYSTEM_PROMPT: "You're a helpful assistant."
       ACTIVATION_WORDS: "hey help what how"
+      MAX_TOKENS: "512"
+      N_GPU_LAYERS: "35"
+      N_THREADS: "4"
+      CONTEXT_SIZE: "4096"
 
   - id: dora-tts
     build: pip install dora-kokoro-tts
@@ -142,4 +144,4 @@ uv run pytest . # Test
 
 ## License
 
-dora-llama-cpp-python's code is released under the MIT License
+dora-llama-cpp-python is released under the MIT License
