@@ -1,0 +1,24 @@
+nodes:
+  - id: pyarrow-sender
+    build: pip install -e ../../node-hub/pyarrow-sender
+    path: pyarrow-sender
+    outputs:
+      - data
+    env:
+      DATA: "'Please only output: This is a test'"
+
+  - id: dora-qwen2.5
+    build: pip install -e ../../node-hub/dora-qwen2.5
+    path: dora-qwen2-5
+    inputs:
+      text: pyarrow-sender/data
+    outputs:
+      - text
+
+  - id: pyarrow-assert
+    build: pip install -e ../../node-hub/pyarrow-assert
+    path: pyarrow-assert
+    inputs:
+      data: dora-phi4/text
+    env:
+      DATA: "'This is a test'"
