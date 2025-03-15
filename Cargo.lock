@@ -2654,6 +2654,7 @@ version = "0.3.10"
 dependencies = [
  "arrow 54.2.1",
  "arrow_convert",
+ "chrono",
  "eyre",
 ]
 

@@ -2,6 +2,7 @@ use arrow::{
     array::{Array, AsArray, PrimitiveArray, StringArray},
     datatypes::ArrowPrimitiveType,
 };
+use chrono::{NaiveDate, NaiveTime};
 
 use arrow_convert::deserialize::TryIntoCollection;
 use eyre::ContextCompat;
@@ -352,6 +353,45 @@ impl<'a> TryFrom<&'a ArrowData> for String {
         let string_array: Vec<String> =
             <Arc<dyn arrow::array::Array> as Clone>::clone(&value).try_into_collection()?;
         return Ok(string_array[0].clone());
+    }
+}
+
+
+impl TryFrom<&ArrowData> for NaiveDate {
+    type Error = eyre::Report;
+    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+        let array = value
+            .as_primitive_opt::<arrow::datatypes::Date32Type>()
+            .context("not a primitive Date32Type array")?;
+        if array.is_empty() {
+            eyre::bail!("empty array");
+        }
+        if array.len() != 1 {
+            eyre::bail!("expected length 1");
+        }
+        if array.null_count() != 0 {
+            eyre::bail!("array has nulls");
+        }
+        Ok(array.value_as_date(0).context("data type cannot be converted to NaiveDate")?)
+    }
+}
+
+impl TryFrom<&ArrowData> for NaiveTime {
+    type Error = eyre::Report;
+    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+        let array = value
+            .as_primitive_opt::<arrow::datatypes::Time64NanosecondType>()
+            .context("not a primitive Time64NanosecondType array")?;
+        if array.is_empty() {
+            eyre::bail!("empty array");
+        }
+        if array.len() != 1 {
+            eyre::bail!("expected length 1");
+        }
+        if array.null_count() != 0 {
+            eyre::bail!("array has nulls");
+        }
+        Ok(array.value_as_time(0).context("data type cannot be converted to NaiveTime")?)
     }
 }
 
