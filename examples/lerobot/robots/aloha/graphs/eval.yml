@@ -1,0 +1,141 @@
+nodes:
+  - id: aloha-client
+    custom:
+      source: cargo
+      args: run --release -p aloha-client
+      inputs:
+        puppet_goal_position: eval/action
+        tick: dora/timer/millis/5
+      outputs:
+        - puppet_position
+
+  - id: plot
+    custom:
+      source: ../nodes/plot_node.py
+      inputs:
+        image: cam_right_wrist/image
+        action: eval/action
+        puppet_position: aloha-client/puppet_position
+      envs:
+        IMAGE_WIDTH: 640
+        IMAGE_HEIGHT: 480
+
+  - id: cam_left_wrist
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 2
+
+  - id: cam_right_wrist
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 22
+
+  - id: cam_low
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 14
+
+  - id: cam_high
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 8
+
+  - id: eval
+    custom:
+      source: python
+      args: /home/rcadene/dora_lerobot/dora_lerobot/scripts/eval.py -p cadene/aloha_act_no_state_aloha_v2_static_dora_test_wrist_gripper eval.n_episodes=1 eval.batch_size=1 env.episode_length=20000
+      inputs:
+        agent_pos: aloha-client/puppet_position
+        cam_left_wrist: cam_left_wrist/image
+        cam_right_wrist: cam_right_wrist/image
+        cam_low: cam_low/image
+        cam_high: cam_high/image
+      outputs:
+        - action
+
+  - id: keyboard
+    custom:
+      source: ../nodes/keyboard_node.py
+      inputs:
+        heartbeat: dora/timer/millis/20
+      outputs:
+        - space
+        - failed
+
+  - id: cam_saver_left_wrist
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_left_wrist/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_left_wrist
+
+  - id: cam_saver_right_wrist
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_right_wrist/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_right_wrist
+
+  - id: cam_saver_low
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_low/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_low
+
+  - id: cam_saver_high
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_high/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_high
+
+  - id: dora-record
+    custom:
+      build: cargo install --git https://github.com/dora-rs/dora dora-record
+      source: dora-record
+      inputs:
+        action: eval/action
+        observation.state: aloha-client/puppet_position
+        episode_index: keyboard/space
+        failed_episode_index: keyboard/failed
+        observation.images.cam_left_wrist: cam_saver_left_wrist/saved_image
+        observation.images.cam_right_wrist: cam_saver_right_wrist/saved_image
+        observation.images.cam_low: cam_saver_low/saved_image
+        observation.images.cam_high: cam_saver_high/saved_image
