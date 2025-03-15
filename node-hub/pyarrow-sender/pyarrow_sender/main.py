@@ -42,7 +42,7 @@ def main():
         )
     try:
         data = ast.literal_eval(data)
-    except ValueError:
+    except Exception:  # noqa
         print("Passing input as string")
 
     if isinstance(data, (str, int, float)):
