@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use std::convert::TryFrom;
 use dora_arrow_convert::{ArrowData, IntoArrow};
+use std::convert::TryFrom;
+use std::sync::Arc;
 
 #[cfg(test)]
 mod tests {
@@ -16,7 +16,6 @@ mod tests {
         assert_eq!(value_bool, result_bool);
         Ok(())
     }
-
 
     #[test]
     fn test_u8_round_trip() -> Result<(), Report> {
@@ -177,7 +176,6 @@ mod tests {
         Ok(())
     }
 
-    
     #[test]
     fn test_vec_i8_round_trip() -> Result<(), Report> {
         let value_vec_i8: Vec<i8> = vec![-1, -2, -3, -4, -5];
@@ -220,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_vec_f32_round_trip() -> Result<(), Report> {
-        let value_vec_f32 : Vec<f32> = vec![-1.5, -2.6, -3.2, -4.5, -5.1];
+        let value_vec_f32: Vec<f32> = vec![-1.5, -2.6, -3.2, -4.5, -5.1];
         let arrow_array = value_vec_f32.clone().into_arrow();
         let data: ArrowData = ArrowData(Arc::new(arrow_array));
         let result_vec_f32: Vec<f32> = TryFrom::try_from(&data)?;
@@ -238,4 +236,3 @@ mod tests {
         Ok(())
     }
 }
-

@@ -349,7 +349,8 @@ impl<'a> TryFrom<&'a ArrowData> for Vec<f64> {
 impl<'a> TryFrom<&'a ArrowData> for String {
     type Error = eyre::Report;
     fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let string_array: Vec<String> = <Arc<dyn arrow::array::Array> as Clone>::clone(&value).try_into_collection()?;
+        let string_array: Vec<String> =
+            <Arc<dyn arrow::array::Array> as Clone>::clone(&value).try_into_collection()?;
         return Ok(string_array[0].clone());
     }
 }
