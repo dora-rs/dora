@@ -34,7 +34,7 @@ nodes:
     outputs:
       - text
     env:
-      MODEL_NAME: "TheBloke/Llama-2-7B-Chat-GGUF"   # Llama 2.7B model pull from Hugging Face
+      MODEL_NAME_OR_PATH: TheBloke/Llama-2-7B-Chat-GGUF   # Llama 2.7B model pull from Hugging Face
       MODEL_FILE_PATTERN: "*Q4_K_M.gguf"
       SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
       ACTIVATION_WORDS: "what how who where you"
