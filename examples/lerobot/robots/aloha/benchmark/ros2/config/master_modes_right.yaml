@@ -1,9 +1,0 @@
-port: /dev/ttyDXL_master_right
-
-groups:
-  arm:
-    torque_enable: false
-
-singles:
-  gripper:
-    torque_enable: false
