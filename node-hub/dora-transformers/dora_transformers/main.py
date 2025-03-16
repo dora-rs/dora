@@ -15,7 +15,7 @@ SYSTEM_PROMPT = os.getenv(
 )
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
-DEVICE = os.getenv("DEVICE", "cpu")
+DEVICE = os.getenv("DEVICE", "auto")
 TORCH_DTYPE = os.getenv("TORCH_DTYPE", "auto")
 ENABLE_MEMORY_EFFICIENT = os.getenv("ENABLE_MEMORY_EFFICIENT", "true").lower() == "true"
 

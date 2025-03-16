@@ -26,9 +26,9 @@ nodes:
     env:
       TARGET_LANGUAGE: english
 
-  - id: dora-transformer
-    build: pip install -e ../../node-hub/dora-transformer
-    path: dora-transformer
+  - id: dora-transformers
+    build: pip install -e ../../node-hub/dora-transformers
+    path: dora-transformers
     inputs:
       text: dora-distil-whisper/text
     outputs:
@@ -46,14 +46,14 @@ nodes:
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      text_transformer: dora-transformer/text
+      text_transformer: dora-transformers/text
       text_whisper: dora-distil-whisper/text
 
   - id: dora-kokoro-tts
     build: pip install -e ../../node-hub/dora-kokoro-tts
     path: dora-kokoro-tts
     inputs:
-      text: dora-transformer/text
+      text: dora-transformers/text
     outputs:
       - audio
     env:

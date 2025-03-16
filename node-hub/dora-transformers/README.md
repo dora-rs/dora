@@ -1,4 +1,4 @@
-# dora-transformer
+# dora-transformers
 
 A Dora node that provides access to Hugging Face transformer models for efficient text generation and chat completion.
 
@@ -26,9 +26,9 @@ uv pip install -e .
 Configure the node in your dataflow YAML file:
 
 ```yaml
-- id: dora-transformer
-  build: pip install -e path/to/dora-transformer
-  path: dora-transformer
+- id: dora-transformers
+  build: pip install -e path/to/dora-transformers
+  path: dora-transformers
   inputs:
     text: source_node/text  # Input text to generate response for
   outputs:
@@ -98,9 +98,9 @@ nodes:
     env:
       TARGET_LANGUAGE: english
 
-  - id: dora-transformer
-    build: pip install -e ../../node-hub/dora-transformer
-    path: dora-transformer
+  - id: dora-transformers
+    build: pip install -e ../../node-hub/dora-transformers
+    path: dora-transformers
     inputs:
       text: dora-distil-whisper/text
     outputs:
@@ -118,7 +118,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-kokoro-tts
     path: dora-kokoro-tts
     inputs:
-      text: dora-transformer/text
+      text: dora-transformers/text
     outputs:
       - audio
 ```
@@ -159,4 +159,4 @@ uv run pytest . # Test
 
 ## License
 
-dora-transformer is released under the MIT License
+dora-transformers is released under the MIT License
