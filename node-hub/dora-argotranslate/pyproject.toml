@@ -22,4 +22,5 @@ dora-argotranslate = "dora_argotranslate.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP",
 ]

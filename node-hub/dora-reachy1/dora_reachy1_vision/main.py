@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 from reachy_sdk import ReachySDK
 import os
 from dora import Node
@@ -5,7 +7,7 @@ import pyarrow as pa
 
 
 def main():
-
+    """TODO: Add docstring."""
     node = Node()
 
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.24")

@@ -1,6 +1,4 @@
-"""
-This Dora node is a minimalistic interface that shows two images and text in a Pygame window.
-"""
+"""Following Dora node is a minimalistic interface that shows two images and text in a Pygame window."""
 
 import os
 import argparse
@@ -13,7 +11,7 @@ from dora import Node
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow
+    """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
         description="LeRobot Record: This node is used to record episodes of a robot interacting with the environment."
     )

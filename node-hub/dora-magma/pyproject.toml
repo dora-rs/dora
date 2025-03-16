@@ -43,4 +43,5 @@ extend.exclude = "dora_magma/Magma"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP",
 ]

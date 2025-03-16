@@ -24,4 +24,5 @@ dora-pyrealsense = "dora_pyrealsense.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP",
 ]

@@ -1,3 +1,4 @@
+"""TODO: Add docstring."""
 import lebai_sdk
 import numpy as np
 from dora import Node
@@ -9,7 +10,7 @@ import time
 def load_json_file(file_path):
     """Load JSON file and return the dictionary."""
     if os.path.exists(file_path):
-        with open(file_path, "r") as file:
+        with open(file_path) as file:
             data = json.load(file)
     else:
         # Return an empty dictionary if file does not exist
@@ -32,6 +33,7 @@ ROBOT_IP = os.getenv(
 
 
 def main():
+    """TODO: Add docstring."""
     # Load the JSON file
     pose_library = load_json_file(SAVED_POSE_PATH)
     lebai = lebai_sdk.connect(ROBOT_IP, False)  # 创建实例
