@@ -1,17 +1,18 @@
 import enum
-
-import pyarrow as pa
-
 from typing import Union
 
+import pyarrow as pa
 from dynamixel_sdk import (
-    PacketHandler,
-    PortHandler,
     COMM_SUCCESS,
+    DXL_HIBYTE,
+    DXL_HIWORD,
+    DXL_LOBYTE,
+    DXL_LOWORD,
     GroupSyncRead,
     GroupSyncWrite,
+    PacketHandler,
+    PortHandler,
 )
-from dynamixel_sdk import DXL_HIBYTE, DXL_HIWORD, DXL_LOBYTE, DXL_LOWORD
 
 PROTOCOL_VERSION = 2.0
 BAUD_RATE = 1_000_000
@@ -22,8 +23,7 @@ def wrap_joints_and_values(
     joints: Union[list[str], pa.Array],
     values: Union[int, list[int], pa.Array],
 ) -> pa.StructArray:
-    """
-    Wraps joints and their corresponding values into a structured array.
+    """Wraps joints and their corresponding values into a structured array.
 
     :param joints: A list, numpy array, or pyarrow array of joint names.
     :type joints: Union[list[str], np.array, pa.Array]
@@ -39,7 +39,7 @@ def wrap_joints_and_values(
     :raises ValueError: If lengths of joints and values do not match.
 
     Example:
-    --------
+    -------
     joints = ["shoulder_pan", "shoulder_lift", "elbow_flex"]
     values = [100, 200, 300]
     struct_array = wrap_joints_and_values(joints, values)
@@ -52,8 +52,8 @@ def wrap_joints_and_values(
     struct_array = wrap_joints_and_values(joints, value)
 
     This example broadcasts the single integer value to all joints and wraps them into a structured array.
-    """
 
+    """
     if isinstance(values, int):
         values = [values] * len(joints)
 
@@ -69,7 +69,7 @@ def wrap_joints_and_values(
         mask = values.is_null()
 
     return pa.StructArray.from_arrays(
-        arrays=[joints, values], names=["joints", "values"], mask=mask
+        arrays=[joints, values], names=["joints", "values"], mask=mask,
     ).drop_null()
 
 
@@ -239,7 +239,7 @@ class DynamixelBus:
             else:
                 raise NotImplementedError(
                     f"Value of the number of bytes to be sent is expected to be in [1, 2, 4], but {packet_bytes_size} "
-                    f"is provided instead."
+                    f"is provided instead.",
                 )
 
             if init_group:
@@ -251,7 +251,7 @@ class DynamixelBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Write failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
@@ -281,13 +281,13 @@ class DynamixelBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Read failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
         values = pa.array(
             [
                 self.group_readers[group_key].getData(
-                    idx, packet_address, packet_bytes_size
+                    idx, packet_address, packet_bytes_size,
                 )
                 for idx in motor_ids
             ],

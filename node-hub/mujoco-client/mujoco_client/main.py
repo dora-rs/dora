@@ -1,19 +1,16 @@
-"""
-Mujoco Client: This node is used to represent simulated robot, it can be used to read virtual positions,
+"""Mujoco Client: This node is used to represent simulated robot, it can be used to read virtual positions,
 or can be controlled
 """
 
-import os
 import argparse
-import time
 import json
-
-import pyarrow as pa
-
-from dora import Node
+import os
+import time
 
 import mujoco
 import mujoco.viewer
+import pyarrow as pa
+from dora import Node
 
 
 class Client:
@@ -66,7 +63,7 @@ class Client:
 
                 elif event_type == "ERROR":
                     raise ValueError(
-                        "An error occurred in the dataflow: " + event["error"]
+                        "An error occurred in the dataflow: " + event["error"],
                     )
 
             self.node.send_output("end", pa.array([]))
@@ -92,7 +89,7 @@ def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow
     parser = argparse.ArgumentParser(
         description="MujoCo Client: This node is used to represent a MuJoCo simulation. It can be used instead of a "
-        "follower arm to test the dataflow."
+        "follower arm to test the dataflow.",
     )
 
     parser.add_argument(
@@ -110,14 +107,14 @@ def main():
     )
 
     parser.add_argument(
-        "--config", type=str, help="The configuration of the joints.", default=None
+        "--config", type=str, help="The configuration of the joints.", default=None,
     )
 
     args = parser.parse_args()
 
     if not os.getenv("SCENE") and args.scene is None:
         raise ValueError(
-            "Please set the SCENE environment variable or pass the --scene argument."
+            "Please set the SCENE environment variable or pass the --scene argument.",
         )
 
     scene = os.getenv("SCENE", args.scene)
@@ -126,7 +123,7 @@ def main():
     if not os.environ.get("CONFIG") and args.config is None:
         raise ValueError(
             "The configuration is not set. Please set the configuration of the simulated motors in the environment "
-            "variables or as an argument."
+            "variables or as an argument.",
         )
 
     with open(os.environ.get("CONFIG") if args.config is None else args.config) as file:
