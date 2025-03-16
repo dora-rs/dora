@@ -4,9 +4,7 @@ use arrow::{
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
-use arrow_convert::deserialize::TryIntoCollection;
 use eyre::ContextCompat;
-use std::sync::Arc;
 
 use crate::ArrowData;
 
@@ -350,9 +348,17 @@ impl<'a> TryFrom<&'a ArrowData> for Vec<f64> {
 impl<'a> TryFrom<&'a ArrowData> for String {
     type Error = eyre::Report;
     fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let string_array: Vec<String> =
-            <Arc<dyn arrow::array::Array> as Clone>::clone(value).try_into_collection()?;
-        Ok(string_array[0].clone())
+        let array: &StringArray = value.as_string_opt().wrap_err("not a string array")?;
+        if array.is_empty() {
+            eyre::bail!("empty array");
+        }
+        if array.len() != 1 {
+            eyre::bail!("expected length 1");
+        }
+        if array.null_count() != 0 {
+            eyre::bail!("array has nulls");
+        }
+        Ok(array.value(0).to_string())
     }
 }
 
