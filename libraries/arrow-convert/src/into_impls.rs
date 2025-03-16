@@ -148,17 +148,17 @@ impl IntoArrow for () {
 }
 
 impl IntoArrow for NaiveDate {
-    type A = arrow::array::Date32Array;
+    type A = arrow::array::Date64Array;
     fn into_arrow(self) -> Self::A {
-        arrow::array::Date32Array::from(vec![arrow::datatypes::Date32Type::from_naive_date(self)])
+        arrow::array::Date64Array::from(vec![arrow::datatypes::Date64Type::from_naive_date(self)])
     }
 }
 
 impl IntoArrow for NaiveTime {
-    type A = arrow::array::Time64NanosecondArray;
+    type A = arrow::array::Time64MicrosecondArray;
     fn into_arrow(self) -> Self::A {
-        arrow::array::Time64NanosecondArray::from(vec![
-            arrow::array::temporal_conversions::time_to_time64ns(self),
+        arrow::array::Time64MicrosecondArray::from(vec![
+            arrow::array::temporal_conversions::time_to_time64us(self),
         ])
     }
 }
