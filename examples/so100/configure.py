@@ -149,9 +149,9 @@ def main():
     left = "left" if args.left else "right"
     path = (
         input(
-            f"Please enter the path of the configuration file (default is ./robots/so100/configs/follower.{left}.json): "
+            f"Please enter the path of the configuration file (default is ./examples/so100/configs/follower.{left}.json): "
         )
-        or f"./robots/so100/configs/follower.{left}.json"
+        or f"./examples/so100/configs/follower.{left}.json"
     )
 
     with open(path, "w") as file:

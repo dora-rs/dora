@@ -26,7 +26,7 @@ cd ..
 git clone https://github.com/pollen-robotics/reachy2_hdf5_recorder/
 ```
 
-#### Installation dora-lerobot
+#### Installation dora
 
 ```bash
 ## Create new python environment

@@ -180,9 +180,9 @@ def main():
 
     path = (
         input(
-            f"Please enter the path of the configuration file (default is ./robots/alexk-lcr/configs/{leader}.{left}.json): "
+            f"Please enter the path of the configuration file (default is ./examples/alexk-lcr/configs/{leader}.{left}.json): "
         )
-        or f"./robots/alexk-lcr/configs/{leader}.{left}.json"
+        or f"./examples/alexk-lcr/configs/{leader}.{left}.json"
     )
 
     with open(path, "w") as file:

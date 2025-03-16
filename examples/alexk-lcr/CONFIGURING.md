@@ -33,7 +33,7 @@ recommend using our on-board tool to set all of that automatically:
 - Run the configuration tool with the following command and follow the instructions:
 
 ```bash
-cd dora-lerobot/
+cd dora/
 
 # If you are using a custom environment, you will have to activate it before running the command
 source [your_custom_env_bin]/activate
@@ -44,7 +44,7 @@ source venv/Scripts/activate # On Windows bash
 venv\Scripts\activate.bat # On Windows cmd
 venv\Scripts\activate.ps1 # On Windows PowerShell
 
-python ./robots/alexk-lcr/configure.py --port /dev/ttyUSB0 --follower --left # (or right)
+python ./examples/alexk-lcr/configure.py --port /dev/ttyUSB0 --follower --left # (or right)
 ```
 
 **Note:** change `/dev/ttyUSB0` to the device port you retrieved from the official wizard (like `COM3` on Windows).
@@ -58,7 +58,7 @@ python ./robots/alexk-lcr/configure.py --port /dev/ttyUSB0 --follower --left # (
 - Repeat the same steps for the Leader arm:
 
 ```bash
-python ./robots/alexk-lcr/configure.py --port /dev/ttyUSB1 --leader --left # (or right)
+python ./examples/alexk-lcr/configure.py --port /dev/ttyUSB1 --leader --left # (or right)
 ```
 
 **Note:** change `/dev/ttyUSB1` to the device port you retrieved from the official wizard (like `COM4` on Windows).
@@ -77,7 +77,7 @@ nodes:
   - id: lcr-follower
     env:
       PORT: /dev/ttyUSB0
-      CONFIG: ../configs/follower.left.json # relative path to `./robots/alexk-lcr/configs/follower.json`
+      CONFIG: ../configs/follower.left.json # relative path to `./examples/alexk-lcr/configs/follower.json`
 
   - id: lcr-to-lcr
     env:

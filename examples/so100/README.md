@@ -46,7 +46,7 @@ the correct
 environment variables. (e.g. `PORT` and `CONFIG`, `LEADER_CONTROL` and `FOLLOWER_CONTROL`)
 
 ```bash
-cd dora-lerobot/
+cd dora/
 
 # If you are using a custom environment, you will have to activate it before running the command
 source [your_custom_env_bin]/activate
@@ -57,10 +57,10 @@ source venv/Scripts/activate # On Windows bash
 venv\Scripts\activate.bat # On Windows cmd
 venv\Scripts\activate.ps1 # On Windows PowerShell
 
-dora build ./robots/so100/graphs/mono_teleop_real_with_alexk_lcr.yml # Only the first time, it will install all the requirements if needed
+dora build ./examples/so100/graphs/mono_teleop_real_with_alexk_lcr.yml # Only the first time, it will install all the requirements if needed
 
 dora up
-dora start ./robots/so100/graphs/mono_teleop_real_with_alexk_lcr.yml
+dora start ./examples/so100/graphs/mono_teleop_real_with_alexk_lcr.yml
 ```
 
 ## License
