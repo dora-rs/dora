@@ -93,7 +93,7 @@ fn main_multithreaded(
             pos.insert(2, pos[1]);
             pos.insert(4, pos[3]);
             let pos: Vec<u32> = pos.iter().map(|&x| xm::conv::radians_to_pos(x)).collect();
-            // Compute linear interpolation for gripper as input and output range missmatch
+            // Compute linear interpolation for gripper as input and output range mismatch
             xm::sync_write_goal_position(
                 &io,
                 puppet_serial_port.as_mut(),

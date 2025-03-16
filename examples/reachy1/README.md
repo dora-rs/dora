@@ -63,7 +63,7 @@ huggingface-cli upload \
 > - mobile_base : branch 21 # server side, install manually
 > - reachy-sdk-api : branch 116 # server and client side, install manually
 > - mobile-base-sdk : branch 25 # client side, install manually
-> - reachy2-sdk-server : branch 135 # server side, install mannually
+> - reachy2-sdk-server : branch 135 # server side, install manually
 >   Then push to HF hub!
 
 ### Training

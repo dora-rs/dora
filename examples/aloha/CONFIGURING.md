@@ -23,7 +23,7 @@ The first thing to do is to configure the Servo BUS:
 - Setting the ID of the servos from the base (1) to the gripper (9) for the Follower and Leader arms.
 
 Those steps can be done using the official wizard provided by the
-manufacturer [ROBOTIS](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/).
+manufacturer [ROBOTICS](https://emanual.robotis.com/docs/en/software/dynamixel/dynamixel_wizard2/).
 
 After that, you need to configure the homing offsets and drive mode to have the same behavior for every user. We
 recommend using our on-board tool to set all of that automatically:
