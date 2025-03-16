@@ -39,10 +39,10 @@ the Dora pipeline to manipulate arms, cameras, and record/replay episodes with L
 > You have an example of the given rules in `hardware_config.yml`.
 
 ```bash
-cd dora-lerobot
+cd dora
 
-sudo cp robots/aloha/hardware_config/99-interbotix-udev.rules /etc/udev/rules.d
-sudo cp robots/aloha/hardware_config/99-fixed-interbotix-udev.rules /etc/udev/rules.d
+sudo cp examples/aloha/hardware_config/99-interbotix-udev.rules /etc/udev/rules.d
+sudo cp examples/aloha/hardware_config/99-fixed-interbotix-udev.rules /etc/udev/rules.d
 ```
 
 - To apply the changes, run `sudo udevadm control --reload && sudo udevadm trigger`

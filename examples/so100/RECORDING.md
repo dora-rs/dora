@@ -26,7 +26,7 @@ Make sure to:
 You can now start the Dora pipeline to record episodes for LeRobot:
 
 ```bash
-cd dora-lerobot
+cd dora
 
 # If you are using a custom environment, you will have to activate it before running the command
 source [your_custom_env_bin]/activate
@@ -37,10 +37,10 @@ source venv/Scripts/activate # On Windows bash
 venv\Scripts\activate.bat # On Windows cmd
 venv\Scripts\activate.ps1 # On Windows PowerShell
 
-dora build ./robots/so100/graphs/record_mono_teleop_real_with_alexk_lcr.yml # Only the first time, it will install all the requirements if needed
+dora build ./examples/so100/graphs/record_mono_teleop_real_with_alexk_lcr.yml # Only the first time, it will install all the requirements if needed
 
 dora up
-dora start ./robots/so100/graphs/record_mono_teleop_real_with_alexk_lcr.yml
+dora start ./examples/so100/graphs/record_mono_teleop_real_with_alexk_lcr.yml
 ```
 
 Then, you can tele operate the follower with the leader. A window will pop up showing the camera feed, and some text.
@@ -55,7 +55,7 @@ Then, you can tele operate the follower with the leader. A window will pop up sh
 You can now use our script to convert the logs to an understandable dataset:
 
 ```bash
-cd dora-lerobot
+cd dora
 
 # If you are using a custom environment, you will have to activate it before running the command
 source [your_custom_env_bin]/activate

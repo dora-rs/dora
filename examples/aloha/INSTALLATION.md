@@ -27,13 +27,13 @@ you may need to setup your Python environment:
 - Clone this repository by running the following command:
 
 ```bash
-git clone https://github.com/dora-rs/dora-lerobot
+git clone https://github.com/dora-rs/dora
 ```
 
 - Open a bash terminal and navigate to the repository by running the following command:
 
 ```bash
-cd dora-lerobot
+cd dora
 ```
 
 - Create a virtual environment by running the following command (you can find where is all your pythons executable with
@@ -56,14 +56,14 @@ source venv/Scripts/activate # On Windows bash
 venv\Scripts\activate.bat # On Windows cmd
 venv\Scripts\activate.ps1 # On Windows PowerShell
 
-pip install -r robots/so100/requirements.txt
+pip install -r examples/so100/requirements.txt
 ```
 
 If you want to install the required Python packages in development mode, you can run the following command, but you will
 have to avoid using `dora build` during execution procedure:
 
 ```bash
-pip install -r robots/aloha/development.txt # You **MUST** be inside dora-lerobot to run this command, not robots/aloha
+pip install -r examples/aloha/development.txt # You **MUST** be inside dora to run this command
 ```
 
 **Note**: You're totally free to use your own Python environment, a Conda environment, or whatever you prefer, you will
