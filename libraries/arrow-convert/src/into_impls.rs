@@ -1,7 +1,8 @@
 use crate::IntoArrow;
-use arrow::array::{Array, ArrayRef, PrimitiveArray, StringArray};
+use arrow::array::{Array, ArrayRef, PrimitiveArray, StringArray, TimestampNanosecondArray};
+use arrow::datatypes::{ArrowPrimitiveType, ArrowTimestampType};
 use arrow_convert::serialize::TryIntoArrow;
-use chrono::{NaiveDate, NaiveTime};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 impl IntoArrow for bool {
     type A = arrow::array::BooleanArray;
@@ -155,14 +156,24 @@ impl IntoArrow for NaiveDate {
 }
 
 impl IntoArrow for NaiveTime {
-    type A = arrow::array::Time64MicrosecondArray;
+    type A = arrow::array::Time64NanosecondArray;
     fn into_arrow(self) -> Self::A {
-        arrow::array::Time64MicrosecondArray::from(vec![
-            arrow::array::temporal_conversions::time_to_time64us(self),
+        arrow::array::Time64NanosecondArray::from(vec![
+            arrow::array::temporal_conversions::time_to_time64ns(self),
         ])
     }
 }
 
+impl IntoArrow for NaiveDateTime {
+    type A = arrow::array::TimestampNanosecondArray;
+    fn into_arrow(self) -> Self::A {
+        let timestamp = match arrow::datatypes::TimestampNanosecondType::make_value(self) {
+            Some(timestamp) => timestamp,
+            None => arrow::datatypes::TimestampNanosecondType::default_value(),
+        };
+        TimestampNanosecondArray::from(vec![timestamp])
+    }
+}
 impl IntoArrow for &String {
     type A = StringArray;
 

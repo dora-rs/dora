@@ -1,4 +1,4 @@
-use chrono::{NaiveDate, NaiveTime};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use dora_arrow_convert::{ArrowData, IntoArrow};
 use std::sync::Arc;
 
@@ -252,6 +252,18 @@ mod tests {
         let data: ArrowData = ArrowData(Arc::new(arrow_array));
         let result_naivetime: NaiveTime = TryFrom::try_from(&data)?;
         assert_eq!(value_naivetime, result_naivetime);
+        Ok(())
+    }
+
+    #[test]
+    fn test_naivedatetime_round_trip() -> Result<(), Report> {
+        let d = NaiveDate::from_ymd_opt(2015, 6, 3).unwrap();
+        let t = NaiveTime::from_hms_milli_opt(12, 34, 56, 789).unwrap();
+        let value_naivedatetime = NaiveDateTime::new(d, t);
+        let arrow_array = value_naivedatetime.into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_naivedatetime: NaiveDateTime = TryFrom::try_from(&data)?;
+        assert_eq!(value_naivedatetime, result_naivedatetime);
         Ok(())
     }
 }
