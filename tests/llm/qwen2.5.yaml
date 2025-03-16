@@ -21,4 +21,4 @@ nodes:
     inputs:
       data: dora-phi4/text
     env:
-      DATA: "'This is a test'"
+      DATA: "This is a test"
