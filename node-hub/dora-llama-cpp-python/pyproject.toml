@@ -1,6 +1,6 @@
 [project]
 name = "dora-llama-cpp-python"
-version = "1.0.0"
+version = "1.0.1"
 authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
 description = "dora-llama-cpp-python"
 license = { text = "MIT" }

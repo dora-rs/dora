@@ -27,26 +27,6 @@ The node can be configured in your dataflow YAML file:
 
 ```yaml
 
-# Using a local model
-
-- id: dora-llama-cpp-python
-  build: pip install -e path/to/dora-llama-cpp-python
-  path: dora-llama-cpp-python
-  inputs:
-    text: source_node/text  # Input text to generate response for
-  outputs:
-    - text  # Generated response text
-  env:
-    MODEL_LOCAL_PATH: "./models/my-local-model.gguf"
-    SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
-    ACTIVATION_WORDS: "what how who where you"
-    MAX_TOKENS: "512"
-    N_GPU_LAYERS: "35"     # Enable GPU acceleration
-    N_THREADS: "4"         # CPU threads
-    CONTEXT_SIZE: "4096"   # Maximum context window
-
-
-
 # Using a HuggingFace model
 - id: dora-llama-cpp-python
   build: pip install -e path/to/dora-llama-cpp-python
@@ -56,7 +36,7 @@ The node can be configured in your dataflow YAML file:
   outputs:
     - text  # Generated response text
   env:
-    MODEL_NAME: "TheBloke/Llama-2-7B-Chat-GGUF"
+    MODEL_NAME_OR_PATH: "TheBloke/Llama-2-7B-Chat-GGUF"
     MODEL_FILE_PATTERN: "*Q4_K_M.gguf"
     SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
     ACTIVATION_WORDS: "what how who where you"
@@ -68,7 +48,8 @@ The node can be configured in your dataflow YAML file:
 
 ### Configuration Options
 
-- `MODEL_PATH`: Path to your GGUF model file (default: "./models/llama-2-7b-chat.Q4_K_M.gguf")
+- `MODEL_NAME_OR_PATH`: Path to local model file or HuggingFace repo id (default: "TheBloke/Llama-2-7B-Chat-GGUF")
+- `MODEL_FILE_PATTERN`: Pattern to match model file when downloading from HF (default: "*Q4_K_M.gguf")
 - `SYSTEM_PROMPT`: Customize the AI assistant's personality/behavior
 - `ACTIVATION_WORDS`: Space-separated list of words that trigger model response
 - `MAX_TOKENS`: Maximum number of tokens to generate (default: 512)

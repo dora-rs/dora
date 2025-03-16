@@ -11,8 +11,7 @@ SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "You're a very succinct AI assistant with short answers.",
 )
-MODEL_LOCAL_PATH = os.getenv("MODEL_LOCAL_PATH", "")  # Local model path takes precedence
-MODEL_NAME = os.getenv("MODEL_NAME", "TheBloke/Llama-2-7B-Chat-GGUF")  # HF repo as fallback
+MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", "TheBloke/Llama-2-7B-Chat-GGUF")
 MODEL_FILE_PATTERN = os.getenv("MODEL_FILE_PATTERN", "*Q4_K_M.gguf")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
 N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "0"))
@@ -25,13 +24,10 @@ def get_model():
     from llama_cpp import Llama
     
     try:
-        # Check if local path is provided
-        if MODEL_LOCAL_PATH:
-            model_path = Path(MODEL_LOCAL_PATH)
-            if not model_path.exists():
-                raise FileNotFoundError(f"Local model not found at {MODEL_LOCAL_PATH}")
-            
-            logging.info(f"Loading local model from {MODEL_LOCAL_PATH}")
+        # Check if path exists locally
+        model_path = Path(MODEL_NAME_OR_PATH)
+        if model_path.exists():
+            logging.info(f"Loading local model from {MODEL_NAME_OR_PATH}")
             llm = Llama(
                 model_path=str(model_path),
                 n_gpu_layers=N_GPU_LAYERS,
@@ -40,10 +36,10 @@ def get_model():
                 verbose=False
             )
         else:
-            # Load from HuggingFace if no local path
-            logging.info(f"Downloading model {MODEL_NAME} with pattern {MODEL_FILE_PATTERN}")
+            # Load from HuggingFace
+            logging.info(f"Downloading model {MODEL_NAME_OR_PATH} with pattern {MODEL_FILE_PATTERN}")
             llm = Llama.from_pretrained(
-                repo_id=MODEL_NAME,
+                repo_id=MODEL_NAME_OR_PATH,
                 filename=MODEL_FILE_PATTERN,
                 n_gpu_layers=N_GPU_LAYERS,
                 n_ctx=CONTEXT_SIZE,
