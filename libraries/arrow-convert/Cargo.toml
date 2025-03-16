@@ -12,3 +12,4 @@ repository.workspace = true
 [dependencies]
 arrow = { workspace = true }
 eyre = "0.6.8"
+chrono = "0.4.39"

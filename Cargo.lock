@@ -2628,6 +2628,7 @@ name = "dora-arrow-convert"
 version = "0.3.10"
 dependencies = [
  "arrow 54.2.1",
+ "chrono",
  "eyre",
 ]
 
