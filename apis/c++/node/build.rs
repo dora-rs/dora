@@ -9,10 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/lib.rs");
 
     // rename header files
-    let src_dir = target_dir()
-        .join("cxxbridge")
-        .join("dora-node-api-cxx")
-        .join("src");
+    let src_dir = origin_dir();
     let target_dir = src_dir.parent().unwrap();
     std::fs::copy(src_dir.join("lib.rs.h"), target_dir.join("dora-node-api.h")).unwrap();
     std::fs::copy(
@@ -28,8 +25,8 @@ fn main() {
     bridge_files.clear();
 }
 
-fn target_dir() -> PathBuf {
-    std::env::var("CARGO_TARGET_DIR")
+fn origin_dir() -> PathBuf {
+    let default_target = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -37,12 +34,26 @@ fn target_dir() -> PathBuf {
                 .nth(3)
                 .unwrap();
             root.join("target")
-        })
+        });
+    let cross_target = default_target
+        .join(std::env::var("TARGET").unwrap())
+        .join("cxxbridge")
+        .join("dora-node-api-cxx")
+        .join("src");
+
+    if cross_target.exists() {
+        cross_target
+    } else {
+        default_target
+            .join("cxxbridge")
+            .join("dora-node-api-cxx")
+            .join("src")
+    }
 }
 
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
-    use super::target_dir;
+    use super::origin_dir;
     use std::{
         io::{BufRead, BufReader},
         path::{Component, Path, PathBuf},
@@ -113,10 +124,7 @@ mod ros2 {
             .join("ros2_bindings.rs.cc");
 
         // copy message files to target directory
-        let target_path = target_dir()
-            .join("cxxbridge")
-            .join("dora-node-api-cxx")
-            .join("dora-ros2-bindings.h");
+        let target_path = origin_dir().parent().unwrap().join("dora-ros2-bindings.h");
 
         std::fs::copy(&header_path, &target_path).unwrap();
         println!("cargo:rerun-if-changed={}", header_path.display());

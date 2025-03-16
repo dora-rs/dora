@@ -7,8 +7,6 @@ import os
 import pyarrow as pa
 from dora import Node
 
-RUNNER_CI = True if os.getenv("CI") == "true" else False
-
 
 def main():
     # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
@@ -44,11 +42,10 @@ def main():
         )
     try:
         data = ast.literal_eval(data)
-    except ValueError:
+    except Exception:  # noqa
         print("Passing input as string")
-    if isinstance(data, list):
-        data = pa.array(data)  # initialize pyarrow array
-    elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float):
+
+    if isinstance(data, (str, int, float)):
         data = pa.array([data])
     else:
         data = pa.array(data)  # initialize pyarrow array

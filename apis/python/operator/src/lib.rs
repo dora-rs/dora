@@ -81,15 +81,41 @@ impl PyEvent {
     pub fn to_py_dict(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut pydict = HashMap::new();
         match &self.event {
-            MergedEvent::Dora(_) => pydict.insert("kind", "dora".to_object(py)),
-            MergedEvent::External(_) => pydict.insert("kind", "external".to_object(py)),
+            MergedEvent::Dora(_) => pydict.insert(
+                "kind",
+                "dora"
+                    .into_pyobject(py)
+                    .context("Failed to create pystring")?
+                    .unbind()
+                    .into(),
+            ),
+            MergedEvent::External(_) => pydict.insert(
+                "kind",
+                "external"
+                    .into_pyobject(py)
+                    .context("Failed to create pystring")?
+                    .unbind()
+                    .into(),
+            ),
         };
         match &self.event {
             MergedEvent::Dora(event) => {
                 if let Some(id) = Self::id(event) {
-                    pydict.insert("id", id.into_py(py));
+                    pydict.insert(
+                        "id",
+                        id.into_pyobject(py)
+                            .context("Failed to create id pyobject")?
+                            .into(),
+                    );
                 }
-                pydict.insert("type", Self::ty(event).to_object(py));
+                pydict.insert(
+                    "type",
+                    Self::ty(event)
+                        .into_pyobject(py)
+                        .context("Failed to create event pyobject")?
+                        .unbind()
+                        .into(),
+                );
 
                 if let Some(value) = self.value(py)? {
                     pydict.insert("value", value);
@@ -98,7 +124,14 @@ impl PyEvent {
                     pydict.insert("metadata", metadata);
                 }
                 if let Some(error) = Self::error(event) {
-                    pydict.insert("error", error.to_object(py));
+                    pydict.insert(
+                        "error",
+                        error
+                            .into_pyobject(py)
+                            .context("Failed to create error pyobject")?
+                            .unbind()
+                            .into(),
+                    );
                 }
             }
             MergedEvent::External(event) => {
@@ -107,10 +140,20 @@ impl PyEvent {
         }
 
         if let Some(cleanup) = self._cleanup.clone() {
-            pydict.insert("_cleanup", cleanup.into_py(py));
+            pydict.insert(
+                "_cleanup",
+                cleanup
+                    .into_pyobject(py)
+                    .context("failed to convert cleanup handle to pyobject")?
+                    .into_any()
+                    .unbind(),
+            );
         }
 
-        Ok(pydict.into_py_dict_bound(py).unbind())
+        Ok(pydict
+            .into_py_dict(py)
+            .context("Failed to create py_dict")?
+            .unbind())
     }
 
     fn ty(event: &Event) -> &str {
@@ -148,7 +191,10 @@ impl PyEvent {
             Event::Input { metadata, .. } => Ok(Some(
                 metadata_to_pydict(metadata, py)
                     .context("Issue deserializing metadata")?
-                    .to_object(py),
+                    .into_pyobject(py)
+                    .context("Failed to create metadata_to_pydice")?
+                    .unbind()
+                    .into(),
             )),
             _ => Ok(None),
         }
@@ -218,7 +264,7 @@ pub fn metadata_to_pydict<'a>(
     metadata: &'a Metadata,
     py: Python<'a>,
 ) -> Result<pyo3::Bound<'a, PyDict>> {
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (k, v) in metadata.parameters.iter() {
         match v {
             Parameter::Bool(bool) => dict
