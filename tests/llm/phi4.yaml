@@ -5,7 +5,7 @@ nodes:
     outputs:
       - data
     env:
-      DATA: "'Please only generate the following output: This is a test'"
+      DATA: "Please only generate the following output: This is a test"
 
   - id: dora-phi4
     build: pip install -e ../../node-hub/dora-phi4
@@ -21,4 +21,8 @@ nodes:
     inputs:
       data: dora-phi4/text
     env:
+<<<<<<< HEAD
       DATA: "'This is a test'"
+=======
+      DATA: "This is a test"
+>>>>>>> e74a242a (Simplify magma generate and skip CI test)
