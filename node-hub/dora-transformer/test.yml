@@ -1,0 +1,67 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+      - timestamp_start
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english
+
+  - id: dora-transformer
+    build: pip install -e ../../node-hub/dora-transformer
+    path: dora-transformer
+    inputs:
+      text: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct"
+      SYSTEM_PROMPT: "You are an AI assistant that gives extremely concise responses, never more than one or two sentences. Always be direct and to the point."
+      ACTIVATION_WORDS: "what how who where you"
+      MAX_TOKENS: "128"
+      DEVICE: "cuda"  # Change to cpu/mps as needed
+      ENABLE_MEMORY_EFFICIENT: "true"
+      TORCH_DTYPE: "float16"
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      text_transformer: dora-transformer/text
+      text_whisper: dora-distil-whisper/text
+
+  - id: dora-kokoro-tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
+    inputs:
+      text: dora-transformer/text
+    outputs:
+      - audio
+    env:
+      ACTIVATION_WORDS: you
+
+  - id: dora-pyaudio
+    build: pip install -e ../../node-hub/dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-kokoro-tts/audio
+      timestamp_start: dora-vad/timestamp_start
