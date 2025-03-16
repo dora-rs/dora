@@ -21,3 +21,10 @@ lebai-client = "lebai_client.main:main"
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
+
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+  "UP"   # Ruff's UP rule
+]

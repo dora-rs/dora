@@ -52,4 +52,5 @@ build-backend = "setuptools.build_meta"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP"   # Ruff's UP rule
 ]

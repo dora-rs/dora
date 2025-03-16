@@ -45,4 +45,5 @@ dora-qwen = "dora_qwen.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP"   # Ruff's UP rule
 ]

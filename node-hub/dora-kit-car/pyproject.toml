@@ -19,4 +19,5 @@ features = ["python", "pyo3/extension-module"]
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP"   # Ruff's UP rule
 ]

@@ -23,4 +23,5 @@ dora-sam2 = "dora_sam2.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP"   # Ruff's UP rule
 ]

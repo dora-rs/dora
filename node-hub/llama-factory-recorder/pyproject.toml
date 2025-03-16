@@ -25,4 +25,5 @@ llama-factory-recorder = "llama_factory_recorder.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP"   # Ruff's UP rule
 ]
