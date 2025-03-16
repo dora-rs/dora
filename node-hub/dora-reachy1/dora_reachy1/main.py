@@ -47,7 +47,6 @@ def sad_antennas(reachy):
 
 
 def main():
-
     node = Node()
 
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.24")
@@ -109,7 +108,7 @@ def main():
                 reachy.joints.r_gripper.goal_position = goal
                 time.sleep(0.02)
 
-            # When openning the gripper always go to default pose
+            # When opening the gripper always go to default pose
             if action == -100:
                 goto(
                     {

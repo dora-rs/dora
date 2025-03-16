@@ -37,6 +37,7 @@ mod tests {
     use arrow::pyarrow::ToPyArrow;
 
     use eyre::eyre;
+    use pyo3::ffi::c_str;
     use pyo3::types::IntoPyDict;
     use pyo3::types::PyAnyMethods;
     use pyo3::types::PyDict;
@@ -65,13 +66,17 @@ mod tests {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path
-            py.run_bound(
-                "import sys; sys.path.append(str(path))",
-                Some(&[("path", path)].into_py_dict_bound(py)),
+            py.run(
+                c_str!("import sys; sys.path.append(str(path))"),
+                Some(
+                    &[("path", path)]
+                        .into_py_dict(py)
+                        .context("Failed to create py_dict")?,
+                ),
                 None,
             )?;
 
-            let my_module = PyModule::import_bound(py, "test_utils")?;
+            let my_module = PyModule::import(py, "test_utils")?;
 
             let arrays = my_module.getattr("TEST_ARRAYS")?;
             let arrays = arrays
@@ -108,16 +113,16 @@ mod tests {
 
                 let out_pyarrow = out_value.to_pyarrow(py)?;
 
-                let test_utils = PyModule::import_bound(py, "test_utils")?;
-                let context = PyDict::new_bound(py);
+                let test_utils = PyModule::import(py, "test_utils")?;
+                let context = PyDict::new(py);
 
                 context.set_item("test_utils", test_utils)?;
                 context.set_item("in_pyarrow", in_pyarrow)?;
                 context.set_item("out_pyarrow", out_pyarrow)?;
 
                 let _ = py
-                    .eval_bound(
-                        "test_utils.is_subset(in_pyarrow, out_pyarrow)",
+                    .eval(
+                        c_str!("test_utils.is_subset(in_pyarrow, out_pyarrow)"),
                         Some(&context),
                         None,
                     )
