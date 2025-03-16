@@ -1,7 +1,6 @@
 use crate::IntoArrow;
-use arrow::array::{Array, ArrayRef, PrimitiveArray, StringArray, TimestampNanosecondArray};
+use arrow::array::{PrimitiveArray, StringArray, TimestampNanosecondArray};
 use arrow::datatypes::{ArrowPrimitiveType, ArrowTimestampType};
-use arrow_convert::serialize::TryIntoArrow;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 impl IntoArrow for bool {
@@ -172,28 +171,5 @@ impl IntoArrow for NaiveDateTime {
             None => arrow::datatypes::TimestampNanosecondType::default_value(),
         };
         TimestampNanosecondArray::from(vec![timestamp])
-    }
-}
-impl IntoArrow for &String {
-    type A = StringArray;
-
-    fn into_arrow(self) -> Self::A {
-        match vec![self.clone()].try_into_arrow() {
-            Ok(array_ref) => {
-                let array_ref: ArrayRef = array_ref; // Ensuring explicit type annotation
-                let array: &dyn Array = array_ref.as_ref(); // Dereference Arc<dyn Array>
-
-                if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
-                    string_array.clone()
-                } else {
-                    eprintln!("Failed to downcast to StringArray.");
-                    StringArray::from(vec![""]) // Fallback in case of failure
-                }
-            }
-            Err(err) => {
-                eprintln!("Failed to Create String Array: {}", err);
-                StringArray::from(vec![""]) // Safe fallback
-            }
-        }
     }
 }
