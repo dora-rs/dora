@@ -129,8 +129,7 @@ def generate_response(model, tokenizer, text: str, history, max_retries: int = 3
                 else:
                     # Final retry: Reduce token count
                     logging.info("Reducing token count for final attempt")
-                    global MAX_TOKENS
-                    MAX_TOKENS = max(32, MAX_TOKENS // 2)
+                    MAX_TOKENS = 24
                     continue
             else:
                 # For non-CUDA OOM errors, raise immediately
