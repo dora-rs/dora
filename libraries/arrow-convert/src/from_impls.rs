@@ -1,6 +1,6 @@
 use arrow::{
     array::{Array, AsArray, PrimitiveArray, StringArray},
-    datatypes::ArrowPrimitiveType,
+    datatypes::{ArrowPrimitiveType, ArrowTemporalType},
 };
 use chrono::{NaiveDate, NaiveTime};
 
@@ -351,53 +351,89 @@ impl<'a> TryFrom<&'a ArrowData> for String {
     type Error = eyre::Report;
     fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
         let string_array: Vec<String> =
-            <Arc<dyn arrow::array::Array> as Clone>::clone(&value).try_into_collection()?;
-        return Ok(string_array[0].clone());
+            <Arc<dyn arrow::array::Array> as Clone>::clone(value).try_into_collection()?;
+        Ok(string_array[0].clone())
     }
 }
 
 impl TryFrom<&ArrowData> for NaiveDate {
     type Error = eyre::Report;
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+        if let Some(array) = value.as_any().downcast_ref::<arrow::array::Date32Array>() {
+            if check_single_datetime(array) {
+                eyre::bail!("Not a valid array");
+            }
+            return array
+                .value_as_date(0)
+                .context("data type cannot be converted to NaiveDate");
+        }
         let array = value
-            .as_primitive_opt::<arrow::datatypes::Date32Type>()
-            .context("not a primitive Date32Type array")?;
-        if array.is_empty() {
-            eyre::bail!("empty array");
+            .as_any()
+            .downcast_ref::<arrow::array::Date64Array>()
+            .context("Refrence is neither to a Date32Array nor a Date64Array")?;
+        if check_single_datetime(array) {
+            eyre::bail!("Not a valid array");
         }
-        if array.len() != 1 {
-            eyre::bail!("expected length 1");
-        }
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array
+        array
             .value_as_date(0)
-            .context("data type cannot be converted to NaiveDate")?)
+            .context("data type cannot be converted to NaiveDate")
     }
 }
 
 impl TryFrom<&ArrowData> for NaiveTime {
     type Error = eyre::Report;
     fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+        if let Some(array) = value
+            .as_any()
+            .downcast_ref::<arrow::array::Time32SecondArray>()
+        {
+            if check_single_datetime(array) {
+                eyre::bail!("Not a valid array");
+            }
+            return array
+                .value_as_time(0)
+                .context("data type cannot be converted to NaiveDate");
+        }
+        if let Some(array) = value
+            .as_any()
+            .downcast_ref::<arrow::array::Time32MillisecondArray>()
+        {
+            if check_single_datetime(array) {
+                eyre::bail!("Not a valid array");
+            }
+            return array
+                .value_as_time(0)
+                .context("data type cannot be converted to NaiveDate");
+        }
+        if let Some(array) = value
+            .as_any()
+            .downcast_ref::<arrow::array::Time64MicrosecondArray>()
+        {
+            if check_single_datetime(array) {
+                eyre::bail!("Not a valid array");
+            }
+            return array
+                .value_as_time(0)
+                .context("data type cannot be converted to NaiveDate");
+        }
         let array = value
             .as_primitive_opt::<arrow::datatypes::Time64NanosecondType>()
-            .context("not a primitive Time64NanosecondType array")?;
-        if array.is_empty() {
-            eyre::bail!("empty array");
+            .context("not any of the primitive Time arrays")?;
+        if check_single_datetime(array) {
+            eyre::bail!("Not a vaild array");
         }
-        if array.len() != 1 {
-            eyre::bail!("expected length 1");
-        }
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array
+        array
             .value_as_time(0)
-            .context("data type cannot be converted to NaiveTime")?)
+            .context("data type cannot be converted to NaiveTime")
     }
 }
 
+fn check_single_datetime<T>(array: &PrimitiveArray<T>) -> bool
+where
+    T: ArrowTemporalType,
+{
+    array.is_empty() || array.len() != 1 || array.null_count() != 0
+}
 fn extract_single_primitive<T>(array: &PrimitiveArray<T>) -> Result<T::Native, eyre::Error>
 where
     T: ArrowPrimitiveType,
