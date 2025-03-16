@@ -58,7 +58,6 @@ Configure the node in your dataflow YAML file:
 The node includes several memory optimization features:
 - 8-bit quantization for CUDA devices
 - Automatic CUDA cache clearing
-- Dynamic CPU fallback on OOM errors
 - Memory-efficient model loading
 - Half-precision support
 
