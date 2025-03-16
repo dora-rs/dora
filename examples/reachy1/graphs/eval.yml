@@ -75,6 +75,6 @@ nodes:
 
 - [ ] Add support for EoF action space recording and action
 - [ ] Add support for tokenized action
-- [ ] Add support for mulitple images, videos, ...
+- [ ] Add support for multiple images, videos, ...
 - [ ] Add support for multiple actions
 - [ ] Add support for multiple observations

@@ -10,7 +10,7 @@ the Dora pipeline to manipulate arms, cameras, and record/replay episodes with L
   However, it has no knowledge about the kinematics of the robot, so be careful about collisions.
   The robot _will_ collapse if motors are torque off i.e. there is no automatically engaged brakes in joints.
 - Open Dynamixel wizard, go into `options` and select:
-    - Protocal 2.0
+    - Protocol 2.0
     - All ports
     - 1000000 bps
     - ID range from 0-10

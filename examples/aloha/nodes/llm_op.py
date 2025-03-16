@@ -14,7 +14,7 @@ MODEL_NAME_OR_PATH = "TheBloke/deepseek-coder-6.7B-instruct-GPTQ"
 
 CODE_MODIFIER_TEMPLATE = """
 ### Instruction
-Respond with one block of modified code only in ```python block. No explaination.
+Respond with one block of modified code only in ```python block. No explanation.
 
 ```python
 {code}
