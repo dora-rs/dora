@@ -127,8 +127,8 @@ nodes:
 ### Running the Example
 
 ```bash
-dora build example.yml
-dora run example.yml
+dora build test.yml
+dora run test.yml
 ```
 
 ### Troubleshooting
