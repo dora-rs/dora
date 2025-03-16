@@ -7,7 +7,6 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
 
-
 dependencies = [
 "dora-rs == 0.3.5",
 "numpy <=  2.0.0",
@@ -23,3 +22,9 @@ feetech-client = "feetech_client.main:main"
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+  "UP"
+]

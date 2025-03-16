@@ -1,5 +1,5 @@
-"""
-Replay Client: This node is used to represent a leader robot and send a sequence of goals to the dataflow,
+"""Replay Client: This node is used to represent a leader robot and send a sequence of goals to the dataflow,.
+
 reading a dataset of actions and joints from a specific episode.
 """
 
@@ -13,6 +13,7 @@ from dora import Node
 
 
 def joints_values_to_arrow(joints, values):
+    """TODO: Add docstring."""
     return pa.StructArray.from_arrays(
         arrays=[joints, values],
         names=["joints", "values"],
@@ -23,8 +24,10 @@ def joints_values_to_arrow(joints, values):
 
 
 class Client:
+    """TODO: Add docstring."""
 
     def __init__(self, config: dict[str, any]):
+        """TODO: Add docstring."""
         self.config = config
 
         self.node = Node(config["name"])
@@ -39,6 +42,7 @@ class Client:
         self.frame = 0
 
     def run(self):
+        """TODO: Add docstring."""
         for event in self.node:
             event_type = event["type"]
 
@@ -57,6 +61,7 @@ class Client:
         self.node.send_output("end", pa.array([]))
 
     def pull_position(self, node, metadata) -> bool:
+        """TODO: Add docstring."""
         if self.frame >= len(self.action):
             return True
 
@@ -71,7 +76,7 @@ class Client:
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow
+    """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
         description="Replay Client: This node is used to replay a sequence of goals for a followee robot."
     )

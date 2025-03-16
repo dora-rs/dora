@@ -1,7 +1,4 @@
-"""
-Mujoco Client: This node is used to represent simulated robot, it can be used to read virtual positions,
-or can be controlled
-"""
+"""Mujoco Client: This node is used to represent simulated robot, it can be used to read virtual positions, or can be controlled."""
 
 import os
 import argparse
@@ -17,8 +14,10 @@ import mujoco.viewer
 
 
 class Client:
+    """TODO: Add docstring."""
 
     def __init__(self, config: dict[str, any]):
+        """TODO: Add docstring."""
         self.config = config
 
         self.m = mujoco.MjModel.from_xml_path(filename=config["scene"])
@@ -27,6 +26,7 @@ class Client:
         self.node = Node(config["name"])
 
     def run(self):
+        """TODO: Add docstring."""
         with mujoco.viewer.launch_passive(self.m, self.data) as viewer:
             for event in self.node:
                 event_type = event["type"]
@@ -72,15 +72,19 @@ class Client:
             self.node.send_output("end", pa.array([]))
 
     def pull_position(self, node, metadata):
+        """TODO: Add docstring."""
         pass
 
     def pull_velocity(self, node, metadata):
+        """TODO: Add docstring."""
         pass
 
     def pull_current(self, node, metadata):
+        """TODO: Add docstring."""
         pass
 
     def write_goal_position(self, goal_position_with_joints):
+        """TODO: Add docstring."""
         joints = goal_position_with_joints.field("joints")
         goal_position = goal_position_with_joints.field("values")
 
@@ -89,7 +93,7 @@ class Client:
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow
+    """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
         description="MujoCo Client: This node is used to represent a MuJoCo simulation. It can be used instead of a "
         "follower arm to test the dataflow."
