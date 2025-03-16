@@ -1,5 +1,5 @@
 [project]
-name = "dora-transformer"
+name = "dora-transformers"
 version = "1.0.0"
 authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
 description = "dora-transformer"
