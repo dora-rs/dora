@@ -1,4 +1,6 @@
-"""Dynamixel Client: This node is used to represent a chain of dynamixel motors. It can be used to read positions,
+"""Dynamixel Client node for motor chain control.
+
+This node is used to represent a chain of dynamixel motors. It can be used to read positions,
 velocities, currents, and set goal positions and currents.
 """
 

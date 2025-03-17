@@ -1,4 +1,6 @@
-"""Feetech Client: This node is used to represent a chain of feetech motors. It can be used to read positions,
+"""Feetech Client node for motor chain control.
+
+This node is used to represent a chain of feetech motors. It can be used to read positions,
 velocities, currents, and set goal positions and currents.
 """
 

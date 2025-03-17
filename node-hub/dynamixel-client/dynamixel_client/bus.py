@@ -25,12 +25,12 @@ def wrap_joints_and_values(
     joints: Union[list[str], pa.Array],
     values: Union[int, list[int], pa.Array],
 ) -> pa.StructArray:
-    """Wraps joints and their corresponding values into a structured array.
+    """Wrap joints and their corresponding values into a structured array.
 
     :param joints: A list, numpy array, or pyarrow array of joint names.
     :type joints: Union[list[str], np.array, pa.Array]
     :param values: A single integer value, or a list, numpy array, or pyarrow array of integer values.
-                   If a single integer is provided, it will be broadcasted to all joints.
+                 If a single integer is provided, it will be broadcasted to all joints.
     :type values: Union[int, list[int], np.array, pa.Array]
 
     :return: A structured array with two fields:

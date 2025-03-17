@@ -103,10 +103,12 @@ class FeetechBus:
     """TODO: Add docstring."""
 
     def __init__(self, port: str, description: dict[str, (np.uint8, str)]):
-        """Args:
-        port: the serial port to connect to the Feetech bus
-        description: a dictionary containing the description of the motors connected to the bus. The keys are the
-        motor names and the values are tuples containing the motor id and the motor model.
+        """Initialize a Feetech bus connection.
+
+        Args:
+            port: the serial port to connect to the Feetech bus
+            description: a dictionary containing the description of the motors connected to the bus. The keys are the
+            motor names and the values are tuples containing the motor id and the motor model.
 
         """
         self.port = port
