@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import enum
 from typing import Union
 
@@ -74,11 +76,15 @@ def wrap_joints_and_values(
 
 
 class TorqueMode(enum.Enum):
+    """TODO: Add docstring."""
+
     ENABLED = pa.scalar(1, pa.uint32())
     DISABLED = pa.scalar(0, pa.uint32())
 
 
 class OperatingMode(enum.Enum):
+    """TODO: Add docstring."""
+
     VELOCITY = pa.scalar(1, pa.uint32())
     POSITION = pa.scalar(3, pa.uint32())
     EXTENDED_POSITION = pa.scalar(4, pa.uint32())
@@ -190,6 +196,7 @@ class DynamixelBus:
         self.port_handler.closePort()
 
     def write(self, data_name: str, data: pa.StructArray):
+        """TODO: Add docstring."""
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"]
             for motor_name in data.field("joints")
@@ -258,6 +265,7 @@ class DynamixelBus:
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"] for motor_name in motor_names
         ]
@@ -301,31 +309,41 @@ class DynamixelBus:
         return wrap_joints_and_values(motor_names, values)
 
     def write_torque_enable(self, torque_mode: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Torque_Enable", torque_mode)
 
     def write_operating_mode(self, operating_mode: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Operating_Mode", operating_mode)
 
     def read_position(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         return self.read("Present_Position", motor_names)
 
     def read_velocity(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         return self.read("Present_Velocity", motor_names)
 
     def read_current(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         return self.read("Present_Current", motor_names)
 
     def write_goal_position(self, goal_position: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Goal_Position", goal_position)
 
     def write_goal_current(self, goal_current: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Goal_Current", goal_current)
 
     def write_position_p_gain(self, position_p_gain: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Position_P_Gain", position_p_gain)
 
     def write_position_i_gain(self, position_i_gain: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Position_I_Gain", position_i_gain)
 
     def write_position_d_gain(self, position_d_gain: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Position_D_Gain", position_d_gain)

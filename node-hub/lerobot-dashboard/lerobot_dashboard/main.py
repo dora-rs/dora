@@ -10,6 +10,7 @@ from dora import Node
 
 
 def main():
+    """TODO: Add docstring."""
     # Handle dynamic nodes, ask for the name of the node in the dataflow
     parser = argparse.ArgumentParser(
         description="LeRobot Record: This node is used to record episodes of a robot interacting with the environment.",

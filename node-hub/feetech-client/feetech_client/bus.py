@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import enum
 from typing import Union
 

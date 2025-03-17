@@ -1,8 +1,10 @@
+"""TODO: Add docstring."""
+
 # import pytest
 
 
 def test_pass():
-    pass
+    """TODO: Add docstring."""
 
 
 # def test_import_main():

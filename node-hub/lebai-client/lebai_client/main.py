@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import json
 import os
 import time
@@ -33,6 +35,7 @@ ROBOT_IP = os.getenv(
 
 
 def main():
+    """TODO: Add docstring."""
     # Load the JSON file
     pose_library = load_json_file(SAVED_POSE_PATH)
     lebai = lebai_sdk.connect(ROBOT_IP, False)  # 创建实例

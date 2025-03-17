@@ -13,8 +13,10 @@ from .bus import FeetechBus, TorqueMode, wrap_joints_and_values
 
 
 class Client:
+    """TODO: Add docstring."""
 
     def __init__(self, config: dict[str, any]):
+        """TODO: Add docstring."""
         self.config = config
 
         description = {}
@@ -32,6 +34,7 @@ class Client:
         self.node = Node(config["name"])
 
     def run(self):
+        """TODO: Add docstring."""
         for event in self.node:
             event_type = event["type"]
 
@@ -53,6 +56,7 @@ class Client:
                 raise ValueError("An error occurred in the dataflow: " + event["error"])
 
     def close(self):
+        """TODO: Add docstring."""
         self.bus.write_torque_enable(
             wrap_joints_and_values(
                 self.config["joints"],
@@ -61,6 +65,7 @@ class Client:
         )
 
     def pull_position(self, node, metadata):
+        """TODO: Add docstring."""
         try:
             node.send_output(
                 "position",
@@ -72,6 +77,7 @@ class Client:
             print("Error reading position:", e)
 
     def pull_velocity(self, node, metadata):
+        """TODO: Add docstring."""
         try:
             node.send_output(
                 "velocity",
@@ -82,6 +88,7 @@ class Client:
             print("Error reading velocity:", e)
 
     def pull_current(self, node, metadata):
+        """TODO: Add docstring."""
         try:
             node.send_output(
                 "current",
@@ -92,6 +99,7 @@ class Client:
             print("Error reading current:", e)
 
     def write_goal_position(self, goal_position: pa.StructArray):
+        """TODO: Add docstring."""
         try:
             self.bus.write_goal_position(goal_position)
         except ConnectionError as e:
@@ -99,6 +107,7 @@ class Client:
 
 
 def main():
+    """TODO: Add docstring."""
     # Handle dynamic nodes, ask for the name of the node in the dataflow
     parser = argparse.ArgumentParser(
         description="Feetech Client: This node is used to represent a chain of feetech motors. "
