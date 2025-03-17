@@ -60,6 +60,7 @@ ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split
 
 
 def main():
+    """TODO: Add docstring."""
     # Initialize model
     model = get_model()
     node = Node()
