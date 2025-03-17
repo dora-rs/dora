@@ -25,5 +25,6 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
-  "UP"
+  "UP",  # Ruff's UP rule
+  "PERF" # Ruff's PERF rule
 ]
