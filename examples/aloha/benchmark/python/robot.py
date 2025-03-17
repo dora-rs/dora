@@ -1,16 +1,17 @@
-import numpy as np
-from dynamixel import Dynamixel, OperatingMode, ReadAttribute
 import time
-from dynamixel_sdk import (
-    GroupSyncRead,
-    GroupSyncWrite,
-    DXL_LOBYTE,
-    DXL_HIBYTE,
-    DXL_LOWORD,
-    DXL_HIWORD,
-)
 from enum import Enum, auto
 from typing import Union
+
+import numpy as np
+from dynamixel import OperatingMode, ReadAttribute
+from dynamixel_sdk import (
+    DXL_HIBYTE,
+    DXL_HIWORD,
+    DXL_LOBYTE,
+    DXL_LOWORD,
+    GroupSyncRead,
+    GroupSyncWrite,
+)
 
 
 class MotorControlType(Enum):
@@ -65,8 +66,7 @@ class Robot:
         self.motor_control_state = MotorControlType.DISABLED
 
     def read_position(self, tries=2):
-        """
-        Reads the joint positions of the robot. 2048 is the center position. 0 and 4096 are 180 degrees in each direction.
+        """Reads the joint positions of the robot. 2048 is the center position. 0 and 4096 are 180 degrees in each direction.
         :param tries: maximum number of tries to read the position
         :return: list of joint positions in range [0, 4096]
         """
@@ -74,8 +74,7 @@ class Robot:
         if result != 0:
             if tries > 0:
                 return self.read_position(tries=tries - 1)
-            else:
-                print(f"failed to read position!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print("failed to read position!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         positions = []
         for id in self.servo_ids:
             position = self.position_reader.getData(id, ReadAttribute.POSITION.value, 4)
@@ -85,8 +84,7 @@ class Robot:
         return positions
 
     def read_velocity(self):
-        """
-        Reads the joint velocities of the robot.
+        """Reads the joint velocities of the robot.
         :return: list of joint velocities,
         """
         self.velocity_reader.txRxPacket()
@@ -99,11 +97,9 @@ class Robot:
         return velocties
 
     def set_goal_pos(self, action):
+        """:param action: list or numpy array of target joint positions in range [0, 4096]
         """
-
-        :param action: list or numpy array of target joint positions in range [0, 4096]
-        """
-        if not self.motor_control_state is MotorControlType.POSITION_CONTROL:
+        if self.motor_control_state is not MotorControlType.POSITION_CONTROL:
             self._set_position_control()
         for i, motor_id in enumerate(self.servo_ids):
             data_write = [
@@ -117,11 +113,10 @@ class Robot:
         self.pos_writer.txPacket()
 
     def set_pwm(self, action):
-        """
-        Sets the pwm values for the servos.
+        """Sets the pwm values for the servos.
         :param action: list or numpy array of pwm values in range [0, 885]
         """
-        if not self.motor_control_state is MotorControlType.PWM:
+        if self.motor_control_state is not MotorControlType.PWM:
             self._set_pwm_control()
         for i, motor_id in enumerate(self.servo_ids):
             data_write = [
@@ -133,15 +128,13 @@ class Robot:
         self.pwm_writer.txPacket()
 
     def set_trigger_torque(self):
-        """
-        Sets a constant torque torque for the last servo in the chain. This is useful for the trigger of the leader arm
+        """Sets a constant torque torque for the last servo in the chain. This is useful for the trigger of the leader arm
         """
         self.dynamixel._enable_torque(self.servo_ids[-1])
         self.dynamixel.set_pwm_value(self.servo_ids[-1], 200)
 
     def limit_pwm(self, limit: Union[int, list, np.ndarray]):
-        """
-        Limits the pwm values for the servos in for position control
+        """Limits the pwm values for the servos in for position control
         @param limit: 0 ~ 885
         @return:
         """

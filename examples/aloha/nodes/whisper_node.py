@@ -1,14 +1,10 @@
-import pyarrow as pa
-import whisper
-from pynput import keyboard
-from pynput.keyboard import Key, Events
-from dora import Node
-
-import torch
 import numpy as np
 import pyarrow as pa
 import sounddevice as sd
-import gc  # garbage collect library
+import whisper
+from dora import Node
+from pynput import keyboard
+from pynput.keyboard import Events, Key
 
 model = whisper.load_model("base")
 
@@ -48,7 +44,7 @@ with keyboard.Events() as events:
                 if event.key == Key.alt_r:
                     result = get_text(5)
                     node.send_output(
-                        "text_llm", pa.array([result["text"]]), dora_event["metadata"]
+                        "text_llm", pa.array([result["text"]]), dora_event["metadata"],
                     )
                 elif event.key == Key.ctrl_r:
                     result = get_text(3)

@@ -1,11 +1,11 @@
-from robot import Robot
 from dynamixel import Dynamixel
+from robot import Robot
 
 leader_dynamixel = Dynamixel.Config(
-    baudrate=1_000_000, device_name="/dev/ttyDXL_master_right"
+    baudrate=1_000_000, device_name="/dev/ttyDXL_master_right",
 ).instantiate()
 follower_dynamixel = Dynamixel.Config(
-    baudrate=1_000_000, device_name="/dev/ttyDXL_puppet_right"
+    baudrate=1_000_000, device_name="/dev/ttyDXL_puppet_right",
 ).instantiate()
 follower = Robot(follower_dynamixel, servo_ids=[1, 2, 3, 4, 5, 6, 7, 8])
 leader = Robot(leader_dynamixel, servo_ids=[1, 2, 3, 4, 5, 6, 7, 8])

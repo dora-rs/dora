@@ -1,5 +1,5 @@
-from dora import Node
 import pyarrow as pa
+from dora import Node
 
 node = Node()
 

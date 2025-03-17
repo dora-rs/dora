@@ -1,7 +1,7 @@
 import os
+
 import cv2
 from dora import Node
-
 
 IMAGE_WIDTH = int(os.getenv("IMAGE_WIDTH", "1280"))
 IMAGE_HEIGHT = int(os.getenv("IMAGE_HEIGHT", "720"))

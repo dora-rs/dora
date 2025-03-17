@@ -1,12 +1,12 @@
-import gymnasium as gym
-
-import gym_dora  # noqa: F401
-import pandas as pd
 import time
 from pathlib import Path
 
+import gym_dora  # noqa: F401
+import gymnasium as gym
+import pandas as pd
+
 env = gym.make(
-    "gym_dora/DoraAloha-v0", disable_env_checker=True, max_episode_steps=10000
+    "gym_dora/DoraAloha-v0", disable_env_checker=True, max_episode_steps=10000,
 )
 observation = env.reset()
 
@@ -49,8 +49,8 @@ class ReplayPolicy:
 
 policy = ReplayPolicy(
     Path(
-        "/home/rcadene/dora-aloha/aloha/graphs/out/018fa4ad-5942-7235-93d3-3efebe9b8a12"
-    )
+        "/home/rcadene/dora-aloha/aloha/graphs/out/018fa4ad-5942-7235-93d3-3efebe9b8a12",
+    ),
 )
 
 

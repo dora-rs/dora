@@ -4,7 +4,6 @@
 
 def test_pass():
     """TODO: Add docstring."""
-    pass
 
 
 # def test_import_main():

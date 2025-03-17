@@ -1,8 +1,8 @@
-from dora import Node
-import pandas as pd
-import pyarrow as pa
 import time
 
+import pandas as pd
+import pyarrow as pa
+from dora import Node
 
 TOPIC = "puppet_goal_position"
 

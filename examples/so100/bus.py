@@ -1,17 +1,18 @@
 import enum
-
-import pyarrow as pa
-
 from typing import Union
 
+import pyarrow as pa
 from scservo_sdk import (
-    PacketHandler,
-    PortHandler,
     COMM_SUCCESS,
+    SCS_HIBYTE,
+    SCS_HIWORD,
+    SCS_LOBYTE,
+    SCS_LOWORD,
     GroupSyncRead,
     GroupSyncWrite,
+    PacketHandler,
+    PortHandler,
 )
-from scservo_sdk import SCS_HIBYTE, SCS_HIWORD, SCS_LOBYTE, SCS_LOWORD
 
 PROTOCOL_VERSION = 0
 BAUD_RATE = 1_000_000
@@ -93,13 +94,12 @@ MODEL_CONTROL_TABLE = {
 class FeetechBus:
 
     def __init__(self, port: str, description: dict[str, (np.uint8, str)]):
-        """
-        Args:
-            port: the serial port to connect to the Feetech bus
-            description: a dictionary containing the description of the motors connected to the bus. The keys are the
-            motor names and the values are tuples containing the motor id and the motor model.
-        """
+        """Args:
+        port: the serial port to connect to the Feetech bus
+        description: a dictionary containing the description of the motors connected to the bus. The keys are the
+        motor names and the values are tuples containing the motor id and the motor model.
 
+        """
         self.port = port
         self.descriptions = description
         self.motor_ctrl = {}
@@ -183,7 +183,7 @@ class FeetechBus:
             else:
                 raise NotImplementedError(
                     f"Value of the number of bytes to be sent is expected to be in [1, 2, 4], but {packet_bytes_size} "
-                    f"is provided instead."
+                    f"is provided instead.",
                 )
 
             if init_group:
@@ -195,7 +195,7 @@ class FeetechBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Write failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
@@ -225,13 +225,13 @@ class FeetechBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Read failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
         values = pa.array(
             [
                 self.group_readers[group_key].getData(
-                    idx, packet_address, packet_bytes_size
+                    idx, packet_address, packet_bytes_size,
                 )
                 for idx in motor_ids
             ],

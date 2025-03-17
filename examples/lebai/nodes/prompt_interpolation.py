@@ -1,5 +1,5 @@
-from dora import Node
 import pyarrow as pa
+from dora import Node
 
 node = Node()
 
@@ -15,7 +15,7 @@ for event in node:
                     pa.array(
                         [
                             "Respond with left, right, forward, back, up, down or go home in order for the robotic arm to "
-                            + text
-                        ]
+                            + text,
+                        ],
                     ),
                 )

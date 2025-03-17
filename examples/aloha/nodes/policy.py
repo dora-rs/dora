@@ -1,4 +1,3 @@
-import pyarrow as pa
 from dora import DoraStatus
 
 

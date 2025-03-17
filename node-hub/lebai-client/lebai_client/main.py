@@ -1,10 +1,11 @@
 """TODO: Add docstring."""
-import lebai_sdk
-import numpy as np
-from dora import Node
 import json
 import os
 import time
+
+import lebai_sdk
+import numpy as np
+from dora import Node
 
 
 def load_json_file(file_path):
@@ -28,7 +29,7 @@ SAVED_POSE_PATH = "pose_library.json"
 
 lebai_sdk.init()
 ROBOT_IP = os.getenv(
-    "LEBAI_IP", "10.42.0.253"
+    "LEBAI_IP", "10.42.0.253",
 )  # 设定机器人ip地址，需要根据机器人实际ip地址修改
 
 
@@ -180,7 +181,7 @@ def main():
                         "duration": time.time() - start_time,
                         "joint_position": joint_position,
                         "t": t * 2 if t == 0.1 else t,
-                    }
+                    },
                 ]
                 start_time = time.time()
 
