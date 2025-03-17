@@ -84,7 +84,7 @@ def main():
 
     durations = []
     speed = []
-    for i in range(50):
+    for _ in range(50):
         start_time = time.time()
         node.send_output("data", data)
         event = node.next()
@@ -117,15 +117,15 @@ def main():
         [
             "path",
             "date",
-            "average_duration",
-            "max_duration",
-            "min_duration",
-            "median_duration",
-            "median_frequency",
-            "average_speed",
-            "max_speed",
-            "min_speed",
-            "median_speed",
+            "average_duration(s)",
+            "max_duration(s)",
+            "min_duration(s)",
+            "median_duration(s)",
+            "median_frequency(Hz)",
+            "average_speed(tok/s)",
+            "max_speed(tok/s)",
+            "min_speed(tok/s)",
+            "median_speed(tok/s)",
             "total_tokens",
         ],
         [

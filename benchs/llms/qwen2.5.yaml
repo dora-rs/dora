@@ -1,6 +1,6 @@
 nodes:
-  - id: pyarrow-sender
-    path: benchs.py
+  - id: benchmark_script
+    path: benchmark_script.py
     inputs:
       text: llm/text
     outputs:
@@ -14,8 +14,6 @@ nodes:
       pip install -e ../../node-hub/dora-qwen
     path: dora-qwen
     inputs:
-      text:
-        source: pyarrow-sender/data
-        queue-size: 10
+      text: benchmark_script/data
     outputs:
       - text
