@@ -1,3 +1,9 @@
+"""Module for speech recognition using Whisper.
+
+This module provides functionality for capturing audio input and converting
+it to text using the Whisper speech recognition model.
+"""
+
 import numpy as np
 import pyarrow as pa
 import sounddevice as sd
@@ -14,7 +20,15 @@ node = Node()
 
 
 def get_text(duration) -> str:
+    """Capture audio and convert it to text using Whisper.
 
+    Args:
+        duration: Duration of audio to capture in seconds
+
+    Returns:
+        str: Transcribed text from the audio input
+
+    """
     ## Microphone
     audio_data = sd.rec(
         int(SAMPLE_RATE * duration),

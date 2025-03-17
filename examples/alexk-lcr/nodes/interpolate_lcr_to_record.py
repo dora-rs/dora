@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse
 import json
 import os
@@ -13,6 +15,7 @@ from pwm_position_control.transform import (
 
 
 def main():
+    """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
         description="Interpolation LCR Node: This Dora node is used to calculates appropriate goal positions for the "
         "LCR followers knowing a Leader position and Follower position.",

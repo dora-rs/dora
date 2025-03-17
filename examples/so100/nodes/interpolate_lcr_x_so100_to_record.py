@@ -1,3 +1,9 @@
+"""Module for recording and interpolating between LCR and SO100 configurations.
+
+This module provides functionality for recording robot configurations and
+interpolating between LCR and SO100 robots to create smooth motion sequences.
+"""
+
 import argparse
 import json
 import os
@@ -13,7 +19,7 @@ from pwm_position_control.transform import (
 
 
 def main():
-    """Main function to handle interpolation and recording between LCR and SO100 robot configurations."""
+    """Handle interpolation and recording between LCR and SO100 configurations."""
     parser = argparse.ArgumentParser(
         description="Interpolation LCR Node: This Dora node is used to calculates appropriate goal positions for the "
         "LCR followers knowing a Leader position and Follower position.",

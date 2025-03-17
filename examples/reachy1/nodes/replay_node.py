@@ -1,3 +1,9 @@
+"""Module for replaying recorded robot actions and movements.
+
+This module provides functionality for loading and replaying previously recorded
+robot actions and movements, allowing for demonstration and analysis of robot behavior.
+"""
+
 import time
 
 import pyarrow as pa

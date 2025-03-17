@@ -1,3 +1,9 @@
+"""Module for handling keyboard input events in robot control.
+
+This module provides functionality for capturing and processing keyboard input
+events to control robot movements and actions.
+"""
+
 import pyarrow as pa
 from dora import Node
 from pynput import keyboard

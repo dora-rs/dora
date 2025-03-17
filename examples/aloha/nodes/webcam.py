@@ -1,3 +1,9 @@
+"""Module for handling webcam input and processing.
+
+This module provides functionality for capturing and processing video input
+from webcam devices for robot vision applications.
+"""
+
 #!/usr/bin/env python3
 
 import os

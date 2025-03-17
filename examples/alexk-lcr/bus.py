@@ -58,6 +58,7 @@ def wrap_joints_and_values(
         struct_array = wrap_joints_and_values(joints, value)
 
         This example broadcasts the single integer value to all joints and wraps them into a structured array.
+
     """
     if isinstance(values, int):
         values = [values] * len(joints)
@@ -171,6 +172,7 @@ class DynamixelBus:
             description: A dictionary containing the description of the motors connected to the bus.
                        The keys are the motor names and the values are tuples containing the motor id
                        and the motor model.
+
         """
         self.port = port
         self.descriptions = description
@@ -211,6 +213,7 @@ class DynamixelBus:
         Args:
             data_name: Name of the parameter to write.
             data: Structured array containing the data to write.
+
         """
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"]
@@ -288,6 +291,7 @@ class DynamixelBus:
 
         Returns:
             Structured array containing the read data.
+
         """
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"] for motor_name in motor_names
@@ -336,6 +340,7 @@ class DynamixelBus:
 
         Args:
             torque_mode: Structured array containing the torque mode for each servo.
+
         """
         self.write("Torque_Enable", torque_mode)
 
@@ -344,6 +349,7 @@ class DynamixelBus:
 
         Args:
             operating_mode: Structured array containing the operating mode for each servo.
+
         """
         self.write("Operating_Mode", operating_mode)
 
@@ -355,6 +361,7 @@ class DynamixelBus:
 
         Returns:
             Structured array containing the current positions.
+
         """
         return self.read("Present_Position", motor_names)
 
@@ -366,6 +373,7 @@ class DynamixelBus:
 
         Returns:
             Structured array containing the current velocities.
+
         """
         return self.read("Present_Velocity", motor_names)
 
@@ -377,6 +385,7 @@ class DynamixelBus:
 
         Returns:
             Structured array containing the current currents.
+
         """
         return self.read("Present_Current", motor_names)
 
@@ -385,6 +394,7 @@ class DynamixelBus:
 
         Args:
             goal_position: Structured array containing the goal positions.
+
         """
         self.write("Goal_Position", goal_position)
 
@@ -393,6 +403,7 @@ class DynamixelBus:
 
         Args:
             goal_current: Structured array containing the goal currents.
+
         """
         self.write("Goal_Current", goal_current)
 
@@ -401,6 +412,7 @@ class DynamixelBus:
 
         Args:
             position_p_gain: Structured array containing the position P gains.
+
         """
         self.write("Position_P_Gain", position_p_gain)
 
@@ -409,6 +421,7 @@ class DynamixelBus:
 
         Args:
             position_i_gain: Structured array containing the position I gains.
+
         """
         self.write("Position_I_Gain", position_i_gain)
 
@@ -417,5 +430,6 @@ class DynamixelBus:
 
         Args:
             position_d_gain: Structured array containing the position D gains.
+
         """
         self.write("Position_D_Gain", position_d_gain)

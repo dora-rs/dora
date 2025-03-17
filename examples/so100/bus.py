@@ -1,3 +1,9 @@
+"""Module for managing Feetech servo motor communication.
+
+This module provides functionality for communicating with and controlling
+Feetech servo motors through a serial bus interface.
+"""
+
 import enum
 from typing import Union
 
@@ -23,6 +29,16 @@ def wrap_joints_and_values(
     joints: Union[list[str], pa.Array],
     values: Union[list[int], pa.Array],
 ) -> pa.StructArray:
+    """Create a structured array from joint names and their values.
+
+    Args:
+        joints: List of joint names or Arrow array of joint names
+        values: List of values or Arrow array of values
+
+    Returns:
+        pa.StructArray: Structured array containing joint names and values
+
+    """
     return pa.StructArray.from_arrays(
         arrays=[joints, values],
         names=["joints", "values"],
@@ -30,11 +46,15 @@ def wrap_joints_and_values(
 
 
 class TorqueMode(enum.Enum):
+    """Enumeration of torque control modes for servo motors."""
+
     ENABLED = pa.scalar(1, pa.uint32())
     DISABLED = pa.scalar(0, pa.uint32())
 
 
 class OperatingMode(enum.Enum):
+    """Enumeration of operating modes for servo motors."""
+
     ONE_TURN = pa.scalar(0, pa.uint32())
 
 
@@ -92,12 +112,21 @@ MODEL_CONTROL_TABLE = {
 
 
 class FeetechBus:
+    """A class for managing communication with Feetech servo motors.
+    
+    This class handles the low-level communication with Feetech servo motors
+    through a serial bus interface, providing methods for reading and writing
+    motor parameters.
+    """
 
     def __init__(self, port: str, description: dict[str, (np.uint8, str)]):
-        """Args:
-        port: the serial port to connect to the Feetech bus
-        description: a dictionary containing the description of the motors connected to the bus. The keys are the
-        motor names and the values are tuples containing the motor id and the motor model.
+        """Initialize the Feetech bus interface.
+
+        Args:
+            port: The serial port to connect to the Feetech bus
+            description: A dictionary containing the description of the motors
+                        connected to the bus. The keys are the motor names and
+                        the values are tuples containing the motor id and model.
 
         """
         self.port = port
@@ -130,9 +159,17 @@ class FeetechBus:
         self.group_writers = {}
 
     def close(self):
+        """Close the serial port connection."""
         self.port_handler.closePort()
 
     def write(self, data_name: str, data: pa.StructArray):
+        """Write data to the specified motor parameters.
+
+        Args:
+            data_name: Name of the parameter to write
+            data: Structured array containing the data to write
+
+        """
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"]
             for motor_name in data.field("joints")
@@ -199,6 +236,16 @@ class FeetechBus:
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
+        """Read data from the specified motor parameters.
+
+        Args:
+            data_name: Name of the parameter to read
+            motor_names: Array of motor names to read from
+
+        Returns:
+            pa.StructArray: Structured array containing the read data
+
+        """
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"] for motor_name in motor_names
         ]
@@ -249,25 +296,82 @@ class FeetechBus:
         return wrap_joints_and_values(motor_names, values)
 
     def write_torque_enable(self, torque_mode: pa.StructArray):
+        """Enable or disable torque for the specified motors.
+
+        Args:
+            torque_mode: Structured array containing torque enable/disable values
+
+        """
         self.write("Torque_Enable", torque_mode)
 
     def write_operating_mode(self, operating_mode: pa.StructArray):
+        """Set the operating mode for the specified motors.
+
+        Args:
+            operating_mode: Structured array containing operating mode values
+
+        """
         self.write("Mode", operating_mode)
 
     def read_position(self, motor_names: pa.Array) -> pa.StructArray:
+        """Read current position from the specified motors.
+
+        Args:
+            motor_names: Array of motor names to read positions from
+
+        Returns:
+            pa.StructArray: Structured array containing position values
+
+        """
         return self.read("Present_Position", motor_names)
 
     def read_velocity(self, motor_names: pa.Array) -> pa.StructArray:
+        """Read current velocity from the specified motors.
+
+        Args:
+            motor_names: Array of motor names to read velocities from
+
+        Returns:
+            pa.StructArray: Structured array containing velocity values
+
+        """
         return self.read("Present_Velocity", motor_names)
 
     def read_current(self, motor_names: pa.Array) -> pa.StructArray:
+        """Read current current from the specified motors.
+
+        Args:
+            motor_names: Array of motor names to read currents from
+
+        Returns:
+            pa.StructArray: Structured array containing current values
+
+        """
         return self.read("Present_Current", motor_names)
 
     def write_goal_position(self, goal_position: pa.StructArray):
+        """Set goal positions for the specified motors.
+
+        Args:
+            goal_position: Structured array containing goal position values
+
+        """
         self.write("Goal_Position", goal_position)
 
     def write_max_angle_limit(self, max_angle_limit: pa.StructArray):
+        """Set maximum angle limits for the specified motors.
+
+        Args:
+            max_angle_limit: Structured array containing maximum angle limit values
+
+        """
         self.write("Max_Angle_Limit", max_angle_limit)
 
     def write_min_angle_limit(self, min_angle_limit: pa.StructArray):
+        """Set minimum angle limits for the specified motors.
+
+        Args:
+            min_angle_limit: Structured array containing minimum angle limit values
+
+        """
         self.write("Min_Angle_Limit", min_angle_limit)

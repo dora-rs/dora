@@ -1,3 +1,9 @@
+"""Module for interpolating between keyframe positions.
+
+This module provides functionality for creating smooth transitions between
+keyframe positions in robot motion sequences.
+"""
+
 import pyarrow as pa
 from dora import Node
 

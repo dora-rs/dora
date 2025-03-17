@@ -1,3 +1,9 @@
+"""Module for saving webcam feed data from LeRobot experiments.
+
+This module provides functionality for capturing and saving webcam feed data
+during LeRobot experiments with the Reachy robot.
+"""
+
 #!/usr/bin/env python3
 
 import os

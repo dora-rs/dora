@@ -1,3 +1,9 @@
+"""Module for client-side communication with the Reachy robot.
+
+This module provides functionality for establishing and managing communication
+with the Reachy robot, including sending commands and receiving sensor data.
+"""
+
 import time
 
 # import h5py

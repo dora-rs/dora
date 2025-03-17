@@ -1,3 +1,9 @@
+"""Module for interpolating between replay and SO100 robot configurations.
+
+This module provides functionality for interpolating between recorded robot actions
+and SO100 robot configurations to create smooth motion sequences.
+"""
+
 import argparse
 import json
 import os
@@ -8,7 +14,7 @@ from pwm_position_control.transform import logical_to_pwm_with_offset_arrow
 
 
 def main():
-    """Main function to handle replay interpolation for SO100 robot configurations."""
+    """Handle replay interpolation for SO100 robot configurations."""
     # Handle dynamic nodes, ask for the name of the node in the dataflow
     parser = argparse.ArgumentParser(
         description="Interpolation LCR Node: This Dora node is used to calculates appropriate goal positions for the "

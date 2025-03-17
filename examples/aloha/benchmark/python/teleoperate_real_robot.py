@@ -1,3 +1,9 @@
+"""Module for teleoperating a physical robot.
+
+This module provides functionality for controlling a physical robot through
+teleoperation, allowing real-time control of robot movements and actions.
+"""
+
 from dynamixel import Dynamixel
 from robot import Robot
 
