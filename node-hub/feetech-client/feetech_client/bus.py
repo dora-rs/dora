@@ -33,12 +33,14 @@ def wrap_joints_and_values(
 
 class TorqueMode(enum.Enum):
     """TODO: Add docstring."""
+
     ENABLED = pa.scalar(1, pa.uint32())
     DISABLED = pa.scalar(0, pa.uint32())
 
 
 class OperatingMode(enum.Enum):
     """TODO: Add docstring."""
+
     ONE_TURN = pa.scalar(0, pa.uint32())
 
 
