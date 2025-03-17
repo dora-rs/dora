@@ -490,7 +490,7 @@ def concatenated_path_to_type(
     return path_to_type(*parts)
 
 
-def build_doc_comment(doc: Optional[str]) -> Optional[ast.Expr]:
+def build_doc_comment(doc: [str]) -> Optional[ast.Expr]:
     """TODO: Add docstring."""
     lines = [line.strip() for line in doc.split("\n")]
     clean_lines = []
@@ -498,7 +498,7 @@ def build_doc_comment(doc: Optional[str]) -> Optional[ast.Expr]:
         if line.startswith((":type", ":rtype")):
             continue
         clean_lines.append(line)
-    text = "\n".join(clean_lines).strip()
+    text = "\n".join(clean_lines).strip() 
     return ast.Expr(value=ast.Constant(text)) if text else None
 
 
