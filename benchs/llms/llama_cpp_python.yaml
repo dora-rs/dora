@@ -1,6 +1,6 @@
 nodes:
-  - id: pyarrow-sender
-    path: benchs.py
+  - id: benchmark_script
+    path: benchmark_script.py
     inputs:
       text: llm/text
     outputs:
@@ -13,7 +13,7 @@ nodes:
     path: dora-llama-cpp-python
     inputs:
       text:
-        source: pyarrow-sender/data
+        source: benchmark_script/data
         queue-size: 10
     outputs:
       - text

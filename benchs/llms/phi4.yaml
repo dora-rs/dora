@@ -1,6 +1,6 @@
 nodes:
-  - id: pyarrow-sender
-    path: benchs.py
+  - id: benchmark_script
+    path: benchmark_script.py
     inputs:
       text: llm/text
     outputs:
@@ -14,6 +14,6 @@ nodes:
       pip install -e ../../node-hub/dora-phi4
     path: dora-phi4
     inputs:
-      text: pyarrow-sender/data
+      text: benchmark_script/data
     outputs:
       - text
