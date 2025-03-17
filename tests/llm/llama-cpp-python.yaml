@@ -1,0 +1,33 @@
+nodes:
+  - id: pyarrow-sender
+    build: pip install -e ../../node-hub/pyarrow-sender
+    path: pyarrow-sender
+    outputs:
+      - data
+    env:
+      DATA: "Please only output: This is a test"
+
+  - id: dora-llama-cpp-python
+    build: pip install -e ../../node-hub/dora-llama-cpp-python
+    path: dora-llama-cpp-python
+    inputs:
+      text: pyarrow-sender/data
+    outputs:
+      - text
+    env:
+      MODEL_NAME_OR_PATH: "TheBloke/Llama-2-7B-Chat-GGUF"
+      MODEL_FILE_PATTERN: "*Q4_K_M.gguf"
+      SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
+      ACTIVATION_WORDS: "what how who where you"
+      MAX_TOKENS: "512"
+      N_GPU_LAYERS: "35" # Enable GPU acceleration
+      N_THREADS: "4" # CPU threads
+      CONTEXT_SIZE: "4096" # Maximum context window
+
+  - id: pyarrow-assert
+    build: pip install -e ../../node-hub/pyarrow-assert
+    path: pyarrow-assert
+    inputs:
+      data: dora-llama-cpp-python/text
+    env:
+      DATA: "This is a test"
