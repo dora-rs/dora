@@ -51,24 +51,7 @@ macro_rules! impl_try_from_arrow_data {
                 }
             }
         )*
-    };
-}
 
-impl_try_from_arrow_data!(
-    u8 => UInt8Type,
-    u16 => UInt16Type,
-    u32 => UInt32Type,
-    u64 => UInt64Type,
-    i8 => Int8Type,
-    i16 =>Int16Type,
-    i32 => Int32Type,
-    i64 => Int64Type,
-    f32 => Float32Type,
-    f64 => Float64Type
-);
-
-macro_rules! impl_try_from_arrow_data_for_slice {
-    ($($t:ty => $arrow_type:ident),*) => {
         $(
             impl<'a> TryFrom<&'a ArrowData> for &'a [$t] {
                 type Error = eyre::Report;
@@ -84,24 +67,7 @@ macro_rules! impl_try_from_arrow_data_for_slice {
                 }
             }
         )*
-    };
-}
 
-impl_try_from_arrow_data_for_slice!(
-    u8 => UInt8Type,
-    u16 => UInt16Type,
-    u32 => UInt32Type,
-    u64 => UInt64Type,
-    i8 => Int8Type,
-    i16 =>Int16Type,
-    i32 => Int32Type,
-    i64 => Int64Type,
-    f32 => Float32Type,
-    f64 => Float64Type
-);
-
-macro_rules! impl_try_from_arrow_data_for_vec {
-    ($($t:ty),*) => {
         $(
             impl<'a> TryFrom<&'a ArrowData> for Vec<$t> {
                 type Error = eyre::Report;
@@ -116,7 +82,18 @@ macro_rules! impl_try_from_arrow_data_for_vec {
     };
 }
 
-impl_try_from_arrow_data_for_vec!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_try_from_arrow_data!(
+    u8 => UInt8Type,
+    u16 => UInt16Type,
+    u32 => UInt32Type,
+    u64 => UInt64Type,
+    i8 => Int8Type,
+    i16 =>Int16Type,
+    i32 => Int32Type,
+    i64 => Int64Type,
+    f32 => Float32Type,
+    f64 => Float64Type
+);
 
 impl<'a> TryFrom<&'a ArrowData> for &'a str {
     type Error = eyre::Report;
