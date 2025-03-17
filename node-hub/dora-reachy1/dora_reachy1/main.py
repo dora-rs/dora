@@ -1,6 +1,7 @@
 """TODO: Add docstring."""
 import os
 import time
+
 import numpy as np
 from dora import Node
 from reachy_sdk import ReachySDK
