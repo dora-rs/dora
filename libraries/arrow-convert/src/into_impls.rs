@@ -13,7 +13,7 @@ impl IntoArrow for bool {
     }
 }
 
-macro_rules! impl_into_arrow_for_uint {
+macro_rules! impl_into_arrow {
     ($($t:ty => $arrow_type:ty),*) => {
         $(
             impl IntoArrow for $t {
@@ -23,24 +23,7 @@ macro_rules! impl_into_arrow_for_uint {
                 }
             }
         )*
-    };
-}
 
-impl_into_arrow_for_uint!(
-    u8 => UInt8Type,
-    u16 => UInt16Type,
-    u32 => UInt32Type,
-    u64 => UInt64Type,
-    i8 => Int8Type,
-    i16 => Int16Type,
-    i32 => Int32Type,
-    i64 => Int64Type,
-    f32 => Float32Type,
-    f64 => Float64Type
-);
-
-macro_rules! impl_into_arrow_for_vec {
-    ($($t:ty => $arrow_type:ty),*) => {
         $(
             impl IntoArrow for Vec<$t> {
                 type A = PrimitiveArray<$arrow_type>;
@@ -52,7 +35,7 @@ macro_rules! impl_into_arrow_for_vec {
     };
 }
 
-impl_into_arrow_for_vec!(
+impl_into_arrow!(
     u8 => UInt8Type,
     u16 => UInt16Type,
     u32 => UInt32Type,
