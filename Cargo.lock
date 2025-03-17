@@ -2874,6 +2874,8 @@ name = "dora-node-api-python"
 version = "0.3.10"
 dependencies = [
  "arrow 54.2.1",
+ "dora-daemon",
+ "dora-download",
  "dora-node-api",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
@@ -2884,6 +2886,7 @@ dependencies = [
  "pyo3",
  "pythonize",
  "serde_yaml 0.8.26",
+ "tokio",
 ]
 
 [[package]]

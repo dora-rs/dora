@@ -8,8 +8,8 @@ nodes:
       DATA: "Please only output: This is a test"
 
   - id: dora-qwen2.5
-    build: pip install -e ../../node-hub/dora-qwen2.5
-    path: dora-qwen2-5
+    build: pip install -e ../../node-hub/dora-qwen
+    path: dora-qwen
     inputs:
       text: pyarrow-sender/data
     outputs:
