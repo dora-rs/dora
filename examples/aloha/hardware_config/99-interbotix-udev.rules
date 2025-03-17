@@ -1,0 +1,24 @@
+# Place this file in /etc/udev/rules.d/
+# Then reload udev by typing 'udevadm control --reload-rules && udevadm trigger'
+# Sets up rules to give permanent names to devices
+
+# Allow serial devices to be read by anyone
+KERNEL=="ttyUSB*", MODE:="0666"
+KERNEL=="ttyACM*", MODE:="0666"
+KERNEL=="js*", MODE:="0666"
+KERNEL=="video*", MODE:="0666"
+
+# OpenCM9.04C board
+SUBSYSTEM=="tty", ATTRS{idVendor}=="fff1", ATTRS{idProduct}=="ff48", ENV{ID_MM_DEVICE_IGNORE}="1", SYMLINK+="ttyDXL"
+
+# U2D2 board (also sets latency timer to 1ms for faster communication)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", ENV{ID_MM_DEVICE_IGNORE}="1", ATTR{device/latency_timer}="1", SYMLINK+="ttyDXL"
+
+# RPLidar
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="rplidar"
+
+# Kobuki base
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="kobuki*", ATTR{device/latency_timer}="1", MODE:="0666", GROUP:="dialout", SYMLINK+="kobuki"
+
+# LifeCam Cinema
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="0812", ATTR{index}=="0", SYMLINK+="lifecam"
