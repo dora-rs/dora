@@ -1,7 +1,6 @@
 """TODO: Add docstring."""
 
 import os
-
 import numpy as np
 import pyarrow as pa
 import torch
@@ -106,8 +105,8 @@ def load_image(image_array: np.array, input_size=448, max_num=12):
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     """TODO: Add docstring."""
+    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
     model_path = os.getenv("MODEL", "OpenGVLab/InternVL2-1B")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
