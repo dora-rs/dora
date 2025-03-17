@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import os
 import pyarrow as pa
 from dora import Node
@@ -31,7 +33,6 @@ ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split
 
 def load_model():
     """Load the transformer model and tokenizer."""
-
     logging.info(f"Loading model {MODEL_NAME} on {DEVICE}")
     
     # Memory efficient loading
@@ -94,6 +95,7 @@ def generate_response(model, tokenizer, text: str, history) -> tuple[str, list]:
     return response, history
 
 def main():
+    """TODO: Add docstring."""
     # Initialize model and conversation history
     model, tokenizer = load_model()
     # Initialize history with system prompt
