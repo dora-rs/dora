@@ -1,0 +1,19 @@
+nodes:
+  - id: pyarrow-sender
+    path: benchs.py
+    inputs:
+      text: llm/text
+    outputs:
+      - data
+    env:
+      DATA: "Please only generate the following output: This is a test"
+
+  - id: llm
+    build: |
+      pip install flash-attn --no-build-isolation
+      pip install -e ../../node-hub/dora-phi4
+    path: dora-phi4
+    inputs:
+      text: pyarrow-sender/data
+    outputs:
+      - text
