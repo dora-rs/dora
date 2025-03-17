@@ -1,3 +1,9 @@
+"""Module for interpolating between robot configurations.
+
+This module provides functionality for creating smooth transitions between
+robot configurations and movements.
+"""
+
 from enum import Enum
 
 import pyarrow as pa

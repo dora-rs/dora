@@ -1,3 +1,9 @@
+"""Module for handling vision-related communication with the Reachy robot.
+
+This module provides functionality for processing and managing visual data
+from the Reachy robot's cameras and vision sensors.
+"""
+
 import time
 
 import numpy as np

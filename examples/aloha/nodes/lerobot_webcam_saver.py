@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 #!/usr/bin/env python3
 
 import os

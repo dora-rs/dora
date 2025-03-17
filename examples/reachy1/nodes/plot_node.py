@@ -1,3 +1,9 @@
+"""Module for visualizing robot data and states.
+
+This module provides functionality for creating real-time visualizations of
+robot states, movements, and sensor data during operation.
+"""
+
 import os
 
 import cv2

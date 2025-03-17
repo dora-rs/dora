@@ -1,3 +1,9 @@
+"""Module for interpolating between LCR and simulated LCR configurations.
+
+This module provides functionality for calculating and interpolating between
+physical LCR robot configurations and their simulated counterparts.
+"""
+
 import argparse
 import json
 import os
@@ -15,6 +21,7 @@ from pwm_position_control.transform import (
 
 
 def main():
+    """Initialize and run the LCR to simulated LCR interpolation node."""
     parser = argparse.ArgumentParser(
         description="Interpolation LCR Node: This Dora node is used to calculates appropriate goal positions for the "
         "LCR followers knowing a Leader position and Follower position.",

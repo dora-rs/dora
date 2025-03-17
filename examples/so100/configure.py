@@ -1,4 +1,7 @@
-"""SO100 Auto Configure: This program is used to automatically configure the SO-ARM100 (SO100) for the user.
+"""Module for configuring and setting up the SO100 robot hardware.
+
+This module provides functionality for initializing and configuring the SO100 robot's
+servo motors and other hardware components.
 
 The program will:
 1. Disable all torque motors of provided SO100.
@@ -55,6 +58,7 @@ def configure_servos(bus: FeetechBus):
 
     Args:
         bus: The FeetechBus instance to configure.
+
     """
     bus.write_torque_enable(
         wrap_joints_and_values(FULL_ARM, [TorqueMode.DISABLED.value] * 6),
@@ -74,7 +78,7 @@ def configure_servos(bus: FeetechBus):
 
 
 def main():
-    """Main function to run the servo configuration process."""
+    """Run the servo configuration process."""
     parser = argparse.ArgumentParser(
         description="SO100 Auto Configure: This program is used to automatically configure the Low Cost Robot (SO100) "
         "for the user.",

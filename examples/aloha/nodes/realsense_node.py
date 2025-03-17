@@ -1,3 +1,9 @@
+"""Module for handling Intel RealSense camera data.
+
+This module provides functionality for capturing and processing data from
+Intel RealSense cameras, including depth and color images.
+"""
+
 import os
 
 import cv2

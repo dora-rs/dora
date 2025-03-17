@@ -1,3 +1,9 @@
+"""Module for interpolating between voice commands.
+
+This module provides functionality for processing and interpolating between
+voice commands used for robot control.
+"""
+
 import pyarrow as pa
 from dora import Node
 

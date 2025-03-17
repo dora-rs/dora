@@ -1,3 +1,9 @@
+"""Module for handling keyboard input in the Reachy robot control system.
+
+This module provides functionality for capturing and processing keyboard input
+to control the Reachy robot's movements and actions.
+"""
+
 import pyarrow as pa
 from dora import Node
 from pynput import keyboard

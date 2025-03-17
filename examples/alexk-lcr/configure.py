@@ -1,4 +1,7 @@
-"""LCR Configuration Tool: This program is used to automatically configure the Low Cost Robot (LCR) for the user.
+"""Module for configuring and setting up the Low Cost Robot (LCR) hardware.
+
+This module provides functionality for initializing and configuring the LCR robot's
+servo motors and other hardware components.
 
 The program will:
 1. Disable all torque motors of provided LCR.
@@ -46,10 +49,17 @@ GRIPPER = pa.array(["gripper"], type=pa.string())
 
 
 def pause():
+    """Pause execution and wait for user input to continue."""
     input("Press Enter to continue...")
 
 
 def configure_servos(bus: DynamixelBus):
+    """Configure servo motors with appropriate settings.
+
+    Args:
+        bus: DynamixelBus instance for servo communication
+
+    """
     bus.write_torque_enable(
         wrap_joints_and_values(FULL_ARM, [TorqueMode.DISABLED.value] * 6),
     )
@@ -68,6 +78,7 @@ def configure_servos(bus: DynamixelBus):
 
 
 def main():
+    """Initialize and configure the LCR robot hardware components."""
     parser = argparse.ArgumentParser(
         description="LCR Auto Configure: This program is used to automatically configure the Low Cost Robot (LCR) for "
         "the user.",

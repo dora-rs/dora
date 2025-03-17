@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import argparse
 import json
 import os
@@ -14,7 +16,7 @@ from pwm_position_control.transform import (
 
 
 def main():
-    """Main function to handle interpolation between LCR and SO100 robot configurations."""
+    """Handle interpolation between LCR and SO100 robot configurations."""
     # Handle dynamic nodes, ask for the name of the node in the dataflow
     parser = argparse.ArgumentParser(
         description="Interpolation LCR Node: This Dora node is used to calculates appropriate goal positions for the "

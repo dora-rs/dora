@@ -1,3 +1,9 @@
+"""Module for interpolating between text-based robot commands.
+
+This module provides functionality for processing and interpolating between
+text-based commands to create smooth transitions in robot behavior.
+"""
+
 import pyarrow as pa
 from dora import Node
 

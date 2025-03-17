@@ -1,3 +1,9 @@
+"""Module for ROS2-based robot teleoperation.
+
+This module provides functionality for controlling robots through ROS2,
+enabling teleoperation and real-time control of robot movements.
+"""
+
 import dora
 import numpy as np
 import pyarrow as pa
