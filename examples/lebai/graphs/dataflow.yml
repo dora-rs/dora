@@ -1,0 +1,63 @@
+nodes:
+  - id: lebai-client
+    build: pip install -e ../../../node-hub/lebai-client
+    path: lebai-client
+    inputs:
+      movec:
+        source: interpolation/movec
+        queue_size: 1
+      movej:
+        source: interpolation/movej
+        queue_size: 1
+      claw: interpolation/claw
+      stop: interpolation/stop
+      save: interpolation/save
+      go_to: interpolation/go_to
+      record: interpolation/record
+      cut: interpolation/cut
+      play: interpolation/play
+      teach: interpolation/teach
+      end_teach: interpolation/end_teach
+
+  - id: keyboard-listener
+    build: pip install -e ../../../../dora/node-hub/keyboard-listener
+    path: keyboard-listener
+    outputs:
+      - char
+
+  - id: dora-microphone
+    build: pip install -e  ../../../../dora/node-hub/dora-microphone
+    path: dora-microphone
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install -e  ../../../../dora/node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-microphone/audio
+    outputs:
+      - text
+
+  - id: terminal-print
+    path: dynamic
+    inputs:
+      text: dora-distil-whisper/text
+
+  - id: interpolation
+    path: ../nodes/interpolation.py
+    inputs:
+      keyboard: keyboard-listener/char
+      text: dora-distil-whisper/text
+    outputs:
+      - movec
+      - movej
+      - claw
+      - stop
+      - save
+      - record
+      - play
+      - go_to
+      - cut
+      - teach
+      - end_teach

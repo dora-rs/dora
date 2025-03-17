@@ -1,0 +1,38 @@
+nodes:
+  - id: aloha-client
+    custom:
+      source: cargo
+      args: run -p aloha-client --release
+      inputs:
+        puppet_goal_position: dora-gym/action
+        tick: dora/timer/millis/33
+      outputs:
+        - puppet_position
+
+  - id: plot
+    custom:
+      source: ../nodes/plot_node.py
+      inputs:
+        image: cam_left_wrist/image
+      envs:
+        IMAGE_WIDTH: 640
+        IMAGE_HEIGHT: 480
+
+  - id: cam_left_wrist
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 2
+
+  - id: dora-gym
+    custom:
+      source: ../nodes/gym_dora_node.py
+      inputs:
+        agent_pos: aloha-client/puppet_position
+        cam_left_wrist: cam_left_wrist/image
+      outputs:
+        - action
