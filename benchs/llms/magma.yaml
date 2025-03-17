@@ -1,0 +1,17 @@
+nodes:
+  - id: benchmark_script
+    path: benchmark_script.py
+    inputs:
+      text: llm/text
+    outputs:
+      - data
+    env:
+      DATA: "Please only generate the following output: This is a test"
+
+  - id: llm
+    build: pip install -e ../../node-hub/dora-magma
+    path: dora-magma
+    inputs:
+      text: benchmark_script/data
+    outputs:
+      - text

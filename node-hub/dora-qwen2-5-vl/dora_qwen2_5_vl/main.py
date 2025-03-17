@@ -48,7 +48,9 @@ try:
     )
 except (ImportError, ModuleNotFoundError):
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        MODEL_NAME_OR_PATH, torch_dtype="auto", device_map="auto",
+        MODEL_NAME_OR_PATH,
+        torch_dtype="auto",
+        device_map="auto",
     )
 
 
@@ -57,7 +59,7 @@ if ADAPTER_PATH != "":
 
 
 # default processor
-processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
+processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH, use_fast=True)
 
 
 def generate(frames: dict, question, history, past_key_values=None, image_id=None):
@@ -141,7 +143,6 @@ def main():
     pa.array([])  # initialize pyarrow array
     node = Node()
 
-    frames = {}
     if SYSTEM_PROMPT:
         history = [
             {
@@ -155,6 +156,7 @@ def main():
         history = []
 
     cached_text = DEFAULT_QUESTION
+    frames = {}
     image_id = None
     past_key_values = None
 
@@ -221,7 +223,11 @@ def main():
                     continue
                 # set the max number of tiles in `max_num`
                 response, history, past_key_values = generate(
-                    frames, text, history, past_key_values, image_id,
+                    frames,
+                    text,
+                    history,
+                    past_key_values,
+                    image_id,
                 )
                 node.send_output(
                     "text",

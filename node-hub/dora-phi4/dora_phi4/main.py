@@ -1,9 +1,12 @@
 """TODO: Add docstring."""
 
+import cv2
+import numpy as np
 import pyarrow as pa
 import torch
 from accelerate import infer_auto_device_map
 from dora import Node
+from PIL import Image
 from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
@@ -27,7 +30,9 @@ else:
 MODEL_PATH = "microsoft/Phi-4-multimodal-instruct"
 
 processor = AutoProcessor.from_pretrained(
-    MODEL_PATH, trust_remote_code=True, use_fast=True,
+    MODEL_PATH,
+    trust_remote_code=True,
+    use_fast=True,
 )
 
 # Define model config
@@ -47,8 +52,8 @@ device_map = infer_auto_device_map(
 
 # Load the model directly with the inferred device map
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH, **MODEL_CONFIG, device_map=device_map,
-)
+    MODEL_PATH, **MODEL_CONFIG, device_map=device_map
+).to(device)
 
 generation_config = GenerationConfig.from_pretrained(MODEL_PATH)
 
@@ -61,16 +66,77 @@ def main():
     """TODO: Add docstring."""
     node = Node()
 
+    frames = {}
+    image_id = None
+    image = None
+    audios = None
     for event in node:
         if event["type"] == "INPUT":
             input_id = event["id"]
-            if input_id == "text":
+
+            if "image" in input_id:
+                storage = event["value"]
+                metadata = event["metadata"]
+                encoding = metadata["encoding"]
+                width = metadata["width"]
+                height = metadata["height"]
+
+                if (
+                    encoding == "bgr8"
+                    or encoding == "rgb8"
+                    or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]
+                ):
+                    channels = 3
+                    storage_type = np.uint8
+                else:
+                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+
+                if encoding == "bgr8":
+                    frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                    )
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                elif encoding == "rgb8":
+                    frame = (
+                        storage.to_numpy()
+                        .astype(storage_type)
+                        .reshape((height, width, channels))
+                    )
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    storage = storage.to_numpy()
+                    frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
+                    frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
+                else:
+                    raise RuntimeError(f"Unsupported image encoding: {encoding}")
+                image = Image.fromarray(frame)
+                frames[input_id] = image
+            elif input_id == "audio":
+                audio = event["value"].to_numpy()
+                sample_rate = event["metadata"]["sample_rate"]
+                audios = [(audio, sample_rate)]
+            elif input_id == "text":
                 text = event["value"][0].as_py()
-                prompt = f"{user_prompt}{text}{prompt_suffix}{assistant_prompt}"
+                if len(frames) > 1:
+                    raise ValueError("Multiple images are not supported yet!")
+                elif len(frames) == 1:
+                    image_prompt = "<|image_1|>"
+                else:
+                    image_prompt = ""
+
+                if audios is not None:
+                    audio_prompt = "<|audio_1|>"
+                else:
+                    audio_prompt = ""
+
+                prompt = f"{user_prompt}{audio_prompt}{image_prompt}{text}{prompt_suffix}{assistant_prompt}"
 
                 # Process input
                 inputs = processor(
                     text=prompt,
+                    images=image,
+                    audios=audios,
                     return_tensors="pt",
                 ).to(model.device)
                 # Generate response
