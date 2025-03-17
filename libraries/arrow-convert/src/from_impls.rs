@@ -88,7 +88,7 @@ impl_try_from_arrow_data!(
     u32 => UInt32Type,
     u64 => UInt64Type,
     i8 => Int8Type,
-    i16 =>Int16Type,
+    i16 => Int16Type,
     i32 => Int32Type,
     i64 => Int64Type,
     f32 => Float32Type,
