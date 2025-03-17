@@ -1,11 +1,12 @@
+"""TODO: Add docstring."""
 import os
-
 import pyarrow as pa
 from dora import Node
 from reachy_sdk import ReachySDK
 
 
 def main():
+    """TODO: Add docstring."""
 
     node = Node()
 

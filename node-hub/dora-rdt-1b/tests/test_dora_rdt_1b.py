@@ -1,7 +1,6 @@
 """TODO: Add docstring."""
 
 import os
-
 import numpy as np
 import pytest
 import torch
