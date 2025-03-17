@@ -70,7 +70,7 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
 
 
 def manage_gripper(reachy, gripper, grasp):
-    """TODO: Add docstring."""
+    """TODO docstring."""
     if (gripper == 100 and reachy.r_arm.gripper.get_current_opening() == 100) or (
         gripper == 0.0
         and (

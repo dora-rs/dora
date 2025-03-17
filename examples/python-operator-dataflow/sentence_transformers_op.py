@@ -17,7 +17,7 @@ SHOULD_BE_INCLUDED = [
 
 ## Get all python files path in given directory
 def get_all_functions(path):
-    """TODO: Add docstring."""
+    """TODO docstring."""
     raw = []
     paths = []
     for root, dirs, files in os.walk(path):

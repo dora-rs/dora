@@ -93,6 +93,7 @@ MODEL_CONTROL_TABLE = {
 
 
 class FeetechBus:
+    """TODO docstring."""
 
     def __init__(self, port: str, description: dict[str, (np.uint8, str)]):
         """Args:
@@ -131,9 +132,11 @@ class FeetechBus:
         self.group_writers = {}
 
     def close(self):
+        """TODO docstring."""
         self.port_handler.closePort()
 
     def write(self, data_name: str, data: pa.StructArray):
+        """TODO docstring."""
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"]
             for motor_name in data.field("joints")
@@ -200,6 +203,7 @@ class FeetechBus:
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
+        """TODO docstring."""
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"] for motor_name in motor_names
         ]
@@ -250,25 +254,33 @@ class FeetechBus:
         return wrap_joints_and_values(motor_names, values)
 
     def write_torque_enable(self, torque_mode: pa.StructArray):
+        """TODO docstring."""
         self.write("Torque_Enable", torque_mode)
 
     def write_operating_mode(self, operating_mode: pa.StructArray):
+        """TODO docstring."""
         self.write("Mode", operating_mode)
 
     def read_position(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO docstring."""
         return self.read("Present_Position", motor_names)
 
     def read_velocity(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO docstring."""
         return self.read("Present_Velocity", motor_names)
 
     def read_current(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO docstring."""
         return self.read("Present_Current", motor_names)
 
     def write_goal_position(self, goal_position: pa.StructArray):
+        """TODO docstring."""
         self.write("Goal_Position", goal_position)
 
     def write_max_angle_limit(self, max_angle_limit: pa.StructArray):
+        """TODO docstring."""
         self.write("Max_Angle_Limit", max_angle_limit)
 
     def write_min_angle_limit(self, min_angle_limit: pa.StructArray):
+        """TODO docstring."""
         self.write("Min_Angle_Limit", min_angle_limit)

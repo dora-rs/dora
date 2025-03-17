@@ -5,14 +5,14 @@ import shutil
 
 
 def clear_screen():
+    """TODO docstring."""
     # Clear the screen based on the operating system
-    """TODO: Add docstring."""
     os.system("cls" if os.name == "nt" else "clear")
 
 
 def print_centered(texts):
+    """TODO docstring."""
     # Get terminal size
-    """TODO: Add docstring."""
     terminal_size = shutil.get_terminal_size()
 
     # Print newlines to move cursor to the middle vertically

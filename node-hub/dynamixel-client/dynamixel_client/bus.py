@@ -152,8 +152,10 @@ MODEL_CONTROL_TABLE = {
 
 
 class DynamixelBus:
+    """TODO docstring."""
 
     def __init__(self, port: str, description: dict[str, (int, str)]):
+        """TODO docstring."""
         self.port = port
         self.descriptions = description
         self.motor_ctrl = {}
@@ -184,6 +186,7 @@ class DynamixelBus:
         self.group_writers = {}
 
     def close(self):
+        """TODO docstring."""
         self.port_handler.closePort()
 
     def write(self, data_name: str, data: pa.StructArray):
