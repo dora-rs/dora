@@ -1,6 +1,9 @@
 use crate::IntoArrow;
 use arrow::array::{PrimitiveArray, StringArray, TimestampNanosecondArray};
-use arrow::datatypes::{ArrowPrimitiveType, ArrowTimestampType};
+use arrow::datatypes::{
+    ArrowPrimitiveType, ArrowTimestampType, Float32Type, Float64Type, Int16Type, Int32Type,
+    Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 impl IntoArrow for bool {
@@ -10,132 +13,45 @@ impl IntoArrow for bool {
     }
 }
 
-impl IntoArrow for u8 {
-    type A = PrimitiveArray<arrow::datatypes::UInt8Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
+macro_rules! impl_into_arrow {
+    ($($t:ty => $arrow_type:ty),*) => {
+        $(
+            impl IntoArrow for $t {
+                type A = PrimitiveArray<$arrow_type>;
+                fn into_arrow(self) -> Self::A {
+                    std::iter::once(self).collect()
+                }
+            }
+        )*
+
+        $(
+            impl IntoArrow for Vec<$t> {
+                type A = PrimitiveArray<$arrow_type>;
+                fn into_arrow(self) -> Self::A {
+                    self.into()
+                }
+            }
+        )*
+    };
 }
-impl IntoArrow for u16 {
-    type A = PrimitiveArray<arrow::datatypes::UInt16Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for u32 {
-    type A = PrimitiveArray<arrow::datatypes::UInt32Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for u64 {
-    type A = PrimitiveArray<arrow::datatypes::UInt64Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for i8 {
-    type A = PrimitiveArray<arrow::datatypes::Int8Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for i16 {
-    type A = PrimitiveArray<arrow::datatypes::Int16Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for i32 {
-    type A = PrimitiveArray<arrow::datatypes::Int32Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for i64 {
-    type A = PrimitiveArray<arrow::datatypes::Int64Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for f32 {
-    type A = PrimitiveArray<arrow::datatypes::Float32Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
-impl IntoArrow for f64 {
-    type A = PrimitiveArray<arrow::datatypes::Float64Type>;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(self).collect()
-    }
-}
+
+impl_into_arrow!(
+    u8 => UInt8Type,
+    u16 => UInt16Type,
+    u32 => UInt32Type,
+    u64 => UInt64Type,
+    i8 => Int8Type,
+    i16 => Int16Type,
+    i32 => Int32Type,
+    i64 => Int64Type,
+    f32 => Float32Type,
+    f64 => Float64Type
+);
 
 impl IntoArrow for &str {
     type A = StringArray;
     fn into_arrow(self) -> Self::A {
         std::iter::once(Some(self)).collect()
-    }
-}
-
-impl IntoArrow for Vec<u8> {
-    type A = PrimitiveArray<arrow::datatypes::UInt8Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<u16> {
-    type A = PrimitiveArray<arrow::datatypes::UInt16Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<u32> {
-    type A = PrimitiveArray<arrow::datatypes::UInt32Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<u64> {
-    type A = PrimitiveArray<arrow::datatypes::UInt64Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<i8> {
-    type A = PrimitiveArray<arrow::datatypes::Int8Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<i16> {
-    type A = PrimitiveArray<arrow::datatypes::Int16Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<i32> {
-    type A = PrimitiveArray<arrow::datatypes::Int32Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<i64> {
-    type A = PrimitiveArray<arrow::datatypes::Int64Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<f32> {
-    type A = PrimitiveArray<arrow::datatypes::Float32Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
-    }
-}
-impl IntoArrow for Vec<f64> {
-    type A = PrimitiveArray<arrow::datatypes::Float64Type>;
-    fn into_arrow(self) -> Self::A {
-        self.into()
     }
 }
 
