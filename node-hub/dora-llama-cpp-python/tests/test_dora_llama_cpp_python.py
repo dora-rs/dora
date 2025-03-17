@@ -1,9 +1,9 @@
-"""TODO docstring."""
+"""TODO: Add docstring."""
 import pytest
 
 
 def test_import_main():
-    """TODO docstring."""
+    """TODO: Add docstring."""
     from dora_llama_cpp_python.main import main
 
     # Check that everything is working, and catch dora Runtime Exception as we're not running in a dora dataflow.

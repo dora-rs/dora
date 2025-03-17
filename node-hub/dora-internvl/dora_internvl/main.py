@@ -15,7 +15,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 def build_transform(input_size):
-    """TODO docstring."""
+    """TODO: Add docstring."""
     MEAN, STD = IMAGENET_MEAN, IMAGENET_STD
     transform = T.Compose(
         [

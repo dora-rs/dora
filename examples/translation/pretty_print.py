@@ -5,13 +5,13 @@ import shutil
 
 
 def clear_screen():
-    """TODO docstring."""
+    """TODO: Add docstring."""
     # Clear the screen based on the operating system
     os.system("cls" if os.name == "nt" else "clear")
 
 
 def print_centered(texts):
-    """TODO docstring."""
+    """TODO: Add docstring."""
     # Get terminal size
     terminal_size = shutil.get_terminal_size()
 
