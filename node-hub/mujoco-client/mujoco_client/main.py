@@ -1,5 +1,7 @@
-"""Mujoco Client: This node is used to represent simulated robot, it can be used to read virtual positions,
-or can be controlled
+"""MuJoCo Client node for robot simulation.
+
+This node represents a simulated robot that can be used to read virtual positions
+and control the robot in the simulation environment.
 """
 
 import argparse

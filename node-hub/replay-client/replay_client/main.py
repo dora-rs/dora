@@ -1,4 +1,6 @@
-"""Replay Client: This node is used to represent a leader robot and send a sequence of goals to the dataflow,
+"""Replay Client node for robot motion playback.
+
+This node represents a leader robot and sends a sequence of goals to the dataflow,
 reading a dataset of actions and joints from a specific episode.
 """
 

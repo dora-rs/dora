@@ -1,5 +1,4 @@
-"""This Dora node is a minimalistic interface that shows two images and text in a Pygame window.
-"""
+"""Dora node providing a minimalistic interface for displaying images and text in a Pygame window."""
 
 import argparse
 import os
