@@ -1,3 +1,11 @@
+"""Main module for the Phi-4 language model inference node.
+
+This module provides the core functionality for running Phi-4 language model inference.
+It handles model loading, input processing, and response generation using the Phi-4 model
+from Microsoft. The module automatically detects the best available device and configures
+the model accordingly.
+"""
+
 import pyarrow as pa
 import torch
 from accelerate import infer_auto_device_map
@@ -56,6 +64,15 @@ prompt_suffix = "<|end|>"
 
 
 def main():
+    """Run the Phi-4 language model inference node.
+    
+    This function initializes a Dora node and processes incoming text events.
+    For each text input, it:
+    1. Formats the input with appropriate prompts
+    2. Processes the input using the Phi-4 model
+    3. Generates a response
+    4. Sends the response back through the node
+    """
     node = Node()
 
     for event in node:

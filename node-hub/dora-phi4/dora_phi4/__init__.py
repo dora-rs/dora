@@ -1,3 +1,9 @@
+"""A Dora node for running Phi-4 language model inference.
+
+This package provides functionality to run Phi-4 language model inference using Dora.
+It handles loading the model, processing inputs, and generating outputs in a streaming fashion.
+"""
+
 import os
 
 # Define the path to the README file relative to the package directory
