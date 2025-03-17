@@ -26,19 +26,6 @@ macro_rules! impl_into_arrow_for_uint {
     };
 }
 
-macro_rules! impl_into_arrow_for_vec {
-    ($($t:ty => $arrow_type:ty),*) => {
-        $(
-            impl IntoArrow for Vec<$t> {
-                type A = PrimitiveArray<$arrow_type>;
-                fn into_arrow(self) -> Self::A {
-                    self.into()
-                }
-            }
-        )*
-    };
-}
-
 impl_into_arrow_for_uint!(
     u8 => UInt8Type,
     u16 => UInt16Type,
@@ -51,6 +38,19 @@ impl_into_arrow_for_uint!(
     f32 => Float32Type,
     f64 => Float64Type
 );
+
+macro_rules! impl_into_arrow_for_vec {
+    ($($t:ty => $arrow_type:ty),*) => {
+        $(
+            impl IntoArrow for Vec<$t> {
+                type A = PrimitiveArray<$arrow_type>;
+                fn into_arrow(self) -> Self::A {
+                    self.into()
+                }
+            }
+        )*
+    };
+}
 
 impl_into_arrow_for_vec!(
     u8 => UInt8Type,
