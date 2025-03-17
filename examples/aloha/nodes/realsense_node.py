@@ -1,9 +1,10 @@
-import pyrealsense2 as rs
-import numpy as np
-from dora import Node
-import pyarrow as pa
 import os
+
 import cv2
+import numpy as np
+import pyarrow as pa
+import pyrealsense2 as rs
+from dora import Node
 
 IMAGE_WIDTH = int(os.getenv("IMAGE_WIDTH", "640"))
 IMAGE_HEIGHT = int(os.getenv("IMAGE_HEIGHT", "480"))

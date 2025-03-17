@@ -1,10 +1,11 @@
 """TODO: Add docstring."""
 
+import logging
 import os
+from pathlib import Path
+
 import pyarrow as pa
 from dora import Node
-from pathlib import Path
-import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +25,7 @@ CONTEXT_SIZE = int(os.getenv("CONTEXT_SIZE", "4096"))
 def get_model():
     """Load a GGUF model using llama-cpp-python with optional GPU acceleration."""
     from llama_cpp import Llama
-    
+
     try:
         # Check if path exists locally
         model_path = Path(MODEL_NAME_OR_PATH)
@@ -35,7 +36,7 @@ def get_model():
                 n_gpu_layers=N_GPU_LAYERS,
                 n_ctx=CONTEXT_SIZE,
                 n_threads=N_THREADS,
-                verbose=False
+                verbose=False,
             )
         else:
             # Load from HuggingFace
@@ -46,14 +47,14 @@ def get_model():
                 n_gpu_layers=N_GPU_LAYERS,
                 n_ctx=CONTEXT_SIZE,
                 n_threads=N_THREADS,
-                verbose=False
+                verbose=False,
             )
-        
+
         logging.info("Model loaded successfully")
         return llm
-    
+
     except Exception as e:
-        logging.error(f"Error loading model: {e}")
+        logging.exception(f"Error loading model: {e}")
         raise
 
 
@@ -79,9 +80,9 @@ def main():
                     max_tokens=MAX_TOKENS,
                     stop=["Q:", "\n"],
                 )["choices"][0]["text"]
-                
+
                 node.send_output(
-                    output_id="text", data=pa.array([response]), metadata={}
+                    output_id="text", data=pa.array([response]), metadata={},
                 )
 
 

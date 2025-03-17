@@ -1,7 +1,8 @@
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 import time
-from dora import Node
+
 import pyarrow as pa
+from dora import Node
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
 episode = 1
 dataset = LeRobotDataset("cadene/reachy2_teleop_remi")

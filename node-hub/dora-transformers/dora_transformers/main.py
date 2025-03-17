@@ -1,11 +1,12 @@
 """TODO: Add docstring."""
 
+import logging
 import os
+
 import pyarrow as pa
+import torch
 from dora import Node
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import logging
-import torch
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,23 +35,23 @@ ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split
 def load_model():
     """Load the transformer model and tokenizer."""
     logging.info(f"Loading model {MODEL_NAME} on {DEVICE}")
-    
+
     # Memory efficient loading
     model_kwargs = {
         "torch_dtype": TORCH_DTYPE,
         "device_map": DEVICE,
     }
-    
+
     if ENABLE_MEMORY_EFFICIENT and DEVICE == "cuda":
         model_kwargs.update({
             "low_cpu_mem_usage": True,
             "offload_folder": "offload",
-            "load_in_8bit": True
+            "load_in_8bit": True,
         })
-    
+
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        **model_kwargs
+        **model_kwargs,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     logging.info("Model loaded successfully")
@@ -61,37 +62,37 @@ def load_model():
 def generate_response(model, tokenizer, text: str, history) -> tuple[str, list]:
     """Generate text using the transformer model."""
     history += [{"role": "user", "content": text}]
-    
+
     prompt = tokenizer.apply_chat_template(
-        history, tokenize=False, add_generation_prompt=True
+        history, tokenize=False, add_generation_prompt=True,
     )
-    
+
     model_inputs = tokenizer([prompt], return_tensors="pt").to(DEVICE)
-    
+
     with torch.inference_mode():
         generated_ids = model.generate(
-            **model_inputs, 
+            **model_inputs,
             max_new_tokens=MAX_TOKENS,
             pad_token_id=tokenizer.pad_token_id,
             do_sample=True,
             temperature=0.7,
-            top_p=0.9,         
+            top_p=0.9,
             repetition_penalty=1.2,
             length_penalty=0.5,
         )
-    
+
     generated_ids = [
         output_ids[len(input_ids):]
         for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
     ]
-    
+
     response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
     history += [{"role": "assistant", "content": response}]
-    
+
     # Clear CUDA cache after successful generation if enabled
     if ENABLE_MEMORY_EFFICIENT and DEVICE == "cuda":
         torch.cuda.empty_cache()
-        
+
     return response, history
 
 def main():
@@ -111,11 +112,11 @@ def main():
                 logging.info(f"Processing input: {text}")
                 response, history = generate_response(model, tokenizer, text, history)
                 logging.info(f"Generated response: {response}")
-                
+
                 node.send_output(
-                    output_id="text", 
-                    data=pa.array([response]), 
-                    metadata={}
+                    output_id="text",
+                    data=pa.array([response]),
+                    metadata={},
                 )
 
 if __name__ == "__main__":

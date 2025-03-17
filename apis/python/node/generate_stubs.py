@@ -287,8 +287,7 @@ def arguments_stub(
         param_names = list(real_parameters.keys())
         if param_names and param_names[0] == "self":
             del param_names[0]
-        for name, t in zip(param_names, builtin[0]):
-            parsed_param_types[name] = t
+        parsed_param_types = {name: t for name, t in zip(param_names, builtin[0])}
 
     # Types from comment
     for match in re.findall(

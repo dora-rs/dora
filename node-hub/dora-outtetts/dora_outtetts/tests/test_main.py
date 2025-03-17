@@ -3,6 +3,7 @@
 import os
 
 import pytest
+
 from dora_outtetts.main import load_interface, main
 
 CI = os.getenv("CI", "false") in ["True", "true"]

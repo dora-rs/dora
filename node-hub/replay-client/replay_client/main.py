@@ -3,12 +3,11 @@
 reading a dataset of actions and joints from a specific episode.
 """
 
-import os
 import argparse
+import os
 
-import pyarrow as pa
 import pandas as pd
-
+import pyarrow as pa
 from dora import Node
 
 
@@ -78,7 +77,7 @@ class Client:
 def main():
     """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
-        description="Replay Client: This node is used to replay a sequence of goals for a followee robot."
+        description="Replay Client: This node is used to replay a sequence of goals for a followee robot.",
     )
 
     parser.add_argument(

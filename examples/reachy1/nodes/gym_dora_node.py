@@ -1,14 +1,12 @@
 import time
-from pathlib import Path
 
+import gym_dora  # noqa: F401
 import gymnasium as gym
 import pandas as pd
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-import gym_dora  # noqa: F401
-
 env = gym.make(
-    "gym_dora/DoraReachy2-v0", disable_env_checker=True, max_episode_steps=10000
+    "gym_dora/DoraReachy2-v0", disable_env_checker=True, max_episode_steps=10000,
 )
 observation = env.reset()
 
