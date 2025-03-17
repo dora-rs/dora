@@ -1,3 +1,4 @@
+"""TODO: Add docstring."""
 import os
 import time
 
@@ -8,6 +9,7 @@ from reachy_sdk.trajectory import goto
 
 
 def r_arm_inverse_kinematics(reachy, pose, action) -> list:
+    """TODO: Add docstring."""
     A = np.array(
         [
             [0, 0, -1, pose[0] + action[0]],
@@ -20,6 +22,7 @@ def r_arm_inverse_kinematics(reachy, pose, action) -> list:
 
 
 def happy_antennas(reachy):
+    """TODO: Add docstring."""
     reachy.head.l_antenna.speed_limit = 480.0
     reachy.head.r_antenna.speed_limit = 480.0
 
@@ -39,6 +42,7 @@ def happy_antennas(reachy):
 
 
 def sad_antennas(reachy):
+    """TODO: Add docstring."""
     reachy.head.l_antenna.speed_limit = 360.0
     reachy.head.r_antenna.speed_limit = 360.0
 
@@ -47,6 +51,7 @@ def sad_antennas(reachy):
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
 
     ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.24")

@@ -29,17 +29,14 @@ dependencies = [
 
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
-
 [tool.black]
 extend-exclude = 'dora_rdt_1b/RoboticsDiffusionTransformer'
-
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 dora-rdt-1b = "dora_rdt_1b.main:main"
-
 
 [tool.ruff]
 exclude = ["dora_rdt_1b/RoboticsDiffusionTransformer"]
@@ -51,4 +48,5 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP",
 ]

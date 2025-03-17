@@ -34,4 +34,5 @@ dora-internvl = "dora_internvl.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP",
 ]

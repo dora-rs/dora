@@ -21,7 +21,6 @@ dependencies = [
   "mlx-whisper >= 0.4.1; sys_platform == 'darwin'",
 ]
 
-
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
@@ -31,4 +30,5 @@ dora-distil-whisper = "dora_distil_whisper.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D", # pydocstyle
+  "UP",
 ]

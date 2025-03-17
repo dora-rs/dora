@@ -1,3 +1,4 @@
+"""TODO: Add docstring."""
 import lebai_sdk
 
 
@@ -5,6 +6,7 @@ lebai_sdk.init()
 
 
 def main():
+    """TODO: Add docstring."""
     # print(lebai_sdk.discover_devices(2)) #发现同一局域网内的机器人
 
     robot_ip = "10.20.17.1"  # 设定机器人ip地址，需要根据机器人实际ip地址修改

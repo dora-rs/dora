@@ -44,7 +44,7 @@ class Operator:
                 frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
                 cv2.putText(
                     frame,
-                    "No Webcam was found at index %d" % (CAMERA_INDEX),
+                    f"No Webcam was found at index {CAMERA_INDEX}",
                     (30, 30),
                     font,
                     0.75,
