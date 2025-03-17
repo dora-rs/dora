@@ -1,3 +1,5 @@
+"""TODO: Add docstring."""
+
 import pyarrow as pa
 import torch
 from accelerate import infer_auto_device_map
@@ -56,6 +58,7 @@ prompt_suffix = "<|end|>"
 
 
 def main():
+    """TODO: Add docstring."""
     node = Node()
 
     for event in node:

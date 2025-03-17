@@ -7,7 +7,6 @@ authors = [
 ]
 description = "Dora Node for plotting text and bbox on image with OpenCV"
 
-
 requires-python = ">=3.8"
 
 dependencies = ["dora-rs >= 0.3.9", "numpy < 2.0.0", "opencv-python >= 4.1.1"]
@@ -21,4 +20,5 @@ opencv-plot = "opencv_plot.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP",
 ]

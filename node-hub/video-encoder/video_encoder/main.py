@@ -1,3 +1,4 @@
+"""TODO : Doc String."""
 import os
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from ffmpeg import FFmpeg
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow
+    """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
         description="Video Encoder: This node is used to record episodes of a robot interacting with the environment."
     )

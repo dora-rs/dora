@@ -26,7 +26,6 @@ dependencies = [
 
 # flash_attn = "^2.6.1" # Install using: pip install -U flash-attn --no-build-isolation
 
-
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
@@ -39,4 +38,5 @@ dora-qwenvl = "dora_qwenvl.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
+  "UP",
 ]

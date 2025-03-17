@@ -28,5 +28,8 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 dora-openai-server = "dora_openai_server.main:main"
 
 [tool.ruff.lint]
-extend-select = ["I","D"]
+extend-select = [
+  "D",   # pydocstyle
+  "UP"
+]
 
