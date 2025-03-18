@@ -21,6 +21,8 @@ DEVICE = os.getenv("DEVICE", "cuda")
 pa.array([])
 node = Node()
 
+# Create a random number generator
+rng = np.random.default_rng()
 
 time.sleep(1)
 
@@ -28,7 +30,7 @@ time.sleep(1)
 for size in SIZES:
     for _ in range(100):
         now = time.time()
-        random_data = np.random.randint(1000, size=size, dtype=np.int64)
+        random_data = rng.integers(1000, size=size, dtype=np.int64)
         torch_tensor = torch.tensor(random_data, dtype=torch.int64, device="cuda")
         t_send = time.perf_counter_ns()
         if DEVICE == "cpu":
@@ -52,10 +54,15 @@ for size in SIZES:
 DEVICE = "cuda"
 
 time.sleep(1)
+
+# Create a random number generator
+rng = np.random.default_rng()
+
+# test latency first
 for size in SIZES:
     for _ in range(100):
         now = time.time()
-        random_data = np.random.randint(1000, size=size, dtype=np.int64)
+        random_data = rng.integers(1000, size=size, dtype=np.int64)
         torch_tensor = torch.tensor(random_data, dtype=torch.int64, device="cuda")
         t_send = time.perf_counter_ns()
         if DEVICE == "cpu":

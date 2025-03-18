@@ -72,6 +72,7 @@ class Client:
         self.frame += 1
 
         node.send_output("position", position, metadata)
+        return False
 
 
 def main():
