@@ -1,29 +1,29 @@
 """TODO: Add docstring."""
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation
 
 
 def convert_quaternion_to_euler(quat):
     """Convert Quaternion (xyzw) to Euler angles (rpy)."""
     # Normalize
     quat = quat / np.linalg.norm(quat)
-    return R.from_quat(quat).as_euler("xyz")
+    return Rotation.from_quat(quat).as_euler("xyz")
 
 
 def convert_euler_to_quaternion(euler):
     """Convert Euler angles (rpy) to Quaternion (xyzw)."""
-    return R.from_euler("xyz", euler).as_quat()
+    return Rotation.from_euler("xyz", euler).as_quat()
 
 
 def convert_euler_to_rotation_matrix(euler):
     """Convert Euler angles (rpy) to rotation matrix (3x3)."""
-    return R.from_euler("xyz", euler).as_matrix()
+    return Rotation.from_euler("xyz", euler).as_matrix()
 
 
 def convert_rotation_matrix_to_euler(rotmat):
     """Convert rotation matrix (3x3) to Euler angles (rpy)."""
-    r = R.from_matrix(rotmat)
+    r = Rotation.from_matrix(rotmat)
     return r.as_euler("xyz", degrees=False)
 
 

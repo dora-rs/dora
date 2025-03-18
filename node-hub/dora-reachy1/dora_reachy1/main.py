@@ -10,7 +10,7 @@ from reachy_sdk.trajectory import goto
 
 def r_arm_inverse_kinematics(reachy, pose, action) -> list:
     """TODO: Add docstring."""
-    A = np.array(
+    a = np.array(
         [
             [0, 0, -1, pose[0] + action[0]],
             [0, 1, 0, pose[1] + action[1]],
@@ -18,7 +18,7 @@ def r_arm_inverse_kinematics(reachy, pose, action) -> list:
             [0, 0, 0, 1],
         ],
     )
-    return reachy.r_arm.inverse_kinematics(A)
+    return reachy.r_arm.inverse_kinematics(a)
 
 
 def happy_antennas(reachy):
@@ -54,9 +54,9 @@ def main():
     """TODO: Add docstring."""
     node = Node()
 
-    ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.24")
+    robot_ip = os.getenv("ROBOT_IP", "10.42.0.24")
 
-    reachy = ReachySDK(ROBOT_IP, with_mobile_base=False)
+    reachy = ReachySDK(robot_ip, with_mobile_base=False)
     reachy.turn_on("r_arm")
     reachy.turn_on("head")
 
