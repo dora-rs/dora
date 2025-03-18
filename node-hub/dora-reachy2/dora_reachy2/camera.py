@@ -11,10 +11,10 @@ from reachy2_sdk.media.camera import CameraView
 
 def main():
     """TODO: Add docstring."""
-    ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
+    robot_ip = os.getenv("ROBOT_IP", "10.42.0.80")
 
     for _ in range(10):
-        reachy = ReachySDK(ROBOT_IP)
+        reachy = ReachySDK(robot_ip)
         try:
             reachy.cameras.teleop.get_frame(view=CameraView.LEFT)
             params = reachy.cameras.depth.get_parameters(view=CameraView.DEPTH)
@@ -28,7 +28,7 @@ def main():
 
     reachy.cameras.teleop.get_frame(view=CameraView.LEFT)
     params = reachy.cameras.depth.get_parameters(view=CameraView.DEPTH)
-    height, width, _distortion_model, _D, K, _R, _P = params
+    height, width, _distortion_model, _d, k, _r, _p = params
 
     node = Node()
 
@@ -90,8 +90,8 @@ def main():
                         metadata={
                             "width": width,
                             "height": height,
-                            "focal": [int(K[0, 0]), int(K[1, 1])],
-                            "resolution": [int(K[0, 2]), int(K[1, 2])],
+                            "focal": [int(k[0, 0]), int(k[1, 1])],
+                            "resolution": [int(k[0, 2]), int(k[1, 2])],
                         },
                     )
 
