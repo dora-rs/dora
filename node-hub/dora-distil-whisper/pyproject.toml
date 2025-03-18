@@ -29,7 +29,13 @@ dora-distil-whisper = "dora_distil_whisper.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",  # Ruff's UP rule
-  "PERF" # Ruff's PERF rule
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "E",    # Ruff's E rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
 ]

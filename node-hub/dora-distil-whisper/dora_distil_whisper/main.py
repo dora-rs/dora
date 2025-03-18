@@ -37,8 +37,7 @@ def remove_text_noise(text: str, text_noise="") -> str:
         # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as equivalent
         s = re.sub(r"-", " ", s)
         # Remove other punctuation and convert to lowercase
-        s = re.sub(r"[^\w\s]", "", s).lower()
-        return s
+        return re.sub(r"[^\w\s]", "", s).lower()
 
     # Normalize both text and text_noise
     normalized_text = normalize(text)
@@ -84,8 +83,7 @@ def remove_text_noise(text: str, text_noise="") -> str:
             cleaned_words.remove(noise_word)
 
     # Reconstruct the cleaned text
-    cleaned_text = " ".join(cleaned_words)
-    return cleaned_text
+    return " ".join(cleaned_words)
 
 
 def load_model():
@@ -112,7 +110,7 @@ def load_model():
     model.to(device)
 
     processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
-    pipe = pipeline(
+    return pipeline(
         "automatic-speech-recognition",
         model=model,
         tokenizer=processor.tokenizer,
@@ -121,7 +119,6 @@ def load_model():
         torch_dtype=torch_dtype,
         device=device,
     )
-    return pipe
 
 
 BAD_SENTENCES = [
