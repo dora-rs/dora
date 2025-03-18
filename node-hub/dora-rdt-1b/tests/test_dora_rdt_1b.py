@@ -172,9 +172,9 @@ def test_dummy_states():
 
     # suppose you do not have proprio
     # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
-    B, N = 1, 1  # batch size and state history size
+    b, n = 1, 1  # batch size and state history size
     states = torch.zeros(
-        (B, N, config["model"]["state_token_dim"]),
+        (b, n, config["model"]["state_token_dim"]),
         device=DEVICE,
         dtype=DTYPE,
     )
@@ -182,10 +182,10 @@ def test_dummy_states():
     # if you have proprio, you can do like this
     # format like this: [arm_joint_0_pos, arm_joint_1_pos, arm_joint_2_pos, arm_joint_3_pos, arm_joint_4_pos, arm_joint_5_pos, arm_joint_6_pos, gripper_open]
     # proprio = torch.tensor([0, 1, 2, 3, 4, 5, 6, 0.5]).reshape((1, 1, -1))
-    # states[:, :, STATE_INDICES] = proprio
+    # states[:, :, state_indices] = proprio
 
     state_elem_mask = torch.zeros(
-        (B, config["model"]["state_token_dim"]),
+        (b, config["model"]["state_token_dim"]),
         device=DEVICE,
         dtype=torch.bool,
     )
@@ -194,7 +194,7 @@ def test_dummy_states():
     )
 
     # suppose you control in 7DOF joint position
-    STATE_INDICES = [
+    state_indices = [
         STATE_VEC_IDX_MAPPING["arm_joint_0_pos"],
         STATE_VEC_IDX_MAPPING["arm_joint_1_pos"],
         STATE_VEC_IDX_MAPPING["arm_joint_2_pos"],
@@ -205,7 +205,7 @@ def test_dummy_states():
         STATE_VEC_IDX_MAPPING["gripper_open"],
     ]
 
-    state_elem_mask[:, STATE_INDICES] = True
+    state_elem_mask[:, state_indices] = True
     states, state_elem_mask = (
         states.to(DEVICE, dtype=DTYPE),
         state_elem_mask.to(DEVICE, dtype=DTYPE),
@@ -213,7 +213,7 @@ def test_dummy_states():
     states = states[:, -1:, :]  # only use the last state
     pytest.states = states
     pytest.state_elem_mask = state_elem_mask
-    pytest.STATE_INDICES = STATE_INDICES
+    pytest.state_indices = state_indices
 
 
 def test_dummy_input():
@@ -227,7 +227,7 @@ def test_dummy_input():
     image_embeds = pytest.image_embeds
     state_elem_mask = pytest.state_elem_mask
     states = pytest.states
-    STATE_INDICES = pytest.STATE_INDICES
+    state_indices = pytest.state_indices
 
     actions = rdt.predict_action(
         lang_tokens=lang_embeddings,
@@ -242,10 +242,10 @@ def test_dummy_input():
         ctrl_freqs=torch.tensor([25.0], device=DEVICE),  # would this default work?
     )  # (1, chunk_size, 128)
 
-    # select the meaning action via STATE_INDICES
+    # select the meaning action via state_indices
     action = actions[
         :,
         :,
-        STATE_INDICES,
-    ]  # (1, chunk_size, len(STATE_INDICES)) = (1, chunk_size, 7+ 1)
+        state_indices,
+    ]  # (1, chunk_size, len(state_indices)) = (1, chunk_size, 7+ 1)
     print(action)
