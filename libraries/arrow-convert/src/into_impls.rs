@@ -1,10 +1,11 @@
 use crate::IntoArrow;
 use arrow::array::{PrimitiveArray, StringArray, TimestampNanosecondArray};
 use arrow::datatypes::{
-    ArrowPrimitiveType, ArrowTimestampType, Float32Type, Float64Type, Int16Type, Int32Type,
-    Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+    ArrowPrimitiveType, ArrowTimestampType, Float16Type, Float32Type, Float64Type, Int16Type,
+    Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use half::f16;
 
 impl IntoArrow for bool {
     type A = arrow::array::BooleanArray;
@@ -44,6 +45,7 @@ impl_into_arrow!(
     i16 => Int16Type,
     i32 => Int32Type,
     i64 => Int64Type,
+    f16 => Float16Type,
     f32 => Float32Type,
     f64 => Float64Type
 );

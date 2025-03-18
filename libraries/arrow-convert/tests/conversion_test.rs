@@ -1,5 +1,6 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use dora_arrow_convert::{ArrowData, IntoArrow};
+use half::f16;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -94,6 +95,16 @@ mod tests {
         let data: ArrowData = ArrowData(Arc::new(arrow_array));
         let result_i64: i64 = TryFrom::try_from(&data)?;
         assert_eq!(value_i64, result_i64);
+        Ok(())
+    }
+
+    #[test]
+    fn test_f16_round_trip() -> Result<(), Report> {
+        let value_f16: f16 = f16::from_f32(42.42);
+        let arrow_array = value_f16.into_arrow();
+        let data: ArrowData = ArrowData(Arc::new(arrow_array));
+        let result_f16: f16 = TryFrom::try_from(&data)?;
+        assert_eq!(value_f16, result_f16);
         Ok(())
     }
 
