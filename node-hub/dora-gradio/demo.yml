@@ -1,0 +1,14 @@
+nodes:
+  - id: ui
+    build: pip install -e ../../node-hub/dora-gradio
+    path: dora-gradio
+    outputs:
+      - text_input     # Text from chat interface
+      - transcribed_text    # Transcribed text from audio
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      text_input: ui/text_input
+      text_whisper: ui/transcribed_text
