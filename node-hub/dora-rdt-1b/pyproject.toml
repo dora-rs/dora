@@ -50,7 +50,6 @@ extend-select = [
   "D",    # pydocstyle
   "UP",   # Ruff's UP rule
   "PERF", # Ruff's PERF rule
-  "E",    # Ruff's E rule
   "RET",  # Ruff's RET rule
   "RSE",  # Ruff's RSE rule
   "NPY",  # Ruff's NPY rule
