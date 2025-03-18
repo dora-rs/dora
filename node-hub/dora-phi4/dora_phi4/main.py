@@ -102,7 +102,6 @@ BAD_SENTENCES = [
     "the company also has a presence the united states canada and the united kingdom",
     "the company also announced that it will acquire the online retailer zappos",
     "the company has a market capitalization of 15 trillion yen",
-
 ]
 
 
@@ -177,8 +176,7 @@ def remove_text_noise(text: str, text_noise="") -> str:
             cleaned_words.remove(noise_word)
 
     # Reconstruct the cleaned text
-    cleaned_text = " ".join(cleaned_words)
-    return cleaned_text
+    return " ".join(cleaned_words)
 
 
 def main():
@@ -242,10 +240,10 @@ def main():
                 text = event["value"][0].as_py()
 
             if LEAD_MODALITY == input_id:
-                if len(frames) > 1:
-                    raise ValueError("Multiple images are not supported yet!")
-                elif len(frames) == 1:
+                if len(frames) == 1:
                     image_prompt = "<|image_1|>"
+                elif len(frames) > 1:
+                    raise ValueError("Multiple images are not supported yet!")
                 else:
                     image_prompt = ""
 
@@ -284,11 +282,11 @@ def main():
                 ):  # WPS
                     text_noise = ""
 
-                if response in BAD_SENTENCES:
-                    continue
-                if "company also has a presence" in response:
-                    continue
-                elif "The first time I saw the" in response:
+                if (
+                    response in BAD_SENTENCES
+                    or "company also has a presence" in response
+                    or "The first time I saw the" in response
+                ):
                     continue
                 ## Remove text noise independently of casing
                 response = remove_text_noise(response, text_noise)
