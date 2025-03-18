@@ -143,8 +143,7 @@ def calculate_similarity(source, target):
     edit_distance = pylcs.edit_distance(source, target)
     max_length = max(len(source), len(target))
     # Normalize the score by the maximum possible edit distance (the length of the longer string)
-    similarity = 1 - (edit_distance / max_length)
-    return similarity
+    return 1 - (edit_distance / max_length)
 
 
 def find_best_match_location(source_code, target_block):
@@ -181,10 +180,9 @@ def replace_code_in_source(source_code, replacement_block: str):
     start_index, end_index = find_best_match_location(source_code, replacement_block)
     if start_index != -1 and end_index != -1:
         # Replace the best matching part with the replacement block
-        new_source = (
+        return (
             source_code[:start_index] + replacement_block + source_code[end_index:]
         )
-        return new_source
     return source_code
 
 
