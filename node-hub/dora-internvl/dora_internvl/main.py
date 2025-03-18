@@ -18,7 +18,7 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 def build_transform(input_size):
     """TODO: Add docstring."""
     MEAN, STD = IMAGENET_MEAN, IMAGENET_STD
-    transform = T.Compose(
+    return T.Compose(
         [
             T.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
             T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
@@ -26,7 +26,6 @@ def build_transform(input_size):
             T.Normalize(mean=MEAN, std=STD),
         ],
     )
-    return transform
 
 
 def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
@@ -101,8 +100,7 @@ def load_image(image_array: np.array, input_size=448, max_num=12):
         image, image_size=input_size, use_thumbnail=True, max_num=max_num,
     )
     pixel_values = [transform(image) for image in images]
-    pixel_values = torch.stack(pixel_values)
-    return pixel_values
+    return torch.stack(pixel_values)
 
 
 def main():
