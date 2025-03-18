@@ -51,25 +51,6 @@ if DEVICE == "cuda":
 # Words that trigger the model to respond
 ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split()
 
-def load_model():
-    """Load the transformer model and tokenizer."""
-    logging.info(f"Loading model {MODEL_NAME} on {DEVICE}")
-
-    # Memory efficient loading
-
-def load_model():
-    """Load the transformer model and tokenizer.
-
-    This function loads the pretrained transformer model and tokenizer based on
-    the specified MODEL_NAME. It applies memory-efficient settings if enabled.
-
-    Returns
-    -------
-        tuple: A tuple containing the loaded model and tokenizer.
-
-    """
-    logging.info(f"Loading model {MODEL_NAME} on {DEVICE}")
-
 
 def load_model():
     """Load the transformer model and tokenizer.
@@ -90,16 +71,6 @@ def load_model():
     }
 
     if ENABLE_MEMORY_EFFICIENT and DEVICE == "cuda":
-        model_kwargs.update({
-            "low_cpu_mem_usage": True,
-            "offload_folder": "offload",
-            "load_in_8bit": True,
-        })
-
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        **model_kwargs,
-    )
         model_kwargs.update(
             {
                 "low_cpu_mem_usage": True,
@@ -107,6 +78,11 @@ def load_model():
                 "load_in_8bit": True,
             }
         )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        **model_kwargs,
+    )
 
     model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, **model_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -135,7 +111,9 @@ def generate_response(model, tokenizer, text: str, history) -> tuple[str, list]:
     history += [{"role": "user", "content": text}]
 
     prompt = tokenizer.apply_chat_template(
-        history, tokenize=False, add_generation_prompt=True,
+        history,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
     model_inputs = tokenizer([prompt], return_tensors="pt").to(DEVICE)
