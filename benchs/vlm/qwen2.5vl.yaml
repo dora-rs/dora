@@ -12,7 +12,6 @@ nodes:
   - id: vlm
     # Comment flash_attn if not on cuda hardware
     build: |
-      pip install flash-attn --no-build-isolation
       pip install -e ../../node-hub/dora-qwen2-5-vl
     path: dora-qwen2-5-vl
     inputs:

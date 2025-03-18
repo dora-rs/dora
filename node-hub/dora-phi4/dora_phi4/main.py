@@ -55,9 +55,7 @@ device_map = infer_auto_device_map(
 )
 
 # Load the model directly with the inferred device map
-model = AutoModelForCausalLM.from_pretrained(
-    MODEL_PATH, **MODEL_CONFIG, device_map=device_map
-).to(device)
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, **MODEL_CONFIG).to(device)
 
 generation_config = GenerationConfig.from_pretrained(MODEL_PATH)
 
@@ -82,6 +80,7 @@ BAD_SENTENCES = [
     "The sound of the wind is so loud.",
     "The first time I saw the sea.",
     "the first time saw the sea i was so happy"
+    "The first time I saw the sea, I was very happy.",
     "The first time I saw the sea was in the movie.",
     "The first time I saw the movie was in the theater.",
     "The first time I saw the movie.",
@@ -129,8 +128,7 @@ def remove_text_noise(text: str, text_noise="") -> str:
         # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as equivalent
         s = re.sub(r"-", " ", s)
         # Remove other punctuation and convert to lowercase
-        s = re.sub(r"[^\w\s]", "", s).lower()
-        return s
+        return re.sub(r"[^\w\s]", "", s).lower()
 
     # Normalize both text and text_noise
     normalized_text = normalize(text)

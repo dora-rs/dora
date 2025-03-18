@@ -42,7 +42,8 @@ def load_magma_models():
             device_map="auto",
         )
         processor = AutoProcessor.from_pretrained(
-            model_name_or_path, trust_remote_code=True,
+            model_name_or_path,
+            trust_remote_code=True,
         )
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
@@ -72,7 +73,9 @@ def generate(
     ]
 
     prompt = processor.tokenizer.apply_chat_template(
-        convs, tokenize=False, add_generation_prompt=True,
+        convs,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
     try:
@@ -174,14 +177,18 @@ def main():
                     task_description = event["value"][0].as_py()
                     image_id = event["metadata"].get("image_id", None)
 
-                    if image_id is None or image_id not in frames:
-                        logger.error(f"Image ID {image_id} not found in frames")
+                    if image_id in frames:
+                        image = frames[image_id]
+                    elif len(frames) == 1:
+                        image = next(iter(frames.values()))
+                    else:
+                        logger.error(f"Image not found for {image_id}")
                         continue
-
-                    image = frames[image_id]
                     response, trajectories = generate(image, task_description)
                     node.send_output(
-                        "text", pa.array([response]), {"image_id": image_id},
+                        "text",
+                        pa.array([response]),
+                        {"image_id": image_id},
                     )
 
                     # Send trajectory data if available

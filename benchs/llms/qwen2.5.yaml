@@ -10,7 +10,6 @@ nodes:
 
   - id: llm
     build: |
-      pip install flash-attn --no-build-isolation
       pip install -e ../../node-hub/dora-qwen
     path: dora-qwen
     inputs:
