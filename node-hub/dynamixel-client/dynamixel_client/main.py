@@ -3,13 +3,12 @@
 It can be used to read positions, velocities, currents, and set goal positions and currents.
 """
 
-import os
-import time
 import argparse
 import json
+import os
+import time
 
 import pyarrow as pa
-
 from dora import Node
 
 from .bus import DynamixelBus, TorqueMode, wrap_joints_and_values

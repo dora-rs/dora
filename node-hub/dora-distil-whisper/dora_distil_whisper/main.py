@@ -19,10 +19,12 @@ def remove_text_noise(text: str, text_noise="") -> str:
     """Remove noise from text.
 
     Args:
+    ----
         text (str): Original text
         text_noise (str): text to remove from the original text
 
     Returns:
+    -------
         str: Cleaned text
 
     """

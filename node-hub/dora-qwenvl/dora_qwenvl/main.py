@@ -74,7 +74,9 @@ def generate(frames: dict, question):
 
     # Preparation for inference
     text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True,
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
     )
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
@@ -128,7 +130,11 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                if (
+                    encoding == "bgr8"
+                    or encoding == "rgb8"
+                    or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]
+                ):
                     channels = 3
                     storage_type = np.uint8
                 else:

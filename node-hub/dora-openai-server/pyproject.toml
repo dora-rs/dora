@@ -29,7 +29,7 @@ dora-openai-server = "dora_openai_server.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]
-

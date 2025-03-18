@@ -1,17 +1,13 @@
 [project]
 name = "mujoco-client"
 version = "0.1"
-authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>"}]
+authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>" }]
 description = "Dora Node client for mujoco simulated robots."
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
 
-dependencies = [
-"dora-rs == 0.3.5",
-"mujoco ~= 3.1.6",
-"PyOpenGL ~= 3.1.1a1",
-]
+dependencies = ["dora-rs == 0.3.5", "mujoco ~= 3.1.6", "PyOpenGL ~= 3.1.1a1"]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
@@ -25,6 +21,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

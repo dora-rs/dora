@@ -3,6 +3,7 @@
 import pyarrow as pa
 from dora import Node
 
+
 def main():
     """Process node input events and send speech output."""
     node = Node()
@@ -16,6 +17,7 @@ def main():
             metadata: {event["metadata"]}""",
             )
             node.send_output("speech", pa.array(["Hello World"]))
+
 
 if __name__ == "__main__":
     main()

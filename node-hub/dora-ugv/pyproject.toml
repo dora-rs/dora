@@ -17,6 +17,7 @@ dora-ugv = "dora_ugv.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

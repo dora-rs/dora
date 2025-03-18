@@ -21,6 +21,7 @@ pyarrow-sender = "pyarrow_sender.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

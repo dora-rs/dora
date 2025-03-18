@@ -54,7 +54,11 @@ def write_dict_to_json(file_path, key: str, new_data):
 
 
 def save_image_and_add_to_json(
-    frame_dict: dict, root_path, llama_root_path, jsonl_file, messages,
+    frame_dict: dict,
+    root_path,
+    llama_root_path,
+    jsonl_file,
+    messages,
 ):
     """Save an image from a NumPy array and add a new JSON object as a line to a JSONL file.
 
@@ -113,9 +117,9 @@ def main():
     pa.array([])  # initialize pyarrow array
     node = Node()
 
-    assert os.getenv("LLAMA_FACTORY_ROOT_PATH"), (
-        "LLAMA_FACTORY_ROOT_PATH is not set, Either git clone the repo or set the environment variable"
-    )
+    assert os.getenv(
+        "LLAMA_FACTORY_ROOT_PATH"
+    ), "LLAMA_FACTORY_ROOT_PATH is not set, Either git clone the repo or set the environment variable"
     llama_factory_root_path = Path(os.getenv("LLAMA_FACTORY_ROOT_PATH")) / "data"
 
     entry_name = os.getenv("ENTRY_NAME", "dora_demo")

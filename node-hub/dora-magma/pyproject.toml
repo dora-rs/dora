@@ -7,11 +7,9 @@ name = "dora-magma"
 version = "0.1.0"
 description = "Dora node for Microsoft Magma model"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = { text = "MIT" }
 readme = "README.md"
-authors = [
-  {name = "Munish Mummadi", email = "moneymindedmunish1@gmail.com"}
-]
+authors = [{ name = "Munish Mummadi", email = "moneymindedmunish1@gmail.com" }]
 dependencies = [
     "dora-rs >= 0.3.9",
     "numpy >= 2.2.3",
@@ -25,11 +23,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = [
-    "pytest>=8.1.1",
-    "ruff>=0.9.1",
-    "pytest-cov>=4.0.0",
-]
+dev = ["pytest>=8.1.1", "ruff>=0.9.1", "pytest-cov>=4.0.0"]
 
 [project.scripts]
 dora-magma = "dora_magma.main:main"
@@ -42,6 +36,7 @@ extend.exclude = "dora_magma/Magma"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

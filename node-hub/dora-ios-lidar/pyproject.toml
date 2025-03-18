@@ -17,6 +17,7 @@ dora-ios-lidar = "dora_ios_lidar.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

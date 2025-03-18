@@ -2,8 +2,8 @@
 name = "dora-distil-whisper"
 version = "0.3.10"
 authors = [
-  { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
-  { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
+    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora dora-distil-whisper"
 license = { text = "MIT" }
@@ -11,14 +11,14 @@ readme = "README.md"
 requires-python = ">=3.8"
 
 dependencies = [
-  "dora-rs >= 0.3.9",
-  "numpy < 2.0.0",
-  "pyarrow >= 5.0.0",
-  "transformers >= 4.0.0",
-  "accelerate >= 0.29.2",
-  "torch >= 2.2.0",
-  "modelscope >= 1.18.1",
-  "mlx-whisper >= 0.4.1; sys_platform == 'darwin'",
+    "dora-rs >= 0.3.9",
+    "numpy < 2.0.0",
+    "pyarrow >= 5.0.0",
+    "transformers >= 4.0.0",
+    "accelerate >= 0.29.2",
+    "torch >= 2.2.0",
+    "modelscope >= 1.18.1",
+    "mlx-whisper >= 0.4.1; sys_platform == 'darwin'",
 ]
 
 [dependency-groups]
@@ -29,6 +29,7 @@ dora-distil-whisper = "dora_distil_whisper.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D", # pydocstyle
-  "UP",
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

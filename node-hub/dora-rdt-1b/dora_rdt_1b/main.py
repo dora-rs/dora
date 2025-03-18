@@ -18,7 +18,8 @@ from dora_rdt_1b.RoboticsDiffusionTransformer.configs.state_vec import (
 
 VISION_DEFAULT_PATH = "robotics-diffusion-transformer/rdt-1b"
 ROBOTIC_MODEL_NAME_OR_PATH = os.getenv(
-    "ROBOTIC_MODEL_NAME_OR_PATH", VISION_DEFAULT_PATH,
+    "ROBOTIC_MODEL_NAME_OR_PATH",
+    VISION_DEFAULT_PATH,
 )
 LANGUAGE_EMBEDDING_PATH = os.getenv("LANGUAGE_EMBEDDING", "lang_embed.pt")
 
@@ -163,7 +164,9 @@ def get_states(proprio):
 
     B, N = 1, 1  # batch size and state history size
     states = torch.zeros(
-        (B, N, config["model"]["state_token_dim"]), device=DEVICE, dtype=DTYPE,
+        (B, N, config["model"]["state_token_dim"]),
+        device=DEVICE,
+        dtype=DTYPE,
     )
     # suppose you do not have proprio
     # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
@@ -177,7 +180,9 @@ def get_states(proprio):
     states[:, :, STATE_INDICES] = proprio
 
     state_elem_mask = torch.zeros(
-        (1, config["model"]["state_token_dim"]), device=DEVICE, dtype=torch.bool,
+        (1, config["model"]["state_token_dim"]),
+        device=DEVICE,
+        dtype=torch.bool,
     )
 
     state_elem_mask[:, STATE_INDICES] = True
@@ -213,7 +218,11 @@ def main():
                     metadata = event["metadata"]
                     encoding = metadata["encoding"]
 
-                    if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    if (
+                        encoding == "bgr8"
+                        or encoding == "rgb8"
+                        or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]
+                    ):
                         channels = 3
                         storage_type = np.uint8
                     else:
@@ -243,7 +252,8 @@ def main():
                     else:
                         raise RuntimeError(f"Unsupported image encoding: {encoding}")
                     frames[f"last_{event_id}"] = frames.get(
-                        event_id, Image.fromarray(frame),
+                        event_id,
+                        Image.fromarray(frame),
                     )
                     frames[event_id] = Image.fromarray(frame)
                 elif "jointstate" in event_id:
@@ -270,7 +280,9 @@ def main():
                         ],
                     ]
                     image_embeds = process_image(
-                        rgbs_lst, image_processor, vision_encoder,
+                        rgbs_lst,
+                        image_processor,
+                        vision_encoder,
                     )
 
                     ## Embed states
@@ -285,19 +297,24 @@ def main():
                     actions = rdt.predict_action(
                         lang_tokens=lang_embeddings,
                         lang_attn_mask=torch.ones(
-                            lang_embeddings.shape[:2], dtype=torch.bool, device=DEVICE,
+                            lang_embeddings.shape[:2],
+                            dtype=torch.bool,
+                            device=DEVICE,
                         ),
                         img_tokens=image_embeds,
                         state_tokens=states,  # how can I get this?
                         action_mask=state_elem_mask.unsqueeze(1),  # how can I get this?
                         ctrl_freqs=torch.tensor(
-                            [25.0], device=DEVICE,
+                            [25.0],
+                            device=DEVICE,
                         ),  # would this default work?
                     )  # (1, chunk_size, 128)
 
                     # select the meaning action via STATE_INDICES
                     action = actions[
-                        :, :, state_indices,
+                        :,
+                        :,
+                        state_indices,
                     ]  # (1, chunk_size, len(STATE_INDICES)) = (1, chunk_size, 7+ 1)
                     action = action.detach().float().to("cpu").numpy()
                     node.send_output("action", pa.array(action.ravel()))

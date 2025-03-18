@@ -1,16 +1,14 @@
 """Mujoco Client: This node is used to represent simulated robot, it can be used to read virtual positions, or can be controlled."""
 
-import os
 import argparse
-import time
 import json
-
-import pyarrow as pa
-
-from dora import Node
+import os
+import time
 
 import mujoco
 import mujoco.viewer
+import pyarrow as pa
+from dora import Node
 
 
 class Client:

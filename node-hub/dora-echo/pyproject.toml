@@ -20,6 +20,7 @@ dora-echo = "dora_echo.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

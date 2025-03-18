@@ -17,6 +17,7 @@ dora-kokoro-tts = "dora_kokoro_tts.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

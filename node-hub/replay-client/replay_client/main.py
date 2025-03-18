@@ -3,12 +3,11 @@
 reading a dataset of actions and joints from a specific episode.
 """
 
-import os
 import argparse
+import os
 
-import pyarrow as pa
 import pandas as pd
-
+import pyarrow as pa
 from dora import Node
 
 

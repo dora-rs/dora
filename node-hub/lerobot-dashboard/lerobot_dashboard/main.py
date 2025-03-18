@@ -1,12 +1,10 @@
 """Following Dora node is a minimalistic interface that shows two images and text in a Pygame window."""
 
-import os
 import argparse
-
-import pygame
+import os
 
 import pyarrow as pa
-
+import pygame
 from dora import Node
 
 

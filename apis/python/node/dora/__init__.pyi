@@ -1,4 +1,5 @@
 import typing
+from types import MappingProxyType
 
 import pyarrow
 
@@ -11,12 +12,12 @@ class Enum:
     Derive from this class to define new enumerations.
     """
 
-    __members__: mappingproxy = ...
+    __members__: MappingProxyType = ...
 
 @typing.final
 class Node:
     """The custom node API lets you integrate `dora` into your application.
-    
+
     It allows you to retrieve input and send output in any fashion you want.
 
     Use with:
@@ -28,7 +29,7 @@ class Node:
     ```
     """
 
-    def __init__(self, node_id: str=None) -> None:
+    def __init__(self, node_id: str = None) -> None:
         """Use the custom node API to embed `dora` into your application.
 
         It allows you to retrieve input and send output in any fashion you want.
@@ -57,8 +58,10 @@ class Node:
         This currently only work with ROS2.
         """
 
-    def next(self, timeout: float=None) -> dict:
-        """`.next()` gives you the next input that the node has received.
+    def next(self, timeout: float = None) -> dict:
+        """Get the next input that the node has received.
+
+        `.next()` gives you the next input that the node has received.
 
         It blocks until the next event becomes available.
         You can use timeout in seconds to return if no input is available.
@@ -79,7 +82,9 @@ class Node:
         ```
         """
 
-    def send_output(self, output_id: str, data: pyarrow.Array, metadata: dict=None) -> None:
+    def send_output(
+        self, output_id: str, data: pyarrow.Array, metadata: dict = None
+    ) -> None:
         """`send_output` send data from the node.
 
         ```python
@@ -124,7 +129,7 @@ class Ros2Context:
     ```
     """
 
-    def __init__(self, ros_paths: list[str]=None) -> None:
+    def __init__(self, ros_paths: list[str] = None) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 
         By default, Ros2Context will use env `AMENT_PREFIX_PATH` to search for message definition.
@@ -145,7 +150,9 @@ class Ros2Context:
         ```
         """
 
-    def new_node(self, name: str, namespace: str, options: dora.Ros2NodeOptions) -> dora.Ros2Node:
+    def new_node(
+        self, name: str, namespace: str, options: dora.Ros2NodeOptions
+    ) -> dora.Ros2Node:
         """Create a new ROS2 node.
 
         ```python
@@ -231,7 +238,9 @@ class Ros2Node:
     See: https://github.com/jhelovuo/ros2-client/issues/4
     """
 
-    def create_publisher(self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies=None) -> dora.Ros2Publisher:
+    def create_publisher(
+        self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies = None
+    ) -> dora.Ros2Publisher:
         """Create a ROS2 publisher.
 
         ```python
@@ -242,7 +251,9 @@ class Ros2Node:
         at any point without it being considered a breaking change.
         """
 
-    def create_subscription(self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies=None) -> dora.Ros2Subscription:
+    def create_subscription(
+        self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies = None
+    ) -> dora.Ros2Subscription:
         """Create a ROS2 subscription.
 
         ```python
@@ -250,12 +261,15 @@ class Ros2Node:
         ```
 
         Warnings:
+        --------
         - dora Ros2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change.
 
         """
 
-    def create_topic(self, name: str, message_type: str, qos: dora.Ros2QosPolicies) -> dora.Ros2Topic:
+    def create_topic(
+        self, name: str, message_type: str, qos: dora.Ros2QosPolicies
+    ) -> dora.Ros2Topic:
         """Create a ROS2 topic to connect to.
 
         ```python
@@ -269,7 +283,7 @@ class Ros2Node:
 class Ros2NodeOptions:
     """ROS2 Node Options."""
 
-    def __init__(self, rosout: bool=None) -> None:
+    def __init__(self, rosout: bool = None) -> None:
         """ROS2 Node Options."""
 
 @typing.final
@@ -277,6 +291,7 @@ class Ros2Publisher:
     """ROS2 Publisher.
 
     Warnings:
+    --------
     - dora Ros2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
 
@@ -306,7 +321,16 @@ class Ros2Publisher:
 class Ros2QosPolicies:
     """ROS2 QoS Policy."""
 
-    def __init__(self, durability: dora.Ros2Durability=None, liveliness: dora.Ros2Liveliness=None, reliable: bool=None, keep_all: bool=None, lease_duration: float=None, max_blocking_time: float=None, keep_last: int=None) -> dora.Ros2QoSPolicies:
+    def __init__(
+        self,
+        durability: dora.Ros2Durability = None,
+        liveliness: dora.Ros2Liveliness = None,
+        reliable: bool = None,
+        keep_all: bool = None,
+        lease_duration: float = None,
+        max_blocking_time: float = None,
+        keep_last: int = None,
+    ) -> dora.Ros2QoSPolicies:
         """ROS2 QoS Policy."""
 
 @typing.final
@@ -314,18 +338,20 @@ class Ros2Subscription:
     """ROS2 Subscription.
 
     Warnings:
+    --------
     - dora Ros2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
 
     """
 
-    def next(self):...
+    def next(self): ...
 
 @typing.final
 class Ros2Topic:
     """ROS2 Topic.
 
     Warnings:
+    --------
     - dora Ros2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
 

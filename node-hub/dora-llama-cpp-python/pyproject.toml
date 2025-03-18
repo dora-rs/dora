@@ -42,6 +42,7 @@ dora-llama-cpp-python = "dora_llama_cpp_python.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

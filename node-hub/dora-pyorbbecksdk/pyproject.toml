@@ -20,6 +20,7 @@ dora-pyorbbecksdk = "dora_pyorbbecksdk.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

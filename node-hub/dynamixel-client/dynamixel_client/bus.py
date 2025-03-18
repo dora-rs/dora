@@ -1,19 +1,20 @@
 """TODO: Add docstring."""
 
 import enum
-
-import pyarrow as pa
-
 from typing import Union
 
+import pyarrow as pa
 from dynamixel_sdk import (
-    PacketHandler,
-    PortHandler,
     COMM_SUCCESS,
+    DXL_HIBYTE,
+    DXL_HIWORD,
+    DXL_LOBYTE,
+    DXL_LOWORD,
     GroupSyncRead,
     GroupSyncWrite,
+    PacketHandler,
+    PortHandler,
 )
-from dynamixel_sdk import DXL_HIBYTE, DXL_HIWORD, DXL_LOBYTE, DXL_LOWORD
 
 PROTOCOL_VERSION = 2.0
 BAUD_RATE = 1_000_000

@@ -33,7 +33,9 @@ if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
         MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
 
 model = ParlerTTSForConditionalGeneration.from_pretrained(
-    MODEL_NAME_OR_PATH, torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+    MODEL_NAME_OR_PATH,
+    torch_dtype=torch_dtype,
+    low_cpu_mem_usage=True,
 ).to(device)
 model.generation_config.cache_implementation = "static"
 model.forward = torch.compile(model.forward, mode="default")
@@ -78,7 +80,10 @@ class InterruptStoppingCriteria(StoppingCriteria):
         self.stop_signal = False
 
     def __call__(
-        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs,
+        self,
+        input_ids: torch.LongTensor,
+        scores: torch.FloatTensor,
+        **kwargs,
     ) -> bool:
         """TODO: Add docstring."""
         return self.stop_signal

@@ -1,13 +1,12 @@
 """TODO : Doc String."""
+
+import argparse
 import os
 from pathlib import Path
 
 import cv2
-import argparse
-
 import numpy as np
 import pyarrow as pa
-
 from dora import Node
 from ffmpeg import FFmpeg
 

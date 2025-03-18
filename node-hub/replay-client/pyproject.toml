@@ -1,16 +1,13 @@
 [project]
 name = "replay-client"
 version = "0.1"
-authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>"}]
+authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>" }]
 description = "Dora Node client for replaying recorded data."
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
 
-dependencies = [
-"dora-rs == 0.3.5",
-"pandas ~= 2.2.2",
-]
+dependencies = ["dora-rs == 0.3.5", "pandas ~= 2.2.2"]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
@@ -24,6 +21,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]
