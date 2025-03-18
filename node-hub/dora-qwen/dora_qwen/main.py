@@ -17,12 +17,11 @@ def get_model_gguf():
     """TODO: Add docstring."""
     from llama_cpp import Llama
 
-    llm = Llama.from_pretrained(
+    return Llama.from_pretrained(
         repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
         filename="*fp16.gguf",
         verbose=False,
     )
-    return llm
 
 
 def get_model_darwin():

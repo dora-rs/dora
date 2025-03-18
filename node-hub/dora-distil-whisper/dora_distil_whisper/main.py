@@ -37,8 +37,7 @@ def remove_text_noise(text: str, text_noise="") -> str:
         # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as equivalent
         s = re.sub(r"-", " ", s)
         # Remove other punctuation and convert to lowercase
-        s = re.sub(r"[^\w\s]", "", s).lower()
-        return s
+        return re.sub(r"[^\w\s]", "", s).lower()
 
     # Normalize both text and text_noise
     normalized_text = normalize(text)
@@ -84,35 +83,34 @@ def remove_text_noise(text: str, text_noise="") -> str:
             cleaned_words.remove(noise_word)
 
     # Reconstruct the cleaned text
-    cleaned_text = " ".join(cleaned_words)
-    return cleaned_text
+    return " ".join(cleaned_words)
 
 
 def load_model():
     """TODO: Add docstring."""
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 
-    MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
+    model_name_or_path = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
 
     if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
         from modelscope import snapshot_download
 
-        if not Path(MODEL_NAME_OR_PATH).exists():
-            MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
+        if not Path(model_name_or_path).exists():
+            model_name_or_path = snapshot_download(model_name_or_path)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
-        MODEL_NAME_OR_PATH,
+        model_name_or_path,
         torch_dtype=torch_dtype,
         low_cpu_mem_usage=True,
         use_safetensors=True,
     )
     model.to(device)
 
-    processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH)
-    pipe = pipeline(
+    processor = AutoProcessor.from_pretrained(model_name_or_path)
+    return pipeline(
         "automatic-speech-recognition",
         model=model,
         tokenizer=processor.tokenizer,
@@ -121,7 +119,6 @@ def load_model():
         torch_dtype=torch_dtype,
         device=device,
     )
-    return pipe
 
 
 BAD_SENTENCES = [

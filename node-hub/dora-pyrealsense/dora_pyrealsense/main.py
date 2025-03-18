@@ -14,8 +14,8 @@ RUNNER_CI = True if os.getenv("CI") == "true" else False
 
 def main():
     """TODO: Add docstring."""
-    FLIP = os.getenv("FLIP", "")
-    DEVICE_SERIAL = os.getenv("DEVICE_SERIAL", "")
+    flip = os.getenv("FLIP", "")
+    device_serial = os.getenv("DEVICE_SERIAL", "")
     image_height = int(os.getenv("IMAGE_HEIGHT", "480"))
     image_width = int(os.getenv("IMAGE_WIDTH", "640"))
     encoding = os.getenv("ENCODING", "rgb8")
@@ -26,15 +26,15 @@ def main():
 
     # Serial list
     serials = [device.get_info(rs.camera_info.serial_number) for device in devices]
-    if DEVICE_SERIAL and (DEVICE_SERIAL in serials):
+    if device_serial and (device_serial in serials):
         raise ConnectionError(
-            f"Device with serial {DEVICE_SERIAL} not found within: {serials}.",
+            f"Device with serial {device_serial} not found within: {serials}.",
         )
 
     pipeline = rs.pipeline()
 
     config = rs.config()
-    config.enable_device(DEVICE_SERIAL)
+    config.enable_device(device_serial)
     config.enable_stream(rs.stream.color, image_width, image_height, rs.format.rgb8, 30)
     config.enable_stream(rs.stream.depth, image_width, image_height)
 
@@ -79,11 +79,11 @@ def main():
 
                 ## Change rgb to bgr
 
-                if FLIP == "VERTICAL":
+                if flip == "VERTICAL":
                     frame = cv2.flip(frame, 0)
-                elif FLIP == "HORIZONTAL":
+                elif flip == "HORIZONTAL":
                     frame = cv2.flip(frame, 1)
-                elif FLIP == "BOTH":
+                elif flip == "BOTH":
                     frame = cv2.flip(frame, -1)
 
                 # resize the frame

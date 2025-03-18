@@ -22,33 +22,33 @@ magma_dir = current_dir.parent / "Magma" / "magma"
 
 def load_magma_models():
     """TODO: Add docstring."""
-    DEFAULT_PATH = str(magma_dir.parent / "checkpoints" / "Magma-8B")
-    if not os.path.exists(DEFAULT_PATH):
-        DEFAULT_PATH = str(magma_dir.parent)
-        if not os.path.exists(DEFAULT_PATH):
+    default_path = str(magma_dir.parent / "checkpoints" / "Magma-8B")
+    if not os.path.exists(default_path):
+        default_path = str(magma_dir.parent)
+        if not os.path.exists(default_path):
             logger.warning(
                 "Warning: Magma submodule not found, falling back to HuggingFace version",
             )
-            DEFAULT_PATH = "microsoft/Magma-8B"
+            default_path = "microsoft/Magma-8B"
 
-    MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
-    logger.info(f"Loading Magma model from: {MODEL_NAME_OR_PATH}")
+    model_name_or_path = os.getenv("MODEL_NAME_OR_PATH", default_path)
+    logger.info(f"Loading Magma model from: {model_name_or_path}")
 
     try:
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME_OR_PATH,
+            model_name_or_path,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
             device_map="auto",
         )
         processor = AutoProcessor.from_pretrained(
-            MODEL_NAME_OR_PATH, trust_remote_code=True,
+            model_name_or_path, trust_remote_code=True,
         )
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
 
-    return model, processor, MODEL_NAME_OR_PATH
+    return model, processor, model_name_or_path
 
 
 model, processor, MODEL_NAME_OR_PATH = load_magma_models()
