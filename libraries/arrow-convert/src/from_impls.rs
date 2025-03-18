@@ -3,8 +3,8 @@ use arrow::{
     datatypes::{ArrowPrimitiveType, ArrowTemporalType},
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-
 use eyre::ContextCompat;
+use half::f16;
 
 use crate::ArrowData;
 
@@ -91,6 +91,7 @@ impl_try_from_arrow_data!(
     i16 => Int16Type,
     i32 => Int32Type,
     i64 => Int64Type,
+    f16 => Float16Type,
     f32 => Float32Type,
     f64 => Float64Type
 );
