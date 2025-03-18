@@ -17,7 +17,6 @@ nodes:
 
   - id: dora-phi4
     build: |
-      pip install flash-attn --no-build-isolation
       pip install -e ../../node-hub/dora-phi4
     path: dora-phi4
     inputs:

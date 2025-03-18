@@ -17,8 +17,3 @@ nodes:
       - text
     env:
       MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct" # Model from Hugging Face
-      SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
-      MAX_TOKENS: "128" # Reduced for concise responses
-      DEVICE: "cuda" # Use "cpu" for CPU, "cuda" for NVIDIA GPU, "mps" for Apple Silicon
-      ENABLE_MEMORY_EFFICIENT: "true" # Enable 8-bit quantization and memory optimizations
-      TORCH_DTYPE: "float16" # Use half precision for better memory efficiency
