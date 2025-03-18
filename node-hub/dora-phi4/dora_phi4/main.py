@@ -1,6 +1,8 @@
 """TODO: Add docstring."""
 
 import os
+import re
+import time
 
 import cv2
 import numpy as np
@@ -76,9 +78,85 @@ BAD_SENTENCES = [
     "The first time I saw the sea.",
     "The first time I saw the sea was in the movie.",
     "The first time I saw the movie.",
+    "the first time saw the video i was like my god",
     "I don't know what to do.",
     "I don't know.",
 ]
+
+
+def remove_text_noise(text: str, text_noise="") -> str:
+    """Remove noise from text.
+
+    Args:
+    ----
+        text (str): Original text
+        text_noise (str): text to remove from the original text
+
+    Returns:
+    -------
+        str: Cleaned text
+
+    """
+    # Handle the case where text_noise is empty
+    if not text_noise.strip():
+        return (
+            text  # Return the original text if text_noise is empty or just whitespace
+        )
+
+    # Helper function to normalize text (remove punctuation, make lowercase, and handle hyphens)
+    def normalize(s):
+        # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as equivalent
+        s = re.sub(r"-", " ", s)
+        # Remove other punctuation and convert to lowercase
+        s = re.sub(r"[^\w\s]", "", s).lower()
+        return s
+
+    # Normalize both text and text_noise
+    normalized_text = normalize(text)
+    normalized_noise = normalize(text_noise)
+
+    # Split into words
+    text_words = normalized_text.split()
+    noise_words = normalized_noise.split()
+
+    # Function to find and remove noise sequence flexibly
+    def remove_flexible(text_list, noise_list):
+        i = 0
+        while i <= len(text_list) - len(noise_list):
+            match = True
+            extra_words = 0
+            for j, noise_word in enumerate(noise_list):
+                if i + j + extra_words >= len(text_list):
+                    match = False
+                    break
+                # Allow skipping extra words in text_list
+                while (
+                    i + j + extra_words < len(text_list)
+                    and text_list[i + j + extra_words] != noise_word
+                ):
+                    extra_words += 1
+                    if i + j + extra_words >= len(text_list):
+                        match = False
+                        break
+                if not match:
+                    break
+            if match:
+                # Remove matched part
+                del text_list[i : i + len(noise_list) + extra_words]
+                i = max(0, i - len(noise_list))  # Adjust index after removal
+            else:
+                i += 1
+        return text_list
+
+    # Only remove parts of text_noise that are found in text
+    cleaned_words = text_words[:]
+    for noise_word in noise_words:
+        if noise_word in cleaned_words:
+            cleaned_words.remove(noise_word)
+
+    # Reconstruct the cleaned text
+    cleaned_text = " ".join(cleaned_words)
+    return cleaned_text
 
 
 def main():
@@ -86,10 +164,12 @@ def main():
     node = Node()
 
     frames = {}
-    image_id = None
     image = None
     audios = None
     text = ""
+    noise_timestamp = time.time()
+    text_noise = ""
+
     for event in node:
         if event["type"] == "INPUT":
             input_id = event["id"]
@@ -176,8 +256,21 @@ def main():
                     clean_up_tokenization_spaces=False,
                 )[0]
 
-                if response not in BAD_SENTENCES:
-                    node.send_output("text", pa.array([response]))
+                # Remove noise filter after some time
+                if time.time() - noise_timestamp > (
+                    len(text_noise.split()) / 1.5
+                ):  # WPS
+                    text_noise = ""
+
+                if response in BAD_SENTENCES:
+                    continue
+                ## Remove text noise independently of casing
+                response = remove_text_noise(response, text_noise)
+                if response.strip() == "" or response.strip() == ".":
+                    continue
+                node.send_output("text", pa.array([response]))
+                noise_timestamp = time.time()
+                text_noise = response
 
 
 if __name__ == "__main__":

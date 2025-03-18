@@ -34,7 +34,7 @@ nodes:
     outputs:
       - data
     env:
-      DATA: "Translate this chinese audio to english"
+      DATA: "Translate this audio to english."
 
   - id: dora-rerun
     build: pip install -e ../../node-hub/dora-rerun
