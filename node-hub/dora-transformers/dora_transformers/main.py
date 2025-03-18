@@ -70,6 +70,20 @@ def load_model():
     """
     logging.info(f"Loading model {MODEL_NAME} on {DEVICE}")
 
+
+def load_model():
+    """Load the transformer model and tokenizer.
+
+    This function loads the pretrained transformer model and tokenizer based on
+    the specified MODEL_NAME. It applies memory-efficient settings if enabled.
+
+    Returns
+    -------
+        tuple: A tuple containing the loaded model and tokenizer.
+
+    """
+    logging.info(f"Loading model {MODEL_NAME} on {DEVICE}")
+
     model_kwargs = {
         "torch_dtype": TORCH_DTYPE,
         "device_map": DEVICE,

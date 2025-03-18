@@ -27,7 +27,6 @@ dora-transformer = "dora_transformer.main:main"
 
 
 
-  "D",   # pydocstyle
 [tool.ruff.lint]
 extend-select = [
     "D",  # pydocstyle
