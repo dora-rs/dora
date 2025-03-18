@@ -19,7 +19,7 @@ dependencies = [
     "backoff==2.2.1",
     "peft==0.13.2",
     "bitsandbytes>=0.42.0",
-    "requests"
+    "requests",
 ]
 
 [tool.setuptools]
@@ -33,7 +33,8 @@ dora-phi4 = "dora_phi4.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",  # Ruff's UP rule
-  "PERF" # Ruff's PERF rule
+  "PERF", # Ruff's PERF rule
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

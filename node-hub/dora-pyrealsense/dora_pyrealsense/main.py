@@ -117,7 +117,9 @@ def main():
                 # metadata["principal_point"] = [int(rgb_intr.ppx), int(rgb_intr.ppy)]
                 node.send_output("image", storage, metadata)
                 node.send_output(
-                    "depth", pa.array(scaled_depth_image.ravel()), metadata,
+                    "depth",
+                    pa.array(scaled_depth_image.ravel()),
+                    metadata,
                 )
 
         elif event_type == "ERROR":

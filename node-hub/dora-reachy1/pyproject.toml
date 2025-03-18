@@ -11,9 +11,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 dependencies = [
-"dora-rs >= 0.3.6",
-"reachy-sdk >= 0.7.0",
-"grpcio-tools >= 1.50.0"
+    "dora-rs >= 0.3.6",
+    "reachy-sdk >= 0.7.0",
+    "grpcio-tools >= 1.50.0",
 ]
 
 [dependency-groups]
@@ -29,7 +29,8 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",  # Ruff's UP rule
-  "PERF" # Ruff's PERF rule
+  "PERF", # Ruff's PERF rule
+    "D",  # pydocstyle
+    "UP",
+    "I",
 ]

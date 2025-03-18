@@ -102,7 +102,10 @@ def module_stubs(module: Any) -> ast.Module:
 
 
 def class_stubs(
-    cls_name: str, cls_def: Any, element_path: List[str], types_to_import: Set[str],
+    cls_name: str,
+    cls_def: Any,
+    element_path: List[str],
+    types_to_import: Set[str],
 ) -> ast.ClassDef:
     """TODO: Add docstring."""
     attributes: List[ast.AST] = []
@@ -137,7 +140,10 @@ def class_stubs(
         elif inspect.isdatadescriptor(member_value):
             attributes.extend(
                 data_descriptor_stub(
-                    member_name, member_value, current_element_path, types_to_import,
+                    member_name,
+                    member_value,
+                    current_element_path,
+                    types_to_import,
                 ),
             )
         elif inspect.isroutine(member_value):
@@ -157,7 +163,8 @@ def class_stubs(
                     annotation=ast.Subscript(
                         value=path_to_type("tuple"),
                         slice=ast.Tuple(
-                            elts=[path_to_type("str"), ast.Ellipsis()], ctx=ast.Load(),
+                            elts=[path_to_type("str"), ast.Ellipsis()],
+                            ctx=ast.Load(),
                         ),
                         ctx=ast.Load(),
                     ),
@@ -170,7 +177,9 @@ def class_stubs(
                 ast.AnnAssign(
                     target=ast.Name(id=member_name, ctx=ast.Store()),
                     annotation=concatenated_path_to_type(
-                        member_value.__class__.__name__, element_path, types_to_import,
+                        member_value.__class__.__name__,
+                        element_path,
+                        types_to_import,
                     ),
                     value=ast.Ellipsis(),
                     simple=1,
@@ -291,7 +300,9 @@ def arguments_stub(
 
     # Types from comment
     for match in re.findall(
-        r"^ *:type *([a-zA-Z0-9_]+): ([^\n]*) *$", doc, re.MULTILINE,
+        r"^ *:type *([a-zA-Z0-9_]+): ([^\n]*) *$",
+        doc,
+        re.MULTILINE,
     ):
         if match[0] not in real_parameters:
             raise ValueError(
@@ -303,7 +314,9 @@ def arguments_stub(
             optional_params.add(match[0])
             type = type[:-10]
         parsed_param_types[match[0]] = convert_type_from_doc(
-            type, element_path, types_to_import,
+            type,
+            element_path,
+            types_to_import,
         )
 
     # we parse the parameters
@@ -321,7 +334,8 @@ def arguments_stub(
                 "has no type definition in the function documentation",
             )
         param_ast = ast.arg(
-            arg=param.name, annotation=parsed_param_types.get(param.name),
+            arg=param.name,
+            annotation=parsed_param_types.get(param.name),
         )
 
         default_ast = None
@@ -365,7 +379,10 @@ def arguments_stub(
 
 
 def returns_stub(
-    callable_name: str, doc: str, element_path: List[str], types_to_import: Set[str],
+    callable_name: str,
+    doc: str,
+    element_path: List[str],
+    types_to_import: Set[str],
 ) -> Optional[ast.AST]:
     """TODO: Add docstring."""
     m = re.findall(r"^ *:rtype: *([^\n]*) *$", doc, re.MULTILINE)
@@ -385,7 +402,9 @@ def returns_stub(
 
 
 def convert_type_from_doc(
-    type_str: str, element_path: List[str], types_to_import: Set[str],
+    type_str: str,
+    element_path: List[str],
+    types_to_import: Set[str],
 ) -> ast.AST:
     """TODO: Add docstring."""
     type_str = type_str.strip()
@@ -393,7 +412,9 @@ def convert_type_from_doc(
 
 
 def parse_type_to_ast(
-    type_str: str, element_path: List[str], types_to_import: Set[str],
+    type_str: str,
+    element_path: List[str],
+    types_to_import: Set[str],
 ) -> ast.AST:
     # let's tokenize
     """TODO: Add docstring."""
@@ -430,7 +451,9 @@ def parse_type_to_ast(
         or_groups: List[List[str]] = [[]]
         print(sequence)
         # TODO: Fix sequence
-        if ("Ros" in sequence and "2" in sequence) or ("dora.Ros" in sequence and "2" in sequence):
+        if ("Ros" in sequence and "2" in sequence) or (
+            "dora.Ros" in sequence and "2" in sequence
+        ):
             sequence = ["".join(sequence)]
 
         for e in sequence:
@@ -457,7 +480,9 @@ def parse_type_to_ast(
                 new_elements.append(
                     ast.Subscript(
                         value=concatenated_path_to_type(
-                            group[0], element_path, types_to_import,
+                            group[0],
+                            element_path,
+                            types_to_import,
                         ),
                         slice=parse_sequence(group[1]),
                         ctx=ast.Load(),
@@ -476,7 +501,9 @@ def parse_type_to_ast(
 
 
 def concatenated_path_to_type(
-    path: str, element_path: List[str], types_to_import: Set[str],
+    path: str,
+    element_path: List[str],
+    types_to_import: Set[str],
 ) -> ast.AST:
     """TODO: Add docstring."""
     parts = path.split(".")
@@ -511,7 +538,8 @@ if __name__ == "__main__":
         description="Extract Python type stub from a python module.",
     )
     parser.add_argument(
-        "module_name", help="Name of the Python module for which generate stubs",
+        "module_name",
+        help="Name of the Python module for which generate stubs",
     )
     parser.add_argument(
         "out",
@@ -519,7 +547,9 @@ if __name__ == "__main__":
         type=argparse.FileType("wt"),
     )
     parser.add_argument(
-        "--ruff", help="Formats the generated stubs using Ruff", action="store_true",
+        "--ruff",
+        help="Formats the generated stubs using Ruff",
+        action="store_true",
     )
     args = parser.parse_args()
     stub_content = ast.unparse(module_stubs(importlib.import_module(args.module_name)))

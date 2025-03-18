@@ -60,7 +60,12 @@ def main():
                     print("Passing input as string")
                 if isinstance(data, list):
                     data = pa.array(data)  # initialize pyarrow array
-                elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
+                elif (
+                    isinstance(data, str)
+                    or isinstance(data, int)
+                    or isinstance(data, float)
+                    or isinstance(data, dict)
+                ):
                     data = pa.array([data])
                 else:
                     data = pa.array(data)  # initialize pyarrow array
@@ -78,7 +83,12 @@ def main():
                 print("Passing input as string")
             if isinstance(data, list):
                 data = pa.array(data)  # initialize pyarrow array
-            elif isinstance(data, str) or isinstance(data, int) or isinstance(data, float) or isinstance(data, dict):
+            elif (
+                isinstance(data, str)
+                or isinstance(data, int)
+                or isinstance(data, float)
+                or isinstance(data, dict)
+            ):
                 data = pa.array([data])
             else:
                 data = pa.array(data)  # initialize pyarrow array

@@ -1,4 +1,23 @@
-"""TODO: Add docstring."""
+"""Loads the content of the README.md file and assigns it to the module-level `__doc__`.
+
+This script dynamically sets the module docstring by reading the README.md file
+located in the package's root directory. If the README file is not found, it sets
+a fallback message.
+
+Functionality:
+- Constructs the absolute path to README.md.
+- Attempts to read and load its content into `__doc__`.
+- Handles the case where the file does not exist by providing a default message.
+
+Attributes
+----------
+- `readme_path` (str): Absolute path to the README.md file.
+- `__doc__` (str): Content of the README file or a fallback message.
+
+Exceptions:
+- `FileNotFoundError`: Caught and handled if the README.md file is missing.
+
+"""
 
 import os
 

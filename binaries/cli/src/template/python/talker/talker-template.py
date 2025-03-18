@@ -18,5 +18,6 @@ def main():
             )
             node.send_output("speech", pa.array(["Hello World"]))
 
+
 if __name__ == "__main__":
     main()

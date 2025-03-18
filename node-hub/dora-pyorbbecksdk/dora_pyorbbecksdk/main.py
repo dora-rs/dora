@@ -55,7 +55,11 @@ class TemporalFilter:
             result = frame
         else:
             result = cv2.addWeighted(
-                frame, self.alpha, self.previous_frame, 1 - self.alpha, 0,
+                frame,
+                self.alpha,
+                self.previous_frame,
+                1 - self.alpha,
+                0,
             )
         self.previous_frame = result
         return result
@@ -158,7 +162,10 @@ def main():
     profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
     try:
         color_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
-            640, 480, OBFormat.RGB, 30,
+            640,
+            480,
+            OBFormat.RGB,
+            30,
         )
     except OBError as e:
         print(e)
@@ -167,7 +174,10 @@ def main():
     profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
     try:
         depth_profile: VideoStreamProfile = profile_list.get_video_stream_profile(
-            640, 480, OBFormat.Y16, 30,
+            640,
+            480,
+            OBFormat.Y16,
+            30,
         )
     except OBError as e:
         print(e)
@@ -217,7 +227,12 @@ def main():
             node.send_output("depth", storage)
             # Convert to Image
             depth_image = cv2.normalize(
-                depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U,
+                depth_data,
+                None,
+                0,
+                255,
+                cv2.NORM_MINMAX,
+                dtype=cv2.CV_8U,
             )
             # Send Depth Image
             depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
