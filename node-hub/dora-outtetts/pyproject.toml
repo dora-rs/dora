@@ -12,7 +12,7 @@ dependencies = [
     "numpy < 2.0.0",
     "pyarrow >= 5.0.0",
     "outetts >= 0.2.3",
-    "llama-cpp-python",
+    "llama-cpp-python>=0.2.0",
 ]
 
 [dependency-groups]
