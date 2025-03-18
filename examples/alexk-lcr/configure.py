@@ -1,5 +1,7 @@
-"""
-LCR Configuration Tool: This program is used to automatically configure the Low Cost Robot (LCR) for the user.
+"""Module for configuring and setting up the Low Cost Robot (LCR) hardware.
+
+This module provides functionality for initializing and configuring the LCR robot's
+servo motors and other hardware components.
 
 The program will:
 1. Disable all torque motors of provided LCR.
@@ -14,21 +16,17 @@ It will also enable all appropriate operating modes for the LCR.
 """
 
 import argparse
-import time
 import json
+import time
 
 import pyarrow as pa
-
-from bus import DynamixelBus, TorqueMode, OperatingMode
-
-from pwm_position_control.transform import pwm_to_logical_arrow, wrap_joints_and_values
-
+from bus import DynamixelBus, OperatingMode, TorqueMode
+from pwm_position_control.functions import construct_control_table
 from pwm_position_control.tables import (
     construct_logical_to_pwm_conversion_table_arrow,
     construct_pwm_to_logical_conversion_table_arrow,
 )
-
-from pwm_position_control.functions import construct_control_table
+from pwm_position_control.transform import pwm_to_logical_arrow, wrap_joints_and_values
 
 FULL_ARM = pa.array(
     [
@@ -51,31 +49,39 @@ GRIPPER = pa.array(["gripper"], type=pa.string())
 
 
 def pause():
+    """Pause execution and wait for user input to continue."""
     input("Press Enter to continue...")
 
 
 def configure_servos(bus: DynamixelBus):
+    """Configure servo motors with appropriate settings.
+
+    Args:
+        bus: DynamixelBus instance for servo communication
+
+    """
     bus.write_torque_enable(
-        wrap_joints_and_values(FULL_ARM, [TorqueMode.DISABLED.value] * 6)
+        wrap_joints_and_values(FULL_ARM, [TorqueMode.DISABLED.value] * 6),
     )
 
     bus.write_operating_mode(
         wrap_joints_and_values(
-            ARM_WITHOUT_GRIPPER, [OperatingMode.EXTENDED_POSITION.value] * 5
-        )
+            ARM_WITHOUT_GRIPPER, [OperatingMode.EXTENDED_POSITION.value] * 5,
+        ),
     )
 
     bus.write_operating_mode(
         wrap_joints_and_values(
-            GRIPPER, [OperatingMode.CURRENT_CONTROLLED_POSITION.value]
-        )
+            GRIPPER, [OperatingMode.CURRENT_CONTROLLED_POSITION.value],
+        ),
     )
 
 
 def main():
+    """Initialize and configure the LCR robot hardware components."""
     parser = argparse.ArgumentParser(
         description="LCR Auto Configure: This program is used to automatically configure the Low Cost Robot (LCR) for "
-        "the user."
+        "the user.",
     )
 
     parser.add_argument("--port", type=str, required=True, help="The port of the LCR.")
@@ -95,7 +101,7 @@ def main():
         help="If the LCR is the follower of the user.",
     )
     parser.add_argument(
-        "--leader", action="store_true", help="If the LCR is the leader of the user."
+        "--leader", action="store_true", help="If the LCR is the leader of the user.",
     )
 
     args = parser.parse_args()
@@ -138,10 +144,10 @@ def main():
     pwm_positions = (pwm_position_1, pwm_position_2)
 
     pwm_to_logical_conversion_table = construct_pwm_to_logical_conversion_table_arrow(
-        pwm_positions, targets
+        pwm_positions, targets,
     )
     logical_to_pwm_conversion_table = construct_logical_to_pwm_conversion_table_arrow(
-        pwm_positions, targets
+        pwm_positions, targets,
     )
 
     control_table_json = {}
@@ -180,7 +186,7 @@ def main():
 
     path = (
         input(
-            f"Please enter the path of the configuration file (default is ./examples/alexk-lcr/configs/{leader}.{left}.json): "
+            f"Please enter the path of the configuration file (default is ./examples/alexk-lcr/configs/{leader}.{left}.json): ",
         )
         or f"./examples/alexk-lcr/configs/{leader}.{left}.json"
     )
@@ -189,21 +195,21 @@ def main():
         json.dump(control_table_json, file)
 
     control_table = construct_control_table(
-        pwm_to_logical_conversion_table, logical_to_pwm_conversion_table
+        pwm_to_logical_conversion_table, logical_to_pwm_conversion_table,
     )
 
     while True:
         try:
             pwm_position = arm.read_position(FULL_ARM)
             logical_position = pwm_to_logical_arrow(
-                pwm_position, control_table, ranged=True
+                pwm_position, control_table, ranged=True,
             ).field("values")
 
             print(f"Logical Position: {logical_position}")
 
         except ConnectionError:
             print(
-                "Connection error occurred. Please check the connection and try again."
+                "Connection error occurred. Please check the connection and try again.",
             )
 
         time.sleep(0.5)

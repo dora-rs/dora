@@ -3,6 +3,7 @@
 import pyarrow as pa
 from dora import Node
 
+
 def main():
     """Process node input events and send speech output."""
     node = Node()

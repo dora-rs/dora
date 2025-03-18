@@ -1,7 +1,10 @@
-import pyrealsense2 as rs
+"""TODO: Add docstring."""
+
+import os
+
 import cv2
 import numpy as np
-import os
+import pyrealsense2 as rs
 
 CAMERA_ID = os.getenv("CAMERA_ID")
 pipe = rs.pipeline()
@@ -12,7 +15,7 @@ profile = pipe.start(config)
 
 
 try:
-    for i in range(0, 1000):
+    for i in range(1000):
         frames = pipe.wait_for_frames()
         color_frame = frames.get_color_frame()
         color_images = np.asanyarray(color_frame.get_data())

@@ -194,7 +194,7 @@ class FeetechBus:
             else:
                 raise NotImplementedError(
                     f"Value of the number of bytes to be sent is expected to be in [1, 2, 4], but {packet_bytes_size} "
-                    f"is provided instead."
+                    f"is provided instead.",
                 )
 
             if init_group:
@@ -206,7 +206,7 @@ class FeetechBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Write failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
@@ -237,13 +237,13 @@ class FeetechBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Read failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
         values = pa.array(
             [
                 self.group_readers[group_key].getData(
-                    idx, packet_address, packet_bytes_size
+                    idx, packet_address, packet_bytes_size,
                 )
                 for idx in motor_ids
             ],

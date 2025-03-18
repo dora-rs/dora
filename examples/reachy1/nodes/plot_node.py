@@ -1,7 +1,13 @@
+"""Module for visualizing robot data and states.
+
+This module provides functionality for creating real-time visualizations of
+robot states, movements, and sensor data during operation.
+"""
+
 import os
+
 import cv2
 from dora import Node
-
 
 IMAGE_WIDTH = int(os.getenv("IMAGE_WIDTH", "1280"))
 IMAGE_HEIGHT = int(os.getenv("IMAGE_HEIGHT", "720"))

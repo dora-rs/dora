@@ -1,13 +1,19 @@
-from dora import DoraStatus
-import pylcs
-import os
-import pyarrow as pa
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
+"""Module for language model-based robot control.
+
+This module provides functionality for controlling robots using natural language
+commands processed by large language models.
+"""
 
 import gc  # garbage collect library
+import os
 import re
 import time
+
+import pyarrow as pa
+import pylcs
+import torch
+from dora import DoraStatus
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 CHATGPT = False
 MODEL_NAME_OR_PATH = "TheBloke/deepseek-coder-6.7B-instruct-GPTQ"
@@ -39,14 +45,15 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH, use_fast=True)
 
 
 def extract_python_code_blocks(text):
-    """
-    Extracts Python code blocks from the given text that are enclosed in triple backticks with a python language identifier.
+    """Extract Python code blocks from the given text.
 
-    Parameters:
-    - text: A string that may contain one or more Python code blocks.
+    Args:
+        text: A string that may contain one or more Python code blocks.
 
     Returns:
-    - A list of strings, where each string is a block of Python code extracted from the text.
+        list: A list of strings, where each string is a block of Python code
+              extracted from the text.
+
     """
     pattern = r"```python\n(.*?)\n```"
     matches = re.findall(pattern, text, re.DOTALL)
@@ -55,21 +62,20 @@ def extract_python_code_blocks(text):
         matches = re.findall(pattern, text, re.DOTALL)
         if len(matches) == 0:
             return [text]
-        else:
-            matches = [remove_last_line(matches[0])]
+        matches = [remove_last_line(matches[0])]
 
     return matches
 
 
 def remove_last_line(python_code):
-    """
-    Removes the last line from a given string of Python code.
+    """Remove the last line from a given string of Python code.
 
-    Parameters:
-    - python_code: A string representing Python source code.
+    Args:
+        python_code: A string representing Python source code.
 
     Returns:
-    - A string with the last line removed.
+        str: A string with the last line removed.
+
     """
     lines = python_code.split("\n")  # Split the string into lines
     if lines:  # Check if there are any lines to remove
@@ -78,9 +84,17 @@ def remove_last_line(python_code):
 
 
 def calculate_similarity(source, target):
-    """
-    Calculate a similarity score between the source and target strings.
+    """Calculate a similarity score between the source and target strings.
+
     This uses the edit distance relative to the length of the strings.
+
+    Args:
+        source: First string to compare
+        target: Second string to compare
+
+    Returns:
+        float: Similarity score between 0 and 1
+
     """
     edit_distance = pylcs.edit_distance(source, target)
     max_length = max(len(source), len(target))
@@ -90,9 +104,17 @@ def calculate_similarity(source, target):
 
 
 def find_best_match_location(source_code, target_block):
-    """
-    Find the best match for the target_block within the source_code by searching line by line,
-    considering blocks of varying lengths.
+    """Find the best match for the target_block within the source_code.
+
+    This function searches line by line, considering blocks of varying lengths.
+
+    Args:
+        source_code: The source code to search within
+        target_block: The code block to find a match for
+
+    Returns:
+        tuple: (start_index, end_index) of the best matching location
+
     """
     source_lines = source_code.split("\n")
     target_lines = target_block.split("\n")
@@ -121,8 +143,15 @@ def find_best_match_location(source_code, target_block):
 
 
 def replace_code_in_source(source_code, replacement_block: str):
-    """
-    Replace the best matching block in the source_code with the replacement_block, considering variable block lengths.
+    """Replace the best matching block in the source_code with the replacement_block.
+
+    Args:
+        source_code: The original source code
+        replacement_block: The new code block to insert
+
+    Returns:
+        str: The modified source code
+
     """
     replacement_block = extract_python_code_blocks(replacement_block)[0]
     start_index, end_index = find_best_match_location(source_code, replacement_block)
@@ -132,12 +161,18 @@ def replace_code_in_source(source_code, replacement_block: str):
             source_code[:start_index] + replacement_block + source_code[end_index:]
         )
         return new_source
-    else:
-        return source_code
+    return source_code
 
 
 class Operator:
+    """A class for managing LLM-based code modifications.
+    
+    This class handles the process of using LLMs to modify code based on
+    natural language instructions and managing the modification workflow.
+    """
+
     def __init__(self) -> None:
+        """Initialize the operator with policy initialization flag."""
         self.policy_init = False
 
     def on_event(
@@ -145,6 +180,16 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
+        """Handle incoming events and process LLM-based code modifications.
+
+        Args:
+            dora_event: Dictionary containing event information
+            send_output: Function to send output to the dataflow
+
+        Returns:
+            DoraStatus: Status indicating whether to continue processing
+
+        """
         global model, tokenizer
         if dora_event["type"] == "INPUT" and dora_event["id"] == "text":
             input = dora_event["value"][0].as_py()
@@ -155,14 +200,14 @@ class Operator:
             current_directory = os.path.dirname(current_file_path)
             path = current_directory + "/policy.py"
 
-            with open(path, "r", encoding="utf8") as f:
+            with open(path, encoding="utf8") as f:
                 code = f.read()
 
             user_message = input
             start_llm = time.time()
 
             output = self.ask_llm(
-                CODE_MODIFIER_TEMPLATE.format(code=code, user_message=user_message)
+                CODE_MODIFIER_TEMPLATE.format(code=code, user_message=user_message),
             )
 
             source_code = replace_code_in_source(code, output)
@@ -178,7 +223,15 @@ class Operator:
         return DoraStatus.CONTINUE
 
     def ask_llm(self, prompt):
+        """Send a prompt to the LLM and get its response.
 
+        Args:
+            prompt: The prompt to send to the LLM
+
+        Returns:
+            str: The LLM's response
+
+        """
         # Generate output
         # prompt = PROMPT_TEMPLATE.format(system_message=system_message, prompt=prompt))
         input = tokenizer(prompt, return_tensors="pt")
@@ -213,7 +266,7 @@ if __name__ == "__main__":
     current_directory = os.path.dirname(current_file_path)
 
     path = current_directory + "/policy.py"
-    with open(path, "r", encoding="utf8") as f:
+    with open(path, encoding="utf8") as f:
         raw = f.read()
 
     op.on_event(
@@ -226,7 +279,7 @@ if __name__ == "__main__":
                         "path": path,
                         "user_message": "When I say suit up, get the hat and the get the food.",
                     },
-                ]
+                ],
             ),
             "metadata": [],
         },

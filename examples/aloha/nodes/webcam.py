@@ -1,12 +1,16 @@
+"""Module for handling webcam input and processing.
+
+This module provides functionality for capturing and processing video input
+from webcam devices for robot vision applications.
+"""
+
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 import os
-import time
-import numpy as np
-import cv2
-import pyarrow as pa
 
+import cv2
+import numpy as np
+import pyarrow as pa
 from dora import Node
 
 node = Node()
@@ -26,8 +30,8 @@ for event in node:
             frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
             cv2.putText(
                 frame,
-                "No Webcam was found at index %d" % (CAMERA_ID),
-                (int(30), int(30)),
+                f"No Webcam was found at index {CAMERA_ID}",
+                (30, 30),
                 font,
                 0.75,
                 (255, 255, 255),

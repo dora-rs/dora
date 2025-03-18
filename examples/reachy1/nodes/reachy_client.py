@@ -1,7 +1,10 @@
-import argparse
-import os
+"""Module for client-side communication with the Reachy robot.
+
+This module provides functionality for establishing and managing communication
+with the Reachy robot, including sending commands and receiving sensor data.
+"""
+
 import time
-from pathlib import Path
 
 # import h5py
 import numpy as np
@@ -83,7 +86,7 @@ for event in node:
             #     min(100, max(0, action[7] / 2.26 * 100))
             # )  # replay true action value
             reachy.l_arm.gripper.set_opening(
-                0 if action[7] < 2.0 else 100
+                0 if action[7] < 2.0 else 100,
             )  # trick to force the gripper to close fully
 
             reachy.r_arm.shoulder.pitch.goal_position = np.rad2deg(action[8])
@@ -97,7 +100,7 @@ for event in node:
             #     min(100, max(0, action[15] / 2.26 * 100))
             # )  # replay true action value
             reachy.r_arm.gripper.set_opening(
-                0 if action[15] < 2.0 else 100
+                0 if action[15] < 2.0 else 100,
             )  # trick to force the gripper to close fully
             reachy.mobile_base.set_speed(action[16], action[17], np.rad2deg(action[18]))
             reachy.head.neck.roll.goal_position = np.rad2deg(action[19])
@@ -110,38 +113,38 @@ for event in node:
                 mobile_base_pos = {"vx": 0, "vy": 0, "vtheta": 0}
             qpos = {
                 "l_arm_shoulder_pitch": np.deg2rad(
-                    reachy.l_arm.shoulder.pitch.present_position
+                    reachy.l_arm.shoulder.pitch.present_position,
                 ),
                 "l_arm_shoulder_roll": np.deg2rad(
-                    reachy.l_arm.shoulder.roll.present_position
+                    reachy.l_arm.shoulder.roll.present_position,
                 ),
                 "l_arm_elbow_yaw": np.deg2rad(reachy.l_arm.elbow.yaw.present_position),
                 "l_arm_elbow_pitch": np.deg2rad(
-                    reachy.l_arm.elbow.pitch.present_position
+                    reachy.l_arm.elbow.pitch.present_position,
                 ),
                 "l_arm_wrist_roll": np.deg2rad(
-                    reachy.l_arm.wrist.roll.present_position
+                    reachy.l_arm.wrist.roll.present_position,
                 ),
                 "l_arm_wrist_pitch": np.deg2rad(
-                    reachy.l_arm.wrist.pitch.present_position
+                    reachy.l_arm.wrist.pitch.present_position,
                 ),
                 "l_arm_wrist_yaw": np.deg2rad(reachy.l_arm.wrist.yaw.present_position),
                 "l_gripper": reachy.l_arm.gripper._present_position,
                 "r_arm_shoulder_pitch": np.deg2rad(
-                    reachy.r_arm.shoulder.pitch.present_position
+                    reachy.r_arm.shoulder.pitch.present_position,
                 ),
                 "r_arm_shoulder_roll": np.deg2rad(
-                    reachy.r_arm.shoulder.roll.present_position
+                    reachy.r_arm.shoulder.roll.present_position,
                 ),
                 "r_arm_elbow_yaw": np.deg2rad(reachy.r_arm.elbow.yaw.present_position),
                 "r_arm_elbow_pitch": np.deg2rad(
-                    reachy.r_arm.elbow.pitch.present_position
+                    reachy.r_arm.elbow.pitch.present_position,
                 ),
                 "r_arm_wrist_roll": np.deg2rad(
-                    reachy.r_arm.wrist.roll.present_position
+                    reachy.r_arm.wrist.roll.present_position,
                 ),
                 "r_arm_wrist_pitch": np.deg2rad(
-                    reachy.r_arm.wrist.pitch.present_position
+                    reachy.r_arm.wrist.pitch.present_position,
                 ),
                 "r_arm_wrist_yaw": np.deg2rad(reachy.r_arm.wrist.yaw.present_position),
                 "r_gripper": reachy.r_arm.gripper._present_position,

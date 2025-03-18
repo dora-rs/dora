@@ -1,20 +1,33 @@
-import time
-from pathlib import Path
+"""TODO: Add docstring."""
 
+import time
+
+import gym_dora  # noqa: F401
 import gymnasium as gym
 import pandas as pd
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-import gym_dora  # noqa: F401
-
 env = gym.make(
-    "gym_dora/DoraReachy2-v0", disable_env_checker=True, max_episode_steps=10000
+    "gym_dora/DoraReachy2-v0", disable_env_checker=True, max_episode_steps=10000,
 )
 observation = env.reset()
 
 
 class ReplayPolicy:
+    """A policy class for replaying recorded robot actions.
+    
+    This class handles loading and replaying recorded actions from a dataset,
+    maintaining timing between actions to match the original recording.
+    """
+
     def __init__(self, example_path, epidode=0):
+        """Initialize the replay policy.
+
+        Args:
+            example_path: Path to the directory containing recorded actions
+            epidode: Index of the episode to replay
+
+        """
         df_action = pd.read_parquet(example_path / "action.parquet")
         df_episode_index = pd.read_parquet(example_path / "episode_index.parquet")
         self.df = pd.merge_asof(
@@ -31,6 +44,16 @@ class ReplayPolicy:
         self.finished = False
 
     def select_action(self, obs):
+        """Select the next action to replay.
+
+        Args:
+            obs: Current observation from the environment (unused)
+
+        Returns:
+            tuple: (action, finished) where action is the next action to take
+                  and finished indicates if all actions have been replayed
+
+        """
         if self.index < len(self.df):
             self.index += 1
         else:
@@ -44,7 +67,19 @@ class ReplayPolicy:
 
 
 class ReplayLeRobotPolicy:
+    """A policy class for replaying actions from the LeRobot dataset.
+    
+    This class handles loading and replaying actions from the LeRobot dataset,
+    maintaining the sequence of actions from the original recording.
+    """
+
     def __init__(self, episode=21):
+        """Initialize the LeRobot replay policy.
+
+        Args:
+            episode: Index of the episode to replay from the dataset
+
+        """
         self.index = 0
         self.finished = False
         # episode = 1
@@ -55,6 +90,16 @@ class ReplayLeRobotPolicy:
         self.actions = dataset.hf_dataset["action"][from_index:to_index]
 
     def select_action(self, obs):
+        """Select the next action to replay from the LeRobot dataset.
+
+        Args:
+            obs: Current observation from the environment (unused)
+
+        Returns:
+            tuple: (action, finished) where action is the next action to take
+                  and finished indicates if all actions have been replayed
+
+        """
         if self.index < len(self.actions):
             self.index += 1
         else:
