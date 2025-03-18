@@ -70,17 +70,39 @@ LEAD_MODALITY = os.getenv("LEAD_MODALITY", "text")
 BAD_SENTENCES = [
     "The stock market closed down by 0.1%.",
     "The stock market closed down by 0.1 percent.",
+    "The stock market closed down by one.",
+    "The market is closed on Monday and Tuesday.",
     "The market is closed on Mondays and Tuesdays.",
+    "the first is the of the internet communicate people",
     "The first time I saw the movie, I was very impressed.",
+    "The first one is the one that is the most important.",
+    "The first one is the one that is the most common.",
     "The first time I saw the sea, I was very young.",
     "The first time I saw the sea was when I was a child.",
     "The sound of the wind is so loud.",
     "The first time I saw the sea.",
+    "the first time saw the sea i was so happy"
     "The first time I saw the sea was in the movie.",
+    "The first time I saw the movie was in the theater.",
     "The first time I saw the movie.",
+    "the first i saw the video i was very impressed",
     "the first time saw the video i was like my god",
+    "i am a student at the university of toronto",
     "I don't know what to do.",
-    "I don't know.",
+    "translator elisabeth buffard reviewer denise rq",
+    "Translator Elisabeth Buffard Reviewer Denise RQ.",
+    "Translator Denise RQ Reviewer Denise RQ.",
+    "the company also has a presence the united states canada brazil argentina mexico colombia peru chile uruguay",
+    "the company also has a presence the united states canada brazil mexico argentina colombia chile peru and uruguay",
+    "the company also has a presence the united states canada brazil argentina mexico and the united kingdom",
+    "the company also presence in the united states canada brazil argentina mexico colombia peru chile uruguay",
+    "The company also has a presence in the United States, Canada, Brazil, Argentina, Mexico, Colombia, Peru, Chile, and Uruguay."
+    "the company also has presence in the united states canada the united kingdom",
+    "company also has a presence the united states canada brazil argentina colombia mexico peru chile and uruguay",
+    "the company also has a presence the united states canada and the united kingdom",
+    "the company also announced that it will acquire the online retailer zappos",
+    "the company has a market capitalization of 15 trillion yen",
+
 ]
 
 
@@ -263,6 +285,10 @@ def main():
                     text_noise = ""
 
                 if response in BAD_SENTENCES:
+                    continue
+                if "company also has a presence" in response:
+                    continue
+                elif "The first time I saw the" in response:
                     continue
                 ## Remove text noise independently of casing
                 response = remove_text_noise(response, text_noise)
