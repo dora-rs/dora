@@ -1,5 +1,7 @@
 """TODO: Add docstring."""
 
+import os
+
 import cv2
 import numpy as np
 import pyarrow as pa
@@ -61,6 +63,23 @@ user_prompt = "<|user|>"
 assistant_prompt = "<|assistant|>"
 prompt_suffix = "<|end|>"
 
+LEAD_MODALITY = os.getenv("LEAD_MODALITY", "text")
+
+BAD_SENTENCES = [
+    "The stock market closed down by 0.1%.",
+    "The stock market closed down by 0.1 percent.",
+    "The market is closed on Mondays and Tuesdays.",
+    "The first time I saw the movie, I was very impressed.",
+    "The first time I saw the sea, I was very young.",
+    "The first time I saw the sea was when I was a child.",
+    "The sound of the wind is so loud.",
+    "The first time I saw the sea.",
+    "The first time I saw the sea was in the movie.",
+    "The first time I saw the movie.",
+    "I don't know what to do.",
+    "I don't know.",
+]
+
 
 def main():
     """TODO: Add docstring."""
@@ -70,6 +89,7 @@ def main():
     image_id = None
     image = None
     audios = None
+    text = ""
     for event in node:
         if event["type"] == "INPUT":
             input_id = event["id"]
@@ -118,6 +138,8 @@ def main():
                 audios = [(audio, sample_rate)]
             elif input_id == "text":
                 text = event["value"][0].as_py()
+
+            if LEAD_MODALITY == input_id:
                 if len(frames) > 1:
                     raise ValueError("Multiple images are not supported yet!")
                 elif len(frames) == 1:
@@ -153,7 +175,9 @@ def main():
                     skip_special_tokens=True,
                     clean_up_tokenization_spaces=False,
                 )[0]
-                node.send_output("text", pa.array([response]))
+
+                if response not in BAD_SENTENCES:
+                    node.send_output("text", pa.array([response]))
 
 
 if __name__ == "__main__":
