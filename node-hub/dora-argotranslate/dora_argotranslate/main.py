@@ -32,15 +32,15 @@ def main():
             break
         if event["type"] == "INPUT" and event["id"] == "text":
             text = event["value"][0].as_py()
-            translatedText = argostranslate.translate.translate(
+            translated_text = argostranslate.translate.translate(
                 text,
                 from_code,
                 to_code,
             )
             print(text, flush=True)
-            print("translated: " + translatedText, flush=True)
+            print("translated: " + translated_text, flush=True)
             node.send_output(
                 "text",
-                pa.array([translatedText]),
+                pa.array([translated_text]),
                 {"language": to_code},
             )

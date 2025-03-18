@@ -377,29 +377,29 @@ class Dynamixel:
         )
         self._process_response(dxl_comm_result, dxl_error, motor_id)
 
-    def set_P(self, motor_id: int, P: int):
+    def set_p(self, motor_id: int, p: int):
         """Set the position P gain for the specified servo.
 
         Args:
-            motor_id: ID of the servo to control.
-            P: Position P gain value to set.
+            motor_id (int): The ID of the servo motor
+            p (int): The position P gain value to set
 
         """
         dxl_comm_result, dxl_error = self.packetHandler.write2ByteTxRx(
-            self.portHandler, motor_id, self.POSITION_P, P,
+            self.portHandler, motor_id, self.POSITION_P, p,
         )
         self._process_response(dxl_comm_result, dxl_error, motor_id)
 
-    def set_I(self, motor_id: int, I: int):
+    def set_i(self, motor_id: int, i: int):
         """Set the position I gain for the specified servo.
 
         Args:
-            motor_id: ID of the servo to control.
-            I: Position I gain value to set.
+            motor_id (int): The ID of the servo motor
+            i (int): The position I gain value to set
 
         """
         dxl_comm_result, dxl_error = self.packetHandler.write2ByteTxRx(
-            self.portHandler, motor_id, self.POSITION_I, I,
+            self.portHandler, motor_id, self.POSITION_I, i,
         )
         self._process_response(dxl_comm_result, dxl_error, motor_id)
 
