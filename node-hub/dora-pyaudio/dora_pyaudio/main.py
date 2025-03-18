@@ -41,7 +41,7 @@ def main():
     sr = SAMPLE_RATE
     i = 0
     while True:
-        event = node.next(timeout=0.01)
+        event = node.next(timeout=0.005)
         if event is None:
             break
         if event["type"] == "INPUT":
