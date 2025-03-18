@@ -1,20 +1,23 @@
-import time
-from pathlib import Path
+"""TODO: Add docstring."""
 
+import time
+
+import gym_dora  # noqa: F401
 import gymnasium as gym
 import pandas as pd
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-import gym_dora  # noqa: F401
-
 env = gym.make(
-    "gym_dora/DoraReachy2-v0", disable_env_checker=True, max_episode_steps=10000
+    "gym_dora/DoraReachy2-v0", disable_env_checker=True, max_episode_steps=10000,
 )
 observation = env.reset()
 
 
 class ReplayPolicy:
+    """TODO: Add docstring."""
+
     def __init__(self, example_path, epidode=0):
+        """TODO: Add docstring."""
         df_action = pd.read_parquet(example_path / "action.parquet")
         df_episode_index = pd.read_parquet(example_path / "episode_index.parquet")
         self.df = pd.merge_asof(
@@ -31,6 +34,7 @@ class ReplayPolicy:
         self.finished = False
 
     def select_action(self, obs):
+        """TODO: Add docstring."""
         if self.index < len(self.df):
             self.index += 1
         else:
@@ -44,7 +48,10 @@ class ReplayPolicy:
 
 
 class ReplayLeRobotPolicy:
+    """TODO: Add docstring."""
+
     def __init__(self, episode=21):
+        """TODO: Add docstring."""
         self.index = 0
         self.finished = False
         # episode = 1
@@ -55,6 +62,7 @@ class ReplayLeRobotPolicy:
         self.actions = dataset.hf_dataset["action"][from_index:to_index]
 
     def select_action(self, obs):
+        """TODO: Add docstring."""
         if self.index < len(self.actions):
             self.index += 1
         else:

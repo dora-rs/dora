@@ -1,5 +1,7 @@
-from dora import Node
+"""TODO: Add docstring."""
+
 import pyarrow as pa
+from dora import Node
 
 node = Node()
 
@@ -15,7 +17,7 @@ for event in node:
                     pa.array(
                         [
                             "Respond with left, right, forward, back, up, down or go home in order for the robotic arm to "
-                            + text
-                        ]
+                            + text,
+                        ],
                     ),
                 )

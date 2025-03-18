@@ -1,8 +1,13 @@
-from pynput import keyboard
-from pynput.keyboard import Key, Events
+"""Module for handling keyboard input events in robot control.
+
+This module provides functionality for capturing and processing keyboard input
+events to control robot movements and actions.
+"""
+
 import pyarrow as pa
 from dora import Node
-
+from pynput import keyboard
+from pynput.keyboard import Events, Key
 
 node = Node()
 buffer_text = ""
@@ -17,7 +22,7 @@ with keyboard.Events() as events:
                 cursor += 1
                 node.send_output("space", pa.array([cursor]))
                 space = True
-            
+
 
         elif event is not None and isinstance(event, Events.Release):
             if event.key == Key.space:
@@ -25,7 +30,7 @@ with keyboard.Events() as events:
                 space = False
             elif event.key == Key.backspace:
                 node.send_output("failed", pa.array([cursor]))
-                
+
 
         if node.next(0.001) is None:
             break

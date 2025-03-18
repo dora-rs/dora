@@ -1,14 +1,16 @@
-import pyarrow as pa
-import whisper
-from pynput import keyboard
-from pynput.keyboard import Key, Events
-from dora import Node
+"""Module for speech recognition using Whisper.
 
-import torch
+This module provides functionality for capturing audio input and converting
+it to text using the Whisper speech recognition model.
+"""
+
 import numpy as np
 import pyarrow as pa
 import sounddevice as sd
-import gc  # garbage collect library
+import whisper
+from dora import Node
+from pynput import keyboard
+from pynput.keyboard import Events, Key
 
 model = whisper.load_model("base")
 
@@ -18,7 +20,15 @@ node = Node()
 
 
 def get_text(duration) -> str:
+    """Capture audio and convert it to text using Whisper.
 
+    Args:
+        duration: Duration of audio to capture in seconds
+
+    Returns:
+        str: Transcribed text from the audio input
+
+    """
     ## Microphone
     audio_data = sd.rec(
         int(SAMPLE_RATE * duration),
@@ -48,7 +58,7 @@ with keyboard.Events() as events:
                 if event.key == Key.alt_r:
                     result = get_text(5)
                     node.send_output(
-                        "text_llm", pa.array([result["text"]]), dora_event["metadata"]
+                        "text_llm", pa.array([result["text"]]), dora_event["metadata"],
                     )
                 elif event.key == Key.ctrl_r:
                     result = get_text(3)

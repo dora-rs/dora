@@ -1,13 +1,11 @@
 """TODO : Doc String."""
+import argparse
 import os
 from pathlib import Path
 
 import cv2
-import argparse
-
 import numpy as np
 import pyarrow as pa
-
 from dora import Node
 from ffmpeg import FFmpeg
 
@@ -15,7 +13,7 @@ from ffmpeg import FFmpeg
 def main():
     """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
-        description="Video Encoder: This node is used to record episodes of a robot interacting with the environment."
+        description="Video Encoder: This node is used to record episodes of a robot interacting with the environment.",
     )
 
     parser.add_argument(
@@ -77,8 +75,8 @@ def main():
                                 {
                                     "path": f"videos/{name}",
                                     "timestamp": float(frame_count) / fps,
-                                }
-                            ]
+                                },
+                            ],
                         ),
                         event["metadata"],
                     )
@@ -92,7 +90,7 @@ def main():
                     }
 
                     data = image["data"].reshape(
-                        (image["height"], image["width"], image["channels"])
+                        (image["height"], image["width"], image["channels"]),
                     )
 
                     path = str(out_dir / f"frame_{frame_count:06d}.png")
@@ -118,7 +116,7 @@ def main():
                         .option("y")
                         .input(str(out_dir / "frame_%06d.png"), f="image2", r=fps)
                         .output(
-                            str(video_path), vcodec="libx264", g=2, pix_fmt="yuv444p"
+                            str(video_path), vcodec="libx264", g=2, pix_fmt="yuv444p",
                         )
                     )
 

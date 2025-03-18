@@ -31,5 +31,6 @@ dora-opus = "dora_opus.main:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
-  "UP",
+  "UP",  # Ruff's UP rule
+  "PERF" # Ruff's PERF rule
 ]

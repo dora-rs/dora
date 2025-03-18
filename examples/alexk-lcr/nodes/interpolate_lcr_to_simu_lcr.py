@@ -1,25 +1,30 @@
-import os
+"""Module for interpolating between LCR and simulated LCR configurations.
+
+This module provides functionality for calculating and interpolating between
+physical LCR robot configurations and their simulated counterparts.
+"""
+
 import argparse
 import json
+import os
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
-
 from dora import Node
-
 from pwm_position_control.load import load_control_table_from_json_conversion_tables
 from pwm_position_control.transform import (
-    wrap_joints_and_values,
-    pwm_to_logical_arrow,
     logical_to_pwm_with_offset_arrow,
+    pwm_to_logical_arrow,
+    wrap_joints_and_values,
 )
 
 
 def main():
+    """Initialize and run the LCR to simulated LCR interpolation node."""
     parser = argparse.ArgumentParser(
         description="Interpolation LCR Node: This Dora node is used to calculates appropriate goal positions for the "
-        "LCR followers knowing a Leader position and Follower position."
+        "LCR followers knowing a Leader position and Follower position.",
     )
 
     parser.add_argument(
@@ -41,13 +46,13 @@ def main():
     if not os.environ.get("LEADER_CONTROL") and args.leader_control is None:
         raise ValueError(
             "The leader control is not set. Please set the configuration of the leader in the environment variables or "
-            "as an argument."
+            "as an argument.",
         )
 
     with open(
         os.environ.get("LEADER_CONTROL")
         if args.leader_control is None
-        else args.leader_control
+        else args.leader_control,
     ) as file:
         leader_control = json.load(file)
         load_control_table_from_json_conversion_tables(leader_control, leader_control)
@@ -114,7 +119,7 @@ def main():
                         [
                             joint.as_py() + "_joint"
                             for joint in leader_position.field("joints")
-                        ]
+                        ],
                     ),
                     pc.multiply(
                         pc.add(leader_position.field("values"), interpolation_a),

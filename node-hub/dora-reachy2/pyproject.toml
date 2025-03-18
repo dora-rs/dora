@@ -27,5 +27,6 @@ dora-reachy2-head = "dora_reachy2.head:main"
 [tool.ruff.lint]
 extend-select = [
   "D",   # pydocstyle
-  "UP",
+  "UP",  # Ruff's UP rule
+  "PERF" # Ruff's PERF rule
 ]

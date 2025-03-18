@@ -1,5 +1,7 @@
-"""
-SO100 Auto Configure: This program is used to automatically configure the SO-ARM100 (SO100) for the user.
+"""Module for configuring and setting up the SO100 robot hardware.
+
+This module provides functionality for initializing and configuring the SO100 robot's
+servo motors and other hardware components.
 
 The program will:
 1. Disable all torque motors of provided SO100.
@@ -14,20 +16,17 @@ It will also enable all appropriate operating modes for the SO100.
 """
 
 import argparse
-import time
 import json
+import time
 
 import pyarrow as pa
-
-from bus import FeetechBus, TorqueMode, OperatingMode
-from pwm_position_control.transform import pwm_to_logical_arrow, wrap_joints_and_values
-
+from bus import FeetechBus, OperatingMode, TorqueMode
+from pwm_position_control.functions import construct_control_table
 from pwm_position_control.tables import (
     construct_logical_to_pwm_conversion_table_arrow,
     construct_pwm_to_logical_conversion_table_arrow,
 )
-
-from pwm_position_control.functions import construct_control_table
+from pwm_position_control.transform import pwm_to_logical_arrow, wrap_joints_and_values
 
 FULL_ARM = pa.array(
     [
@@ -50,35 +49,43 @@ GRIPPER = pa.array(["gripper"], type=pa.string())
 
 
 def pause():
+    """Pause execution and wait for user input."""
     input("Press Enter to continue...")
 
 
 def configure_servos(bus: FeetechBus):
+    """Configure the servos with default settings.
+
+    Args:
+        bus: The FeetechBus instance to configure.
+
+    """
     bus.write_torque_enable(
-        wrap_joints_and_values(FULL_ARM, [TorqueMode.DISABLED.value] * 6)
+        wrap_joints_and_values(FULL_ARM, [TorqueMode.DISABLED.value] * 6),
     )
 
     bus.write_operating_mode(
-        wrap_joints_and_values(FULL_ARM, [OperatingMode.ONE_TURN.value] * 6)
+        wrap_joints_and_values(FULL_ARM, [OperatingMode.ONE_TURN.value] * 6),
     )
 
     bus.write_max_angle_limit(
-        wrap_joints_and_values(FULL_ARM, [pa.scalar(0, pa.uint32())] * 6)
+        wrap_joints_and_values(FULL_ARM, [pa.scalar(0, pa.uint32())] * 6),
     )
 
     bus.write_min_angle_limit(
-        wrap_joints_and_values(FULL_ARM, [pa.scalar(0, pa.uint32())] * 6)
+        wrap_joints_and_values(FULL_ARM, [pa.scalar(0, pa.uint32())] * 6),
     )
 
 
 def main():
+    """Run the servo configuration process."""
     parser = argparse.ArgumentParser(
         description="SO100 Auto Configure: This program is used to automatically configure the Low Cost Robot (SO100) "
-        "for the user."
+        "for the user.",
     )
 
     parser.add_argument(
-        "--port", type=str, required=True, help="The port of the SO100."
+        "--port", type=str, required=True, help="The port of the SO100.",
     )
     parser.add_argument(
         "--right",
@@ -130,10 +137,10 @@ def main():
     pwm_positions = (pwm_position_1, pwm_position_2)
 
     pwm_to_logical_conversion_table = construct_pwm_to_logical_conversion_table_arrow(
-        pwm_positions, targets
+        pwm_positions, targets,
     )
     logical_to_pwm_conversion_table = construct_logical_to_pwm_conversion_table_arrow(
-        pwm_positions, targets
+        pwm_positions, targets,
     )
 
     control_table_json = {}
@@ -149,7 +156,7 @@ def main():
     left = "left" if args.left else "right"
     path = (
         input(
-            f"Please enter the path of the configuration file (default is ./examples/so100/configs/follower.{left}.json): "
+            f"Please enter the path of the configuration file (default is ./examples/so100/configs/follower.{left}.json): ",
         )
         or f"./examples/so100/configs/follower.{left}.json"
     )
@@ -158,21 +165,21 @@ def main():
         json.dump(control_table_json, file)
 
     control_table = construct_control_table(
-        pwm_to_logical_conversion_table, logical_to_pwm_conversion_table
+        pwm_to_logical_conversion_table, logical_to_pwm_conversion_table,
     )
 
     while True:
         try:
             pwm_position = arm.read_position(FULL_ARM)
             logical_position = pwm_to_logical_arrow(
-                pwm_position, control_table, ranged=True
+                pwm_position, control_table, ranged=True,
             ).field("values")
 
             print(f"Logical Position: {logical_position}")
 
         except ConnectionError:
             print(
-                "Connection error occurred. Please check the connection and try again."
+                "Connection error occurred. Please check the connection and try again.",
             )
 
         time.sleep(0.5)

@@ -1,7 +1,6 @@
-import argparse
-import os
+"""TODO: Add docstring."""
+
 import time
-from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
@@ -21,7 +20,6 @@ cam = SDKWrapper(get_config_file_path("CONFIG_SR"), fps=freq)
 # ret, image = cap.read()
 
 import cv2
-import numpy as np
 
 episode = 1
 dataset = LeRobotDataset("cadene/reachy2_teleop_remi")
@@ -41,8 +39,6 @@ images = images.astype(np.uint8)
 images = cv2.cvtColor(images, cv2.COLOR_RGB2BGR)
 
 # start = time.time()
-import PIL
-import torch
 
 # frame_hwc = (images.permute((1, 2, 0)) * 255).type(torch.uint8).cpu().numpy()
 

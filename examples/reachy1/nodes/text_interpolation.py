@@ -1,6 +1,11 @@
-from dora import Node
+"""Module for interpolating between text-based robot commands.
+
+This module provides functionality for processing and interpolating between
+text-based commands to create smooth transitions in robot behavior.
+"""
+
 import pyarrow as pa
-import numpy as np
+from dora import Node
 
 node = Node()
 
@@ -19,19 +24,19 @@ for event in node:
             node.send_output("head_action", pa.array([0, head_step, 0]))
         elif text == "look up":
             node.send_output(
-                "head_action", pa.array([head_step / 2, 0, -head_step / 2])
+                "head_action", pa.array([head_step / 2, 0, -head_step / 2]),
             )
         elif text == "look down":
             node.send_output(
-                "head_action", pa.array([-head_step / 2, 0, head_step / 2])
+                "head_action", pa.array([-head_step / 2, 0, head_step / 2]),
             )
         elif text == "look up":
             node.send_output(
-                "head_action", pa.array([head_step / 2, 0, -head_step / 2])
+                "head_action", pa.array([head_step / 2, 0, -head_step / 2]),
             )
         elif text == "look down":
             node.send_output(
-                "head_action", pa.array([-head_step / 2, 0, head_step / 2])
+                "head_action", pa.array([-head_step / 2, 0, head_step / 2]),
             )
         elif text == "smile":
             node.send_output("antenna_action", pa.array(["smile"]))
@@ -54,8 +59,8 @@ for event in node:
                 "question",
                 pa.array(
                     [
-                        "Respond with right, left, forward, backward, open, or close to grab the trash"
-                    ]
+                        "Respond with right, left, forward, backward, open, or close to grab the trash",
+                    ],
                 ),
             )
 
@@ -65,8 +70,8 @@ for event in node:
                 "question",
                 pa.array(
                     [
-                        "Respond with right, left, forward, backward, open, or close to put the trash in your hand in the right bin"
-                    ]
+                        "Respond with right, left, forward, backward, open, or close to put the trash in your hand in the right bin",
+                    ],
                 ),
             )
             node.send_output("gripper_action", pa.array([100]))
