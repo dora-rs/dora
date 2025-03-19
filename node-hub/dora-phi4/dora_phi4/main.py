@@ -39,12 +39,19 @@ processor = AutoProcessor.from_pretrained(
     use_fast=True,
 )
 
+USE_FLASH_ATTN = False
+try:
+    import flash_attn as _  # noqa
+    USE_FLASH_ATTN = True
+except (ImportError, ModuleNotFoundError):
+    pass
+
 # Define model config
 MODEL_CONFIG = {
     "torch_dtype": torch_dtype,
     "trust_remote_code": True,
     "_attn_implementation": "flash_attention_2"
-    if device == "cuda" and torch.cuda.get_device_properties(0).total_memory > 16e9
+    if device == "cuda" and USE_FLASH_ATTN
     else "eager",
     "low_cpu_mem_usage": True,
 }
