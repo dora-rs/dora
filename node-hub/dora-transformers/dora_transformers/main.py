@@ -20,6 +20,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
 DEVICE = os.getenv("DEVICE", "auto")
 TORCH_DTYPE = os.getenv("TORCH_DTYPE", "auto")
+HISTORY= os.getenv("HISTORY", "False").lower() == "true"
 
 
 # Words that trigger the model to respond
@@ -90,8 +91,8 @@ def main():
             if len(ACTIVATION_WORDS) == 0 or any(
                 word in ACTIVATION_WORDS for word in words
             ):
-                response, _history = generate_response(model, tokenizer, text, history)
-
+                response, tmp_history = generate_response(model, tokenizer, text, history)
+                history = tmp_history if HISTORY else history
                 node.send_output(
                     output_id="text", data=pa.array([response]), metadata={}
                 )
