@@ -6,13 +6,14 @@ nodes:
     outputs:
       - text
     env:
-      DATA: "Please only generate the following output: This is a test"
+      TEXT: "Please only generate the following output: This is a test"
+      TEXT_TRUTH: "This is a test"
 
   - id: llm
     build: pip install -e ../../node-hub/dora-transformers
     path: dora-transformers
     inputs:
-      text: benchmark_script/data
+      text: benchmark_script/text
     outputs:
       - text
     env:

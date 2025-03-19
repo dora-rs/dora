@@ -110,7 +110,7 @@ def main():
         default="pyarrow-sender",
     )
     parser.add_argument(
-        "--data",
+        "--text",
         type=str,
         required=False,
         help="Arrow Data as string.",
@@ -119,23 +119,24 @@ def main():
 
     args = parser.parse_args()
 
-    data = os.getenv("DATA", args.data)
+    text = os.getenv("TEXT", args.text)
+    text_truth = os.getenv("TEXT_TRUTH", args.text)
 
     cat = get_cat_image()
     audio, sample_rate = get_c3po_audio()
-    if data is None:
+    if text is None:
         raise ValueError(
-            "No data provided. Please specify `DATA` environment argument or as `--data` argument",
+            "No data provided. Please specify `TEXT` environment argument or as `--text` argument",
         )
     try:
-        data = ast.literal_eval(data)
+        text = ast.literal_eval(text)
     except Exception:  # noqa
         print("Passing input as string")
 
-    if isinstance(data, (str, int, float)):
-        data = pa.array([data])
+    if isinstance(text, (str, int, float)):
+        text = pa.array([text])
     else:
-        data = pa.array(data)  # initialize pyarrow array
+        text = pa.array(text)  # initialize pyarrow array
     node = Node(
         args.name,
     )  # provide the name to connect to the dataflow if dynamic node
@@ -156,15 +157,15 @@ def main():
         )
         time.sleep(0.1)
         start_time = time.time()
-        node.send_output("text", data)
+        node.send_output("text", text)
         event = node.next()
         duration = time.time() - start_time
         if event is not None and event["type"] == "INPUT":
-            text = event["value"][0].as_py()
+            received_text = event["value"][0].as_py()
             tokens = event["metadata"].get("tokens", 6)
             assert (
-                "this is a cat" in text.lower()
-            ), f"Expected 'This is a cat', got {text}"
+                text_truth in received_text
+            ), f"Expected '{text_truth}', got {received_text}"
             durations.append(duration)
             speed.append(tokens / duration)
             time.sleep(0.1)
