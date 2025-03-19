@@ -1,25 +1,21 @@
 [project]
 name = "dora-gradio"
-version = "0.1.0"
+version = "0.2.0"
 authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
 description = "dora-gradio"
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 
 dependencies = [
     "dora-rs >= 0.3.9",
     "gradio >= 5.3.0",
     "pyarrow >= 14.0.1",
     "numpy >= 1.26.0",
-    "torch >= 2.2.0",
-    "transformers >= 4.38.0",
-    "soundfile >= 0.12.1",
-    "psutil >= 5.9.0", 
+    "opencv-python >= 4.8.0",
+    "fastrtc >= 0.0.16",
+    "librosa >= 0.10.1"
 ]
-
-[dependency-groups]
-dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 dora-gradio = "dora_gradio.main:main"

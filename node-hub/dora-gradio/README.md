@@ -1,26 +1,22 @@
 # Dora Gradio UI Interface
 
-A versatile UI interface for Dora-rs that provides both text and voice input capabilities using Gradio.
+A versatile UI interface for Dora-rs that provides text, audio, and video input capabilities using Gradio.
 
 ## Features
 
 - **Text Input**: Direct text input through a chat-like interface
-- **Voice Input**: Real-time audio transcription using Whisper
+- **Audio Input**: Real-time audio streaming in 16kHz format
+- **Video Input**: WebRTC camera streaming at 640x480
 - **Multiple Output Channels**: 
-  - `text_input`: For direct text messages
-  - `transcribed_text`: For transcribed audio content
-- **Clean Interface**: Simple and intuitive UI with clear sections
+  - `text`: For direct text messages
+  - `audio`: For raw audio stream
+  - `image`: For camera feed
+- **Clean Interface**: Simple and intuitive UI with tabbed sections
 - **Auto Port Management**: Automatically handles port conflicts
 
 ## Installation
 
-1. Using `uv` (recommended):
-```bash
-uv venv -p 3.11 --seed
-uv pip install -e .
-```
-
-2. Using `pip`:
+Using `pip`:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -35,117 +31,127 @@ The interface will be available at: `http://localhost:7860`
 
 ### 2. As a Dora Node
 
-1. Create a YAML configuration:
+Create a YAML configuration:
 ```yaml
 nodes:
   - id: ui
     build: pip install -e .
     path: dora-gradio
     outputs:
-      - text_input     # Text from chat interface
-      - transcribed_text    # Transcribed text from audio
+      - text     # Text from chat interface
+      - audio    # Raw audio stream
+      - image    # Camera feed
 ```
 
-2. Run with Dora:
+Run with Dora:
 ```bash
-dora run your_config.yml --uv
+dora run demo.yml
 ```
 
 ### 3. Integration Examples
 
-#### Text Processing Pipeline
+#### Video Processing Pipeline
 ```yaml
 nodes:
   - id: ui
     build: pip install -e .
     path: dora-gradio
     outputs:
-      - text_input
-      - transcribed_text
+      - image    # Camera feed
 
-  - id: text_processor
+  - id: video_processor
     build: pip install -e path/to/processor
-    path: text-processor
+    path: video-processor
     inputs:
-      text: ui/text_input
+      video: ui/image
 ```
 
-#### Voice Assistant Pipeline
+#### Audio Processing Pipeline
 ```yaml
 nodes:
   - id: ui
     build: pip install -e .
     path: dora-gradio
     outputs:
-      - transcribed_text  # Use voice input
+      - audio    # Raw audio stream
 
-  - id: llm
-    build: pip install -e path/to/llm
-    path: llm-node
+  - id: audio_processor
+    build: pip install -e path/to/processor
+    path: audio-processor
     inputs:
-      prompt: ui/transcribed_text
+      audio: ui/audio
 ```
+
+### 4. Demo Example
+
+Here's a complete demo pipeline using the UI with visualization and audio processing:
+
+```yaml
+nodes:
+  - id: ui
+    build: pip install -e .
+    path: dora-gradio
+    outputs:
+      - text     # Text messages
+      - audio    # Raw audio stream
+      - image    # Camera feed
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      text_input: ui/text
+      audio: ui/audio
+      image: ui/image
+
+  - id: dora-vad
+    build: pip install -e path/to/dora-vad
+    path: dora-vad
+    inputs:
+      audio: ui/audio
+
+  - id: dora-distil-whisper
+    build: pip install -e path/to/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      audio: ui/audio
+```
+
+This demo showcases:
+- Real-time visualization with dora-rerun
+- Voice Activity Detection with dora-vad
+- Speech processing with dora-distil-whisper
 
 ## Interface Features
 
-### Text Input Section
-- Chat-like interface for text input
-- History tracking
-- Immediate output through `text_input` channel
+### Camera Tab
+- Real-time WebRTC video streaming
+- Fixed 640x480 resolution
+- BGR8 color format
+- Automatic timestamp synchronization
 
-### Voice Input Section
-- Real-time audio streaming
-- Automatic transcription using Whisper
-- Noise filtering and audio preprocessing
-- Output through `transcribed_text` channel
-- Clear button to reset recording
-- Status indicators for recording/transcription state
+### Audio and Text Input Tab
+- Chat-like interface for text input
+- Real-time audio streaming (16kHz, mono)
+- Status indicators for streaming state
+- Immediate output through respective channels
 
 ### Controls
-- Send button for voice transcriptions
-- Clear button for resetting inputs
+- Send Text button for chat messages
 - Stop Server button for graceful shutdown
-
-## Development
-
-### Code Formatting
-```bash
-uv pip install ruff
-uv run ruff check . --fix
-```
-
-### Linting
-```bash
-uv run ruff check .
-```
-
-### Testing
-```bash
-uv pip install pytest
-uv run pytest .
-```
 
 ## System Requirements
 
-- Python ≥ 3.11
-- CUDA-compatible GPU (optional, for faster transcription)
+- Python ≥ 3.10
 - Required ports:
   - 7860 (Gradio interface)
 
 ## Known Limitations
 
-- Only supports English language for voice transcription
-- Requires manual port management if multiple instances needed
-- Voice transcription may be slower on CPU-only systems
+- Fixed video resolution (640x480)
+- Fixed audio sample rate (16kHz)
+- Requires port 7860 to be available
 
 ## License
 
 dora-gradio's code are released under the MIT License
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a new Pull Request
