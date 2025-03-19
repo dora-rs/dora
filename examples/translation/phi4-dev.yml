@@ -16,7 +16,9 @@ nodes:
       - audio
 
   - id: dora-phi4
+    # This build currently only work on Linux/CUDA
     build: |
+      pip install flash-attn --no-build-isolation
       pip install -e ../../node-hub/dora-phi4
     path: dora-phi4
     inputs:
@@ -36,7 +38,7 @@ nodes:
       DATA: "Translate this audio to english."
 
   - id: dora-rerun
-    build: pip install -e ../../node-hub/dora-rerun
+    build: pip install dora-rerun
     path: dora-rerun
     inputs:
       original_text: dora-phi4/text
