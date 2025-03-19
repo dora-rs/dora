@@ -1,19 +1,19 @@
 nodes:
   - id: benchmark_script
-    path: benchmark_script.py
+    path: ../mllm/benchmark_script.py
     inputs:
       text: llm/text
     outputs:
-      - data
+      - text
     env:
       DATA: "Please only generate the following output: This is a test"
 
   - id: llm
-    build: |
-      pip install flash-attn --no-build-isolation
-      pip install -e ../../node-hub/dora-phi4
-    path: dora-phi4
+    build: pip install -e ../../node-hub/dora-transformers
+    path: dora-transformers
     inputs:
       text: benchmark_script/data
     outputs:
       - text
+    env:
+      MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct" # Model from Hugging Face
