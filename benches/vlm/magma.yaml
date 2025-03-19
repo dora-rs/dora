@@ -7,7 +7,8 @@ nodes:
       - text
       - image
     env:
-      DATA: "Please only generate the following output: This is a test"
+      TEXT: "Please only generate the following output: This is a cat"
+      TEXT_TRUTH: "This is a cat"
 
   - id: llm
     build: pip install -e ../../node-hub/dora-magma

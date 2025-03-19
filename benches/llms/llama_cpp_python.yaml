@@ -6,14 +6,15 @@ nodes:
     outputs:
       - text
     env:
-      DATA: "Please only generate the following output: This is a test"
+      TEXT: "Please only generate the following output: This is a test"
+      TEXT_TRUTH: "This is a test"
 
   - id: llm
     build: pip install -e ../../node-hub/dora-llama-cpp-python
     path: dora-llama-cpp-python
     inputs:
       text:
-        source: benchmark_script/data
+        source: benchmark_script/text
         queue-size: 10
     outputs:
       - text
