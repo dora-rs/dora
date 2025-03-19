@@ -51,10 +51,10 @@ def main():
                     )
                     continue
                 audio = audio[0 : speech_timestamps[-1]["end"]]
-                node.send_output("audio", pa.array(audio))
+                node.send_output("audio", pa.array(audio), metadata={"sample_rate": sr})
                 last_audios = [audio[speech_timestamps[-1]["end"] :]]
 
             # If there is no sound for too long return the audio
             elif len(last_audios) > MAX_AUDIO_DURATION_S:
-                node.send_output("audio", pa.array(audio))
+                node.send_output("audio", pa.array(audio), metadata={"sample_rate": sr})
                 last_audios = []

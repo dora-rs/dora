@@ -45,7 +45,7 @@ def get_model_huggingface():
     return model, tokenizer
 
 
-ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "what how who where you").split()
+ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
 
 
 def generate_hf(model, tokenizer, prompt: str, history) -> str:
@@ -86,17 +86,15 @@ def main():
             text = event["value"][0].as_py()
             words = text.lower().split()
 
-            if any(word in ACTIVATION_WORDS for word in words):
+            if len(ACTIVATION_WORDS) == 0 or any(
+                word in ACTIVATION_WORDS for word in words
+            ):
                 # On linux, Windows
                 if sys.platform == "darwin":
-                    response = model(
-                        f"Q: {text} A: ",  # Prompt
+                    response = model.create_chat_completion(
+                        messages=[{"role": "user", "content": text}],  # Prompt
                         max_tokens=24,
-                        stop=[
-                            "Q:",
-                            "\n",
-                        ],  # Stop generating just before the model would generate a new question
-                    )["choices"][0]["text"]
+                    )["choices"][0]["message"]["content"]
                 elif sys.platform == "linux":
                     response, history = generate_hf(model, tokenizer, text, history)
                 else:

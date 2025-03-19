@@ -1,0 +1,28 @@
+nodes:
+  - id: benchmark_script
+    path: ../mllm/benchmark_script.py
+    inputs:
+      text: llm/text
+    outputs:
+      - text
+    env:
+      TEXT: "Please only generate the following output: This is a test"
+      TEXT_TRUTH: "This is a test"
+
+  - id: llm
+    build: pip install -e ../../node-hub/dora-llama-cpp-python
+    path: dora-llama-cpp-python
+    inputs:
+      text:
+        source: benchmark_script/text
+        queue-size: 10
+    outputs:
+      - text
+    env:
+      MODEL_NAME_OR_PATH: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+      MODEL_FILE_PATTERN: "*fp16.gguf"
+      SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
+      MAX_TOKENS: "512"
+      N_GPU_LAYERS: "35" # Enable GPU acceleration
+      N_THREADS: "16" # CPU threads
+      CONTEXT_SIZE: "4096" # Maximum context window
