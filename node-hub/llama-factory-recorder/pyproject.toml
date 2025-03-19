@@ -2,17 +2,17 @@
 name = "llama-factory-recorder"
 version = "0.3.10"
 authors = [
-    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
-    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
+  { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+  { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for VLM"
-
+license = "MIT"
 requires-python = ">=3.8"
 
 dependencies = [
-    "dora-rs >= 0.3.9",
-    "pillow >= 10.4.0",
-    "opencv-python >= 4.1.1",
+  "dora-rs >= 0.3.9",
+  "pillow >= 10.4.0",
+  "opencv-python >= 4.1.1",
 ]
 
 [dependency-groups]
@@ -23,7 +23,7 @@ llama-factory-recorder = "llama_factory_recorder.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP",  # Ruff's UP rule
-  "PERF" # Ruff's PERF rule
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
 ]
