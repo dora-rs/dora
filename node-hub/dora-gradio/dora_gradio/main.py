@@ -90,6 +90,7 @@ class DoraGradioUI:
         with gr.Blocks(theme=self.theme, title="Dora Input Interface") as interface:
             gr.Markdown("## Dora Input Interface")
             with gr.Tab("Camera"):
+                # noqa: F841 - Stream is used by Gradio internally
                 video_feed = Stream(
                     handler=self.handle_video_stream,
                     modality="video",
