@@ -1,0 +1,22 @@
+nodes:
+  - id: benchmark_script
+    path: ../mllm/benchmark_script.py
+    inputs:
+      text: vlm/text
+    outputs:
+      - text
+      - image
+    env:
+      TEXT: "Please only generate the following output: This is a cat"
+      TEXT_TRUTH: "This is a cat"
+
+  - id: vlm
+    # Comment flash_attn if not on cuda hardware
+    build: |
+      pip install -e ../../node-hub/dora-qwen2-5-vl
+    path: dora-qwen2-5-vl
+    inputs:
+      image: benchmark_script/image
+      text: benchmark_script/text
+    outputs:
+      - text

@@ -1,0 +1,58 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-phi4
+    # This build currently only work on Linux/CUDA
+    build: |
+      pip install flash-attn --no-build-isolation
+      pip install -e ../../node-hub/dora-phi4
+    path: dora-phi4
+    inputs:
+      audio: dora-vad/audio
+      text: sender/data
+    outputs:
+      - text
+    env:
+      LEAD_MODALITY: audio
+
+  - id: sender
+    build: pip install -e ../../node-hub/pyarrow-sender
+    path: pyarrow-sender
+    outputs:
+      - data
+    env:
+      DATA: "Translate this audio to english."
+
+  - id: dora-rerun
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      original_text: dora-phi4/text
+
+  - id: dora-kokoro-tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
+    inputs:
+      text: dora-phi4/text
+    outputs:
+      - audio
+
+  - id: dora-pyaudio
+    build: pip install -e ../../node-hub/dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-kokoro-tts/audio

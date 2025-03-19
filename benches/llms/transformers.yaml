@@ -1,0 +1,20 @@
+nodes:
+  - id: benchmark_script
+    path: ../mllm/benchmark_script.py
+    inputs:
+      text: llm/text
+    outputs:
+      - text
+    env:
+      TEXT: "Please only generate the following output: This is a test"
+      TEXT_TRUTH: "This is a test"
+
+  - id: llm
+    build: pip install -e ../../node-hub/dora-transformers
+    path: dora-transformers
+    inputs:
+      text: benchmark_script/text
+    outputs:
+      - text
+    env:
+      MODEL_NAME: "Qwen/Qwen2.5-0.5B-Instruct" # Model from Hugging Face
