@@ -17,5 +17,11 @@ dependencies = [
     "librosa >= 0.10.1"
 ]
 
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
 [project.scripts]
 dora-gradio = "dora_gradio.main:main"
+
+[tool.ruff]
+ignore = ["F841"]  # Ignore unused variable warnings
