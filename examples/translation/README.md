@@ -9,4 +9,6 @@ cd dora/examples/translation
 uv venv --seed -p 3.11
 dora build phi4-dev.yml --uv
 dora run phi4-dev.yml --uv
+
+# Start talking or play a recording in English, Chinese, German, French, Italian, Japanese, Spanish, Portuguese
 ```
