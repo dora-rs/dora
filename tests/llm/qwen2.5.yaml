@@ -5,11 +5,11 @@ nodes:
     outputs:
       - data
     env:
-      DATA: "'Please only output: This is a test'"
+      DATA: "Please only output: This is a test"
 
   - id: dora-qwen2.5
-    build: pip install -e ../../node-hub/dora-qwen2.5
-    path: dora-qwen2-5
+    build: pip install -e ../../node-hub/dora-qwen
+    path: dora-qwen
     inputs:
       text: pyarrow-sender/data
     outputs:
@@ -19,6 +19,6 @@ nodes:
     build: pip install -e ../../node-hub/pyarrow-assert
     path: pyarrow-assert
     inputs:
-      data: dora-phi4/text
+      data: dora-qwen2.5/text
     env:
       DATA: "This is a test"

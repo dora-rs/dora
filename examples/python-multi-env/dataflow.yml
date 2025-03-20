@@ -1,0 +1,32 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+      VIRTUAL_ENV: env_1
+
+  - id: object-detection
+    build: pip install -e ../../node-hub/dora-yolo
+    path: dora-yolo
+    inputs:
+      image: camera/image
+    outputs:
+      - bbox
+    env:
+      VIRTUAL_ENV: env_2
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      image: camera/image
+      boxes2d: object-detection/bbox
+    env:
+      VIRTUAL_ENV: env_1

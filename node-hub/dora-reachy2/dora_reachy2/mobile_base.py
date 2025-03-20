@@ -11,9 +11,9 @@ from reachy2_sdk import ReachySDK
 
 def main():
     """TODO: Add docstring."""
-    ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
+    robot_ip = os.getenv("ROBOT_IP", "10.42.0.80")
 
-    reachy = ReachySDK(ROBOT_IP)
+    reachy = ReachySDK(robot_ip)
 
     if reachy.mobile_base is not None:
         reachy.mobile_base.turn_on()
