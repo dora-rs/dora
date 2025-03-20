@@ -29,13 +29,13 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
 #[cfg(feature = "metrics")]
 use dora_metrics::init_meter_provider;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
+use tokio::runtime::Handle;
 
 pub mod arrow_utils;
 mod control_channel;
@@ -56,7 +56,7 @@ pub struct DoraNode {
 
     dataflow_descriptor: Descriptor,
     warned_unknown_output: BTreeSet<DataId>,
-    _rt: Runtime,
+    _rt: Handle,
 }
 
 impl DoraNode {
@@ -136,15 +136,25 @@ impl DoraNode {
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
+
+        let rt = match Handle::try_current() {
+            Ok(rt) => rt,
+            Err(_) => tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .context("tokio runtime failed")?
+                .handle()
+                .clone(),
+        };
+
         let id = node_id.to_string();
         #[cfg(feature = "metrics")]
         rt.spawn(async {
-            if let Err(e) = init_meter_provider(id).context("failed to init metrics provider") {
+            if let Err(e) = init_meter_provider(id)
+                .await
+                .context("failed to init metrics provider")
+            {
                 warn!("could not create metric provider with err: {:#?}", e);
             }
         });
