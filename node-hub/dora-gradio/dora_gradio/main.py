@@ -3,7 +3,6 @@ import numpy as np
 import logging
 import pyarrow as pa
 from dora import Node
-import subprocess
 import signal
 import os
 import cv2
@@ -138,6 +137,7 @@ class DoraGradioUI:
     def launch(self):
         try:
             # Kill existing process on port 7860 if any
+            # import subprocess
             # subprocess.run('lsof -ti :7860 | xargs kill -9', shell=True, stderr=subprocess.DEVNULL)
             interface = self.create_interface()
             
