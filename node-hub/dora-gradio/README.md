@@ -41,6 +41,9 @@ nodes:
       - text     # Text from chat interface
       - audio    # Raw audio stream
       - image    # Camera feed
+    env:
+      VIRTUAL_ENV: path to your venv   # comment this if not using venv
+
 ```
 
 Run with Dora:
