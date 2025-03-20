@@ -29,8 +29,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::runtime::Runtime;
 use tracing::{info, warn};
 
+#[cfg(feature = "metrics")]
+use dora_metrics::init_meter_provider;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 
@@ -53,6 +56,7 @@ pub struct DoraNode {
 
     dataflow_descriptor: Descriptor,
     warned_unknown_output: BTreeSet<DataId>,
+    _rt: Runtime,
 }
 
 impl DoraNode {
@@ -132,6 +136,18 @@ impl DoraNode {
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+        let id = node_id.to_string();
+        #[cfg(feature = "metrics")]
+        rt.spawn(async {
+            if let Err(e) = init_meter_provider(id).context("failed to init metrics provider") {
+                warn!("could not create metric provider with err: {:#?}", e);
+            }
+        });
 
         let event_stream = EventStream::init(
             dataflow_id,
@@ -159,6 +175,7 @@ impl DoraNode {
             cache: VecDeque::new(),
             dataflow_descriptor,
             warned_unknown_output: BTreeSet::new(),
+            _rt: rt,
         };
         Ok((node, event_stream))
     }
