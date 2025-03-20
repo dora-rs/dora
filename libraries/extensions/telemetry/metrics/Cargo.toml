@@ -18,4 +18,4 @@ opentelemetry-otlp = { version = "0.28.0", features = [
 ] }
 opentelemetry_sdk = { version = "0.28.0", features = ["rt-tokio", "metrics"] }
 eyre = "0.6.12"
-opentelemetry-system-metrics = { version = "0.3.0" }
+opentelemetry-system-metrics = { version = "0.3.1" }
