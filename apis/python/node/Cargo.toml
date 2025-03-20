@@ -10,8 +10,9 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["tracing", "telemetry"]
+default = ["tracing", "metrics", "telemetry"]
 tracing = ["dora-node-api/tracing"]
+metrics = ["dora-node-api/metrics"]
 telemetry = ["dora-runtime/telemetry"]
 
 [dependencies]

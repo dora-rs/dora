@@ -10,40 +10,35 @@
 //! [`sysinfo`]: https://github.com/GuillaumeGomez/sysinfo
 //! [`opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
 
-use std::time::Duration;
-
-use eyre::{Context, Result};
-use opentelemetry::metrics::{self, MeterProvider as _};
-use opentelemetry_otlp::{ExportConfig, WithExportConfig};
-use opentelemetry_sdk::{metrics::SdkMeterProvider, runtime};
+use eyre::Result;
+use opentelemetry::{global, InstrumentationScope};
+use opentelemetry_otlp::MetricExporter;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_system_metrics::init_process_observer;
 /// Init opentelemetry meter
 ///
 /// Use the default Opentelemetry exporter with default config
 /// TODO: Make Opentelemetry configurable
 ///
-pub fn init_metrics() -> metrics::Result<SdkMeterProvider> {
-    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:4317".to_string());
-    let export_config = ExportConfig {
-        endpoint,
-        ..ExportConfig::default()
-    };
+pub fn init_metrics() -> SdkMeterProvider {
+    let exporter = MetricExporter::builder()
+        .with_tonic()
+        .build()
+        .expect("Failed to create metric exporter");
 
-    opentelemetry_otlp::new_pipeline()
-        .metrics(runtime::Tokio)
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_export_config(export_config),
-        )
-        .with_period(Duration::from_secs(10))
+    SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter)
         .build()
 }
 
-pub fn init_meter_provider(meter_id: String) -> Result<SdkMeterProvider> {
-    let meter_provider = init_metrics().context("Could not create opentelemetry meter")?;
-    let meter = meter_provider.meter(meter_id);
-    init_process_observer(meter).context("could not initiate system metrics observer")?;
+pub async fn init_meter_provider(meter_id: String) -> Result<SdkMeterProvider> {
+    let meter_provider = init_metrics();
+    global::set_meter_provider(meter_provider.clone());
+    let scope = InstrumentationScope::builder(meter_id)
+        .with_version("1.0")
+        .build();
+    let meter = global::meter_with_scope(scope);
+
+    init_process_observer(meter).await.unwrap();
     Ok(meter_provider)
 }
