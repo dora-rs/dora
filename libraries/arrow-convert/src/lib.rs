@@ -31,7 +31,7 @@ impl DerefMut for ArrowData {
 
 macro_rules! register_array_handlers {
     ($(($variant:path, $array_type:ty, $type_name:expr)),* $(,)?) => {
-        pub fn cast_values(data: &ArrowData) -> Result<Vec<f64>> {
+        pub fn into_vec_f64(data: &ArrowData) -> Result<Vec<f64>> {
             match data.data_type() {
                 $(
                     $variant => {
