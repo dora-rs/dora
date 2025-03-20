@@ -138,7 +138,7 @@ class DoraGradioUI:
     def launch(self):
         try:
             # Kill existing process on port 7860 if any
-            subprocess.run('lsof -ti :7860 | xargs kill -9', shell=True, stderr=subprocess.DEVNULL)
+            # subprocess.run('lsof -ti :7860 | xargs kill -9', shell=True, stderr=subprocess.DEVNULL)
             interface = self.create_interface()
             
             def cleanup(signum, frame):
@@ -147,10 +147,8 @@ class DoraGradioUI:
             
             signal.signal(signal.SIGINT, cleanup)
             signal.signal(signal.SIGTERM, cleanup)
-            interface.launch(server_name="0.0.0.0", server_port=7860, quiet=True)
-            logger.info("Gradio UI running at: http://localhost:7860")
-            while True:
-                time.sleep(0.1)
+            interface.launch(server_name="0.0.0.0", server_port=7860, quiet=False)
+
         except Exception as e:
             logger.error(f"Error launching UI: {e}")
             raise e
