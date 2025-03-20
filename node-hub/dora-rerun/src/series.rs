@@ -1,15 +1,13 @@
 use dora_node_api::{
-    arrow::array::{Float32Array, Float64Array, Int32Array, Int64Array, UInt32Array},
-    arrow::datatypes::DataType,
-    cast_values,
+    into_vec_f64,
     dora_core::config::DataId,
     ArrowData,
 };
-use eyre::{Context, ContextCompat, Result};
+use eyre::{Context, Result};
 use rerun::RecordingStream;
 
 pub fn update_series(rec: &RecordingStream, id: DataId, data: ArrowData) -> Result<()> {
-    let series = cast_values(&data).context("could not cast values")?;
+    let series = into_vec_f64(&data).context("could not cast values")?;
     for (i, value) in series.iter().enumerate() {
         rec.log(
             format!("{}_{}", id.as_str(), i),
