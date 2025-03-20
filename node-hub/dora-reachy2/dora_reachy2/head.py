@@ -9,17 +9,17 @@ from reachy2_sdk import ReachySDK
 
 def main():
     """TODO: Add docstring."""
-    ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
+    robot_ip = os.getenv("ROBOT_IP", "10.42.0.80")
 
     for _i in range(5):
-        reachy = ReachySDK(ROBOT_IP)
+        reachy = ReachySDK(robot_ip)
 
         if reachy.head is not None:
             reachy.head.turn_on()
             reachy.head.goto([0, 0, 0])
             break
-    FOV_H = 107
-    FOV_V = 91
+    fov_h = 107
+    fov_v = 91
     resolution = [720, 960]
 
     roll, _pitch, yaw = reachy.head.get_current_positions()
@@ -37,8 +37,8 @@ def main():
                     x_min + x_max
                 ) / 2 - 10  # Deviate a bit to take into account the off centered camera
                 y = (3 * y_min + y_max) / 4
-                ry = (x - resolution[1] / 2) * FOV_H / 2 / resolution[1]
-                rz = (y - resolution[0] / 2) * FOV_V / 2 / resolution[0]
+                ry = (x - resolution[1] / 2) * fov_h / 2 / resolution[1]
+                rz = (y - resolution[0] / 2) * fov_v / 2 / resolution[0]
                 if np.abs(yaw) > 45 and yaw * -ry > 0:
                     reachy.head.cancel_all_goto()
                     roll, _pitch, yaw = reachy.head.get_current_positions()

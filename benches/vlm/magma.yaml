@@ -1,0 +1,20 @@
+nodes:
+  - id: benchmark_script
+    path: ../mllm/benchmark_script.py
+    inputs:
+      text: llm/text
+    outputs:
+      - text
+      - image
+    env:
+      TEXT: "Please only generate the following output: This is a cat"
+      TEXT_TRUTH: "This is a cat"
+
+  - id: llm
+    build: pip install -e ../../node-hub/dora-magma
+    path: dora-magma
+    inputs:
+      text: benchmark_script/text
+      image: benchmark_script/image
+    outputs:
+      - text

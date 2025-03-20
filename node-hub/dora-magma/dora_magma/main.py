@@ -22,33 +22,34 @@ magma_dir = current_dir.parent / "Magma" / "magma"
 
 def load_magma_models():
     """TODO: Add docstring."""
-    DEFAULT_PATH = str(magma_dir.parent / "checkpoints" / "Magma-8B")
-    if not os.path.exists(DEFAULT_PATH):
-        DEFAULT_PATH = str(magma_dir.parent)
-        if not os.path.exists(DEFAULT_PATH):
+    default_path = str(magma_dir.parent / "checkpoints" / "Magma-8B")
+    if not os.path.exists(default_path):
+        default_path = str(magma_dir.parent)
+        if not os.path.exists(default_path):
             logger.warning(
-                "Warning: Magma submodule not found, falling back to HuggingFace version"
+                "Warning: Magma submodule not found, falling back to HuggingFace version",
             )
-            DEFAULT_PATH = "microsoft/Magma-8B"
+            default_path = "microsoft/Magma-8B"
 
-    MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", DEFAULT_PATH)
-    logger.info(f"Loading Magma model from: {MODEL_NAME_OR_PATH}")
+    model_name_or_path = os.getenv("MODEL_NAME_OR_PATH", default_path)
+    logger.info(f"Loading Magma model from: {model_name_or_path}")
 
     try:
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME_OR_PATH,
+            model_name_or_path,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
             device_map="auto",
         )
         processor = AutoProcessor.from_pretrained(
-            MODEL_NAME_OR_PATH, trust_remote_code=True
+            model_name_or_path,
+            trust_remote_code=True,
         )
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         raise
 
-    return model, processor, MODEL_NAME_OR_PATH
+    return model, processor, model_name_or_path
 
 
 model, processor, MODEL_NAME_OR_PATH = load_magma_models()
@@ -72,7 +73,9 @@ def generate(
     ]
 
     prompt = processor.tokenizer.apply_chat_template(
-        convs, tokenize=False, add_generation_prompt=True
+        convs,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
     try:
@@ -102,7 +105,7 @@ def generate(
 
             # Parse the trajectories using the same approach as in `https://github.com/microsoft/Magma/blob/main/agents/robot_traj/app.py`
             traces_dict = ast.literal_eval(
-                "{" + traces_str.strip().replace("\n\n", ",") + "}"
+                "{" + traces_str.strip().replace("\n\n", ",") + "}",
             )
             for mark_id, trace in traces_dict.items():
                 trajectories[mark_id] = ast.literal_eval(trace)
@@ -153,7 +156,7 @@ def main():
                         frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
                         if frame is None:
                             raise ValueError(
-                                f"Failed to decode image with encoding {encoding}"
+                                f"Failed to decode image with encoding {encoding}",
                             )
                         frame = frame[:, :, ::-1]  # Convert BGR to RGB
                     else:
@@ -174,14 +177,18 @@ def main():
                     task_description = event["value"][0].as_py()
                     image_id = event["metadata"].get("image_id", None)
 
-                    if image_id is None or image_id not in frames:
-                        logger.error(f"Image ID {image_id} not found in frames")
+                    if image_id in frames:
+                        image = frames[image_id]
+                    elif len(frames) == 1:
+                        image = next(iter(frames.values()))
+                    else:
+                        logger.error(f"Image not found for {image_id}")
                         continue
-
-                    image = frames[image_id]
                     response, trajectories = generate(image, task_description)
                     node.send_output(
-                        "text", pa.array([response]), {"image_id": image_id}
+                        "text",
+                        pa.array([response]),
+                        {"image_id": image_id},
                     )
 
                     # Send trajectory data if available

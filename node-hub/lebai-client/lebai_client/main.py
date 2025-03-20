@@ -1,15 +1,17 @@
-import lebai_sdk
-import numpy as np
-from dora import Node
+"""TODO: Add docstring."""
 import json
 import os
 import time
+
+import lebai_sdk
+import numpy as np
+from dora import Node
 
 
 def load_json_file(file_path):
     """Load JSON file and return the dictionary."""
     if os.path.exists(file_path):
-        with open(file_path, "r") as file:
+        with open(file_path) as file:
             data = json.load(file)
     else:
         # Return an empty dictionary if file does not exist
@@ -27,11 +29,12 @@ SAVED_POSE_PATH = "pose_library.json"
 
 lebai_sdk.init()
 ROBOT_IP = os.getenv(
-    "LEBAI_IP", "10.42.0.253"
+    "LEBAI_IP", "10.42.0.253",
 )  # 设定机器人ip地址，需要根据机器人实际ip地址修改
 
 
 def main():
+    """TODO: Add docstring."""
     # Load the JSON file
     pose_library = load_json_file(SAVED_POSE_PATH)
     lebai = lebai_sdk.connect(ROBOT_IP, False)  # 创建实例
@@ -178,7 +181,7 @@ def main():
                         "duration": time.time() - start_time,
                         "joint_position": joint_position,
                         "t": t * 2 if t == 0.1 else t,
-                    }
+                    },
                 ]
                 start_time = time.time()
 

@@ -1,0 +1,24 @@
+nodes:
+  - id: pyarrow-sender
+    build: pip install -e ../../node-hub/pyarrow-sender
+    path: pyarrow-sender
+    outputs:
+      - data
+    env:
+      DATA: "'Please only output: This is a test'"
+
+  - id: dora-magma
+    build: pip install -e ../../node-hub/dora-magma
+    path: dora-magma
+    inputs:
+      text: pyarrow-sender/data
+    outputs:
+      - text
+
+  - id: pyarrow-assert
+    build: pip install -e ../../node-hub/pyarrow-assert
+    path: pyarrow-assert
+    inputs:
+      data: dora-magma/text
+    env:
+      DATA: "This is a test"

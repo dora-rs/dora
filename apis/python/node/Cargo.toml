@@ -22,11 +22,14 @@ eyre = "0.6"
 serde_yaml = "0.8.23"
 flume = "0.10.14"
 dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
+dora-daemon = { workspace = true }
+dora-download = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"
 dora-ros2-bridge-python = { workspace = true }
 # pyo3_special_method_derive = "0.4.2"
+tokio = { version = "1.24.2", features = ["rt"] }
 
 [lib]
 name = "dora"

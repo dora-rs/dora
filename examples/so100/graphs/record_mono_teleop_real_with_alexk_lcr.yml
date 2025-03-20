@@ -1,0 +1,106 @@
+nodes:
+  - id: lcr-leader
+    build: pip install ../../../node-hub/dynamixel-client
+    path: dynamixel-client
+    inputs:
+      pull_position: dora/timer/millis/10
+      write_goal_position: lcr-to-so100/leader_goal
+    outputs:
+      - position
+    env:
+      PORT: COM6
+      CONFIG: ../../alexk-lcr/configs/leader.left.json
+
+  - id: lcr-to-so100
+    path: ../nodes/interpolate_lcr_to_so100.py
+    inputs:
+      leader_position: lcr-leader/position
+      follower_position: so100-follower/position
+    outputs:
+      - follower_goal
+      - leader_goal
+    env:
+      LEADER_CONTROL: ../../alexk-lcr/configs/leader.left.json
+      FOLLOWER_CONTROL: ../configs/follower.left.json
+
+  - id: so100-follower
+    build: pip install ../../../node-hub/feetech-client
+    path: feetech-client
+    inputs:
+      pull_position: dora/timer/millis/10
+      write_goal_position: lcr-to-so100/follower_goal
+    outputs:
+      - position
+    env:
+      PORT: COM11
+      CONFIG: ../configs/follower.left.json
+
+  - id: lcr-x-so100-to-record
+    build: pip install git+https://github.com/Hennzau/pwm-position-control
+    path: ../nodes/interpolate_lcr_x_so100_to_record.py
+    inputs:
+      leader_position:
+        source: lcr-leader/position
+        queue_size: 1
+      follower_position:
+        source: so100-follower/position
+        queue_size: 1
+    outputs:
+      - logical_goal
+      - logical_position
+    env:
+      LEADER_CONTROL: ../../alexk-lcr/configs/leader.left.json
+      FOLLOWER_CONTROL: ../configs/follower.left.json
+
+  - id: opencv-video-capture
+    build: pip install ../../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick:
+        source: lerobot-dashboard/tick
+        queue_size: 1
+    outputs:
+      - image
+    env:
+      PATH: 1
+      IMAGE_WIDTH: 860
+      IMAGE_HEIGHT: 540
+
+  - id: video-encoder
+    build: pip install ../../../node-hub/video-encoder
+    path: video-encoder
+    inputs:
+      image: opencv-video-capture/image
+      episode_index: lerobot-dashboard/episode
+    outputs:
+      - image
+    env:
+      VIDEO_NAME: cam_up
+      FPS: 30
+
+  - id: lerobot-dashboard
+    build: pip install ../../../node-hub/lerobot-dashboard
+    path: lerobot-dashboard
+    inputs:
+      tick:
+        source: dora/timer/millis/16
+        queue_size: 1
+      image_left: opencv-video-capture/image
+    outputs:
+      - tick
+      - episode
+      - failed
+      - end
+    env:
+      WINDOW_WIDTH: 1720
+      WINDOW_HEIGHT: 540
+
+  - id: dora-record
+    build: cargo install dora-record
+    path: dora-record
+    inputs:
+      action: lcr-x-so100-to-record/logical_goal
+      observation.state: lcr-x-so100-to-record/logical_position
+      episode_index: lerobot-dashboard/episode
+      failed_episode_index: lerobot-dashboard/failed
+      observation.images.cam_up: video-encoder/image

@@ -1,0 +1,35 @@
+nodes:
+  - id: replay-client
+    build: pip install ../../../node-hub/replay-client
+    path: replay-client
+    inputs:
+      pull_position: dora/timer/millis/33
+    outputs:
+      - position
+      - end
+    env:
+      PATH: ../../../datasets/enzo1
+      EPISODE: 1
+
+  - id: replay-to-so100
+    path: ../nodes/interpolate_replay_to_so100.py
+    inputs:
+      leader_position: replay-client/position
+      follower_position: so100-follower/position
+    outputs:
+      - follower_goal
+    env:
+      FOLLOWER_CONTROL: ../configs/follower.left.json
+
+  - id: so100-follower
+    build: pip install ../../../node-hub/feetech-client
+    path: feetech-client
+    inputs:
+      pull_position: dora/timer/millis/33
+      write_goal_position: replay-to-so100/follower_goal
+      end: replay-client/end
+    outputs:
+      - position
+    env:
+      PORT: /dev/tty.usbmodem585A0077581
+      CONFIG: ../configs/follower.left.json

@@ -7,7 +7,6 @@ authors = [
 ]
 description = "Dora Node for VLM"
 
-
 requires-python = ">=3.8"
 
 dependencies = [
@@ -24,5 +23,12 @@ llama-factory-recorder = "llama_factory_recorder.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
 ]

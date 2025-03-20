@@ -3,8 +3,8 @@ use arrow::{
     datatypes::{ArrowPrimitiveType, ArrowTemporalType},
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-
 use eyre::ContextCompat;
+use half::f16;
 
 use crate::ArrowData;
 
@@ -36,97 +36,65 @@ impl TryFrom<&ArrowData> for bool {
         Ok(bool_array.value(0))
     }
 }
-impl TryFrom<&ArrowData> for u8 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::UInt8Type>()
-            .context("not a primitive UInt8Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for u16 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::UInt16Type>()
-            .context("not a primitive UInt16Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for u32 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::UInt32Type>()
-            .context("not a primitive UInt32Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for u64 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::UInt64Type>()
-            .context("not a primitive UInt64Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for i8 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::Int8Type>()
-            .context("not a primitive Int8Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for i16 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::Int16Type>()
-            .context("not a primitive Int16Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for i32 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::Int32Type>()
-            .context("not a primitive Int32Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for i64 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::Int64Type>()
-            .context("not a primitive Int64Type array")?;
-        extract_single_primitive(array)
-    }
+
+macro_rules! impl_try_from_arrow_data {
+    ($($t:ty => $arrow_type:ident),*) => {
+        $(
+            impl TryFrom<&ArrowData> for $t {
+                type Error = eyre::Report;
+
+                fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+                    let array = value
+                        .as_primitive_opt::<arrow::datatypes::$arrow_type>()
+                        .context(concat!("not a primitive ", stringify!($arrow_type), " array"))?;
+                    extract_single_primitive(array)
+                }
+            }
+        )*
+
+        $(
+            impl<'a> TryFrom<&'a ArrowData> for &'a [$t] {
+                type Error = eyre::Report;
+
+                fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
+                    let array: &PrimitiveArray<arrow::datatypes::$arrow_type> = value
+                        .as_primitive_opt()
+                        .wrap_err(concat!("not a primitive ", stringify!($arrow_type), " array"))?;
+                    if array.null_count() != 0 {
+                        eyre::bail!("array has nulls");
+                    }
+                    Ok(array.values())
+                }
+            }
+        )*
+
+        $(
+            impl<'a> TryFrom<&'a ArrowData> for Vec<$t> {
+                type Error = eyre::Report;
+
+                fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
+                    value
+                        .try_into()
+                        .map(|slice: &'a [$t]| slice.to_vec())
+                }
+            }
+        )*
+    };
 }
 
-impl TryFrom<&ArrowData> for f32 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::Float32Type>()
-            .context("not a primitive Float32Type array")?;
-        extract_single_primitive(array)
-    }
-}
-impl TryFrom<&ArrowData> for f64 {
-    type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let array = value
-            .as_primitive_opt::<arrow::datatypes::Float64Type>()
-            .context("not a primitive Float64Type array")?;
-        extract_single_primitive(array)
-    }
-}
+impl_try_from_arrow_data!(
+    u8 => UInt8Type,
+    u16 => UInt16Type,
+    u32 => UInt32Type,
+    u64 => UInt64Type,
+    i8 => Int8Type,
+    i16 => Int16Type,
+    i32 => Int32Type,
+    i64 => Int64Type,
+    f16 => Float16Type,
+    f32 => Float32Type,
+    f64 => Float64Type
+);
 
 impl<'a> TryFrom<&'a ArrowData> for &'a str {
     type Error = eyre::Report;
@@ -142,206 +110,6 @@ impl<'a> TryFrom<&'a ArrowData> for &'a str {
             eyre::bail!("array has nulls");
         }
         Ok(array.value(0))
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [u8] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::UInt8Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive UInt8Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<u8> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [u8]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [u16] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::UInt16Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive UInt16Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<u16> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [u16]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [u32] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::UInt32Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive UInt32Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<u32> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [u32]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [u64] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::UInt64Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive UInt64Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<u64> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [u64]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [i8] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::Int8Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive Int8Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<i8> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [i8]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [i16] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::Int16Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive Int16Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<i16> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [i16]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [i32] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::Int32Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive Int32Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<i32> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [i32]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [i64] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::Int64Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive Int64Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<i64> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [i64]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [f32] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::Float32Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive Float32Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<f32> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [f32]| slice.to_vec())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for &'a [f64] {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &PrimitiveArray<arrow::datatypes::Float64Type> = value
-            .as_primitive_opt()
-            .wrap_err("not a primitive Float64Type array")?;
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.values())
-    }
-}
-
-impl<'a> TryFrom<&'a ArrowData> for Vec<f64> {
-    type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        value.try_into().map(|slice: &'a [f64]| slice.to_vec())
     }
 }
 

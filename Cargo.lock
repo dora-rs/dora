@@ -2630,6 +2630,7 @@ dependencies = [
  "arrow 54.2.1",
  "chrono",
  "eyre",
+ "half",
 ]
 
 [[package]]
@@ -2874,6 +2875,8 @@ name = "dora-node-api-python"
 version = "0.3.10"
 dependencies = [
  "arrow 54.2.1",
+ "dora-daemon",
+ "dora-download",
  "dora-node-api",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
@@ -2884,6 +2887,7 @@ dependencies = [
  "pyo3",
  "pythonize",
  "serde_yaml 0.8.26",
+ "tokio",
 ]
 
 [[package]]
@@ -4386,9 +4390,9 @@ dependencies = [
 
 [[package]]
 name = "half"
-version = "2.4.1"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dd08c532ae367adf81c312a4580bc67f1d0fe8bc9c460520283f4c0ff277888"
+checksum = "7db2ff139bba50379da6aa0766b52fdcb62cb5b263009b09ed58ba604e14bbd1"
 dependencies = [
  "bytemuck",
  "cfg-if 1.0.0",

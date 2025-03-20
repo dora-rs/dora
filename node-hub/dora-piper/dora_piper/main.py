@@ -47,8 +47,8 @@ def enable_fun(piper: C_PiperInterface):
 def main():
     """TODO: Add docstring."""
     elapsed_time = time.time()
-    CAN_BUS = os.getenv("CAN_BUS", "")
-    piper = C_PiperInterface(CAN_BUS)
+    can_bus = os.getenv("CAN_BUS", "")
+    piper = C_PiperInterface(can_bus)
     piper.ConnectPort()
 
     if not TEACH_MODE:

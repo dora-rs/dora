@@ -81,7 +81,7 @@ def get_language_embeddings():
 
     return lang_embeddings.unsqueeze(
         0,
-    )  # Size:  (B, L_lang, D) or None, language condition tokens (variable length),    dimension D is assumed to be the same as the hidden size.
+    )  # Size:  (b, L_lang, D) or None, language condition tokens (variable length),    dimension D is assumed to be the same as the hidden size.
 
 
 def expand2square(pil_img, background_color):
@@ -144,7 +144,7 @@ def process_image(rgbs_lst, image_processor, vision_encoder):
 def get_states(proprio):
     # suppose you control in 7DOF joint position
     """TODO: Add docstring."""
-    STATE_INDICES = [
+    state_indices = [
         STATE_VEC_IDX_MAPPING["left_arm_joint_0_pos"],
         STATE_VEC_IDX_MAPPING["left_arm_joint_1_pos"],
         STATE_VEC_IDX_MAPPING["left_arm_joint_2_pos"],
@@ -161,32 +161,32 @@ def get_states(proprio):
         STATE_VEC_IDX_MAPPING["right_gripper_open"],
     ]
 
-    B, N = 1, 1  # batch size and state history size
+    b, n = 1, 1  # batch size and state history size
     states = torch.zeros(
-        (B, N, config["model"]["state_token_dim"]), device=DEVICE, dtype=DTYPE,
+        (b, n, config["model"]["state_token_dim"]), device=DEVICE, dtype=DTYPE,
     )
     # suppose you do not have proprio
     # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
     proprio = torch.tensor(proprio, device=DEVICE, dtype=DTYPE).reshape(
         (1, 1, -1),
-    )  # B, N = 1, 1  # batch size and state history size
+    )  # b, n = 1, 1  # batch size and state history size
 
     # if you have proprio, you can do like this
     # format like this: [arm_joint_0_pos, arm_joint_1_pos, arm_joint_2_pos, arm_joint_3_pos, arm_joint_4_pos, arm_joint_5_pos, arm_joint_6_pos, gripper_open]
     # proprio = torch.tensor([0, 1, 2, 3, 4, 5, 6, 0.5]).reshape((1, 1, -1))
-    states[:, :, STATE_INDICES] = proprio
+    states[:, :, state_indices] = proprio
 
     state_elem_mask = torch.zeros(
         (1, config["model"]["state_token_dim"]), device=DEVICE, dtype=torch.bool,
     )
 
-    state_elem_mask[:, STATE_INDICES] = True
+    state_elem_mask[:, state_indices] = True
     states, state_elem_mask = (
         states.to(DEVICE, dtype=DTYPE),
         state_elem_mask.to(DEVICE, dtype=DTYPE),
     )
     states = states[:, -1:, :]  # only use the last state
-    return states, state_elem_mask, STATE_INDICES
+    return states, state_elem_mask, state_indices
 
 
 def main():
