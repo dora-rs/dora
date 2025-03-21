@@ -1,6 +1,5 @@
 from dora import Node
 import pyarrow as pa
-import os
 import pygame
 
 class LogitechF710:
@@ -112,8 +111,8 @@ def main():
                 data=pa.array(zero_cmd, type=pa.float64()),
                 metadata={"type": "cmd_vel"}
             )
-        except:
-            pass
+        except Exception as e:
+            print(f"Failed to send zero velocity: {e}")
 
 if __name__ == "__main__":
     main()
