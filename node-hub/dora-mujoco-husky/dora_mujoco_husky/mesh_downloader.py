@@ -1,18 +1,17 @@
-import os
-import requests
-import hashlib
 from pathlib import Path
-import shutil
+from huggingface_hub import hf_hub_download
 
-BASE_URL = "https://raw.githubusercontent.com/robotlearning123/dual_ur5_husky_mujoco/dual_ur5_husky_mujoco/husky_description/meshes_mujoco"
+MESH_FILES = [
+    "base_link.stl",
+    "wheel.stl",
+    "top_plate.stl",
+    "user_rail.stl",
+    "bumper.stl"
+]
 
-MESH_URLS = {
-    "base_link.stl": f"{BASE_URL}/base_link.stl",
-    "wheel.stl": f"{BASE_URL}/wheel.stl",
-    "top_plate.stl": f"{BASE_URL}/top_plate.stl",
-    "user_rail.stl": f"{BASE_URL}/user_rail.stl",
-    "bumper.stl": f"{BASE_URL}/bumper.stl"
-}
+# Replace with your Hugging Face username
+REPO_ID = "SGPatil/mujoco-husky-meshes"
+REPO_TYPE = "dataset"
 
 def get_cache_dir():
     """Get or create cache directory for mesh files"""
@@ -20,45 +19,31 @@ def get_cache_dir():
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
-def download_file(url: str, filepath: Path):
-    """Download file from URL with progress indicator"""
-    print(f"Downloading {filepath.name} from {url}")
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 8192
-        
-        with open(filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=block_size):
-                if chunk:
-                    f.write(chunk)
-        print(f"Successfully downloaded {filepath.name}")
-                    
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading {filepath.name}: {e}")
-        raise
-
 def ensure_meshes():
-    """Ensure all mesh files are available, downloading if necessary"""
-    cache_dir = get_cache_dir()
+    """Download mesh files from Hugging Face Hub if necessary"""
     mesh_dir = Path(__file__).parent / "husky" / "meshes"
     mesh_dir.mkdir(parents=True, exist_ok=True)
     
     print("Checking mesh files...")
-    for filename, url in MESH_URLS.items():
-        cache_file = cache_dir / filename
-        mesh_file = mesh_dir / filename
-        
-        # Check if file exists in cache
-        if not cache_file.exists():
-            download_file(url, cache_file)
-        
-        # Copy from cache to mesh directory if needed
-        if not mesh_file.exists():
-            print(f"Installing {filename} to {mesh_file}")
-            shutil.copy2(cache_file, mesh_file)
+    for filename in MESH_FILES:
+        try:
+            # Download file from Hugging Face Hub
+            downloaded_path = hf_hub_download(
+                repo_id=REPO_ID,
+                filename=filename,
+                repo_type=REPO_TYPE,
+                cache_dir=get_cache_dir()
+            )
+            
+            # Copy to mesh directory if needed
+            mesh_file = mesh_dir / filename
+            if not mesh_file.exists():
+                print(f"Installing {filename} to {mesh_file}")
+                mesh_file.write_bytes(Path(downloaded_path).read_bytes())
+                
+        except Exception as e:
+            print(f"Error downloading {filename}: {e}")
+            raise
     
     print("All mesh files are ready")
 
