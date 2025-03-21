@@ -1,6 +1,6 @@
 [project]
 name = "dora-mujoco-husky"
-version = "0.0.0"
+version = "0.2.0"
 authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
 description = "dora-mujoco-husky"
 license = { text = "MIT" }
@@ -10,7 +10,8 @@ requires-python = ">=3.10"
 dependencies = [
     "dora-rs >= 0.3.9",
     "mujoco >= 3.1.6",
-    "pyarrow >= 14.0.1"
+    "pyarrow >= 14.0.1",
+    "requests >= 2.31.0",
 ]
 
 [dependency-groups]
