@@ -217,7 +217,6 @@ pub fn run(
 
                 let py_event = PyEvent {
                     event: MergedEvent::Dora(event),
-                    _cleanup: None,
                 }
                 .to_py_dict(py)
                 .context("Could not convert event to pydict bound")?;

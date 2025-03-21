@@ -57,14 +57,14 @@ impl Node {
         let dataflow_id = *node.dataflow_id();
         let node_id = node.id().clone();
         let node = DelayedCleanup::new(node);
-        let events = DelayedCleanup::new(events);
+        let events = events;
         let cleanup_handle = NodeCleanupHandle {
-            _handles: Arc::new((node.handle(), events.handle())),
+            _handles: Arc::new(node.handle()),
         };
         Ok(Node {
             events: Events {
                 inner: EventsInner::Dora(events),
-                cleanup_handle,
+                _cleanup_handle: cleanup_handle,
             },
             dataflow_id,
             node_id,
@@ -102,6 +102,43 @@ impl Node {
                 .to_py_dict(py)
                 .context("Could not convert event into a dict")?;
             Ok(Some(dict))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// `.recv_async()` gives you the next input that the node has received asynchronously.
+    /// It does not blocks until the next event becomes available.
+    /// You can use timeout in seconds to return if no input is available.
+    /// It will return an Error if the timeout is reached.
+    /// It will return `None` when all senders has been dropped.
+    ///
+    /// warning::
+    ///     This feature is experimental as pyo3 async (rust-python FFI) is still in development.
+    ///
+    /// ```python
+    /// event = await node.recv_async()
+    /// ```
+    ///
+    /// You can also iterate over the event stream with a loop
+    ///
+    /// :type timeout: float, optional
+    /// :rtype: dict
+    #[pyo3(signature = (timeout=None))]
+    #[allow(clippy::should_implement_trait)]
+    pub async fn recv_async(&mut self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+        let event = self
+            .events
+            .recv_async_timeout(timeout.map(Duration::from_secs_f32))
+            .await;
+        if let Some(event) = event {
+            // Get python
+            Python::with_gil(|py| {
+                let dict = event
+                    .to_py_dict(py)
+                    .context("Could not convert event into a dict")?;
+                Ok(Some(dict))
+            })
         } else {
             Ok(None)
         }
@@ -254,30 +291,38 @@ fn err_to_pyany(err: eyre::Report, gil: Python<'_>) -> Py<PyAny> {
 
 struct Events {
     inner: EventsInner,
-    cleanup_handle: NodeCleanupHandle,
+    _cleanup_handle: NodeCleanupHandle,
 }
 
 impl Events {
     fn recv(&mut self, timeout: Option<Duration>) -> Option<PyEvent> {
         let event = match &mut self.inner {
             EventsInner::Dora(events) => match timeout {
-                Some(timeout) => events
-                    .get_mut()
-                    .recv_timeout(timeout)
-                    .map(MergedEvent::Dora),
-                None => events.get_mut().recv().map(MergedEvent::Dora),
+                Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
+                None => events.recv().map(MergedEvent::Dora),
             },
             EventsInner::Merged(events) => futures::executor::block_on(events.next()),
         };
-        event.map(|event| PyEvent {
-            event,
-            _cleanup: Some(self.cleanup_handle.clone()),
-        })
+        event.map(|event| PyEvent { event })
+    }
+
+    async fn recv_async_timeout(&mut self, timeout: Option<Duration>) -> Option<PyEvent> {
+        let event = match &mut self.inner {
+            EventsInner::Dora(events) => match timeout {
+                Some(timeout) => events
+                    .recv_async_timeout(timeout)
+                    .await
+                    .map(MergedEvent::Dora),
+                None => events.recv_async().await.map(MergedEvent::Dora),
+            },
+            EventsInner::Merged(events) => events.next().await,
+        };
+        event.map(|event| PyEvent { event })
     }
 }
 
 enum EventsInner {
-    Dora(DelayedCleanup<EventStream>),
+    Dora(EventStream),
     Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send + Sync>),
 }
 
