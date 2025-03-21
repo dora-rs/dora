@@ -41,8 +41,6 @@ dora build demo.yml --uv
 ```bash
 dora run demo.yml --uv
 ```
-If everthing is correct, it should look like this 
-![Husky MuJoCo Simulation](husky.gif)
 
 ## Usage
 

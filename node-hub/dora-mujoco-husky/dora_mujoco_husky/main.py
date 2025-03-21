@@ -3,6 +3,7 @@ import mujoco
 import mujoco.viewer
 import pyarrow as pa
 import os
+from .mesh_downloader import ensure_meshes
 
 def clamp(value, min_val, max_val):
     """Clamp value between min_val and max_val"""
@@ -13,6 +14,8 @@ def main():
         # Initialize node
         node = Node("mujoco_husky")
         print("Initializing Mujoco Husky simulation...")
+        
+        ensure_meshes()
         
         # Load Husky model
         model_path = os.path.join(os.path.dirname(__file__), "husky/husky.xml")
