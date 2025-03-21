@@ -11,7 +11,7 @@ dependencies = [
     "dora-rs >= 0.3.9",
     "mujoco >= 3.1.6",
     "pyarrow >= 14.0.1",
-    "requests >= 2.31.0",
+    "huggingface_hub >= 0.20.3",
 ]
 
 [dependency-groups]
