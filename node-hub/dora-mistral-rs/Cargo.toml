@@ -1,0 +1,13 @@
+[package]
+name = "dora-mistral-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
+dora-node-api = "0.3.10"
+tokio = { version = "1.36.0", features = ["full"] }
+eyre = "0.6.8"
