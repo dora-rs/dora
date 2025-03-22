@@ -1,0 +1,27 @@
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update",
+    "apt-get install -y libssl-dev:arm64"
+]
+
+[target.aarch64-unknown-linux-musl]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y musl-tools musl-dev",
+    "apt-get install -y libssl-dev pkg-config"
+]
+
+[target.armv7-unknown-linux-musleabihf]
+pre-build = [
+    "dpkg --add-architecture armhf",
+    "apt-get update",
+    "apt-get install -y libssl-dev:armhf"
+]
+
+[target.i686-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture i386",
+    "apt-get update",
+    "apt-get install -y libssl-dev:i386"
+] 
