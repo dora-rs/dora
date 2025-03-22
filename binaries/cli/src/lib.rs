@@ -31,6 +31,7 @@ use tabwriter::TabWriter;
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
+use self_update::Status;
 
 mod attach;
 mod build;
@@ -43,6 +44,8 @@ mod up;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+const GITHUB_ORG: &str = "dora-rs";
+const GITHUB_REPO: &str = "dora";
 
 #[derive(Debug, clap::Parser)]
 #[clap(version)]
@@ -87,6 +90,31 @@ enum Command {
         #[clap(long, action)]
         uv: bool,
     },
+    /// List running dataflows.
+    List {
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+    },
+    /// Show logs of a given dataflow and node.
+    #[command(allow_missing_positional = true)]
+    Logs {
+        /// Identifier of the dataflow
+        #[clap(value_name = "UUID_OR_NAME")]
+        dataflow: Option<String>,
+        /// Show logs for the given node
+        #[clap(value_name = "NAME")]
+        node: String,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+    },
     /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
@@ -105,6 +133,13 @@ enum Command {
         // Use UV to run nodes.
         #[clap(long, action)]
         uv: bool,
+    },
+    /// Update dora to the latest version
+    #[command(name = "self-update")]
+    SelfUpdate {
+        /// Force update even if no new version is available
+        #[clap(long, action)]
+        force: bool,
     },
     /// Spawn coordinator and daemon in local mode (with default config)
     Up {
@@ -169,37 +204,6 @@ enum Command {
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
         coordinator_port: u16,
     },
-    /// List running dataflows.
-    List {
-        /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-        coordinator_addr: IpAddr,
-        /// Port number of the coordinator control server
-        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-        coordinator_port: u16,
-    },
-    // Planned for future releases:
-    // Dashboard,
-    /// Show logs of a given dataflow and node.
-    #[command(allow_missing_positional = true)]
-    Logs {
-        /// Identifier of the dataflow
-        #[clap(value_name = "UUID_OR_NAME")]
-        dataflow: Option<String>,
-        /// Show logs for the given node
-        #[clap(value_name = "NAME")]
-        node: String,
-        /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-        coordinator_addr: IpAddr,
-        /// Port number of the coordinator control server
-        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-        coordinator_port: u16,
-    },
-    // Metrics,
-    // Stats,
-    // Get,
-    // Upgrade,
     /// Run daemon
     Daemon {
         /// Unique identifier for the machine (required for distributed dataflows)
@@ -537,6 +541,35 @@ fn run(args: Args) -> eyre::Result<()> {
             .context("failed to run dora-daemon")?
         }
         Command::Runtime => dora_runtime::main().context("Failed to run dora-runtime")?,
+        Command::SelfUpdate { force } => {
+            let status = self_update::backends::github::Update::configure()
+                .repo_owner(GITHUB_ORG)
+                .repo_name(GITHUB_REPO)
+                .bin_name("dora")
+                .show_download_progress(true)
+                .current_version(env!("CARGO_PKG_VERSION"))
+                .build()?
+                .update()?;
+
+            match status {
+                Status::UpToDate(v) => {
+                    if force {
+                        println!("Forcing update to latest version...");
+                        self_update::backends::github::Update::configure()
+                            .repo_owner(GITHUB_ORG)
+                            .repo_name(GITHUB_REPO)
+                            .bin_name("dora")
+                            .show_download_progress(true)
+                            .current_version(&v)
+                            .build()?
+                            .update()?;
+                    } else {
+                        println!("dora is already up to date at version {}", v);
+                    }
+                }
+                Status::Updated(v) => println!("dora has been updated to version {}", v),
+            }
+        }
     };
 
     Ok(())
