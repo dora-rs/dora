@@ -1,9 +1,0 @@
-[env]
-OPENSSL_STATIC = "1"
-OPENSSL_INCLUDE_DIR = "/usr/include"
-
-[target.aarch64-unknown-linux-musl]
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.x86_64-unknown-linux-musl]
-rustflags = ["-C", "target-feature=+crt-static"] 
