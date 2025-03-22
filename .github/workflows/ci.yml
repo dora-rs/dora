@@ -23,10 +23,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v3
-      - name: Install OpenSSL
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev
+      - name: Install OpenSSL via vcpkg
+        run: "vcpkg install openssl:x64-windows"
+        if: runner.os == 'Windows'
       - name: Print available space (Windows only)
         run: Get-PSDrive
         if: runner.os == 'Windows'
@@ -36,10 +35,11 @@ jobs:
         if: runner.os == 'Windows'
 
       - uses: actions/checkout@v3
-      - name: Install OpenSSL
+      - name: Install OpenSSL (Linux only)
         run: |
           sudo apt-get update
           sudo apt-get install -y libssl-dev
+        if: runner.os == 'Linux'
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - run: cargo --version --verbose
       - name: Free Disk Space (Ubuntu)
