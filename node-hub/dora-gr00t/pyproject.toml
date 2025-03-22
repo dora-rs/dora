@@ -1,0 +1,53 @@
+[project]
+name = "dora-gr00t"
+version = "0.1.0"
+authors = [
+    { name = "Munish Mummadi", email = "moneymindedmunish1@gmail.com" }
+]
+description = "Dora Node for NVIDIA's Isaac-GR00T (General Robot Operative 0bjectives with Transformers)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+
+dependencies = [
+    "dora-rs >= 0.3.9",
+    "numpy >= 1.24.0",
+    "pyarrow >= 14.0.0",
+    "torch >= 2.0.0",
+    "huggingface-hub >= 0.19.0",
+    "transformers >= 4.36.0",
+    "pillow >= 10.0.0",
+    "opencv-python >= 4.8.0",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[tool.ruff]
+exclude = ["dora_gr00t/isaac_gr00t"]
+
+[tool.black]
+extend.exclude = "dora_gr00t/isaac_gr00t"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]
+
+[project.scripts]
+dora-gr00t = "dora_gr00t.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["dora_gr00t/isaac_gr00t"]
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
