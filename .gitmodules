@@ -4,3 +4,6 @@
 [submodule "node-hub/dora-magma/dora_magma/Magma"]
 	path = node-hub/dora-magma/dora_magma/Magma
 	url = https://github.com/microsoft/Magma
+[submodule "node-hub/dora-gr00t/dora_gr00t/isaac_gr00t"]
+	path = node-hub/dora-gr00t/dora_gr00t/isaac_gr00t
+	url = https://github.com/NVIDIA/Isaac-GR00T.git
