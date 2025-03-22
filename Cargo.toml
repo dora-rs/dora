@@ -80,7 +80,8 @@ arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }
 arrow-array = { version = "54.2.1" }
 parquet = { version = "54.2.1" }
-openssl = { version = "0.9.106", features = ["vendored"] }
+openssl = { version = "0.10.59" }
+openssl-sys = { version = "0.9.106", features = ["vendored"] }
 pyo3 = { version = "0.23", features = [
     "eyre",
     "abi3-py37",
