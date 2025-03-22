@@ -21,8 +21,7 @@ CAT_URL = "https://i.ytimg.com/vi/fzzjgBAaWZw/hqdefault.jpg"
 
 
 def get_cat_image():
-    """
-    Get a cat image as a numpy array.
+    """Get a cat image as a numpy array.
 
     :return: Cat image as a numpy array.
     """
@@ -46,14 +45,12 @@ AUDIO_URL = "https://github.com/dora-rs/dora-rs.github.io/raw/refs/heads/main/st
 
 
 def get_c3po_audio():
-    """
-    Download the C-3PO audio and load it into a NumPy array using librosa.
-    """
+    """Download the C-3PO audio and load it into a NumPy array using librosa."""
     # Download the audio file
     response = requests.get(AUDIO_URL)
     if response.status_code != 200:
         raise Exception(
-            f"Failed to download audio file. Status code: {response.status_code}"
+            f"Failed to download audio file. Status code: {response.status_code}",
         )
 
     # Save the audio file temporarily
@@ -72,8 +69,8 @@ def get_c3po_audio():
 
 
 def write_to_csv(filename, header, row):
-    """
-    Create a CSV file with a header if it does not exist, and write a row to it.
+    """Create a CSV file with a header if it does not exist, and write a row to it.
+
     If the file exists, append the row to the file.
 
     :param filename: Name of the CSV file.
@@ -83,7 +80,7 @@ def write_to_csv(filename, header, row):
     file_exists = os.path.exists(filename)
 
     with open(
-        filename, mode="a" if file_exists else "w", newline="", encoding="utf8"
+        filename, mode="a" if file_exists else "w", newline="", encoding="utf8",
     ) as file:
         writer = csv.writer(file)
 
@@ -181,7 +178,7 @@ def main():
         + f"\nMax speed: {max(speed)}"
         + f"\nMin speed: {min(speed)}"
         + f"\nMedian speed: {np.median(speed)}"
-        + f"\nTotal tokens: {tokens}"
+        + f"\nTotal tokens: {tokens}",
     )
     write_to_csv(
         "benchmark.csv",

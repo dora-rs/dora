@@ -94,7 +94,7 @@ def main():
                 response, tmp_history = generate_response(model, tokenizer, text, history)
                 history = tmp_history if HISTORY else history
                 node.send_output(
-                    output_id="text", data=pa.array([response]), metadata={}
+                    output_id="text", data=pa.array([response]), metadata={},
                 )
 
 

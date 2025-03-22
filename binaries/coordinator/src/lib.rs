@@ -157,6 +157,7 @@ impl DaemonConnections {
         self.daemons.keys()
     }
 
+    #[allow(dead_code)]
     fn iter(&self) -> impl Iterator<Item = (&DaemonId, &DaemonConnection)> {
         self.daemons.iter()
     }

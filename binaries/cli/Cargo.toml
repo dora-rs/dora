@@ -54,6 +54,7 @@ pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
 ], optional = true }
+self_update = "0.42.0"
 
 
 [lib]

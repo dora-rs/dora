@@ -244,7 +244,7 @@ def main():
             elif input_id == "text":
                 text = event["value"][0].as_py()
 
-            if LEAD_MODALITY == input_id:
+            if input_id == LEAD_MODALITY:
                 if len(frames) == 1:
                     image_prompt = "<|image_1|>"
                 elif len(frames) > 1:
