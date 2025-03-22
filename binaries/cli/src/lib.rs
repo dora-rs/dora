@@ -134,12 +134,11 @@ enum Command {
         #[clap(long, action)]
         uv: bool,
     },
-    /// Update dora to the latest version
-    #[command(name = "self-update")]
-    SelfUpdate {
-        /// Force update even if no new version is available
-        #[clap(long, action)]
-        force: bool,
+    /// Self management commands
+    #[command(name = "self")]
+    SelfManage {
+        #[clap(subcommand)]
+        command: SelfCommand,
     },
     /// Spawn coordinator and daemon in local mode (with default config)
     Up {
@@ -259,6 +258,20 @@ pub struct CommandNew {
     /// Where to create the entity
     #[clap(hide = true)]
     path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum SelfCommand {
+    /// Update dora to the latest version
+    Update {
+        /// Force update even if no new version is available
+        #[clap(long, action)]
+        force: bool,
+    },
+    /// Uninstall dora from your system
+    Uninstall,
+    /// Reinstall dora (useful for fixing installation issues)
+    Reinstall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -541,35 +554,63 @@ fn run(args: Args) -> eyre::Result<()> {
             .context("failed to run dora-daemon")?
         }
         Command::Runtime => dora_runtime::main().context("Failed to run dora-runtime")?,
-        Command::SelfUpdate { force } => {
-            let status = self_update::backends::github::Update::configure()
-                .repo_owner(GITHUB_ORG)
-                .repo_name(GITHUB_REPO)
-                .bin_name("dora")
-                .show_download_progress(true)
-                .current_version(env!("CARGO_PKG_VERSION"))
-                .build()?
-                .update()?;
+        Command::SelfManage { command } => match command {
+            SelfCommand::Update { force } => {
+                let status = self_update::backends::github::Update::configure()
+                    .repo_owner(GITHUB_ORG)
+                    .repo_name(GITHUB_REPO)
+                    .bin_name("dora")
+                    .show_download_progress(true)
+                    .current_version(env!("CARGO_PKG_VERSION"))
+                    .build()?
+                    .update()?;
 
-            match status {
-                Status::UpToDate(v) => {
-                    if force {
-                        println!("Forcing update to latest version...");
-                        self_update::backends::github::Update::configure()
-                            .repo_owner(GITHUB_ORG)
-                            .repo_name(GITHUB_REPO)
-                            .bin_name("dora")
-                            .show_download_progress(true)
-                            .current_version(&v)
-                            .build()?
-                            .update()?;
-                    } else {
-                        println!("dora is already up to date at version {}", v);
+                match status {
+                    Status::UpToDate(v) => {
+                        if force {
+                            println!("Forcing update to latest version...");
+                            self_update::backends::github::Update::configure()
+                                .repo_owner(GITHUB_ORG)
+                                .repo_name(GITHUB_REPO)
+                                .bin_name("dora")
+                                .show_download_progress(true)
+                                .current_version(&v)
+                                .build()?
+                                .update()?;
+                        } else {
+                            println!("Already up-to-date. Version: {}", v);
+                        }
                     }
+                    Status::Updated(v) => println!("Updated Successfully. Version: {}", v),
                 }
-                Status::Updated(v) => println!("dora has been updated to version {}", v),
             }
-        }
+            SelfCommand::Uninstall => {
+                println!("Uninstalling dora...");
+                let status = std::process::Command::new("cargo")
+                    .arg("uninstall")
+                    .arg("dora-cli")
+                    .status()?;
+                
+                if status.success() {
+                    println!("Successfully uninstalled dora");
+                } else {
+                    bail!("Failed to uninstall dora");
+                }
+            }
+            SelfCommand::Reinstall => {
+                println!("Reinstalling dora...");
+                let status = std::process::Command::new("cargo")
+                    .arg("install")
+                    .arg("dora-cli")
+                    .status()?;
+                
+                if status.success() {
+                    println!("Successfully reinstalled dora");
+                } else {
+                    bail!("Failed to reinstall dora");
+                }
+            }
+        },
     };
 
     Ok(())
