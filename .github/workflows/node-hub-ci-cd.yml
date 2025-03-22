@@ -72,10 +72,15 @@ jobs:
 
       - name: Set up Rust
         if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
+
+      - name: Update Rust
+        run: |
+          rustup update stable
+          rustup override set stable
 
       - name: Run Linting and Tests
         ## Run Linting and testing only on Mac for release workflows.
