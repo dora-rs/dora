@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
                 other => eprintln!("Received input `{other}`"),
             },
             Event::Stop => {
-                println!("Recieved manual stop")
+                println!("Received manual stop")
             }
             Event::InputClosed { id } => {
                 println!("input `{id}` was closed");
