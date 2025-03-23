@@ -54,6 +54,8 @@ pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
 ], optional = true }
+self_update = { version = "0.42.0", features = ["rustls", "archive-zip"], default-features = false }
+self_replace = { version = "1.5.0", package = "self-replace" }
 
 
 [lib]

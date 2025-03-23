@@ -31,6 +31,7 @@ use tabwriter::TabWriter;
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
+use self_update::Status;
 
 mod attach;
 mod build;
@@ -43,6 +44,8 @@ mod up;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+const GITHUB_ORG: &str = "dora-rs";
+const GITHUB_REPO: &str = "dora";
 
 #[derive(Debug, clap::Parser)]
 #[clap(version)]
@@ -240,6 +243,12 @@ enum Command {
         #[clap(long)]
         quiet: bool,
     },
+    /// Self management commands
+    #[command(name = "self")]
+    SelfManage {
+        #[clap(subcommand)]
+        command: SelfCommand,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -255,6 +264,18 @@ pub struct CommandNew {
     /// Where to create the entity
     #[clap(hide = true)]
     path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum SelfCommand {
+    /// Update dora to the latest version
+    Update {
+        /// Force update even if no new version is available
+        #[clap(long, action)]
+        force: bool,
+    },
+    /// Uninstall dora from your system
+    Uninstall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -537,6 +558,53 @@ fn run(args: Args) -> eyre::Result<()> {
             .context("failed to run dora-daemon")?
         }
         Command::Runtime => dora_runtime::main().context("Failed to run dora-runtime")?,
+        Command::SelfManage { command } => match command {
+            SelfCommand::Update { force } => {
+                let status = self_update::backends::github::Update::configure()
+                    .repo_owner(GITHUB_ORG)
+                    .repo_name(GITHUB_REPO)
+                    .bin_name("dora")
+                    .show_download_progress(true)
+                    .current_version(env!("CARGO_PKG_VERSION"))
+                    .build()?
+                    .update()?;
+
+                match status {
+                    Status::UpToDate(v) => {
+                        if force {
+                            println!("Forcing update to latest version...");
+                            self_update::backends::github::Update::configure()
+                                .repo_owner(GITHUB_ORG)
+                                .repo_name(GITHUB_REPO)
+                                .bin_name("dora")
+                                .show_download_progress(true)
+                                .current_version(&v)
+                                .build()?
+                                .update()?;
+                        } else {
+                            println!("\nAlready up-to-date. Version: {}", v);
+                        }
+                    }
+                    Status::Updated(v) => println!("Updated Successfully. Version: {}", v),
+                }
+            }
+            SelfCommand::Uninstall => {
+                println!("Uninstalling dora...");
+                let itself = std::env::current_exe().unwrap();
+                let parent = itself.parent().unwrap();
+                match self_replace::self_delete_outside_path(parent) {
+                    Ok(_) => {
+                        println!("Successfully uninstalled dora.\nThe executable will be removed when the process exits.");
+                        // Optionally remove the parent directory if needed
+                        // std::fs::remove_dir_all(parent).ok();
+                        std::process::exit(0);
+                    }
+                    Err(err) => {
+                        bail!("Failed to uninstall dora: {}", err);
+                    }
+                }
+            }
+        },
     };
 
     Ok(())
