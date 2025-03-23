@@ -18,7 +18,7 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 # Path that installers should place binaries in
-install-path = "CARGO_HOME"
+install-path = "~/.dora/bin"
 # Whether to install an updater program
 install-updater = false
 # Build only the required packages, and individually
@@ -31,3 +31,6 @@ create-release = false
 [dist.github-custom-runners]
 x86_64-pc-windows-msvc = "windows-2022"
 x86_64-unknown-linux-gnu = "ubuntu-22.04"
+
+[dist.bin-aliases]
+dora-cli = ["dora"]
