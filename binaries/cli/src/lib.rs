@@ -570,7 +570,7 @@ fn run(args: Args) -> eyre::Result<()> {
                             let current_version = self_update::cargo_crate_version!();
                             if current_version != release.version {
                                 println!(
-                                    "An update is available: {}. Run 'dora self-update' to update",
+                                    "An update is available: {}. Run 'dora self update' to update",
                                     release.version
                                 );
                             } else {
