@@ -242,7 +242,6 @@ enum Command {
     },
 
     Self_ {
-        /// Only check for updates without installing
         #[clap(subcommand)]
         command: SelfSubCommand,
     },
@@ -251,6 +250,7 @@ enum Command {
 #[derive(Debug, clap::Subcommand)]
 enum SelfSubCommand {
     Update {
+        /// Only check for updates without installing
         #[clap(long)]
         check_only: bool,
     },
