@@ -32,7 +32,6 @@ use tabwriter::TabWriter;
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
-use self_replace;
 
 mod attach;
 mod build;
@@ -271,8 +270,6 @@ enum SelfCommand {
     },
     /// Uninstall dora from your system
     Uninstall,
-    /// Reinstall dora (useful for fixing installation issues)
-    Reinstall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -579,7 +576,7 @@ fn run(args: Args) -> eyre::Result<()> {
                                 .build()?
                                 .update()?;
                         } else {
-                            println!("Already up-to-date. Version: {}", v);
+                            println!("\nAlready up-to-date. Version: {}", v);
                         }
                     }
                     Status::Updated(v) => println!("Updated Successfully. Version: {}", v),
@@ -587,48 +584,17 @@ fn run(args: Args) -> eyre::Result<()> {
             }
             SelfCommand::Uninstall => {
                 println!("Uninstalling dora...");
-                match self_replace::self_delete() {
+                let itself = std::env::current_exe().unwrap();
+                let parent = itself.parent().unwrap();
+                match self_replace::self_delete_outside_path(parent) {
                     Ok(_) => {
-                        println!("Successfully uninstalled dora. The executable will be removed when the process exits.");
+                        println!("Successfully uninstalled dora.\nThe executable will be removed when the process exits.");
+                        // Optionally remove the parent directory if needed
+                        // std::fs::remove_dir_all(parent).ok();
                         std::process::exit(0);
                     }
                     Err(err) => {
                         bail!("Failed to uninstall dora: {}", err);
-                    }
-                }
-            }
-            SelfCommand::Reinstall => {
-                println!("Reinstalling dora...");
-                let status = self_update::backends::github::Update::configure()
-                    .repo_owner(GITHUB_ORG)
-                    .repo_name(GITHUB_REPO)
-                    .bin_name("dora")
-                    .show_download_progress(true)
-                    .current_version(env!("CARGO_PKG_VERSION"))
-                    .build()?;
-                
-                let temp_dir = std::env::temp_dir().join("dora_reinstall");
-                std::fs::create_dir_all(&temp_dir)?;
-                let downloaded_binary = temp_dir.join("dora.new");
-                
-                match status.download_to_path(&downloaded_binary)? {
-                    Some(version) => {
-                        println!("Downloaded version {} for reinstallation", version);
-                        
-                        match self_replace::self_replace(&downloaded_binary) {
-                            Ok(_) => {
-                                println!("Successfully reinstalled dora to version {}", version);
-                                let _ = std::fs::remove_file(&downloaded_binary);
-                                std::process::exit(0);
-                            }
-                            Err(err) => {
-                                let _ = std::fs::remove_file(&downloaded_binary);
-                                bail!("Failed to reinstall dora: {}", err);
-                            }
-                        }
-                    }
-                    None => {
-                        bail!("No new version available for reinstallation");
                     }
                 }
             }

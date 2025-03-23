@@ -86,8 +86,6 @@ pyo3 = { version = "0.23", features = [
     "multiple-pymethods",
 ] }
 pythonize = "0.23"
-self_update = { version = "0.42.0", features = ["rustls"], default-features = false }
-self_replace = { version = "1.5.0", features = ["rustls"], default-features = false }
 
 [package]
 name = "dora-examples"

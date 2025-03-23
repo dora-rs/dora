@@ -1,20 +1,26 @@
-import gradio as gr
-import numpy as np
+"""TODO: Add docstrings."""
+
 import logging
+import os
+import signal
+import time
+
+import cv2
+import gradio as gr
+import librosa
+import numpy as np
 import pyarrow as pa
 from dora import Node
-import signal
-import os
-import cv2
 from fastrtc import Stream
-import librosa
-import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DoraGradioUI:
+    """TODO: Add docstrings."""
+
     def __init__(self):
+        """TODO: Add docstrings."""
         self.node = Node()
         self.theme = gr.themes.Soft(primary_hue="blue", secondary_hue="indigo")
         self.sample_rate = 16000
@@ -23,6 +29,7 @@ class DoraGradioUI:
         self.start_recording_time = time.time()
 
     def handle_text_input(self, message, history):
+        """TODO: Add docstrings."""
         if message:
             self.node.send_output("text", pa.array([message]))
             history = history or []
@@ -30,6 +37,7 @@ class DoraGradioUI:
         return "", history
 
     def handle_audio_stream(self, stream, new_chunk, text_state):
+        """TODO: Add docstrings."""
         if new_chunk is not None:
             try:
                 sr, y = new_chunk
@@ -64,7 +72,7 @@ class DoraGradioUI:
         return None, text_state, "Waiting for audio..."
 
     def handle_video_stream(self, frame):
-        """Handle incoming video frames"""
+        """Handle incoming video frames."""
         if frame is not None:
             try:
                 # Convert frame to proper format
@@ -86,6 +94,7 @@ class DoraGradioUI:
         return None
     
     def create_interface(self):
+        """TODO: Add docstrings."""
         with gr.Blocks(theme=self.theme, title="Dora Input Interface") as interface:
             gr.Markdown("## Dora Input Interface")
             with gr.Tab("Camera"):
@@ -135,6 +144,7 @@ class DoraGradioUI:
         return interface
 
     def launch(self):
+        """TODO: Add docstrings."""
         try:
             # Kill existing process on port 7860 if any
             # import subprocess
@@ -154,11 +164,12 @@ class DoraGradioUI:
             raise e
 
     def kill_server(self):
-        """Kill the Gradio server and exit"""
+        """Kill the Gradio server and exit."""
         logger.info("Manually stopping server...")
         os._exit(0)
 
 def main():
+    """TODO: Add docstrings."""
     ui = DoraGradioUI()
     ui.launch()
 

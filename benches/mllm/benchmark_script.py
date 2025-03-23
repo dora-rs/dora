@@ -21,8 +21,7 @@ CAT_URL = "https://i.ytimg.com/vi/fzzjgBAaWZw/hqdefault.jpg"
 
 
 def get_cat_image():
-    """
-    Get a cat image as a numpy array.
+    """Get a cat image as a numpy array.
 
     :return: Cat image as a numpy array.
     """
@@ -46,9 +45,7 @@ AUDIO_URL = "https://github.com/dora-rs/dora-rs.github.io/raw/refs/heads/main/st
 
 
 def get_c3po_audio():
-    """
-    Download the C-3PO audio and load it into a NumPy array using librosa.
-    """
+    """Download the C-3PO audio and load it into a NumPy array using librosa."""
     # Download the audio file
     response = requests.get(AUDIO_URL)
     if response.status_code != 200:
@@ -72,10 +69,9 @@ def get_c3po_audio():
 
 
 def write_to_csv(filename, header, row):
-    """
-    Create a CSV file with a header if it does not exist, and write a row to it.
-    If the file exists, append the row to the file.
+    """Create a CSV file with a header if it does not exist, and write a row to it.
 
+    If the file exists, append the row to the file.
     :param filename: Name of the CSV file.
     :param header: List of column names to use as the header.
     :param row: List of data to write as a row in the CSV file.

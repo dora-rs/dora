@@ -157,6 +157,7 @@ impl DaemonConnections {
         self.daemons.keys()
     }
 
+    #[warn(unused_function)]
     fn iter(&self) -> impl Iterator<Item = (&DaemonId, &DaemonConnection)> {
         self.daemons.iter()
     }
