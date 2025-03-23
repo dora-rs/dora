@@ -1,0 +1,183 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  release:
+    types:
+      - "published"
+  workflow_dispatch:
+
+jobs:
+  cargo-release:
+    name: "Cargo Release"
+
+    strategy:
+      matrix:
+        platform: [ubuntu-22.04]
+      fail-fast: false
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6 GB
+          tool-cache: true
+
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+
+      - name: "Publish packages on `crates.io`"
+        if: runner.os == 'Linux'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+
+          # Publishing those crates from outer crates with no dependency to inner crates
+          # As cargo is going to rebuild the crates based on published dependencies 
+          # we need to publish those outer crates first to be able to test the publication 
+          # of inner crates. 
+          #
+          # We should preferably test pre-releases before testing releases as
+          # cargo publish might catch release issues that the workspace manages to fix using 
+          # workspace crates.
+          publish_if_not_exists() {
+              local package_name=$1
+              local version=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[] | select(.name=="'"$package_name"'") | .version')
+
+              if [[ -z $version ]]; then
+                  echo "error: package '$package_name' not found in the workspace."
+                  return 1
+              fi
+
+              if cargo search "$package_name" | grep -q "^$package_name = \"$version\""; then
+                  echo "package '$package_name' version '$version' already exists on crates.io. skipping publish."
+              else
+                  echo "publishing package '$package_name' version '$version'..."
+                  cargo publish --package "$package_name"
+              fi
+          }
+
+          # the dora-message package is versioned separately, so this publish command might fail if the version is already published
+          publish_if_not_exists dora-message
+
+          # Publish libraries crates
+          publish_if_not_exists dora-tracing
+          publish_if_not_exists dora-metrics 
+          publish_if_not_exists dora-download 
+          publish_if_not_exists dora-core
+          publish_if_not_exists communication-layer-pub-sub
+          publish_if_not_exists communication-layer-request-reply
+          publish_if_not_exists shared-memory-server
+          publish_if_not_exists dora-arrow-convert
+
+          # Publish rust API
+          publish_if_not_exists dora-operator-api-macros
+          publish_if_not_exists dora-operator-api-types
+          publish_if_not_exists dora-operator-api
+          publish_if_not_exists dora-node-api
+          publish_if_not_exists dora-operator-api-python
+          publish_if_not_exists dora-operator-api-c
+          publish_if_not_exists dora-node-api-c
+
+          # Publish binaries crates
+          publish_if_not_exists dora-coordinator
+          publish_if_not_exists dora-runtime
+          publish_if_not_exists dora-daemon
+          publish_if_not_exists dora-cli
+
+          # Publish ROS2 bridge 
+          publish_if_not_exists dora-ros2-bridge-msg-gen
+          publish_if_not_exists dora-ros2-bridge
+  unix:
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      matrix:
+        platform:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04
+            target: i686-unknown-linux-gnu
+          - runner: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+          - runner: ubuntu-22.04
+            target: armv7-unknown-linux-musleabihf
+          - runner: macos-13
+            target: aarch64-apple-darwin
+          - runner: macos-13
+            target: x86_64-apple-darwin
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v3
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - name: "Add toolchains"
+        run: rustup target add ${{ matrix.platform.target }}
+      - name: "Build"
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --release --target  ${{ matrix.platform.target }} -p dora-cli
+      - name: "Archive"
+        run: zip  -j -r ${{ matrix.platform.target }}.zip target/${{ matrix.platform.target }}/release/dora
+
+      - name: "Upload asset"
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ${{ matrix.platform.target }}.zip
+          asset_name: dora-${{ github.ref_name }}-${{ matrix.platform.target }}.zip
+          asset_content_type: application/zip
+
+  windows-release:
+    name: "Windows Release"
+
+    strategy:
+      matrix:
+        platform:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+
+      fail-fast: false
+    runs-on: ${{ matrix.platform.runner }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+
+      - name: "Build binaries"
+        timeout-minutes: 60
+        run: "cargo build --release -p dora-cli"
+
+      - name: Create Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Compress-Archive -Path target/release/dora.exe -DestinationPath archive.zip
+
+      - name: "Upload release asset"
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: archive.zip
+          asset_name: dora-${{ github.ref_name }}-${{ matrix.platform.target }}.zip
+          asset_content_type: application/zip
