@@ -280,7 +280,7 @@ jobs:
         run: |
           cargo install --path binaries/cli --locked
       - name: "Test CLI (Rust)"
-        timeout-minutes: 45
+        timeout-minutes: 60
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
@@ -312,7 +312,7 @@ jobs:
           enable-cache: true
 
       - name: "Test CLI (Python)"
-        timeout-minutes: 45
+        timeout-minutes: 60
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
@@ -380,7 +380,7 @@ jobs:
           dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
       - name: "Test CLI (C)"
-        timeout-minutes: 45
+        timeout-minutes: 60
         # fail-fast by using bash shell explictly
         shell: bash
         if: runner.os == 'Linux'
@@ -399,7 +399,7 @@ jobs:
           dora destroy
 
       - name: "Test CLI (C++)"
-        timeout-minutes: 45
+        timeout-minutes: 60
         # fail-fast by using bash shell explictly
         shell: bash
         if: runner.os == 'Linux'

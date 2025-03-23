@@ -21,6 +21,7 @@ use dora_tracing::{set_up_tracing_opts, FileLogging};
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
+use self_update::Status;
 use std::{env::current_dir, io::Write, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -31,6 +32,7 @@ use tabwriter::TabWriter;
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
+use self_replace;
 
 mod attach;
 mod build;
@@ -43,6 +45,8 @@ mod up;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+const GITHUB_ORG: &str = "dora-rs";
+const GITHUB_REPO: &str = "dora";
 
 #[derive(Debug, clap::Parser)]
 #[clap(version)]
@@ -87,6 +91,31 @@ enum Command {
         #[clap(long, action)]
         uv: bool,
     },
+    /// List running dataflows.
+    List {
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+    },
+    /// Show logs of a given dataflow and node.
+    #[command(allow_missing_positional = true)]
+    Logs {
+        /// Identifier of the dataflow
+        #[clap(value_name = "UUID_OR_NAME")]
+        dataflow: Option<String>,
+        /// Show logs for the given node
+        #[clap(value_name = "NAME")]
+        node: String,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+    },
     /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
         #[clap(flatten)]
@@ -105,6 +134,12 @@ enum Command {
         // Use UV to run nodes.
         #[clap(long, action)]
         uv: bool,
+    },
+    /// Self management commands
+    #[command(name = "self")]
+    SelfManage {
+        #[clap(subcommand)]
+        command: SelfCommand,
     },
     /// Spawn coordinator and daemon in local mode (with default config)
     Up {
@@ -169,37 +204,6 @@ enum Command {
         #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
         coordinator_port: u16,
     },
-    /// List running dataflows.
-    List {
-        /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-        coordinator_addr: IpAddr,
-        /// Port number of the coordinator control server
-        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-        coordinator_port: u16,
-    },
-    // Planned for future releases:
-    // Dashboard,
-    /// Show logs of a given dataflow and node.
-    #[command(allow_missing_positional = true)]
-    Logs {
-        /// Identifier of the dataflow
-        #[clap(value_name = "UUID_OR_NAME")]
-        dataflow: Option<String>,
-        /// Show logs for the given node
-        #[clap(value_name = "NAME")]
-        node: String,
-        /// Address of the dora coordinator
-        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-        coordinator_addr: IpAddr,
-        /// Port number of the coordinator control server
-        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-        coordinator_port: u16,
-    },
-    // Metrics,
-    // Stats,
-    // Get,
-    // Upgrade,
     /// Run daemon
     Daemon {
         /// Unique identifier for the machine (required for distributed dataflows)
@@ -212,7 +216,7 @@ enum Command {
         #[clap(long, short, default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
-        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
+        #[clap(long, default_value_t = if cfg!(windows) { 9880 } else { DORA_COORDINATOR_PORT_DEFAULT })]
         coordinator_port: u16,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
@@ -228,13 +232,13 @@ enum Command {
         #[clap(long, default_value_t = LISTEN_WILDCARD)]
         interface: IpAddr,
         /// Port number to bind to for daemon communication
-        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
+        #[clap(long, default_value_t = if cfg!(windows) { 9880 } else { DORA_COORDINATOR_PORT_DEFAULT })]
         port: u16,
         /// Network interface to bind to for control communication
         #[clap(long, default_value_t = LISTEN_WILDCARD)]
         control_interface: IpAddr,
         /// Port number to bind to for control communication
-        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        #[clap(long, default_value_t = if cfg!(windows) { 9881 } else { DORA_COORDINATOR_PORT_CONTROL_DEFAULT })]
         control_port: u16,
         /// Suppresses all log output to stdout.
         #[clap(long)]
@@ -255,6 +259,20 @@ pub struct CommandNew {
     /// Where to create the entity
     #[clap(hide = true)]
     path: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum SelfCommand {
+    /// Update dora to the latest version
+    Update {
+        /// Force update even if no new version is available
+        #[clap(long, action)]
+        force: bool,
+    },
+    /// Uninstall dora from your system
+    Uninstall,
+    /// Reinstall dora (useful for fixing installation issues)
+    Reinstall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -537,6 +555,84 @@ fn run(args: Args) -> eyre::Result<()> {
             .context("failed to run dora-daemon")?
         }
         Command::Runtime => dora_runtime::main().context("Failed to run dora-runtime")?,
+        Command::SelfManage { command } => match command {
+            SelfCommand::Update { force } => {
+                let status = self_update::backends::github::Update::configure()
+                    .repo_owner(GITHUB_ORG)
+                    .repo_name(GITHUB_REPO)
+                    .bin_name("dora")
+                    .show_download_progress(true)
+                    .current_version(env!("CARGO_PKG_VERSION"))
+                    .build()?
+                    .update()?;
+
+                match status {
+                    Status::UpToDate(v) => {
+                        if force {
+                            println!("Forcing update to latest version...");
+                            self_update::backends::github::Update::configure()
+                                .repo_owner(GITHUB_ORG)
+                                .repo_name(GITHUB_REPO)
+                                .bin_name("dora")
+                                .show_download_progress(true)
+                                .current_version(&v)
+                                .build()?
+                                .update()?;
+                        } else {
+                            println!("Already up-to-date. Version: {}", v);
+                        }
+                    }
+                    Status::Updated(v) => println!("Updated Successfully. Version: {}", v),
+                }
+            }
+            SelfCommand::Uninstall => {
+                println!("Uninstalling dora...");
+                match self_replace::self_delete() {
+                    Ok(_) => {
+                        println!("Successfully uninstalled dora. The executable will be removed when the process exits.");
+                        std::process::exit(0);
+                    }
+                    Err(err) => {
+                        bail!("Failed to uninstall dora: {}", err);
+                    }
+                }
+            }
+            SelfCommand::Reinstall => {
+                println!("Reinstalling dora...");
+                let status = self_update::backends::github::Update::configure()
+                    .repo_owner(GITHUB_ORG)
+                    .repo_name(GITHUB_REPO)
+                    .bin_name("dora")
+                    .show_download_progress(true)
+                    .current_version(env!("CARGO_PKG_VERSION"))
+                    .build()?;
+                
+                let temp_dir = std::env::temp_dir().join("dora_reinstall");
+                std::fs::create_dir_all(&temp_dir)?;
+                let downloaded_binary = temp_dir.join("dora.new");
+                
+                match status.download_to_path(&downloaded_binary)? {
+                    Some(version) => {
+                        println!("Downloaded version {} for reinstallation", version);
+                        
+                        match self_replace::self_replace(&downloaded_binary) {
+                            Ok(_) => {
+                                println!("Successfully reinstalled dora to version {}", version);
+                                let _ = std::fs::remove_file(&downloaded_binary);
+                                std::process::exit(0);
+                            }
+                            Err(err) => {
+                                let _ = std::fs::remove_file(&downloaded_binary);
+                                bail!("Failed to reinstall dora: {}", err);
+                            }
+                        }
+                    }
+                    None => {
+                        bail!("No new version available for reinstallation");
+                    }
+                }
+            }
+        },
     };
 
     Ok(())
