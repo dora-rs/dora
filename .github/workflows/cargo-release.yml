@@ -1,4 +1,4 @@
-name: Release
+name: Cargo Release
 
 permissions:
   contents: write
@@ -47,12 +47,12 @@ jobs:
         run: |
 
           # Publishing those crates from outer crates with no dependency to inner crates
-          # As cargo is going to rebuild the crates based on published dependencies 
-          # we need to publish those outer crates first to be able to test the publication 
-          # of inner crates. 
+          # As cargo is going to rebuild the crates based on published dependencies
+          # we need to publish those outer crates first to be able to test the publication
+          # of inner crates.
           #
           # We should preferably test pre-releases before testing releases as
-          # cargo publish might catch release issues that the workspace manages to fix using 
+          # cargo publish might catch release issues that the workspace manages to fix using
           # workspace crates.
           publish_if_not_exists() {
               local package_name=$1
@@ -76,8 +76,8 @@ jobs:
 
           # Publish libraries crates
           publish_if_not_exists dora-tracing
-          publish_if_not_exists dora-metrics 
-          publish_if_not_exists dora-download 
+          publish_if_not_exists dora-metrics
+          publish_if_not_exists dora-download
           publish_if_not_exists dora-core
           publish_if_not_exists communication-layer-pub-sub
           publish_if_not_exists communication-layer-request-reply
@@ -99,85 +99,6 @@ jobs:
           publish_if_not_exists dora-daemon
           publish_if_not_exists dora-cli
 
-          # Publish ROS2 bridge 
+          # Publish ROS2 bridge
           publish_if_not_exists dora-ros2-bridge-msg-gen
           publish_if_not_exists dora-ros2-bridge
-  unix:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      matrix:
-        platform:
-          - runner: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-22.04
-            target: i686-unknown-linux-gnu
-          - runner: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-          - runner: ubuntu-22.04
-            target: aarch64-unknown-linux-musl
-          - runner: ubuntu-22.04
-            target: armv7-unknown-linux-musleabihf
-          - runner: macos-13
-            target: aarch64-apple-darwin
-          - runner: macos-13
-            target: x86_64-apple-darwin
-      fail-fast: false
-    steps:
-      - uses: actions/checkout@v3
-      - uses: r7kamura/rust-problem-matchers@v1.1.0
-      - name: "Add toolchains"
-        run: rustup target add ${{ matrix.platform.target }}
-      - name: "Build"
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --release --target  ${{ matrix.platform.target }} -p dora-cli
-      - name: "Archive"
-        run: zip  -j -r ${{ matrix.platform.target }}.zip target/${{ matrix.platform.target }}/release/dora
-
-      - name: "Upload asset"
-        uses: actions/upload-release-asset@v1.0.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ${{ matrix.platform.target }}.zip
-          asset_name: dora-${{ github.ref_name }}-${{ matrix.platform.target }}.zip
-          asset_content_type: application/zip
-
-  windows-release:
-    name: "Windows Release"
-
-    strategy:
-      matrix:
-        platform:
-          - runner: windows-2022
-            target: x86_64-pc-windows-msvc
-
-      fail-fast: false
-    runs-on: ${{ matrix.platform.runner }}
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: r7kamura/rust-problem-matchers@v1.1.0
-
-      - name: "Build binaries"
-        timeout-minutes: 60
-        run: "cargo build --release -p dora-cli"
-
-      - name: Create Archive (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: Compress-Archive -Path target/release/dora.exe -DestinationPath archive.zip
-
-      - name: "Upload release asset"
-        uses: actions/upload-release-asset@v1.0.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: archive.zip
-          asset_name: dora-${{ github.ref_name }}-${{ matrix.platform.target }}.zip
-          asset_content_type: application/zip
