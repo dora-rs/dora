@@ -215,7 +215,7 @@ enum Command {
         #[clap(long, short, default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
         /// Port number of the coordinator control server
-        #[clap(long, default_value_t = if cfg!(windows) { 9880 } else { DORA_COORDINATOR_PORT_DEFAULT })]
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
         coordinator_port: u16,
         #[clap(long, hide = true)]
         run_dataflow: Option<PathBuf>,
@@ -231,13 +231,13 @@ enum Command {
         #[clap(long, default_value_t = LISTEN_WILDCARD)]
         interface: IpAddr,
         /// Port number to bind to for daemon communication
-        #[clap(long, default_value_t = if cfg!(windows) { 9880 } else { DORA_COORDINATOR_PORT_DEFAULT })]
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
         port: u16,
         /// Network interface to bind to for control communication
         #[clap(long, default_value_t = LISTEN_WILDCARD)]
         control_interface: IpAddr,
         /// Port number to bind to for control communication
-        #[clap(long, default_value_t = if cfg!(windows) { 9881 } else { DORA_COORDINATOR_PORT_CONTROL_DEFAULT })]
+        #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
         control_port: u16,
         /// Suppresses all log output to stdout.
         #[clap(long)]
