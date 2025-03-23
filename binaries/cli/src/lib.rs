@@ -21,6 +21,7 @@ use dora_tracing::{set_up_tracing_opts, FileLogging};
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
+use self_update::Status;
 use std::{env::current_dir, io::Write, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -31,7 +32,6 @@ use tabwriter::TabWriter;
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
-use self_update::Status;
 
 mod attach;
 mod build;
