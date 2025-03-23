@@ -1,55 +1,58 @@
+"""Gamepad controller node for Dora.
+
+This module provides a Dora node that reads input from a controller and publishes velocity commands for robot control.
+It handles controller mapping, deadzone filtering, and velocity scaling.
+"""
+
 from dora import Node
-import pyarrow as pa
 import pygame
+import pyarrow as pa
 
-class LogitechF710:
-    """Logitech F710 controller mapping"""
-    fullName = 'Logitech Wireless Gamepad F710'
+class Controller:
+    """controller mapping."""
 
-    def __init__(self, joystickNumber=0):
-        self.joystickNumber = joystickNumber
+    def __init__(self):
+        """Change this according to your controller mapping. Currently Logitech F710."""
         self.axisNames = {
-            0: 'LEFT-X',    # Left stick X axis
-            1: 'LEFT-Y',    # Left stick Y axis
-            2: 'LT',        # Left trigger
-            3: 'RIGHT-X',   # Right stick X axis
-            4: 'RIGHT-Y',   # Right stick Y axis
-            5: 'RT',        # Right trigger
-            6: 'DPAD-X',    # D-pad X axis
-            7: 'DPAD-Y'     # D-pad Y axis
+            'LEFT-X': 0,
+            'LEFT-Y': 1,
+            'LT': 2,        
+            'RIGHT-X': 3,
+            'RIGHT-Y': 4,
+            'RT': 5,        
+            'DPAD-X': 6,    
+            'DPAD-Y': 7     
         }
         self.buttonNames = {
-            0: 'A',
-            1: 'B',
-            2: 'X',
-            3: 'Y',
-            4: 'LB',
-            5: 'RB',
-            6: 'BACK',
-            7: 'START',
-            8: 'LOGITECH',
-            9: 'LEFT-STICK',
-            10: 'RIGHT-STICK'
+            'A': 0,
+            'B': 1,
+            'X': 2,
+            'Y': 3,
+            'LB': 4,
+            'RB': 5,
+            'BACK': 6,
+            'START': 7,
+            'LOGITECH': 8,
+            'LEFT-STICK': 9,
+            'RIGHT-STICK': 10
         }
 
 def main():
     node = Node("gamepad")
     
-    # Initialize pygame for joystick handling
     pygame.init()
     pygame.joystick.init()
     
-    # Check for connected joysticks
     if pygame.joystick.get_count() == 0:
-        print("No gamepad found! Please connect your Logitech F710 controller.")
+        print("No gamepad found! Please connect your controller.")
         return
         
-    # Initialize the first joystick
     joystick = pygame.joystick.Joystick(0)
     joystick.init()
+
+    controller = Controller()
     
-    # Control parameters
-    max_linear_speed = 2.0  # Maximum speed in m/s
+    max_linear_speed = 1.0  # Maximum speed in m/s
     max_angular_speed = 1.5  # Maximum angular speed in rad/s
     
     print("Gamepad Controls:")
@@ -60,59 +63,46 @@ def main():
 
     try:
         for event in node:
-            # Process pygame events
             pygame.event.pump()
-            # print("#############################################")
-            try:
-                # Get axis values (-1 to 1)
-                forward = -joystick.get_axis(1)  # Left stick Y (inverted)
-                turn = -joystick.get_axis(0)     # Left stick X
-                
-                # Apply deadzone
-                deadzone = 0.05
-                forward = 0.0 if abs(forward) < deadzone else forward
-                turn = 0.0 if abs(turn) < deadzone else turn
-                
-                # Calculate velocities
-                forward_speed = forward * max_linear_speed
-                turn_speed = turn * max_angular_speed
-                
-                # Create cmd_vel array
-                cmd_vel = [
-                    forward_speed,  # Linear X
-                    0.0,           # Linear Y
-                    0.0,           # Linear Z
-                    0.0,           # Angular X
-                    0.0,           # Angular Y
-                    turn_speed     # Angular Z
-                ]
-                
-                # Send command
-                node.send_output(
-                    output_id="cmd_vel",
-                    data=pa.array(cmd_vel, type=pa.float64()),
-                    metadata={"type": "cmd_vel"}
-                )
-                # print("cmd vel : ", cmd_vel)
-                
-            except Exception as e:
-                print(f"Controller error: {e}")
+
+            forward = -joystick.get_axis(controller.axisNames['LEFT-Y'])
+            turn = -joystick.get_axis(controller.axisNames['LEFT-X'])
+            
+            deadzone = 0.05
+            forward = 0.0 if abs(forward) < deadzone else forward
+            turn = 0.0 if abs(turn) < deadzone else turn
+            
+            forward_speed = forward * max_linear_speed
+            turn_speed = turn * max_angular_speed
+        
+            cmd_vel = [
+                forward_speed,
+                0.0,           
+                0.0,           
+                0.0,           
+                0.0,           
+                turn_speed     
+            ]
+            
+            node.send_output(
+                output_id="cmd_vel",
+                data=pa.array(cmd_vel, type=pa.float64()),
+                metadata={"type": "cmd_vel"}
+            )
+
                 
     except KeyboardInterrupt:
         print("\nExiting...")
     finally:
-        # Cleanup
         pygame.quit()
-        # Send zero velocity
+        # Send zero velocity at cleanup
         zero_cmd = [0.0] * 6
-        try:
-            node.send_output(
-                output_id="cmd_vel",
-                data=pa.array(zero_cmd, type=pa.float64()),
-                metadata={"type": "cmd_vel"}
-            )
-        except Exception as e:
-            print(f"Failed to send zero velocity: {e}")
+        node.send_output(
+            output_id="cmd_vel",
+            data=pa.array(zero_cmd, type=pa.float64()),
+            metadata={"type": "cmd_vel"}
+        )
+
 
 if __name__ == "__main__":
     main()
