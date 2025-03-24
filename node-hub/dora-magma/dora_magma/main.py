@@ -1,6 +1,5 @@
 """TODO: Add docstring."""
 
-import ast
 import logging
 import os
 from pathlib import Path
@@ -25,13 +24,6 @@ magma_dir = current_dir.parent / "Magma" / "magma"
 
 def load_magma_models():
     """TODO: Add docstring."""
-    # default_path = str(magma_dir.parent / "checkpoints" / "Magma-8B")
-    # if not os.path.exists(default_path):
-        # default_path = str(magma_dir.parent)
-        # if not os.path.exists(default_path):
-            # logger.warning(
-                # "Warning: Magma submodule not found, falling back to HuggingFace version",
-            # )
     default_path = "microsoft/Magma-8B"
 
     model_name_or_path = os.getenv("MODEL_NAME_OR_PATH", default_path)
@@ -47,6 +39,7 @@ def load_magma_models():
         model_name_or_path,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
+        use_fast=True,
     )
 
     return model, processor, model_name_or_path
@@ -77,6 +70,7 @@ def generate(
         tokenize=False,
         add_generation_prompt=True,
     )
+    # image = image.resize((256, 256))
 
     inputs = processor(images=image, texts=prompt, return_tensors="pt")
     inputs["pixel_values"] = (
@@ -94,26 +88,7 @@ def generate(
             max_new_tokens=1024,
             use_cache=True,
         )
-    response = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
-
-    # Parse trajectories from response
-    trajectories = {}
-    try:
-        if "and their future positions are:" in response:
-            _, traces_str = response.split("and their future positions are:\n")
-        else:
-            _, traces_str = None, response
-
-        # Parse the trajectories using the same approach as in `https://github.com/microsoft/Magma/blob/main/agents/robot_traj/app.py`
-        traces_dict = ast.literal_eval(
-            "{" + traces_str.strip().replace("\n\n", ",") + "}",
-        )
-        for mark_id, trace in traces_dict.items():
-            trajectories[mark_id] = ast.literal_eval(trace)
-    except Exception as e:
-        logger.warning(f"Failed to parse trajectories: {e}")
-
-    return response, trajectories
+    return processor.batch_decode(output_ids, skip_special_tokens=True)[0]
 
 
 def main():
@@ -121,6 +96,7 @@ def main():
     node = Node()
     frames = {}
     image_id = ""
+    image = np.array([])
 
     for event in node:
         event_type = event["type"]
@@ -172,24 +148,16 @@ def main():
                     else:
                         logger.error(f"Image not found for {image_id}")
                         continue
-                    response, trajectories = generate(image, task_description)
+                    response = generate(image, task_description)
                     node.send_output(
                         "text",
                         pa.array([response]),
-                        {"image_id": image_id},
+                        {
+                            "image_id": image_id,
+                            "width": image.width,
+                            "height": image.height,
+                        },
                     )
-
-                    # Send trajectory data if available
-                    if trajectories:
-                        import json
-
-                        node.send_output(
-                            "trajectories",
-                            pa.array([json.dumps(trajectories)]),
-                            {"image_id": image_id},
-                        )
-                else:
-                    continue
 
         elif event_type == "ERROR":
             logger.error(f"Event Error: {event['error']}")

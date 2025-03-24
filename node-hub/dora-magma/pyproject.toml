@@ -15,7 +15,7 @@ dependencies = [
   "numpy < 2",
   "torch >= 2.4.0",
   "torchvision >= 0.19",
-  "transformers >= 4.45",
+  "transformers>=4.45",
   "opencv-python >= 4.1.1",
   "accelerate>=1.5.1",
   "psutil>=7.0.0",
@@ -34,6 +34,9 @@ exclude = ["dora_magma/Magma"]
 
 [tool.black]
 extend.exclude = "dora_magma/Magma"
+
+[tool.uv.sources]
+transformers = { git = "https://github.com/jwyang/transformers.git", rev = "dev/jwyang-v4.48.2" }
 
 [tool.ruff.lint]
 extend-select = [
