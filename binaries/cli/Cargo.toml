@@ -60,3 +60,7 @@ pyo3 = { workspace = true, features = [
 name = "dora_cli"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
+
+[package.metadata.dist]
+# Enable dora-cli binary to be distributed
+dist = true
