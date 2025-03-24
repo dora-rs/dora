@@ -12,7 +12,6 @@ use eyre::bail;
 use dora_ros2_bridge::{_core, ros2_client};
 use futures_lite::{stream, Stream, StreamExt};
 
-
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
 mod ffi {
@@ -76,13 +75,13 @@ mod ffi {
         unsafe fn send_arrow_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
-            array_ptr: *mut u8,  
-            schema_ptr: *mut u8, 
+            array_ptr: *mut u8,
+            schema_ptr: *mut u8,
         ) -> DoraResult;
-        
+
         unsafe fn event_as_arrow_input(
-            event: Box<DoraEvent>, 
-            out_array: *mut u8,  
+            event: Box<DoraEvent>,
+            out_array: *mut u8,
             out_schema: *mut u8,
         ) -> DoraResult;
     }
@@ -180,7 +179,7 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
 }
 
 unsafe fn event_as_arrow_input(
-    event: Box<DoraEvent>, 
+    event: Box<DoraEvent>,
     out_array: *mut u8,
     out_schema: *mut u8,
 ) -> ffi::DoraResult {
@@ -188,29 +187,36 @@ unsafe fn event_as_arrow_input(
     let out_array = out_array as *mut arrow::ffi::FFI_ArrowArray;
     let out_schema = out_schema as *mut arrow::ffi::FFI_ArrowSchema;
 
-    let Some(Event::Input { id: _, metadata: _, data }) = event.0 else {
-        return ffi::DoraResult { error: "Not an input event".to_string() };
+    let Some(Event::Input {
+        id: _,
+        metadata: _,
+        data,
+    }) = event.0
+    else {
+        return ffi::DoraResult {
+            error: "Not an input event".to_string(),
+        };
     };
-    
+
     if out_array.is_null() || out_schema.is_null() {
-        return ffi::DoraResult { 
-            error: "Received null output pointer".to_string() 
+        return ffi::DoraResult {
+            error: "Received null output pointer".to_string(),
         };
     }
-    
+
     let array_data = data.to_data();
-    
+
     match arrow::ffi::to_ffi(&array_data.clone()) {
         Ok((ffi_array, ffi_schema)) => {
             std::ptr::write(out_array, ffi_array);
             std::ptr::write(out_schema, ffi_schema);
-            ffi::DoraResult { error: String::new() }
-        },
-        Err(e) => {
             ffi::DoraResult {
-                error: format!("Error exporting Arrow array to C++: {:?}", e)
+                error: String::new(),
             }
         }
+        Err(e) => ffi::DoraResult {
+            error: format!("Error exporting Arrow array to C++: {:?}", e),
+        },
     }
 }
 
@@ -236,38 +242,42 @@ pub struct MergedEvents {
 unsafe fn send_arrow_output(
     sender: &mut Box<OutputSender>,
     id: String,
-    array_ptr: *mut u8, 
-    schema_ptr: *mut u8
+    array_ptr: *mut u8,
+    schema_ptr: *mut u8,
 ) -> ffi::DoraResult {
     let array_ptr = array_ptr as *mut arrow::ffi::FFI_ArrowArray;
     let schema_ptr = schema_ptr as *mut arrow::ffi::FFI_ArrowSchema;
 
     if array_ptr.is_null() || schema_ptr.is_null() {
-        return ffi::DoraResult { 
-            error: "Received null Arrow array or schema pointer".to_string()
+        return ffi::DoraResult {
+            error: "Received null Arrow array or schema pointer".to_string(),
         };
     }
-    
+
     let array = std::ptr::read(array_ptr);
     let schema = std::ptr::read(schema_ptr);
-    
+
     std::ptr::write(array_ptr, std::mem::zeroed());
     std::ptr::write(schema_ptr, std::mem::zeroed());
-    
+
     match arrow::ffi::from_ffi(array, &schema) {
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
-            let result = sender.0.send_output(id.into(), Default::default(), arrow_array);
+            let result = sender
+                .0
+                .send_output(id.into(), Default::default(), arrow_array);
             match result {
-                Ok(()) => ffi::DoraResult { error: String::new() },
-                Err(err) => ffi::DoraResult { error: format!("{err:?}") },
-            }
-        },
-        Err(e) => {
-            ffi::DoraResult { 
-                error: format!("Error importing array from C++: {:?}", e) 
+                Ok(()) => ffi::DoraResult {
+                    error: String::new(),
+                },
+                Err(err) => ffi::DoraResult {
+                    error: format!("{err:?}"),
+                },
             }
         }
+        Err(e) => ffi::DoraResult {
+            error: format!("Error importing array from C++: {:?}", e),
+        },
     }
 }
 
