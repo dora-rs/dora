@@ -1,6 +1,6 @@
 # Dora C++ Dataflow Example
 
-This example shows usage of event_as_arrow_input() and send_arrow_output(). We can send and recieve arrow arrays using these functions which can be serialized and deserialized on either files easliy. These functions are implemented in rust and are provided through dora-node-api.h. Currently this requires to have arrow installed on user sytsem as required during build process.  
+This example shows usage of event_as_arrow_input() and send_arrow_output(). We can send and receive arrow arrays using these functions which can be serialized and deserialized on either files easily. These functions are implemented in rust and are provided through dora-node-api.h. Currently this requires to have arrow installed on user system as required during build process.  
 
 ## Compile and Run
 
