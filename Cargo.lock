@@ -3173,6 +3173,7 @@ dependencies = [
 name = "dora-node-api-cxx"
 version = "0.3.10"
 dependencies = [
+ "arrow 54.2.1",
  "cxx",
  "cxx-build",
  "dora-node-api",
