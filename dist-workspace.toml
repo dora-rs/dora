@@ -10,7 +10,13 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
 # Path that installers should place binaries in
 install-path = "~/.dora/bin"
 # Whether to install an updater program
@@ -23,10 +29,13 @@ dist = false
 create-release = false
 # The archive format to use for non-windows builds (defaults .tar.xz)
 unix-archive = ".tar.gz"
+# Skip checking whether the specified configuration files are up to date
+allow-dirty = ["ci"]
 
 [dist.github-custom-runners]
 x86_64-pc-windows-msvc = "windows-2022"
 x86_64-unknown-linux-gnu = "ubuntu-22.04"
+aarch64-unknown-linux-gnu = "ubuntu-22.04"
 global = "ubuntu-22.04"
 
 [dist.bin-aliases]
