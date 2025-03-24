@@ -3,7 +3,7 @@ use eyre::{bail, Context};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
     path::Path,
-    process::Command, 
+    process::Command,
 };
 
 struct ArrowConfig {
@@ -23,7 +23,11 @@ async fn main() -> eyre::Result<()> {
     }
 
     let arrow_config = find_arrow_config().wrap_err("Failed to find Arrow configuration")?;
-    tracing::info!("Found Arrow configuration: cflags={}, libs={}", arrow_config.cflags, arrow_config.libs);
+    tracing::info!(
+        "Found Arrow configuration: cflags={}, libs={}",
+        arrow_config.cflags,
+        arrow_config.libs
+    );
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let target = root.join("target");
@@ -79,7 +83,12 @@ async fn main() -> eyre::Result<()> {
             &dunce::canonicalize(build_dir.join("node-bridge.cc"))?,
         ],
         "node_rust_api",
-        &["-l", "dora_node_api_cxx", &arrow_config.cflags, &arrow_config.libs],
+        &[
+            "-l",
+            "dora_node_api_cxx",
+            &arrow_config.cflags,
+            &arrow_config.libs,
+        ],
     )
     .await?;
     build_cxx_node(
@@ -98,9 +107,12 @@ async fn main() -> eyre::Result<()> {
         ],
         "operator_rust_api",
         &[
-            "-l", "dora_operator_api_cxx",
-            "-L", root.join("target").join("debug").to_str().unwrap(),
-            &arrow_config.cflags, &arrow_config.libs,
+            "-l",
+            "dora_operator_api_cxx",
+            "-L",
+            root.join("target").join("debug").to_str().unwrap(),
+            &arrow_config.cflags,
+            &arrow_config.libs,
         ],
     )
     .await?;
@@ -110,8 +122,10 @@ async fn main() -> eyre::Result<()> {
         )?],
         "operator_c_api",
         &[
-            "-l", "dora_operator_api_c",
-            "-L", root.join("target").join("debug").to_str().unwrap(),
+            "-l",
+            "dora_operator_api_c",
+            "-L",
+            root.join("target").join("debug").to_str().unwrap(),
         ],
     )
     .await?;
@@ -124,29 +138,28 @@ async fn main() -> eyre::Result<()> {
 }
 
 fn find_arrow_config() -> eyre::Result<ArrowConfig> {
-    
     let output = Command::new("pkg-config")
         .args(&["--cflags", "arrow"])
         .output()
         .wrap_err("Failed to run pkg-config. Make sure Arrow C++ is installed")?;
-    
+
     if !output.status.success() {
         bail!("Arrow C++ not found via pkg-config. Make sure it's installed and in your PKG_CONFIG_PATH");
     }
-    
+
     let cflags = String::from_utf8(output.stdout)?.trim().to_string();
-    
+
     let output = Command::new("pkg-config")
         .args(&["--libs", "arrow"])
         .output()
         .wrap_err("Failed to get Arrow library flags")?;
-    
+
     if !output.status.success() {
         bail!("Failed to get Arrow library flags");
     }
-    
+
     let libs = String::from_utf8(output.stdout)?.trim().to_string();
-    
+
     Ok(ArrowConfig { cflags, libs })
 }
 
