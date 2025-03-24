@@ -555,9 +555,17 @@ fn run(args: Args) -> eyre::Result<()> {
             SelfSubCommand::Update { check_only } => {
                 println!("Checking for updates...");
 
+                #[cfg(target_os = "linux")]
+                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+                #[cfg(target_os = "macos")]
+                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+                #[cfg(target_os = "windows")]
+                let bin_path_in_archive = String::from("dora.exe");
+
                 let status = self_update::backends::github::Update::configure()
                     .repo_owner("dora-rs")
                     .repo_name("dora")
+                    .bin_path_in_archive(&bin_path_in_archive)
                     .bin_name("dora")
                     .show_download_progress(true)
                     .current_version(env!("CARGO_PKG_VERSION"))
