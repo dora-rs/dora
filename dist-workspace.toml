@@ -27,6 +27,7 @@ unix-archive = ".tar.gz"
 [dist.github-custom-runners]
 x86_64-pc-windows-msvc = "windows-2022"
 x86_64-unknown-linux-gnu = "ubuntu-22.04"
+global = "ubuntu-22.04"
 
 [dist.bin-aliases]
 dora-cli = ["dora"]
