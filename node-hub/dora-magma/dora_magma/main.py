@@ -34,20 +34,17 @@ def load_magma_models():
     model_name_or_path = os.getenv("MODEL_NAME_OR_PATH", default_path)
     logger.info(f"Loading Magma model from: {model_name_or_path}")
 
-    try:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name_or_path,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
-        processor = AutoProcessor.from_pretrained(
-            model_name_or_path,
-            trust_remote_code=True,
-        )
-    except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        raise
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    processor = AutoProcessor.from_pretrained(
+        model_name_or_path,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+    )
 
     return model, processor, model_name_or_path
 
@@ -78,51 +75,49 @@ def generate(
         add_generation_prompt=True,
     )
 
+    inputs = processor(images=image, texts=prompt, return_tensors="pt")
+    inputs["pixel_values"] = (
+        inputs["pixel_values"].unsqueeze(0).to(model.device, dtype=torch.bfloat16)
+    )
+    inputs["image_sizes"] = inputs["image_sizes"].unsqueeze(0)
+    inputs = inputs.to(model.device)
+
+    with torch.inference_mode():
+        output_ids = model.generate(
+            **inputs,
+            temperature=0.3,
+            do_sample=True,
+            num_beams=1,
+            max_new_tokens=1024,
+            use_cache=True,
+        )
+    response = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
+
+    # Parse trajectories from response
+    trajectories = {}
     try:
-        inputs = processor(images=image, texts=prompt, return_tensors="pt")
-        inputs["pixel_values"] = inputs["pixel_values"].unsqueeze(0)
-        inputs["image_sizes"] = inputs["image_sizes"].unsqueeze(0)
-        inputs = inputs.to(model.device)
+        if "and their future positions are:" in response:
+            _, traces_str = response.split("and their future positions are:\n")
+        else:
+            _, traces_str = None, response
 
-        with torch.inference_mode():
-            output_ids = model.generate(
-                **inputs,
-                temperature=0.3,
-                do_sample=True,
-                num_beams=1,
-                max_new_tokens=1024,
-                use_cache=True,
-            )
-        response = processor.batch_decode(output_ids, skip_special_tokens=True)[0]
-
-        # Parse trajectories from response
-        trajectories = {}
-        try:
-            if "and their future positions are:" in response:
-                _, traces_str = response.split("and their future positions are:\n")
-            else:
-                _, traces_str = None, response
-
-            # Parse the trajectories using the same approach as in `https://github.com/microsoft/Magma/blob/main/agents/robot_traj/app.py`
-            traces_dict = ast.literal_eval(
-                "{" + traces_str.strip().replace("\n\n", ",") + "}",
-            )
-            for mark_id, trace in traces_dict.items():
-                trajectories[mark_id] = ast.literal_eval(trace)
-        except Exception as e:
-            logger.warning(f"Failed to parse trajectories: {e}")
-
-        return response, trajectories
-
+        # Parse the trajectories using the same approach as in `https://github.com/microsoft/Magma/blob/main/agents/robot_traj/app.py`
+        traces_dict = ast.literal_eval(
+            "{" + traces_str.strip().replace("\n\n", ",") + "}",
+        )
+        for mark_id, trace in traces_dict.items():
+            trajectories[mark_id] = ast.literal_eval(trace)
     except Exception as e:
-        logger.error(f"Error in generate: {e}")
-        return f"Error: {e}", {}
+        logger.warning(f"Failed to parse trajectories: {e}")
+
+    return response, trajectories
 
 
 def main():
     """TODO: Add docstring."""
     node = Node()
     frames = {}
+    image_id = ""
 
     for event in node:
         event_type = event["type"]
@@ -137,39 +132,29 @@ def main():
                 width = metadata["width"]
                 height = metadata["height"]
 
-                try:
-                    if encoding == "bgr8":
-                        frame = (
-                            storage.to_numpy()
-                            .astype(np.uint8)
-                            .reshape((height, width, 3))
+                if encoding == "bgr8":
+                    frame = (
+                        storage.to_numpy().astype(np.uint8).reshape((height, width, 3))
+                    )
+                    frame = frame[:, :, ::-1]  # Convert BGR to RGB
+                elif encoding == "rgb8":
+                    frame = (
+                        storage.to_numpy().astype(np.uint8).reshape((height, width, 3))
+                    )
+                elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    storage = storage.to_numpy()
+                    frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        raise ValueError(
+                            f"Failed to decode image with encoding {encoding}",
                         )
-                        frame = frame[:, :, ::-1]  # Convert BGR to RGB
-                    elif encoding == "rgb8":
-                        frame = (
-                            storage.to_numpy()
-                            .astype(np.uint8)
-                            .reshape((height, width, 3))
-                        )
-                    elif encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
-                        storage = storage.to_numpy()
-                        frame = cv2.imdecode(storage, cv2.IMREAD_COLOR)
-                        if frame is None:
-                            raise ValueError(
-                                f"Failed to decode image with encoding {encoding}",
-                            )
-                        frame = frame[:, :, ::-1]  # Convert BGR to RGB
-                    else:
-                        raise ValueError(f"Unsupported image encoding: {encoding}")
+                    frame = frame[:, :, ::-1]  # Convert BGR to RGB
+                else:
+                    raise ValueError(f"Unsupported image encoding: {encoding}")
 
-                    image = Image.fromarray(frame)
-                    frames[event_id] = image
-
-                    # Cleanup old frames
-                    if len(frames) > 10:
-                        frames.popitem(last=False)
-                except Exception as e:
-                    logger.error(f"Error processing image {event_id}: {e}")
+                image = Image.fromarray(frame)
+                frames[event_id] = image
+                image_id = event_id
 
             # Handle text inputs
             elif "text" in event_id:
