@@ -46,8 +46,7 @@ macro_rules! register_array_handlers {
 
                         let mut result = Vec::with_capacity(buffer.len());
                         for &v in buffer.values() {
-                            let converted = NumCast::from(v).ok_or_else(||
-                                eyre!("Failed to cast value from {} to target type", $type_name))?;
+                            let converted = NumCast::from(v).context(format!("Failed to cast value from {} to target type",$type_name))?;
                             result.push(converted);
                         }
                         Ok(result)
