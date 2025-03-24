@@ -61,11 +61,6 @@ name = "dora_cli"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
 
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
-
 [package.metadata.dist]
 # Enable dora-cli binary to be distributed
 dist = true
