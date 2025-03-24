@@ -2586,6 +2586,7 @@ dependencies = [
  "chrono",
  "eyre",
  "half",
+ "num",
 ]
 
 [[package]]

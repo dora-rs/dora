@@ -1,6 +1,7 @@
 use arrow::array::{Array, Float32Array, Float64Array, Int32Array, Int64Array, UInt32Array};
 use arrow::datatypes::DataType;
 use eyre::{eyre, ContextCompat, Result};
+use num::NumCast;
 use std::ops::{Deref, DerefMut};
 
 mod from_impls;
@@ -31,7 +32,10 @@ impl DerefMut for ArrowData {
 
 macro_rules! register_array_handlers {
     ($(($variant:path, $array_type:ty, $type_name:expr)),* $(,)?) => {
-        pub fn into_vec_f64(data: &ArrowData) -> Result<Vec<f64>> {
+        pub fn into_vec<T>(data: &ArrowData) -> Result<Vec<T>>
+        where
+            T: Copy + NumCast + 'static,
+        {
             match data.data_type() {
                 $(
                     $variant => {
@@ -39,7 +43,13 @@ macro_rules! register_array_handlers {
                             .as_any()
                             .downcast_ref()
                             .context(concat!("series is not ", $type_name))?;
-                        Ok(buffer.values().iter().map(|&v| v as f64).collect())
+
+                        let mut result = Vec::with_capacity(buffer.len());
+                        for &v in buffer.values() {
+                            let converted = NumCast::from(v).context(format!("Failed to cast value from {} to target type",$type_name))?;
+                            result.push(converted);
+                        }
+                        Ok(result)
                     }
                 ),*
                 // Error handling for unsupported types

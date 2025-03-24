@@ -13,4 +13,5 @@ repository.workspace = true
 arrow = { workspace = true }
 eyre = "0.6.8"
 half = "2.5.0"
+num = "0.4.3"
 chrono = "0.4.39"
