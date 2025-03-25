@@ -1,6 +1,11 @@
-## Dora Node Hub
+# Dora Node Hub
 
 This hub contains useful pre-built nodes for Dora.
+
+
+
+
+# Python
 
 ## Add a new python node
 
@@ -29,7 +34,7 @@ uv add numpy # for example
 
 - Create a PR and let the CI/CD run test on it 🙋
 
-# Structure
+## Structure
 
 The structure of the node hub is as follows (please use the same structure if you need to add a new node):
 
@@ -73,7 +78,7 @@ dependencies = [
 
 Finally, the README.md file should explicit all inputs/outputs of the node and how to configure it in the YAML file.
 
-# Example
+## Example
 
 ```toml
 [project]
@@ -99,7 +104,7 @@ opencv-plot = "opencv_plot.main:main"
 
 ```
 ## Adding git dependency
-- If a git repository is added as submodule. Proper path should be added in `pyproject.toml` inorder to make sure that linting and testing are exempted for that dependency. 
+- If a git repository is added as submodule. Proper path should be added in `pyproject.toml` inorder to make sure that linting and testing are exempted for that dependency.
 - A very good example of how this can be done is as follows
 
 Correct approach:
@@ -118,8 +123,52 @@ exclude = ["dora-magma/dora_magma/Magma"]
 [tool.black]
 extend.exclude = "dora_magma/Magma"
 ```
-##### Note: 
-- `dora-magma` is root folder of the node. 
+##### Note:
+- `dora-magma` is root folder of the node.
+
+# Rust
+
+## Add a new rust node
+
+```bash
+cd node-hub
+dora new your-node-name --lang rust --kind node
+cd ./your-node-name
+```
+
+## Steps Before Building
+
+- Before building the node, make sure to add your node to the workspace members list in the root `Cargo.toml` file:
+
+```
+[workspace]
+members = [
+...
+"node-hub/your-node-name"
+]
+```
+
+- Also change the `Cargo.toml` file in your node to use the workspace version of dora-node-api:
+
+```
+[dependencies]
+dora-node-api = { workspace = true }
+```
+
+## Structure
+
+The structure of the node hub for Rust is as follows (please use the same structure if you need to add a new node):
+
+```
+node-hub/
+└── your-node/
+    ├── Cargo.toml
+    ├── README.md
+    └── src/
+           └── main.rs
+```
+
+The README.md file should explicit all inputs/outputs of the node and how to configure it in the YAML file.
 
 ## License
 
