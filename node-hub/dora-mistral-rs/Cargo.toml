@@ -9,7 +9,6 @@ edition = "2021"
 cuda = ["mistralrs/cuda"]
 cudnn = ["mistralrs/cudnn"]
 flash-attn = ["cuda", "mistralrs/flash-attn"]
-accelerate = ["mistralrs/accelerate"]
 
 [dependencies]
 dora-node-api = { workspace = true }
@@ -23,6 +22,4 @@ mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features =
 ] }
 
 [target.'cfg( target_os = "linux" )'.dependencies]
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features = [
-    "accelerate",
-] }
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
