@@ -1,5 +1,12 @@
-name: 
+name: MLX Dora Model CI
 
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 
 jobs:
