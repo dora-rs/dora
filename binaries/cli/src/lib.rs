@@ -240,6 +240,20 @@ enum Command {
         #[clap(long)]
         quiet: bool,
     },
+
+    Self_ {
+        #[clap(subcommand)]
+        command: SelfSubCommand,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum SelfSubCommand {
+    Update {
+        /// Only check for updates without installing
+        #[clap(long)]
+        check_only: bool,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -538,6 +552,61 @@ fn run(args: Args) -> eyre::Result<()> {
             .context("failed to run dora-daemon")?
         }
         Command::Runtime => dora_runtime::main().context("Failed to run dora-runtime")?,
+        Command::Self_ { command } => match command {
+            SelfSubCommand::Update { check_only } => {
+                println!("Checking for updates...");
+
+                #[cfg(target_os = "linux")]
+                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+                #[cfg(target_os = "macos")]
+                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+                #[cfg(target_os = "windows")]
+                let bin_path_in_archive = String::from("dora.exe");
+
+                let status = self_update::backends::github::Update::configure()
+                    .repo_owner("dora-rs")
+                    .repo_name("dora")
+                    .bin_path_in_archive(&bin_path_in_archive)
+                    .bin_name("dora")
+                    .show_download_progress(true)
+                    .current_version(env!("CARGO_PKG_VERSION"))
+                    .build()?;
+
+                if check_only {
+                    // Only check if an update is available
+                    match status.get_latest_release() {
+                        Ok(release) => {
+                            let current_version = self_update::cargo_crate_version!();
+                            if current_version != release.version {
+                                println!(
+                                    "An update is available: {}. Run 'dora self update' to update",
+                                    release.version
+                                );
+                            } else {
+                                println!(
+                                    "Dora CLI is already at the latest version: {}",
+                                    current_version
+                                );
+                            }
+                        }
+                        Err(e) => println!("Failed to check for updates: {}", e),
+                    }
+                } else {
+                    // Perform the actual update
+                    match status.update() {
+                        Ok(update_status) => match update_status {
+                            self_update::Status::UpToDate(version) => {
+                                println!("Dora CLI is already at the latest version: {}", version);
+                            }
+                            self_update::Status::Updated(version) => {
+                                println!("Successfully updated Dora CLI to version: {}", version);
+                            }
+                        },
+                        Err(e) => println!("Failed to update: {}", e),
+                    }
+                }
+            }
+        },
     };
 
     Ok(())
