@@ -326,7 +326,8 @@ fn run(args: Args) -> eyre::Result<()> {
                 .context("failed to set up tracing subscriber")?;
         }
         Command::Run { .. } => {
-            set_up_tracing_opts("run", Some("info"), None)
+            let log_level = std::env::var("RUST_LOG").ok().or(Some("info".to_string()));
+            set_up_tracing_opts("run", log_level.as_deref(), None)
                 .context("failed to set up tracing subscriber")?;
         }
         _ => {
