@@ -19,6 +19,7 @@ eyre = "0.6.8"
 tokio = { version = "1.24.2", features = ["rt"] }
 rerun = { version = "0.22.0", features = ["web_viewer", "image"] }
 ndarray = "0.15.6"
+chrono = "=0.4.39"
 k = "0.32"
 pyo3 = { workspace = true, features = [
     "extension-module",
