@@ -50,6 +50,12 @@ tabwriter = "1.4.0"
 log = { version = "0.4.21", features = ["serde"] }
 colored = "2.1.0"
 env_logger = "0.11.3"
+self_update = { version = "0.27.0", features = [
+    "rustls",
+    "archive-zip",
+    "archive-tar",
+    "compression-flate2",
+], default-features = false }
 pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
@@ -60,3 +66,7 @@ pyo3 = { workspace = true, features = [
 name = "dora_cli"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
+
+[package.metadata.dist]
+# Enable dora-cli binary to be distributed
+dist = true

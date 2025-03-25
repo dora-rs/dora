@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="husky">
+    <compiler angle="radian" coordinate="local" inertiafromgeom="true" meshdir="meshes"/>
+    
+    <default>
+        <joint armature="1" damping="1" limited="false"/>
+        <geom contype="1" conaffinity="1" condim="3" friction="1.0 0.0 0.0"/>
+    </default>
+
+    <option timestep="0.01" gravity="0 0 -9.81"/>
+    
+    <asset>
+        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+        <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="512" height="512"/>
+        <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+        <material name="Black" rgba="0.1 0.1 0.1 1.0"/>
+        <material name="DarkGrey" rgba="0.3 0.3 0.3 1.0"/>
+        <material name="Yellow" rgba="0.8 0.8 0.0 1.0"/>
+        
+        <mesh name="base_link" file="base_link.stl"/>
+        <mesh name="wheel" file="wheel.stl"/>
+        <mesh name="top_plate" file="top_plate.stl"/>
+        <mesh name="user_rail" file="user_rail.stl"/>
+        <mesh name="bumper" file="bumper.stl"/>
+    </asset>
+
+    <worldbody>
+        <light name="sunlight" 
+               directional="true"
+               pos="0 0 100" 
+               dir="0 0 -1" 
+               diffuse="0.8 0.8 0.8" 
+               specular="0.2 0.2 0.2" 
+               ambient="0.4 0.4 0.4"/>
+        <camera name="tracking" mode="trackcom" pos="0 -3 1" xyaxes="1 0 0 0 0 1"/>
+        <geom name="floor" type="plane" size="10 10 0.1" material="grid"/>
+        
+        <!-- Base footprint -->
+        <body name="base_footprint" pos="0 0 0">
+            <joint name="free" type="free"/>
+            
+            <!-- Base link -->
+            <body name="base_link" pos="0 0 0.14493">
+                <geom type="mesh" mesh="base_link" material="Yellow"/>
+
+
+                <!-- Front Left Wheel -->
+                <body name="front_left_wheel_link" pos="0.256 0.2854 0.03282">
+                    <joint name="wheel_fl" type="hinge" axis="0 1 0" damping="0.1"/>
+                    <geom type="mesh" mesh="wheel" material="DarkGrey"/>
+                </body>
+
+                <!-- Front Right Wheel -->
+                <body name="front_right_wheel_link" pos="0.256 -0.2854 0.03282">
+                    <joint name="wheel_fr" type="hinge" axis="0 1 0" damping="0.1"/>
+                    <geom type="mesh" mesh="wheel" material="DarkGrey"/>
+                </body>
+
+                <!-- Rear Left Wheel -->
+                <body name="rear_left_wheel_link" pos="-0.256 0.2854 0.03282">
+                    <joint name="wheel_bl" type="hinge" axis="0 1 0" damping="0.1"/>
+                    <geom type="mesh" mesh="wheel" material="DarkGrey"/>
+                </body>
+
+                <!-- Rear Right Wheel -->
+                <body name="rear_right_wheel_link" pos="-0.256 -0.2854 0.03282">
+                    <joint name="wheel_br" type="hinge" axis="0 1 0" damping="0.1"/>
+                    <geom type="mesh" mesh="wheel" material="DarkGrey"/>
+                </body>
+
+                <!-- Top Plate -->
+                <body name="top_plate_link" pos="0 0 0.245">
+                    <geom type="mesh" mesh="top_plate" material="Yellow"/>
+                </body>
+
+                <!-- User Rail -->
+                <body name="user_rail_link" pos="0.272 0 0.245">
+                    <geom type="mesh" mesh="user_rail" material="DarkGrey"/>
+                </body>
+
+                <!-- Front Bumper -->
+                <body name="front_bumper_link" pos="0.48 0 0.091">
+                    <geom type="mesh" mesh="bumper" material="DarkGrey"/>
+                </body>
+
+                <!-- Rear Bumper -->
+                <body name="rear_bumper_link" pos="-0.48 0 0.091">
+                    <geom type="mesh" mesh="bumper" material="DarkGrey" euler="0 0 3.14159"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+
+    <actuator>
+        <motor joint="wheel_fl" name="fl_motor" gear="40"/>
+        <motor joint="wheel_fr" name="fr_motor" gear="40"/>
+        <motor joint="wheel_bl" name="bl_motor" gear="40"/>
+        <motor joint="wheel_br" name="br_motor" gear="40"/>
+    </actuator>
+</mujoco>
