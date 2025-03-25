@@ -35,6 +35,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c71b1793ee61086797f5c80b6efa2b8ffa6d5dd703f118545808a7f2e27f7046"
 
 [[package]]
+name = "accelerate-src"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "415ed64958754dbe991900f3940677e6a7eefb4d7367afd70d642677b0c7d19d"
+
+[[package]]
 name = "accesskit"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -322,6 +328,9 @@ name = "anyhow"
 version = "1.0.97"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
+dependencies = [
+ "backtrace",
+]
 
 [[package]]
 name = "approx"
@@ -1450,6 +1459,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen_cuda"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f8489af5b7d17a81bffe37e0f4d6e1e4de87c87329d05447f22c35d95a1227d"
+dependencies = [
+ "glob",
+ "num_cpus",
+ "rayon",
+]
+
+[[package]]
+name = "bindgen_cuda"
+version = "0.1.6"
+source = "git+https://github.com/guoqingbao/bindgen_cuda.git#fb7ed75f3901b146aa1ba460baaeed5b494f2e0d"
+dependencies = [
+ "glob",
+ "num_cpus",
+ "rayon",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1707,11 +1737,17 @@ name = "candle-core"
 version = "0.8.0"
 source = "git+https://github.com/EricLBuehler/candle.git?rev=1f137cd4#1f137cd4f99ee76797cc4a6969802d85e041dd54"
 dependencies = [
+ "accelerate-src",
  "byteorder",
+ "candle-kernels",
+ "candle-metal-kernels",
+ "cudarc",
  "float8",
  "gemm",
  "half",
+ "libc",
  "memmap2 0.9.5",
+ "metal 0.27.0",
  "num-traits",
  "num_cpus",
  "rand 0.9.0",
@@ -1724,12 +1760,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-flash-attn"
+version = "0.8.0"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=1f137cd4#1f137cd4f99ee76797cc4a6969802d85e041dd54"
+dependencies = [
+ "anyhow",
+ "bindgen_cuda 0.1.5",
+ "candle-core",
+ "half",
+]
+
+[[package]]
+name = "candle-kernels"
+version = "0.8.0"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=1f137cd4#1f137cd4f99ee76797cc4a6969802d85e041dd54"
+dependencies = [
+ "bindgen_cuda 0.1.5",
+]
+
+[[package]]
+name = "candle-metal-kernels"
+version = "0.8.0"
+source = "git+https://github.com/EricLBuehler/candle.git?rev=1f137cd4#1f137cd4f99ee76797cc4a6969802d85e041dd54"
+dependencies = [
+ "metal 0.27.0",
+ "once_cell",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "candle-nn"
 version = "0.8.0"
 source = "git+https://github.com/EricLBuehler/candle.git?rev=1f137cd4#1f137cd4f99ee76797cc4a6969802d85e041dd54"
 dependencies = [
+ "accelerate-src",
  "candle-core",
+ "candle-metal-kernels",
  "half",
+ "metal 0.27.0",
  "num-traits",
  "rayon",
  "safetensors",
@@ -2434,6 +2503,16 @@ checksum = "90eeab0aa92f3f9b4e87f258c72b139c207d251f9cbc1080a0086b86a8870dd3"
 dependencies = [
  "nix 0.29.0",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.13.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "486c221362668c63a1636cfa51463b09574433b39029326cff40864b3ba12b6e"
+dependencies = [
+ "half",
+ "libloading 0.8.6",
 ]
 
 [[package]]
@@ -4090,6 +4169,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dee36245af1dccf978103fcd393582806db2a1d0bcd2f38c663cdbb4a363a01c"
 dependencies = [
+ "cudarc",
  "half",
  "num-traits",
  "rand 0.9.0",
@@ -6396,6 +6476,21 @@ dependencies = [
 
 [[package]]
 name = "metal"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c43f73953f8cbe511f021b58f18c3ce1c3d1ae13fe953293e13345bf83217f25"
+dependencies = [
+ "bitflags 2.9.0",
+ "block",
+ "core-graphics-types",
+ "foreign-types",
+ "log",
+ "objc",
+ "paste",
+]
+
+[[package]]
+name = "metal"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f569fb946490b5743ad69813cb19629130ce9374034abe31614a36402d18f99e"
@@ -6591,9 +6686,11 @@ dependencies = [
  "as-any",
  "async-trait",
  "base64 0.22.1",
+ "bindgen_cuda 0.1.5",
  "bytemuck",
  "bytemuck_derive",
  "candle-core",
+ "candle-flash-attn",
  "candle-nn",
  "cfgrammar",
  "chrono",
@@ -6615,10 +6712,13 @@ dependencies = [
  "itertools 0.13.0",
  "llguidance",
  "lrtable",
+ "metal 0.27.0",
  "minijinja",
  "minijinja-contrib",
+ "mistralrs-paged-attn",
  "mistralrs-quant",
  "mistralrs-vision",
+ "objc",
  "once_cell",
  "radix_trie",
  "rand 0.9.0",
@@ -6652,10 +6752,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mistralrs-paged-attn"
+version = "0.5.0"
+source = "git+https://github.com/EricLBuehler/mistral.rs.git#7c086a90acbcff1355ed0079fb019c021678b408"
+dependencies = [
+ "anyhow",
+ "bindgen_cuda 0.1.6",
+ "candle-core",
+ "float8",
+ "half",
+ "metal 0.27.0",
+ "once_cell",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "mistralrs-quant"
 version = "0.5.0"
 source = "git+https://github.com/EricLBuehler/mistral.rs.git#8069f9072500398dae419d896356a557ad890cfa"
 dependencies = [
+ "bindgen_cuda 0.1.5",
  "byteorder",
  "candle-core",
  "candle-nn",
@@ -6664,6 +6780,7 @@ dependencies = [
  "hf-hub",
  "lazy_static",
  "memmap2 0.9.5",
+ "metal 0.27.0",
  "once_cell",
  "paste",
  "rayon",
@@ -7269,6 +7386,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
 dependencies = [
  "malloc_buf",
+ "objc_exception",
 ]
 
 [[package]]
@@ -7514,6 +7632,15 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc_exception"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad970fb455818ad6cba4c122ad012fae53ae8b4795f86378bce65e4f6bab2ca4"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -14293,7 +14420,7 @@ dependencies = [
  "libc",
  "libloading 0.8.6",
  "log",
- "metal",
+ "metal 0.31.0",
  "naga",
  "ndk-sys 0.5.0+25.2.9519653",
  "objc",
