@@ -247,7 +247,15 @@ async fn build_cxx_node(
         clang.arg("-l").arg("c");
         clang.arg("-l").arg("m");
     }
-    clang.args(args);
+    for arg in args {
+        if arg.contains(" ") {
+            for part in arg.split_whitespace() {
+                clang.arg(part);
+            }
+        } else {
+            clang.arg(arg);
+        }
+    }
     clang.arg("-L").arg(root.join("target").join("debug"));
     clang
         .arg("--output")
@@ -288,7 +296,15 @@ async fn build_cxx_operator(
 
     let mut link = tokio::process::Command::new("clang++");
     link.arg("-shared").args(&object_file_paths);
-    link.args(link_args);
+    for arg in link_args {
+        if arg.contains(" ") {
+            for part in arg.split_whitespace() {
+                link.arg(part);
+            }
+        } else {
+            link.arg(arg);
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         link.arg("-ladvapi32");
