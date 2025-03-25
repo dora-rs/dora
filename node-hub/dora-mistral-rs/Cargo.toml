@@ -15,11 +15,11 @@ dora-node-api = { workspace = true }
 tokio = { version = "1.36.0", features = ["full"] }
 eyre = "0.6.8"
 
-[target.'cfg( target_os = "macos" )'.dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
 mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features = [
     "metal",
     "accelerate",
 ] }
 
-[target.'cfg( target_os = "linux" )'.dependencies]
+[target.'cfg(not(target_os = "macos"))'.dependencies]
 mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
