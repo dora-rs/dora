@@ -127,23 +127,23 @@ jobs:
       - name: "C++ Dataflow example"
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
-       - name: "Install Arrow C++ Library"
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            # For Ubuntu
-            sudo apt-get update
-            sudo apt-get install -y -V ca-certificates lsb-release wget
-            wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-            sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-            sudo apt-get update
-            sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            # For macOS
-            brew update
-            brew install apache-arrow
-          fi
+     - name: "Install Arrow C++ Library"
+      timeout-minutes: 10
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          # For Ubuntu
+          sudo apt-get update
+          sudo apt-get install -y -V ca-certificates lsb-release wget
+          wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+          sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+          sudo apt-get update
+          sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          # For macOS
+          brew update
+          brew install apache-arrow
+        fi
       - name: "C++ Dataflow2 example"
         timeout-minutes: 15
         run : cargo run --example cxx-dataflow2
