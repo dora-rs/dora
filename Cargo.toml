@@ -147,6 +147,10 @@ name = "cxx-dataflow"
 path = "examples/c++-dataflow/run.rs"
 
 [[example]]
+name = "cxx-arrow-dataflow"
+path = "examples/c++-arrow-dataflow/run.rs"
+
+[[example]]
 name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
 
