@@ -1,0 +1,15 @@
+[package]
+name = "dora-av1-encoder"
+edition = "2021"
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rav1e = { version = "0.7.1", features = ["serialize"] }
+dora-node-api = { workspace = true, features = ["tracing"] }
+eyre = "0.6.8"

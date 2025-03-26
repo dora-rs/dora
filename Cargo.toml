@@ -37,6 +37,8 @@ members = [
     "node-hub/dora-kit-car",
     "node-hub/dora-object-to-pose",
     "node-hub/dora-mistral-rs",
+    "node-hub/dora-av1-encoder",
+    "node-hub/dora-dav1d",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
