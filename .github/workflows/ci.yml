@@ -146,7 +146,7 @@ jobs:
           fi
       - name: "C++ Dataflow2 example"
         timeout-minutes: 15
-        run: cargo run --example cxx-dataflow2
+        run: cargo run --example cxx-arrow-dataflow
       - name: "Cmake example"
         if: runner.os == 'Linux'
         timeout-minutes: 30
