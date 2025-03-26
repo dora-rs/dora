@@ -4,12 +4,12 @@ import os
 
 import gradio as gr
 import torch
-from transformers import CoTrackerModel
+from transformers import AutoModel
 
 MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", "facebook/cotracker")
 
 # Load the CoTracker model
-model = CoTrackerModel.from_pretrained(MODEL_NAME_OR_PATH)
+model = AutoModel.from_pretrained(MODEL_NAME_OR_PATH)
 
 def track_points(video_input, pixel_coordinates):
     """Tracks points in a video using the CoTracker model.

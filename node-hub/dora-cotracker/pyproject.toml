@@ -1,7 +1,7 @@
 [project]
 name = "dora-cotracker"
 version = "0.0.0"
-authors = [{ name = "Your Name", email = "your.email@example.com" }]
+authors = [{ name = "krishnadubey1008", email = "krishnadubey692004@gmail.com" }]
 description = "DORA node for CoTracker model integration"
 license = { text = "MIT" }
 readme = "README.md"
@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
   "dora-rs>=0.3.9",
   "torch==2.6.0",
-  "transformers==4.48.2",
+  "transformers>=4.0.0",
   "gradio==2.2.13",
 ]
 
