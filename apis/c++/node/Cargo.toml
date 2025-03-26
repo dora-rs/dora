@@ -32,6 +32,7 @@ dora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.2" }
 serde = { version = "1.0.164", features = ["derive"], optional = true }
 serde-big-array = { version = "0.5.1", optional = true }
+arrow = { workspace = true, features = ["ffi"] }
 
 [build-dependencies]
 cxx-build = "1.0.73"
