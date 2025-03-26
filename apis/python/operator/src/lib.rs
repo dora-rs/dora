@@ -19,14 +19,13 @@ use pyo3::{
 /// Dora Event
 pub struct PyEvent {
     pub event: MergedEvent<PyObject>,
-    pub _cleanup: Option<NodeCleanupHandle>,
 }
 
 /// Keeps the dora node alive until all event objects have been dropped.
 #[derive(Clone)]
 #[pyclass]
 pub struct NodeCleanupHandle {
-    pub _handles: Arc<(CleanupHandle<DoraNode>, CleanupHandle<EventStream>)>,
+    pub _handles: Arc<CleanupHandle<DoraNode>>,
 }
 
 /// Owned type with delayed cleanup (using `handle` method).
@@ -137,17 +136,6 @@ impl PyEvent {
             MergedEvent::External(event) => {
                 pydict.insert("value", event.clone_ref(py));
             }
-        }
-
-        if let Some(cleanup) = self._cleanup.clone() {
-            pydict.insert(
-                "_cleanup",
-                cleanup
-                    .into_pyobject(py)
-                    .context("failed to convert cleanup handle to pyobject")?
-                    .into_any()
-                    .unbind(),
-            );
         }
 
         Ok(pydict
