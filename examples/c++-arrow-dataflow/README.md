@@ -29,5 +29,5 @@ fi
 
 ## Compile and Run
 
-To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all required build steps and then starts the dataflow. Use the following command to run it: `cargo run --example cxx-dataflow2`. For manual build, check build system for
+To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all required build steps and then starts the dataflow. Use the following command to run it: `cargo run --example cxx-arow-dataflow`. For manual build, check build system for
 `cxx-dataflow` example.
