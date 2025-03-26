@@ -1,0 +1,53 @@
+nodes:
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+      ENCODING: yuv420
+
+  - id: av
+    path: /home/peter/Documents/work/dora/target/release/dora-av1-encoder
+    build: cargo build -p dora-av1-encoder --release
+    inputs:
+      image: camera/image
+    outputs:
+      - frame
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: dav1d
+    path: /home/peter/Documents/work/dora/target/release/dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    inputs:
+      image: av/frame
+    outputs:
+      - frame
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: plot
+    build: pip install -e ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image: dav1d/frame
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: plot2
+    build: pip install -e ../../node-hub/opencv-plot
+    path: opencv-plot
+    inputs:
+      image: camera/image
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
