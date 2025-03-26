@@ -1,11 +1,10 @@
 """TODO: Add docstring."""
 
 import os
-from pathlib import Path
 
+import gradio as gr
 import torch
 from transformers import CoTrackerModel
-import gradio as gr
 
 MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", "facebook/cotracker")
 
@@ -21,22 +20,20 @@ def track_points(video_input, pixel_coordinates):
     
     Returns:
         The tracked points.
+
     """
     # Create query tensor from pixel coordinates
     queries = torch.tensor(pixel_coordinates, dtype=torch.float32).unsqueeze(0)
     add_support_grid = False
 
-    # Run the model
-    outputs = model(video_chunk=video_input, is_first_step=True, grid_size=0, queries=queries, add_support_grid=add_support_grid)
-    return outputs
+    return model(video_chunk=video_input, is_first_step=True, grid_size=0, queries=queries, add_support_grid=add_support_grid)
 
 def gradio_interface(video_input, pixel_coordinates):
     """Gradio interface function for tracking points in a video."""
-    result = track_points(video_input, pixel_coordinates)
-    return result
+    return track_points(video_input, pixel_coordinates)
 
 def main():
-    """Main function to launch the Gradio interface."""
+    """Launch the Gradio interface."""
     iface = gr.Interface(
         fn=gradio_interface,
         inputs=["video", "text"],
