@@ -1,4 +1,4 @@
-import os
+"""TODO: Add docstring."""
 
 import gradio as gr
 import torch
@@ -18,6 +18,7 @@ def track_points(video_input, pixel_coordinates):
     
     Returns:
         The tracked points.
+
     """
     # Initialize online processing
     cotracker(video_chunk=video_input, is_first_step=True, grid_size=0)
