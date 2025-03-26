@@ -1,15 +1,13 @@
-"""TODO: Add docstring."""
-
 import os
 
 import gradio as gr
 import torch
-from transformers import AutoModel
 
-MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", "facebook/cotracker")
+# Set the device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Load the CoTracker model
-model = AutoModel.from_pretrained(MODEL_NAME_OR_PATH)
+# Load the CoTracker model from torch.hub
+cotracker = torch.hub.load("facebookresearch/co-tracker", "cotracker2_online").to(device)
 
 def track_points(video_input, pixel_coordinates):
     """Tracks points in a video using the CoTracker model.
@@ -20,13 +18,19 @@ def track_points(video_input, pixel_coordinates):
     
     Returns:
         The tracked points.
-
     """
-    # Create query tensor from pixel coordinates
-    queries = torch.tensor(pixel_coordinates, dtype=torch.float32).unsqueeze(0)
-    add_support_grid = False
+    # Initialize online processing
+    cotracker(video_chunk=video_input, is_first_step=True, grid_size=0)
 
-    return model(video_chunk=video_input, is_first_step=True, grid_size=0, queries=queries, add_support_grid=add_support_grid)
+    # Process the video and track points
+    tracked_points = []
+    for ind in range(0, video_input.shape[1] - cotracker.step, cotracker.step):
+        pred_tracks, pred_visibility = cotracker(
+            video_chunk=video_input[:, ind : ind + cotracker.step * 2]
+        )
+        tracked_points.append(pred_tracks.cpu().numpy())
+    
+    return tracked_points
 
 def gradio_interface(video_input, pixel_coordinates):
     """Gradio interface function for tracking points in a video."""
