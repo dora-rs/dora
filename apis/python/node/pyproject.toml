@@ -12,13 +12,13 @@ readme = "README.md"
 dependencies = ['pyarrow']
 
 [dependency-groups]
-dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+dev = ["pytest >=7.1.1", "ruff >=0.9.1"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+    "D",  # pydocstyle
+    "UP",
 ]
