@@ -1,7 +1,8 @@
 """TODO: Add docstring."""
 
-import gradio as gr
+import pyarrow as pa
 import torch
+from dora import Node
 
 # Set the device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,14 +39,18 @@ def gradio_interface(video_input, pixel_coordinates):
     return track_points(video_input, pixel_coordinates)
 
 def main():
-    """Launch the Gradio interface."""
-    iface = gr.Interface(
-        fn=gradio_interface,
-        inputs=["video", "text"],
-        outputs="text",
-        description="Track points using facebook co-tracker model"
-    )
-    iface.launch()
+    """Launch the DORA node and Gradio interface."""
+    node = Node()
+    for event in node:
+        if event["type"] == "INPUT":
+            video_input = event["value"]
+            pixel_coordinates = event["metadata"]["pixel_coordinates"]
+            tracked_points = track_points(video_input, pixel_coordinates)
+            node.send_output(
+                "tracked_points",
+                pa.array([tracked_points]),
+                event["metadata"]
+            )
 
 if __name__ == "__main__":
     main()
