@@ -13,3 +13,4 @@ repository.workspace = true
 rav1e = { version = "0.7.1", features = ["serialize"] }
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
+log = "0.4"

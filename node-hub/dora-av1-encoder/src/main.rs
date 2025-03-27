@@ -13,6 +13,7 @@ use dora_node_api::arrow::array::UInt8Array;
 use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event, IntoArrow, MetadataParameters, Parameter};
 use eyre::{Context as EyreContext, Result};
+use log::warn;
 // Encode the same tiny blank frame 30 times
 use rav1e::config::RateControlConfig;
 use rav1e::config::SpeedSettings;
@@ -50,7 +51,7 @@ fn bgr_to_yuv(bgr_data: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec<u
     (y_plane, u_plane, v_plane)
 }
 
-fn get_yuv_planes(buffer: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+fn get_yuv_planes(buffer: &[u8], width: usize, height: usize) -> (&[u8], &[u8], &[u8]) {
     // Calculate sizes of Y, U, and V planes for YUV420 format
     let y_size = width * height; // Y has full resolution
     let uv_width = width / 2; // U and V are subsampled by 2 in both dimensions
@@ -63,9 +64,9 @@ fn get_yuv_planes(buffer: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec
     // }
 
     // Extract Y, U, and V planes
-    let y_plane = buffer[0..y_size].to_vec();
-    let u_plane = buffer[y_size..y_size + uv_size].to_vec();
-    let v_plane = buffer[y_size + uv_size..].to_vec();
+    let y_plane = &buffer[0..y_size]; //.to_vec();
+    let u_plane = &buffer[y_size..y_size + uv_size]; //.to_vec();
+    let v_plane = &buffer[y_size + uv_size..]; //.to_vec();
 
     (y_plane, u_plane, v_plane)
 }
@@ -82,7 +83,7 @@ fn main() -> Result<()> {
     let enc = EncoderConfig {
         width,
         height,
-        speed_settings: SpeedSettings::from_preset(8),
+        speed_settings: SpeedSettings::from_preset(10),
         low_latency: true,
         ..Default::default()
     };
@@ -91,6 +92,7 @@ fn main() -> Result<()> {
         //    .with_rate_control(RateControlConfig::new().with_emit_data(true))
         .with_encoder_config(enc.clone())
         .with_threads(16);
+    cfg.validate()?;
 
     let mut ctx: Context<u16> = cfg.new_context().unwrap();
 
@@ -125,8 +127,58 @@ fn main() -> Result<()> {
                     //un
                 } else if encoding == "yuv420" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    let buffer: Vec<u8> = buffer.values().to_vec();
-                    buffer
+                    let buffer = buffer.values(); //.to_vec();
+
+                    let (y, u, v) = get_yuv_planes(buffer, width, height);
+                    let mut f = ctx.new_frame();
+
+                    let xdec = f.planes[0].cfg.xdec;
+                    let stride = (enc.width + xdec) >> xdec;
+                    f.planes[0].copy_from_raw_u8(&y, stride, 1);
+                    let xdec = f.planes[1].cfg.xdec;
+                    let stride = (enc.width + xdec) >> xdec;
+                    f.planes[1].copy_from_raw_u8(&u, stride, 1);
+                    let xdec = f.planes[2].cfg.xdec;
+                    let stride = (enc.width + xdec) >> xdec;
+                    f.planes[2].copy_from_raw_u8(&v, stride, 1);
+
+                    match ctx.send_frame(f) {
+                        Ok(_) => {}
+                        Err(e) => match e {
+                            EncoderStatus::EnoughData => {
+                                warn!("Unable to send frame ");
+                            }
+                            _ => {
+                                warn!("Unable to send frame ");
+                            }
+                        },
+                    }
+                    match ctx.receive_packet() {
+                        Ok(pkt) => {
+                            println!("Time to encode: {:?}", time.elapsed());
+                            time = std::time::Instant::now();
+                            let data = pkt.data;
+                            println!("frame compression: {:#?}", width * height * 3 / data.len());
+                            println!("frame size: {:#?}", data.len());
+                            let arrow = data.into_arrow();
+                            node.send_output(
+                                DataId::from("frame".to_owned()),
+                                MetadataParameters::default(),
+                                arrow,
+                            )
+                            .context("could not send output")
+                            .unwrap();
+                        }
+                        Err(e) => match e {
+                            EncoderStatus::LimitReached => {}
+                            EncoderStatus::Encoded => {}
+                            EncoderStatus::NeedMoreData => {}
+                            _ => {
+                                panic!("Unable to receive packet",);
+                            }
+                        },
+                    }
+                    vec![]
                 } else if encoding == "rgb8" {
                     unimplemented!("We haven't worked on additional encodings.");
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
@@ -149,68 +201,6 @@ fn main() -> Result<()> {
             _ => break,
         };
         //let (y, u, v) = bgr_to_yuv(buffer, 640 as usize, 480 as usize);
-
-        let (y, u, v) = get_yuv_planes(buffer, width, height);
-        let mut f = ctx.new_frame();
-
-        let xdec = f.planes[0].cfg.xdec;
-        let stride = (enc.width + xdec) >> xdec;
-        f.planes[0].copy_from_raw_u8(&y, stride, 1);
-        let xdec = f.planes[1].cfg.xdec;
-        let stride = (enc.width + xdec) >> xdec;
-        f.planes[1].copy_from_raw_u8(&u, stride, 1);
-        let xdec = f.planes[2].cfg.xdec;
-        let stride = (enc.width + xdec) >> xdec;
-        f.planes[2].copy_from_raw_u8(&v, stride, 1);
-
-        match ctx.send_frame(f) {
-            Ok(_) => {}
-            Err(e) => match e {
-                EncoderStatus::EnoughData => {
-                    println!("Unable to append frame to the internal queue");
-                    panic!("Unable to send frame ");
-                }
-                _ => {
-                    panic!("Unable to send frame ");
-                }
-            },
-        }
-        println!("Frame sent to encoder");
-        for _ in 0..1 {
-            match ctx.receive_packet() {
-                Ok(pkt) => {
-                    println!("Time to encode: {:?}", time.elapsed());
-                    time = std::time::Instant::now();
-                    let data = pkt.data;
-                    println!("frame compression: {:#?}", width * height * 3 / data.len());
-                    println!("frame size: {:#?}", data.len());
-                    let arrow = data.into_arrow();
-                    node.send_output(
-                        DataId::from("frame".to_owned()),
-                        MetadataParameters::default(),
-                        arrow,
-                    )
-                    .context("could not send output")
-                    .unwrap();
-
-                    break;
-                }
-                Err(e) => match e {
-                    EncoderStatus::LimitReached => {
-                        break;
-                    }
-                    EncoderStatus::Encoded => {
-                        break;
-                    }
-                    EncoderStatus::NeedMoreData => {
-                        break;
-                    }
-                    _ => {
-                        panic!("Unable to receive packet",);
-                    }
-                },
-            }
-        }
     }
 
     Ok(())
