@@ -151,8 +151,6 @@ fn main() -> Result<()> {
                     match ctx.receive_packet() {
                         Ok(pkt) => {
                             let data = pkt.data;
-                            println!("Packet data: {:?}", data.len());
-                            println!("Compression: {:?}", height * width * 3 / data.len());
                             let arrow = data.into_arrow();
                             node.send_output(
                                 DataId::from("frame".to_owned()),
