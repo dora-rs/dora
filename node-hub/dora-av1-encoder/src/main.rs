@@ -7,15 +7,12 @@
 // Media Patent License 1.0 was not distributed with this source code in the
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
-use std::time::Duration;
-
 use dora_node_api::arrow::array::UInt8Array;
 use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event, IntoArrow, MetadataParameters, Parameter};
 use eyre::{Context as EyreContext, Result};
 use log::warn;
 // Encode the same tiny blank frame 30 times
-use rav1e::config::RateControlConfig;
 use rav1e::config::SpeedSettings;
 
 use rav1e::*;
@@ -90,18 +87,14 @@ fn main() -> Result<()> {
 
     let cfg = Config::new()
         //    .with_rate_control(RateControlConfig::new().with_emit_data(true))
-        .with_encoder_config(enc.clone())
-        .with_threads(16);
+        .with_encoder_config(enc.clone()); //.with_threads(16);
     cfg.validate()?;
-
-    let mut ctx: Context<u16> = cfg.new_context().unwrap();
 
     let (mut node, mut events) =
         DoraNode::init_from_env().context("Could not initialize dora node")?;
 
-    let mut time = std::time::Instant::now();
     loop {
-        let buffer = match events.recv() {
+        let _buffer = match events.recv() {
             Some(Event::Input { id, data, metadata }) => {
                 if let Some(Parameter::Integer(h)) = metadata.parameters.get("height") {
                     height = *h as usize;
@@ -130,6 +123,7 @@ fn main() -> Result<()> {
                     let buffer = buffer.values(); //.to_vec();
 
                     let (y, u, v) = get_yuv_planes(buffer, width, height);
+                    let mut ctx: Context<u8> = cfg.new_context().unwrap();
                     let mut f = ctx.new_frame();
 
                     let xdec = f.planes[0].cfg.xdec;
@@ -153,13 +147,12 @@ fn main() -> Result<()> {
                             }
                         },
                     }
+                    ctx.flush();
                     match ctx.receive_packet() {
                         Ok(pkt) => {
-                            println!("Time to encode: {:?}", time.elapsed());
-                            time = std::time::Instant::now();
                             let data = pkt.data;
-                            println!("frame compression: {:#?}", width * height * 3 / data.len());
-                            println!("frame size: {:#?}", data.len());
+                            println!("Packet data: {:?}", data.len());
+                            println!("Compression: {:?}", height * width * 3 / data.len());
                             let arrow = data.into_arrow();
                             node.send_output(
                                 DataId::from("frame".to_owned()),
@@ -183,6 +176,7 @@ fn main() -> Result<()> {
                     unimplemented!("We haven't worked on additional encodings.");
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
+                    let mut ctx: Context<u8> = cfg.new_context().unwrap();
                     let mut f = ctx.new_frame();
 
                     for p in &mut f.planes {
@@ -192,15 +186,13 @@ fn main() -> Result<()> {
                     buffer.to_vec()
                 } else {
                     unimplemented!("We haven't worked on additional encodings.");
-                    continue;
                 }
             }
-            Some(Event::Error(e)) => {
+            Some(Event::Error(_e)) => {
                 continue;
             }
             _ => break,
         };
-        //let (y, u, v) = bgr_to_yuv(buffer, 640 as usize, 480 as usize);
     }
 
     Ok(())
