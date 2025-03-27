@@ -6,6 +6,7 @@ use dora_node_api::{
     MetadataParameters,
 };
 use eyre::{Context, Result};
+use log::warn;
 
 fn yuv420_to_bgr(
     y_plane: &[u8],
@@ -44,6 +45,7 @@ fn yuv420_to_bgr(
 fn main() -> Result<()> {
     let mut settings = Settings::new();
     settings.set_n_threads(16);
+    settings.set_max_frame_delay(1);
 
     let height: usize = std::env::var("IMAGE_HEIGHT")
         .unwrap_or_else(|_| "480".to_string())
@@ -57,76 +59,41 @@ fn main() -> Result<()> {
     let mut dec =
         dav1d::Decoder::with_settings(&settings).expect("failed to create decoder instance");
 
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let (mut node, mut events) =
         DoraNode::init_from_env().context("Could not initialize dora node")?;
 
-    let _ = std::thread::spawn(move || {
-        let mut now = std::time::Instant::now();
-        loop {
-            while let Ok(data) = rx.recv_timeout(Duration::from_millis(100)) {
-                match dec.send_data(data, None, None, None) {
-                    Err(e) if e.is_again() => {
-                        panic!("Error sending data to the decoder: {}", e);
-                        if let Ok(p) = dec.get_picture() {
-                            let mut y = p.plane(dav1d::PlanarImageComponent::Y).to_vec();
-                            let mut u = p.plane(dav1d::PlanarImageComponent::U).to_vec();
-                            let mut v = p.plane(dav1d::PlanarImageComponent::V).to_vec();
-                            y.append(&mut u);
-                            y.append(&mut v);
-                            // let rgb = yuv420_to_rgb(&y, &u, &v, 100, 100);
-                            let arrow = y.into_arrow();
-                            let mut metadata = MetadataParameters::default();
-                            metadata.insert(
-                                "width".to_string(),
-                                dora_node_api::Parameter::Integer(640),
-                            );
-                            metadata.insert(
-                                "height".to_string(),
-                                dora_node_api::Parameter::Integer(480),
-                            );
-                            metadata.insert(
-                                "encoding".to_string(),
-                                dora_node_api::Parameter::String("yuv420".to_string()),
-                            );
-                            node.send_output(DataId::from("frame".to_string()), metadata, arrow)
-                                .unwrap();
-                            println!("Time to decode: {:?}", now.elapsed());
-                            now = std::time::Instant::now();
-                        }
-                        // If the decoder did not consume all data, output all
-                        // pending pictures and send pending data to the decoder
-                        // until it is all used up.
-                        //loop {
-                        // handle_pending_pictures(&mut dec, false, &mut node);
+    let mut now = std::time::Instant::now();
+    loop {
+        match events.recv() {
+            Some(Event::Input {
+                id: _,
+                data,
+                metadata: _,
+            }) => {
+                let data = data.as_any().downcast_ref::<UInt8Array>().unwrap();
+                let data = data.values().clone();
 
-                        // match dec.send_pending_data() {
-                        // Err(e) if e.is_again() => continue,
-                        // Err(e) => {
-                        // panic!("Error sending pending data to the decoder: {}", e);
-                        // }
-                        // _ => break,
-                        // }
-                        //}
-                    }
+                // Send packet to the decoder
+
+                match dec.send_data(data, None, None, None) {
                     Err(e) => {
-                        panic!("Error sending data to the decoder: {}", e);
+                        warn!("Error sending data to the decoder: {}", e);
                     }
                     Ok(()) => {
                         if let Ok(p) = dec.get_picture() {
-                            let mut y = p.plane(dav1d::PlanarImageComponent::Y).to_vec();
-                            let mut u = p.plane(dav1d::PlanarImageComponent::U).to_vec();
-                            let mut v = p.plane(dav1d::PlanarImageComponent::V).to_vec();
-                            // u.iter_mut().for_each(|e| {
-                            // if *e < 128 {
-                            // *e = *e + 128
-                            // }
-                            // });
-                            // v.iter_mut().for_each(|e: &mut u8| {
-                            // if *e < 128 {
-                            // *e = *e + 128
-                            // }
-                            // });
+                            let mut y = p.plane(dav1d::PlanarImageComponent::Y); //.to_vec();
+                            let mut u = p.plane(dav1d::PlanarImageComponent::U); //.to_vec();
+                            let mut v = p.plane(dav1d::PlanarImageComponent::V); //.to_vec();
+                                                                                 // u.iter_mut().for_each(|e| {
+                                                                                 // if *e < 128 {
+                                                                                 // *e = *e + 128
+                                                                                 // }
+                                                                                 // });
+                                                                                 // v.iter_mut().for_each(|e: &mut u8| {
+                                                                                 // if *e < 128 {
+                                                                                 // *e = *e + 128
+                                                                                 // }
+                                                                                 // });
 
                             // y.append(&mut u);
                             // y.append(&mut v);
@@ -153,28 +120,11 @@ fn main() -> Result<()> {
                             node.send_output(DataId::from("frame".to_string()), metadata, arrow)
                                 .unwrap();
                             println!("Time to decode: {:?}", now.elapsed());
-                            println!("Delay: {:#?}", dec.get_frame_delay());
 
                             now = std::time::Instant::now();
                         }
                     }
                 }
-            }
-        }
-    });
-    loop {
-        match events.recv() {
-            Some(Event::Input {
-                id: _,
-                data,
-                metadata: _,
-            }) => {
-                let data = data.as_any().downcast_ref::<UInt8Array>().unwrap();
-                let data = data.values().clone();
-
-                // Send packet to the decoder
-
-                tx.try_send(data).unwrap_or_default();
                 // Handle all pending pictures before sending the next data.
                 // handle_pending_pictures(&mut dec, false, &mut node);
             }
