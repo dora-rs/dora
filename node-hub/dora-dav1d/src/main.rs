@@ -64,6 +64,7 @@ fn main() -> Result<()> {
 
     let mut now = std::time::Instant::now();
     loop {
+        let time = std::time::Instant::now();
         match events.recv() {
             Some(Event::Input {
                 id: _,
@@ -81,6 +82,7 @@ fn main() -> Result<()> {
                     }
                     Ok(()) => {
                         if let Ok(p) = dec.get_picture() {
+                            // println!("Time to decode: {:?}", time.elapsed());
                             let mut y = p.plane(dav1d::PlanarImageComponent::Y); //.to_vec();
                             let mut u = p.plane(dav1d::PlanarImageComponent::U); //.to_vec();
                             let mut v = p.plane(dav1d::PlanarImageComponent::V); //.to_vec();
@@ -119,7 +121,7 @@ fn main() -> Result<()> {
                             );
                             node.send_output(DataId::from("frame".to_string()), metadata, arrow)
                                 .unwrap();
-                            println!("Time to decode: {:?}", now.elapsed());
+                            //println!("Time to decode: {:?}", now.elapsed());
 
                             now = std::time::Instant::now();
                         }
