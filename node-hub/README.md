@@ -41,9 +41,14 @@ The structure of the node hub is as follows (please use the same structure if yo
 ```
 node-hub/
 └── your-node/
-    ├── main.py
-    ├── README.mdr
-    └── pyproject.toml
+    ├── README.md
+    ├── your-node
+    │   ├── __init__.py
+    │   ├── __main__.py
+    │   └── main.py
+    ├── pyproject.toml
+    └── tests
+        └── test_<your-node>.py
 ```
 
 The idea is to make a `pyproject.toml` file that will install the required dependencies for the node **and** attach main
@@ -74,6 +79,17 @@ dependencies = [
 [project.scripts]
 [name of the node with '-' to replace spaces] = "[name of the node with '_' to replace spaces].main:main"
 
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]
 ```
 
 Finally, the README.md file should explicit all inputs/outputs of the node and how to configure it in the YAML file.
@@ -102,6 +118,17 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 [project.scripts]
 opencv-plot = "opencv_plot.main:main"
 
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]
 ```
 ## Adding git dependency
 - If a git repository is added as submodule. Proper path should be added in `pyproject.toml` inorder to make sure that linting and testing are exempted for that dependency.
