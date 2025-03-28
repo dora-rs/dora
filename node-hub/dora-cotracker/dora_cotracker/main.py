@@ -21,8 +21,8 @@ def track_points(video_input, pixel_coordinates):
         The tracked points.
 
     """
-    # Initialize online processing
-    cotracker(video_chunk=video_input, is_first_step=True, grid_size=0)
+    queries = torch.tensor(pixel_coordinates, dtype=torch.float32).unsqueeze(0).to(video_input.device)
+    cotracker(video_chunk=video_input, is_first_step=True, grid_size=0, queries=queries, add_support_grid=True)
 
     # Process the video and track points
     tracked_points = []
