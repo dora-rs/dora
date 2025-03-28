@@ -7,9 +7,10 @@
 // Media Patent License 1.0 was not distributed with this source code in the
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
+use std::env::var;
+
 use dora_node_api::arrow::array::UInt8Array;
-use dora_node_api::dora_core::config::DataId;
-use dora_node_api::{DoraNode, Event, IntoArrow, MetadataParameters, Parameter};
+use dora_node_api::{DoraNode, Event, IntoArrow, Parameter};
 use eyre::{Context as EyreContext, Result};
 use log::warn;
 // Encode the same tiny blank frame 30 times
@@ -77,17 +78,15 @@ fn main() -> Result<()> {
         .unwrap_or_else(|_| "640".to_string())
         .parse()
         .unwrap();
-    let enc = EncoderConfig {
+    let speed = var("RAV1E_SPEED").map(|s| s.parse().unwrap()).unwrap_or(10);
+    let mut enc = EncoderConfig {
         width,
         height,
-        speed_settings: SpeedSettings::from_preset(10),
+        speed_settings: SpeedSettings::from_preset(speed),
         low_latency: true,
         ..Default::default()
     };
-
-    let cfg = Config::new()
-        //    .with_rate_control(RateControlConfig::new().with_emit_data(true))
-        .with_encoder_config(enc.clone()); //.with_threads(16);
+    let cfg = Config::new().with_encoder_config(enc.clone());
     cfg.validate()?;
 
     let (mut node, mut events) =
@@ -95,7 +94,11 @@ fn main() -> Result<()> {
 
     loop {
         let _buffer = match events.recv() {
-            Some(Event::Input { id, data, metadata }) => {
+            Some(Event::Input {
+                id,
+                data,
+                mut metadata,
+            }) => {
                 if let Some(Parameter::Integer(h)) = metadata.parameters.get("height") {
                     height = *h as usize;
                 };
@@ -109,7 +112,14 @@ fn main() -> Result<()> {
                 } else {
                     "bgr8"
                 };
-
+                enc = EncoderConfig {
+                    width,
+                    height,
+                    speed_settings: SpeedSettings::from_preset(speed),
+                    low_latency: true,
+                    ..Default::default()
+                };
+                let cfg = Config::new().with_encoder_config(enc.clone());
                 if encoding == "bgr8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: Vec<u8> = buffer.values().to_vec();
@@ -127,13 +137,13 @@ fn main() -> Result<()> {
                     let mut f = ctx.new_frame();
 
                     let xdec = f.planes[0].cfg.xdec;
-                    let stride = (enc.width + xdec) >> xdec;
+                    let stride = (width + xdec) >> xdec;
                     f.planes[0].copy_from_raw_u8(&y, stride, 1);
                     let xdec = f.planes[1].cfg.xdec;
-                    let stride = (enc.width + xdec) >> xdec;
+                    let stride = (width + xdec) >> xdec;
                     f.planes[1].copy_from_raw_u8(&u, stride, 1);
                     let xdec = f.planes[2].cfg.xdec;
-                    let stride = (enc.width + xdec) >> xdec;
+                    let stride = (width + xdec) >> xdec;
                     f.planes[2].copy_from_raw_u8(&v, stride, 1);
 
                     match ctx.send_frame(f) {
@@ -147,18 +157,17 @@ fn main() -> Result<()> {
                             }
                         },
                     }
+                    metadata
+                        .parameters
+                        .insert("encoding".to_string(), Parameter::String("av1".to_string()));
                     ctx.flush();
                     match ctx.receive_packet() {
                         Ok(pkt) => {
                             let data = pkt.data;
                             let arrow = data.into_arrow();
-                            node.send_output(
-                                DataId::from("frame".to_owned()),
-                                MetadataParameters::default(),
-                                arrow,
-                            )
-                            .context("could not send output")
-                            .unwrap();
+                            node.send_output(id, metadata.parameters, arrow)
+                                .context("could not send output")
+                                .unwrap();
                         }
                         Err(e) => match e {
                             EncoderStatus::LimitReached => {}

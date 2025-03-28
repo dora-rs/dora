@@ -251,11 +251,29 @@ impl Daemon {
             None => None,
         };
 
-        let zenoh_config = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
+        let mut zenoh_config = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
             Ok(path) => zenoh::Config::from_file(&path)
                 .map_err(|e| eyre!(e))
                 .wrap_err_with(|| format!("failed to read zenoh config from {path}"))?,
-            Err(std::env::VarError::NotPresent) => zenoh::Config::default(),
+            Err(std::env::VarError::NotPresent) => {
+                let mut zenoh_config = zenoh::Config::default();
+
+                if let Some(addr) = coordinator_addr {
+                    zenoh_config
+                        .insert_json5(
+                            "connect/endpoints",
+                            &format!(r#"["tcp/{}:5456"]"#, addr.ip()),
+                        )
+                        .unwrap();
+                    zenoh_config
+                .insert_json5(
+                    "listen/endpoints",
+                    r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:0", "tcp/[::]:5456"] }"#,
+                )
+                .unwrap();
+                };
+                zenoh_config
+            }
             Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
                 "{} env variable is not valid unicode",
                 zenoh::Config::DEFAULT_CONFIG_PATH_ENV

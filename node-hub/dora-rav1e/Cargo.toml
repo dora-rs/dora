@@ -1,5 +1,5 @@
 [package]
-name = "dora-av1-encoder"
+name = "dora-rav1e"
 edition = "2021"
 version.workspace = true
 description.workspace = true
