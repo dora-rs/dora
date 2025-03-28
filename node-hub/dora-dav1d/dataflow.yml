@@ -2,6 +2,8 @@ nodes:
   - id: camera
     build: pip install ../../node-hub/opencv-video-capture
     path: opencv-video-capture
+    _unstable_deploy:
+      machine: encoder
     inputs:
       tick: dora/timer/millis/50
     outputs:
@@ -11,23 +13,75 @@ nodes:
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
       ENCODING: yuv420
-
-  - id: av
-    path: /home/peter/Documents/work/dora/target/release/dora-av1-encoder
-    build: cargo build -p dora-av1-encoder --release
+  - id: camera2
+    path: dora-pyrealsense
+    _unstable_deploy:
+      machine: encoder
     inputs:
-      image: camera/image
+      tick: dora/timer/millis/10
+    outputs:
+      - image
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+      ENCODING: jpeg
+
+  - id: echo
+    build: pip install -e ../../node-hub/dora-echo
+    path: dora-echo
+    _unstable_deploy:
+      machine: decoder
+    inputs:
+      image: camera2/image
+    outputs:
+      - image
+
+  - id: rav1e-local
+    path: dora-av1-encoder
+    build: cargo build -p dora-av1-encoder --release
+    _unstable_deploy:
+      machine: encoder
+    #inputs:
+    #  image: camera/image
     outputs:
       - frame
     env:
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
 
-  - id: dav1d
-    path: /home/peter/Documents/work/dora/target/release/dora-dav1d
+  - id: dav1d-remote
+    path: dora-dav1d
     build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: decoder
     inputs:
-      image: av/frame
+      image: av-local/frame
+    outputs:
+      - frame
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: rav1e-remote
+    path: dora-av1-encoder
+    build: cargo build -p dora-av1-encoder --release
+    _unstable_deploy:
+      machine: decoder
+    inputs:
+      image: dav1d-remote/image
+    outputs:
+      - frame
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: dav1d-local
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: decoder
+    inputs:
+      image: rav1e-local/frame
     outputs:
       - frame
     env:
@@ -35,19 +89,19 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: plot
-    build: pip install -e ../../node-hub/opencv-plot
-    path: opencv-plot
+    build: pip install -e ../../node-hub/dora-rerun
+    _unstable_deploy:
+      machine: encoder
+    path: dora-rerun
     inputs:
-      image: dav1d/frame
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
+      image: dav1d-local/frame
+    # image: echo/image
+    #image_2: camera6/image
 
   - id: plot2
     build: pip install -e ../../node-hub/opencv-plot
+    _unstable_deploy:
+      machine: encoder
     path: opencv-plot
     inputs:
-      image: camera/image
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
+      image: echo/image
