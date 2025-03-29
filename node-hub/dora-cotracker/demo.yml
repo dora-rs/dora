@@ -1,0 +1,39 @@
+nodes:
+  - id: camera
+    build: pip install opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: "0"
+      ENCODING: "rgb8"
+      IMAGE_WIDTH: "640"
+      IMAGE_HEIGHT: "480"
+
+  - id: tracker
+    build: pip install -e .
+    path: dora-cotracker
+    inputs:
+      image: camera/image
+      # points_to_track: debug/points_to_track
+    outputs:
+      - tracked_image
+      - tracked_points
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      image: camera/image
+      tracked_image: tracker/tracked_image
+      # points: tracker/tracked_points
+
+  - id: debug
+    build: pip install -e .
+    path: dora-sgp_debug_node
+    inputs:
+      points: tracker/tracked_points
+    # outputs:
+    #   - points_to_track
