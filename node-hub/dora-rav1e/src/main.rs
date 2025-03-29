@@ -18,7 +18,7 @@ use rav1e::config::SpeedSettings;
 
 use rav1e::*;
 
-fn bgr_to_yuv(bgr_data: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+fn bgr8_to_yuv420(bgr_data: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut y_plane = vec![0; width * height];
     let mut u_plane = vec![0; (width / 2) * (height / 2)];
     let mut v_plane = vec![0; (width / 2) * (height / 2)];
@@ -123,11 +123,57 @@ fn main() -> Result<()> {
                 if encoding == "bgr8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: Vec<u8> = buffer.values().to_vec();
-                    buffer
+                    let (y, u, v) = bgr8_to_yuv420(buffer, width, height);
+
                     // Transpose values from BGR to RGB
                     // let buffer: Vec<u8> = buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
 
-                    //un
+                    let mut ctx: Context<u8> = cfg.new_context().unwrap();
+                    let mut f = ctx.new_frame();
+
+                    let xdec = f.planes[0].cfg.xdec;
+                    let stride = (width + xdec) >> xdec;
+                    f.planes[0].copy_from_raw_u8(&y, stride, 1);
+                    let xdec = f.planes[1].cfg.xdec;
+                    let stride = (width + xdec) >> xdec;
+                    f.planes[1].copy_from_raw_u8(&u, stride, 1);
+                    let xdec = f.planes[2].cfg.xdec;
+                    let stride = (width + xdec) >> xdec;
+                    f.planes[2].copy_from_raw_u8(&v, stride, 1);
+
+                    match ctx.send_frame(f) {
+                        Ok(_) => {}
+                        Err(e) => match e {
+                            EncoderStatus::EnoughData => {
+                                warn!("Unable to send frame ");
+                            }
+                            _ => {
+                                warn!("Unable to send frame ");
+                            }
+                        },
+                    }
+                    metadata
+                        .parameters
+                        .insert("encoding".to_string(), Parameter::String("av1".to_string()));
+                    ctx.flush();
+                    match ctx.receive_packet() {
+                        Ok(pkt) => {
+                            let data = pkt.data;
+                            let arrow = data.into_arrow();
+                            node.send_output(id, metadata.parameters, arrow)
+                                .context("could not send output")
+                                .unwrap();
+                        }
+                        Err(e) => match e {
+                            EncoderStatus::LimitReached => {}
+                            EncoderStatus::Encoded => {}
+                            EncoderStatus::NeedMoreData => {}
+                            _ => {
+                                panic!("Unable to receive packet",);
+                            }
+                        },
+                    }
+                    vec![]
                 } else if encoding == "yuv420" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer = buffer.values(); //.to_vec();

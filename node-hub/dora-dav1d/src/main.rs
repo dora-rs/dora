@@ -1,5 +1,5 @@
 use dav1d::Settings;
-use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, IntoArrow};
+use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, IntoArrow, Parameter};
 use eyre::{Context, Result};
 use log::warn;
 
@@ -64,7 +64,20 @@ fn main() -> Result<()> {
                     }
                     Ok(()) => {
                         if let Ok(p) = dec.get_picture() {
-                            // println!("Time to decode: {:?}", time.elapsed());
+                            let height = if let Some(Parameter::Integer(h)) =
+                                metadata.parameters.get("height")
+                            {
+                                *h as usize
+                            } else {
+                                640
+                            };
+                            let width = if let Some(Parameter::Integer(w)) =
+                                metadata.parameters.get("width")
+                            {
+                                *w as usize
+                            } else {
+                                480
+                            };
                             let y = p.plane(dav1d::PlanarImageComponent::Y);
                             let u = p.plane(dav1d::PlanarImageComponent::U);
                             let v = p.plane(dav1d::PlanarImageComponent::V);
