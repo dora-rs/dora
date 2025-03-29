@@ -1,22 +1,21 @@
 [project]
 name = "dora-cotracker"
-version = "0.0.1"
-authors = [{ name = "Your Name", email = "email@email.com" }]
-description = "dora-cotracker"
+version = "0.1.0"
+authors = [
+    { name = "Shashwat Patil", email = "shashwatpatil974@gmail.com" }
+]
+description = "A Dora node implementing real-time object tracking using Facebook's CoTracker model"
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 
 dependencies = [
     "dora-rs>=0.3.9",
-    "gradio>=4.0.0",
     "torch>=2.0.0",
     "numpy>=1.24.0",
     "opencv-python>=4.8.0",
     "pyarrow>=14.0.1",
     "cotracker @ git+https://github.com/facebookresearch/co-tracker.git",
-    "imageio>=2.31.0",
-    "imageio-ffmpeg>=0.4.9",
 ]
 
 [dependency-groups]
@@ -24,3 +23,12 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 dora-cotracker = "dora_cotracker.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+    "PERF",  # Performance
+    "RET",   # Return statements
+    "RSE",   # Runtime errors
+    "NPY",   # NumPy
+    "N",     # Naming
+]
