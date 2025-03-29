@@ -17,7 +17,7 @@ nodes:
     path: dora-cotracker
     inputs:
       image: camera/image
-      # points_to_track: debug/points_to_track
+      points_to_track: input/points_to_track
     outputs:
       - tracked_image
       - tracked_points
@@ -28,12 +28,11 @@ nodes:
     inputs:
       image: camera/image
       tracked_image: tracker/tracked_image
-      # points: tracker/tracked_points
 
-  - id: debug
+
+    # replace with your own node that outputs tracking points # optional comment is not needed
+  - id: input
     build: pip install -e .
-    path: dora-sgp_debug_node
-    inputs:
-      points: tracker/tracked_points
-    # outputs:
-    #   - points_to_track
+    path: point-input-node
+    outputs:
+      - points_to_track
