@@ -41,7 +41,7 @@ nodes:
       IMAGE_HEIGHT: "480"
 
   - id: tracker
-    build: pip install -e .
+    build: pip install -e dora-cotracker
     path: dora-cotracker
     inputs:
       image: camera/image
@@ -58,10 +58,12 @@ nodes:
       tracked_image: tracker/tracked_image
 ```
 
+*Note* - this only has the cv2 as an input source. see below to add your nodes workflow and pass points directly.
+
 2. Run the demo:
 
 ```bash
-dora run demo.yml 
+dora run demo.yml --uv
 ```
 
 ## Usage Examples
@@ -118,15 +120,61 @@ class PointInputNode:
         self.send_points(points)
 ```
 
-Add to your YAML configuration:
+
+
+To connect your existing node that outputs tracking points with the CoTracker node, add the following to your YAML configuration:
+
 ```yaml
-  - id: input
-    build: pip install -e .
-    path: point-input-node
+nodes:
+  # Your existing point source node (e.g., YOLO detector, pose estimator, etc.)
+  - id: point_source
+    build: pip install your-node  # Replace with your node's name
+    path: your-point-source-node  # Replace with your node's path
+    inputs:
+      image: camera/image  # If your node needs image input
     outputs:
-      - points_to_track
+      - points_to_track    # Must output points in required format
+
+  # CoTracker node configuration
+  - id: tracker
+    build: pip install dora-cotracker
+    path: dora-cotracker
+    inputs:
+      image: camera/image
+      points_to_track: point_source/points_to_track  # Connect to your point source
+    outputs:
+      - tracked_image
+      - tracked_points
+
+  # Optional visualization
+  - id: display
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      image: camera/image
+      tracked_image: tracker/tracked_image
 ```
 
+Your point source node must output points in the following format:
+- Topic name: `points_to_track`
+- Data: Flattened numpy array of x,y coordinates
+- Metadata:
+  ```python
+  {
+      "num_points": len(points),  # Number of points
+      "dtype": "float32",        # Data type
+      "shape": (N, 2)           # N points, 2 coordinates each
+  }
+  ```
+
+Example point source implementations:
+- YOLO detection centroids
+- Pose estimation keypoints
+- Face landmark detectors
+- Custom object detectors
+
+For dynamic updates, send new points whenever your source node processes a new frame. The tracker will maintain temporal consistency between updates.
+**
 ## API Reference
 
 ### Input Topics
