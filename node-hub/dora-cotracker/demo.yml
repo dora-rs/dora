@@ -13,11 +13,11 @@ nodes:
       IMAGE_HEIGHT: "480"
 
   - id: tracker
-    build: pip install -e .
+    build: pip install dora-cotracker
     path: dora-cotracker
     inputs:
       image: camera/image
-      # points_to_track: input/points_to_track
+      # points_to_track: input/points_to_track    # uncomment this if using input node
     outputs:
       - tracked_image
       - tracked_points
@@ -30,9 +30,12 @@ nodes:
       tracked_image: tracker/tracked_image
 
 
-    # replace with your own node that outputs tracking points # optional uncomment if input via node 
-  # - id: input
-  #   build: pip install -e .
-  #   path: point-input-node
+  # replace with your own node that outputs tracking points # uncomment if input via node 
+  # (e.g., YOLO detector, pose estimator, etc.)
+  # - id: point_source
+  #   build: pip install your-node  # Replace with your node's name
+  #   path: your-point-source-node  # Replace with your node's path
+  #   inputs:
+  #     image: camera/image  # If your node needs image input
   #   outputs:
-  #     - points_to_track
+  #     - points_to_track    # Must output points in required format
