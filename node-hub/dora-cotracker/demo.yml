@@ -17,7 +17,7 @@ nodes:
     path: dora-cotracker
     inputs:
       image: camera/image
-      points_to_track: input/points_to_track
+      # points_to_track: input/points_to_track
     outputs:
       - tracked_image
       - tracked_points
@@ -30,9 +30,9 @@ nodes:
       tracked_image: tracker/tracked_image
 
 
-    # replace with your own node that outputs tracking points # optional comment is not needed
-  - id: input
-    build: pip install -e .
-    path: point-input-node
-    outputs:
-      - points_to_track
+    # replace with your own node that outputs tracking points # optional uncomment if input via node 
+  # - id: input
+  #   build: pip install -e .
+  #   path: point-input-node
+  #   outputs:
+  #     - points_to_track
