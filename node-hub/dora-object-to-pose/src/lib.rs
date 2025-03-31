@@ -187,7 +187,6 @@ pub fn lib_main() -> Result<()> {
                         "encoding".to_string(),
                         Parameter::String("xyzrpy".to_string()),
                     );
-                    println!("Got data: {:?}", flatten_data);
 
                     node.send_output(
                         DataId::from("pose".to_string()),
