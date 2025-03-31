@@ -163,9 +163,9 @@ def main():
         if event is not None and event["type"] == "INPUT":
             received_text = event["value"][0].as_py()
             tokens = event["metadata"].get("tokens", 6)
-            assert (
-                text_truth in received_text
-            ), f"Expected '{text_truth}', got {received_text}"
+            assert text_truth in received_text, (
+                f"Expected '{text_truth}', got {received_text}"
+            )
             durations.append(duration)
             speed.append(tokens / duration)
             time.sleep(0.1)
@@ -176,7 +176,7 @@ def main():
         + f"\nMax duration: {max(durations)}"
         + f"\nMin duration: {min(durations)}"
         + f"\nMedian duration: {np.median(durations)}"
-        + f"\nMedian frequency: {1/np.median(durations)}"
+        + f"\nMedian frequency: {1 / np.median(durations)}"
         + f"\nAverage speed: {sum(speed) / len(speed)}"
         + f"\nMax speed: {max(speed)}"
         + f"\nMin speed: {min(speed)}"
