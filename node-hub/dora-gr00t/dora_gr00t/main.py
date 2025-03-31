@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger("dora_gr00t")
 
 # Ensure the Isaac-GR00T submodule is in the Python path
-isaac_gr00t_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "isaac_gr00t")
+isaac_gr00t_path = os.path.join(os.path.dirname(__file__), "isaac_gr00t")
 if os.path.exists(isaac_gr00t_path):
     sys.path.append(isaac_gr00t_path)
     logger.info(f"Added Isaac-GR00T submodule to Python path: {isaac_gr00t_path}")
@@ -84,7 +84,7 @@ except ImportError as e:
 
 
 # Helper functions
-def unsqueeze_dict_values(data: Dict[str, Any]) -> Dict[str, Any]:
+def unsqueeze_dict_values(data: dict[str, Any]) -> dict[str, Any]:
     """TODO: Add docstring."""
     unsqueezed_data = {}
     for k, v in data.items():
@@ -97,7 +97,7 @@ def unsqueeze_dict_values(data: Dict[str, Any]) -> Dict[str, Any]:
     return unsqueezed_data
 
 
-def squeeze_dict_values(data: Dict[str, Any]) -> Dict[str, Any]:
+def squeeze_dict_values(data: dict[str, Any]) -> dict[str, Any]:
     """TODO: Add docstring."""
     squeezed_data = {}
     for k, v in data.items():
@@ -155,7 +155,7 @@ class DoraGr00tNode:
                 denoising_steps=self.denoising_steps
             )
     
-    def process_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def process_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """TODO: Add docstring."""
         # Map dora inputs to GR00T input format
         gr00t_inputs = {}
@@ -204,7 +204,7 @@ class DoraGr00tNode:
         
         return gr00t_inputs
     
-    def get_action(self, inputs: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    def get_action(self, inputs: dict[str, Any]) -> dict[str, np.ndarray]:
         """TODO: Add docstring."""
         if self.model is None:
             logger.warning("GR00T model not initialized. Using fallback empty actions.")
@@ -298,7 +298,7 @@ def main():
     
     # Get configuration from the node
     config = node.config if hasattr(node, "config") else {}
-    
+
     # Extract configuration parameters with defaults
     model_path = config.get("model_path", "nvidia/GR00T-N1-2B")
     embodiment_tag = config.get("embodiment_tag", "gr1")
@@ -319,9 +319,16 @@ def main():
     # Register the event handler
     node.on_event(gr00t_node.process_event)
     
-    # Start the node
-    logger.info("Starting dora-gr00t node")
-    node.start()
+    try:
+        # Start the node
+        logger.info("Starting dora-gr00t node")
+        node.start()
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received, shutting down...")
+    except Exception as e:
+        logger.error(f"Error starting node: {e}")
+    finally:
+        logger.info("dora-gr00t node shut down")
 
 
 if __name__ == "__main__":
