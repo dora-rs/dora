@@ -7,29 +7,24 @@ name = "dora-magma"
 version = "0.1.0"
 description = "Dora node for Microsoft Magma model"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = { text = "MIT" }
 readme = "README.md"
-authors = [
-  {name = "Munish Mummadi", email = "moneymindedmunish1@gmail.com"}
-]
+authors = [{ name = "Munish Mummadi", email = "moneymindedmunish1@gmail.com" }]
 dependencies = [
-    "dora-rs >= 0.3.9",
-    "numpy >= 2.2.3",
-    "torch >= 2.4.0",
-    "torchvision >= 0.19",
-    "transformers >= 4.45",
-    "opencv-python >= 4.1.1",
-    "accelerate>=1.5.1",
-    "psutil>=7.0.0",
-    "open-clip-torch>=2.31.0",
+  "dora-rs >= 0.3.9",
+  "numpy < 2",
+  "torch >= 2.4.0",
+  "torchvision >= 0.19",
+  "transformers>=4.45",
+  "opencv-python >= 4.1.1",
+  "accelerate>=1.5.1",
+  "psutil>=7.0.0",
+  "open-clip-torch>=2.31.0",
+  "wandb",
 ]
 
 [dependency-groups]
-dev = [
-    "pytest>=8.1.1",
-    "ruff>=0.9.1",
-    "pytest-cov>=4.0.0",
-]
+dev = ["pytest>=8.1.1", "ruff>=0.9.1", "pytest-cov>=4.0.0"]
 
 [project.scripts]
 dora-magma = "dora_magma.main:main"
@@ -39,6 +34,9 @@ exclude = ["dora_magma/Magma"]
 
 [tool.black]
 extend.exclude = "dora_magma/Magma"
+
+[tool.uv.sources]
+transformers = { git = "https://github.com/jwyang/transformers.git", rev = "dev/jwyang-v4.48.2" }
 
 [tool.ruff.lint]
 extend-select = [
