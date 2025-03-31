@@ -17,7 +17,7 @@ logger = logging.getLogger("test_gr00t")
 
 def generate_dummy_video(width=224, height=224, frames=3, channels=3):
     """TODO: Add docstring."""
-    # Use a gradiant pattern so we can see if it's being processed correctly
+    # Use a gradient pattern so we can see if it's being processed correctly
     video = np.zeros((frames, height, width, channels), dtype=np.uint8)
     for i in range(frames):
         for j in range(height):
