@@ -390,10 +390,11 @@ dora start dataflow.yml
 ```
 
 ---
-
 ## YAML Example for Distributed Dataflow 📘
 
 ```yaml
+communication:
+  zenoh: {}
 
 nodes:
   - id: camera_node
@@ -410,6 +411,7 @@ nodes:
       image: camera_node/image
     outputs:
       - result
+
 ```
 ## Contributing
 
