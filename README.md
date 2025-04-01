@@ -394,9 +394,6 @@ dora start dataflow.yml
 ## YAML Example for Distributed Dataflow 📘
 
 ```yaml
-communication:
-  zenoh:
-    prefix: /my_dora_network
 
 nodes:
   - id: camera_node
