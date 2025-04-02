@@ -1,3 +1,4 @@
+"""TODO: Add docstring."""
 import os
 import time
 
@@ -8,18 +9,20 @@ from reachy_sdk.trajectory import goto
 
 
 def r_arm_inverse_kinematics(reachy, pose, action) -> list:
-    A = np.array(
+    """TODO: Add docstring."""
+    a = np.array(
         [
             [0, 0, -1, pose[0] + action[0]],
             [0, 1, 0, pose[1] + action[1]],
             [1, 0, 0, pose[2] + action[2]],
             [0, 0, 0, 1],
-        ]
+        ],
     )
-    return reachy.r_arm.inverse_kinematics(A)
+    return reachy.r_arm.inverse_kinematics(a)
 
 
 def happy_antennas(reachy):
+    """TODO: Add docstring."""
     reachy.head.l_antenna.speed_limit = 480.0
     reachy.head.r_antenna.speed_limit = 480.0
 
@@ -39,6 +42,7 @@ def happy_antennas(reachy):
 
 
 def sad_antennas(reachy):
+    """TODO: Add docstring."""
     reachy.head.l_antenna.speed_limit = 360.0
     reachy.head.r_antenna.speed_limit = 360.0
 
@@ -47,12 +51,12 @@ def sad_antennas(reachy):
 
 
 def main():
-
+    """TODO: Add docstring."""
     node = Node()
 
-    ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.24")
+    robot_ip = os.getenv("ROBOT_IP", "10.42.0.24")
 
-    reachy = ReachySDK(ROBOT_IP, with_mobile_base=False)
+    reachy = ReachySDK(robot_ip, with_mobile_base=False)
     reachy.turn_on("r_arm")
     reachy.turn_on("head")
 
@@ -66,7 +70,7 @@ def main():
     default_pose = r_arm_inverse_kinematics(reachy, r_arm_pose, [0, 0, 0])
 
     goto(
-        {joint: pos for joint, pos in zip(reachy.r_arm.joints.values(), default_pose)},
+        {joint: pos for joint, pos in zip(reachy.r_arm.joints.values(), default_pose, strict=False)},
         duration=3,
     )
 
@@ -80,7 +84,7 @@ def main():
             goto(
                 {
                     joint: pos
-                    for joint, pos in zip(reachy.r_arm.joints.values(), joint_pose)
+                    for joint, pos in zip(reachy.r_arm.joints.values(), joint_pose, strict=False)
                 },
                 duration=0.200,
             )
@@ -109,13 +113,13 @@ def main():
                 reachy.joints.r_gripper.goal_position = goal
                 time.sleep(0.02)
 
-            # When openning the gripper always go to default pose
+            # When opening the gripper always go to default pose
             if action == -100:
                 goto(
                     {
                         joint: pos
                         for joint, pos in zip(
-                            reachy.r_arm.joints.values(), default_pose
+                            reachy.r_arm.joints.values(), default_pose, strict=False,
                         )
                     },
                     duration=3,

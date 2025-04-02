@@ -1,8 +1,14 @@
-use std::{path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path, process::Command};
 
+use dora_message::descriptor::EnvValue;
 use eyre::{eyre, Context};
 
-pub fn run_build_command(build: &str, working_dir: &Path, uv: bool) -> eyre::Result<()> {
+pub fn run_build_command(
+    build: &str,
+    working_dir: &Path,
+    uv: bool,
+    envs: Option<BTreeMap<String, EnvValue>>,
+) -> eyre::Result<()> {
     let lines = build.lines().collect::<Vec<_>>();
     for build_line in lines {
         let mut split = build_line.split_whitespace();
@@ -18,6 +24,15 @@ pub fn run_build_command(build: &str, working_dir: &Path, uv: bool) -> eyre::Res
             Command::new(program)
         };
         cmd.args(split);
+
+        // Inject Environment Variables
+        if let Some(envs) = envs.clone() {
+            for (key, value) in envs {
+                let value = value.to_string();
+                cmd.env(key, value);
+            }
+        }
+
         cmd.current_dir(working_dir);
         let exit_status = cmd
             .status()

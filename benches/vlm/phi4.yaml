@@ -1,0 +1,22 @@
+nodes:
+  - id: benchmark_script
+    path: ../mllm/benchmark_script.py
+    inputs:
+      text: llm/text
+    outputs:
+      - text
+      - image
+    env:
+      TEXT: "Please only generate the following output: This is a cat"
+      TEXT_TRUTH: "This is a cat"
+
+  - id: llm
+    build: |
+      pip install flash-attn --no-build-isolation
+      pip install -e ../../node-hub/dora-phi4
+    path: dora-phi4
+    inputs:
+      text: benchmark_script/text
+      image: benchmark_script/image
+    outputs:
+      - text

@@ -12,7 +12,7 @@ dependencies = [
     "numpy < 2.0.0",
     "pyarrow >= 5.0.0",
     "outetts >= 0.2.3",
-    "llama-cpp-python",
+    "llama-cpp-python>=0.2.0",
 ]
 
 [dependency-groups]
@@ -30,5 +30,12 @@ dora-outtetts = "dora_outtetts.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
 ]

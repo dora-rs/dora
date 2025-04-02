@@ -24,8 +24,14 @@ dora-reachy2-right-arm = "dora_reachy2.right_arm:main"
 dora-reachy2-mobile-base = "dora_reachy2.mobile_base:main"
 dora-reachy2-head = "dora_reachy2.head:main"
 
-
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
 ]

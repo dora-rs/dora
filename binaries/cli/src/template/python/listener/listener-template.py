@@ -2,6 +2,7 @@
 
 from dora import Node
 
+
 def main():
     """Listen for input events and print received messages."""
     node = Node()

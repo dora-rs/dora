@@ -1,17 +1,20 @@
+"""TODO: Add docstring."""
+
 import enum
-
-import pyarrow as pa
-
 from typing import Union
 
+import pyarrow as pa
 from dynamixel_sdk import (
-    PacketHandler,
-    PortHandler,
     COMM_SUCCESS,
+    DXL_HIBYTE,
+    DXL_HIWORD,
+    DXL_LOBYTE,
+    DXL_LOWORD,
     GroupSyncRead,
     GroupSyncWrite,
+    PacketHandler,
+    PortHandler,
 )
-from dynamixel_sdk import DXL_HIBYTE, DXL_HIWORD, DXL_LOBYTE, DXL_LOWORD
 
 PROTOCOL_VERSION = 2.0
 BAUD_RATE = 1_000_000
@@ -22,8 +25,7 @@ def wrap_joints_and_values(
     joints: Union[list[str], pa.Array],
     values: Union[int, list[int], pa.Array],
 ) -> pa.StructArray:
-    """
-    Wraps joints and their corresponding values into a structured array.
+    """Wrap joints and their corresponding values into a structured array.
 
     :param joints: A list, numpy array, or pyarrow array of joint names.
     :type joints: Union[list[str], np.array, pa.Array]
@@ -39,7 +41,7 @@ def wrap_joints_and_values(
     :raises ValueError: If lengths of joints and values do not match.
 
     Example:
-    --------
+    -------
     joints = ["shoulder_pan", "shoulder_lift", "elbow_flex"]
     values = [100, 200, 300]
     struct_array = wrap_joints_and_values(joints, values)
@@ -52,8 +54,8 @@ def wrap_joints_and_values(
     struct_array = wrap_joints_and_values(joints, value)
 
     This example broadcasts the single integer value to all joints and wraps them into a structured array.
-    """
 
+    """
     if isinstance(values, int):
         values = [values] * len(joints)
 
@@ -69,16 +71,20 @@ def wrap_joints_and_values(
         mask = values.is_null()
 
     return pa.StructArray.from_arrays(
-        arrays=[joints, values], names=["joints", "values"], mask=mask
+        arrays=[joints, values], names=["joints", "values"], mask=mask,
     ).drop_null()
 
 
 class TorqueMode(enum.Enum):
+    """TODO: Add docstring."""
+
     ENABLED = pa.scalar(1, pa.uint32())
     DISABLED = pa.scalar(0, pa.uint32())
 
 
 class OperatingMode(enum.Enum):
+    """TODO: Add docstring."""
+
     VELOCITY = pa.scalar(1, pa.uint32())
     POSITION = pa.scalar(3, pa.uint32())
     EXTENDED_POSITION = pa.scalar(4, pa.uint32())
@@ -152,8 +158,10 @@ MODEL_CONTROL_TABLE = {
 
 
 class DynamixelBus:
+    """TODO: Add docstring."""
 
     def __init__(self, port: str, description: dict[str, (int, str)]):
+        """TODO: Add docstring."""
         self.port = port
         self.descriptions = description
         self.motor_ctrl = {}
@@ -184,9 +192,11 @@ class DynamixelBus:
         self.group_writers = {}
 
     def close(self):
+        """TODO: Add docstring."""
         self.port_handler.closePort()
 
     def write(self, data_name: str, data: pa.StructArray):
+        """TODO: Add docstring."""
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"]
             for motor_name in data.field("joints")
@@ -239,7 +249,7 @@ class DynamixelBus:
             else:
                 raise NotImplementedError(
                     f"Value of the number of bytes to be sent is expected to be in [1, 2, 4], but {packet_bytes_size} "
-                    f"is provided instead."
+                    f"is provided instead.",
                 )
 
             if init_group:
@@ -251,10 +261,11 @@ class DynamixelBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Write failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         motor_ids = [
             self.motor_ctrl[motor_name.as_py()]["id"] for motor_name in motor_names
         ]
@@ -281,13 +292,13 @@ class DynamixelBus:
         if comm != COMM_SUCCESS:
             raise ConnectionError(
                 f"Read failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}"
+                f"{self.packet_handler.getTxRxResult(comm)}",
             )
 
         values = pa.array(
             [
                 self.group_readers[group_key].getData(
-                    idx, packet_address, packet_bytes_size
+                    idx, packet_address, packet_bytes_size,
                 )
                 for idx in motor_ids
             ],
@@ -298,31 +309,41 @@ class DynamixelBus:
         return wrap_joints_and_values(motor_names, values)
 
     def write_torque_enable(self, torque_mode: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Torque_Enable", torque_mode)
 
     def write_operating_mode(self, operating_mode: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Operating_Mode", operating_mode)
 
     def read_position(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         return self.read("Present_Position", motor_names)
 
     def read_velocity(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         return self.read("Present_Velocity", motor_names)
 
     def read_current(self, motor_names: pa.Array) -> pa.StructArray:
+        """TODO: Add docstring."""
         return self.read("Present_Current", motor_names)
 
     def write_goal_position(self, goal_position: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Goal_Position", goal_position)
 
     def write_goal_current(self, goal_current: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Goal_Current", goal_current)
 
     def write_position_p_gain(self, position_p_gain: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Position_P_Gain", position_p_gain)
 
     def write_position_i_gain(self, position_i_gain: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Position_I_Gain", position_i_gain)
 
     def write_position_d_gain(self, position_d_gain: pa.StructArray):
+        """TODO: Add docstring."""
         self.write("Position_D_Gain", position_d_gain)

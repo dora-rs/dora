@@ -127,6 +127,26 @@ jobs:
       - name: "C++ Dataflow example"
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
+      - name: "Install Arrow C++ Library"
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            # For Ubuntu
+            sudo apt-get update
+            sudo apt-get install -y -V ca-certificates lsb-release wget
+            wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            sudo apt-get update
+            sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            # For macOS
+            brew update
+            brew install apache-arrow
+          fi
+      - name: "C++ Dataflow2 example"
+        timeout-minutes: 15
+        run: cargo run --example cxx-arrow-dataflow
       - name: "Cmake example"
         if: runner.os == 'Linux'
         timeout-minutes: 30
@@ -280,7 +300,7 @@ jobs:
         run: |
           cargo install --path binaries/cli --locked
       - name: "Test CLI (Rust)"
-        timeout-minutes: 30
+        timeout-minutes: 45
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
@@ -312,7 +332,7 @@ jobs:
           enable-cache: true
 
       - name: "Test CLI (Python)"
-        timeout-minutes: 30
+        timeout-minutes: 45
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
@@ -366,7 +386,7 @@ jobs:
 
           dora destroy
 
-          # Run Python queue latency test 
+          # Run Python queue latency test
           echo "Running CI Queue Latency Test"
           dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
 
@@ -374,13 +394,13 @@ jobs:
           echo "Running CI Queue + Timeout Test"
           dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
-          # Run Rust queue latency test 
+          # Run Rust queue latency test
           echo "Running CI Queue Size Latest Data Rust Test"
           dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
           dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
       - name: "Test CLI (C)"
-        timeout-minutes: 30
+        timeout-minutes: 45
         # fail-fast by using bash shell explictly
         shell: bash
         if: runner.os == 'Linux'
@@ -399,7 +419,7 @@ jobs:
           dora destroy
 
       - name: "Test CLI (C++)"
-        timeout-minutes: 30
+        timeout-minutes: 45
         # fail-fast by using bash shell explictly
         shell: bash
         if: runner.os == 'Linux'
@@ -491,6 +511,8 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: ubuntu-22.04
             target: armv7-unknown-linux-musleabihf
+          - runner: ubuntu-22.04
+            target: x86_64-pc-windows-gnu
           - runner: macos-13
             target: aarch64-apple-darwin
           - runner: macos-13
@@ -501,9 +523,13 @@ jobs:
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - name: "Add toolchains"
         run: rustup target add ${{ matrix.platform.target }}
-      - name: "Build"
+      - name: Install system-level dependencies
+        if: runner.target == 'x86_64-pc-windows-gnu'
+        run: |
+          sudo apt install g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
+      - name: "Check"
         uses: actions-rs/cargo@v1
         with:
           use-cross: true
           command: check
-          args: --target  ${{ matrix.platform.target }} -p dora-cli
+          args: --target  ${{ matrix.platform.target }} --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python

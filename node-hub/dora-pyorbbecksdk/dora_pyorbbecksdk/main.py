@@ -64,15 +64,13 @@ class TemporalFilter:
 def yuyv_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     """TODO: Add docstring."""
     yuyv = frame.reshape((height, width, 2))
-    bgr_image = cv2.cvtColor(yuyv, cv2.COLOR_YUV2BGR_YUY2)
-    return bgr_image
+    return cv2.cvtColor(yuyv, cv2.COLOR_YUV2BGR_YUY2)
 
 
 def uyvy_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     """TODO: Add docstring."""
     uyvy = frame.reshape((height, width, 2))
-    bgr_image = cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
-    return bgr_image
+    return cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
 
 
 def i420_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -81,8 +79,7 @@ def i420_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     u = frame[height : height + height // 4].reshape(height // 2, width // 2)
     v = frame[height + height // 4 :].reshape(height // 2, width // 2)
     yuv_image = cv2.merge([y, u, v])
-    bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_I420)
-    return bgr_image
+    return cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_I420)
 
 
 def nv21_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -90,8 +87,7 @@ def nv21_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     y = frame[0:height, :]
     uv = frame[height : height + height // 2].reshape(height // 2, width)
     yuv_image = cv2.merge([y, uv])
-    bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV21)
-    return bgr_image
+    return cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV21)
 
 
 def nv12_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -99,8 +95,7 @@ def nv12_to_bgr(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     y = frame[0:height, :]
     uv = frame[height : height + height // 2].reshape(height // 2, width)
     yuv_image = cv2.merge([y, uv])
-    bgr_image = cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV12)
-    return bgr_image
+    return cv2.cvtColor(yuv_image, cv2.COLOR_YUV2BGR_NV12)
 
 
 def frame_to_bgr_image(frame: VideoFrame):
@@ -122,14 +117,11 @@ def frame_to_bgr_image(frame: VideoFrame):
     elif color_format == OBFormat.MJPG:
         image = cv2.imdecode(data, cv2.IMREAD_COLOR)
     elif color_format == OBFormat.I420:
-        image = i420_to_bgr(data, width, height)
-        return image
+        return i420_to_bgr(data, width, height)
     elif color_format == OBFormat.NV12:
-        image = nv12_to_bgr(data, width, height)
-        return image
+        return nv12_to_bgr(data, width, height)
     elif color_format == OBFormat.NV21:
-        image = nv21_to_bgr(data, width, height)
-        return image
+        return nv21_to_bgr(data, width, height)
     elif color_format == OBFormat.UYVY:
         image = np.resize(data, (height, width, 2))
         image = cv2.cvtColor(image, cv2.COLOR_YUV2BGR_UYVY)

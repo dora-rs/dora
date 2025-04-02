@@ -1,0 +1,54 @@
+[project]
+name = "dora-llama-cpp-python"
+version = "1.0.1"
+authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
+description = "dora-llama-cpp-python"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+  "dora-rs >= 0.3.9",
+  "torch == 2.4.0",
+  "torchvision >= 0.19",
+  "torchaudio >= 2.1.0",
+  "opencv-python >= 4.1.1",
+  "modelscope >= 1.18.1",
+  "huggingface-hub>=0.29.0",
+  "mlx-lm>=0.21.1; sys_platform == 'darwin'",
+  "llama-cpp-python",
+]
+
+[tool.uv.sources]
+llama-cpp-python = [
+  { index = "llama_cpp_python_metal", marker = "sys_platform == 'darwin'" },
+  { index = "llama_cpp_python_cu121", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "llama_cpp_python_cu121"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu121"
+explicit = true
+
+[[tool.uv.index]]
+name = "llama_cpp_python_metal"
+url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
+explicit = true
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-llama-cpp-python = "dora_llama_cpp_python.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]

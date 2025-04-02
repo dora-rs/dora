@@ -1,0 +1,68 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+      - timestamp_start
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english
+
+  - id: dora-llama-cpp-python
+    build: pip install -e ../../node-hub/dora-llama-cpp-python
+    path: dora-llama-cpp-python
+    inputs:
+      text: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      MODEL_NAME_OR_PATH: TheBloke/Llama-2-7B-Chat-GGUF   # Llama 2.7B model pull from Hugging Face
+      MODEL_FILE_PATTERN: "*Q4_K_M.gguf"
+      SYSTEM_PROMPT: "You're a very succinct AI assistant with short answers."
+      ACTIVATION_WORDS: "what how who where you"
+      MAX_TOKENS: "512"
+      N_GPU_LAYERS: "35"     # Enable GPU acceleration
+      N_THREADS: "4"         # CPU threads
+      CONTEXT_SIZE: "4096"   # Maximum context window
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      text_llama: dora-llama-cpp-python/text  
+      text_whisper: dora-distil-whisper/text
+
+  - id: dora-kokoro-tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
+    inputs:
+      text: dora-llama-cpp-python/text  
+    outputs:
+      - audio
+    env:
+      ACTIVATION_WORDS: you
+
+  - id: dora-pyaudio
+    build: pip install -e ../../node-hub/dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-kokoro-tts/audio
+      timestamp_start: dora-vad/timestamp_start

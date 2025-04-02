@@ -1,0 +1,35 @@
+nodes:
+  - id: ui
+    build: pip install -e .
+    path: dora-gradio
+    outputs:
+      - text    # Text from chat interface
+      - audio        # Raw audio stream
+      - image        # Camera feed
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      text: ui/text
+      image: ui/image
+      text_whisper: dora-distil-whisper/text
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: ui/audio
+    outputs:
+      - audio
+      - timestamp_start
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english

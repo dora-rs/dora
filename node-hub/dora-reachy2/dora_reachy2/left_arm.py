@@ -7,7 +7,7 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 from reachy2_sdk import ReachySDK
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation
 
 ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
@@ -26,7 +26,7 @@ l_default_pose = [
 def l_arm_go_to_mixed_angles(reachy, x, y, z):
     """TODO: Add docstring."""
     for theta in range(-80, -60, 10):
-        r = R.from_euler("zyx", [0, theta, 0], degrees=True)
+        r = Rotation.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
         transform[:3, 3] = [x, y, z]
@@ -41,7 +41,7 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
 
         ## First try turning left
         pitch = -90
-        r = R.from_euler("ZYX", (-yaw, 0, 0), degrees=True) * R.from_euler(
+        r = Rotation.from_euler("ZYX", (-yaw, 0, 0), degrees=True) * Rotation.from_euler(
             "ZYX",
             (0, pitch, 0),
             degrees=True,
@@ -71,11 +71,11 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
 
 def manage_gripper(reachy, gripper, grasp):
     """TODO: Add docstring."""
-    if (gripper == 100 and reachy.r_arm.gripper.get_current_opening() == 100) or (
+    if (gripper == 100 and reachy.l_arm.gripper.get_current_opening() == 100) or (
         gripper == 0.0
         and (
-            reachy.r_arm.gripper.get_current_opening() < 98
-            and reachy.r_arm.gripper.get_current_opening() > 2
+            reachy.l_arm.gripper.get_current_opening() < 98
+            and reachy.l_arm.gripper.get_current_opening() > 2
         )
         and grasp
     ):

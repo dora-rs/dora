@@ -31,14 +31,22 @@ use std::{
 };
 use tracing::{info, warn};
 
+#[cfg(feature = "metrics")]
+use dora_metrics::init_meter_provider;
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
+use tokio::runtime::{Handle, Runtime};
 
 pub mod arrow_utils;
 mod control_channel;
 mod drop_stream;
 
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
+
+enum TokioRuntime {
+    Runtime(Runtime),
+    Handle(Handle),
+}
 
 pub struct DoraNode {
     id: NodeId,
@@ -53,6 +61,7 @@ pub struct DoraNode {
 
     dataflow_descriptor: Descriptor,
     warned_unknown_output: BTreeSet<DataId>,
+    _rt: TokioRuntime,
 }
 
 impl DoraNode {
@@ -133,6 +142,39 @@ impl DoraNode {
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
 
+        let rt = match Handle::try_current() {
+            Ok(handle) => TokioRuntime::Handle(handle),
+            Err(_) => TokioRuntime::Runtime(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .context("tokio runtime failed")?,
+            ),
+        };
+
+        let id = format!("{}/{}", dataflow_id, node_id);
+
+        #[cfg(feature = "metrics")]
+        match &rt {
+            TokioRuntime::Runtime(rt) => rt.spawn(async {
+                if let Err(e) = init_meter_provider(id)
+                    .await
+                    .context("failed to init metrics provider")
+                {
+                    warn!("could not create metric provider with err: {:#?}", e);
+                }
+            }),
+            TokioRuntime::Handle(handle) => handle.spawn(async {
+                if let Err(e) = init_meter_provider(id)
+                    .await
+                    .context("failed to init metrics provider")
+                {
+                    warn!("could not create metric provider with err: {:#?}", e);
+                }
+            }),
+        };
+
         let event_stream = EventStream::init(
             dataflow_id,
             &node_id,
@@ -159,6 +201,7 @@ impl DoraNode {
             cache: VecDeque::new(),
             dataflow_descriptor,
             warned_unknown_output: BTreeSet::new(),
+            _rt: rt,
         };
         Ok((node, event_stream))
     }
