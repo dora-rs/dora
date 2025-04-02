@@ -1,0 +1,42 @@
+# test_dataflow.yaml
+# Simple test dataflow for dora-gr00t
+
+nodes:
+  # Dummy input node
+  - id: dummy
+    custom:
+      source: python
+      operator: dummy_input:main
+      outputs:
+        - video.ego_view
+        - state.left_arm
+        - state.right_arm
+        - state.left_hand
+        - state.right_hand
+        - state.waist
+        - annotation.human.action.task_description
+    
+  # GR00T node
+  - id: gr00t
+    custom:
+      source: python
+      operator: dora_gr00t.main:main
+      config:
+        model_path: nvidia/GR00T-N1-2B
+        embodiment_tag: gr1
+        data_config: gr1_arms_waist
+        denoising_steps: 4
+      inputs:
+        video.ego_view: dummy/video.ego_view
+        state.left_arm: dummy/state.left_arm
+        state.right_arm: dummy/state.right_arm
+        state.left_hand: dummy/state.left_hand
+        state.right_hand: dummy/state.right_hand
+        state.waist: dummy/state.waist
+        annotation.human.action.task_description: dummy/annotation.human.action.task_description
+      outputs:
+        - action.left_arm
+        - action.right_arm
+        - action.left_hand
+        - action.right_hand
+        - action.waist
