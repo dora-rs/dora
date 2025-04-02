@@ -120,11 +120,11 @@ jobs:
           esac
           echo "Packaging artifact..."
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            ARCHIVE_NAME="dora-c-api-${VERSION}-${{ matrix.target }}.zip"
+            ARCHIVE_NAME="libdora-${VERSION}-${{ matrix.target }}.zip"
             powershell Compress-Archive -Path 'dist/*' -DestinationPath "$ARCHIVE_NAME"
             mv "$ARCHIVE_NAME" .
           else
-            ARCHIVE_NAME="dora-c-api-${VERSION}-${{ matrix.target }}.tar.gz"
+            ARCHIVE_NAME="libdora-${VERSION}-${{ matrix.target }}.tar.gz"
             tar -czf "$ARCHIVE_NAME" -C dist .
           fi
           echo "Archive created: $ARCHIVE_NAME"
