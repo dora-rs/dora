@@ -3032,6 +3032,7 @@ dependencies = [
  "dora-message",
  "dora-node-api",
  "dora-tracing",
+ "dunce",
  "eyre",
  "flume 0.10.14",
  "futures",
