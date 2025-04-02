@@ -11,3 +11,4 @@ log = "0.4"
 structopt = "0.3"
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
+bytemuck = "1.7.0"

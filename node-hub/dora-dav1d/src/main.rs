@@ -41,7 +41,6 @@ fn main() -> Result<()> {
     let mut settings = Settings::new();
     // settings.set_n_threads(16);
     settings.set_max_frame_delay(1);
-
     let mut dec =
         dav1d::Decoder::with_settings(&settings).expect("failed to create decoder instance");
 
@@ -78,17 +77,34 @@ fn main() -> Result<()> {
                             } else {
                                 480
                             };
-                            let y = p.plane(dav1d::PlanarImageComponent::Y);
-                            let u = p.plane(dav1d::PlanarImageComponent::U);
-                            let v = p.plane(dav1d::PlanarImageComponent::V);
-                            let y = yuv420_to_bgr(&y, &u, &v, width, height);
-
-                            let arrow = y.into_arrow();
-                            metadata.parameters.insert(
-                                "encoding".to_string(),
-                                dora_node_api::Parameter::String("bgr8".to_string()),
-                            );
-                            node.send_output(id, metadata.parameters, arrow).unwrap();
+                            match p.pixel_layout() {
+                                dav1d::PixelLayout::I420 => {
+                                    let y = p.plane(dav1d::PlanarImageComponent::Y);
+                                    let u = p.plane(dav1d::PlanarImageComponent::U);
+                                    let v = p.plane(dav1d::PlanarImageComponent::V);
+                                    let y = yuv420_to_bgr(&y, &u, &v, width, height);
+                                    let arrow = y.into_arrow();
+                                    metadata.parameters.insert(
+                                        "encoding".to_string(),
+                                        dora_node_api::Parameter::String("bgr8".to_string()),
+                                    );
+                                    node.send_output(id, metadata.parameters, arrow).unwrap();
+                                }
+                                dav1d::PixelLayout::I400 => {
+                                    let y = p.plane(dav1d::PlanarImageComponent::Y);
+                                    let vec16: Vec<u16> = bytemuck::cast_slice(&y).to_vec();
+                                    let arrow = vec16.into_arrow();
+                                    metadata.parameters.insert(
+                                        "encoding".to_string(),
+                                        dora_node_api::Parameter::String("mono16".to_string()),
+                                    );
+                                    node.send_output(id, metadata.parameters, arrow).unwrap();
+                                }
+                                _ => {
+                                    warn!("Unsupported pixel layout");
+                                    continue;
+                                }
+                            };
                         }
                     }
                 }
