@@ -9,7 +9,7 @@
 
 use std::env::var;
 
-use dora_node_api::arrow::array::UInt8Array;
+use dora_node_api::arrow::array::{UInt16Array, UInt8Array};
 use dora_node_api::{DoraNode, Event, IntoArrow, Parameter};
 use eyre::{Context as EyreContext, Result};
 use log::warn;
@@ -119,6 +119,14 @@ fn main() -> Result<()> {
                     low_latency: true,
                     ..Default::default()
                 };
+                match encoding {
+                    "mono16" => {
+                        enc.bit_depth = 12;
+                        enc.chroma_sampling = color::ChromaSampling::Cs400;
+                    }
+                    _ => {}
+                }
+
                 let cfg = Config::new().with_encoder_config(enc.clone());
                 if encoding == "bgr8" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
@@ -191,6 +199,48 @@ fn main() -> Result<()> {
                     let xdec = f.planes[2].cfg.xdec;
                     let stride = (width + xdec) >> xdec;
                     f.planes[2].copy_from_raw_u8(&v, stride, 1);
+
+                    match ctx.send_frame(f) {
+                        Ok(_) => {}
+                        Err(e) => match e {
+                            EncoderStatus::EnoughData => {
+                                warn!("Unable to send frame ");
+                            }
+                            _ => {
+                                warn!("Unable to send frame ");
+                            }
+                        },
+                    }
+                    metadata
+                        .parameters
+                        .insert("encoding".to_string(), Parameter::String("av1".to_string()));
+                    ctx.flush();
+                    match ctx.receive_packet() {
+                        Ok(pkt) => {
+                            let data = pkt.data;
+                            let arrow = data.into_arrow();
+                            node.send_output(id, metadata.parameters, arrow)
+                                .context("could not send output")
+                                .unwrap();
+                        }
+                        Err(e) => match e {
+                            EncoderStatus::LimitReached => {}
+                            EncoderStatus::Encoded => {}
+                            EncoderStatus::NeedMoreData => {}
+                            _ => {
+                                panic!("Unable to receive packet",);
+                            }
+                        },
+                    }
+                    vec![]
+                } else if encoding == "mono16" {
+                    let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
+                    let buffer: &[u16] = buffer.values();
+                    let mut ctx: Context<u16> = cfg.new_context().unwrap();
+                    let mut f = ctx.new_frame();
+
+                    let origin = f.planes[0].data_origin_mut();
+                    origin.copy_from_slice(buffer);
 
                     match ctx.send_frame(f) {
                         Ok(_) => {}
