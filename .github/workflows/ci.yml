@@ -118,6 +118,9 @@ jobs:
       - name: "Rust Dataflow example"
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
+      - name: "Rust Git Dataflow example"
+        timeout-minutes: 30
+        run: cargo run --example rust-dataflow-git
       - name: "Multiple Daemons example"
         timeout-minutes: 30
         run: cargo run --example multiple-daemons
