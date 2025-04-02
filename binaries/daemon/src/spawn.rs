@@ -644,6 +644,12 @@ async fn clone_into(
     clone_dir: &Path,
     logger: &mut NodeLogger<'_>,
 ) -> eyre::Result<git2::Repository> {
+    if let Some(parent) = clone_dir.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .context("failed to create parent directory for git clone")?;
+    }
+
     let rev_str = rev_str(rev);
     logger
         .log(
