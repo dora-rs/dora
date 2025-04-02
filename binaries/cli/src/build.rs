@@ -23,15 +23,15 @@ pub fn build(dataflow: String, uv: bool) -> eyre::Result<()> {
         match node.kind()? {
             dora_core::descriptor::NodeKind::Standard(_) => {
                 if let Some(build) = &node.build {
-                    run_build_command(build, working_dir, uv, node.env.clone()).with_context(
-                        || format!("build command failed for standard node `{}`", node.id),
-                    )?
+                    run_build_command(build, working_dir, uv, &node.env).with_context(|| {
+                        format!("build command failed for standard node `{}`", node.id)
+                    })?
                 }
             }
             dora_core::descriptor::NodeKind::Runtime(runtime_node) => {
                 for operator in &runtime_node.operators {
                     if let Some(build) = &operator.config.build {
-                        run_build_command(build, working_dir, uv, node.env.clone()).with_context(
+                        run_build_command(build, working_dir, uv, &node.env).with_context(
                             || {
                                 format!(
                                     "build command failed for operator `{}/{}`",
@@ -44,22 +44,20 @@ pub fn build(dataflow: String, uv: bool) -> eyre::Result<()> {
             }
             dora_core::descriptor::NodeKind::Custom(custom_node) => {
                 if let Some(build) = &custom_node.build {
-                    run_build_command(build, working_dir, uv, node.env.clone()).with_context(
-                        || format!("build command failed for custom node `{}`", node.id),
-                    )?
+                    run_build_command(build, working_dir, uv, &node.env).with_context(|| {
+                        format!("build command failed for custom node `{}`", node.id)
+                    })?
                 }
             }
             dora_core::descriptor::NodeKind::Operator(operator) => {
                 if let Some(build) = &operator.config.build {
-                    run_build_command(build, working_dir, uv, node.env.clone()).with_context(
-                        || {
-                            format!(
-                                "build command failed for operator `{}/{}`",
-                                node.id,
-                                operator.id.as_ref().unwrap_or(&default_op_id)
-                            )
-                        },
-                    )?
+                    run_build_command(build, working_dir, uv, &node.env).with_context(|| {
+                        format!(
+                            "build command failed for operator `{}/{}`",
+                            node.id,
+                            operator.id.as_ref().unwrap_or(&default_op_id)
+                        )
+                    })?
                 }
             }
         }

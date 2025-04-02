@@ -7,7 +7,7 @@ pub fn run_build_command(
     build: &str,
     working_dir: &Path,
     uv: bool,
-    envs: Option<BTreeMap<String, EnvValue>>,
+    envs: &Option<BTreeMap<String, EnvValue>>,
 ) -> eyre::Result<()> {
     let lines = build.lines().collect::<Vec<_>>();
     for build_line in lines {
@@ -26,7 +26,7 @@ pub fn run_build_command(
         cmd.args(split);
 
         // Inject Environment Variables
-        if let Some(envs) = envs.clone() {
+        if let Some(envs) = envs {
             for (key, value) in envs {
                 let value = value.to_string();
                 cmd.env(key, value);

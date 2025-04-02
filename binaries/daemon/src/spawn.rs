@@ -608,7 +608,7 @@ impl Spawner<'_> {
             let uv = self.uv;
             let node_env = node_env.clone();
             let task = tokio::task::spawn_blocking(move || {
-                run_build_command(&build, &clone_dir, uv, node_env).context("build command failed")
+                run_build_command(&build, &clone_dir, uv, &node_env).context("build command failed")
             });
             task.await??;
         }
