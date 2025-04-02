@@ -36,10 +36,12 @@ members = [
     "node-hub/openai-proxy-server",
     "node-hub/dora-kit-car",
     "node-hub/dora-object-to-pose",
+    "node-hub/dora-mistral-rs",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
     "tests/queue_size_latest_data_rust/receive_data",
+
 ]
 
 [workspace.package]
@@ -145,6 +147,10 @@ name = "cxx-dataflow"
 path = "examples/c++-dataflow/run.rs"
 
 [[example]]
+name = "cxx-arrow-dataflow"
+path = "examples/c++-arrow-dataflow/run.rs"
+
+[[example]]
 name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
 
@@ -173,3 +179,8 @@ path = "examples/cmake-dataflow/run.rs"
 name = "cxx-ros2-dataflow"
 path = "examples/c++-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

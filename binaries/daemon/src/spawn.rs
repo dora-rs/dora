@@ -21,7 +21,7 @@ use dora_message::{
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
-    descriptor::GitRepoRev,
+    descriptor::{EnvValue, GitRepoRev},
     DataflowId,
 };
 use dora_node_api::{
@@ -107,7 +107,8 @@ impl Spawner<'_> {
                             .await?
                     }
                     dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
-                        self.spawn_git_node(&n, repo, rev, logger).await?
+                        self.spawn_git_node(&n, repo, rev, logger, &node.env)
+                            .await?
                     }
                 };
                 let Some(mut command) = command else {
@@ -512,6 +513,7 @@ impl Spawner<'_> {
         repo_addr: &String,
         rev: &Option<GitRepoRev>,
         logger: &mut NodeLogger<'_>,
+        node_env: &Option<BTreeMap<String, EnvValue>>,
     ) -> Result<Option<tokio::process::Command>, eyre::Error> {
         let dataflow_id = self.dataflow_id;
         let repo_url = Url::parse(repo_addr).context("failed to parse git repository URL")?;
@@ -604,8 +606,9 @@ impl Spawner<'_> {
             let build = build.to_owned();
             let clone_dir = clone_dir.clone();
             let uv = self.uv;
+            let node_env = node_env.clone();
             let task = tokio::task::spawn_blocking(move || {
-                run_build_command(&build, &clone_dir, uv).context("build command failed")
+                run_build_command(&build, &clone_dir, uv, node_env).context("build command failed")
             });
             task.await??;
         }

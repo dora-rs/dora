@@ -1,0 +1,51 @@
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "dora-magma"
+version = "0.1.0"
+description = "Dora node for Microsoft Magma model"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+readme = "README.md"
+authors = [{ name = "Munish Mummadi", email = "moneymindedmunish1@gmail.com" }]
+dependencies = [
+  "dora-rs >= 0.3.9",
+  "numpy < 2",
+  "torch >= 2.4.0",
+  "torchvision >= 0.19",
+  "transformers>=4.45",
+  "opencv-python >= 4.1.1",
+  "accelerate>=1.5.1",
+  "psutil>=7.0.0",
+  "open-clip-torch>=2.31.0",
+  "wandb",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.1.1", "ruff>=0.9.1", "pytest-cov>=4.0.0"]
+
+[project.scripts]
+dora-magma = "dora_magma.main:main"
+
+[tool.ruff]
+exclude = ["dora_magma/Magma"]
+
+[tool.black]
+extend.exclude = "dora_magma/Magma"
+
+[tool.uv.sources]
+transformers = { git = "https://github.com/jwyang/transformers.git", rev = "dev/jwyang-v4.48.2" }
+
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]

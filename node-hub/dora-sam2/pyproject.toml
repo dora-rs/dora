@@ -8,11 +8,14 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 dependencies = [
-    "dora-rs >= 0.3.9",
-    "huggingface-hub>=0.29.0",
-    "opencv-python>=4.11.0.86",
-    "sam2>=1.1.0",
+  "dora-rs >= 0.3.9",
+  "huggingface-hub>=0.29.0",
+  "opencv-python>=4.11.0.86",
+  "sam2>=1.1.0",
 ]
+
+[tool.uv]
+no-build-isolation-package = ['sam2']
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
@@ -22,5 +25,12 @@ dora-sam2 = "dora_sam2.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
 ]

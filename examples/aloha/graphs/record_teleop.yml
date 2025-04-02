@@ -1,0 +1,32 @@
+nodes:
+  - id: teleop
+    custom:
+      source: cargo
+      args: run -p aloha-teleop --release
+      outputs:
+        - puppet_goal_position
+
+  - id: dora-record
+    custom:
+      build: cargo install --git https://github.com/dora-rs/dora dora-record
+      source: dora-record
+      inputs:
+        puppet_goal_position: teleop/puppet_goal_position
+
+  - id: plot
+    custom:
+      source: ../nodes/plot_node.py
+      inputs:
+        image: webcam/image
+        position: teleop/puppet_goal_position
+      envs:
+        IMAGE_WIDTH: 1280
+        IMAGE_HEIGHT: 720
+  
+  - id: webcam
+    custom:
+      source: ../nodes/realsense_node.py
+      inputs:
+        tick: dora/timer/millis/20
+      outputs:
+        - image

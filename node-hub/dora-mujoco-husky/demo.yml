@@ -1,0 +1,18 @@
+nodes:
+  - id: gamepad
+    build: pip install -e ../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: mujoco_husky
+    build: pip install -e ../../node-hub/dora-mujoco-husky
+    path: dora-mujoco-husky
+    inputs:
+      cmd_vel: gamepad/cmd_vel
+    outputs:
+      - position
+      - velocity
+

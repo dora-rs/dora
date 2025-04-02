@@ -1,21 +1,24 @@
-from reachy_sdk import ReachySDK
+"""TODO: Add docstring."""
+
 import os
-from dora import Node
+
 import pyarrow as pa
+from dora import Node
+from reachy_sdk import ReachySDK
 
 
 def main():
-
+    """TODO: Add docstring."""
     node = Node()
 
-    ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.24")
-    CAMERA = os.getenv("CAMERA", "right")
+    robot_ip = os.getenv("ROBOT_IP", "10.42.0.24")
+    camera = os.getenv("CAMERA", "right")
 
-    reachy = ReachySDK(ROBOT_IP, with_mobile_base=False)
+    reachy = ReachySDK(robot_ip, with_mobile_base=False)
 
     for event in node:
         if event["type"] == "INPUT":
-            if CAMERA == "right":
+            if camera == "right":
                 frame = reachy.right_camera.last_frame
             else:
                 frame = reachy.left_camera.last_frame

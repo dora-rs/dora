@@ -1,0 +1,162 @@
+nodes:
+  - id: teleop_right
+    custom:
+      source: cargo
+      args: run --release -p aloha-teleop
+      inputs:
+        heartbeat: dora/timer/millis/20
+      outputs:
+        - puppet_goal_position
+        - puppet_position
+        - puppet_velocity
+        - puppet_current
+
+  - id: dora-record
+    custom:
+      build: cargo install --git https://github.com/dora-rs/dora dora-record
+      source: dora-record
+      inputs:
+        action: teleop_right/puppet_goal_position
+        observation.state: teleop_right/puppet_position
+        observation.velocity: teleop_right/puppet_velocity
+        observation.effort: teleop_right/puppet_current
+        episode_index: keyboard/space
+        failed_episode_index: keyboard/failed
+        observation.images.cam_left_wrist: cam_saver_left_wrist/saved_image
+        observation.images.cam_right_wrist: cam_saver_right_wrist/saved_image
+        observation.images.cam_low: cam_saver_low/saved_image
+        observation.images.cam_high: cam_saver_high/saved_image
+
+  - id: cam_left_wrist
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 2
+
+  - id: cam_right_wrist
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 22
+
+  - id: cam_low
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 14
+
+  - id: cam_high
+    custom:
+      source: ../nodes/webcam.py
+      inputs:
+        tick: dora/timer/millis/33
+      outputs:
+        - image
+      envs:
+        CAMERA_ID: 8
+
+  - id: keyboard
+    custom:
+      source: ../nodes/keyboard_node.py
+      inputs:
+        heartbeat: dora/timer/millis/20
+      outputs:
+        - space
+        - failed
+
+  - id: cam_saver_left_wrist
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_left_wrist/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_left_wrist
+
+  - id: cam_saver_right_wrist
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_right_wrist/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_right_wrist
+
+  - id: cam_saver_low
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_low/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_low
+
+  - id: cam_saver_high
+    custom:
+      source: ../nodes/lerobot_webcam_saver.py
+      inputs:
+        image: cam_high/image
+        record_episode: keyboard/space
+      outputs:
+        - saved_image
+      envs:
+        CAMERA_NAME: observation.images.cam_high
+
+  # Realsense seems to require specific power that makes it unreliable in our current setup
+  # - id: cam_left_wrist
+  # custom:
+  # source: ../nodes/realsense_node.py
+  # inputs:
+  # tick: dora/timer/millis/2
+  # outputs:
+  # - image
+  # envs:
+  # CAMERA_ID: 128422271614
+
+  # - id: cam_right_wrist
+  # custom:
+  # source: ../nodes/realsense_node.py
+  # inputs:
+  # tick: dora/timer/millis/2
+  # outputs:
+  # - image
+  # envs:
+  # CAMERA_ID: 128422270109
+
+  # - id: cam_low
+  # custom:
+  # source: ../nodes/realsense_node.py
+  # inputs:
+  # tick: dora/timer/millis/2
+  # outputs:
+  # - image
+  # envs:
+  # CAMERA_ID: 128422271393
+
+  # - id: cam_high
+  # custom:
+  # source: ../nodes/realsense_node.py
+  # inputs:
+  # tick: dora/timer/millis/2
+  # outputs:
+  # - image
+  # envs:
+  # CAMERA_ID: 128422271609

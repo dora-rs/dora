@@ -7,7 +7,7 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 from reachy2_sdk import ReachySDK
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation
 
 ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
 
@@ -25,7 +25,7 @@ r_default_pose = [
 def r_arm_go_to_mixed_angles(reachy, x, y, z):
     """TODO: Add docstring."""
     for theta in range(-80, -60, 10):
-        r = R.from_euler("zyx", [0, theta, 0], degrees=True)
+        r = Rotation.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
         transform[:3, 3] = [x, y, z]
@@ -40,7 +40,7 @@ def r_arm_go_to_mixed_angles(reachy, x, y, z):
 
         ## First try turning left
         pitch = -90
-        r = R.from_euler("ZYX", (yaw, 0, 0), degrees=True) * R.from_euler(
+        r = Rotation.from_euler("ZYX", (yaw, 0, 0), degrees=True) * Rotation.from_euler(
             "ZYX",
             (0, pitch, 0),
             degrees=True,

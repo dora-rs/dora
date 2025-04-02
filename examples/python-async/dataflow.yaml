@@ -1,0 +1,14 @@
+nodes:
+  - id: send_data
+    build: pip install asyncio
+    path: ./send_data.py
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - data
+
+  - id: receive_data_with_sleep
+    build: pip install numpy pyarrow
+    path: ./receive_data.py
+    inputs:
+      tick: send_data/data

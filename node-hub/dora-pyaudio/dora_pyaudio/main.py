@@ -41,23 +41,23 @@ def main():
     sr = SAMPLE_RATE
     i = 0
     while True:
-        event = node.next(timeout=0.01)
+        event = node.next(timeout=0.005)
         if event is None:
             break
         if event["type"] == "INPUT":
             if event["id"] == "audio":
                 audio = event["value"].to_numpy()
                 sr = event["metadata"].get("sample_rate", SAMPLE_RATE)
-                stream = play_audio(audio[0 : sr // 10], sr, stream)
-                i = sr // 10
+                stream = play_audio(audio[0:sr], sr, stream)
+                i = sr
 
             else:
                 audio = np.array([])
                 i = 0
         elif event["type"] == "ERROR":
             if i < len(audio):
-                stream = play_audio(audio[i : i + sr // 10], sr, stream)
-                i += sr // 10
+                stream = play_audio(audio[i : i + sr], sr, stream)
+                i += sr
 
     if stream is not None:
         stream.stop_stream()

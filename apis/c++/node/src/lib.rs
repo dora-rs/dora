@@ -71,7 +71,24 @@ mod ffi {
 
         fn is_dora(self: &CombinedEvent) -> bool;
         fn downcast_dora(event: CombinedEvent) -> Result<Box<DoraEvent>>;
+
+        unsafe fn send_arrow_output(
+            output_sender: &mut Box<OutputSender>,
+            id: String,
+            array_ptr: *mut u8,
+            schema_ptr: *mut u8,
+        ) -> DoraResult;
+
+        unsafe fn event_as_arrow_input(
+            event: Box<DoraEvent>,
+            out_array: *mut u8,
+            out_schema: *mut u8,
+        ) -> DoraResult;
     }
+}
+
+mod arrow_ffi {
+    pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 }
 
 #[cfg(feature = "ros2-bridge")]
@@ -161,6 +178,48 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
     })
 }
 
+unsafe fn event_as_arrow_input(
+    event: Box<DoraEvent>,
+    out_array: *mut u8,
+    out_schema: *mut u8,
+) -> ffi::DoraResult {
+    // Cast to Arrow FFI types
+    let out_array = out_array as *mut arrow::ffi::FFI_ArrowArray;
+    let out_schema = out_schema as *mut arrow::ffi::FFI_ArrowSchema;
+
+    let Some(Event::Input {
+        id: _,
+        metadata: _,
+        data,
+    }) = event.0
+    else {
+        return ffi::DoraResult {
+            error: "Not an input event".to_string(),
+        };
+    };
+
+    if out_array.is_null() || out_schema.is_null() {
+        return ffi::DoraResult {
+            error: "Received null output pointer".to_string(),
+        };
+    }
+
+    let array_data = data.to_data();
+
+    match arrow::ffi::to_ffi(&array_data.clone()) {
+        Ok((ffi_array, ffi_schema)) => {
+            std::ptr::write(out_array, ffi_array);
+            std::ptr::write(out_schema, ffi_schema);
+            ffi::DoraResult {
+                error: String::new(),
+            }
+        }
+        Err(e) => ffi::DoraResult {
+            error: format!("Error exporting Arrow array to C++: {:?}", e),
+        },
+    }
+}
+
 pub struct OutputSender(dora_node_api::DoraNode);
 
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
@@ -179,6 +238,47 @@ fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::
 pub struct MergedEvents {
     events: Option<Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin>>,
     next_id: u32,
+}
+unsafe fn send_arrow_output(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    array_ptr: *mut u8,
+    schema_ptr: *mut u8,
+) -> ffi::DoraResult {
+    let array_ptr = array_ptr as *mut arrow::ffi::FFI_ArrowArray;
+    let schema_ptr = schema_ptr as *mut arrow::ffi::FFI_ArrowSchema;
+
+    if array_ptr.is_null() || schema_ptr.is_null() {
+        return ffi::DoraResult {
+            error: "Received null Arrow array or schema pointer".to_string(),
+        };
+    }
+
+    let array = std::ptr::read(array_ptr);
+    let schema = std::ptr::read(schema_ptr);
+
+    std::ptr::write(array_ptr, std::mem::zeroed());
+    std::ptr::write(schema_ptr, std::mem::zeroed());
+
+    match arrow::ffi::from_ffi(array, &schema) {
+        Ok(array_data) => {
+            let arrow_array = arrow::array::make_array(array_data);
+            let result = sender
+                .0
+                .send_output(id.into(), Default::default(), arrow_array);
+            match result {
+                Ok(()) => ffi::DoraResult {
+                    error: String::new(),
+                },
+                Err(err) => ffi::DoraResult {
+                    error: format!("{err:?}"),
+                },
+            }
+        }
+        Err(e) => ffi::DoraResult {
+            error: format!("Error importing array from C++: {:?}", e),
+        },
+    }
 }
 
 impl MergedEvents {

@@ -1,0 +1,40 @@
+nodes:
+  - id: replay-client
+    build: pip install ../../../node-hub/replay-client
+    path: replay-client
+    inputs:
+      pull_position: dora/timer/millis/33
+    outputs:
+      - position
+      - end
+    env:
+      PATH: ../../../datasets/enzo2
+      EPISODE: 1
+
+  - id: replay-to-lcr
+    build: pip install git+https://github.com/Hennzau/pwm-position-control
+    path: ../nodes/interpolate_replay_to_lcr.py
+    inputs:
+      leader_position:
+        source: replay-client/position
+        queue_size: 1
+      follower_position:
+        source: lcr-follower/position
+        queue_size: 1
+    outputs:
+      - follower_goal
+    env:
+      FOLLOWER_CONTROL: ../configs/follower.left.json
+
+  - id: lcr-follower
+    build: pip install ../../../node-hub/dynamixel-client
+    path: dynamixel-client
+    inputs:
+      pull_position: dora/timer/millis/33
+      write_goal_position: replay-to-lcr/follower_goal
+      end: replay-client/end
+    outputs:
+      - position
+    env:
+      PORT: /dev/tty.usbmodem575E0031141
+      CONFIG: ../configs/follower.left.json
