@@ -563,6 +563,8 @@ impl Spawner<'_> {
         } else {
             clone_dir_base
         };
+        let clone_dir = dunce::simplified(&clone_dir).to_owned();
+
         if clone_dir.exists() {
             let empty = BTreeSet::new();
             let in_use = self.repos_in_use.get(&clone_dir).unwrap_or(&empty);
