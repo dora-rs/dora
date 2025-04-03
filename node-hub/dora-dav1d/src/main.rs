@@ -1,5 +1,5 @@
 use dav1d::Settings;
-use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, IntoArrow, Parameter};
+use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, IntoArrow};
 use eyre::{Context, Result};
 use log::warn;
 
@@ -7,9 +7,11 @@ fn yuv420_to_bgr(
     y_plane: &[u8],
     u_plane: &[u8],
     v_plane: &[u8],
-    width: usize,
-    height: usize,
+    width: u32,
+    height: u32,
 ) -> Vec<u8> {
+    let width = width as usize;
+    let height = height as usize;
     let mut rgb_data = vec![0u8; width * height * 3]; // Output RGB data buffer
 
     for j in 0..height {
@@ -54,65 +56,53 @@ fn main() -> Result<()> {
                 data,
                 mut metadata,
             }) => {
-                let data = data.as_any().downcast_ref::<UInt8Array>().unwrap();
-                let data = data.values().clone();
-
-                match dec.send_data(data, None, None, None) {
-                    Err(e) => {
-                        warn!("Error sending data to the decoder: {}", e);
-                    }
-                    Ok(()) => {
-                        if let Ok(p) = dec.get_picture() {
-                            let height = if let Some(Parameter::Integer(h)) =
-                                metadata.parameters.get("height")
-                            {
-                                *h as usize
-                            } else {
-                                640
-                            };
-                            let width = if let Some(Parameter::Integer(w)) =
-                                metadata.parameters.get("width")
-                            {
-                                *w as usize
-                            } else {
-                                480
-                            };
-                            match p.pixel_layout() {
-                                dav1d::PixelLayout::I420 => {
-                                    let y = p.plane(dav1d::PlanarImageComponent::Y);
-                                    let u = p.plane(dav1d::PlanarImageComponent::U);
-                                    let v = p.plane(dav1d::PlanarImageComponent::V);
-                                    let y = yuv420_to_bgr(&y, &u, &v, width, height);
-                                    let arrow = y.into_arrow();
-                                    metadata.parameters.insert(
-                                        "encoding".to_string(),
-                                        dora_node_api::Parameter::String("bgr8".to_string()),
-                                    );
-                                    node.send_output(id, metadata.parameters, arrow).unwrap();
-                                }
-                                dav1d::PixelLayout::I400 => {
-                                    let y = p.plane(dav1d::PlanarImageComponent::Y);
-                                    let vec16: Vec<u16> = bytemuck::cast_slice(&y).to_vec();
-                                    let arrow = vec16.into_arrow();
-                                    metadata.parameters.insert(
-                                        "encoding".to_string(),
-                                        dora_node_api::Parameter::String("mono16".to_string()),
-                                    );
-                                    node.send_output(id, metadata.parameters, arrow).unwrap();
-                                }
-                                _ => {
-                                    warn!("Unsupported pixel layout");
-                                    continue;
-                                }
-                            };
+                if let Some(data) = data.as_any().downcast_ref::<UInt8Array>() {
+                    let data = data.values().clone();
+                    match dec.send_data(data, None, None, None) {
+                        Err(e) => {
+                            warn!("Error sending data to the decoder: {}", e);
+                        }
+                        Ok(()) => {
+                            if let Ok(p) = dec.get_picture() {
+                                match p.pixel_layout() {
+                                    dav1d::PixelLayout::I420 => {
+                                        let y = p.plane(dav1d::PlanarImageComponent::Y);
+                                        let u = p.plane(dav1d::PlanarImageComponent::U);
+                                        let v = p.plane(dav1d::PlanarImageComponent::V);
+                                        let y = yuv420_to_bgr(&y, &u, &v, p.width(), p.height());
+                                        let arrow = y.into_arrow();
+                                        metadata.parameters.insert(
+                                            "encoding".to_string(),
+                                            dora_node_api::Parameter::String("bgr8".to_string()),
+                                        );
+                                        node.send_output(id, metadata.parameters, arrow).unwrap();
+                                    }
+                                    dav1d::PixelLayout::I400 => {
+                                        let y = p.plane(dav1d::PlanarImageComponent::Y);
+                                        let vec16: Vec<u16> = bytemuck::cast_slice(&y).to_vec();
+                                        let arrow = vec16.into_arrow();
+                                        metadata.parameters.insert(
+                                            "encoding".to_string(),
+                                            dora_node_api::Parameter::String("mono16".to_string()),
+                                        );
+                                        node.send_output(id, metadata.parameters, arrow).unwrap();
+                                    }
+                                    _ => {
+                                        warn!("Unsupported pixel layout");
+                                        continue;
+                                    }
+                                };
+                            }
                         }
                     }
+                } else {
+                    warn!("Unsupported data type {}", data.data_type());
+                    continue;
                 }
             }
             None => break,
             Some(_) => break,
         }
     }
-
     Ok(())
 }
