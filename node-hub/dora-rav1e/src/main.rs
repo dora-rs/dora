@@ -93,7 +93,7 @@ fn main() -> Result<()> {
         DoraNode::init_from_env().context("Could not initialize dora node")?;
 
     loop {
-        let _buffer = match events.recv() {
+        match events.recv() {
             Some(Event::Input {
                 id,
                 data,
@@ -154,9 +154,11 @@ fn main() -> Result<()> {
                         Err(e) => match e {
                             EncoderStatus::EnoughData => {
                                 warn!("Unable to send frame ");
+                                continue;
                             }
                             _ => {
                                 warn!("Unable to send frame ");
+                                continue;
                             }
                         },
                     }
@@ -181,7 +183,6 @@ fn main() -> Result<()> {
                             }
                         },
                     }
-                    vec![]
                 } else if encoding == "yuv420" {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer = buffer.values(); //.to_vec();
@@ -232,15 +233,19 @@ fn main() -> Result<()> {
                             }
                         },
                     }
-                    vec![]
                 } else if encoding == "mono16" {
                     let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u16] = buffer.values();
+                    // let buffer = shift_u16_slice_to_upper_12_bits(buffer);
+                    let bytes: &[u8] = &bytemuck::cast_slice(&buffer);
+
                     let mut ctx: Context<u16> = cfg.new_context().unwrap();
                     let mut f = ctx.new_frame();
 
-                    let origin = f.planes[0].data_origin_mut();
-                    origin.copy_from_slice(buffer);
+                    let xdec = f.planes[0].cfg.xdec;
+                    let stride = (width + xdec) >> xdec;
+                    // Multiply by 2 the stride as it is going to be width * 2 as we're converting 16-bit to 2*8-bit.
+                    f.planes[0].copy_from_raw_u8(bytes, stride * 2, 2);
 
                     match ctx.send_frame(f) {
                         Ok(_) => {}
@@ -274,19 +279,8 @@ fn main() -> Result<()> {
                             }
                         },
                     }
-                    vec![]
                 } else if encoding == "rgb8" {
                     unimplemented!("We haven't worked on additional encodings.");
-                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    let buffer: &[u8] = buffer.values();
-                    let mut ctx: Context<u8> = cfg.new_context().unwrap();
-                    let mut f = ctx.new_frame();
-
-                    for p in &mut f.planes {
-                        let stride = (enc.width + p.cfg.xdec) >> p.cfg.xdec;
-                        p.copy_from_raw_u8(&buffer, stride, 1);
-                    }
-                    buffer.to_vec()
                 } else {
                     unimplemented!("We haven't worked on additional encodings.");
                 }

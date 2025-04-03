@@ -3178,6 +3178,7 @@ name = "dora-dav1d"
 version = "0.0.0"
 dependencies = [
  "bitstream-io",
+ "bytemuck",
  "dav1d",
  "dora-node-api",
  "eyre",
@@ -3436,6 +3437,7 @@ dependencies = [
 name = "dora-rav1e"
 version = "0.3.10"
 dependencies = [
+ "bytemuck",
  "dora-node-api",
  "eyre",
  "log",
