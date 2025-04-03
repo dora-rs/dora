@@ -9,7 +9,7 @@ use dora_core::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
-use dora_daemon::Daemon;
+use dora_daemon::{Daemon, DoraCommand};
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
@@ -285,15 +285,15 @@ enum Lang {
     Cxx,
 }
 
-pub fn lib_main(args: Args) {
-    if let Err(err) = run(args) {
+pub fn lib_main(args: Args, dora_command: DoraCommand) {
+    if let Err(err) = run(args, dora_command) {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:?}");
         std::process::exit(1);
     }
 }
 
-fn run(args: Args) -> eyre::Result<()> {
+fn run(args: Args, dora_command: DoraCommand) -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     match &args.command {
         Command::Daemon {
@@ -379,7 +379,7 @@ fn run(args: Args) -> eyre::Result<()> {
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
-            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv))?;
+            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv, dora_command))?;
             handle_dataflow_result(result, None)?
         }
         Command::Up { config } => {
@@ -541,11 +541,11 @@ fn run(args: Args) -> eyre::Result<()> {
                             );
                         }
 
-                        let result = Daemon::run_dataflow(&dataflow_path, false).await?;
+                        let result = Daemon::run_dataflow(&dataflow_path, false, dora_command).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id, local_listen_port).await
+                        Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id, local_listen_port, dora_command).await
                     }
                 }
             })
@@ -799,9 +799,9 @@ fn py_main(_py: Python) -> PyResult<()> {
     pyo3::prepare_freethreaded_python();
     // Skip first argument as it is a python call.
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-
+    let dora_command = DoraCommand::from_python_env()?;
     match Args::try_parse_from(args) {
-        Ok(args) => lib_main(args),
+        Ok(args) => lib_main(args, dora_command),
         Err(err) => {
             eprintln!("{err}");
         }
