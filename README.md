@@ -256,6 +256,67 @@ nodes:
 The full documentation is available on [our website](https://dora-rs.ai/).
 A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/) of our website.
 
+### Documentation Structure
+```
+dora/docs/src/
+├── api/
+│   ├── python/
+│   │   └── README.md
+│   ├── rust/
+│   │   └── README.md
+│   └── README.md
+├── architecture/
+│   └── README.md
+├── assets/
+│   ├── logo.svg
+│   ├── bar_chart_dark.svg
+│   ├── bar_chart_light.svg
+│   └── ...
+├── community/
+│   └── README.md
+├── examples/
+│   ├── basic/
+│   │   ├── README.md
+│   │   └── hello_world.md
+│   └── advanced/
+│       ├── README.md
+│       └── image_processing.md
+├── quickstart/
+│   └── README.md
+└── troubleshooting/
+    └── README.md
+```
+
+### Quick Start
+- [Getting Started Guide](docs/src/quickstart/README.md) - Step-by-step tutorial for absolute beginners
+- [System Requirements](docs/src/quickstart/README.md#system-requirements) - Hardware and software prerequisites
+- [Installation Guide](docs/src/quickstart/README.md#quick-installation) - Installation instructions for different platforms
+
+### API Documentation
+- [Python API Guide](docs/src/api/python/README.md) - Python API documentation with examples
+- [Rust API Guide](docs/src/api/rust/README.md) - Rust API documentation with examples
+- [Performance Considerations](docs/src/api/README.md#performance-considerations) - Best practices for performance
+
+### Architecture and Concepts
+- [Architecture Overview](docs/src/architecture/README.md) - System architecture and design principles
+- [Data Flow](docs/src/architecture/README.md#data-flow) - Understanding data flow between nodes
+- [Core Components](docs/src/architecture/README.md#core-components) - Key system components
+
+### Examples and Tutorials
+- [Basic Examples](docs/src/examples/basic/README.md) - Simple examples to get started
+- [Advanced Examples](docs/src/examples/advanced/README.md) - Complex use cases and patterns
+- [Performance Examples](docs/src/examples/advanced/README.md#performance-considerations) - Optimization examples
+
+### Troubleshooting
+- [Common Issues](docs/src/troubleshooting/README.md#common-issues) - Solutions to common problems
+- [Debugging Tools](docs/src/troubleshooting/README.md#debugging-tools) - Tools and techniques for debugging
+- [Performance Tuning](docs/src/troubleshooting/README.md#performance-tuning) - Guidelines for performance optimization
+
+### Community
+- [Community Guidelines](docs/src/community/README.md) - How to get involved
+- [Support Channels](docs/src/community/README.md#support-channels) - Where to get help
+- [Contributing Guide](docs/src/community/README.md#contributing) - How to contribute
+
 ## What is Dora? And what features does Dora offer?
 
 **D**ataflow-**O**riented **R**obotic **A**rchitecture (`dora-rs`) is a framework that makes creation of robotic applications fast and simple.
