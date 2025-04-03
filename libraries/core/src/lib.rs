@@ -7,6 +7,7 @@ use std::{
 
 pub use dora_message::{config, uhlc};
 
+pub mod build;
 pub mod descriptor;
 pub mod metadata;
 pub mod topics;

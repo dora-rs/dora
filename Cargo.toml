@@ -133,6 +133,10 @@ name = "rust-dataflow"
 path = "examples/rust-dataflow/run.rs"
 
 [[example]]
+name = "rust-dataflow-git"
+path = "examples/rust-dataflow-git/run.rs"
+
+[[example]]
 name = "rust-ros2-dataflow"
 path = "examples/rust-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]

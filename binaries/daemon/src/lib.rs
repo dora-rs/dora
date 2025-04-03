@@ -21,6 +21,7 @@ use dora_message::{
     },
     daemon_to_daemon::InterDaemonEvent,
     daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    descriptor::NodeSource,
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
     DataflowId,
@@ -34,6 +35,7 @@ use log::{DaemonLogger, DataflowLogger, Logger};
 use pending::PendingNodes;
 use shared_memory_server::ShmemConf;
 use socket_stream_utils::socket_stream_send;
+use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
@@ -97,6 +99,8 @@ pub struct Daemon {
     remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
 
     logger: DaemonLogger,
+
+    repos_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -286,6 +290,7 @@ impl Daemon {
             clock,
             zenoh_session,
             remote_daemon_events_tx,
+            repos_in_use: Default::default(),
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -732,6 +737,16 @@ impl Daemon {
             }
         }
 
+        let mut spawner = Spawner {
+            dataflow_id,
+            working_dir,
+            daemon_tx: self.events_tx.clone(),
+            dataflow_descriptor,
+            clock: self.clock.clone(),
+            uv,
+            repos_in_use: &mut self.repos_in_use,
+        };
+
         // spawn nodes and set up subscriptions
         for node in nodes.into_values() {
             let mut logger = logger.reborrow().for_node(node.id.clone());
@@ -752,19 +767,10 @@ impl Daemon {
                 logger
                     .log(LogLevel::Info, Some("daemon".into()), "spawning")
                     .await;
-                match spawn::spawn_node(
-                    dataflow_id,
-                    &working_dir,
-                    node,
-                    self.events_tx.clone(),
-                    dataflow_descriptor.clone(),
-                    self.clock.clone(),
-                    node_stderr_most_recent,
-                    uv,
-                    &mut logger,
-                )
-                .await
-                .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
+                match spawner
+                    .spawn_node(node, node_stderr_most_recent, &mut logger)
+                    .await
+                    .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
                     Ok(running_node) => {
                         dataflow.running_nodes.insert(node_id, running_node);
@@ -1309,6 +1315,10 @@ impl Daemon {
                     .context("failed to get dataflow node results")?
                     .clone(),
             };
+
+            self.repos_in_use.values_mut().for_each(|dataflows| {
+                dataflows.remove(&dataflow_id);
+            });
 
             logger
                 .log(
@@ -2176,7 +2186,9 @@ impl CoreNodeKindExt for CoreNodeKind {
     fn dynamic(&self) -> bool {
         match self {
             CoreNodeKind::Runtime(_n) => false,
-            CoreNodeKind::Custom(n) => n.source == DYNAMIC_SOURCE,
+            CoreNodeKind::Custom(n) => {
+                matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
+            }
         }
     }
 }
