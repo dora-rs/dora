@@ -97,6 +97,8 @@ pub struct Daemon {
     remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
 
     logger: DaemonLogger,
+
+    dora_command: DoraCommand,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -106,6 +108,7 @@ impl Daemon {
         coordinator_addr: SocketAddr,
         machine_id: Option<String>,
         local_listen_port: u16,
+        dora_command: DoraCommand,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
@@ -137,12 +140,17 @@ impl Daemon {
             None,
             clock,
             Some(remote_daemon_events_tx),
+            dora_command,
         )
         .await
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path, uv: bool) -> eyre::Result<DataflowResult> {
+    pub async fn run_dataflow(
+        dataflow_path: &Path,
+        uv: bool,
+        dora_command: DoraCommand,
+    ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canonicalize dataflow path")?
@@ -192,6 +200,7 @@ impl Daemon {
             Some(exit_when_done),
             clock.clone(),
             None,
+            dora_command,
         );
 
         let spawn_result = reply_rx
@@ -223,6 +232,7 @@ impl Daemon {
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
         remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+        dora_command: DoraCommand,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -286,6 +296,7 @@ impl Daemon {
             clock,
             zenoh_session,
             remote_daemon_events_tx,
+            dora_command,
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -762,6 +773,7 @@ impl Daemon {
                     node_stderr_most_recent,
                     uv,
                     &mut logger,
+                    &self.dora_command,
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
@@ -2178,5 +2190,45 @@ impl CoreNodeKindExt for CoreNodeKind {
             CoreNodeKind::Runtime(_n) => false,
             CoreNodeKind::Custom(n) => n.source == DYNAMIC_SOURCE,
         }
+    }
+}
+
+/// Enables dora to spawn itself as a subprocess.
+#[derive(Clone, Debug)]
+pub struct DoraCommand {
+    /// Path to the `dora` (or `python`) executable.
+    ///
+    /// When dora is installed as a standalone binary, this points to the
+    /// `dora` executable directly. When installed through `pip`, this will
+    /// point to the Python executable.
+    pub executable: PathBuf,
+    /// Additional arguments required to invoke dora.
+    ///
+    /// This will be empty when dora is installed as standalone binary. For
+    /// pip installations, this will point to the dora python executable.
+    pub args: Vec<String>,
+}
+
+impl DoraCommand {
+    pub fn from_python_env() -> eyre::Result<Self> {
+        let mut args = std::env::args();
+        // first arg is executable name
+        // (we use first arg instead of std::env::current_exe() because the
+        // latter follows symlinks on some platforms, which affects the python
+        // import folders so that the dora_cli is not found)
+        let executable = args.next().context("no executable name arg")?.into();
+        // second argument should be the python executable wrapping dora
+        let python_file = args.next().context("no python file argument")?;
+
+        Ok(DoraCommand {
+            executable,
+            args: [python_file].to_vec(),
+        })
+    }
+
+    fn to_tokio_command(&self) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new(&self.executable);
+        cmd.args(&self.args);
+        cmd
     }
 }

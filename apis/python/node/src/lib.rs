@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use dora_daemon::Daemon;
+use dora_daemon::{Daemon, DoraCommand};
 use dora_download::download_file;
 use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
@@ -387,7 +387,12 @@ pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
-    let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv.unwrap_or_default()))?;
+    let dora_command = DoraCommand::from_python_env()?;
+    let result = rt.block_on(Daemon::run_dataflow(
+        &dataflow_path,
+        uv.unwrap_or_default(),
+        dora_command,
+    ))?;
     match result.is_ok() {
         true => Ok(()),
         false => Err(eyre::eyre!(
