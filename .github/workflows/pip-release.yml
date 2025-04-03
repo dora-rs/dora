@@ -54,11 +54,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.8
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-provider: buildjet
-          # only save caches for `main` branch
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # - uses: Swatinem/rust-cache@v2
+      #   with:
+      #     cache-provider: buildjet
+      #     # only save caches for `main` branch
+      #     save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
