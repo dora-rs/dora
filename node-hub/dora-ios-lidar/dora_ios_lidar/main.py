@@ -7,6 +7,7 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 from record3d import Record3DStream
+from scipy.spatial.transform import Rotation
 
 
 class DemoApp:
@@ -54,6 +55,21 @@ class DemoApp:
             [[coeffs.fx, 0, coeffs.tx], [0, coeffs.fy, coeffs.ty], [0, 0, 1]],
         )
 
+    def get_camera_pose(self):
+        """Get Camera Pose."""
+        pose = self.session.get_camera_pose()
+        rot = Rotation.from_quat([pose.qx, pose.qy, pose.qz, pose.qw])
+        euler = rot.as_euler("xyz", degrees=False)
+
+        return [
+            pose.tx,
+            pose.ty,
+            pose.tz,
+            pose.qx,
+            euler[1],
+            euler[2],
+        ]
+
     def start_processing_stream(self):
         """TODO: Add docstring."""
         node = Node()
@@ -61,47 +77,52 @@ class DemoApp:
         for event in node:
             if self.stop:
                 break
+
             if event["type"] == "INPUT":
-                if event["id"] == "TICK":
-                    self.event.wait()  # Wait for new frame to arrive
+                self.event.wait()  # Wait for new frame to arrive
 
-                    # Copy the newly arrived RGBD frame
-                    depth = self.session.get_depth_frame()
-                    rgb = self.session.get_rgb_frame()
-                    intrinsic_mat = self.get_intrinsic_mat_from_coeffs(
-                        self.session.get_intrinsic_mat(),
-                    )
+                # Copy the newly arrived RGBD frame
+                depth = self.session.get_depth_frame()
+                rgb = self.session.get_rgb_frame()
+                intrinsic_mat = self.get_intrinsic_mat_from_coeffs(
+                    self.session.get_intrinsic_mat(),
+                )
+                pose = self.get_camera_pose()
 
-                    if depth.shape != rgb.shape:
-                        rgb = cv2.resize(rgb, (depth.shape[1], depth.shape[0]))
+                if depth.shape != rgb.shape:
+                    rgb = cv2.resize(rgb, (depth.shape[1], depth.shape[0]))
+                node.send_output(
+                    "image",
+                    pa.array(rgb.ravel()),
+                    metadata={
+                        "encoding": "rgb8",
+                        "width": rgb.shape[1],
+                        "height": rgb.shape[0],
+                    },
+                )
 
-                    node.send_output(
-                        "image",
-                        pa.array(rgb.ravel()),
-                        metadata={
-                            "encoding": "rgb8",
-                            "width": rgb.shape[1],
-                            "height": rgb.shape[0],
-                        },
-                    )
+                depth = (np.array(depth) * 1_000).astype(np.uint16)
 
-                    node.send_output(
-                        "depth",
-                        pa.array(depth.ravel().astype(np.float64())),
-                        metadata={
-                            "width": depth.shape[1],
-                            "height": depth.shape[0],
-                            "encoding": "CV_64F",
-                            "focal": [
-                                int(intrinsic_mat[0, 0]),
-                                int(intrinsic_mat[1, 1]),
-                            ],
-                            "resolution": [
-                                int(intrinsic_mat[0, 2]),
-                                int(intrinsic_mat[1, 2]),
-                            ],
-                        },
-                    )
+                node.send_output(
+                    "depth",
+                    pa.array(depth.ravel()),
+                    metadata={
+                        "width": depth.shape[1],
+                        "height": depth.shape[0],
+                        "encoding": "mono16",
+                        "focal": [
+                            int(intrinsic_mat[0, 0]),
+                            int(intrinsic_mat[1, 1]),
+                        ],
+                        "resolution": [
+                            int(intrinsic_mat[0, 2]),
+                            int(intrinsic_mat[1, 2]),
+                        ],
+                        "roll": pose[3],
+                        "pitch": pose[4],
+                        "yaw": pose[5],
+                    },
+                )
 
             self.event.clear()
 
