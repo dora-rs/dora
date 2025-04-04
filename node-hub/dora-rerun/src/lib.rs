@@ -94,6 +94,13 @@ pub fn lib_main() -> Result<()> {
         }
         Err(VarError::NotPresent) => (),
     };
+    let camera_pitch = std::env::var("CAMERA_PITCH")
+        .unwrap_or("2.47".to_string())
+        .parse::<f32>()
+        .unwrap();
+    let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
+    let sin_theta = camera_pitch.sin(); // np.sin(np.deg2rad(180-38))
+                                        // (0.32489833, -0.25068134, 0.4761387)
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
@@ -238,12 +245,13 @@ pub fn lib_main() -> Result<()> {
                             let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
                             let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
                             let z = z.unwrap_or_default() as f32 / 1_000.;
+                            let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
+                            let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
+                            let new_x = sin_theta * z + cos_theta * x;
+                            let new_y = -y;
+                            let new_z = cos_theta * z - sin_theta * x;
 
-                            (
-                                (u - resolution[0] as f32) * z / focal_length[0] as f32,
-                                (v - resolution[1] as f32) * z / focal_length[1] as f32,
-                                z,
-                            )
+                            (new_x, new_y, new_z)
                         });
                         let points_3d = Points3D::new(points_3d);
                         if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
