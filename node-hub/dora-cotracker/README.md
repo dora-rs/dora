@@ -21,6 +21,17 @@ uv venv -p 3.11 --seed
 uv pip install -e .
 ```
 
+## Demo Video
+
+Watch a demonstration of the dora-cotracker node in action:
+
+[![Dora CoTracker Demo](https://img.youtube.com/vi/1VmC1BNq6J0/0.jpg)](https://youtu.be/1VmC1BNq6J0)
+
+The video shows:
+- Setting up the node
+- Interactive point selection
+- Real-time tracking performance
+
 ### Basic Usage
 
 1. Create a YAML configuration file (e.g., `demo.yml`):
