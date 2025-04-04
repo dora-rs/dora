@@ -53,6 +53,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get install portaudio19-dev
+          sudo apt-get install libdav1d-dev
           # Install mingw-w64 cross-compilers
           sudo apt install g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
 
@@ -60,6 +61,7 @@ jobs:
         if: runner.os == 'MacOS' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')))
         run: |
           brew install portaudio
+          brew install dav1d
 
       - name: Set up Python
         if: runner.os == 'Linux' || github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.ref, 'refs/tags/'))
