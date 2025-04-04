@@ -3087,6 +3087,7 @@ dependencies = [
  "log",
  "notify 5.2.0",
  "pyo3",
+ "self-replace",
  "self_update",
  "serde",
  "serde_json",
@@ -11987,6 +11988,17 @@ checksum = "49db231d56a190491cb4aeda9527f1ad45345af50b0851622a7adb8c03b01c32"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "self-replace"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03ec815b5eab420ab893f63393878d89c90fdd94c0bcc44c07abb8ad95552fb7"
+dependencies = [
+ "fastrand 2.3.0",
+ "tempfile",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

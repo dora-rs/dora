@@ -240,7 +240,7 @@ enum Command {
         #[clap(long)]
         quiet: bool,
     },
-
+    /// Dora CLI self-management commands
     Self_ {
         #[clap(subcommand)]
         command: SelfSubCommand,
@@ -249,10 +249,17 @@ enum Command {
 
 #[derive(Debug, clap::Subcommand)]
 enum SelfSubCommand {
+    /// Check for updates or update the CLI
     Update {
         /// Only check for updates without installing
         #[clap(long)]
         check_only: bool,
+    },
+    /// Remove The Dora CLI from the system
+    Uninstall {
+        /// Force uninstallation without confirmation
+        #[clap(long)]
+        force: bool,
     },
 }
 
@@ -603,6 +610,30 @@ fn run(args: Args) -> eyre::Result<()> {
                             }
                         },
                         Err(e) => println!("Failed to update: {}", e),
+                    }
+                }
+            }
+            SelfSubCommand::Uninstall { force } => {
+                if !force {
+                    let confirmed =
+                        inquire::Confirm::new("Are you sure you want to uninstall Dora CLI?")
+                            .with_default(false)
+                            .prompt()
+                            .wrap_err("Uninstallation cancelled")?;
+
+                    if !confirmed {
+                        println!("Uninstallation cancelled");
+                        return Ok(());
+                    }
+                }
+
+                println!("Uninstalling Dora CLI...");
+                match self_replace::self_delete() {
+                    Ok(_) => {
+                        println!("Dora CLI has been successfully uninstalled.");
+                    }
+                    Err(e) => {
+                        bail!("Failed to uninstall Dora CLI: {}", e);
                     }
                 }
             }
