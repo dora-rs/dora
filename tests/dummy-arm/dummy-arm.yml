@@ -1,0 +1,13 @@
+nodes:
+
+  - id: dummy-arm
+    build: python dummy-arm.py
+    path: dummy-arm.py
+    outputs:
+      - arm
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      arm: dummy-arm/arm

@@ -1,0 +1,13 @@
+nodes:
+
+  - id: dummy-textlog
+    build: python dummy-textlog.py
+    path: dummy-textlog.py
+    outputs:
+      - textlog
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      textlog: dummy-textlog/textlog
