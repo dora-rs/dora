@@ -186,7 +186,7 @@ pub fn lib_main() -> Result<()> {
                 } else {
                     vec![640, 480]
                 };
-                match data.data_type() {
+                let points = match data.data_type() {
                     dora_node_api::arrow::datatypes::DataType::Float64 => {
                         let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
 
@@ -213,42 +213,7 @@ pub fn lib_main() -> Result<()> {
                                 points.push((0., 0., 0.));
                             }
                         });
-                        let points_3d = Points3D::new(points);
-                        if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
-                            let colors = if let Some(mask) =
-                                mask_cache.get(&id.replace("depth", "masks"))
-                            {
-                                let mask_length = color_buffer.len() / 3;
-                                let number_masks = mask.len() / mask_length;
-                                color_buffer
-                                    .chunks(3)
-                                    .enumerate()
-                                    .map(|(e, x)| {
-                                        for i in 0..number_masks {
-                                            if mask[i * mask_length + e] && (e % 3 == 0) {
-                                                if i == 0 {
-                                                    return rerun::Color::from_rgb(255, x[1], x[2]);
-                                                } else if i == 1 {
-                                                    return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                                } else if i == 2 {
-                                                    return rerun::Color::from_rgb(x[0], x[1], 255);
-                                                } else {
-                                                    return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                                }
-                                            }
-                                        }
-                                        rerun::Color::from_rgb(x[0], x[1], x[2])
-                                    })
-                                    .collect::<Vec<_>>()
-                            } else {
-                                color_buffer
-                                    .chunks(3)
-                                    .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
-                                    .collect::<Vec<_>>()
-                            };
-                            rec.log(id.as_str(), &points_3d.with_colors(colors))
-                                .context("could not log points")?;
-                        }
+                        Points3D::new(points)
                     }
                     dora_node_api::arrow::datatypes::DataType::UInt16 => {
                         let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
@@ -275,46 +240,44 @@ pub fn lib_main() -> Result<()> {
                                 points.push((0., 0., 0.));
                             }
                         });
-                        let points_3d = Points3D::new(points);
-                        if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
-                            let colors = if let Some(mask) =
-                                mask_cache.get(&id.replace("depth", "masks"))
-                            {
-                                let mask_length = color_buffer.len() / 3;
-                                let number_masks = mask.len() / mask_length;
-                                color_buffer
-                                    .chunks(3)
-                                    .enumerate()
-                                    .map(|(e, x)| {
-                                        for i in 0..number_masks {
-                                            if mask[i * mask_length + e] && (e % 3 == 0) {
-                                                if i == 0 {
-                                                    return rerun::Color::from_rgb(255, x[1], x[2]);
-                                                } else if i == 1 {
-                                                    return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                                } else if i == 2 {
-                                                    return rerun::Color::from_rgb(x[0], x[1], 255);
-                                                } else {
-                                                    return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                                }
-                                            }
-                                        }
-                                        rerun::Color::from_rgb(x[0], x[1], x[2])
-                                    })
-                                    .collect::<Vec<_>>()
-                            } else {
-                                color_buffer
-                                    .chunks(3)
-                                    .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
-                                    .collect::<Vec<_>>()
-                            };
-                            rec.log(id.as_str(), &points_3d.with_colors(colors))
-                                .context("could not log points")?;
-                        }
+                        Points3D::new(points)
                     }
                     _ => {
                         return Err(eyre!("Unsupported depth data type {}", data.data_type()));
                     }
+                };
+                if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
+                    let colors = if let Some(mask) = mask_cache.get(&id.replace("depth", "masks")) {
+                        let mask_length = color_buffer.len() / 3;
+                        let number_masks = mask.len() / mask_length;
+                        color_buffer
+                            .chunks(3)
+                            .enumerate()
+                            .map(|(e, x)| {
+                                for i in 0..number_masks {
+                                    if mask[i * mask_length + e] && (e % 3 == 0) {
+                                        if i == 0 {
+                                            return rerun::Color::from_rgb(255, x[1], x[2]);
+                                        } else if i == 1 {
+                                            return rerun::Color::from_rgb(x[0], 255, x[2]);
+                                        } else if i == 2 {
+                                            return rerun::Color::from_rgb(x[0], x[1], 255);
+                                        } else {
+                                            return rerun::Color::from_rgb(x[0], 255, x[2]);
+                                        }
+                                    }
+                                }
+                                rerun::Color::from_rgb(x[0], x[1], x[2])
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        color_buffer
+                            .chunks(3)
+                            .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
+                            .collect::<Vec<_>>()
+                    };
+                    rec.log(id.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
                 }
             } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
