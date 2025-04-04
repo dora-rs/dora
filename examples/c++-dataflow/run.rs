@@ -47,7 +47,7 @@ async fn main() -> eyre::Result<()> {
     .await?;
 
     archive_node_bridge(root, build_dir).await?;
-    
+
     build_package("dora-operator-api-cxx").await?;
     let operator_cxxbridge = target
         .join("cxxbridge")
@@ -131,36 +131,38 @@ async fn archive_node_bridge(root: &Path, build_dir: &Path) -> eyre::Result<()> 
         .output()
         .await?
         .status
-        .success() {
-            "clang++"
-        } else {
-            "g++"
-        };
+        .success()
+    {
+        "clang++"
+    } else {
+        "g++"
+    };
     tracing::info!("Using C++ compiler: {}", compiler);
 
     let mut compile = tokio::process::Command::new(compiler);
-    compile.arg("-c")
-           .arg(&node_bridge_cc)
-           .arg("-std=c++17")
-           .arg("-fPIC")
-           .arg("-o")
-           .arg(&node_bridge_o);
+    compile
+        .arg("-c")
+        .arg(&node_bridge_cc)
+        .arg("-std=c++17")
+        .arg("-fPIC")
+        .arg("-o")
+        .arg(&node_bridge_o);
     if !compile.status().await?.success() {
         bail!("failed to compile node-bridge.cc with {}", compiler);
     }
 
-    let static_lib = root.join("target").join("debug").join("libdora_node_api_cxx.a");
+    let static_lib = root
+        .join("target")
+        .join("debug")
+        .join("libdora_node_api_cxx.a");
 
     let mut ar = tokio::process::Command::new("ar");
-    ar.arg("rcs")
-      .arg(&static_lib)
-      .arg(&node_bridge_o);
+    ar.arg("rcs").arg(&static_lib).arg(&node_bridge_o);
     if !ar.status().await?.success() {
         bail!("failed to archive node-bridge.o into libdora_node_api_cxx.a");
     }
     Ok(())
 }
-
 
 async fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
