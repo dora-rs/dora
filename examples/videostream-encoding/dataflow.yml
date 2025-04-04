@@ -9,19 +9,9 @@ nodes:
     outputs:
       - image
     env:
-      CAPTURE_PATH: 1
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
-
-  - id: echo
-    build: pip install -e ../../node-hub/dora-echo
-    path: dora-echo
-    _unstable_deploy:
-      machine: decoder
-    #inputs:
-    #  image: camera/image
-    outputs:
-      - image
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 1280
+      IMAGE_HEIGHT: 720
 
   - id: rav1e-local
     path: dora-rav1e
@@ -32,9 +22,6 @@ nodes:
       image: camera/image
     outputs:
       - image
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
 
   - id: dav1d-remote
     path: dora-dav1d
@@ -45,9 +32,6 @@ nodes:
       image: rav1e-local/image
     outputs:
       - image
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
 
   - id: rav1e-remote
     path: dora-rav1e
@@ -83,12 +67,3 @@ nodes:
     inputs:
       image_decode: dav1d-local/image
       image_echo: echo/image
-    #image_2: camera6/image
-
-  # - id: plot2
-  # build: pip install -e ../../node-hub/opencv-plot
-  # _unstable_deploy:
-  # machine: encoder
-  # path: opencv-plot
-  # inputs:
-  # image: echo/image

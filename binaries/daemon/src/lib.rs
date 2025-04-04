@@ -277,6 +277,8 @@ impl Daemon {
                             r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:5456"] }"#,
                         )
                         .unwrap();
+
+                    // Linkstate make it possible to connect two daemons on different network through a public daemon
                     zenoh_config
                         .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
                         .unwrap();
