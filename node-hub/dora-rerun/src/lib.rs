@@ -95,12 +95,9 @@ pub fn lib_main() -> Result<()> {
         Err(VarError::NotPresent) => (),
     };
     let camera_pitch = std::env::var("CAMERA_PITCH")
-        .unwrap_or("2.47".to_string())
+        .unwrap_or("0.0".to_string())
         .parse::<f32>()
         .unwrap();
-    let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
-    let sin_theta = camera_pitch.sin(); // np.sin(np.deg2rad(180-38))
-                                        // (0.32489833, -0.25068134, 0.4761387)
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
@@ -186,6 +183,15 @@ pub fn lib_main() -> Result<()> {
                 } else {
                     vec![640, 480]
                 };
+                let pitch = if let Some(Parameter::Float(pitch)) = metadata.parameters.get("pitch")
+                {
+                    *pitch as f32
+                } else {
+                    camera_pitch
+                };
+                let cos_theta = pitch.cos(); // np.cos(np.deg2rad(180-38))
+                let sin_theta = pitch.sin(); // np.sin(np.deg2rad(180-38))
+
                 let points = match data.data_type() {
                     dora_node_api::arrow::datatypes::DataType::Float64 => {
                         let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
@@ -223,8 +229,8 @@ pub fn lib_main() -> Result<()> {
                             let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
 
                             if let Some(z) = z {
-                                let z = z as f32;
-                                // Skip points that have empty depth or is too far away
+                                let z = z as f32 / 1000.0; // Convert to meters
+                                                           // Skip points that have empty depth or is too far away
                                 if z == 0. || z > 8.0 {
                                     points.push((0., 0., 0.));
                                     return;
