@@ -190,18 +190,30 @@ pub fn lib_main() -> Result<()> {
                     dora_node_api::arrow::datatypes::DataType::Float64 => {
                         let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
 
-                        let points_3d = buffer.iter().enumerate().map(|(i, z)| {
+                        let mut points = vec![];
+                        buffer.iter().enumerate().for_each(|(i, z)| {
                             let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
                             let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
-                            let z = z.unwrap_or_default() as f32;
 
-                            (
-                                (u - resolution[0] as f32) * z / focal_length[0] as f32,
-                                (v - resolution[1] as f32) * z / focal_length[1] as f32,
-                                z,
-                            )
+                            if let Some(z) = z {
+                                let z = z as f32;
+                                // Skip points that have empty depth or is too far away
+                                if z == 0. || z > 8.0 {
+                                    points.push((0., 0., 0.));
+                                    return;
+                                }
+                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
+                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
+                                let new_x = sin_theta * z + cos_theta * x;
+                                let new_y = -y;
+                                let new_z = cos_theta * z - sin_theta * x;
+
+                                points.push((new_x, new_y, new_z));
+                            } else {
+                                points.push((0., 0., 0.));
+                            }
                         });
-                        let points_3d = Points3D::new(points_3d);
+                        let points_3d = Points3D::new(points);
                         if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
                             let colors = if let Some(mask) =
                                 mask_cache.get(&id.replace("depth", "masks"))
@@ -240,20 +252,30 @@ pub fn lib_main() -> Result<()> {
                     }
                     dora_node_api::arrow::datatypes::DataType::UInt16 => {
                         let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
-
-                        let points_3d = buffer.iter().enumerate().map(|(i, z)| {
+                        let mut points = vec![];
+                        buffer.iter().enumerate().for_each(|(i, z)| {
                             let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
                             let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
-                            let z = z.unwrap_or_default() as f32 / 1_000.;
-                            let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                            let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                            let new_x = sin_theta * z + cos_theta * x;
-                            let new_y = -y;
-                            let new_z = cos_theta * z - sin_theta * x;
 
-                            (new_x, new_y, new_z)
+                            if let Some(z) = z {
+                                let z = z as f32;
+                                // Skip points that have empty depth or is too far away
+                                if z == 0. || z > 8.0 {
+                                    points.push((0., 0., 0.));
+                                    return;
+                                }
+                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
+                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
+                                let new_x = sin_theta * z + cos_theta * x;
+                                let new_y = -y;
+                                let new_z = cos_theta * z - sin_theta * x;
+
+                                points.push((new_x, new_y, new_z));
+                            } else {
+                                points.push((0., 0., 0.));
+                            }
                         });
-                        let points_3d = Points3D::new(points_3d);
+                        let points_3d = Points3D::new(points);
                         if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
                             let colors = if let Some(mask) =
                                 mask_cache.get(&id.replace("depth", "masks"))
