@@ -266,9 +266,12 @@ impl Daemon {
 
                 if let Some(addr) = coordinator_addr {
                     // Linkstate make it possible to connect two daemons on different network through a public daemon
-                    zenoh_config
-                        .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                        .unwrap();
+                    // TODO: There is currently a CI/CD Error in windows linkstate.
+                    if cfg!(not(target_os = "windows")) {
+                        zenoh_config
+                            .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
+                            .unwrap();
+                    }
 
                     zenoh_config
                         .insert_json5(
@@ -299,9 +302,13 @@ impl Daemon {
                         "failed to open zenoh session, retrying with default config + coordinator"
                     );
                     let mut zenoh_config = zenoh::Config::default();
-                    zenoh_config
-                        .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                        .unwrap();
+                    // Linkstate make it possible to connect two daemons on different network through a public daemon
+                    // TODO: There is currently a CI/CD Error in windows linkstate.
+                    if cfg!(not(target_os = "windows")) {
+                        zenoh_config
+                            .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
+                            .unwrap();
+                    }
 
                     if let Some(addr) = coordinator_addr {
                         zenoh_config
