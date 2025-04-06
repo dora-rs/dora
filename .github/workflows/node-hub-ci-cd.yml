@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: ${{ github.event_name != 'workflow_dispatch' && !(github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')) }}
       matrix:
-        platform: [ubuntu-22.04, macos-14]
+        platform: [ubuntu-24.04, macos-14]
         folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
     steps:
       - name: Checkout repository
