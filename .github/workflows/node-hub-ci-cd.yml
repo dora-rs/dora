@@ -52,6 +52,7 @@ jobs:
       - name: Install system-level dependencies
         if: runner.os == 'Linux'
         run: |
+          sudo apt update
           sudo apt-get install portaudio19-dev
           sudo apt-get install libdav1d-dev nasm
           # Install mingw-w64 cross-compilers
