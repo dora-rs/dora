@@ -3183,6 +3183,7 @@ dependencies = [
  "dora-node-api",
  "eyre",
  "log",
+ "pyo3",
  "structopt",
 ]
 
@@ -3441,6 +3442,7 @@ dependencies = [
  "dora-node-api",
  "eyre",
  "log",
+ "pyo3",
  "rav1e",
 ]
 
