@@ -1,0 +1,68 @@
+nodes:
+  - id: camera
+    path: dora-reachy2-camera
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - image_right
+      - image_left
+      - image_depth
+      - depth
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+      ROBOT_IP: 127.0.0.1
+
+  - id: rav1e-local
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      depth: camera/depth
+    outputs:
+      - depth
+    env:
+      RAV1E_SPEED: 7
+
+  - id: rav1e-local-image
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      image_depth: camera/image_depth
+      image_left: camera/image_left
+    outputs:
+      - image_left
+      - image_depth
+      - depth
+    env:
+      RAV1E_SPEED: 10
+
+  - id: dav1d-remote
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: plot
+    inputs:
+      image_depth: rav1e-local-image/image_depth
+      image_left: rav1e-local-image/image_left
+      depth: rav1e-local/depth
+    outputs:
+      - image_left
+      - image_depth
+      - depth
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    _unstable_deploy:
+      machine: plot
+    path: dora-rerun
+    inputs:
+      image: dav1d-remote/image_depth
+      depth: dav1d-remote/depth
+      image_left: dav1d-remote/image_left

@@ -63,11 +63,11 @@ jobs:
           cache-directories: ${{ env.CARGO_TARGET_DIR }}
 
       - name: "Check"
-        run: cargo check --all
+        run: cargo check --all --exclude dora-dav1d --exclude dora-rav1e
       - name: "Build  (Without Python dep as it is build with maturin)"
-        run: cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+        run: cargo build --all --exclude dora-dav1d --exclude dora-rav1e --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
       - name: "Test"
-        run: cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+        run: cargo test --all --exclude dora-dav1d --exclude dora-rav1e --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
   # Run examples as separate job because otherwise we will exhaust the disk
   # space of the GitHub action runners.
@@ -307,7 +307,7 @@ jobs:
           # Test Rust template Project
           dora new test_rust_project --internal-create-with-path-dependencies
           cd test_rust_project
-          cargo build --all
+          cargo build --all --exclude dora-dav1d --exclude dora-rav1e
           dora up
           dora list
           dora start dataflow.yml --name ci-rust-test --detach
@@ -447,12 +447,12 @@ jobs:
       - run: cargo --version --verbose
 
       - name: "Clippy"
-        run: cargo clippy --all
+        run: cargo clippy --all --exclude dora-dav1d --exclude dora-rav1e
       - name: "Clippy (tracing feature)"
-        run: cargo clippy --all --features tracing
+        run: cargo clippy --all --exclude dora-dav1d --exclude dora-rav1e --features tracing
         if: false # only the dora-runtime has this feature, but it is currently commented out
       - name: "Clippy (metrics feature)"
-        run: cargo clippy --all --features metrics
+        run: cargo clippy --all --exclude dora-dav1d --exclude dora-rav1e --features metrics
         if: false # only the dora-runtime has this feature, but it is currently commented out
 
   rustfmt:
@@ -532,4 +532,4 @@ jobs:
         with:
           use-cross: true
           command: check
-          args: --target  ${{ matrix.platform.target }} --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+          args: --target  ${{ matrix.platform.target }} --all --exclude dora-dav1d --exclude dora-rav1e --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python

@@ -1,0 +1,14 @@
+[package]
+name = "dora-dav1d"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dav1d = "0.10"
+bitstream-io = "2.0"
+log = "0.4"
+structopt = "0.3"
+dora-node-api = { workspace = true, features = ["tracing"] }
+eyre = "0.6.8"
+bytemuck = "1.7.0"
