@@ -288,8 +288,8 @@ impl Daemon {
                             r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:5456"] }"#,
                         )
                         .unwrap();
-                    if cfg!(not(target_os = "linux")) {
-                        warn!("disabling multicast on non-linux systems. Enable it with the ZENOH_CONFIG env variable or file");
+                    if cfg!(target_os = "macos") {
+                        warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
                         zenoh_config
                             .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
                             .unwrap();
@@ -320,8 +320,8 @@ impl Daemon {
                                 ),
                             )
                             .unwrap();
-                        if cfg!(not(target_os = "linux")) {
-                            warn!("disabling multicast on non-linux systems. Enable it with the ZENOH_CONFIG env variable or file");
+                        if cfg!(target_os = "macos") {
+                            warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
                             zenoh_config
                                 .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
                                 .unwrap();
