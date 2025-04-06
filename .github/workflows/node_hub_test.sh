@@ -96,6 +96,7 @@ else
                 uv run pytest
             fi
             if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+                uv build
                 uv publish --check-url https://pypi.org/simple
             fi
             fi
