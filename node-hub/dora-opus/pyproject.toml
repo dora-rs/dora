@@ -1,6 +1,6 @@
 [project]
 name = "dora-opus"
-version = "0.3.10"
+version = "0.3.11"
 description = "Dora Node for Text translating using Opus"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },

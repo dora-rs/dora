@@ -1,6 +1,6 @@
 [package]
 name = "dora-object-to-pose"
-version = "0.3.10"
+version = "0.3.11"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

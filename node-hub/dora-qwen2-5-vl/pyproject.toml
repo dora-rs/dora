@@ -1,6 +1,6 @@
 [project]
 name = "dora-qwen2-5-vl"
-version = "0.3.10"
+version = "0.3.11"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
     { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
