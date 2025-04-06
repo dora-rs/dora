@@ -1,6 +1,6 @@
 [project]
 name = "dora-qwen"
-version = "0.3.10"
+version = "0.3.11"
 authors = [{ name = "Your Name", email = "email@email.com" }]
 description = "dora-qwen"
 license = { text = "MIT" }

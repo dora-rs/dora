@@ -27,7 +27,7 @@ else
         cargo test
 
         pip install "maturin[zig]"
-        maturin build --zig 
+        maturin build --release
         # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel on multiple platforms
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
             # Free up ubuntu space
@@ -36,7 +36,7 @@ else
             sudo rm -rf /usr/share/dotnet/
             sudo rm -rf /opt/ghc/
 
-            maturin publish --skip-existing --zig
+            maturin publish --skip-existing
             # aarch64-unknown-linux-gnu
             rustup target add aarch64-unknown-linux-gnu
             maturin publish --target aarch64-unknown-linux-gnu --skip-existing --zig
@@ -53,21 +53,20 @@ else
         fi
 
     elif [[ -f "Cargo.toml" && -f "pyproject.toml" &&  "$(uname)" = "Darwin" ]]; then
-        # x86_64-apple-darwin
         pip install "maturin[zig]"
+        # aarch64-apple-darwin
+        maturin build  --release
+        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
+        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            maturin publish --skip-existing
+        fi
+        
+        # x86_64-apple-darwin
         rustup target add x86_64-apple-darwin
         maturin build --target x86_64-apple-darwin --zig  --release
         # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
             maturin publish --target x86_64-apple-darwin --skip-existing --zig
-        fi
-
-        # aarch64-apple-darwin
-        rustup target add aarch64-apple-darwin
-        maturin build --target aarch64-apple-darwin --zig  --release
-        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
-        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
-            maturin publish --target aarch64-apple-darwin --skip-existing --zig
         fi
 
     else
@@ -96,6 +95,7 @@ else
                 uv run pytest
             fi
             if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+                uv build
                 uv publish --check-url https://pypi.org/simple
             fi
             fi

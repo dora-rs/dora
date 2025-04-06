@@ -1,6 +1,6 @@
 [project]
 name = "dora-pyaudio"
-version = "0.3.10"
+version = "0.3.11"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 license = { text = "MIT" }
 readme = "README.md"

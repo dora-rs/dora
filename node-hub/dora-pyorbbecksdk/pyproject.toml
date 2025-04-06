@@ -1,6 +1,6 @@
 [project]
 name = "dora-pyorbbecksdk"
-version = "0.3.10"
+version = "0.3.11"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
     { name = "Xiang Yang", email = "Ryu-Yang@qq.com" },
