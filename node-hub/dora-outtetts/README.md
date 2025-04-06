@@ -1,5 +1,7 @@
 # dora-outtetts
 
+> dora-outtetts is no longer maintained in favor of dora-kokorotts
+
 ## Getting started
 
 - Install it with pip:

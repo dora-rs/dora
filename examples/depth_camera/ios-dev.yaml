@@ -7,6 +7,9 @@ nodes:
     outputs:
       - image
       - depth
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
