@@ -1,12 +1,11 @@
 """TODO: Add docstring."""
 
-import pytest
-
 
 def test_import_main():
     """TODO: Add docstring."""
-    from dora_opus.main import main
+    pass  # OPUS is no longer maintained in favor of dora-phi4
+    # from dora_opus.main import main
 
     # Check that everything is working, and catch dora Runtime Exception as we're not running in a dora dataflow.
-    with pytest.raises(RuntimeError):
-        main()
+    # nwith pytest.raises(RuntimeError):
+    # nmain()
