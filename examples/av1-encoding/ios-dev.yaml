@@ -1,0 +1,73 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-ios-lidar
+    path: dora-ios-lidar
+    _unstable_deploy:
+      machine: encoder-ios
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+      - depth
+    env:
+      IMAGE_WIDTH: 640
+      IMAGE_HEIGHT: 480
+
+  - id: rav1e-local
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    _unstable_deploy:
+      machine: encoder-ios
+    inputs:
+      image: camera/image
+      depth: camera/depth
+    outputs:
+      - image
+      - depth
+    env:
+      RAV1E_SPEED: 4
+
+  - id: dav1d-remote
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: decoder
+    inputs:
+      image: rav1e-local/image
+      depth: rav1e-local/depth
+    outputs:
+      - image
+      - depth
+
+  - id: rav1e-remote
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    _unstable_deploy:
+      machine: decoder
+    inputs:
+      image: dav1d-remote/image
+      depth: dav1d-remote/depth
+    outputs:
+      - image
+      - depth
+
+  - id: dav1d-local
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: encoder-ios
+    inputs:
+      image: rav1e-remote/image
+      depth: rav1e-remote/depth
+    outputs:
+      - image
+      - depth
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    _unstable_deploy:
+      machine: encoder-ios
+    inputs:
+      image: dav1d-remote/image
+      depth: dav1d-remote/depth

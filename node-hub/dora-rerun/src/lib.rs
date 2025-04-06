@@ -189,8 +189,8 @@ pub fn lib_main() -> Result<()> {
                 } else {
                     camera_pitch
                 };
-                let cos_theta = pitch.cos(); // np.cos(np.deg2rad(180-38))
-                let sin_theta = pitch.sin(); // np.sin(np.deg2rad(180-38))
+                let cos_theta = pitch.cos();
+                let sin_theta = pitch.sin();
 
                 let points = match data.data_type() {
                     dora_node_api::arrow::datatypes::DataType::Float64 => {
