@@ -1,5 +1,6 @@
 """TODO: Add docstring."""
 
+import os
 from threading import Event
 
 import cv2
@@ -8,6 +9,9 @@ import pyarrow as pa
 from dora import Node
 from record3d import Record3DStream
 from scipy.spatial.transform import Rotation
+
+image_width = os.getenv("IMAGE_WIDTH")
+image_height = os.getenv("IMAGE_HEIGHT")
 
 
 class DemoApp:
@@ -87,10 +91,23 @@ class DemoApp:
                 intrinsic_mat = self.get_intrinsic_mat_from_coeffs(
                     self.session.get_intrinsic_mat(),
                 )
-                pose = self.get_camera_pose()
+                # pose = self.get_camera_pose()
 
                 if depth.shape != rgb.shape:
                     rgb = cv2.resize(rgb, (depth.shape[1], depth.shape[0]))
+                if image_width is not None and image_height is not None:
+                    f_0 = intrinsic_mat[0, 0] * (int(image_height) / rgb.shape[0])
+                    f_1 = intrinsic_mat[1, 1] * (int(image_width) / rgb.shape[1])
+                    r_0 = intrinsic_mat[0, 2] * (int(image_height) / rgb.shape[0])
+                    r_1 = intrinsic_mat[1, 2] * (int(image_width) / rgb.shape[1])
+                    rgb = cv2.resize(rgb, (int(image_width), int(image_height)))
+                    depth = cv2.resize(depth, (int(image_width), int(image_height)))
+                else:
+                    f_0 = intrinsic_mat[0, 0]
+                    f_1 = intrinsic_mat[1, 1]
+                    r_0 = intrinsic_mat[0, 2]
+                    r_1 = intrinsic_mat[1, 2]
+
                 node.send_output(
                     "image",
                     pa.array(rgb.ravel()),
@@ -102,7 +119,7 @@ class DemoApp:
                 )
 
                 depth = (np.array(depth) * 1_000).astype(np.uint16)
-
+                depth = np.clip(depth, 0, 4095)  # Clip depth to uint12
                 node.send_output(
                     "depth",
                     pa.array(depth.ravel()),
@@ -111,16 +128,16 @@ class DemoApp:
                         "height": depth.shape[0],
                         "encoding": "mono16",
                         "focal": [
-                            int(intrinsic_mat[0, 0]),
-                            int(intrinsic_mat[1, 1]),
+                            int(f_0),
+                            int(f_1),
                         ],
                         "resolution": [
-                            int(intrinsic_mat[0, 2]),
-                            int(intrinsic_mat[1, 2]),
+                            int(r_0),
+                            int(r_1),
                         ],
-                        "roll": pose[3],
-                        "pitch": pose[4],
-                        "yaw": pose[5],
+                        # "roll": pose[3],
+                        # "pitch": pose[4],  # Adding 90 degrees to pitch
+                        # "yaw": pose[5],
                     },
                 )
 
