@@ -265,17 +265,11 @@ impl Daemon {
                 let mut zenoh_config = zenoh::Config::default();
 
                 if let Some(addr) = coordinator_addr {
-                    zenoh_config
-                        .insert_json5(
-                            "listen/endpoints",
-                            r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:5456"] }"#,
-                        )
-                        .unwrap();
-
                     // Linkstate make it possible to connect two daemons on different network through a public daemon
                     zenoh_config
                         .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
                         .unwrap();
+
                     zenoh_config
                         .insert_json5(
                             "connect/endpoints",
@@ -285,7 +279,40 @@ impl Daemon {
                             ),
                         )
                         .unwrap();
-                    if !addr.ip().is_loopback() {
+                    zenoh_config
+                        .insert_json5(
+                            "listen/endpoints",
+                            r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:5456"] }"#,
+                        )
+                        .unwrap();
+                    if cfg!(not(target_os = "linux")) {
+                        warn!("disabling multicast on non-linux systems. Enable it with the ZENOH_CONFIG env variable or file");
+                        zenoh_config
+                            .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
+                            .unwrap();
+                    }
+                };
+                if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
+                    zenoh_session
+                } else {
+                    warn!(
+                        "failed to open zenoh session, retrying with default config + coordinator"
+                    );
+                    let mut zenoh_config = zenoh::Config::default();
+                    zenoh_config
+                        .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
+                        .unwrap();
+
+                    if let Some(addr) = coordinator_addr {
+                        zenoh_config
+                            .insert_json5(
+                                "connect/endpoints",
+                                &format!(
+                                    r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
+                                    addr.ip()
+                                ),
+                            )
+                            .unwrap();
                         if cfg!(not(target_os = "linux")) {
                             warn!("disabling multicast on non-linux systems. Enable it with the ZENOH_CONFIG env variable or file");
                             zenoh_config
@@ -293,15 +320,16 @@ impl Daemon {
                                 .unwrap();
                         }
                     }
-                };
-                if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                    zenoh_session
-                } else {
-                    warn!("failed to open zenoh session, retrying with default config");
-                    zenoh::open(zenoh::Config::default())
-                        .await
-                        .map_err(|e| eyre!(e))
-                        .wrap_err("failed to open zenoh session")?
+                    if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
+                        zenoh_session
+                    } else {
+                        warn!("failed to open zenoh session, retrying with default config");
+                        let zenoh_config = zenoh::Config::default();
+                        zenoh::open(zenoh_config)
+                            .await
+                            .map_err(|e| eyre!(e))
+                            .context("failed to open zenoh session")?
+                    }
                 }
             }
             Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
