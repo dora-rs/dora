@@ -267,12 +267,6 @@ impl Daemon {
                 if let Some(addr) = coordinator_addr {
                     zenoh_config
                         .insert_json5(
-                            "connect/endpoints",
-                            &format!(r#"["tcp/{}:5456"]"#, addr.ip()),
-                        )
-                        .unwrap();
-                    zenoh_config
-                        .insert_json5(
                             "listen/endpoints",
                             r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:5456"] }"#,
                         )
@@ -282,11 +276,22 @@ impl Daemon {
                     zenoh_config
                         .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
                         .unwrap();
-                    if cfg!(not(target_os = "linux")) {
-                        warn!("disabling multicast on non-linux systems. Enable it with the ZENOH_CONFIG env variable or file");
-                        zenoh_config
-                            .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
-                            .unwrap();
+                    zenoh_config
+                        .insert_json5(
+                            "connect/endpoints",
+                            &format!(
+                                r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
+                                addr.ip()
+                            ),
+                        )
+                        .unwrap();
+                    if !addr.ip().is_loopback() {
+                        if cfg!(not(target_os = "linux")) {
+                            warn!("disabling multicast on non-linux systems. Enable it with the ZENOH_CONFIG env variable or file");
+                            zenoh_config
+                                .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
+                                .unwrap();
+                        }
                     }
                 };
                 if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {

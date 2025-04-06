@@ -462,7 +462,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
       - name: "rustfmt"
-        run: cargo fmt --all --exclude dora-dav1d --exclude dora-rav1e -- --check
+        run: cargo fmt --all -- --check
 
   check-license:
     name: "License Checks"
