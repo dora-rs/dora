@@ -51,7 +51,7 @@ edition = "2021"
 # Make sure to also bump `apis/node/python/__init__.py` version.
 version = "0.3.11"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
-documentation = "https://dora.carsmos.ai"
+documentation = "https://dora-rs.ai"
 license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
