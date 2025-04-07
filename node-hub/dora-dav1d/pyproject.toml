@@ -5,12 +5,10 @@ build-backend = "maturin"
 [project]
 name = "dora-dav1d"
 dynamic = ["version"]
-license = { text = "MIT" }
+license = { text = "BSD-2-Clause" }
 requires-python = ">=3.8"
 
-dependencies = [
-    "maturin>=1.8.2",
-]
+dependencies = ["maturin>=1.8.2"]
 
 scripts = { "dora-dav1d" = "dora_dav1d:py_main" }
 
