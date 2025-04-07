@@ -69,8 +69,8 @@ else
             maturin publish --target x86_64-apple-darwin --skip-existing --zig
         fi
 
-    else
-        if [ -f "$dir/Cargo.toml" ]; then
+    elif [[ "$(uname)" = "Linux" ]];
+        if [ -f "$dirx§/Cargo.toml" ]; then
             echo "Running build and tests for Rust project in $dir..."
             cargo check
             cargo clippy
