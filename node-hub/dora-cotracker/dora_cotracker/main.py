@@ -22,6 +22,7 @@ class VideoTrackingNode:
         self.buffer_size = self.model.step * 2
         self.window_frames = deque(maxlen=self.buffer_size)
         self.is_first_step = True
+        self.accept_new_points = True
         self.clicked_points = []
         self.input_points = []
 
@@ -59,6 +60,7 @@ class VideoTrackingNode:
             self.is_first_step = False
 
             if pred_tracks is not None and pred_visibility is not None:
+                self.accept_new_points = True
                 tracks = pred_tracks[0, -1].cpu().numpy()
                 visibility = pred_visibility[0, -1].cpu().numpy()
                 visible_tracks = []
@@ -152,25 +154,29 @@ class VideoTrackingNode:
                         cv2.waitKey(1)
 
                 if event["id"] == "points":
+                    if not self.accept_new_points:
+                        continue
                     # Handle points from input_stream node
                     metadata = event["metadata"]
                     points_array = event["value"].to_numpy()
                     self.input_points = points_array.reshape((-1, 2)).tolist()
+                    self.accept_new_points = False
                     self.is_first_step = True
                 if event["id"] == "boxes2d":
-                    if not self.is_first_step:
+                    if not self.accept_new_points:
                         continue
+
                     # Handle points from input_stream node
                     metadata = event["metadata"]
                     if isinstance(event["value"], pa.StructArray):
                         boxes2d = (
-                            event["value"][0]
+                            event["value"]
                             .get("bbox")
                             .values.to_numpy()
                             .reshape((-1, 4))
                         )
                         _labels = (
-                            event["value"][0]
+                            event["value"]
                             .get("labels")
                             .values.to_numpy(zero_copy_only=False)
                         )
@@ -184,6 +190,7 @@ class VideoTrackingNode:
                     ]
 
                     self.is_first_step = True
+                    self.accept_new_points = False
 
 
 def main():
