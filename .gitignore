@@ -180,3 +180,7 @@ out/
 yolo.yml
 
 ~*
+
+# nix
+result
+.direnv
