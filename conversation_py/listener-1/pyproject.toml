@@ -1,0 +1,22 @@
+[project]
+name = "listener-1"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "listener 1"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = ["dora-rs >= 0.3.9"]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+listener-1 = "listener_1.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+  "UP"
+]
