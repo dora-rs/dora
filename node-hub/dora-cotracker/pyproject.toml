@@ -1,11 +1,9 @@
 [project]
 name = "dora-cotracker"
 version = "0.1.0"
-authors = [
-    { name = "Shashwat Patil", email = "shashwatpatil974@gmail.com" }
-]
+authors = [{ name = "Shashwat Patil", email = "shashwatpatil974@gmail.com" }]
 description = "A Dora node implementing real-time object tracking using Facebook's CoTracker model"
-license = { text = "MIT" }
+license = "CC-BY-1.0"
 readme = "README.md"
 requires-python = ">=3.10"
 
@@ -26,9 +24,9 @@ dora-cotracker = "dora_cotracker.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-    "PERF",  # Performance
-    "RET",   # Return statements
-    "RSE",   # Runtime errors
-    "NPY",   # NumPy
-    "N",     # Naming
+    "PERF", # Performance
+    "RET",  # Return statements
+    "RSE",  # Runtime errors
+    "NPY",  # NumPy
+    "N",    # Naming
 ]
