@@ -10,7 +10,7 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.36.0", features = ["fs", "rt", "rt-multi-thread"] }
+tokio = { version = "1.44.2", features = ["fs", "rt", "rt-multi-thread"] }
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
 chrono = "0.4.31"

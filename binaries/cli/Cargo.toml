@@ -42,7 +42,7 @@ bat = "0.24.0"
 dora-daemon = { workspace = true }
 dora-coordinator = { workspace = true }
 dora-runtime = { workspace = true }
-tokio = { version = "1.20.1", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
 futures = "0.3.21"
 duration-str = "0.5"

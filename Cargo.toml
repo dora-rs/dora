@@ -105,7 +105,7 @@ ros2-examples = []
 
 [dev-dependencies]
 eyre = "0.6.8"
-tokio = "1.24.2"
+tokio = "1.44.2"
 dora-coordinator = { workspace = true }
 dora-core = { workspace = true }
 dora-message = { workspace = true }

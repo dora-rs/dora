@@ -18,7 +18,7 @@ telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
 eyre = "0.6.8"
-tokio = { version = "1.20.1", features = ["full"] }
+tokio = { version = "1.44.2", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["net"] }
 tracing = "0.1.36"
 tracing-opentelemetry = { version = "0.18.0", optional = true }
