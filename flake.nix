@@ -26,7 +26,7 @@
             hash = "sha256-YwEqwA7Eqz7ZJYFfKoPTWkmgsudKpoATcFE6OOwxpbU=";
           };
 
-          cargoHash = "sha256-AkungKYGHMK/tUfzh0d88zRRkQfshus7xOHzdtYAT/I=";
+          cargoHash = "sha256-vdKA4qfoWEgTOaR1Deve87GiIiKq3uRpuGo66+IflTg=";
           nativeBuildInputs = [pkgs.pkg-config];
           buildInputs = [pkgs.openssl];
           OPENSSL_NO_VENDOR = 1;
