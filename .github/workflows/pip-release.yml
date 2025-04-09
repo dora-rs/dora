@@ -66,6 +66,7 @@ jobs:
           args: --release --out dist --zig
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
+          before-script-linux: sudo apt install libatomic1
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
