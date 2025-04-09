@@ -103,6 +103,10 @@ impl Spawner<'_> {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let command = match &n.source {
                     dora_message::descriptor::NodeSource::Local => {
+                        if let Some(build) = &n.build {
+                            self.build_node(logger, &node.env, self.working_dir.clone(), build)
+                                .await?;
+                        }
                         spawn_command_from_path(&self.working_dir, self.uv, logger, &n, true)
                             .await?
                     }
@@ -598,23 +602,34 @@ impl Spawner<'_> {
             checkout_tree(&repository, refname)?;
         };
         if let Some(build) = &node.build {
-            logger
-                .log(
-                    LogLevel::Info,
-                    None,
-                    format!("running build command: `{build}"),
-                )
-                .await;
-            let build = build.to_owned();
-            let clone_dir = clone_dir.clone();
-            let uv = self.uv;
-            let node_env = node_env.clone();
-            let task = tokio::task::spawn_blocking(move || {
-                run_build_command(&build, &clone_dir, uv, &node_env).context("build command failed")
-            });
-            task.await??;
+            self.build_node(logger, node_env, clone_dir.clone(), build)
+                .await?;
         }
         spawn_command_from_path(&clone_dir, self.uv, logger, node, true).await
+    }
+
+    async fn build_node(
+        &mut self,
+        logger: &mut NodeLogger<'_>,
+        node_env: &Option<BTreeMap<String, EnvValue>>,
+        working_dir: PathBuf,
+        build: &String,
+    ) -> Result<(), eyre::Error> {
+        logger
+            .log(
+                LogLevel::Info,
+                None,
+                format!("running build command: `{build}"),
+            )
+            .await;
+        let build = build.to_owned();
+        let uv = self.uv;
+        let node_env = node_env.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            run_build_command(&build, &working_dir, uv, &node_env).context("build command failed")
+        });
+        task.await??;
+        Ok(())
     }
 
     fn used_by_other_dataflow(
