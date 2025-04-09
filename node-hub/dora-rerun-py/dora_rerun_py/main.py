@@ -1,22 +1,6 @@
-
-"""
-Dora-Rerun Python Node
-
-This node subscribes to Dora dataflow events and logs different types of data to Rerun.
-It supports logging images (from OpenCV or similar sources), depth data, bounding boxes,
-text events, numeric series data, and joint state data.
-
-For images, this version uses the Rerun Python SDK API correctly:
-  - It passes the keyword argument `color_model` instead of a non-existent `image_format`
-  - For example, if the image is converted to RGB, it calls:
-      rr.Image(image_arr, color_model="RGB")
-"""
-
 import numpy as np
 import cv2
-import pyarrow as pa
 import rerun as rr
-import dora
 from dora import Node
 
 # Global caches for image and mask data
