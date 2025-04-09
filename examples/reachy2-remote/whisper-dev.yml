@@ -1,0 +1,42 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    _unstable_deploy:
+      machine: macbook
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    _unstable_deploy:
+      machine: macbook
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    _unstable_deploy:
+      machine: macbook
+    path: dora-distil-whisper
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english
+      # For China
+      # USE_MODELSCOPE_HUB: true
+
+  - id: dora-rerun
+    build: cargo build -p dora-rerun --release
+    _unstable_deploy:
+      machine: macbook
+    path: dora-rerun
+    inputs:
+      original_text: dora-distil-whisper/text
