@@ -97,6 +97,7 @@ nodes:
       machine: gpu
     inputs:
       image_left: dav1d-remote/image_left
+      image_depth: dav1d-remote/image_depth
       text: parse_whisper/text
     outputs:
       - text
@@ -112,7 +113,8 @@ nodes:
       text: dora-qwenvl/text
       points: parse_whisper/points
     outputs:
-      - bbox
+      - bbox_track
+      - bbox_grab
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -123,13 +125,21 @@ nodes:
       machine: gpu
     inputs:
       image: dav1d-remote/image_left
-      boxes2d: parse_bbox/bbox
+      boxes2d: parse_bbox/bbox_track
     outputs:
       - tracked_image
       - points
     env:
       INTERACTIVE_MODE: false
 
+  # - id: box_coordinates
+  # build: pip install -e ../../node-hub/dora-object-to-pose
+  # path: dora-object-to-pose
+  # inputs:
+  # depth: reachy-camera/depth
+  # boxes2d: parse_bbox/bbox
+  # outputs:
+  # - pose
   #- id: sam2
   #build: pip install -e ../../node-hub/dora-sam2
   #path: dora-sam2

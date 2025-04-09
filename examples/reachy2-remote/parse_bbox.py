@@ -59,8 +59,15 @@ for event in node:
         bboxes, labels = extract_bboxes(text)
         if bboxes is not None and len(bboxes) > 0:
             bboxes = bboxes * int(1 / IMAGE_RESIZE_RATIO)
-            node.send_output(
-                "bbox",
-                pa.array(bboxes.ravel()),
-                metadata={"encoding": "xyxy", "image_id": image_id},
-            )
+            if image_id == "image_left":
+                node.send_output(
+                    "bbox_track",
+                    pa.array(bboxes.ravel()),
+                    metadata={"encoding": "xyxy", "image_id": image_id},
+                )
+            elif image_id == "image_depth":
+                node.send_output(
+                    "bbox_grab",
+                    pa.array(bboxes.ravel()),
+                    metadata={"encoding": "xyxy", "image_id": image_id},
+                )
