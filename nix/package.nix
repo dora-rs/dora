@@ -7,17 +7,27 @@
 }:
 rustPlatform.buildRustPackage rec {
   pname = "dora-cli";
-  version = "0.3.11";
+  name = "latest";
 
-  src = fetchFromGitHub {
-    owner = "dora-rs";
-    repo = "dora";
-    rev = "v${version}";
-    hash = "sha256-dnCHDGTtNZLjKOYmNfRMsop5CeiElctlGoWxuvmIxdA=";
+  src = lib.cleanSource ../.;
+
+  cargoLock = {
+    lockFile = ../Cargo.lock;
+    # Allow dependencies to be fetched from git and avoid having to set the outputHashes manually
+    allowBuiltinFetchGit = true;
   };
 
-  useFetchCargoVendor = true;
-  cargoHash = "sha256-kwJGkxRvCht+aVN8X/elcESuNdYtU1pc0IgNkrlc9a0=";
+  # version = "0.3.11";
+
+  # src = fetchFromGitHub {
+  #   owner = "dora-rs";
+  #   repo = "dora";
+  #   rev = "v${version}";
+  #   hash = "sha256-dnCHDGTtNZLjKOYmNfRMsop5CeiElctlGoWxuvmIxdA=";
+  # };
+  #
+  # useFetchCargoVendor = true;
+  # cargoHash = "sha256-kwJGkxRvCht+aVN8X/elcESuNdYtU1pc0IgNkrlc9a0=";
   # nativeBuildInputs = [pkg-config];
   # buildInputs = [openssl];
   # OPENSSL_NO_VENDOR = 1;
