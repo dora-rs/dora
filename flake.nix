@@ -47,6 +47,9 @@
     packages = eachSystem (pkgs: {
       default = self.packages.${pkgs.system}.dora-cli;
       dora-cli = pkgs.callPackage ./nix/package.nix {};
+      dora-cli-release = pkgs.callPackage ./nix/package_release.nix {};
     });
+
+    checks = self.packages;
   };
 }
