@@ -50,7 +50,7 @@ def extract_bboxes(json_text):
 for event in node:
     if event["type"] == "INPUT":
         if len(event["value"]) == 0:
-            node.send_output("bbox", pa.array([]))
+            node.send_output("bbox_track", pa.array([]))
             continue
 
         text = event["value"][0].as_py()
