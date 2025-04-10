@@ -3175,7 +3175,7 @@ dependencies = [
 
 [[package]]
 name = "dora-dav1d"
-version = "0.0.0"
+version = "0.3.11"
 dependencies = [
  "bitstream-io",
  "bytemuck",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "dora-rav1e"
-version = "0.3.11"
+version = "0.3.11-fix.1"
 dependencies = [
  "bytemuck",
  "dora-node-api",
