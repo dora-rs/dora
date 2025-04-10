@@ -66,7 +66,7 @@ jobs:
           args: --release --out dist --zig
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
-          before-script-linux: sudo apt install libatomic1
+          before-script-linux: sudo apt-get install libatomic1-i386-cross && mkdir -p $HOME/.rustup/toolchains/1.84-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/ && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/1.84-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/1.84-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1 && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 /opt/hostedtoolcache/Python/3.8.18/x64/lib/libatomic.so.1
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
