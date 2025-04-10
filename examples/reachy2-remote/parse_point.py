@@ -29,18 +29,24 @@ for event in node:
         point = values[-1]
 
         rz = int((width / 2) - point[0]) / (width / 2)
-        x_distance = min(height / 2, height - point[1])
+        x_distance = min(height, height - point[1])
 
-        if abs(rz) > 0.3:
-            rz = np.deg2rad(30) * np.sign(rz)
+        if abs(rz) > 0.75:
+            rz = np.deg2rad(90) * np.sign(rz)
+        if abs(rz) > 0.5:
+            rz = np.deg2rad(60) * np.sign(rz)
+        elif abs(rz) > 0.3:
+            rz = np.deg2rad(55) * np.sign(rz)
         elif abs(rz) > 0.1:
-            rz = np.deg2rad(20) * np.sign(rz)
+            rz = np.deg2rad(45) * np.sign(rz)
         else:
             x = 0
 
-        if x_distance > (height * 0.3):
-            x = 0.7
-        elif x_distance > (height * 0.15):
+        if x_distance > (height * 0.7):
+            x = 0.5
+        elif x_distance > (height * 0.5):
+            x = 0.5
+        elif x_distance > (height * 0.2):
             x = 0.5
         else:
             x = 0

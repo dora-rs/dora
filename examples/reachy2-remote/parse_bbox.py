@@ -54,20 +54,23 @@ for event in node:
             continue
 
         text = event["value"][0].as_py()
+        metadata = event["metadata"]
         image_id = event["metadata"]["image_id"]
 
         bboxes, labels = extract_bboxes(text)
         if bboxes is not None and len(bboxes) > 0:
             bboxes = bboxes * int(1 / IMAGE_RESIZE_RATIO)
+            metadata["image_id"] = image_id
+            metadata["encoding"] = "xyxy"
             if image_id == "image_left":
                 node.send_output(
                     "bbox_track",
                     pa.array(bboxes.ravel()),
-                    metadata={"encoding": "xyxy", "image_id": image_id},
+                    metadata,
                 )
             elif image_id == "image_depth":
                 node.send_output(
                     "bbox_grab",
                     pa.array(bboxes.ravel()),
-                    metadata={"encoding": "xyxy", "image_id": image_id},
+                    metadata,
                 )
