@@ -101,7 +101,7 @@ nodes:
   - id: dora-distil-whisper
     build: pip install -e ../../node-hub/dora-distil-whisper
     _unstable_deploy:
-      machine: macbook
+      machine: gpu
     path: dora-distil-whisper
     inputs:
       input: dora-vad/audio
@@ -234,7 +234,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     _unstable_deploy:
-      machine: gpu
+      machine: macbook
     inputs:
       image: dav1d-remote/image_left
       torso/image: dav1d-remote/image_depth
