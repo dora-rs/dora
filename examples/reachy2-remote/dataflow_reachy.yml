@@ -4,15 +4,38 @@ nodes:
     _unstable_deploy:
       machine: encoder
     inputs:
-      tick: dora/timer/millis/10
+      tick: dora/timer/millis/20
     outputs:
       - image_left
       - image_depth
       - depth
     env:
-      CAPTURE_PATH: 0
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
+      ROBOT_IP: 127.0.0.1
+
+  - id: reachy-left-arm
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-left-arm
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      pose: parse_pose/action_l_arm
+    outputs:
+      - response_l_arm
+    env:
+      ROBOT_IP: 127.0.0.1
+
+  - id: reachy-right-arm
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-right-arm
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      pose: parse_pose/action_r_arm
+    outputs:
+      - response_r_arm
+    env:
       ROBOT_IP: 127.0.0.1
 
   - id: rav1e-local-image
@@ -26,9 +49,20 @@ nodes:
     outputs:
       - image_left
       - image_depth
-      - depth
     env:
       RAV1E_SPEED: 10
+
+  - id: rav1e-local-depth
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      depth: camera/depth
+    outputs:
+      - depth
+    env:
+      RAV1E_SPEED: 7
 
   - id: dav1d-remote
     path: dora-dav1d
@@ -38,7 +72,7 @@ nodes:
     inputs:
       image_depth: rav1e-local-image/image_depth
       image_left: rav1e-local-image/image_left
-      # depth: rav1e-local/depth
+      depth: rav1e-local-depth/depth
     outputs:
       - image_left
       - image_depth
@@ -87,6 +121,8 @@ nodes:
       - action
       - points
       - text
+      - action_release_left
+      - action_release_right
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -118,6 +154,17 @@ nodes:
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
+  - id: sam2
+    build: pip install -e ../../node-hub/dora-sam2
+    path: dora-sam2
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      image_depth: dav1d-remote/image_depth
+      boxes2d: parse_bbox/bbox_grab
+    outputs:
+      - masks
+
   - id: tracker
     build: pip install -e ../../node-hub/dora-cotracker
     path: dora-cotracker
@@ -132,24 +179,32 @@ nodes:
     env:
       INTERACTIVE_MODE: false
 
-  # - id: box_coordinates
-  # build: pip install -e ../../node-hub/dora-object-to-pose
-  # path: dora-object-to-pose
-  # inputs:
-  # depth: reachy-camera/depth
-  # boxes2d: parse_bbox/bbox
-  # outputs:
-  # - pose
-  #- id: sam2
-  #build: pip install -e ../../node-hub/dora-sam2
-  #path: dora-sam2
-  #_unstable_deploy:
-  #machine: gpu
-  #inputs:
-  #image_left: dav1d-remote/image_left
-  #boxes2d: parse_bbox/bbox
-  #outputs:
-  #- masks
+  - id: box_coordinates
+    build: pip install -e ../../node-hub/dora-object-to-pose
+    path: dora-object-to-pose
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      depth: dav1d-remote/depth
+      masks: sam2/masks
+    outputs:
+      - pose
+
+  - id: parse_pose
+    path: parse_pose.py
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      pose: box_coordinates/pose
+      response_r_arm: reachy-right-arm/response_r_arm
+      response_l_arm: reachy-left-arm/response_l_arm
+      release_left: parse_whisper/action_release_left
+      release_right: parse_whisper/action_release_right
+    outputs:
+      - action_r_arm
+      - action_l_arm
+    env:
+      IMAGE_RESIZE_RATIO: "1.0"
 
   - id: parse_point
     path: parse_point.py
@@ -179,12 +234,15 @@ nodes:
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     _unstable_deploy:
-      machine: macbook
+      machine: gpu
     inputs:
       image: dav1d-remote/image_left
-      image_depth: dav1d-remote/image_depth
-      boxes2d: parse_bbox/bbox
+      torso/image: dav1d-remote/image_depth
+      torso/depth: dav1d-remote/depth
+      torso/boxes2d: parse_bbox/bbox
       original_text: dora-distil-whisper/text
       parsed_text: parse_whisper/text
       qwenvl_text: dora-qwenvl/text
-      tracked_image: tracker/tracked_image
+    env:
+      RERUN_MEMORY_LIMIT: 5%
+      CAMERA_PITCH: 2.47

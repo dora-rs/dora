@@ -229,10 +229,12 @@ def main():
                     past_key_values,
                     image_id,
                 )
+                metadata = event["metadata"]
+                metadata["image_id"] = image_id if image_id is not None else "all"
                 node.send_output(
                     "text",
                     pa.array([response]),
-                    {"image_id": image_id if image_id is not None else "all"},
+                    metadata,
                 )
 
         elif event_type == "ERROR":
