@@ -1,7 +1,7 @@
 use core::f32;
 use dora_node_api::{
     arrow::{
-        array::{AsArray, Float64Array, UInt8Array},
+        array::{AsArray, Float64Array, UInt16Array, UInt8Array},
         datatypes::{Float32Type, Int64Type},
     },
     dora_core::config::DataId,
@@ -11,7 +11,7 @@ use eyre::Result;
 use std::collections::HashMap;
 
 fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
-    let (_x, _y, _z, sum_xy, sum_x2, sum_y2, n, x_min, x_max, y_min, y_max, z_min, z_max) =
+    let (sum_x, sum_y, sum_z, sum_xy, sum_x2, sum_y2, n, x_min, x_max, y_min, y_max, z_min, z_max) =
         points.iter().fold(
             (
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, 10., -10.0,
@@ -49,11 +49,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
                 )
             },
         );
-    let (mean_x, mean_y, mean_z) = (
-        (x_max + x_min) / 2.,
-        (y_max + y_min) / 2.,
-        (z_max + z_min) / 2.,
-    );
+    let (mean_x, mean_y, mean_z) = ((sum_x) / n, (sum_y) / n, (sum_z) / n);
 
     // Compute covariance and standard deviations
     let cov = sum_xy / n - mean_x * mean_y;
@@ -116,7 +112,8 @@ pub fn lib_main() -> Result<()> {
                     } else {
                         vec![640, 480]
                     };
-                    let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
+                    let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
+
                     depth_frame = Some(buffer.clone());
                 }
                 "masks" => {
@@ -137,6 +134,8 @@ pub fn lib_main() -> Result<()> {
                         continue;
                     };
 
+                    let mut z_2 = 0.0;
+                    let mut z_1 = 0.0;
                     let outputs: Vec<Vec<f32>> = masks
                         .chunks(height as usize * width as usize)
                         .filter_map(|data| {
@@ -150,23 +149,36 @@ pub fn lib_main() -> Result<()> {
                                     let v = i as f32 / width as f32; // Calculate y-coordinate (v)
 
                                     if let Some(z) = z {
-                                        let z = z as f32;
+                                        let z = (z as f32) / 1000.;
                                         // Skip points that have empty depth or is too far away
                                         if z == 0. || z > 20.0 {
                                             return;
                                         }
-                                        if data[i] {
-                                            let y = (u - resolution[0] as f32) * z
-                                                / focal_length[0] as f32;
-                                            let x = (v - resolution[1] as f32) * z
-                                                / focal_length[1] as f32;
-                                            let new_x = sin_theta * z + cos_theta * x;
-                                            let new_y = -y;
-                                            let new_z = cos_theta * z - sin_theta * x;
+                                        if z_2 == 0. && z_1 == 0. {
+                                            z_1 = z;
+                                        } else if z_1 == 0. {
+                                            z_2 = z_1;
+                                            z_1 = z;
+                                        } else if (z - z_2).abs() < 0.1 && (z - z_1).abs() < 0.1 {
+                                            z_2 = z_1;
+                                            z_1 = z;
 
-                                            points.push((new_x, new_y, new_z));
-                                            z_total += new_z;
-                                            n += 1.;
+                                            if data[i] {
+                                                let y = (u - resolution[0] as f32) * z
+                                                    / focal_length[0] as f32;
+                                                let x = (v - resolution[1] as f32) * z
+                                                    / focal_length[1] as f32;
+                                                let new_x = sin_theta * z + cos_theta * x;
+                                                let new_y = -y;
+                                                let new_z = cos_theta * z - sin_theta * x;
+
+                                                points.push((new_x, new_y, new_z));
+                                                z_total += new_z;
+                                                n += 1.;
+                                            }
+                                        } else {
+                                            z_2 = z_1;
+                                            z_1 = z;
                                         }
                                     }
                                 });
@@ -215,7 +227,7 @@ pub fn lib_main() -> Result<()> {
                                         let v = i as f32 / width as f32; // Calculate y-coordinate (v)
 
                                         if let Some(z) = z {
-                                            let z = z as f32;
+                                            let z = (z as f32) / 1000.;
                                             // Skip points that have empty depth or is too far away
                                             if z == 0. || z > 5.0 {
                                                 return;

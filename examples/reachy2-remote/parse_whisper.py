@@ -59,8 +59,21 @@ for event in node:
             node.send_output("text", pa.array([text]), {"image_id": "image_left"})
         elif "grab" in text:
             text = f"Given the prompt: {text}. Output the bounding boxes for the given grabbed object"
-            node.send_output("text", pa.array([text]), {"image_id": "image_depth"})
-        elif "left" in text:
+            node.send_output(
+                "text", pa.array([text]), {"image_id": "image_depth", "action": "grab"}
+            )
+        elif "put " in text:
+            text = f"Given the prompt: {text}. Output the bounding boxes for the place to put the object"
+            node.send_output(
+                "text",
+                pa.array([text]),
+                {"image_id": "image_depth", "action": "release"},
+            )
+        elif "release left" in text:
+            node.send_output("action_release_left", pa.array([1.0]))
+        elif "release right" in text:
+            node.send_output("action_release_right", pa.array([1.0]))
+        elif "turn left" in text:
             action = pa.array([0.0, 0, 0, 0, 0, np.deg2rad(160)])
             node.send_output("action", action)
             time.sleep(0.25)
@@ -70,7 +83,7 @@ for event in node:
             action = pa.array([0.0, 0, 0, 0, 0, np.deg2rad(160)])
             node.send_output("action", action)
             node.send_output("points", pa.array([]))
-        elif "right" in text:
+        elif "turn right" in text:
             action = pa.array([0.0, 0, 0, 0, 0, -np.deg2rad(160)])
             node.send_output("action", action)
             time.sleep(0.25)
