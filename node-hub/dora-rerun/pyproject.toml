@@ -9,9 +9,8 @@ license = { text = "MIT" }
 requires-python = ">=3.8"
 
 dependencies = [
-    "maturin>=1.8.2",
-    'rerun_sdk==0.22.0',
-    # "rerun-loader-urdf @ git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git",
+  'rerun_sdk==0.22.0',
+  # "rerun-loader-urdf @ git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git",
 ]
 
 scripts = { "dora-rerun" = "dora_rerun:py_main" }
