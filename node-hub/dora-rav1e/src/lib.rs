@@ -364,7 +364,7 @@ fn py_main(_py: Python) -> eyre::Result<()> {
 
 #[cfg(feature = "python")]
 #[pymodule]
-fn dora_kit_car(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+fn dora_rav1e(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_main, &m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

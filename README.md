@@ -59,6 +59,10 @@
 <details open>
 <summary><b>2025</b></summary>
 
+\[04/05\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
+
+- \[03/05\] Add support for dora async Python.
+- \[03/05\] Add support for Microsoft Phi4, Microsoft Magma.
 - \[03/05\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
 - \[03/04\] Add support for Zenoh for distributed dataflow.
 - \[03/04\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
@@ -67,17 +71,18 @@
 
 ## Support Matrix
 
-|                                   | dora-rs                                                                                                                                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **APIs**                          | Python >= 3.7 ✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                           |
-| **OS**                            | Linux: Arm 32 ✅ Arm 64 ✅ x64_86 ✅ <br>MacOS: Arm 64 ✅ x64_86 ✅<br>Windows: x64_86 🆗<br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
-| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                  |
-| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                  |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                            |
-| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                         |
-| **Configuration**                 | YAML ✅                                                                                                                                                                                  |
-| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                        |
+|                                   | dora-rs                                                                                                                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                  |
+| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ x64_86 ✅<br>Windows: x64_86 🆗<br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
+| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                          |
+| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                          |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                    |
+| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                 |
+| **Configuration**                 | YAML ✅                                                                                                                                                                                          |
+| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                |
 
+> - ⭐ = Recommended
 > - ✅ = First Class Support
 > - 🆗 = Best Effort Support
 > - 📐 = Experimental and looking for contributions
@@ -172,13 +177,13 @@ cargo install dora-cli
 ### With Github release for macOS and Linux
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/dora-rs/dora/main/install.sh | bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
 ### With Github release for Windows
 
 ```powershell
-powershell -c "irm https://raw.githubusercontent.com/dora-rs/dora/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dorareleases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ### With Source
@@ -311,7 +316,6 @@ turtle_twist_writer.publish(message)
 
 > You might want to use ChatGPT to write the Arrow Formatting: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
 
-
 ## Zenoh Integration for Distributed Dataflow (Experimental)
 
 Zenoh is a high-performance pub/sub and query protocol that unifies data in motion and at rest. In **dora-rs**, Zenoh is used for remote communication between nodes running on different machines, enabling distributed dataflow across networks.
@@ -320,7 +324,7 @@ Zenoh is a high-performance pub/sub and query protocol that unifies data in moti
 
 - **Definition:**  
   [Zenoh](https://zenoh.io) is an open-source communication middleware offering pub/sub and query capabilities.
-- **Benefits in DORA:**  
+- **Benefits in DORA:**
   - Simplifies communication between distributed nodes.
   - Handles NAT traversal and inter-network communication.
   - Integrates with DORA to manage remote data exchange while local communication still uses efficient shared memory.
@@ -332,20 +336,21 @@ Zenoh is a high-performance pub/sub and query protocol that unifies data in moti
 
    ```bash
    docker run -p 7447:7447 -p 8000:8000 --name zenoh-router eclipse/zenohd:latest
+   ```
 
-
-```markdown
+````markdown
 ## Create a Zenoh Configuration File 🎛️
 
 Create a file (e.g., `zenoh.json5`) with the router endpoint details:
 
 ```json5
 {
-  "connect": {
-    "endpoints": [ "tcp/203.0.113.10:7447" ]
-  }
+  connect: {
+    endpoints: ["tcp/203.0.113.10:7447"],
+  },
 }
 ```
+````
 
 ---
 
@@ -354,7 +359,7 @@ Create a file (e.g., `zenoh.json5`) with the router endpoint details:
 On each machine, export the configuration and start the daemon:
 
 ```bash
-export ZENOH_CONFIG=/path/to/zenoh.json5  
+export ZENOH_CONFIG=/path/to/zenoh.json5
 dora daemon --coordinator-addr <COORD_IP> --machine-id <MACHINE_NAME>
 ```
 
@@ -390,6 +395,7 @@ dora start dataflow.yml
 ```
 
 ---
+
 ## YAML Example for Distributed Dataflow 📘
 
 ```yaml
@@ -411,8 +417,8 @@ nodes:
       image: camera_node/image
     outputs:
       - result
-
 ```
+
 ## Contributing
 
 We are passionate about supporting contributors of all levels of experience and would love to see
@@ -441,4 +447,7 @@ This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for 
 - [Zenoh Documentation](https://zenoh.io/docs/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
 - [Dora Autoware Localization Demo](https://github.com/dora-rs/dora-autoware-localization-demo)
+
+```
+
 ```
