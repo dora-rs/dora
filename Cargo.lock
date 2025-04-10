@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "dora-rav1e"
-version = "0.3.11-fix.1"
+version = "0.3.11+fix1"
 dependencies = [
  "bytemuck",
  "dora-node-api",
