@@ -49,7 +49,12 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
                 )
             },
         );
-    let (mean_x, mean_y, mean_z) = ((sum_x) / n, (sum_y) / n, (sum_z) / n);
+    let (mean_x, mean_y, mean_z) = (
+        (x_max + x_min) / 2.,
+        (y_max + y_min) / 2.,
+        (z_max + z_min) / 2.,
+    );
+    
 
     // Compute covariance and standard deviations
     let cov = sum_xy / n - mean_x * mean_y;

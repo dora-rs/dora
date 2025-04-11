@@ -108,6 +108,8 @@ node.send_output(
     pa.array(l_init_pose),
     metadata={"encoding": "jointstate", "duration": 2},
 )
+node.send_output("look", pa.array([0.35, 0, 0]))
+
 
 for event in node:
     if event["type"] == "INPUT":
@@ -126,7 +128,7 @@ for event in node:
                 case "grab":
                     if len(values) == 0:
                         continue
-                    x = x + 0.03
+                    x = x + 0.01
 
                     ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
                     trajectory = np.array(
@@ -187,16 +189,20 @@ for event in node:
                 case "release":
                     if len(values) == 0:
                         continue
-                    x = x + 0.03
+                    x = x + 0.01
+                    if z < -0.4:
+                        z = -0.16
 
                     ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
                     trajectory = np.array(
                         [
-                            [x, y, -0.16, 0, 0, 0, 100],
+                            [x, y, z + 0.1, 0, 0, 0, 100],
                         ],
                     ).ravel()
 
-                    if y < 0:
+                    if arm_holding_object is None:
+                        continue
+                    elif arm_holding_object == "right":
                         node.send_output(
                             "action_r_arm",
                             pa.array(trajectory),
@@ -204,13 +210,14 @@ for event in node:
                         )
                         event = wait_for_event(id="response_r_arm", timeout=5)
                         if event is not None and event[0]:
-                            print("Success")
+                            print("Success release right with", event[0])
                             arm_holding_object = "right"
                             node.send_output(
                                 "action_r_arm",
                                 pa.array(r_init_pose),
                                 metadata={"encoding": "jointstate", "duration": 1},
                             )
+                            arm_holding_object = None
                         else:
                             print("Failed: x: ", x, " y: ", y, " z: ", z)
                             node.send_output(
@@ -228,13 +235,14 @@ for event in node:
                         )
                         event = wait_for_event(id="response_l_arm", timeout=5)
                         if event is not None and event[0]:
-                            print("Success")
+                            print("Success release left with", event[0])
                             arm_holding_object = "left"
                             node.send_output(
                                 "action_l_arm",
                                 pa.array(l_init_pose),
                                 metadata={"encoding": "jointstate", "duration": 1},
                             )
+                            arm_holding_object = None
                         else:
                             print("Failed")
                             node.send_output(
@@ -261,11 +269,12 @@ for event in node:
                 metadata={"encoding": "xyzrpy", "duration": "0.75"},
             )
             event, cache = wait_for_event(id="response_r_arm", cache=cache)
-            node.send_output(
-                "action_r_arm",
-                pa.array(r_init_pose),
-                metadata={"encoding": "jointstate", "duration": 1},
-            )
+            if event is not None and event[0]:
+                node.send_output(
+                    "action_r_arm",
+                    pa.array(r_init_pose),
+                    metadata={"encoding": "jointstate", "duration": 1},
+                )
         elif event["id"] == "release_left":
             node.send_output(
                 "action_l_arm",
@@ -283,9 +292,9 @@ for event in node:
                 metadata={"encoding": "xyzrpy", "duration": "0.75"},
             )
             event, cache = wait_for_event(id="response_l_arm", cache=cache)
-
-            node.send_output(
-                "action_l_arm",
-                pa.array(l_init_pose),
-                metadata={"encoding": "jointstate", "duration": 1},
-            )
+            if event is not None and event[0]:
+                node.send_output(
+                    "action_l_arm",
+                    pa.array(l_init_pose),
+                    metadata={"encoding": "jointstate", "duration": 1},
+                )
