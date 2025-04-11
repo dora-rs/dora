@@ -1,0 +1,142 @@
+name: Build and Publish Dora C/C++ API
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-release:
+    name: Build and Release C API for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+          - os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          # - os: windows-latest
+          #   target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install cross-compilation tools (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf gcc-i686-linux-gnu musl-tools
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo install cross || true
+
+      - name: Build for all targets (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Output "Building for target: $env:matrix_target"
+          cargo build --release --target $env:matrix_target -p dora-node-api-c
+          cargo build --release --target $env:matrix_target -p dora-operator-api-c
+          cargo build --release --target $env:matrix_target -p dora-node-api-cxx
+          cargo build --release --target $env:matrix_target -p dora-operator-api-cxx
+          Write-Output "Generating header file with: cargo run --example cxx-dataflow --release"
+          cargo run --example cxx-dataflow --release
+
+      - name: Build for all targets (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "Building for target: ${{ matrix.target }}"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            cross build --release --target ${{ matrix.target }} -p dora-node-api-c
+            cross build --release --target ${{ matrix.target }} -p dora-operator-api-c
+            cross build --release --target ${{ matrix.target }} -p dora-node-api-cxx
+            cross build --release --target ${{ matrix.target }} -p dora-operator-api-cxx
+          else
+            cargo build --release --target ${{ matrix.target }} -p dora-node-api-c
+            cargo build --release --target ${{ matrix.target }} -p dora-operator-api-c
+            cargo build --release --target ${{ matrix.target }} -p dora-node-api-cxx
+            cargo build --release --target ${{ matrix.target }} -p dora-operator-api-cxx
+          fi
+          echo "Generating header file with: cargo run --example cxx-dataflow --release"
+          cargo run --example cxx-dataflow --release
+      - name: Package artifact
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "release" ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="v-latest"
+          fi
+          mkdir -p dist/{include,lib}
+          
+          echo "Copying headers..."
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cp apis/c/node/*.h dist/include/ || echo "No headers found"
+            cp apis/c/operator/*.h dist/include/ || echo "No headers found"
+            cp target/cxxbridge/dora-node-api-cxx/*.h dist/include/ || echo "No cxxbridge headers found"
+            cp examples/c++-dataflow/build/*.h dist/include/ || echo "No example headers found"
+          else
+            cp apis/c/node/*.h dist/include/ || echo "No headers found"
+            cp apis/c/operator/*.h dist/include/ || echo "No headers found"
+            cp target/cxxbridge/dora-node-api-cxx/*.h dist/include/ || echo "No cxxbridge headers found"
+            cp examples/c++-dataflow/build/*.h dist/include/ || echo "No example headers found"
+            cp examples/c++-dataflow/operator-rust-api/*.h dist/include/ || echo "No operator_api headers found"
+          fi
+          echo "Copying library files..."
+          case "$RUNNER_OS" in
+            "Linux" | "macOS")
+              cp target/${{ matrix.target }}/release/*.a dist/lib/ || echo "No libdora_node_api_c.a found"
+              cp target/${{ matrix.target }}/debug/libdora_node_api_cxx.a dist/lib || echo "No libdora_node_api_cxx.a found"
+              ;;
+            "Windows")
+              cp target/${{ matrix.target }}/release/*.lib dist/lib/ || echo "No dora_node_api_c found"
+              cp target/${{ matrix.target }}/debug/libdora_node_api_cxx.a dist/lib || echo "No libdora_node_api_cxx.a found"
+              ;;
+          esac
+          echo "Packaging artifact..."
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ARCHIVE_NAME="libdora-${VERSION}-${{ matrix.target }}.zip"
+            powershell Compress-Archive -Path 'dist/*' -DestinationPath "$ARCHIVE_NAME"
+            mv "$ARCHIVE_NAME" .
+          else
+            ARCHIVE_NAME="libdora-${VERSION}-${{ matrix.target }}.tar.gz"
+            tar -czf "$ARCHIVE_NAME" -C dist .
+          fi
+          echo "Archive created: $ARCHIVE_NAME"
+          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
+      - name: Upload release asset
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./${{ env.ARCHIVE_NAME }}
+          asset_name: ${{ env.ARCHIVE_NAME }}
+          asset_content_type: application/octet-stream
