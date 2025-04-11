@@ -71,6 +71,15 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
@@ -216,7 +225,8 @@ pub struct CustomNode {
     /// args: some_node.py
     ///
     /// Source can match any executable in PATH.
-    pub source: String,
+    pub path: String,
+    pub source: NodeSource,
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
@@ -232,6 +242,22 @@ pub struct CustomNode {
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum NodeSource {
+    Local,
+    GitBranch {
+        repo: String,
+        rev: Option<GitRepoRev>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum GitRepoRev {
+    Branch(String),
+    Tag(String),
+    Rev(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
