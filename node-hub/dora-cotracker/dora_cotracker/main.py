@@ -39,7 +39,6 @@ class VideoTrackingNode:
             all_points = self.input_points + self.clicked_points
 
             if not all_points:
-                print("No points to track")
                 return None, None
             video_chunk = torch.tensor(
                 np.stack(list(self.window_frames)), device=self.device

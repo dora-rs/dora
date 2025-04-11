@@ -116,6 +116,7 @@ nodes:
       machine: gpu
     inputs:
       text: dora-distil-whisper/text
+      arrived: parse_point/arrived
     outputs:
       - bbox
       - action
@@ -214,6 +215,7 @@ nodes:
       points: tracker/points
     outputs:
       - action
+      - arrived
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
