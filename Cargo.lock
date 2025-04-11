@@ -3002,6 +3002,7 @@ name = "dora-core"
 version = "0.3.10"
 dependencies = [
  "dora-message",
+ "dunce",
  "eyre",
  "log",
  "once_cell",

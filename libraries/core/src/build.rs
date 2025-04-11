@@ -33,7 +33,7 @@ pub fn run_build_command(
             }
         }
 
-        cmd.current_dir(working_dir);
+        cmd.current_dir(dunce::simplified(working_dir));
         let exit_status = cmd
             .status()
             .wrap_err_with(|| format!("failed to run `{}`", build))?;
