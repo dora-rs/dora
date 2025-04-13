@@ -46,8 +46,6 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
 
-    archive_node_bridge(root, build_dir).await?;
-
     build_package("dora-operator-api-cxx").await?;
     let operator_cxxbridge = target
         .join("cxxbridge")
@@ -115,6 +113,7 @@ async fn main() -> eyre::Result<()> {
 
     let dataflow = Path::new("dataflow.yml").to_owned();
     build_package("dora-runtime").await?;
+    archive_node_bridge(root, build_dir).await?;
     run_dataflow(&dataflow).await?;
 
     Ok(())
