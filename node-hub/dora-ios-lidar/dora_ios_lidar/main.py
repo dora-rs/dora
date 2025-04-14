@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 
 image_width = os.getenv("IMAGE_WIDTH")
 image_height = os.getenv("IMAGE_HEIGHT")
+ROTATE = os.getenv("ROTATE")
 
 
 class DemoApp:
@@ -100,8 +101,15 @@ class DemoApp:
                     f_1 = intrinsic_mat[1, 1] * (int(image_width) / rgb.shape[1])
                     r_0 = intrinsic_mat[0, 2] * (int(image_height) / rgb.shape[0])
                     r_1 = intrinsic_mat[1, 2] * (int(image_width) / rgb.shape[1])
+                    if ROTATE == "ROTATE_90_CLOCKWISE":
+                        rgb = cv2.rotate(rgb, cv2.ROTATE_90_CLOCKWISE)
+                        depth = cv2.rotate(depth, cv2.ROTATE_90_CLOCKWISE)
                     rgb = cv2.resize(rgb, (int(image_width), int(image_height)))
-                    depth = cv2.resize(depth, (int(image_width), int(image_height)))
+                    depth = cv2.resize(
+                        depth,
+                        (int(image_width), int(image_height)),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
                 else:
                     f_0 = intrinsic_mat[0, 0]
                     f_1 = intrinsic_mat[1, 1]

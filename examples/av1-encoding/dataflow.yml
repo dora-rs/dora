@@ -42,9 +42,6 @@ nodes:
       image: dav1d-remote/image
     outputs:
       - image
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
 
   - id: dav1d-local
     path: dora-dav1d
@@ -55,9 +52,6 @@ nodes:
       image: rav1e-remote/image
     outputs:
       - image
-    env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
@@ -66,4 +60,3 @@ nodes:
     path: dora-rerun
     inputs:
       image_decode: dav1d-local/image
-      image_echo: echo/image
