@@ -1,5 +1,78 @@
 # Changelog
 
+## v0.3.11 (2025-04-07)
+
+## What's Changed
+
+- Post dora 0.3.10 release fix by @haixuanTao in https://github.com/dora-rs/dora/pull/804
+- Add windows release for rust nodes by @haixuanTao in https://github.com/dora-rs/dora/pull/805
+- Add Node Table into README.md by @haixuanTao in https://github.com/dora-rs/dora/pull/808
+- update dora yaml json schema validator by @haixuanTao in https://github.com/dora-rs/dora/pull/809
+- Improve readme support matrix readability by @haixuanTao in https://github.com/dora-rs/dora/pull/810
+- Clippy automatic fixes applied by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/812
+- Improve documentation on adding new node to the node-hub by @haixuanTao in https://github.com/dora-rs/dora/pull/820
+- #807 Fixed by @7SOMAY in https://github.com/dora-rs/dora/pull/818
+- Applied Ruff pydocstyle to dora by @Mati-ur-rehman-017 in https://github.com/dora-rs/dora/pull/831
+- Related to dora-bot issue assignment by @MunishMummadi in https://github.com/dora-rs/dora/pull/840
+- Add dora-lerobot node into dora by @Ignavar in https://github.com/dora-rs/dora/pull/834
+- CI: Permit issue modifications for issue assign job by @phil-opp in https://github.com/dora-rs/dora/pull/848
+- Fix: Set variables outside bash script to prevent injection by @phil-opp in https://github.com/dora-rs/dora/pull/849
+- Replacing Deprecated functions of pyo3 by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/838
+- Add noise filtering on whisper to be able to use speakers by @haixuanTao in https://github.com/dora-rs/dora/pull/847
+- Add minimal Dockerfile with Python and uv for easy onboarding by @Krishnadubey1008 in https://github.com/dora-rs/dora/pull/843
+- More compact readme with example section by @haixuanTao in https://github.com/dora-rs/dora/pull/855
+- Create docker-image.yml by @haixuanTao in https://github.com/dora-rs/dora/pull/857
+- Multi platform docker by @haixuanTao in https://github.com/dora-rs/dora/pull/858
+- change: `dora/node-hub/README.md` by @MunishMummadi in https://github.com/dora-rs/dora/pull/862
+- Added dora-phi4 inside node-hub by @7SOMAY in https://github.com/dora-rs/dora/pull/861
+- node-hub: Added dora-magma node by @MunishMummadi in https://github.com/dora-rs/dora/pull/853
+- Added the dora-llama-cpp-python node by @ShashwatPatil in https://github.com/dora-rs/dora/pull/850
+- Adding in some missing types and test cases within arrow convert crate by @Ignavar in https://github.com/dora-rs/dora/pull/864
+- Migrate robots from dora-lerobot to dora repository by @rahat2134 in https://github.com/dora-rs/dora/pull/868
+- Applied pyupgrade style by @Mati-ur-rehman-017 in https://github.com/dora-rs/dora/pull/876
+- Adding additional llm in tests by @haixuanTao in https://github.com/dora-rs/dora/pull/873
+- Dora transformer node by @ShashwatPatil in https://github.com/dora-rs/dora/pull/870
+- Using macros in Arrow Conversion by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/877
+- Adding run command within python API by @haixuanTao in https://github.com/dora-rs/dora/pull/875
+- Added f16 type conversion by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/886
+- Added "PERF" flag inside node-hub by @7SOMAY in https://github.com/dora-rs/dora/pull/880
+- Added quality ruff-flags for better code quality by @7SOMAY in https://github.com/dora-rs/dora/pull/888
+- Add llm benchmark by @haixuanTao in https://github.com/dora-rs/dora/pull/881
+- Implement `into_vec_f64(&ArrowData) -> Vec<f64)` conversion function by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/893
+- Adding virtual env within dora build command by @haixuanTao in https://github.com/dora-rs/dora/pull/895
+- Adding metrics for node api by @haixuanTao in https://github.com/dora-rs/dora/pull/903
+- Made UI interface for input in dora, using Gradio by @ShashwatPatil in https://github.com/dora-rs/dora/pull/891
+- Add chinese voice support by @haixuanTao in https://github.com/dora-rs/dora/pull/902
+- Made conversion generic by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/908
+- Added husky simulation in Mujoco and gamepad node by @ShashwatPatil in https://github.com/dora-rs/dora/pull/906
+- use `cargo-dist` tool for dora-cli releases by @Hennzau in https://github.com/dora-rs/dora/pull/916
+- Implementing Self update by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/920
+- Fix: RUST_LOG=. dora run bug by @starlitxiling in https://github.com/dora-rs/dora/pull/924
+- Added dora-mistral-rs node in node-hub for inference in rust by @Ignavar in https://github.com/dora-rs/dora/pull/910
+- Fix reachy left arm by @haixuanTao in https://github.com/dora-rs/dora/pull/907
+- Functions for sending and receiving data using Arrow::FFI by @Mati-ur-rehman-017 in https://github.com/dora-rs/dora/pull/918
+- Adding `recv_async` dora method to retrieve data in python async by @haixuanTao in https://github.com/dora-rs/dora/pull/909
+- Update: README.md of the node hub by @Choudhry18 in https://github.com/dora-rs/dora/pull/929
+- Fix magma by @haixuanTao in https://github.com/dora-rs/dora/pull/926
+- Add support for mask in rerun by @haixuanTao in https://github.com/dora-rs/dora/pull/927
+- Bump array-init-cursor from 0.2.0 to 0.2.1 by @dependabot in https://github.com/dora-rs/dora/pull/933
+- Enhance Zenoh Integration Documentation by @NageshMandal in https://github.com/dora-rs/dora/pull/935
+- Support av1 by @haixuanTao in https://github.com/dora-rs/dora/pull/932
+- Bump dora v0.3.11 by @haixuanTao in https://github.com/dora-rs/dora/pull/948
+
+## New Contributors
+
+- @Shar-jeel-Sajid made their first contribution in https://github.com/dora-rs/dora/pull/812
+- @7SOMAY made their first contribution in https://github.com/dora-rs/dora/pull/818
+- @Mati-ur-rehman-017 made their first contribution in https://github.com/dora-rs/dora/pull/831
+- @MunishMummadi made their first contribution in https://github.com/dora-rs/dora/pull/840
+- @Ignavar made their first contribution in https://github.com/dora-rs/dora/pull/834
+- @Krishnadubey1008 made their first contribution in https://github.com/dora-rs/dora/pull/843
+- @ShashwatPatil made their first contribution in https://github.com/dora-rs/dora/pull/850
+- @rahat2134 made their first contribution in https://github.com/dora-rs/dora/pull/868
+- @Choudhry18 made their first contribution in https://github.com/dora-rs/dora/pull/929
+- @NageshMandal made their first contribution in https://github.com/dora-rs/dora/pull/935
+
 ## v0.3.10 (2025-03-04)
 
 ## What's Changed
