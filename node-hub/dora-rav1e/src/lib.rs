@@ -201,6 +201,13 @@ fn send_yuv(
                 metadata
                     .parameters
                     .insert("encoding".to_string(), Parameter::String("av1".to_string()));
+                metadata
+                    .parameters
+                    .insert("height".to_string(), Parameter::Integer(enc.height as i64));
+                metadata
+                    .parameters
+                    .insert("width".to_string(), Parameter::Integer(enc.width as i64));
+
                 let data = pkt.data;
                 let arrow = data.into_arrow();
                 node.send_output(id, metadata.parameters.clone(), arrow)
@@ -274,6 +281,12 @@ pub fn lib_main() -> Result<()> {
                     height,
                     speed_settings: SpeedSettings::from_preset(speed),
                     low_latency: true,
+                    chroma_sampling: color::ChromaSampling::Cs420,
+                    color_description: Some(ColorDescription {
+                        matrix_coefficients: MatrixCoefficients::BT709,
+                        transfer_characteristics: color::TransferCharacteristics::BT709,
+                        color_primaries: color::ColorPrimaries::BT709,
+                    }),
                     ..Default::default()
                 };
                 match encoding {
@@ -327,9 +340,9 @@ pub fn lib_main() -> Result<()> {
                         fill_zeros_toward_center_y_plane_in_place(&mut buffer, width, height);
                     }
 
-                    // let buffer = shift_u16_slice_to_upper_12_bits(buffer);
                     let bytes: &[u8] = &bytemuck::cast_slice(&buffer);
 
+                    let cfg = Config::new().with_encoder_config(enc.clone());
                     let mut ctx: Context<u16> = cfg.new_context().unwrap();
                     let mut f = ctx.new_frame();
 
