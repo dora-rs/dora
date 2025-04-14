@@ -29,6 +29,8 @@
           pkgs.rustc
           pkgs.cargo
           pkgs.rustPlatform.bindgenHook
+          pkgs.rust-analyzer
+          pkgs.zenoh
 
           # A Python interpreter including the 'venv' module is required to bootstrap
           # the environment.
