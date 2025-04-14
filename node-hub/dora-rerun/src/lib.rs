@@ -155,7 +155,7 @@ pub fn lib_main() -> Result<()> {
                     );
                     rec.log(id.as_str(), &image)
                         .context("could not log image")?;
-                } else if ["jpeg", "png"].contains(&encoding) {
+                } else if ["jpeg", "png", "avif"].contains(&encoding) {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
 

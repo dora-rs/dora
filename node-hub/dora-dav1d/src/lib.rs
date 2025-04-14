@@ -58,6 +58,19 @@ pub fn lib_main() -> Result<()> {
             }) => {
                 if let Some(data) = data.as_any().downcast_ref::<UInt8Array>() {
                     let data = data.values().clone();
+                    let encoding = metadata
+                        .parameters
+                        .get("encoding")
+                        .and_then(|p| match p {
+                            dora_node_api::Parameter::String(s) => Some(s),
+                            _ => None,
+                        })
+                        .map(|s| s.as_str())
+                        .unwrap_or("av1");
+                    if encoding != "av1" {
+                        warn!("Unsupported encoding {}", encoding);
+                        continue;
+                    }
                     match dec.send_data(data, None, None, None) {
                         Err(e) => {
                             warn!("Error sending data to the decoder: {}", e);
