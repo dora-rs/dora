@@ -25,6 +25,11 @@
         venvDir = "./.venv";
         buildInputs = [
           self.packages.${pkgs.system}.dora-cli
+
+          pkgs.rustc
+          pkgs.cargo
+          pkgs.rustPlatform.bindgenHook
+
           # A Python interpreter including the 'venv' module is required to bootstrap
           # the environment.
           pkgs.python3Packages.python
@@ -40,6 +45,10 @@
         postVenvCreation = ''
           unset SOURCE_DATE_EPOCH
           # pip install -r requirements.txt
+
+        '';
+        postShellHook = ''
+          export CARGO_HOME=$(pwd)/.cargo
         '';
       };
     });
