@@ -52,7 +52,7 @@ nodes:
 
 Then run:
 ```bash
-dora run yolo.yml --uv
+dora run your_flow.yml --uv
 ```
 
 ### Environment Variables
