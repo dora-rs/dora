@@ -1,3 +1,9 @@
+"""
+dora_mujoco_husky package.
+
+This package provides simulation for the Husky robot using MuJoCo.
+"""
+
 import os
 
 # Define the path to the README file relative to the package directory
