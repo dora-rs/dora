@@ -1,0 +1,22 @@
+[project]
+name = "dora-bench"
+version = "0.1.0"
+description = "Script to benchmark performance of llms while using dora"
+authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "dora-rs>=0.3.9",
+    "librosa>=0.10.0",
+    "opencv-python>=4.8",
+    "Pillow>=10",
+]
+
+[project.scripts]
+dora-benches = "benchmark_script.main:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
