@@ -605,25 +605,31 @@ impl Spawner {
         };
         let clone_dir = dunce::simplified(&clone_dir).to_owned();
 
-        let reuse = if clone_dir.exists() {
+        let (reuse, checkout) = if clone_dir.exists() {
             let empty = BTreeSet::new();
             let in_use = repos_in_use.get(&clone_dir).unwrap_or(&empty);
             let used_by_other_dataflow = in_use.iter().any(|&id| id != dataflow_id);
             if used_by_other_dataflow {
                 // TODO allow if still up to date
                 eyre::bail!("clone_dir is already in use by other dataflow")
+            } else if in_use.is_empty() {
+                (true, true)
             } else {
-                true
+                (true, false)
             }
         } else {
-            false
+            (false, true)
         };
         repos_in_use
             .entry(clone_dir.clone())
             .or_default()
             .insert(dataflow_id);
 
-        Ok(PreparedGit { clone_dir, reuse })
+        Ok(PreparedGit {
+            clone_dir,
+            reuse,
+            checkout,
+        })
     }
 
     async fn spawn_git_node(
@@ -635,7 +641,11 @@ impl Spawner {
         node_env: &Option<BTreeMap<String, EnvValue>>,
         prepared: PreparedGit,
     ) -> Result<Option<tokio::process::Command>, eyre::Error> {
-        let PreparedGit { clone_dir, reuse } = prepared;
+        let PreparedGit {
+            clone_dir,
+            reuse,
+            checkout,
+        } = prepared;
 
         let rev_str = rev_str(rev);
         let refname = rev.clone().map(|rev| match rev {
@@ -655,10 +665,14 @@ impl Spawner {
             let refname_cloned = refname.clone();
             let clone_dir = clone_dir.clone();
             let repository = fetch_changes(clone_dir, refname_cloned).await?;
-            checkout_tree(&repository, refname)?;
+            if checkout {
+                checkout_tree(&repository, refname)?;
+            }
         } else {
             let repository = clone_into(repo_addr, rev, &clone_dir, logger).await?;
-            checkout_tree(&repository, refname)?;
+            if checkout {
+                checkout_tree(&repository, refname)?;
+            }
         };
         if let Some(build) = &node.build {
             self.build_node(logger, node_env, clone_dir.clone(), build)
@@ -907,4 +921,5 @@ async fn spawn_command_from_path(
 struct PreparedGit {
     clone_dir: PathBuf,
     reuse: bool,
+    checkout: bool,
 }
