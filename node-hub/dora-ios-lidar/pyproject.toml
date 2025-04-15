@@ -27,6 +27,3 @@ extend-select = [
   "I",    # Ruff's I rule
   "E",    # Ruff's E rule
 ]
-
-[flake8]
-max-line-length = 120
