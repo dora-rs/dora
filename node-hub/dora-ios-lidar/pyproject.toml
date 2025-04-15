@@ -26,3 +26,6 @@ extend-select = [
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
 ]
+
+[flake8]
+max-line-length = 120
