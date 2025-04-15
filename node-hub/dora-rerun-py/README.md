@@ -90,7 +90,7 @@ nodes:
       - bbox
 
   - id: plot
-    build: pip install dora-rerun
+    build: pip install dora-rerun-py
     path: dora-rerun
     inputs:
       image: camera/image
