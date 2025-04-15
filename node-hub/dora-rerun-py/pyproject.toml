@@ -1,0 +1,39 @@
+[project]
+name = "dora-rerun-py"
+version = "0.1.0"
+authors = [
+    { name = "Nagesh Mandal", email = "evergreennageshmandal@gmail.com" }
+]
+description = "A Dora node for visualizing data with rerun."
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "dora-rs >= 0.3.9",
+    "rerun-sdk == 0.22.0",   # Use the version of rerun-sdk you have tested with
+    "pyarrow >= 14.0.1",
+    "numpy >= 1.26.0",
+    "opencv-python >= 4.8.0"
+]
+
+[dependency-groups]
+dev = [
+    "pytest >=8.1.1", 
+    "ruff >=0.9.1"
+]
+
+[project.scripts]
+dora-rerun-py = "dora_rerun_py.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]
