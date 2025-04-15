@@ -10,6 +10,7 @@ def test_pass():
 #    from feetech_client.main import main
 
 # Check that everything is working, and catch the dora Runtime Exception 
-# since we're not running in a dora dataflow.
+    # since we're not running in a dora dataflow.
+
 #    with pytest.raises(RuntimeError):
 #        main()

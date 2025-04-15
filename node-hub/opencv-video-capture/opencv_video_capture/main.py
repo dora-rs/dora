@@ -15,7 +15,8 @@ FLIP = os.getenv("FLIP", "")
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    # Handle dynamic nodes, ask for the name of the node in the dataflow,
+    # and the same values as the ENV variables.
     """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
         description="OpenCV Video Capture: This node is used to capture video from a camera.",
