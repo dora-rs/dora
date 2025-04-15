@@ -28,3 +28,7 @@ dora-rerun-py = "dora_rerun_py.main:main"
 
 [tool.ruff]
 ignore = ["F841"]  # Ignore unused variable warnings
+
+[flake8]
+max-line-length = 120
+ignore = E501, D203, D213
