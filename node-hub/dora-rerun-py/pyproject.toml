@@ -26,9 +26,14 @@ dev = [
 [project.scripts]
 dora-rerun-py = "dora_rerun_py.main:main"
 
-[tool.ruff]
-ignore = ["F841"]  # Ignore unused variable warnings
-
-[flake8]
-max-line-length = 120
-ignore = E501, D203, D213
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]
