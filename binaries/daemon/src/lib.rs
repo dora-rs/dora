@@ -38,6 +38,7 @@ use socket_stream_utils::socket_stream_send;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::pin,
@@ -54,6 +55,7 @@ use tokio::{
         mpsc::{self, UnboundedSender},
         oneshot::{self, Sender},
     },
+    task::JoinSet,
 };
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::{error, warn};
@@ -384,6 +386,24 @@ impl Daemon {
                 Event::DaemonError(err) => {
                     tracing::error!("Daemon error: {err:?}");
                 }
+                Event::SpawnNodeResult {
+                    dataflow_id,
+                    node_id,
+                    result,
+                } => match result {
+                    Ok(running_node) => {
+                        if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                            dataflow.running_nodes.insert(node_id, running_node);
+                        }
+                    }
+                    Err(error) => {
+                        self.dataflow_node_results
+                            .entry(dataflow_id)
+                            .or_default()
+                            .insert(node_id.clone(), Err(error));
+                        self.handle_node_stop(dataflow_id, &node_id).await?;
+                    }
+                },
             }
         }
 
@@ -441,10 +461,17 @@ impl Daemon {
                 if let Err(err) = &result {
                     tracing::error!("{err:?}");
                 }
-                let reply =
-                    DaemonCoordinatorReply::SpawnResult(result.map_err(|err| format!("{err:?}")));
-                let _ = reply_tx.send(Some(reply)).map_err(|_| {
-                    error!("could not send `SpawnResult` reply from daemon to coordinator")
+                tokio::spawn(async move {
+                    let result = match result {
+                        Err(err) => Err(err),
+                        Ok(task) => task.await,
+                    };
+                    let reply = DaemonCoordinatorReply::SpawnResult(
+                        result.map_err(|err| format!("{err:?}")),
+                    );
+                    let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                        error!("could not send `SpawnResult` reply from daemon to coordinator")
+                    });
                 });
                 RunStatus::Continue
             }
@@ -685,7 +712,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
         let dataflow =
             RunningDataflow::new(dataflow_id, self.daemon_id.clone(), &dataflow_descriptor);
@@ -737,7 +764,7 @@ impl Daemon {
             }
         }
 
-        let mut spawner = Spawner {
+        let spawner = Spawner {
             dataflow_id,
             working_dir,
             daemon_tx: self.events_tx.clone(),
@@ -745,6 +772,8 @@ impl Daemon {
             clock: self.clock.clone(),
             uv,
         };
+
+        let mut tasks = JoinSet::new();
 
         // spawn nodes and set up subscriptions
         for node in nodes.into_values() {
@@ -767,6 +796,7 @@ impl Daemon {
                     .log(LogLevel::Info, Some("daemon".into()), "spawning")
                     .await;
                 match spawner
+                    .clone()
                     .spawn_node(
                         node,
                         node_stderr_most_recent,
@@ -776,8 +806,43 @@ impl Daemon {
                     .await
                     .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
-                    Ok(running_node) => {
-                        dataflow.running_nodes.insert(node_id, running_node);
+                    Ok(spawn_task) => {
+                        let events_tx = self.events_tx.clone();
+                        let clock = self.clock.clone();
+                        tasks.spawn(async move {
+                            let result = spawn_task.await.unwrap_or_else(|err| {
+                                Err(eyre!("failed to join spawn task: {err}"))
+                            });
+                            let (node_spawn_result, success) = match result {
+                                Ok(node) => (Ok(node), Ok(())),
+                                Err(err) => {
+                                    let node_err = NodeError {
+                                        timestamp: clock.new_timestamp(),
+                                        cause: NodeErrorCause::Other {
+                                            stderr: format!("spawn failed: {err:?}"),
+                                        },
+                                        exit_status: NodeExitStatus::Unknown,
+                                    };
+                                    (Err(node_err), Err(err))
+                                }
+                            };
+                            let send_result = events_tx
+                                .send(Timestamped {
+                                    inner: Event::SpawnNodeResult {
+                                        dataflow_id,
+                                        node_id,
+                                        result: node_spawn_result,
+                                    },
+                                    timestamp: clock.new_timestamp(),
+                                })
+                                .await;
+                            if send_result.is_err() {
+                                tracing::error!(
+                                    "failed to send SpawnNodeResult to main daemon task"
+                                )
+                            }
+                            success
+                        });
                     }
                     Err(err) => {
                         logger
@@ -858,7 +923,11 @@ impl Daemon {
             self.handle_node_stop(dataflow_id, &node_id).await?;
         }
 
-        Ok(())
+        let spawn_result = async move {
+            let result: eyre::Result<()> = tasks.join_all().await.into_iter().collect();
+            result
+        };
+        Ok(spawn_result)
     }
 
     async fn handle_dynamic_node_event(
@@ -1713,7 +1782,7 @@ fn close_input(
 }
 
 #[derive(Debug)]
-struct RunningNode {
+pub struct RunningNode {
     pid: Option<ProcessId>,
     node_config: NodeConfig,
 }
@@ -2017,6 +2086,11 @@ pub enum Event {
     CtrlC,
     SecondCtrlC,
     DaemonError(eyre::Report),
+    SpawnNodeResult {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        result: Result<RunningNode, NodeError>,
+    },
 }
 
 impl From<DoraEvent> for Event {

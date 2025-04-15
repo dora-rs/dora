@@ -10,8 +10,8 @@ use dora_core::{
     build::run_build_command,
     config::DataId,
     descriptor::{
-        resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
-        ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
+        resolve_path, source_is_url, CustomNode, Descriptor, OperatorDefinition, OperatorSource,
+        PythonSource, ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
     },
     get_python_path,
     uhlc::HLC,
@@ -58,12 +58,12 @@ pub struct Spawner {
 
 impl Spawner {
     pub async fn spawn_node(
-        &mut self,
+        mut self,
         node: ResolvedNode,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         logger: &mut NodeLogger<'_>,
         repos_in_use: &mut BTreeMap<PathBuf, BTreeSet<DataflowId>>,
-    ) -> eyre::Result<RunningNode> {
+    ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<RunningNode>>> {
         let dataflow_id = self.dataflow_id;
         let node_id = node.id.clone();
         logger
@@ -87,9 +87,6 @@ impl Spawner {
             self.clock.clone(),
         )
         .await?;
-        let send_stdout_to = node
-            .send_stdout_as()
-            .context("Could not resolve `send_stdout_as` configuration")?;
 
         let node_config = NodeConfig {
             dataflow_id,
@@ -99,6 +96,47 @@ impl Spawner {
             dataflow_descriptor: self.dataflow_descriptor.clone(),
             dynamic: node.kind.dynamic(),
         };
+
+        let prepared_git = if let dora_core::descriptor::CoreNodeKind::Custom(CustomNode {
+            source: dora_message::descriptor::NodeSource::GitBranch { repo, rev },
+            ..
+        }) = &node.kind
+        {
+            Some(self.prepare_git_node(repo, rev, repos_in_use).await?)
+        } else {
+            None
+        };
+
+        let mut logger = logger
+            .try_clone()
+            .await
+            .wrap_err("failed to clone logger")?;
+        let task = async move {
+            self.spawn_node_inner(
+                node,
+                &mut logger,
+                dataflow_id,
+                node_config,
+                prepared_git,
+                node_stderr_most_recent,
+            )
+            .await
+        };
+        Ok(tokio::spawn(task))
+    }
+
+    async fn spawn_node_inner(
+        &mut self,
+        node: ResolvedNode,
+        logger: &mut NodeLogger<'_>,
+        dataflow_id: uuid::Uuid,
+        node_config: NodeConfig,
+        prepared_git: Option<PreparedGit>,
+        node_stderr_most_recent: Arc<ArrayQueue<String>>,
+    ) -> Result<RunningNode, eyre::Error> {
+        let send_stdout_to = node
+            .send_stdout_as()
+            .context("Could not resolve `send_stdout_as` configuration")?;
 
         let mut child = match node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
@@ -112,7 +150,7 @@ impl Spawner {
                             .await?
                     }
                     dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
-                        self.spawn_git_node(&n, repo, rev, logger, &node.env, repos_in_use)
+                        self.spawn_git_node(&n, repo, rev, logger, &node.env, prepared_git.unwrap())
                             .await?
                     }
                 };
@@ -442,6 +480,7 @@ impl Spawner {
             .try_clone()
             .await
             .context("failed to clone logger")?;
+
         // Log to file stream.
         tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -512,24 +551,16 @@ impl Spawner {
         Ok(running_node)
     }
 
-    async fn spawn_git_node(
+    async fn prepare_git_node(
         &mut self,
-        node: &dora_core::descriptor::CustomNode,
         repo_addr: &String,
         rev: &Option<GitRepoRev>,
-        logger: &mut NodeLogger<'_>,
-        node_env: &Option<BTreeMap<String, EnvValue>>,
         repos_in_use: &mut BTreeMap<PathBuf, BTreeSet<DataflowId>>,
-    ) -> Result<Option<tokio::process::Command>, eyre::Error> {
+    ) -> eyre::Result<PreparedGit> {
         let dataflow_id = self.dataflow_id;
         let repo_url = Url::parse(repo_addr).context("failed to parse git repository URL")?;
         let target_dir = self.working_dir.join("build");
-        let rev_str = rev_str(rev);
-        let refname = rev.clone().map(|rev| match rev {
-            GitRepoRev::Branch(branch) => format!("refs/remotes/origin/{branch}"),
-            GitRepoRev::Tag(tag) => format!("refs/tags/{tag}"),
-            GitRepoRev::Rev(rev) => rev,
-        });
+
         let clone_dir_base = {
             let base = {
                 let mut path =
@@ -574,7 +605,7 @@ impl Spawner {
         };
         let clone_dir = dunce::simplified(&clone_dir).to_owned();
 
-        if clone_dir.exists() {
+        let reuse = if clone_dir.exists() {
             let empty = BTreeSet::new();
             let in_use = repos_in_use.get(&clone_dir).unwrap_or(&empty);
             let used_by_other_dataflow = in_use.iter().any(|&id| id != dataflow_id);
@@ -582,27 +613,50 @@ impl Spawner {
                 // TODO allow if still up to date
                 eyre::bail!("clone_dir is already in use by other dataflow")
             } else {
-                repos_in_use
-                    .entry(clone_dir.clone())
-                    .or_default()
-                    .insert(dataflow_id);
-                logger
-                    .log(
-                        LogLevel::Info,
-                        None,
-                        format!("reusing {repo_addr}{rev_str}"),
-                    )
-                    .await;
-                let refname_cloned = refname.clone();
-                let clone_dir = clone_dir.clone();
-                let repository = fetch_changes(clone_dir, refname_cloned).await?;
-                checkout_tree(&repository, refname)?;
+                true
             }
         } else {
-            repos_in_use
-                .entry(clone_dir.clone())
-                .or_default()
-                .insert(dataflow_id);
+            false
+        };
+        repos_in_use
+            .entry(clone_dir.clone())
+            .or_default()
+            .insert(dataflow_id);
+
+        Ok(PreparedGit { clone_dir, reuse })
+    }
+
+    async fn spawn_git_node(
+        &mut self,
+        node: &dora_core::descriptor::CustomNode,
+        repo_addr: &String,
+        rev: &Option<GitRepoRev>,
+        logger: &mut NodeLogger<'_>,
+        node_env: &Option<BTreeMap<String, EnvValue>>,
+        prepared: PreparedGit,
+    ) -> Result<Option<tokio::process::Command>, eyre::Error> {
+        let PreparedGit { clone_dir, reuse } = prepared;
+
+        let rev_str = rev_str(rev);
+        let refname = rev.clone().map(|rev| match rev {
+            GitRepoRev::Branch(branch) => format!("refs/remotes/origin/{branch}"),
+            GitRepoRev::Tag(tag) => format!("refs/tags/{tag}"),
+            GitRepoRev::Rev(rev) => rev,
+        });
+
+        if reuse {
+            logger
+                .log(
+                    LogLevel::Info,
+                    None,
+                    format!("reusing {repo_addr}{rev_str}"),
+                )
+                .await;
+            let refname_cloned = refname.clone();
+            let clone_dir = clone_dir.clone();
+            let repository = fetch_changes(clone_dir, refname_cloned).await?;
+            checkout_tree(&repository, refname)?;
+        } else {
             let repository = clone_into(repo_addr, rev, &clone_dir, logger).await?;
             checkout_tree(&repository, refname)?;
         };
@@ -848,4 +902,9 @@ async fn spawn_command_from_path(
     };
 
     Ok(Some(cmd))
+}
+
+struct PreparedGit {
+    clone_dir: PathBuf,
+    reuse: bool,
 }
