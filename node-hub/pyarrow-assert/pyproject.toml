@@ -29,5 +29,4 @@ extend-select = [
   "NPY",  # Ruff's NPY rule
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
-  "E",    # Ruff's E rule
 ]
