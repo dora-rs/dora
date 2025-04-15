@@ -1,6 +1,6 @@
 [project]
 name = "dora-pyaudio"
-version = "0.3.10"
+version = "0.3.11"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 license = { text = "MIT" }
 readme = "README.md"
@@ -30,4 +30,5 @@ extend-select = [
   "NPY",  # Ruff's NPY rule
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
+  "E",    # Ruff's E rule
 ]

@@ -1,9 +1,10 @@
 [project]
 name = "opencv-plot"
-version = "0.3.10"
+version = "0.3.11"
+license = { file = "MIT" }
 authors = [
-    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
-    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
+  { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+  { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for plotting text and bbox on image with OpenCV"
 
@@ -27,4 +28,5 @@ extend-select = [
   "NPY",  # Ruff's NPY rule
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
+  "E",    # Ruff's E rule
 ]

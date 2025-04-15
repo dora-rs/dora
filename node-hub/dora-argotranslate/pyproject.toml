@@ -1,6 +1,6 @@
 [project]
 name = "dora-argotranslate"
-version = "0.3.10"
+version = "0.3.11"
 description = "Dora Node for Text translating using Argostranslate"
 authors = [
     { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
@@ -29,4 +29,5 @@ extend-select = [
   "NPY",  # Ruff's NPY rule
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
+  "E",    # Ruff's E rule
 ]

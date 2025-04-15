@@ -1,6 +1,6 @@
 [project]
 name = "dora-phi4"
-version = "0.0.0"
+version = "0.3.11"
 authors = [{ name = "Somay", email = "ssomay2002@gmail.com" }]
 description = "DORA node for Phi-4 multimodal model"
 license = { text = "MIT" }
@@ -42,4 +42,5 @@ extend-select = [
   "NPY",  # Ruff's NPY rule
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
+  "E",    # Ruff's E rule
 ]

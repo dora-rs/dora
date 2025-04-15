@@ -37,6 +37,8 @@ members = [
     "node-hub/dora-kit-car",
     "node-hub/dora-object-to-pose",
     "node-hub/dora-mistral-rs",
+    "node-hub/dora-rav1e",
+    "node-hub/dora-dav1d",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
@@ -47,33 +49,33 @@ members = [
 [workspace.package]
 edition = "2021"
 # Make sure to also bump `apis/node/python/__init__.py` version.
-version = "0.3.10"
+version = "0.3.11"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
-documentation = "https://dora.carsmos.ai"
+documentation = "https://dora-rs.ai"
 license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
-dora-node-api = { version = "0.3.10", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "0.3.10", path = "apis/python/node", default-features = false }
-dora-operator-api = { version = "0.3.10", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "0.3.10", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "0.3.10", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "0.3.10", path = "apis/python/operator" }
-dora-operator-api-c = { version = "0.3.10", path = "apis/c/operator" }
-dora-node-api-c = { version = "0.3.10", path = "apis/c/node" }
-dora-core = { version = "0.3.10", path = "libraries/core" }
-dora-arrow-convert = { version = "0.3.10", path = "libraries/arrow-convert" }
-dora-tracing = { version = "0.3.10", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "0.3.10", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "0.3.10", path = "libraries/extensions/download" }
-shared-memory-server = { version = "0.3.10", path = "libraries/shared-memory-server" }
-communication-layer-request-reply = { version = "0.3.10", path = "libraries/communication-layer/request-reply" }
-dora-runtime = { version = "0.3.10", path = "binaries/runtime" }
-dora-daemon = { version = "0.3.10", path = "binaries/daemon" }
-dora-coordinator = { version = "0.3.10", path = "binaries/coordinator" }
-dora-ros2-bridge = { version = "0.3.10", path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { version = "0.3.10", path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-node-api = { version = "0.3.11", path = "apis/rust/node", default-features = false }
+dora-node-api-python = { version = "0.3.11", path = "apis/python/node", default-features = false }
+dora-operator-api = { version = "0.3.11", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "0.3.11", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "0.3.11", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "0.3.11", path = "apis/python/operator" }
+dora-operator-api-c = { version = "0.3.11", path = "apis/c/operator" }
+dora-node-api-c = { version = "0.3.11", path = "apis/c/node" }
+dora-core = { version = "0.3.11", path = "libraries/core" }
+dora-arrow-convert = { version = "0.3.11", path = "libraries/arrow-convert" }
+dora-tracing = { version = "0.3.11", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "0.3.11", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "0.3.11", path = "libraries/extensions/download" }
+shared-memory-server = { version = "0.3.11", path = "libraries/shared-memory-server" }
+communication-layer-request-reply = { version = "0.3.11", path = "libraries/communication-layer/request-reply" }
+dora-runtime = { version = "0.3.11", path = "binaries/runtime" }
+dora-daemon = { version = "0.3.11", path = "binaries/daemon" }
+dora-coordinator = { version = "0.3.11", path = "binaries/coordinator" }
+dora-ros2-bridge = { version = "0.3.11", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "0.3.11", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
 dora-message = { version = "0.4.4", path = "libraries/message" }
