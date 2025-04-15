@@ -744,7 +744,6 @@ impl Daemon {
             dataflow_descriptor,
             clock: self.clock.clone(),
             uv,
-            repos_in_use: &mut self.repos_in_use,
         };
 
         // spawn nodes and set up subscriptions
@@ -768,7 +767,12 @@ impl Daemon {
                     .log(LogLevel::Info, Some("daemon".into()), "spawning")
                     .await;
                 match spawner
-                    .spawn_node(node, node_stderr_most_recent, &mut logger)
+                    .spawn_node(
+                        node,
+                        node_stderr_most_recent,
+                        &mut logger,
+                        &mut self.repos_in_use,
+                    )
                     .await
                     .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
