@@ -362,6 +362,7 @@ jobs:
           sleep 60
           dora stop --name ci-python-test  --grace-duration 5s
           dora destroy
+          sleep 5
 
           cd ..
 
@@ -390,6 +391,7 @@ jobs:
           dora stop --name ci-python-operator  --grace-duration 30s
 
           dora destroy
+          sleep 5
 
           # Run Python queue latency test
           echo "Running CI Queue Latency Test"
