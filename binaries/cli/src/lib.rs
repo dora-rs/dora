@@ -628,12 +628,29 @@ fn run(args: Args) -> eyre::Result<()> {
                 }
 
                 println!("Uninstalling Dora CLI...");
-                match self_replace::self_delete() {
-                    Ok(_) => {
-                        println!("Dora CLI has been successfully uninstalled.");
+                #[cfg(feature = "python")]
+                {
+                    println!("Detected pip installation, running pip uninstall...");
+                    let status = std::process::Command::new("pip")
+                        .args(["uninstall", "-y", "dora-rs-cli"])
+                        .status()
+                        .wrap_err("Failed to run pip uninstall")?;
+
+                    if status.success() {
+                        println!("Dora CLI has been successfully uninstalled via pip.");
+                    } else {
+                        bail!("Failed to uninstall Dora CLI via pip.");
                     }
-                    Err(e) => {
-                        bail!("Failed to uninstall Dora CLI: {}", e);
+                }
+                #[cfg(not(feature = "python"))]
+                {
+                    match self_replace::self_delete() {
+                        Ok(_) => {
+                            println!("Dora CLI has been successfully uninstalled.");
+                        }
+                        Err(e) => {
+                            bail!("Failed to uninstall Dora CLI: {}", e);
+                        }
                     }
                 }
             }
