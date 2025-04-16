@@ -32,7 +32,7 @@ use dora_node_api::{
 use eyre::{ContextCompat, WrapErr};
 use git2::FetchOptions;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -44,6 +44,7 @@ use tokio::{
 };
 use tracing::error;
 use url::Url;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Spawner {
@@ -578,7 +579,7 @@ impl Spawner {
                 },
             }
         };
-        let clone_dir = if clone_dir_base.exists() {
+        let clone_dir = if clone_dir_exists(&clone_dir_base, repos_in_use) {
             let used_by_other_dataflow =
                 self.used_by_other_dataflow(dataflow_id, &clone_dir_base, repos_in_use);
             if used_by_other_dataflow {
@@ -589,7 +590,7 @@ impl Spawner {
                 let mut i = 1;
                 loop {
                     let new_path = clone_dir_base.with_file_name(format!("{dir_name}-{i}"));
-                    if new_path.exists()
+                    if clone_dir_exists(&new_path, repos_in_use)
                         && self.used_by_other_dataflow(dataflow_id, &new_path, repos_in_use)
                     {
                         i += 1;
@@ -605,7 +606,7 @@ impl Spawner {
         };
         let clone_dir = dunce::simplified(&clone_dir).to_owned();
 
-        let (reuse, checkout) = if clone_dir.exists() {
+        let (reuse, checkout) = if clone_dir_exists(&clone_dir, repos_in_use) {
             let empty = BTreeSet::new();
             let in_use = repos_in_use.get(&clone_dir).unwrap_or(&empty);
             let used_by_other_dataflow = in_use.iter().any(|&id| id != dataflow_id);
@@ -922,4 +923,8 @@ struct PreparedGit {
     clone_dir: PathBuf,
     reuse: bool,
     checkout: bool,
+}
+
+fn clone_dir_exists(dir: &PathBuf, repos_in_use: &BTreeMap<PathBuf, BTreeSet<Uuid>>) -> bool {
+    repos_in_use.contains_key(dir) || dir.exists()
 }
