@@ -101,7 +101,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
-          sccache: "true"
+          sccache: "false"
           manylinux: musllinux_1_2
           working-directory: ${{ matrix.repository.path }}
 
