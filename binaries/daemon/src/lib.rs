@@ -1377,10 +1377,11 @@ impl Daemon {
         if let Some(mut pid) = dataflow.running_nodes.remove(node_id).and_then(|n| n.pid) {
             pid.mark_as_stopped()
         }
-        if dataflow
-            .running_nodes
-            .iter()
-            .all(|(_id, n)| n.node_config.dynamic)
+        if !dataflow.pending_nodes.local_nodes_pending()
+            && dataflow
+                .running_nodes
+                .iter()
+                .all(|(_id, n)| n.node_config.dynamic)
         {
             let result = DataflowDaemonResult {
                 timestamp: self.clock.new_timestamp(),
