@@ -356,6 +356,7 @@ jobs:
           dora up
           echo "Running dora list"
           dora list
+          dora build dataflow.yml --uv
           echo "Running CI Python Test"
           dora start dataflow.yml --name ci-python-test --detach --uv
           sleep 60
