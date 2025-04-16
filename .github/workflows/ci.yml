@@ -359,7 +359,7 @@ jobs:
           dora build dataflow.yml --uv
           echo "Running CI Python Test"
           dora start dataflow.yml --name ci-python-test --detach --uv
-          sleep 60
+          sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-test  --grace-duration 5s
           dora destroy
@@ -374,7 +374,7 @@ jobs:
           uv pip install -e apis/python/node
           dora build examples/python-dataflow/dataflow.yml --uv
           dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
-          sleep 60
+          sleep 10
           echo "Running dora stop"
           dora stop --name ci-python  --grace-duration 30s
 
@@ -383,14 +383,14 @@ jobs:
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
           dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
           uv run opencv-plot --name plot
-          sleep 240
+          sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-dynamic  --grace-duration 30s
 
           # Run Python Operator Example
           echo "Running CI Operator Test"
           dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
-          sleep 120
+          sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-operator  --grace-duration 30s
 
