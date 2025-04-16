@@ -1,7 +1,6 @@
 use dora_node_api::{self, dora_core::config::DataId, DoraNode};
-use eyre::{Context, ContextCompat};
-use rand::Rng;
-use std::collections::HashMap;
+use eyre::Context;
+use rand::RngCore;
 use std::time::Duration;
 use tracing_subscriber::Layer;
 
@@ -25,26 +24,17 @@ fn main() -> eyre::Result<()> {
         1000 * 4096,
     ];
 
-    let mut data = HashMap::new();
-    for size in sizes {
-        let vec: Vec<u8> = rand::thread_rng()
-            .sample_iter(rand::distributions::Standard)
-            .take(size)
-            .collect();
-
-        data.insert(size, vec);
-    }
+    let data = sizes.map(|size| {
+        let mut data = vec![0u8; size];
+        rand::thread_rng().fill_bytes(&mut data);
+        data
+    });
 
     // test latency first
-    for size in sizes {
-        for _ in 0..100 {
-            let data = data.get(&size).wrap_err(eyre::Report::msg(format!(
-                "data not found for size {}",
-                size
-            )))?;
-
+    for data in &data {
+        for _ in 0..1 {
             node.send_output_raw(latency.clone(), Default::default(), data.len(), |out| {
-                out.copy_from_slice(data);
+                out.copy_from_slice(&data);
             })?;
 
             // sleep a bit to avoid queue buildup
@@ -56,17 +46,18 @@ fn main() -> eyre::Result<()> {
     std::thread::sleep(Duration::from_secs(2));
 
     // then throughput with full speed
-    for size in sizes {
+    for data in &data {
         for _ in 0..100 {
-            let data = data.get(&size).wrap_err(eyre::Report::msg(format!(
-                "data not found for size {}",
-                size
-            )))?;
-
             node.send_output_raw(throughput.clone(), Default::default(), data.len(), |out| {
-                out.copy_from_slice(data);
+                out.copy_from_slice(&data);
             })?;
         }
+        // notify sink that all messages have been sent
+        node.send_output_raw(throughput.clone(), Default::default(), 1, |out| {
+            out.copy_from_slice(&[1]);
+        })?;
+
+        std::thread::sleep(Duration::from_secs(2));
     }
 
     Ok(())
