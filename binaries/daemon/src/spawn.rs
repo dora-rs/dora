@@ -32,7 +32,8 @@ use dora_node_api::{
 use eyre::{ContextCompat, WrapErr};
 use git2::FetchOptions;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -64,7 +65,7 @@ impl Spawner {
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         logger: &mut NodeLogger<'_>,
         repos_in_use: &mut BTreeMap<PathBuf, BTreeSet<DataflowId>>,
-    ) -> eyre::Result<tokio::task::JoinHandle<eyre::Result<RunningNode>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<RunningNode>>> {
         let dataflow_id = self.dataflow_id;
         let node_id = node.id.clone();
         logger
@@ -123,7 +124,7 @@ impl Spawner {
             )
             .await
         };
-        Ok(tokio::spawn(task))
+        Ok(task)
     }
 
     async fn spawn_node_inner(

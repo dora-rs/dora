@@ -55,7 +55,6 @@ use tokio::{
         mpsc::{self, UnboundedSender},
         oneshot::{self, Sender},
     },
-    task::JoinSet,
 };
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::{error, warn};
@@ -775,7 +774,7 @@ impl Daemon {
             uv,
         };
 
-        let mut tasks = JoinSet::new();
+        let mut tasks = Vec::new();
 
         // spawn nodes and set up subscriptions
         for node in nodes.into_values() {
@@ -808,14 +807,11 @@ impl Daemon {
                     .await
                     .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
-                    Ok(spawn_task) => {
+                    Ok(result) => {
                         let events_tx = self.events_tx.clone();
                         let clock = self.clock.clone();
-                        tasks.spawn(async move {
-                            let result = spawn_task.await.unwrap_or_else(|err| {
-                                Err(eyre!("failed to join spawn task: {err}"))
-                            });
-                            let (node_spawn_result, success) = match result {
+                        tasks.push(async move {
+                            let (node_spawn_result, success) = match result.await {
                                 Ok(node) => (Ok(node), Ok(())),
                                 Err(err) => {
                                     let node_err = NodeError {
@@ -926,9 +922,12 @@ impl Daemon {
         }
 
         let spawn_result = async move {
-            let result: eyre::Result<()> = tasks.join_all().await.into_iter().collect();
-            result
+            for task in tasks {
+                task.await?;
+            }
+            Ok(())
         };
+
         Ok(spawn_result)
     }
 
