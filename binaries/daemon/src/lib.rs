@@ -394,6 +394,8 @@ impl Daemon {
                     Ok(running_node) => {
                         if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                             dataflow.running_nodes.insert(node_id, running_node);
+                        } else {
+                            tracing::error!("failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}");
                         }
                     }
                     Err(error) => {
