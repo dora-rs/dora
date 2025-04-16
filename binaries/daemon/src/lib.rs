@@ -203,7 +203,7 @@ impl Daemon {
             .map_err(|err| eyre!("failed to receive spawn result: {err}"))
             .and_then(|r| async {
                 match r {
-                    Some(DaemonCoordinatorReply::SpawnResult(result)) => {
+                    Some(DaemonCoordinatorReply::TriggerSpawnResult(result)) => {
                         result.map_err(|err| eyre!(err))
                     }
                     _ => Err(eyre!("unexpected spawn reply")),
@@ -408,6 +408,26 @@ impl Daemon {
                         self.handle_node_stop(dataflow_id, &node_id).await?;
                     }
                 },
+                Event::SpawnDataflowResult {
+                    dataflow_id,
+                    result,
+                } => {
+                    if let Some(connection) = &mut self.coordinator_connection {
+                        let msg = serde_json::to_vec(&Timestamped {
+                            inner: CoordinatorRequest::Event {
+                                daemon_id: self.daemon_id.clone(),
+                                event: DaemonEvent::SpawnResult {
+                                    dataflow_id,
+                                    result: result.map_err(|err| format!("{err:?}")),
+                                },
+                            },
+                            timestamp: self.clock.new_timestamp(),
+                        })?;
+                        socket_stream_send(connection, &msg)
+                            .await
+                            .wrap_err("failed to send Exit message to dora-coordinator")?;
+                    }
+                }
             }
 
             let elapsed = start.elapsed();
@@ -470,21 +490,37 @@ impl Daemon {
                         uv,
                     )
                     .await;
-                if let Err(err) = &result {
-                    tracing::error!("{err:?}");
-                }
-                tokio::spawn(async move {
-                    let result = match result {
-                        Err(err) => Err(err),
-                        Ok(task) => task.await,
-                    };
-                    let reply = DaemonCoordinatorReply::SpawnResult(
-                        result.map_err(|err| format!("{err:?}")),
-                    );
-                    let _ = reply_tx.send(Some(reply)).map_err(|_| {
-                        error!("could not send `SpawnResult` reply from daemon to coordinator")
-                    });
+                let (trigger_result, result_task) = match result {
+                    Ok(result_task) => (Ok(()), Some(result_task)),
+                    Err(err) => (Err(format!("{err:?}")), None),
+                };
+                let reply = DaemonCoordinatorReply::TriggerSpawnResult(trigger_result);
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send `TriggerSpawnResult` reply from daemon to coordinator")
                 });
+
+                let result_tx = self.events_tx.clone();
+                let clock = self.clock.clone();
+                if let Some(result_task) = result_task {
+                    tokio::spawn(async move {
+                        let message = Timestamped {
+                            inner: Event::SpawnDataflowResult {
+                                dataflow_id,
+                                result: result_task.await,
+                            },
+                            timestamp: clock.new_timestamp(),
+                        };
+                        let _ = result_tx
+                            .send(message)
+                            .map_err(|_| {
+                                error!(
+                                    "could not send `SpawnResult` reply from daemon to coordinator"
+                                )
+                            })
+                            .await;
+                    });
+                }
+
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::AllNodesReady {
@@ -2103,6 +2139,10 @@ pub enum Event {
         dataflow_id: DataflowId,
         node_id: NodeId,
         result: Result<RunningNode, NodeError>,
+    },
+    SpawnDataflowResult {
+        dataflow_id: Uuid,
+        result: eyre::Result<()>,
     },
 }
 

@@ -112,6 +112,19 @@ pub async fn handle_connection(
                         break;
                     }
                 }
+                DaemonEvent::SpawnResult {
+                    dataflow_id,
+                    result,
+                } => {
+                    let event = Event::DataflowSpawnResult {
+                        dataflow_id,
+                        daemon_id,
+                        result: result.map_err(|err| eyre::eyre!(err)),
+                    };
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
             },
         };
     }
