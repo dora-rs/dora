@@ -9,7 +9,8 @@
 
 use std::env::var;
 
-use dora_node_api::arrow::array::{UInt16Array, UInt8Array};
+use dora_node_api::arrow::array::AsArray;
+use dora_node_api::arrow::datatypes::{UInt16Type, UInt8Type};
 use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event, IntoArrow, Metadata, Parameter};
 use eyre::{Context as EyreContext, Result};
@@ -29,10 +30,12 @@ pub fn fill_zeros_toward_center_y_plane_in_place(y: &mut [u16], width: usize, he
 
         // --- Fill left half (left to center)
         let mut last = 0u16;
-        for col in 0..center {
+        for col in (0..center).rev() {
             let idx = row_start + col;
             if y[idx] == 0 {
                 y[idx] = last;
+            } else if y[idx] > 4096 {
+                y[idx] = 4096;
             } else {
                 last = y[idx];
             }
@@ -40,10 +43,12 @@ pub fn fill_zeros_toward_center_y_plane_in_place(y: &mut [u16], width: usize, he
 
         // --- Fill right half (right to center)
         last = 0u16;
-        for col in (center..width).rev() {
+        for col in center..width {
             let idx = row_start + col;
             if y[idx] == 0 {
                 y[idx] = last;
+            } else if y[idx] > 4096 {
+                y[idx] = 4096;
             } else {
                 last = y[idx];
             }
@@ -282,11 +287,6 @@ pub fn lib_main() -> Result<()> {
                     speed_settings: SpeedSettings::from_preset(speed),
                     low_latency: true,
                     chroma_sampling: color::ChromaSampling::Cs420,
-                    color_description: Some(ColorDescription {
-                        matrix_coefficients: MatrixCoefficients::BT709,
-                        transfer_characteristics: color::TransferCharacteristics::BT709,
-                        color_primaries: color::ColorPrimaries::BT709,
-                    }),
                     ..Default::default()
                 };
                 match encoding {
@@ -298,117 +298,121 @@ pub fn lib_main() -> Result<()> {
                 }
 
                 if encoding == "bgr8" {
-                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    let buffer: Vec<u8> = buffer.values().to_vec();
-                    let (y, u, v) = bgr8_to_yuv420(buffer, width, height);
-                    send_yuv(
-                        &y,
-                        &u,
-                        &v,
-                        enc,
-                        width,
-                        height,
-                        &mut node,
-                        id,
-                        &mut metadata,
-                        &output_encoding,
-                    );
+                    if let Some(buffer) = data.as_primitive_opt::<UInt8Type>() {
+                        let buffer: Vec<u8> = buffer.values().to_vec();
+                        let (y, u, v) = bgr8_to_yuv420(buffer, width, height);
+                        send_yuv(
+                            &y,
+                            &u,
+                            &v,
+                            enc,
+                            width,
+                            height,
+                            &mut node,
+                            id,
+                            &mut metadata,
+                            &output_encoding,
+                        );
+                    }
                 } else if encoding == "yuv420" {
-                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    let buffer = buffer.values(); //.to_vec();
+                    if let Some(buffer) = data.as_primitive_opt::<UInt8Type>() {
+                        let buffer = buffer.values(); //.to_vec();
 
-                    let (y, u, v) = get_yuv_planes(buffer, width, height);
-                    send_yuv(
-                        &y,
-                        &u,
-                        &v,
-                        enc,
-                        width,
-                        height,
-                        &mut node,
-                        id,
-                        &mut metadata,
-                        &output_encoding,
-                    );
+                        let (y, u, v) = get_yuv_planes(buffer, width, height);
+                        send_yuv(
+                            &y,
+                            &u,
+                            &v,
+                            enc,
+                            width,
+                            height,
+                            &mut node,
+                            id,
+                            &mut metadata,
+                            &output_encoding,
+                        );
+                    }
                 } else if encoding == "mono16" || encoding == "z16" {
-                    let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
-                    let mut buffer = buffer.values().to_vec();
-                    if std::env::var("FILL_ZEROS")
-                        .map(|s| s != "false")
-                        .unwrap_or(true)
-                    {
-                        fill_zeros_toward_center_y_plane_in_place(&mut buffer, width, height);
-                    }
+                    if let Some(buffer) = data.as_primitive_opt::<UInt16Type>() {
+                        let mut buffer = buffer.values().to_vec();
+                        if std::env::var("FILL_ZEROS")
+                            .map(|s| s != "false")
+                            .unwrap_or(true)
+                        {
+                            fill_zeros_toward_center_y_plane_in_place(&mut buffer, width, height);
+                        }
 
-                    let bytes: &[u8] = &bytemuck::cast_slice(&buffer);
+                        let bytes: &[u8] = &bytemuck::cast_slice(&buffer);
 
-                    let cfg = Config::new().with_encoder_config(enc.clone());
-                    let mut ctx: Context<u16> = cfg.new_context().unwrap();
-                    let mut f = ctx.new_frame();
+                        let cfg = Config::new().with_encoder_config(enc.clone());
+                        let mut ctx: Context<u16> = cfg.new_context().unwrap();
+                        let mut f = ctx.new_frame();
 
-                    let xdec = f.planes[0].cfg.xdec;
-                    let stride = (width + xdec) >> xdec;
-                    // Multiply by 2 the stride as it is going to be width * 2 as we're converting 16-bit to 2*8-bit.
-                    f.planes[0].copy_from_raw_u8(bytes, stride * 2, 2);
+                        let xdec = f.planes[0].cfg.xdec;
+                        let stride = (width + xdec) >> xdec;
+                        // Multiply by 2 the stride as it is going to be width * 2 as we're converting 16-bit to 2*8-bit.
+                        f.planes[0].copy_from_raw_u8(bytes, stride * 2, 2);
 
-                    match ctx.send_frame(f) {
-                        Ok(_) => {}
-                        Err(e) => match e {
-                            EncoderStatus::EnoughData => {
-                                warn!("Unable to send frame ");
-                            }
-                            _ => {
-                                warn!("Unable to send frame ");
-                            }
-                        },
-                    }
-                    ctx.flush();
-                    match ctx.receive_packet() {
-                        Ok(pkt) => {
-                            let data = pkt.data;
-                            match output_encoding.as_str() {
-                                "avif" => {
-                                    warn!("avif encoding not supported for mono16");
+                        match ctx.send_frame(f) {
+                            Ok(_) => {}
+                            Err(e) => match e {
+                                EncoderStatus::EnoughData => {
+                                    warn!("Unable to send frame ");
                                 }
                                 _ => {
-                                    metadata.parameters.insert(
-                                        "encoding".to_string(),
-                                        Parameter::String("av1".to_string()),
-                                    );
-                                    let arrow = data.into_arrow();
-                                    node.send_output(id, metadata.parameters, arrow)
-                                        .context("could not send output")
-                                        .unwrap();
+                                    warn!("Unable to send frame ");
+                                }
+                            },
+                        }
+                        ctx.flush();
+                        match ctx.receive_packet() {
+                            Ok(pkt) => {
+                                let data = pkt.data;
+                                match output_encoding.as_str() {
+                                    "avif" => {
+                                        warn!("avif encoding not supported for mono16");
+                                    }
+                                    _ => {
+                                        metadata.parameters.insert(
+                                            "encoding".to_string(),
+                                            Parameter::String("av1".to_string()),
+                                        );
+                                        let arrow = data.into_arrow();
+                                        node.send_output(id, metadata.parameters, arrow)
+                                            .context("could not send output")
+                                            .unwrap();
+                                    }
                                 }
                             }
+                            Err(e) => match e {
+                                EncoderStatus::LimitReached => {}
+                                EncoderStatus::Encoded => {}
+                                EncoderStatus::NeedMoreData => {}
+                                _ => {
+                                    panic!("Unable to receive packet",);
+                                }
+                            },
                         }
-                        Err(e) => match e {
-                            EncoderStatus::LimitReached => {}
-                            EncoderStatus::Encoded => {}
-                            EncoderStatus::NeedMoreData => {}
-                            _ => {
-                                panic!("Unable to receive packet",);
-                            }
-                        },
                     }
                 } else if encoding == "rgb8" {
-                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    let buffer: Vec<u8> = buffer.values().to_vec();
-                    let buffer: Vec<u8> =
-                        buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
-                    let (y, u, v) = bgr8_to_yuv420(buffer, width, height);
-                    send_yuv(
-                        &y,
-                        &u,
-                        &v,
-                        enc,
-                        width,
-                        height,
-                        &mut node,
-                        id,
-                        &mut metadata,
-                        &output_encoding,
-                    );
+                    if let Some(buffer) = data.as_primitive_opt::<UInt8Type>() {
+                        let buffer: Vec<u8> = buffer.values().to_vec();
+                        let buffer: Vec<u8> =
+                            buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
+                        let (y, u, v) = bgr8_to_yuv420(buffer, width, height);
+                        send_yuv(
+                            &y,
+                            &u,
+                            &v,
+                            enc,
+                            width,
+                            height,
+                            &mut node,
+                            id,
+                            &mut metadata,
+                            &output_encoding,
+                        );
+                    }
                 } else {
                     unimplemented!("We haven't worked on additional encodings.");
                 }
