@@ -201,6 +201,9 @@ async fn start_inner(
     let mut daemon_connections = DaemonConnections::default();
 
     while let Some(event) = events.next().await {
+        let start = Instant::now();
+        let event_debug = format!("{event:?}");
+
         if event.log() {
             tracing::trace!("Handling event {event:?}");
         }
@@ -703,6 +706,14 @@ async fn start_inner(
                 tracing::info!("Daemon `{daemon_id}` exited");
                 daemon_connections.remove(&daemon_id);
             }
+        }
+
+        let elapsed = start.elapsed();
+        if elapsed > Duration::from_millis(100) {
+            tracing::warn!(
+                "Coordinator took {}ms for handling event: {event_debug}",
+                elapsed.as_millis()
+            );
         }
     }
 

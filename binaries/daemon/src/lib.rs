@@ -320,6 +320,9 @@ impl Daemon {
                 tracing::warn!("failed to update HLC with incoming event timestamp: {err}");
             }
 
+            let start = Instant::now();
+            let event_debug = format!("{inner:?}");
+
             match inner {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
                     let status = self.handle_coordinator_event(event, reply_tx).await?;
@@ -405,6 +408,14 @@ impl Daemon {
                         self.handle_node_stop(dataflow_id, &node_id).await?;
                     }
                 },
+            }
+
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_millis(100) {
+                tracing::warn!(
+                    "Daemon took {}ms for handling event: {event_debug}",
+                    elapsed.as_millis()
+                );
             }
         }
 
