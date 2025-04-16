@@ -157,10 +157,6 @@ impl DaemonConnections {
         self.daemons.keys()
     }
 
-    fn iter(&self) -> impl Iterator<Item = (&DaemonId, &DaemonConnection)> {
-        self.daemons.iter()
-    }
-
     fn iter_mut(&mut self) -> impl Iterator<Item = (&DaemonId, &mut DaemonConnection)> {
         self.daemons.iter_mut()
     }
