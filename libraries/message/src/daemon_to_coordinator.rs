@@ -46,6 +46,10 @@ impl DaemonRegisterRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum DaemonEvent {
+    SpawnResult {
+        dataflow_id: DataflowId,
+        result: Result<(), String>,
+    },
     AllNodesReady {
         dataflow_id: DataflowId,
         exited_before_subscribe: Vec<NodeId>,
@@ -73,7 +77,7 @@ impl DataflowDaemonResult {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorReply {
-    SpawnResult(Result<(), String>),
+    TriggerSpawnResult(Result<(), String>),
     ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),
     DestroyResult {
