@@ -1,4 +1,5 @@
 use std::{
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -39,11 +40,18 @@ impl NodeLogger<'_> {
             .log(level, Some(self.node_id.clone()), target, message)
             .await
     }
+
+    pub async fn try_clone(&self) -> eyre::Result<NodeLogger<'static>> {
+        Ok(NodeLogger {
+            node_id: self.node_id.clone(),
+            logger: self.logger.try_clone().await?,
+        })
+    }
 }
 
 pub struct DataflowLogger<'a> {
     dataflow_id: Uuid,
-    logger: &'a mut DaemonLogger,
+    logger: CowMut<'a, DaemonLogger>,
 }
 
 impl<'a> DataflowLogger<'a> {
@@ -57,12 +65,12 @@ impl<'a> DataflowLogger<'a> {
     pub fn reborrow(&mut self) -> DataflowLogger {
         DataflowLogger {
             dataflow_id: self.dataflow_id,
-            logger: self.logger,
+            logger: CowMut::Borrowed(&mut self.logger),
         }
     }
 
     pub fn inner(&self) -> &DaemonLogger {
-        self.logger
+        &self.logger
     }
 
     pub async fn log(
@@ -76,6 +84,13 @@ impl<'a> DataflowLogger<'a> {
             .log(level, self.dataflow_id, node_id, target, message)
             .await
     }
+
+    pub async fn try_clone(&self) -> eyre::Result<DataflowLogger<'static>> {
+        Ok(DataflowLogger {
+            dataflow_id: self.dataflow_id,
+            logger: CowMut::Owned(self.logger.try_clone().await?),
+        })
+    }
 }
 
 pub struct DaemonLogger {
@@ -87,7 +102,7 @@ impl DaemonLogger {
     pub fn for_dataflow(&mut self, dataflow_id: Uuid) -> DataflowLogger {
         DataflowLogger {
             dataflow_id,
-            logger: self,
+            logger: CowMut::Borrowed(self),
         }
     }
 
@@ -119,6 +134,13 @@ impl DaemonLogger {
 
     pub(crate) fn daemon_id(&self) -> &DaemonId {
         &self.daemon_id
+    }
+
+    pub async fn try_clone(&self) -> eyre::Result<Self> {
+        Ok(Self {
+            daemon_id: self.daemon_id.clone(),
+            logger: self.logger.try_clone().await?,
+        })
     }
 }
 
@@ -205,5 +227,30 @@ impl Logger {
             daemon_id: self.daemon_id.clone(),
             clock: self.clock.clone(),
         })
+    }
+}
+
+enum CowMut<'a, T> {
+    Borrowed(&'a mut T),
+    Owned(T),
+}
+
+impl<T> Deref for CowMut<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            CowMut::Borrowed(v) => v,
+            CowMut::Owned(v) => v,
+        }
+    }
+}
+
+impl<T> DerefMut for CowMut<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            CowMut::Borrowed(v) => v,
+            CowMut::Owned(v) => v,
+        }
     }
 }

@@ -58,7 +58,7 @@ pub(super) async fn spawn_dataflow(
         daemons.insert(daemon_id);
     }
 
-    tracing::info!("successfully spawned dataflow `{uuid}`");
+    tracing::info!("successfully triggered dataflow spawn `{uuid}`");
 
     Ok(SpawnedDataflow {
         uuid,
@@ -90,13 +90,14 @@ async fn spawn_dataflow_on_machine(
     tcp_send(&mut daemon_connection.stream, message)
         .await
         .wrap_err("failed to send spawn message to daemon")?;
+
     let reply_raw = tcp_receive(&mut daemon_connection.stream)
         .await
         .wrap_err("failed to receive spawn reply from daemon")?;
     match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize spawn reply from daemon")?
     {
-        DaemonCoordinatorReply::SpawnResult(result) => result
+        DaemonCoordinatorReply::TriggerSpawnResult(result) => result
             .map_err(|e| eyre!(e))
             .wrap_err("daemon returned an error")?,
         _ => bail!("unexpected reply"),
