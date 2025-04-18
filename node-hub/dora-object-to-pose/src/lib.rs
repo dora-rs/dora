@@ -1,7 +1,7 @@
 use core::f32;
 use dora_node_api::{
     arrow::{
-        array::{AsArray, Float64Array, UInt8Array},
+        array::{AsArray, UInt16Array, UInt8Array},
         datatypes::{Float32Type, Int64Type},
     },
     dora_core::config::DataId,
@@ -11,44 +11,57 @@ use eyre::Result;
 use std::collections::HashMap;
 
 fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
-    let (_x, _y, _z, sum_xy, sum_x2, sum_y2, n, x_min, x_max, y_min, y_max, z_min, z_max) =
-        points.iter().fold(
+    let (
+        _sum_x,
+        _sum_y,
+        _sum_z,
+        sum_xy,
+        sum_x2,
+        sum_y2,
+        n,
+        x_min,
+        x_max,
+        y_min,
+        y_max,
+        z_min,
+        z_max,
+    ) = points.iter().fold(
+        (
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, 10., -10.0,
+        ),
+        |(
+            acc_x,
+            acc_y,
+            acc_z,
+            acc_xy,
+            acc_x2,
+            acc_y2,
+            acc_n,
+            acc_x_min,
+            acc_x_max,
+            acc_y_min,
+            acc_y_max,
+            acc_z_min,
+            acc_z_max,
+        ),
+         (x, y, z)| {
             (
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, 10., -10.0,
-            ),
-            |(
-                acc_x,
-                acc_y,
-                acc_z,
-                acc_xy,
-                acc_x2,
-                acc_y2,
-                acc_n,
-                acc_x_min,
-                acc_x_max,
-                acc_y_min,
-                acc_y_max,
-                acc_z_min,
-                acc_z_max,
-            ),
-             (x, y, z)| {
-                (
-                    acc_x + x,
-                    acc_y + y,
-                    acc_z + z,
-                    acc_xy + x * y,
-                    acc_x2 + x * x,
-                    acc_y2 + y * y,
-                    acc_n + 1.,
-                    f32::min(acc_x_min, *x),
-                    f32::max(acc_x_max, *x),
-                    f32::min(acc_y_min, *y),
-                    f32::max(acc_y_max, *y),
-                    f32::min(acc_z_min, *z),
-                    f32::max(acc_z_max, *z),
-                )
-            },
-        );
+                acc_x + x,
+                acc_y + y,
+                acc_z + z,
+                acc_xy + x * y,
+                acc_x2 + x * x,
+                acc_y2 + y * y,
+                acc_n + 1.,
+                f32::min(acc_x_min, *x),
+                f32::max(acc_x_max, *x),
+                f32::min(acc_y_min, *y),
+                f32::max(acc_y_max, *y),
+                f32::min(acc_z_min, *z),
+                f32::max(acc_z_max, *z),
+            )
+        },
+    );
     let (mean_x, mean_y, mean_z) = (
         (x_max + x_min) / 2.,
         (y_max + y_min) / 2.,
@@ -116,7 +129,8 @@ pub fn lib_main() -> Result<()> {
                     } else {
                         vec![640, 480]
                     };
-                    let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
+                    let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
+
                     depth_frame = Some(buffer.clone());
                 }
                 "masks" => {
@@ -150,11 +164,12 @@ pub fn lib_main() -> Result<()> {
                                     let v = i as f32 / width as f32; // Calculate y-coordinate (v)
 
                                     if let Some(z) = z {
-                                        let z = z as f32;
+                                        let z = (z as f32) / 1000.;
                                         // Skip points that have empty depth or is too far away
                                         if z == 0. || z > 20.0 {
                                             return;
                                         }
+
                                         if data[i] {
                                             let y = (u - resolution[0] as f32) * z
                                                 / focal_length[0] as f32;
@@ -215,7 +230,7 @@ pub fn lib_main() -> Result<()> {
                                         let v = i as f32 / width as f32; // Calculate y-coordinate (v)
 
                                         if let Some(z) = z {
-                                            let z = z as f32;
+                                            let z = (z as f32) / 1000.;
                                             // Skip points that have empty depth or is too far away
                                             if z == 0. || z > 5.0 {
                                                 return;

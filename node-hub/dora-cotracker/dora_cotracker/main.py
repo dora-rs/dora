@@ -25,6 +25,7 @@ class VideoTrackingNode:
         self.accept_new_points = True
         self.clicked_points = []
         self.input_points = []
+        self.input_masks = []
 
     def mouse_callback(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -38,7 +39,6 @@ class VideoTrackingNode:
             all_points = self.input_points + self.clicked_points
 
             if not all_points:
-                print("No points to track")
                 return None, None
             video_chunk = torch.tensor(
                 np.stack(list(self.window_frames)), device=self.device
@@ -52,9 +52,9 @@ class VideoTrackingNode:
             # Track points
             pred_tracks, pred_visibility = self.model(
                 video_chunk,
+                queries=queries,
                 is_first_step=self.is_first_step,
                 grid_size=0,
-                queries=queries,
                 add_support_grid=False,
             )
             self.is_first_step = False
@@ -118,6 +118,8 @@ class VideoTrackingNode:
                             "num_points": len(visible_tracks),
                             "dtype": "float32",
                             "shape": (len(visible_tracks), 2),
+                            "width": frame.shape[1],
+                            "height": frame.shape[0],
                         },
                     )
 
@@ -153,7 +155,7 @@ class VideoTrackingNode:
                         cv2.imshow("Interactive Feed to track point", display_frame)
                         cv2.waitKey(1)
 
-                if event["id"] == "points":
+                elif event["id"] == "points":
                     if not self.accept_new_points:
                         continue
                     # Handle points from input_stream node
@@ -162,8 +164,12 @@ class VideoTrackingNode:
                     self.input_points = points_array.reshape((-1, 2)).tolist()
                     self.accept_new_points = False
                     self.is_first_step = True
-                if event["id"] == "boxes2d":
+                elif event["id"] == "boxes2d":
                     if not self.accept_new_points:
+                        continue
+                    if len(event["value"]) == 0:
+                        self.input_points = []
+                        self.is_first_step = True
                         continue
 
                     # Handle points from input_stream node
@@ -185,7 +191,11 @@ class VideoTrackingNode:
                         _labels = None
 
                     self.input_points = [
-                        [int((x_min + x_max) / 2), int((y_min + y_max) / 2)]
+                        [
+                            int(x_min + (x_max - x_min) * 2 / 4),
+                            int(y_min + (y_max - y_min) * i / 10),
+                        ]
+                        for i in range(4, 7)
                         for x_min, y_min, x_max, y_max in boxes2d
                     ]
 
