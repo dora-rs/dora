@@ -226,7 +226,7 @@ nodes:
       machine: encoder
     inputs:
       action_base: parse_point/action
-      action_whipser: parse_whisper/action
+      action_whisper: parse_whisper/action
     outputs:
       - response_base
     env:
