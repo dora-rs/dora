@@ -117,7 +117,7 @@ fn send_yuv(
     node: &mut DoraNode,
     id: DataId,
     metadata: &mut Metadata,
-    output_enconding: &str,
+    output_encoding: &str,
 ) -> () {
     // Create a new Arrow array for the YUV420 data
     let cfg = Config::new().with_encoder_config(enc.clone());
@@ -147,7 +147,7 @@ fn send_yuv(
     }
     ctx.flush();
     match ctx.receive_packet() {
-        Ok(pkt) => match output_enconding {
+        Ok(pkt) => match output_encoding {
             "avif" => {
                 let data = pkt.data.clone();
                 metadata.parameters.insert(
