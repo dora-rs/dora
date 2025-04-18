@@ -1,0 +1,49 @@
+nodes:
+  - id: dora-microphone
+    build: pip install -e ../../node-hub/dora-microphone
+    path: dora-microphone
+    _unstable_deploy:
+      machine: xavier
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: dora-vad
+    path: dora-vad
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+    env:
+      VIRTUAL_ENV: /home/ubuntu/dora/examples/translation/.venv
+  - id: dora-phi4
+    # This build currently only work on Linux/CUDA
+    path: dora-phi4
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      audio: dora-vad/audio
+      text: sender/data
+    outputs:
+      - text
+    env:
+      LEAD_MODALITY: audio
+      VIRTUAL_ENV: /home/ubuntu/dora/examples/translation/.venv
+
+  - id: sender
+    path: pyarrow-sender
+    _unstable_deploy:
+      machine: gpu
+    outputs:
+      - data
+    env:
+      DATA: "Translate this audio to english."
+      VIRTUAL_ENV: /home/ubuntu/dora/examples/translation/.venv
+
+  - id: dora-rerun
+    path: dora-rerun
+    inputs:
+      original_text: dora-phi4/text
