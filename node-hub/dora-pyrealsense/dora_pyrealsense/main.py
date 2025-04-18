@@ -36,19 +36,17 @@ def main():
     config = rs.config()
     config.enable_device(device_serial)
     config.enable_stream(rs.stream.color, image_width, image_height, rs.format.rgb8, 30)
-    config.enable_stream(rs.stream.depth, image_width, image_height)
+    config.enable_stream(rs.stream.depth, image_width, image_height, rs.format.z16, 30)
 
     align_to = rs.stream.color
     align = rs.align(align_to)
 
     profile = pipeline.start(config)
 
-    depth_sensor = profile.get_device().first_depth_sensor()
-    depth_scale = depth_sensor.get_depth_scale()
-    # rgb_profile = profile.get_stream(rs.stream.color)
-    # depth_profile = profile.get_stream(rs.stream.depth)
-    # rgb_intr = rgb_profile.as_video_stream_profile().get_intrinsics()
-    # rgb_intr = depth_profile.get_extrinsics_to(rgb_profile)
+    rgb_profile = profile.get_stream(rs.stream.color)
+    depth_profile = profile.get_stream(rs.stream.depth)
+    _depth_intr = depth_profile.as_video_stream_profile().get_intrinsics()
+    rgb_intr = rgb_profile.as_video_stream_profile().get_intrinsics()
     node = Node()
     start_time = time.time()
 
@@ -74,7 +72,7 @@ def main():
                     continue
 
                 depth_image = np.asanyarray(aligned_depth_frame.get_data())
-                scaled_depth_image = depth_image * depth_scale
+                scaled_depth_image = depth_image
                 frame = np.asanyarray(color_frame.get_data())
 
                 ## Change rgb to bgr
@@ -85,16 +83,6 @@ def main():
                     frame = cv2.flip(frame, 1)
                 elif flip == "BOTH":
                     frame = cv2.flip(frame, -1)
-
-                # resize the frame
-                if (
-                    image_width is not None
-                    and image_height is not None
-                    and (
-                        frame.shape[1] != image_width or frame.shape[0] != image_height
-                    )
-                ):
-                    frame = cv2.resize(frame, (image_width, image_height))
 
                 metadata = event["metadata"]
                 metadata["encoding"] = encoding
@@ -112,12 +100,17 @@ def main():
 
                 storage = pa.array(frame.ravel())
 
-                # metadata["resolution"] = [int(rgb_intr.width), int(rgb_intr.height)]
-                # metadata["focal_length"] = [int(rgb_intr.fx), int(rgb_intr.fy)]
+                metadata["resolution"] = [int(rgb_intr.ppx), int(rgb_intr.ppy)]
+                metadata["focal_length"] = [int(rgb_intr.fx), int(rgb_intr.fy)]
                 # metadata["principal_point"] = [int(rgb_intr.ppx), int(rgb_intr.ppy)]
+                metadata["timestamp"] = time.time_ns()
                 node.send_output("image", storage, metadata)
+                metadata["encoding"] = "mono16"
+                scaled_depth_image[scaled_depth_image > 5000] = 0
                 node.send_output(
-                    "depth", pa.array(scaled_depth_image.ravel()), metadata,
+                    "depth",
+                    pa.array(scaled_depth_image.ravel()),
+                    metadata,
                 )
 
         elif event_type == "ERROR":
