@@ -12,3 +12,15 @@ dora run phi4-dev.yml --uv
 
 # Start talking or play a recording in English, Chinese, German, French, Italian, Japanese, Spanish, Portuguese
 ```
+
+For the remote instance, with an example instance at ip: 3.82.54.170
+
+```bash
+uv pip install -e ../../node-hub/dora-microphone
+uv pip install -e ../../node-hub/dora-rerun
+
+dora daemon --coordinator-addr 3.82.54.170 --machine-id macbook &
+dora start phi4-remote.yml --coordinator-addr 3.82.54.170 --uv
+
+# Start talking and you should see text appearing
+```

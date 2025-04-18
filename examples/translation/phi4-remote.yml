@@ -2,6 +2,8 @@ nodes:
   - id: dora-microphone
     build: pip install -e ../../node-hub/dora-microphone
     path: dora-microphone
+    _unstable_deploy:
+      machine: macbook
     inputs:
       tick: dora/timer/millis/2000
     outputs:
@@ -50,5 +52,7 @@ nodes:
   - id: dora-rerun
     build: pip install dora-rerun
     path: dora-rerun
+    _unstable_deploy:
+      machine: macbook
     inputs:
       original_text: dora-phi4/text
