@@ -1,3 +1,5 @@
+use std::env::var;
+
 use dav1d::Settings;
 use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, IntoArrow};
 use eyre::{Context, Result};
@@ -49,6 +51,8 @@ pub fn lib_main() -> Result<()> {
     let (mut node, mut events) =
         DoraNode::init_from_env().context("Could not initialize dora node")?;
 
+    let output_encoding = var("ENCODING").unwrap_or("bgr8".to_string());
+
     loop {
         match events.recv() {
             Some(Event::Input {
@@ -58,6 +62,19 @@ pub fn lib_main() -> Result<()> {
             }) => {
                 if let Some(data) = data.as_any().downcast_ref::<UInt8Array>() {
                     let data = data.values().clone();
+                    let encoding = metadata
+                        .parameters
+                        .get("encoding")
+                        .and_then(|p| match p {
+                            dora_node_api::Parameter::String(s) => Some(s),
+                            _ => None,
+                        })
+                        .map(|s| s.as_str())
+                        .unwrap_or("av1");
+                    if encoding != "av1" {
+                        warn!("Unsupported encoding {}", encoding);
+                        continue;
+                    }
                     match dec.send_data(data, None, None, None) {
                         Err(e) => {
                             warn!("Error sending data to the decoder: {}", e);
@@ -69,23 +86,96 @@ pub fn lib_main() -> Result<()> {
                                         let y = p.plane(dav1d::PlanarImageComponent::Y);
                                         let u = p.plane(dav1d::PlanarImageComponent::U);
                                         let v = p.plane(dav1d::PlanarImageComponent::V);
-                                        let y = yuv420_to_bgr(&y, &u, &v, p.width(), p.height());
-                                        let arrow = y.into_arrow();
-                                        metadata.parameters.insert(
-                                            "encoding".to_string(),
-                                            dora_node_api::Parameter::String("bgr8".to_string()),
-                                        );
-                                        node.send_output(id, metadata.parameters, arrow).unwrap();
+                                        match output_encoding.as_str() {
+                                            "yuv420" => {
+                                                let mut y = y.to_vec();
+                                                let mut u = u.to_vec();
+                                                let mut v = v.to_vec();
+                                                y.append(&mut u);
+                                                y.append(&mut v);
+                                                let arrow = y.into_arrow();
+                                                metadata.parameters.insert(
+                                                    "encoding".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "yuv420".to_string(),
+                                                    ),
+                                                );
+                                                metadata.parameters.insert(
+                                                    "width".to_string(),
+                                                    dora_node_api::Parameter::Integer(
+                                                        p.width() as i64
+                                                    ),
+                                                );
+                                                metadata.parameters.insert(
+                                                    "height".to_string(),
+                                                    dora_node_api::Parameter::Integer(
+                                                        p.height() as i64
+                                                    ),
+                                                );
+
+                                                node.send_output(id, metadata.parameters, arrow)
+                                                    .unwrap();
+                                            }
+                                            "bgr8" => {
+                                                let y = yuv420_to_bgr(
+                                                    &y,
+                                                    &u,
+                                                    &v,
+                                                    p.width(),
+                                                    p.height(),
+                                                );
+                                                let arrow = y.into_arrow();
+                                                metadata.parameters.insert(
+                                                    "encoding".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "bgr8".to_string(),
+                                                    ),
+                                                );
+                                                node.send_output(id, metadata.parameters, arrow)
+                                                    .unwrap();
+                                            }
+                                            _ => {
+                                                warn!(
+                                                    "Unsupported output encoding {}",
+                                                    output_encoding
+                                                );
+                                                continue;
+                                            }
+                                        }
                                     }
                                     dav1d::PixelLayout::I400 => {
                                         let y = p.plane(dav1d::PlanarImageComponent::Y);
-                                        let vec16: Vec<u16> = bytemuck::cast_slice(&y).to_vec();
-                                        let arrow = vec16.into_arrow();
-                                        metadata.parameters.insert(
-                                            "encoding".to_string(),
-                                            dora_node_api::Parameter::String("mono16".to_string()),
-                                        );
-                                        node.send_output(id, metadata.parameters, arrow).unwrap();
+                                        match p.bit_depth() {
+                                            8 => {
+                                                let y = y.to_vec();
+                                                let arrow = y.into_arrow();
+                                                metadata.parameters.insert(
+                                                    "encoding".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "mono8".to_string(),
+                                                    ),
+                                                );
+                                                node.send_output(id, metadata.parameters, arrow)
+                                                    .unwrap();
+                                            }
+                                            10 | 12 => {
+                                                let vec16: Vec<u16> =
+                                                    bytemuck::cast_slice(&y).to_vec();
+                                                let arrow = vec16.into_arrow();
+                                                metadata.parameters.insert(
+                                                    "encoding".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "mono16".to_string(),
+                                                    ),
+                                                );
+                                                node.send_output(id, metadata.parameters, arrow)
+                                                    .unwrap();
+                                            }
+                                            _ => {
+                                                warn!("Unsupported bit depth {}", p.bit_depth());
+                                                continue;
+                                            }
+                                        }
                                     }
                                     _ => {
                                         warn!("Unsupported pixel layout");
