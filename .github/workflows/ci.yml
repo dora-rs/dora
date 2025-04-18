@@ -126,7 +126,7 @@ jobs:
         run: cargo run --example c-dataflow
       - name: "C++ Dataflow example"
         timeout-minutes: 15
-        run: cargo run --example cxx-dataflow
+        run: cargo run --example cxx-dataflow && cargo clean -p dora-node-api-cxx
       - name: "Install Arrow C++ Library"
         timeout-minutes: 10
         shell: bash
