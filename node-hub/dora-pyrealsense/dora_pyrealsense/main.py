@@ -43,12 +43,10 @@ def main():
 
     profile = pipeline.start(config)
 
-    depth_sensor = profile.get_device().first_depth_sensor()
-    depth_scale = depth_sensor.get_depth_scale()
-    # rgb_profile = profile.get_stream(rs.stream.color)
+    rgb_profile = profile.get_stream(rs.stream.color)
     depth_profile = profile.get_stream(rs.stream.depth)
-    depth_intr = depth_profile.as_video_stream_profile().get_intrinsics()
-    # rgb_intr = depth_profile.get_extrinsics_to(rgb_profile)
+    _depth_intr = depth_profile.as_video_stream_profile().get_intrinsics()
+    rgb_intr = rgb_profile.as_video_stream_profile().get_intrinsics()
     node = Node()
     start_time = time.time()
 
@@ -86,17 +84,6 @@ def main():
                 elif flip == "BOTH":
                     frame = cv2.flip(frame, -1)
 
-                # resize the frame
-                if (
-                    image_width is not None
-                    and image_height is not None
-                    and (
-                        frame.shape[1] != image_width or frame.shape[0] != image_height
-                    )
-                ):
-                    pass
-                    frame = cv2.resize(frame, (image_width, image_height))
-
                 metadata = event["metadata"]
                 metadata["encoding"] = encoding
                 metadata["width"] = int(frame.shape[1])
@@ -113,8 +100,8 @@ def main():
 
                 storage = pa.array(frame.ravel())
 
-                metadata["resolution"] = [int(depth_intr.width), int(depth_intr.height)]
-                metadata["focal_length"] = [int(depth_intr.fx), int(depth_intr.fy)]
+                metadata["resolution"] = [int(rgb_intr.ppx), int(rgb_intr.ppy)]
+                metadata["focal_length"] = [int(rgb_intr.fx), int(rgb_intr.fy)]
                 # metadata["principal_point"] = [int(rgb_intr.ppx), int(rgb_intr.ppy)]
                 metadata["timestamp"] = time.time_ns()
                 node.send_output("image", storage, metadata)
