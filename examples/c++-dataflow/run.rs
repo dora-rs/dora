@@ -3,7 +3,6 @@ use eyre::{bail, Context};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
     path::Path,
-    // process::Command,
 };
 
 #[tokio::main]
