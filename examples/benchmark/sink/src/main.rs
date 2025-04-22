@@ -24,7 +24,8 @@ fn main() -> eyre::Result<()> {
                 // check if new size bracket
                 let data_len = data.len();
                 if data_len != current_size {
-                    if n > 0 {
+                    // data of length 1 is used to sync
+                    if n > 0 && current_size != 1 {
                         record_results(start, current_size, n, latencies, latency);
                     }
                     current_size = data_len;
@@ -62,8 +63,6 @@ fn main() -> eyre::Result<()> {
             other => eprintln!("Received unexpected input: {other:?}"),
         }
     }
-
-    record_results(start, current_size, n, latencies, latency);
 
     Ok(())
 }
