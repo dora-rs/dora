@@ -630,7 +630,22 @@ fn run(args: Args) -> eyre::Result<()> {
                 println!("Uninstalling Dora CLI...");
                 #[cfg(feature = "python")]
                 {
-                    println!("Detected pip installation, running pip uninstall...");
+                    println!("Detected Python installation...");
+
+                    // Try uv pip uninstall first
+                    let uv_status = std::process::Command::new("uv")
+                        .args(["pip", "uninstall", "dora-rs-cli"])
+                        .status();
+
+                    if let Ok(status) = uv_status {
+                        if status.success() {
+                            println!("Dora CLI has been successfully uninstalled via uv pip.");
+                            return Ok(());
+                        }
+                    }
+
+                    // Fall back to regular pip uninstall
+                    println!("Trying with pip...");
                     let status = std::process::Command::new("pip")
                         .args(["uninstall", "-y", "dora-rs-cli"])
                         .status()
