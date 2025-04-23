@@ -167,6 +167,7 @@ impl Daemon {
             nodes,
             dataflow_descriptor: descriptor,
             uv,
+            build_only: false,
         };
 
         let clock = Arc::new(HLC::default());
@@ -470,6 +471,7 @@ impl Daemon {
                 dataflow_descriptor,
                 spawn_nodes,
                 uv,
+                build_only,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
@@ -490,6 +492,7 @@ impl Daemon {
                         dataflow_descriptor,
                         spawn_nodes,
                         uv,
+                        build_only,
                     )
                     .await;
                 let (trigger_result, result_task) = match result {
@@ -762,6 +765,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
+        build_only: bool,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
         let dataflow =
@@ -821,6 +825,7 @@ impl Daemon {
             dataflow_descriptor,
             clock: self.clock.clone(),
             uv,
+            build_only,
         };
 
         let mut tasks = Vec::new();

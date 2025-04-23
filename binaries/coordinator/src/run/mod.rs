@@ -26,6 +26,7 @@ pub(super) async fn spawn_dataflow(
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
+    build_only: bool,
 ) -> eyre::Result<SpawnedDataflow> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
@@ -36,7 +37,8 @@ pub(super) async fn spawn_dataflow(
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let spawn_nodes = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
-            "Spawning dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})"
+            "{} dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})",
+            if build_only { "Building" } else { "Spawning" }
         );
 
         let spawn_command = SpawnDataflowNodes {
@@ -46,6 +48,7 @@ pub(super) async fn spawn_dataflow(
             dataflow_descriptor: dataflow.clone(),
             spawn_nodes,
             uv,
+            build_only,
         };
         let message = serde_json::to_vec(&Timestamped {
             inner: DaemonCoordinatorEvent::Spawn(spawn_command),
@@ -54,11 +57,19 @@ pub(super) async fn spawn_dataflow(
 
         let daemon_id = spawn_dataflow_on_machine(daemon_connections, machine.as_deref(), &message)
             .await
-            .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
+            .wrap_err_with(|| {
+                format!(
+                    "failed to {} dataflow on machine `{machine:?}`",
+                    if build_only { "build" } else { "spawn" }
+                )
+            })?;
         daemons.insert(daemon_id);
     }
 
-    tracing::info!("successfully triggered dataflow spawn `{uuid}`");
+    tracing::info!(
+        "successfully triggered dataflow {} `{uuid}`",
+        if build_only { "build" } else { "spawn" }
+    );
 
     Ok(SpawnedDataflow {
         uuid,

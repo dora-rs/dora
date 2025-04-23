@@ -394,6 +394,7 @@ async fn start_inner(
                             name,
                             local_working_dir,
                             uv,
+                            build_only,
                         } => {
                             let name = name.or_else(|| names::Generator::default().next());
 
@@ -414,6 +415,7 @@ async fn start_inner(
                                     &mut daemon_connections,
                                     &clock,
                                     uv,
+                                    build_only,
                                 )
                                 .await?;
                                 Ok(dataflow)
@@ -716,12 +718,22 @@ async fn start_inner(
                     match result {
                         Ok(()) => {
                             if dataflow.pending_spawn_results.is_empty() {
-                                tracing::info!("successfully spawned dataflow `{dataflow_id}`");
+                                tracing::info!(
+                                    "successfully {} dataflow `{dataflow_id}`",
+                                    if dataflow.build_only {
+                                        "built"
+                                    } else {
+                                        "spawned"
+                                    }
+                                );
                                 if let Some(reply_tx) = dataflow.spawn_result_tx.take() {
                                     let _ =
                                         reply_tx.send(Ok(ControlRequestReply::DataflowStarted {
                                             uuid: dataflow_id,
                                         }));
+                                }
+                                if dataflow.build_only {
+                                    running_dataflows.remove(&dataflow_id);
                                 }
                             }
                         }
@@ -846,6 +858,8 @@ struct RunningDataflow {
 
     pending_spawn_results: BTreeSet<DaemonId>,
     spawn_result_tx: Option<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+
+    build_only: bool,
 }
 
 struct ArchivedDataflow {
@@ -1045,12 +1059,21 @@ async fn start_dataflow(
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
+    build_only: bool,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
         daemons,
         nodes,
-    } = spawn_dataflow(dataflow, working_dir, daemon_connections, clock, uv).await?;
+    } = spawn_dataflow(
+        dataflow,
+        working_dir,
+        daemon_connections,
+        clock,
+        uv,
+        build_only,
+    )
+    .await?;
     Ok(RunningDataflow {
         uuid,
         name,
@@ -1066,6 +1089,7 @@ async fn start_dataflow(
         log_subscribers: Vec::new(),
         pending_spawn_results: daemons,
         spawn_result_tx: None,
+        build_only,
     })
 }
 

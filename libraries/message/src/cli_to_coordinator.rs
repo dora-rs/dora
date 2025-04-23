@@ -16,6 +16,7 @@ pub enum ControlRequest {
         // binaries from CLI to coordinator/daemon
         local_working_dir: PathBuf,
         uv: bool,
+        build_only: bool,
     },
     Reload {
         dataflow_id: Uuid,

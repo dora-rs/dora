@@ -143,6 +143,7 @@ async fn start_dataflow(
                 local_working_dir: working_dir,
                 name: None,
                 uv: false,
+                build_only: false,
             },
             reply_sender,
         }))
