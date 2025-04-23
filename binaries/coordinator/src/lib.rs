@@ -197,8 +197,9 @@ async fn start_inner(
     let mut daemon_connections = DaemonConnections::default();
 
     while let Some(event) = events.next().await {
+        // used below for measuring the event handling duration
         let start = Instant::now();
-        let event_debug = format!("{event:?}");
+        let event_kind = event.kind();
 
         if event.log() {
             tracing::trace!("Handling event {event:?}");
@@ -738,10 +739,11 @@ async fn start_inner(
             },
         }
 
+        // warn if event handling took too long -> the main loop should never be blocked for too long
         let elapsed = start.elapsed();
         if elapsed > Duration::from_millis(100) {
             tracing::warn!(
-                "Coordinator took {}ms for handling event: {event_debug}",
+                "Coordinator took {}ms for handling event: {event_kind}",
                 elapsed.as_millis()
             );
         }
@@ -1152,6 +1154,22 @@ impl Event {
         match self {
             Event::DaemonHeartbeatInterval => false,
             _ => true,
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Event::NewDaemonConnection(_) => "NewDaemonConnection",
+            Event::DaemonConnectError(_) => "DaemonConnectError",
+            Event::DaemonHeartbeat { .. } => "DaemonHeartbeat",
+            Event::Dataflow { .. } => "Dataflow",
+            Event::Control(_) => "Control",
+            Event::Daemon(_) => "Daemon",
+            Event::DaemonHeartbeatInterval => "DaemonHeartbeatInterval",
+            Event::CtrlC => "CtrlC",
+            Event::Log(_) => "Log",
+            Event::DaemonExit { .. } => "DaemonExit",
+            Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
         }
     }
 }

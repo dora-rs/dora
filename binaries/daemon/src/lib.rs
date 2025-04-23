@@ -320,8 +320,9 @@ impl Daemon {
                 tracing::warn!("failed to update HLC with incoming event timestamp: {err}");
             }
 
+            // used below for checking the duration of event handling
             let start = Instant::now();
-            let event_debug = format!("{inner:?}");
+            let event_kind = inner.kind();
 
             match inner {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
@@ -430,10 +431,11 @@ impl Daemon {
                 }
             }
 
+            // warn if event handling took too long -> the main loop should never be blocked for too long
             let elapsed = start.elapsed();
             if elapsed > Duration::from_millis(100) {
                 tracing::warn!(
-                    "Daemon took {}ms for handling event: {event_debug}",
+                    "Daemon took {}ms for handling event: {event_kind}",
                     elapsed.as_millis()
                 );
             }
@@ -2149,6 +2151,24 @@ pub enum Event {
 impl From<DoraEvent> for Event {
     fn from(event: DoraEvent) -> Self {
         Event::Dora(event)
+    }
+}
+
+impl Event {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Event::Node { .. } => "Node",
+            Event::Coordinator(_) => "Coordinator",
+            Event::Daemon(_) => "Daemon",
+            Event::Dora(_) => "Dora",
+            Event::DynamicNode(_) => "DynamicNode",
+            Event::HeartbeatInterval => "HeartbeatInterval",
+            Event::CtrlC => "CtrlC",
+            Event::SecondCtrlC => "SecondCtrlC",
+            Event::DaemonError(_) => "DaemonError",
+            Event::SpawnNodeResult { .. } => "SpawnNodeResult",
+            Event::SpawnDataflowResult { .. } => "SpawnDataflowResult",
+        }
     }
 }
 
