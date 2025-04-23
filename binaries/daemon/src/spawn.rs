@@ -56,6 +56,7 @@ pub struct Spawner {
     /// clock is required for generating timestamps when dropping messages early because queue is full
     pub clock: Arc<HLC>,
     pub uv: bool,
+    pub build_only: bool,
 }
 
 impl Spawner {
@@ -148,8 +149,12 @@ impl Spawner {
                             self.build_node(logger, &node.env, self.working_dir.clone(), build)
                                 .await?;
                         }
-                        spawn_command_from_path(&self.working_dir, self.uv, logger, &n, true)
-                            .await?
+                        if self.build_only {
+                            None
+                        } else {
+                            spawn_command_from_path(&self.working_dir, self.uv, logger, &n, true)
+                                .await?
+                        }
                     }
                     dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
                         self.spawn_git_node(&n, repo, rev, logger, &node.env, prepared_git.unwrap())
@@ -680,7 +685,11 @@ impl Spawner {
             self.build_node(logger, node_env, clone_dir.clone(), build)
                 .await?;
         }
-        spawn_command_from_path(&clone_dir, self.uv, logger, node, true).await
+        if self.build_only {
+            Ok(None)
+        } else {
+            spawn_command_from_path(&clone_dir, self.uv, logger, node, true).await
+        }
     }
 
     async fn build_node(

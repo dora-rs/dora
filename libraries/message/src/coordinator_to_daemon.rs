@@ -63,4 +63,5 @@ pub struct SpawnDataflowNodes {
     pub dataflow_descriptor: Descriptor,
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
+    pub build_only: bool,
 }

@@ -33,7 +33,6 @@ use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
 
 mod attach;
-pub(crate) mod build;
 mod check;
 mod formatting;
 mod graph;
@@ -83,6 +82,12 @@ enum Command {
         /// Path to the dataflow descriptor file
         #[clap(value_name = "PATH")]
         dataflow: String,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
         // Use UV to build nodes.
         #[clap(long, action)]
         uv: bool,
@@ -366,8 +371,13 @@ fn run(args: Args) -> eyre::Result<()> {
         } => {
             graph::create(dataflow, mermaid, open)?;
         }
-        Command::Build { dataflow, uv } => {
-            build::build(dataflow, uv)?;
+        Command::Build {
+            dataflow,
+            coordinator_addr,
+            coordinator_port,
+            uv,
+        } => {
+            start_dataflow(dataflow, None, coordinator_addr, coordinator_port, uv, true)?;
         }
         Command::New {
             args,
@@ -419,26 +429,15 @@ fn run(args: Args) -> eyre::Result<()> {
             hot_reload,
             uv,
         } => {
-            let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-            let dataflow_descriptor =
-                Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
-            let working_dir = dataflow
-                .canonicalize()
-                .context("failed to canonicalize dataflow path")?
-                .parent()
-                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
-                .to_owned();
-
-            let coordinator_socket = (coordinator_addr, coordinator_port).into();
-            let mut session = connect_to_coordinator(coordinator_socket)
-                .wrap_err("failed to connect to dora coordinator")?;
-            let dataflow_id = start_dataflow(
-                dataflow_descriptor.clone(),
-                name,
-                working_dir,
-                &mut *session,
-                uv,
-            )?;
+            let (dataflow, dataflow_descriptor, coordinator_socket, mut session, dataflow_id) =
+                start_dataflow(
+                    dataflow,
+                    name,
+                    coordinator_addr,
+                    coordinator_port,
+                    uv,
+                    false,
+                )?;
 
             let attach = match (attach, detach) {
                 (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -613,34 +612,72 @@ fn run(args: Args) -> eyre::Result<()> {
 }
 
 fn start_dataflow(
-    dataflow: Descriptor,
+    dataflow: String,
     name: Option<String>,
-    local_working_dir: PathBuf,
-    session: &mut TcpRequestReplyConnection,
+    coordinator_addr: IpAddr,
+    coordinator_port: u16,
     uv: bool,
-) -> Result<Uuid, eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::Start {
-                dataflow,
-                name,
-                local_working_dir,
-                uv,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send start dataflow message")?;
+    build_only: bool,
+) -> Result<
+    (
+        PathBuf,
+        Descriptor,
+        SocketAddr,
+        Box<TcpRequestReplyConnection>,
+        Uuid,
+    ),
+    eyre::Error,
+> {
+    let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    let dataflow_descriptor =
+        Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
+    let working_dir = dataflow
+        .canonicalize()
+        .context("failed to canonicalize dataflow path")?
+        .parent()
+        .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
+        .to_owned();
+    let coordinator_socket = (coordinator_addr, coordinator_port).into();
+    let mut session = connect_to_coordinator(coordinator_socket)
+        .wrap_err("failed to connect to dora coordinator")?;
+    let dataflow_id = {
+        let dataflow = dataflow_descriptor.clone();
+        let session: &mut TcpRequestReplyConnection = &mut *session;
+        let reply_raw = session
+            .request(
+                &serde_json::to_vec(&ControlRequest::Start {
+                    dataflow,
+                    name,
+                    local_working_dir: working_dir,
+                    uv,
+                    build_only,
+                })
+                .unwrap(),
+            )
+            .wrap_err("failed to send start dataflow message")?;
 
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStarted { uuid } => {
-            eprintln!("{uuid}");
-            Ok(uuid)
+        let result: ControlRequestReply =
+            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+        match result {
+            ControlRequestReply::DataflowStarted { uuid } => {
+                if build_only {
+                    eprintln!("dataflow build successful");
+                } else {
+                    eprintln!("{uuid}");
+                }
+                uuid
+            }
+            ControlRequestReply::Error(err) => bail!("{err}"),
+            other => bail!("unexpected start dataflow reply: {other:?}"),
         }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    };
+    Ok((
+        dataflow,
+        dataflow_descriptor,
+        coordinator_socket,
+        session,
+        dataflow_id,
+    ))
 }
 
 fn stop_dataflow_interactive(
