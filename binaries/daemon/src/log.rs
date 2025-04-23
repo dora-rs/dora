@@ -181,27 +181,32 @@ impl Logger {
         match message.level {
             LogLevel::Error => {
                 if let Some(node_id) = message.node_id {
-                    tracing::error!("{}/{} errored:", message.dataflow_id.to_string(), node_id);
-                }
-                for line in message.message.lines() {
-                    tracing::error!("   {}", line);
+                    tracing::error!(
+                        "{}/{} errored:\n{}",
+                        message.dataflow_id.to_string(),
+                        node_id,
+                        Indent(&message.message)
+                    );
                 }
             }
             LogLevel::Warn => {
                 if let Some(node_id) = message.node_id {
-                    tracing::warn!("{}/{} warned:", message.dataflow_id.to_string(), node_id);
-                }
-                for line in message.message.lines() {
-                    tracing::warn!("    {}", line);
+                    tracing::warn!(
+                        "{}/{} warned:\n{}",
+                        message.dataflow_id.to_string(),
+                        node_id,
+                        Indent(&message.message)
+                    );
                 }
             }
             LogLevel::Info => {
                 if let Some(node_id) = message.node_id {
-                    tracing::info!("{}/{} info:", message.dataflow_id.to_string(), node_id);
-                }
-
-                for line in message.message.lines() {
-                    tracing::info!("    {}", line);
+                    tracing::info!(
+                        "{}/{} info:\n{}",
+                        message.dataflow_id.to_string(),
+                        node_id,
+                        Indent(&message.message)
+                    );
                 }
             }
             _ => {}
@@ -252,5 +257,16 @@ impl<T> DerefMut for CowMut<'_, T> {
             CowMut::Borrowed(v) => v,
             CowMut::Owned(v) => v,
         }
+    }
+}
+
+struct Indent<'a>(&'a str);
+
+impl std::fmt::Display for Indent<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for line in self.0.lines() {
+            write!(f, "   {}", line)?;
+        }
+        Ok(())
     }
 }
