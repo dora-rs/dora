@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 
+import numpy as np
 import pyarrow as pa
 from dora import Node
 
@@ -65,9 +66,16 @@ class Client:
     def pull_position(self, node, metadata):
         """TODO: Add docstring."""
         try:
+            struct = self.bus.read_position(self.config["joints"])
+            metadata["encoding"] = "jointstate"
             node.send_output(
                 "position",
-                self.bus.read_position(self.config["joints"]),
+                pa.array(
+                    np.deg2rad(
+                        ((struct.flatten()[1].to_numpy() - 2048) / 4096.0) * 360
+                    ),
+                    type=pa.float32(),
+                ),
                 metadata,
             )
 
@@ -166,20 +174,11 @@ def main():
         "torque": wrap_joints_and_values(
             pa.array(config.keys(), pa.string()),
             pa.array(
-                [
-                    (
-                        TorqueMode.ENABLED.value
-                        if config[joint]["torque"]
-                        else TorqueMode.DISABLED.value
-                    )
-                    for joint in joints
-                ],
+                [(TorqueMode.DISABLED.value) for joint in joints],
                 type=pa.uint32(),
             ),
         ),
     }
-
-    print("Feetech Client Configuration: ", bus, flush=True)
 
     client = Client(bus)
     client.run()

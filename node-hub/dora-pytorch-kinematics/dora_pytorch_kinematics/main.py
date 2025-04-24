@@ -1,0 +1,253 @@
+"""TODO: Add docstring."""
+
+import os
+from typing import List, Optional, Tuple, Union
+
+import numpy as np
+import pyarrow as pa
+import pytorch_kinematics as pk
+import torch
+from dora import Node
+from pytorch_kinematics.transforms.rotation_conversions import matrix_to_euler_angles
+
+
+def get_xyz_rpy_array_from_transform3d(
+    transform: "pytorch_kinematics.transforms.Transform3d", convention: str = "XYZ"
+) -> torch.Tensor:
+    """Extracts translation (xyz) and rotation (RPY Euler angles in radians)
+    from a pytorch_kinematics Transform3d object and returns them concatenated
+    into a single tensor.
+
+    Args:
+        transform: A Transform3d object or a batch of Transform3d objects.
+                    Expected to have a method like get_matrix() or directly
+                    access attributes like .R and .T.
+        convention: The Euler angle convention (e.g., "XYZ", "ZYX").
+                    RPY typically corresponds to "XYZ" (roll around X,
+                    pitch around Y, yaw around Z). Adjust if needed.
+
+    Returns:
+        A single tensor of shape (..., 6) where the last dimension contains
+        [x, y, z, roll, pitch, yaw] in radians.
+
+    """
+    # Attempt to get the full 4x4 transformation matrix
+    # Common methods are get_matrix() or accessing internal properties.
+    # This might need adjustment based on the specific API version.
+    matrix = transform.get_matrix()  # Shape (..., 4, 4)
+
+    # Extract translation (first 3 elements of the last column)
+    xyz = matrix[..., :3, 3]
+
+    # Extract rotation matrix (top-left 3x3 submatrix)
+    rotation_matrix = matrix[..., :3, :3]
+
+    # Convert the rotation matrix to Euler angles in radians
+    # The matrix_to_euler_angles function likely exists based on pytorch3d's structure
+    rpy = matrix_to_euler_angles(
+        rotation_matrix, convention=convention
+    )  # Shape (..., 3)
+
+    # Concatenate xyz and rpy along the last dimension
+    return torch.cat((xyz, rpy), dim=-1)  # Shape (..., 6)
+
+
+class RobotKinematics:
+    """Concise wrapper for pytorch_kinematics FK and IK operations,
+    closely mirroring library usage patterns.
+    """
+
+    def __init__(
+        self,
+        urdf_path: str,
+        end_effector_link: str,
+        device: Union[str, torch.device] = "cpu",
+    ):
+        """Initializes the kinematic chain from a URDF.
+
+        Args:
+            urdf_path (str): Path to the URDF file.
+            end_effector_link (str): Name of the end-effector link.
+            device (Union[str, torch.device]): Computation device ('cpu' or 'cuda').
+
+        """
+        self.device = torch.device(device)
+        try:
+            # Load kinematic chain (core pytorch_kinematics object)
+            self.chain = pk.build_serial_chain_from_urdf(
+                open(urdf_path, mode="rb").read(), end_effector_link
+            ).to(device=self.device)
+        except Exception as e:
+            raise RuntimeError(f"Failed to build chain from URDF: {urdf_path}") from e
+
+        self.num_joints = len(self.chain.get_joint_parameter_names(exclude_fixed=True))
+        # Default initial guess for IK if none provided
+        self._default_q = torch.zeros(
+            (1, self.num_joints), device=self.device, dtype=torch.float32
+        )
+        # print(f"Initialized RobotKinematicsConcise: {self.num_joints} joints, EE='{end_effector_link}', device='{self.device}'") # Optional print
+
+    def _prepare_joint_tensor(
+        self, joints: Union[List[float], torch.Tensor], batch_dim_required: bool = True
+    ) -> torch.Tensor:
+        """Validates and formats joint angles input tensor."""
+        if isinstance(joints, list):
+            j = torch.tensor(joints, dtype=torch.float32, device=self.device)
+        elif isinstance(joints, np.ndarray):
+            j = torch.tensor(joints, device=self.device, dtype=torch.float32)
+        elif isinstance(joints, torch.Tensor):
+            j = joints.to(device=self.device, dtype=torch.float32)
+        else:
+            raise TypeError("Joints must be a list or torch.Tensor")
+
+        if j.ndim == 1:
+            if j.shape[0] != self.num_joints:
+                raise ValueError(f"Expected {self.num_joints} joints, got {j.shape[0]}")
+            if batch_dim_required:
+                j = j.unsqueeze(0)  # Add batch dimension if needed (e.g., shape (1, N))
+        elif j.ndim == 2:
+            if j.shape[1] != self.num_joints:
+                raise ValueError(
+                    f"Expected {self.num_joints} joints (dim 1), got {j.shape[1]}"
+                )
+            if batch_dim_required and j.shape[0] != 1:
+                # Most common IK solvers expect batch=1 for initial guess, FK can handle batches
+                # Relaxing this check slightly, but user should be aware for IK
+                pass
+        else:
+            raise ValueError(f"Joint tensor must have 1 or 2 dimensions, got {j.ndim}")
+        return j
+
+    def compute_fk(
+        self, joint_angles: Union[List[float], torch.Tensor]
+    ) -> pk.Transform3d:
+        """Computes Forward Kinematics (FK).
+
+        Args:
+            joint_angles (Union[List[float], torch.Tensor]): Joint angles (radians).
+                Shape (num_joints,) or (B, num_joints).
+
+        Returns:
+            pk.Transform3d: End-effector pose(s). Batched if input is batched.
+
+        """
+        angles_tensor = self._prepare_joint_tensor(
+            joint_angles, batch_dim_required=False
+        )  # FK handles batches naturally
+        # Direct call to pytorch_kinematics FK
+        return self.chain.forward_kinematics(angles_tensor, end_only=True)
+
+    def compute_ik(
+        self,
+        target_pose: pk.Transform3d,
+        initial_guess: Optional[Union[List[float], torch.Tensor]] = None,
+        iterations: int = 100,
+        lr: float = 0.1,
+        error_tolerance: float = 1e-4,
+    ) -> Tuple[torch.Tensor, bool]:
+        """Computes Inverse Kinematics (IK) using PseudoInverseIK.
+
+        Args:
+            target_pose (pk.Transform3d): Target end-effector pose (batch size 1).
+            initial_guess (Optional): Initial joint angles guess. Uses zeros if None.
+            Shape (num_joints,) or (1, num_joints).
+            iterations (int): Max solver iterations.
+            lr (float): Solver learning rate.
+            error_tolerance (float): Solver convergence tolerance.
+
+        Returns:
+            Tuple[torch.Tensor, bool]: Solution joint angles (1, num_joints), convergence status.
+
+        """
+        if not isinstance(target_pose, pk.Transform3d):
+            raise TypeError("target_pose must be a pk.Transform3d")
+        target_pose = target_pose.to(device=self.device)
+        if target_pose.get_matrix().shape[0] != 1:
+            raise ValueError(
+                "target_pose must have batch size 1 for this IK method."
+            )  # Common limitation
+
+        # Prepare initial guess (q_init)
+        q_init = self._prepare_joint_tensor(
+            initial_guess if initial_guess is not None else self._default_q,
+            batch_dim_required=True,
+        )
+        if q_init.shape[0] != 1:
+            raise ValueError(
+                "initial_guess must result in batch size 1 for this IK setup."
+            )  # Enforce batch=1 for guess
+
+        q_init = (
+            q_init.clone().detach().requires_grad_(True)
+        )  # Need gradient for solver
+
+        # Instantiate and run the IK solver (core pytorch_kinematics objects/methods)
+        ik_solver = pk.PseudoInverseIK(
+            chain=self.chain,
+            max_iterations=iterations,
+            ftol=error_tolerance,
+            lr=lr,
+            num_retries=1,
+            line_search=pk.BacktrackingLineSearch(max_lr=lr),
+            early_stopping_any_converged=True,
+        )
+        solution_angles, converged = ik_solver.solve(target_pose, q_init)
+
+        converged_bool = converged.item()  # Get single boolean status
+        # Optional: Minimalist status print
+        # if not converged_bool: print(f"IK did not converge.")
+
+        return solution_angles.detach(), converged_bool
+
+
+def main():
+    """TODO: Add docstring."""
+    node = Node()
+
+    urdf_path = os.getenv("URDF_PATH")
+    end_effector_link = os.getenv("END_EFFECTOR_LINK")
+    robot = RobotKinematics(urdf_path, end_effector_link)
+    last_known_state = None
+
+    for event in node:
+        if event["type"] == "INPUT":
+            if event["id"] == "pose":
+                metadata = event["metadata"]
+
+                match metadata["encoding"]:
+                    case "xyzrpy":
+                        # Apply Inverse Kinematics
+                        if last_known_state is not None:
+                            target = event["value"].to_numpy()
+                            target = pk.Transform3d(
+                                translation=target[:3],
+                                rotation=pk.Rotation.from_euler_angles(
+                                    target[3:6], degrees=False
+                                ),
+                            )
+                            solution, convergence = robot.compute_ik(
+                                target, last_known_state
+                            )
+                            metadata["encoding"] = "jointstate"
+                            node.send_output("pose", solution, metadata=metadata)
+                            last_known_state = solution
+                    case "jointstate":
+                        target = event["value"].to_numpy()
+                        last_known_state = target
+                        # Apply Forward Kinematics
+                        target = robot.compute_fk(target)
+                        target = np.array(get_xyz_rpy_array_from_transform3d(target))
+                        target = pa.array(target.ravel())
+                        metadata["encoding"] = "xyzrpy"
+                        node.send_output("pose", target, metadata=metadata)
+
+                # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
+                node.send_output(
+                    output_id="my_output_id",
+                    data=pa.array([1, 2, 3]),
+                    metadata={},
+                )
+
+
+if __name__ == "__main__":
+    main()
