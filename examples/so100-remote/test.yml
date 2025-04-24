@@ -1,0 +1,34 @@
+nodes:
+  - id: so100
+    build: pip install -e ../../node-hub/feetech-client
+    path: feetech-client
+    inputs:
+      pull_position: dora/timer/millis/33
+    outputs:
+      - position
+    env:
+      PORT: /dev/tty.usbmodem585A0080971
+      CONFIG: follower.right.json
+
+  - id: pytorch-kinematics
+    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      pose: so100/position
+    outputs:
+      - pose
+    env:
+      URDF_PATH: so100_2.urdf
+      END_EFFECTOR_LINK: "Moving Jaw"
+      so100_transform: 0 -0.3 0
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      # series_so100: so100/position
+      series_pose: pytorch-kinematics/pose
+      #jointstate_so100: so100/position
+    env:
+      so100_urdf: so100_2.urdf
+      so100_transform: 0 -0.3 0
