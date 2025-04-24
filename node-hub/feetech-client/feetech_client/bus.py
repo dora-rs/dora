@@ -1,4 +1,5 @@
 """TODO: Add docstring."""
+
 import enum
 from typing import Union
 
@@ -150,7 +151,9 @@ class FeetechBus:
         ]
 
         values = [
-            np.uint32(32767 - value.as_py()) if value < 0 else np.uint32(value.as_py())
+            np.uint32(32767 - value.as_py())
+            if value.as_py() < 0
+            else np.uint32(value.as_py())
             for value in data.field("values")
         ]
 
@@ -243,7 +246,9 @@ class FeetechBus:
         values = pa.array(
             [
                 self.group_readers[group_key].getData(
-                    idx, packet_address, packet_bytes_size,
+                    idx,
+                    packet_address,
+                    packet_bytes_size,
                 )
                 for idx in motor_ids
             ],

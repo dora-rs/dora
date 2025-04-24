@@ -1,16 +1,17 @@
 [project]
 name = "feetech-client"
 version = "0.1"
-authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>"}]
+authors = [{ name = "Hennzau", email = "<dev@enzo-le-van.fr>" }]
 description = "Dora Node client for feetech motors."
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"
 
 dependencies = [
-"dora-rs == 0.3.5",
-"numpy <=  2.0.0",
-"feetech-servo-sdk == 1.0.0", 
+  "dora-rs == 0.3.11",
+  "numpy <=  2.0.0",
+  "feetech-servo-sdk == 1.0.0",
+  "pwm-position-control",
 ]
 
 [dependency-groups]
@@ -18,7 +19,7 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 feetech-client = "feetech_client.main:main"
-
+feetech-configure = "feetech_client.configure:main"
 [build-system]
 requires = ["poetry-core>=1.8.0"]
 build-backend = "poetry.core.masonry.api"
@@ -34,3 +35,6 @@ extend-select = [
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
 ]
+
+[tool.uv.sources]
+pwm-position-control = { git = "https://github.com/Hennzau/pwm-position-control" }
