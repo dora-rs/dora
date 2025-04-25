@@ -346,13 +346,16 @@ jobs:
           uv pip install -e ../apis/python/node
           uv pip install ruff pytest
 
+          echo "Running dora up"
+          dora up
+          echo "Running dora build"
+          dora build dataflow.yml --uv
+
           # Check Compliancy
           uv run ruff check .
           uv run pytest
 
           export OPERATING_MODE=SAVE
-          echo "Running dora up"
-          dora up
           echo "Running dora list"
           dora list
           dora build dataflow.yml --uv
