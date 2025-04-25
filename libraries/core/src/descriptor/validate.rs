@@ -62,6 +62,8 @@ pub fn check_dataflow(
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
+                            } else if operator_definition.config.build.is_some() {
+                                info!("skipping path check for operator with build command");
                             } else {
                                 let path = adjust_shared_library_path(Path::new(&path))?;
                                 if !working_dir.join(&path).exists() {
