@@ -1002,7 +1002,7 @@ impl Daemon {
 
                 let node_config = match number_node_id {
                     2.. => Err(format!(
-                        "multiple dataflows contains dynamic node id {node_id}. \
+                        "multiple dataflows contain dynamic node id {node_id}. \
                         Please only have one running dataflow with the specified \
                         node id if you want to use dynamic node",
                     )),
@@ -1014,7 +1014,9 @@ impl Daemon {
                             let node_config = dataflow
                                 .running_nodes
                                 .get(&node_id)
-                                .context("no node with ID `{node_id}` within the given dataflow")?
+                                .with_context(|| {
+                                    format!("no node with ID `{node_id}` within the given dataflow")
+                                })?
                                 .node_config
                                 .clone();
                             if !node_config.dynamic {
@@ -1030,7 +1032,7 @@ impl Daemon {
                                 "failed to get dynamic node config within given dataflow: {err}"
                             )
                         }),
-                    0 => Err("no node with ID `{node_id}`".to_string()),
+                    0 => Err(format!("no node with ID `{node_id}`")),
                 };
 
                 let reply = DaemonReply::NodeConfig {
