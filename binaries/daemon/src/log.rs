@@ -180,34 +180,52 @@ impl Logger {
         // log message using tracing if reporting to coordinator is not possible
         match message.level {
             LogLevel::Error => {
-                if let Some(node_id) = message.node_id {
-                    tracing::error!(
-                        "{}/{} errored:\n{}",
-                        message.dataflow_id.to_string(),
-                        node_id,
-                        Indent(&message.message)
-                    );
-                }
+                tracing::error!(
+                    dataflow_id = message.dataflow_id.to_string(),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
             }
             LogLevel::Warn => {
-                if let Some(node_id) = message.node_id {
-                    tracing::warn!(
-                        "{}/{} warned:\n{}",
-                        message.dataflow_id.to_string(),
-                        node_id,
-                        Indent(&message.message)
-                    );
-                }
+                tracing::warn!(
+                    dataflow_id = message.dataflow_id.to_string(),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
             }
             LogLevel::Info => {
-                if let Some(node_id) = message.node_id {
-                    tracing::info!(
-                        "{}/{} info:\n{}",
-                        message.dataflow_id.to_string(),
-                        node_id,
-                        Indent(&message.message)
-                    );
-                }
+                tracing::info!(
+                    dataflow_id = message.dataflow_id.to_string(),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
+            }
+            LogLevel::Debug => {
+                tracing::debug!(
+                    dataflow_id = message.dataflow_id.to_string(),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
             }
             _ => {}
         }
