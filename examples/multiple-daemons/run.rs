@@ -36,7 +36,6 @@ async fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     let dataflow = Path::new("dataflow.yml");
-    build_dataflow(dataflow).await?;
 
     let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
     let coordinator_bind = SocketAddr::new(
@@ -209,18 +208,6 @@ async fn destroy(coordinator_events_tx: &Sender<Event>) -> eyre::Result<()> {
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     }
-}
-
-async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--").arg("build").arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to build dataflow");
-    };
-    Ok(())
 }
 
 async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
