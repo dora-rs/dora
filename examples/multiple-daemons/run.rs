@@ -8,7 +8,7 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
-use dora_tracing::set_up_tracing;
+use dora_tracing::set_up_tracing_opts;
 use eyre::{bail, Context};
 
 use std::{
@@ -29,7 +29,8 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing("multiple-daemon-runner").wrap_err("failed to set up tracing subscriber")?;
+    set_up_tracing_opts("multiple-daemon-runner", Some("debug"), None)
+        .wrap_err("failed to set up tracing subscriber")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -46,12 +47,15 @@ async fn main() -> eyre::Result<()> {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
     );
-    let (_coordinator_port, coordinator) = dora_coordinator::start(
+    let (coordinator_port, coordinator) = dora_coordinator::start(
         coordinator_bind,
         coordinator_control_bind,
         ReceiverStream::new(coordinator_events_rx),
     )
     .await?;
+
+    tracing::info!("coordinator running on {coordinator_port}");
+
     let coordinator_addr = Ipv4Addr::LOCALHOST;
     let daemon_a = run_daemon(coordinator_addr.to_string(), "A");
     let daemon_b = run_daemon(coordinator_addr.to_string(), "B");
