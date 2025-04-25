@@ -772,7 +772,12 @@ impl Daemon {
         uv: bool,
         build_only: bool,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
-        let mut logger = self.logger.for_dataflow(dataflow_id);
+        let mut logger = self
+            .logger
+            .for_dataflow(dataflow_id)
+            .try_clone()
+            .await
+            .context("failed to clone logger")?;
         let dataflow =
             RunningDataflow::new(dataflow_id, self.daemon_id.clone(), &dataflow_descriptor);
         let dataflow = match self.running.entry(dataflow_id) {
@@ -857,7 +862,7 @@ impl Daemon {
                     .await;
                 match spawner
                     .clone()
-                    .spawn_node(
+                    .prepare_node(
                         node,
                         node_stderr_most_recent,
                         &mut logger,
@@ -867,39 +872,7 @@ impl Daemon {
                     .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
                     Ok(result) => {
-                        let events_tx = self.events_tx.clone();
-                        let clock = self.clock.clone();
-                        tasks.push(async move {
-                            let (node_spawn_result, success) = match result.await {
-                                Ok(node) => (Ok(node), Ok(())),
-                                Err(err) => {
-                                    let node_err = NodeError {
-                                        timestamp: clock.new_timestamp(),
-                                        cause: NodeErrorCause::Other {
-                                            stderr: format!("spawn failed: {err:?}"),
-                                        },
-                                        exit_status: NodeExitStatus::Unknown,
-                                    };
-                                    (Err(node_err), Err(err))
-                                }
-                            };
-                            let send_result = events_tx
-                                .send(Timestamped {
-                                    inner: Event::SpawnNodeResult {
-                                        dataflow_id,
-                                        node_id,
-                                        result: node_spawn_result,
-                                    },
-                                    timestamp: clock.new_timestamp(),
-                                })
-                                .await;
-                            if send_result.is_err() {
-                                tracing::error!(
-                                    "failed to send SpawnNodeResult to main daemon task"
-                                )
-                            }
-                            success
-                        });
+                        tasks.push((node_id, result));
                     }
                     Err(err) => {
                         logger
@@ -980,14 +953,120 @@ impl Daemon {
             self.handle_node_stop(dataflow_id, &node_id).await?;
         }
 
-        let spawn_result = async move {
-            for task in tasks {
-                task.await?;
-            }
-            Ok(())
-        };
+        let spawn_result = Self::spawn_prepared_nodes(
+            dataflow_id,
+            logger,
+            tasks,
+            self.events_tx.clone(),
+            self.clock.clone(),
+        );
 
         Ok(spawn_result)
+    }
+
+    async fn spawn_prepared_nodes(
+        dataflow_id: Uuid,
+        mut logger: DataflowLogger<'_>,
+        tasks: Vec<(
+            NodeId,
+            impl Future<Output = std::result::Result<spawn::PreparedNode, eyre::Error>>,
+        )>,
+        events_tx: mpsc::Sender<Timestamped<Event>>,
+        clock: Arc<HLC>,
+    ) -> eyre::Result<()> {
+        let node_result = |node_id, result| Timestamped {
+            inner: Event::SpawnNodeResult {
+                dataflow_id,
+                node_id,
+                result,
+            },
+            timestamp: clock.new_timestamp(),
+        };
+        let mut failed_to_prepare = None;
+        let mut prepared_nodes = Vec::new();
+        for (node_id, task) in tasks {
+            match task.await {
+                Ok(node) => prepared_nodes.push(node),
+                Err(err) => {
+                    if failed_to_prepare.is_none() {
+                        failed_to_prepare = Some(node_id.clone());
+                    }
+                    let node_err: NodeError = NodeError {
+                        timestamp: clock.new_timestamp(),
+                        cause: NodeErrorCause::Other {
+                            stderr: format!("preparing for spawn failed: {err:?}"),
+                        },
+                        exit_status: NodeExitStatus::Unknown,
+                    };
+                    let send_result = events_tx.send(node_result(node_id, Err(node_err))).await;
+                    if send_result.is_err() {
+                        tracing::error!("failed to send SpawnNodeResult to main daemon task")
+                    }
+                }
+            }
+        }
+
+        // once all nodes are prepared, do the actual spawning
+        if let Some(failed_node) = failed_to_prepare {
+            // don't spawn any nodes when an error occurred before
+            for node in prepared_nodes {
+                let err = NodeError {
+                    timestamp: clock.new_timestamp(),
+                    cause: NodeErrorCause::Cascading {
+                        caused_by_node: failed_node.clone(),
+                    },
+                    exit_status: NodeExitStatus::Unknown,
+                };
+                let send_result = events_tx
+                    .send(node_result(node.node_id().clone(), Err(err)))
+                    .await;
+                if send_result.is_err() {
+                    tracing::error!("failed to send SpawnNodeResult to main daemon task")
+                }
+            }
+            Err(eyre!("failed to prepare node {failed_node}"))
+        } else {
+            let mut spawn_result = Ok(());
+
+            logger
+                .log(
+                    LogLevel::Info,
+                    None,
+                    Some("dora daemon".into()),
+                    "finished building nodes, spawning...",
+                )
+                .await;
+
+            // spawn the nodes
+            for node in prepared_nodes {
+                let node_id = node.node_id().clone();
+                let mut logger = logger.reborrow().for_node(node_id.clone());
+                let result = node.spawn(&mut logger).await;
+                let node_spawn_result = match result {
+                    Ok(node) => Ok(node),
+                    Err(err) => {
+                        let node_err = NodeError {
+                            timestamp: clock.new_timestamp(),
+                            cause: NodeErrorCause::Other {
+                                stderr: format!("spawn failed: {err:?}"),
+                            },
+                            exit_status: NodeExitStatus::Unknown,
+                        };
+                        if spawn_result.is_ok() {
+                            spawn_result = Err(err.wrap_err(format!("failed to spawn {node_id}")));
+                        }
+                        Err(node_err)
+                    }
+                };
+                let send_result = events_tx
+                    .send(node_result(node_id, node_spawn_result))
+                    .await;
+                if send_result.is_err() {
+                    tracing::error!("failed to send SpawnNodeResult to main daemon task")
+                }
+            }
+            spawn_result
+        }
     }
 
     async fn handle_dynamic_node_event(
