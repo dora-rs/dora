@@ -413,7 +413,11 @@ impl Daemon {
                 Event::SpawnDataflowResult {
                     dataflow_id,
                     result,
+                    build_only,
                 } => {
+                    if build_only {
+                        self.running.remove(&dataflow_id);
+                    }
                     if let Some(connection) = &mut self.coordinator_connection {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
@@ -512,6 +516,7 @@ impl Daemon {
                             inner: Event::SpawnDataflowResult {
                                 dataflow_id,
                                 result: result_task.await,
+                                build_only,
                             },
                             timestamp: clock.new_timestamp(),
                         };
@@ -2152,6 +2157,7 @@ pub enum Event {
     SpawnDataflowResult {
         dataflow_id: Uuid,
         result: eyre::Result<()>,
+        build_only: bool,
     },
 }
 
