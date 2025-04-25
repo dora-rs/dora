@@ -43,6 +43,8 @@ pub fn check_dataflow(
                                     info!("skipping path check for remote node `{}`", node.id);
                                 }
                             }
+                        } else if custom.build.is_some() {
+                            info!("skipping path check for node with build command");
                         } else {
                             resolve_path(source, working_dir).wrap_err_with(|| {
                                 format!("Could not find source path `{}`", source)
@@ -51,7 +53,7 @@ pub fn check_dataflow(
                     }
                 },
                 dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
-                    // TODO: implement git repo check
+                    info!("skipping check for node with git source");
                 }
             },
             descriptor::CoreNodeKind::Runtime(node) => {
