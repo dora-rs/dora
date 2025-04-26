@@ -2,10 +2,10 @@
 set -euo
 
 # List of ignored modules 
-ignored_folders=("dora-parler")
+ignored_folders=("dora-parler" "dora-mlx-lm")
 
 # Skip test
-skip_test_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input" "dora-mlx-lm")
+skip_test_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input")
 
 # Get current working directory
 dir=$(pwd)
