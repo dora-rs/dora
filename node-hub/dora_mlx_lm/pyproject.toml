@@ -1,0 +1,27 @@
+[project]
+name = "dora-mlx-lm"
+version = "0.1.0"
+authors = [{ name = "Clément Leprêtre", email = "clement.lepretre4@gmail.com" }]
+description = "DORA node for running MLX-LM large language models"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "mlx-lm>=0.2.0",
+    "dora-rs>=0.3.11"
+]
+
+[project.urls]
+Repository = "https://github.com/dora-rs/dora"
+
+[tool.ruff.lint]
+extend-select = [
+    "D",    # pydocstyle
+    "UP",   # Ruff's UP rule
+    "PERF", # Ruff's PERF rule
+    "RET",  # Ruff's RET rule
+    "RSE",  # Ruff's RSE rule
+    "NPY",  # Ruff's NPY rule
+    "N",    # Ruff's N rule
+    "I",    # Ruff's I rule
+]
