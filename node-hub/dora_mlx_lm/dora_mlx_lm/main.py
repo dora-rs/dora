@@ -5,7 +5,7 @@ from mlx_lm import load, generate
 
 
 def main():
-    model_path = os.getenv("MODEL_PATH", "Qwen/Qwen2.5-Omni-7B")
+    model_path = os.getenv("MODEL_PATH", "mlx-community/SmolLM-135M-Instruct-4bit")
     model, tokenizer = load(model_path, tokenizer_config={"eos_token": "<|im_end|>"})
 
     node = Node()

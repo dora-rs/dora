@@ -7,7 +7,7 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.7"
 dependencies = [
-    "mlx-lm>=0.2.0",
+    "mlx-lm>=0.23.2",
     "dora-rs>=0.3.11"
 ]
 
