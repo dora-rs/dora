@@ -98,7 +98,9 @@ class RobotKinematics:
         elif isinstance(joints, torch.Tensor):
             j = joints.to(device=self.device, dtype=torch.float32)
         else:
-            raise TypeError("Joints must be a list or torch.Tensor")
+            raise TypeError(
+                "Joints must be a list or torch.Tensor and got: ", joints.type
+            )
 
         if j.ndim == 1:
             if j.shape[0] != self.num_joints:
@@ -131,11 +133,20 @@ class RobotKinematics:
             pk.Transform3d: End-effector pose(s). Batched if input is batched.
 
         """
+        # robot frame
+        pos = torch.tensor([0.0, 0.0, 0.0])
+        rot = torch.tensor([0.0, 0.0, 0.0])
+        rob_tf = pk.Transform3d(pos=pos, rot=rot)
+
         angles_tensor = self._prepare_joint_tensor(
             joint_angles, batch_dim_required=False
         )  # FK handles batches naturally
         # Direct call to pytorch_kinematics FK
-        return self.chain.forward_kinematics(angles_tensor, end_only=True)
+        goal_in_rob_frame_tf = self.chain.forward_kinematics(
+            angles_tensor, end_only=True
+        )
+        goal_tf = rob_tf.compose(goal_in_rob_frame_tf)
+        return goal_tf
 
     def compute_ik(
         self,
@@ -177,27 +188,21 @@ class RobotKinematics:
                 "initial_guess must result in batch size 1 for this IK setup."
             )  # Enforce batch=1 for guess
 
-        q_init = (
-            q_init.clone().detach().requires_grad_(True)
-        )  # Need gradient for solver
+        q_init = q_init.requires_grad_(True)  # Need gradient for solver
 
         # Instantiate and run the IK solver (core pytorch_kinematics objects/methods)
         ik_solver = pk.PseudoInverseIK(
-            chain=self.chain,
-            max_iterations=iterations,
-            ftol=error_tolerance,
-            lr=lr,
-            num_retries=1,
-            line_search=pk.BacktrackingLineSearch(max_lr=lr),
+            self.chain,
+            max_iterations=300,
+            retry_configs=q_init,
+            joint_limits=torch.tensor(self.chain.get_joint_limits()),
             early_stopping_any_converged=True,
+            early_stopping_no_improvement="all",
+            debug=False,
+            lr=0.05,
         )
-        solution_angles, converged = ik_solver.solve(target_pose, q_init)
-
-        converged_bool = converged.item()  # Get single boolean status
-        # Optional: Minimalist status print
-        # if not converged_bool: print(f"IK did not converge.")
-
-        return solution_angles.detach(), converged_bool
+        solution_angles = ik_solver.solve(target_pose)
+        return solution_angles.solutions.detach()
 
 
 def main():
@@ -211,42 +216,35 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-            if event["id"] == "pose":
-                metadata = event["metadata"]
+            metadata = event["metadata"]
 
-                match metadata["encoding"]:
-                    case "xyzrpy":
-                        # Apply Inverse Kinematics
-                        if last_known_state is not None:
-                            target = event["value"].to_numpy()
-                            target = pk.Transform3d(
-                                translation=target[:3],
-                                rotation=pk.Rotation.from_euler_angles(
-                                    target[3:6], degrees=False
-                                ),
-                            )
-                            solution, convergence = robot.compute_ik(
-                                target, last_known_state
-                            )
-                            metadata["encoding"] = "jointstate"
-                            node.send_output("pose", solution, metadata=metadata)
-                            last_known_state = solution
-                    case "jointstate":
+            match metadata["encoding"]:
+                case "xyzrpy":
+                    # Apply Inverse Kinematics
+                    if last_known_state is not None:
                         target = event["value"].to_numpy()
-                        last_known_state = target
-                        # Apply Forward Kinematics
-                        target = robot.compute_fk(target)
-                        target = np.array(get_xyz_rpy_array_from_transform3d(target))
-                        target = pa.array(target.ravel())
-                        metadata["encoding"] = "xyzrpy"
-                        node.send_output("pose", target, metadata=metadata)
-
-                # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
-                node.send_output(
-                    output_id="my_output_id",
-                    data=pa.array([1, 2, 3]),
-                    metadata={},
-                )
+                        target = target.astype(np.float32)
+                        target = pk.Transform3d(
+                            pos=target[:3],
+                            rot=pk.transforms.euler_angles_to_matrix(
+                                torch.tensor(target[3:6]), convention="XYZ"
+                            ),
+                        )
+                        solution = robot.compute_ik(target, last_known_state)
+                        metadata["encoding"] = "jointstate"
+                        last_known_state = solution.numpy().ravel()
+                        solution = pa.array(last_known_state)
+                        node.send_output(event["id"], solution, metadata=metadata)
+                        print(solution)
+                case "jointstate":
+                    target = event["value"].to_numpy()
+                    last_known_state = target
+                    # Apply Forward Kinematics
+                    target = robot.compute_fk(target)
+                    target = np.array(get_xyz_rpy_array_from_transform3d(target))
+                    target = pa.array(target.ravel())
+                    metadata["encoding"] = "xyzrpy"
+                    node.send_output(event["id"], target, metadata=metadata)
 
 
 if __name__ == "__main__":
