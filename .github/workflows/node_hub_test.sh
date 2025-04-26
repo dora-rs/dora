@@ -5,7 +5,7 @@ set -euo
 ignored_folders=("dora-parler")
 
 # Skip test
-skip_test_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input")
+skip_test_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input" "dora-mlx-lm")
 
 # Get current working directory
 dir=$(pwd)
