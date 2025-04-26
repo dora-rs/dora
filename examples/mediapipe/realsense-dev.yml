@@ -1,0 +1,26 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-pyrealsense
+    path: dora-pyrealsense
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+      - depth
+
+  - id: dora-mediapipe
+    build: pip install -e ../../node-hub/dora-mediapipe
+    path: dora-mediapipe
+    inputs:
+      image: camera/image
+      depth: camera/depth
+    outputs:
+      - points3d
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      realsense/image: camera/image
+      realsense/depth: camera/depth
+      realsense/points3d: dora-mediapipe/points3d

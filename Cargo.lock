@@ -853,7 +853,7 @@ dependencies = [
  "enumflags2",
  "futures-channel",
  "futures-util",
- "rand 0.9.0",
+ "rand 0.9.1",
  "raw-window-handle 0.6.2",
  "serde",
  "serde_repr",
@@ -1827,7 +1827,7 @@ dependencies = [
  "metal 0.27.0",
  "num-traits",
  "num_cpus",
- "rand 0.9.0",
+ "rand 0.9.1",
  "rand_distr",
  "rayon",
  "safetensors",
@@ -3480,6 +3480,7 @@ dependencies = [
  "k",
  "ndarray 0.15.6",
  "pyo3",
+ "rand 0.9.1",
  "rerun",
  "tokio",
 ]
@@ -4343,7 +4344,7 @@ dependencies = [
  "cudarc",
  "half",
  "num-traits",
- "rand 0.9.0",
+ "rand 0.9.1",
  "rand_distr",
 ]
 
@@ -5121,7 +5122,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "crunchy",
  "num-traits",
- "rand 0.9.0",
+ "rand 0.9.1",
  "rand_distr",
 ]
 
@@ -6895,7 +6896,7 @@ dependencies = [
  "image",
  "indexmap 2.8.0",
  "mistralrs-core",
- "rand 0.9.0",
+ "rand 0.9.1",
  "reqwest 0.12.15",
  "serde",
  "serde_json",
@@ -6947,7 +6948,7 @@ dependencies = [
  "objc",
  "once_cell",
  "radix_trie",
- "rand 0.9.0",
+ "rand 0.9.1",
  "rand_isaac",
  "rayon",
  "regex",
@@ -9194,7 +9195,7 @@ checksum = "b820744eb4dc9b57a3398183639c511b5a26d2ed702cedd3febaa1393caa22cc"
 dependencies = [
  "bytes",
  "getrandom 0.3.2",
- "rand 0.9.0",
+ "rand 0.9.1",
  "ring 0.17.14",
  "rustc-hash 2.1.1",
  "rustls 0.23.25",
@@ -9272,13 +9273,12 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3779b94aeb87e8bd4e834cee3650289ee9e0d5677f976ecdb6d219e5f4f6cd94"
+checksum = "9fbfd9d094a40bf3ae768db9361049ace4c0e04a4fd6b359518bd7b73a73dd97"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.3",
- "zerocopy 0.8.24",
 ]
 
 [[package]]
@@ -9326,7 +9326,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
 dependencies = [
  "num-traits",
- "rand 0.9.0",
+ "rand 0.9.1",
 ]
 
 [[package]]
@@ -11606,7 +11606,7 @@ dependencies = [
  "num-derive",
  "num-traits",
  "paste",
- "rand 0.9.0",
+ "rand 0.9.1",
  "serde",
  "serde_repr",
  "socket2 0.5.8",
@@ -14253,7 +14253,7 @@ checksum = "458f7a779bf54acc9f347480ac654f68407d3aab21269a6e3c9f922acd9e2da9"
 dependencies = [
  "getrandom 0.3.2",
  "js-sys",
- "rand 0.9.0",
+ "rand 0.9.1",
  "serde",
  "uuid-macro-internal",
  "wasm-bindgen",
