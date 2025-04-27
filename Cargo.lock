@@ -391,7 +391,7 @@ checksum = "0ae92a5119aa49cdbcf6b9f893fe4e1d98b04ccbf82ee0584ad948a44a734dea"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -885,7 +885,7 @@ checksum = "965c2d33e53cb6b267e148a4cb0760bc01f4904c1cd4bb4002a085bb016d1490"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "synstructure",
 ]
 
@@ -897,7 +897,7 @@ checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -1105,7 +1105,7 @@ checksum = "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -1184,7 +1184,7 @@ checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -1201,7 +1201,7 @@ checksum = "e539d3fca749fcee5236ab05e93a52867dd549cc157c8cb7f99595f3cedffdb5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -1492,7 +1492,7 @@ dependencies = [
 name = "benchmark-example-node"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "futures",
  "rand 0.8.5",
@@ -1505,7 +1505,7 @@ dependencies = [
 name = "benchmark-example-sink"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "tracing",
  "tracing-subscriber",
@@ -1717,7 +1717,7 @@ checksum = "2ff22c2722516255d1823ce3cc4bc0b154dbc9364be5c905d6baa6eccbbc8774"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2159,7 +2159,7 @@ dependencies = [
  "heck 0.5.0",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2657,7 +2657,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "scratch",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2670,7 +2670,7 @@ dependencies = [
  "codespan-reporting 0.11.1",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2688,7 +2688,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2736,7 +2736,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim 0.11.1",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2758,7 +2758,7 @@ checksum = "d336a2a514f6ccccaa3e09b02d41d35330c07ddf03a62165fcec10bb561c7806"
 dependencies = [
  "darling_core 0.20.10",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2868,7 +2868,7 @@ checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2879,7 +2879,7 @@ checksum = "30542c1ad912e0e3d22a1935c290e12e8a29d704a420177a31faad4a601a0800"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2900,7 +2900,7 @@ dependencies = [
  "darling 0.20.10",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2910,7 +2910,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
 dependencies = [
  "derive_builder_core",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -2921,7 +2921,7 @@ checksum = "3da29a38df43d6f156149c9b43ded5e018ddff2a855cf2cfd62e8cd7d079c69f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -3032,7 +3032,7 @@ checksum = "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -3071,6 +3071,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-arrow-convert"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d65f654a79d32d436400dd15ef5b6ef02bf4913037e61d0de5a037118b6c2a02"
+dependencies = [
+ "arrow 54.2.1",
+ "chrono",
+ "eyre",
+ "half",
+ "num",
+]
+
+[[package]]
 name = "dora-cli"
 version = "0.3.11"
 dependencies = [
@@ -3080,16 +3093,16 @@ dependencies = [
  "communication-layer-request-reply",
  "ctrlc",
  "dora-coordinator",
- "dora-core",
+ "dora-core 0.3.11",
  "dora-daemon",
  "dora-download",
- "dora-message",
+ "dora-message 0.4.4",
  "dora-node-api-c",
  "dora-operator-api-c",
  "dora-runtime",
- "dora-tracing",
+ "dora-tracing 0.3.11",
  "duration-str",
- "env_logger 0.11.7",
+ "env_logger 0.11.6",
  "eyre",
  "futures",
  "inquire",
@@ -3114,9 +3127,9 @@ name = "dora-coordinator"
 version = "0.3.11"
 dependencies = [
  "ctrlc",
- "dora-core",
- "dora-message",
- "dora-tracing",
+ "dora-core 0.3.11",
+ "dora-message 0.4.4",
+ "dora-tracing 0.3.11",
  "eyre",
  "futures",
  "futures-concurrency",
@@ -3134,7 +3147,28 @@ dependencies = [
 name = "dora-core"
 version = "0.3.11"
 dependencies = [
- "dora-message",
+ "dora-message 0.4.4",
+ "eyre",
+ "log",
+ "once_cell",
+ "schemars",
+ "serde",
+ "serde-with-expand-env",
+ "serde_json",
+ "serde_yaml 0.9.34+deprecated",
+ "tokio",
+ "tracing",
+ "uuid 1.16.0",
+ "which",
+]
+
+[[package]]
+name = "dora-core"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0b2d224efda6e1439574b56f85cf2b2ad02c821a8de64f427ac0390c4317dc1"
+dependencies = [
+ "dora-message 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "eyre",
  "log",
  "once_cell",
@@ -3159,19 +3193,19 @@ dependencies = [
  "crossbeam",
  "crossbeam-skiplist",
  "ctrlc",
- "dora-arrow-convert",
- "dora-core",
+ "dora-arrow-convert 0.3.11",
+ "dora-core 0.3.11",
  "dora-download",
- "dora-message",
- "dora-node-api",
- "dora-tracing",
+ "dora-message 0.4.4",
+ "dora-node-api 0.3.11",
+ "dora-tracing 0.3.11",
  "eyre",
  "flume 0.10.14",
  "futures",
  "futures-concurrency",
  "serde_json",
  "serde_yaml 0.8.26",
- "shared-memory-server",
+ "shared-memory-server 0.3.11",
  "sysinfo 0.30.13",
  "tokio",
  "tokio-stream",
@@ -3189,7 +3223,7 @@ dependencies = [
  "bitstream-io",
  "bytemuck",
  "dav1d",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "log",
  "pyo3",
@@ -3211,10 +3245,10 @@ name = "dora-examples"
 version = "0.0.0"
 dependencies = [
  "dora-coordinator",
- "dora-core",
+ "dora-core 0.3.11",
  "dora-download",
- "dora-message",
- "dora-tracing",
+ "dora-message 0.4.4",
+ "dora-tracing 0.3.11",
  "dunce",
  "eyre",
  "futures",
@@ -3229,7 +3263,7 @@ dependencies = [
 name = "dora-kit-car"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "dotenv",
  "eyre",
  "pyo3",
@@ -3261,8 +3295,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-message"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1115e6526977ec91e61d5bb282af26c398cc7002317b3842176dff9dbd6961b"
+dependencies = [
+ "aligned-vec",
+ "arrow-data 54.3.0",
+ "arrow-schema 54.3.0",
+ "bincode",
+ "eyre",
+ "log",
+ "once_cell",
+ "schemars",
+ "semver 1.0.26",
+ "serde",
+ "serde-with-expand-env",
+ "serde_yaml 0.9.34+deprecated",
+ "tokio",
+ "uhlc 0.5.2",
+ "uuid 1.16.0",
+]
+
+[[package]]
 name = "dora-metrics"
 version = "0.3.11"
+dependencies = [
+ "eyre",
+ "opentelemetry 0.28.0",
+ "opentelemetry-otlp",
+ "opentelemetry-system-metrics",
+ "opentelemetry_sdk 0.28.0",
+]
+
+[[package]]
+name = "dora-metrics"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7339d7be2f4cd7544cff7b30069514609fab4fb418a4ff9273ca1c6069db0f8c"
 dependencies = [
  "eyre",
  "opentelemetry 0.28.0",
@@ -3275,7 +3345,7 @@ dependencies = [
 name = "dora-mistral-rs"
 version = "0.1.0"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "mistralrs",
  "tokio",
@@ -3288,11 +3358,11 @@ dependencies = [
  "aligned-vec",
  "arrow 54.2.1",
  "bincode",
- "dora-arrow-convert",
- "dora-core",
- "dora-message",
- "dora-metrics",
- "dora-tracing",
+ "dora-arrow-convert 0.3.11",
+ "dora-core 0.3.11",
+ "dora-message 0.4.4",
+ "dora-metrics 0.3.11",
+ "dora-tracing 0.3.11",
  "eyre",
  "flume 0.10.14",
  "futures",
@@ -3300,7 +3370,34 @@ dependencies = [
  "futures-timer",
  "serde_json",
  "serde_yaml 0.8.26",
- "shared-memory-server",
+ "shared-memory-server 0.3.11",
+ "shared_memory_extended",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dora-node-api"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b82429c204a8d22d3561980f14c7a10b746eebcfda57f5b63b2459488dcee2ec"
+dependencies = [
+ "aligned-vec",
+ "arrow 54.2.1",
+ "bincode",
+ "dora-arrow-convert 0.3.11 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dora-core 0.3.11 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dora-message 0.4.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dora-metrics 0.3.11 (registry+https://github.com/rust-lang/crates.io-index)",
+ "dora-tracing 0.3.11 (registry+https://github.com/rust-lang/crates.io-index)",
+ "eyre",
+ "flume 0.10.14",
+ "futures",
+ "futures-concurrency",
+ "futures-timer",
+ "serde_json",
+ "serde_yaml 0.8.26",
+ "shared-memory-server 0.3.11 (registry+https://github.com/rust-lang/crates.io-index)",
  "shared_memory_extended",
  "tokio",
  "tracing",
@@ -3311,7 +3408,7 @@ name = "dora-node-api-c"
 version = "0.3.11"
 dependencies = [
  "arrow-array 54.2.1",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "tracing",
 ]
@@ -3323,7 +3420,7 @@ dependencies = [
  "arrow 54.2.1",
  "cxx",
  "cxx-build",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "dora-ros2-bridge",
  "dora-ros2-bridge-msg-gen",
  "eyre",
@@ -3341,7 +3438,7 @@ dependencies = [
  "arrow 54.2.1",
  "dora-daemon",
  "dora-download",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
  "dora-runtime",
@@ -3358,7 +3455,7 @@ dependencies = [
 name = "dora-object-to-pose"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "pyo3",
 ]
@@ -3368,7 +3465,7 @@ name = "dora-openai-proxy-server"
 version = "0.3.11"
 dependencies = [
  "chrono",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "futures",
  "hyper 0.14.32",
@@ -3388,7 +3485,7 @@ dependencies = [
 name = "dora-operator-api"
 version = "0.3.11"
 dependencies = [
- "dora-arrow-convert",
+ "dora-arrow-convert 0.3.11",
  "dora-operator-api-macros",
  "dora-operator-api-types",
 ]
@@ -3425,7 +3522,7 @@ dependencies = [
  "aligned-vec",
  "arrow 54.2.1",
  "arrow-schema 54.3.0",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "flume 0.10.14",
  "futures",
@@ -3439,7 +3536,7 @@ name = "dora-operator-api-types"
 version = "0.3.11"
 dependencies = [
  "arrow 54.2.1",
- "dora-arrow-convert",
+ "dora-arrow-convert 0.3.11",
  "safer-ffi",
 ]
 
@@ -3449,7 +3546,7 @@ version = "0.3.11+fix1"
 dependencies = [
  "avif-serialize",
  "bytemuck",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "log",
  "pyo3",
@@ -3461,8 +3558,8 @@ name = "dora-record"
 version = "0.3.11"
 dependencies = [
  "chrono",
- "dora-node-api",
- "dora-tracing",
+ "dora-node-api 0.3.11",
+ "dora-tracing 0.3.11",
  "eyre",
  "parquet 54.2.1",
  "tokio",
@@ -3474,7 +3571,7 @@ version = "0.3.11"
 dependencies = [
  "bytemuck",
  "chrono",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "k",
  "ndarray 0.15.6",
@@ -3542,14 +3639,14 @@ version = "0.3.11"
 dependencies = [
  "aligned-vec",
  "arrow 54.2.1",
- "dora-core",
+ "dora-core 0.3.11",
  "dora-download",
- "dora-message",
- "dora-metrics",
- "dora-node-api",
+ "dora-message 0.4.4",
+ "dora-metrics 0.3.11",
+ "dora-node-api 0.3.11",
  "dora-operator-api-python",
  "dora-operator-api-types",
- "dora-tracing",
+ "dora-tracing 0.3.11",
  "eyre",
  "flume 0.10.14",
  "futures",
@@ -3565,8 +3662,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-rustypot"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api 0.3.11 (registry+https://github.com/rust-lang/crates.io-index)",
+ "eyre",
+ "rustypot",
+ "serialport",
+]
+
+[[package]]
 name = "dora-tracing"
 version = "0.3.11"
+dependencies = [
+ "eyre",
+ "opentelemetry 0.18.0",
+ "opentelemetry-jaeger",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dora-tracing"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e50b8839c08b2ab87fd299b76d5a741647a76a22681a855d37ae099bdd77003f"
 dependencies = [
  "eyre",
  "opentelemetry 0.18.0",
@@ -3913,7 +4034,7 @@ dependencies = [
  "heck 0.5.0",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -3934,7 +4055,7 @@ checksum = "f282cfdfe92516eb26c2af8589c274c7c17681f5ecc03c18255fe741c6aa64eb"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -3955,7 +4076,7 @@ checksum = "fc4caf64a58d7a6d65ab00639b046ff54399a39f5f2554728895ace4b297cd79"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -3966,7 +4087,7 @@ checksum = "2f9ed6b3789237c8a0c1c505af1c7eb2c560df6186f01b098c3a1064ea532f38"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -3987,7 +4108,7 @@ dependencies = [
  "darling 0.20.10",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -4015,14 +4136,14 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
-version = "0.11.7"
+version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3716d7a920fb4fac5d84e9d4bce8ceb321e9414b4409da61b07b75c1e3d0697"
+checksum = "dcaee3d8e3cfc3fd92428d477bc97fc29ec8716d180c0d74c643bb26166660e0"
 dependencies = [
  "anstream",
  "anstyle",
  "env_filter",
- "jiff",
+ "humantime",
  "log",
 ]
 
@@ -4401,7 +4522,7 @@ checksum = "1a5c6c585bc94aaf2c7b51dd4c2ba22680844aba4c687be581871a6f518c5742"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -4563,7 +4684,7 @@ checksum = "162ee34ebcb7c64a8abebc059ce0fee27c2262618d7b60ed8faf72fef13c3650"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -4834,7 +4955,7 @@ checksum = "53010ccb100b96a67bc32c0175f0ed1426b31b655d562898e57325f81c023ac0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -4938,7 +5059,7 @@ dependencies = [
  "inflections",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -5646,7 +5767,7 @@ checksum = "1ec89e9337638ecdc08744df490b221a7399bf8d164eb52a665454e60e075ad6"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -5893,7 +6014,7 @@ checksum = "c34819042dc3d3971c46c2190835914dfbe0c3c13f61449b2997f4e9722dfa60"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -5926,6 +6047,16 @@ checksum = "2285ddfe3054097ef4b2fe909ef8c3bcd1ea52a8f0d274416caebeef39f04a65"
 dependencies = [
  "io-lifetimes 2.0.4",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "io-kit-sys"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617ee6cf8e3f66f3b4ea67a4058564628cde41901316e19f559e14c7c72c5e7b"
+dependencies = [
+ "core-foundation-sys",
+ "mach2",
 ]
 
 [[package]]
@@ -6062,30 +6193,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "552f657140ee72c552b728601179c10abea14cd7d815de2d75d75dea42485eca"
 dependencies = [
  "bitstream-io",
-]
-
-[[package]]
-name = "jiff"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d699bc6dfc879fb1bf9bdff0d4c56f0884fc6f0d0eb0fba397a6d00cd9a6b85e"
-dependencies = [
- "jiff-static",
- "log",
- "portable-atomic",
- "portable-atomic-util",
- "serde",
-]
-
-[[package]]
-name = "jiff-static"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d16e75759ee0aa64c57a56acbf43916987b20c77373cb7e808979e02b93c9f9"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.100",
 ]
 
 [[package]]
@@ -6399,6 +6506,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "libudev"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78b324152da65df7bb95acfcaab55e3097ceaab02fb19b228a9eb74d55f135e0"
+dependencies = [
+ "libc",
+ "libudev-sys",
+]
+
+[[package]]
+name = "libudev-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
+dependencies = [
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "libz-sys"
 version = "1.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6553,6 +6680,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75761162ae2b0e580d7e7c390558127e5f01b4194debd6221fd8c207fc80e3f5"
 dependencies = [
  "twox-hash",
+]
+
+[[package]]
+name = "mach2"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19b955cdeb2a02b9117f121ce63aa52d08ade45de53e48fe6a38b39c10f6f709"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -6749,7 +6885,7 @@ checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -7045,14 +7181,14 @@ checksum = "c402a4092d5e204f32c9e155431046831fa712637043c58cb73bc6bc6c9663b5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
 name = "multiple-daemons-example-node"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "futures",
  "rand 0.8.5",
@@ -7070,7 +7206,7 @@ dependencies = [
 name = "multiple-daemons-example-sink"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
 ]
 
@@ -7505,7 +7641,7 @@ checksum = "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -7578,7 +7714,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -8400,7 +8536,7 @@ dependencies = [
  "pest_meta",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -8454,7 +8590,7 @@ dependencies = [
  "phf_shared",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -8489,7 +8625,7 @@ checksum = "6e918e4ff8c4549eb882f14b3a4bc8c8bc93de829416eacf579f1207a8fbf861"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -8823,12 +8959,12 @@ dependencies = [
 
 [[package]]
 name = "prettyplease"
-version = "0.2.31"
+version = "0.2.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5316f57387668042f561aae71480de936257848f9c43ce528e311d89a07cadeb"
+checksum = "64d1ec885c64d0457d564db4ec299b2dae3f9c02808b8ad9c3a089c591b18033"
 dependencies = [
  "proc-macro2",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -8866,9 +9002,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.94"
+version = "1.0.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31971752e70b8b2686d7e46ec17fb38dad4051d94024c88df49b667caea9c84"
+checksum = "f139b0662de085916d1fb67d2b4169d1addddda1919e696f3252b740b629986e"
 dependencies = [
  "unicode-ident",
 ]
@@ -8890,7 +9026,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a65f2e60fbf1063868558d69c6beacf412dc755f9fc020f514b7955fc914fe30"
 dependencies = [
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -8913,7 +9049,7 @@ dependencies = [
  "itertools 0.14.0",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -9031,7 +9167,7 @@ dependencies = [
  "proc-macro2",
  "pyo3-macros-backend",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -9044,7 +9180,7 @@ dependencies = [
  "proc-macro2",
  "pyo3-build-config",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -10416,7 +10552,7 @@ dependencies = [
  "flatbuffers",
  "indent",
  "itertools 0.13.0",
- "prettyplease 0.2.31",
+ "prettyplease 0.2.25",
  "proc-macro2",
  "quote",
  "rayon",
@@ -10428,7 +10564,7 @@ dependencies = [
  "re_tracing",
  "rust-format",
  "serde",
- "syn 2.0.100",
+ "syn 2.0.87",
  "tempfile",
  "toml",
  "unindent",
@@ -11019,7 +11155,7 @@ name = "receive_data"
 version = "0.3.11"
 dependencies = [
  "chrono",
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
 ]
 
@@ -11075,7 +11211,7 @@ checksum = "1165225c21bff1f3bbce98f5a1f889949bc902d3575308cc7b0de30b4f6d27c7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -11487,7 +11623,7 @@ dependencies = [
 name = "rust-dataflow-example-node"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
  "futures",
  "rand 0.8.5",
@@ -11498,7 +11634,7 @@ dependencies = [
 name = "rust-dataflow-example-sink"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
 ]
 
@@ -11506,7 +11642,7 @@ dependencies = [
 name = "rust-dataflow-example-sink-dynamic"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
 ]
 
@@ -11514,7 +11650,7 @@ dependencies = [
 name = "rust-dataflow-example-status-node"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
 ]
 
@@ -11533,7 +11669,7 @@ dependencies = [
 name = "rust-ros2-dataflow-example-node"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "dora-ros2-bridge",
  "eyre",
  "futures",
@@ -11820,6 +11956,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eded382c5f5f786b989652c49544c4877d9f015cc22e145a5ea8ea66c2921cd2"
 
 [[package]]
+name = "rustypot"
+version = "0.7.0"
+source = "git+https://github.com/pollen-robotics/rustypot?branch=next-release-1.0#003c720684a66499b537244f1c09db04822ae5dc"
+dependencies = [
+ "clap 4.5.32",
+ "log",
+ "num_enum",
+ "paste",
+ "proc-macro2",
+ "serialport",
+ "signal-hook",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11922,7 +12072,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12130,7 +12280,7 @@ checksum = "5b0276cf7f2c73365f7157c8123c21cd9a50fbbd844757af28ca1f5925fc2a00"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12141,7 +12291,7 @@ checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12174,7 +12324,7 @@ checksum = "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12225,7 +12375,7 @@ dependencies = [
  "darling 0.20.10",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12296,6 +12446,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "serialport"
+version = "4.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2daa7abb9b965493e3c8f4184c6f46435484ff2538a332b886788cf6768b927b"
+dependencies = [
+ "bitflags 2.9.0",
+ "cfg-if 1.0.0",
+ "core-foundation 0.10.0",
+ "core-foundation-sys",
+ "io-kit-sys",
+ "libudev",
+ "mach2",
+ "nix 0.26.4",
+ "scopeguard",
+ "unescaper",
+ "winapi 0.3.9",
+]
+
+[[package]]
 name = "sha-1"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12356,6 +12525,20 @@ dependencies = [
 [[package]]
 name = "shared-memory-server"
 version = "0.3.11"
+dependencies = [
+ "bincode",
+ "eyre",
+ "raw_sync_2",
+ "serde",
+ "shared_memory_extended",
+ "tracing",
+]
+
+[[package]]
+name = "shared-memory-server"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7bc3a6490bf74045c4eb9fce4374ca217ec0363ee6a76ba9b2dbc7c1f87da88"
 dependencies = [
  "bincode",
  "eyre",
@@ -12707,7 +12890,7 @@ checksum = "658f2ca5276b92c3dfd65fa88316b4e032ace68f88d7570b43967784c0bac5ac"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12927,7 +13110,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12940,7 +13123,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -12978,9 +13161,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.100"
+version = "2.0.87"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b09a44accad81e1ba1cd74a32461ba89dee89095ba17b32f5d03683b1b1fc2a0"
+checksum = "25aa4ce346d03a6dcd68dd8b4010bcb74e54e62c90c573f394c46eae99aba32d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -13010,7 +13193,7 @@ checksum = "c8af7666ab7b6390ab78131fb5b0fce11d6b7a6951602017c35fa82800708971"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -13200,7 +13383,7 @@ dependencies = [
 name = "terminal-print"
 version = "0.3.11"
 dependencies = [
- "dora-node-api",
+ "dora-node-api 0.3.11",
  "eyre",
 ]
 
@@ -13264,7 +13447,7 @@ checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -13275,7 +13458,7 @@ checksum = "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -13553,7 +13736,7 @@ checksum = "6e06d43f1345a3bcd39f6a56dbb7dcab2ba47e68e8ac134855e7e2bdbaf8cab8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -13817,7 +14000,7 @@ checksum = "395ae124c09f9e6918a2310af6038fba074bcf474ac352496d5910dd59a2226d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -14003,6 +14186,15 @@ name = "unchecked-index"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eeba86d422ce181a719445e51872fa30f1f7413b62becb52e95ec91aa262d85c"
+
+[[package]]
+name = "unescaper"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c878a167baa8afd137494101a688ef8c67125089ff2249284bd2b5f9bfedb815"
+dependencies = [
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "unicase"
@@ -14255,7 +14447,7 @@ checksum = "72dcd78c4f979627a754f5522cea6e6a25e55139056535fe6e69c506cd64a862"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -14290,7 +14482,7 @@ checksum = "dcba0282a9f9297af06b91ff22615e7f77f0ab66f75fc95898960d1604fc7fd7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "unzip-n",
 ]
 
@@ -14452,7 +14644,7 @@ dependencies = [
  "log",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "wasm-bindgen-shared",
 ]
 
@@ -14487,7 +14679,7 @@ checksum = "8ae87ea40c9f689fc23f209965b6fb8a99ad69aeeb0231408be24920604395de"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "wasm-bindgen-backend",
  "wasm-bindgen-shared",
 ]
@@ -15060,7 +15252,7 @@ checksum = "9107ddc059d5b6fbfbffdfa7a7fe3e22a226def0b2608f72e9d552763d3e1ad7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -15071,7 +15263,7 @@ checksum = "2bbd5b46c938e506ecbce286b6628a02171d56153ba733b6c741fc627ec9579b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -15082,7 +15274,7 @@ checksum = "a47fddd13af08290e67f4acabf4b459f647552718f683a7b415d290ac744a836"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -15093,7 +15285,7 @@ checksum = "29bee4b38ea3cde66011baa44dba677c432a78593e202392d1e9070cf2a7fca7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -15104,7 +15296,7 @@ checksum = "053c4c462dc91d3b1504c6fe5a726dd15e216ba718e84a0e46a88fbe5ded3515"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -15115,7 +15307,7 @@ checksum = "bd9211b69f8dcdfa817bfd14bf1c97c9188afa36f4750130fcdf3f400eca9fa8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -15631,7 +15823,7 @@ dependencies = [
  "darling 0.20.10",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -15818,7 +16010,7 @@ checksum = "2380878cad4ac9aac1e2435f3eb4020e8374b5f13c296cb75b4620ff8e229154"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "synstructure",
 ]
 
@@ -15914,7 +16106,7 @@ checksum = "709ab20fc57cb22af85be7b360239563209258430bccf38d8b979c5a2ae3ecce"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "zbus-lockstep",
  "zbus_xml",
  "zvariant 4.2.0",
@@ -15929,7 +16121,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "zvariant_utils 2.1.0",
 ]
 
@@ -15942,7 +16134,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "zbus_names 4.2.0",
  "zvariant 5.4.0",
  "zvariant_utils 3.2.0",
@@ -16589,7 +16781,7 @@ checksum = "5a0108f9d378a698967038d96e30f42b3bb9b111acd34102d70d8b4a4dea1b83"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "zenoh-keyexpr",
 ]
 
@@ -16877,7 +17069,7 @@ checksum = "fa4f8080344d4671fb4e831a13ad1e68092748387dfc4f55e356242fae12ce3e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -16888,7 +17080,7 @@ checksum = "a996a8f63c5c4448cd959ac1bab0aaa3306ccfd060472f85943ee0750f0169be"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -16908,7 +17100,7 @@ checksum = "d71e5d6e06ab090c67b5e44993ec16b72dcbaabc526db883a360057678b48502"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "synstructure",
 ]
 
@@ -16937,7 +17129,7 @@ checksum = "6eafa6dfb17584ea3e2bd6e76e0cc15ad7af12b09abdd1ca55961bed9b1063c6"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -17057,7 +17249,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "zvariant_utils 2.1.0",
 ]
 
@@ -17070,7 +17262,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
  "zvariant_utils 3.2.0",
 ]
 
@@ -17082,7 +17274,7 @@ checksum = "c51bcff7cc3dbb5055396bcf774748c3dab426b4b8659046963523cee4808340"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.100",
+ "syn 2.0.87",
 ]
 
 [[package]]
@@ -17095,6 +17287,6 @@ dependencies = [
  "quote",
  "serde",
  "static_assertions",
- "syn 2.0.100",
+ "syn 2.0.87",
  "winnow",
 ]
