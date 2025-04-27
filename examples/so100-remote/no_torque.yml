@@ -8,26 +8,20 @@ nodes:
       - pose
     env:
       PORT: /dev/tty.usbmodem585A0080971
-      CONFIG: follower.right.json
-      TORQUE: true
-
-  - id: parse_keyboard
-    path: parse_keyboard.py
-    outputs:
-      - action
+      IDS: 1 2 3 4 5
+      TORQUE: false
 
   - id: pytorch-kinematics
     build: pip install -e ../../node-hub/dora-pytorch-kinematics
     path: dora-pytorch-kinematics
     inputs:
       pose: so100/pose
-      action: parse_keyboard/action
     outputs:
       - pose
       - action
     env:
       URDF_PATH: so100_2.urdf
-      END_EFFECTOR_LINK: "Moving Jaw"
+      END_EFFECTOR_LINK: "Fixed_Jaw"
       so100_transform: 0 -0.3 0
 
   - id: plot
