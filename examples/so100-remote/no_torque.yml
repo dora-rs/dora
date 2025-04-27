@@ -7,7 +7,7 @@ nodes:
     outputs:
       - pose
     env:
-      PORT: /dev/tty.usbmodem585A0080971
+      PORT: /dev/ttyACM0
       IDS: 1 2 3 4 5
       TORQUE: false
 
@@ -20,7 +20,7 @@ nodes:
       - pose
       - action
     env:
-      URDF_PATH: so100_2.urdf
+      URDF_PATH: so100.urdf
       END_EFFECTOR_LINK: "Fixed_Jaw"
       so100_transform: 0 -0.3 0
 
@@ -32,5 +32,5 @@ nodes:
       series_pose: pytorch-kinematics/pose
       #jointstate_so100: so100/position
     env:
-      so100_urdf: so100_2.urdf
+      so100_urdf: so100.urdf
       so100_transform: 0 -0.3 0
