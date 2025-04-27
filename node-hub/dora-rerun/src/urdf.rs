@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use eyre::{Context, ContextCompat, Result};
 use k::Chain;
-use rerun::{components::RotationAxisAngle, Angle, RecordingStream, Rotation3D, Vec3D};
+use rerun::{
+    components::RotationAxisAngle, external::log::warn, transform, Angle, LineStrips3D, Points3D,
+    RecordingStream, Rotation3D, Vec3D,
+};
 pub struct MyIntersperse<T, I> {
     iterator: I,
     sep: T,
@@ -56,11 +59,11 @@ fn get_entity_path(link: &k::Node<f32>, urdf_path: &str) -> String {
 pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
     // Get all env variable that end with urdf
     let urdfs = std::env::vars()
-        .filter(|(key, _)| key.ends_with("_urdf"))
+        .filter(|(key, _)| key.ends_with("_urdf") || key.ends_with("_URDF"))
         .collect::<Vec<_>>();
     let mut chains = HashMap::new();
     for (key, urdf_path) in urdfs {
-        let path = key.replace("_urdf", ".urdf");
+        let path = key.replace("_urdf", ".urdf").replace("_URDF", ".urdf");
         let chain = k::Chain::<f32>::from_urdf_file(&urdf_path).context("Could not load URDF")?;
 
         let transform = key.replace("_urdf", "_transform");
@@ -126,14 +129,34 @@ pub fn update_visualization(
         let trans = link_to_parent_mat.column(3);
         let trans = trans.as_slice();
         let quat = link_to_parent.rotation.quaternion();
+        let point_transform = rerun::Transform3D::from_translation_rotation(
+            Vec3D::new(trans[0], trans[1], trans[2]),
+            rerun::Quaternion::from([quat.i, quat.j, quat.k, quat.w]),
+        );
+        rec.log(entity_path.clone(), &point_transform)
+            .context("Could not log transform")?;
+        let child = link.world_transform().unwrap();
+    }
+
+    let mut last_transform = [0.0; 3];
+
+    for joint in chain.iter_joints() {
+        let transform = joint.world_transform().unwrap();
+        let transform = transform.to_matrix();
+        let transform = transform.column(3);
+        if last_transform == [0.0; 3] {
+            last_transform = [transform[0], transform[1], transform[2]];
+        }
         rec.log(
-            entity_path,
-            &rerun::Transform3D::from_translation_rotation(
-                Vec3D::new(trans[0], trans[1], trans[2]),
-                rerun::Quaternion::from([quat.i, quat.j, quat.k, quat.w]),
-            ),
+            format!("link/{}", joint.name),
+            &LineStrips3D::new(&[[
+                [last_transform[0], last_transform[1], last_transform[2]],
+                [transform[0], transform[1], transform[2]],
+            ]
+            .to_vec()]),
         )
         .context("Could not log transform")?;
+        last_transform = [transform[0], transform[1], transform[2]];
     }
     Ok(())
 }
