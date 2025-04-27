@@ -13,6 +13,7 @@ mp_draw = mp.solutions.drawing_utils
 
 
 def get_3d_coordinates(landmark, depth_frame, w, h, resolution, focal_length):
+    """Convert 2D landmark coordinates to 3D coordinates."""
     cx, cy = int(landmark.x * w), int(landmark.y * h)
     if 0 < cx < w and 0 < cy < h:
         depth = depth_frame[cy, cx] / 1_000.0
@@ -27,7 +28,13 @@ def get_3d_coordinates(landmark, depth_frame, w, h, resolution, focal_length):
     return [0, 0, 0]
 
 
-def get_image(event):
+def get_image(event: dict) -> np.ndarray:
+    """Convert the image from the event to a numpy array.
+
+    Args:
+        event (dict): The event containing the image data.
+
+    """
     storage = event["value"]
     metadata = event["metadata"]
     encoding = metadata["encoding"]
@@ -116,7 +123,7 @@ def main():
                     print("No pose landmarks detected.")
             elif "depth" in event_id:
                 metadata = event["metadata"]
-                encoding = metadata["encoding"]
+                _encoding = metadata["encoding"]
                 width = metadata["width"]
                 height = metadata["height"]
                 focal_length = metadata["focal_length"]
