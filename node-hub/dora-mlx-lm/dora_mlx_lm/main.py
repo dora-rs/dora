@@ -1,6 +1,6 @@
 """Dora node for generating text responses using a pre-trained language model, optimized for Apple M1, M2, M3 chips.
 
-This node listens for input prompts on the 'prompt' channel, generates text using
+This node listens for input prompts on the 'text' channel, generates text using
 a pre-trained model (default: SmolLM-135M-Instruct-4bit) optimized for Apple's M-series
 chips via MLX, and sends responses to the 'text' output channel. The node can be configured
 via environment variables and supports activation words to filter inputs.
@@ -61,7 +61,7 @@ def main():
     history = [{"role": "system", "content": SYSTEM_PROMPT}] if SYSTEM_PROMPT else []
 
     for event in node:
-        if event["type"] == "INPUT" and event["id"] == "prompt":
+        if event["type"] == "INPUT" and event["id"] == "text":
             # Validate input
             if not isinstance(event["value"], pa.Array) or len(event["value"]) == 0:
                 logging.error("Invalid input: expected a non-empty pyarrow.Array")
