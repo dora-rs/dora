@@ -3,10 +3,12 @@
 use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
-    arrow::array::{Array, Float32Array, Float64Array, StringArray, UInt16Array, UInt8Array},
-    arrow::{array::AsArray, datatypes::Float32Type},
+    arrow::{
+        array::{Array, AsArray, Float32Array, Float64Array, StringArray, UInt16Array, UInt8Array},
+        datatypes::Float32Type,
+    },
     dora_core::config::DataId,
-    DoraNode, Event, Parameter,
+    into_vec, DoraNode, Event, Parameter,
 };
 use eyre::{eyre, Context, ContextCompat, Result};
 
@@ -32,6 +34,7 @@ pub fn lib_main() -> Result<()> {
     // Setup an image cache to paint depth images.
     let mut image_cache = HashMap::new();
     let mut mask_cache: HashMap<DataId, Vec<bool>> = HashMap::new();
+    let mut color_cache: HashMap<DataId, rerun::Color> = HashMap::new();
     let mut options = SpawnOptions::default();
 
     let memory_limit = match std::env::var("RERUN_MEMORY_LIMIT") {
@@ -344,6 +347,33 @@ pub fn lib_main() -> Result<()> {
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
+            } else if id.as_str().contains("points3d") {
+                // Get color or assign random color in cache
+                let color = color_cache.get(&id);
+                let color = if let Some(color) = color {
+                    color.clone()
+                } else {
+                    let color =
+                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+
+                    color_cache.insert(id.clone(), color.clone());
+                    color
+                };
+                let dataid = id;
+
+                // get a random color
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut points = vec![];
+                    let mut colors = vec![];
+                    buffer.chunks(3).for_each(|chunk| {
+                        points.push((chunk[0], chunk[1], chunk[2]));
+                        colors.push(color);
+                    });
+                    let points = Points3D::new(points).with_radii(vec![0.013; colors.len()]);
+
+                    rec.log(dataid.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
+                }
             } else {
                 println!("Could not find handler for {}", id);
             }
