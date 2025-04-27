@@ -193,13 +193,15 @@ class RobotKinematics:
         # Instantiate and run the IK solver (core pytorch_kinematics objects/methods)
         ik_solver = pk.PseudoInverseIK(
             self.chain,
-            max_iterations=300,
+            max_iterations=1_000,
             retry_configs=q_init,
             joint_limits=torch.tensor(self.chain.get_joint_limits()),
             early_stopping_any_converged=True,
             early_stopping_no_improvement="all",
             debug=False,
             lr=0.05,
+            rot_tolerance=1e-4,
+            pos_tolerance=1e-3,
         )
         solution_angles = ik_solver.solve(target_pose)
         return solution_angles.solutions.detach()
@@ -219,6 +221,19 @@ def main():
             metadata = event["metadata"]
 
             match metadata["encoding"]:
+                case "xyzquat":
+                    # Apply Inverse Kinematics
+                    if last_known_state is not None:
+                        target = event["value"].to_numpy()
+                        target = target.astype(np.float32)
+                        target = pk.Transform3d(
+                            pos=target[:3], rot=torch.tensor(target[3:7])
+                        )
+                        solution = robot.compute_ik(target, last_known_state)
+                        metadata["encoding"] = "jointstate"
+                        last_known_state = solution.numpy().ravel()
+                        solution = pa.array(last_known_state)
+                        node.send_output(event["id"], solution, metadata=metadata)
                 case "xyzrpy":
                     # Apply Inverse Kinematics
                     if last_known_state is not None:
@@ -231,11 +246,11 @@ def main():
                             ),
                         )
                         solution = robot.compute_ik(target, last_known_state)
+
                         metadata["encoding"] = "jointstate"
                         last_known_state = solution.numpy().ravel()
                         solution = pa.array(last_known_state)
                         node.send_output(event["id"], solution, metadata=metadata)
-                        print(solution)
                 case "jointstate":
                     target = event["value"].to_numpy()
                     last_known_state = target
