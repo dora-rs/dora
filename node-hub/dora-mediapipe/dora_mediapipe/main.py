@@ -15,7 +15,7 @@ mp_draw = mp.solutions.drawing_utils
 def get_3d_coordinates(landmark, depth_frame, w, h, resolution, focal_length):
     cx, cy = int(landmark.x * w), int(landmark.y * h)
     if 0 < cx < w and 0 < cy < h:
-        depth = depth_frame[cx, cy] / 1_000.0
+        depth = depth_frame[cy, cx] / 1_000.0
         if depth > 0:
             fx, fy = focal_length
             ppx, ppy = resolution
