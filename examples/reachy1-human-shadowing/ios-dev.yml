@@ -1,0 +1,39 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-ios-lidar
+    path: dora-ios-lidar
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+      - depth
+
+  - id: dora-mediapipe
+    build: pip install -e ../../node-hub/dora-mediapipe
+    path: dora-mediapipe
+    inputs:
+      image: camera/image
+      depth: camera/depth
+    outputs:
+      - points3d
+
+  - id: human-shadowing
+    build: pip install scipy
+    path: human_shadowing.py
+    inputs:
+      human_pose: dora-mediapipe/points3d
+    outputs:
+      - pose
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      realsense/image: camera/image
+      realsense/depth: camera/depth
+      realsense/points3d: dora-mediapipe/points3d
+      jointstate_reachy: human-shadowing/pose
+    env:
+      # git clone git clone https://github.com/aubrune/reachy_description.git
+      # Replace package path with local path relative to the urdf. Ex: meshes/...
+      reachy_urdf: reachy_description/reachy.urdf
