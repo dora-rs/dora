@@ -402,31 +402,37 @@ impl Spawner {
         };
         let clone_dir = dunce::simplified(&clone_dir).to_owned();
 
-        let (reuse, checkout) = if clone_dir_exists(&clone_dir, repos_in_use) {
+        let reuse = if clone_dir_exists(&clone_dir, repos_in_use) {
             let empty = BTreeSet::new();
             let in_use = repos_in_use.get(&clone_dir).unwrap_or(&empty);
             let used_by_other_dataflow = in_use.iter().any(|&id| id != dataflow_id);
             if used_by_other_dataflow {
-                // TODO allow if still up to date
+                // The directory is currently in use by another dataflow. We currently don't
+                // support reusing the same clone across multiple dataflow runs. Above, we
+                // choose a new directory if we detect such a case. So this `if` branch
+                // should never be reached.
                 eyre::bail!("clone_dir is already in use by other dataflow")
             } else if in_use.is_empty() {
-                (true, true)
+                // The cloned repo is not used by any dataflow, so we can safely reuse it. However,
+                // the clone might be still on an older commit, so we need to do a `git fetch`
+                // before we reuse it.
+                ReuseOptions::ReuseAfterFetch
             } else {
-                (true, false)
+                // This clone is already used for another node of this dataflow. We will do a
+                // `git fetch` operation for the first node of this dataflow, so we don't need
+                // to do it again for other nodes of the dataflow. So we can simply reuse the
+                // directory without doing any additional git operations.
+                ReuseOptions::Reuse
             }
         } else {
-            (false, true)
+            ReuseOptions::NewClone
         };
         repos_in_use
             .entry(clone_dir.clone())
             .or_default()
             .insert(dataflow_id);
 
-        Ok(PreparedGit {
-            clone_dir,
-            reuse,
-            checkout,
-        })
+        Ok(PreparedGit { clone_dir, reuse })
     }
 
     async fn git_node_spawn_command(
@@ -438,11 +444,7 @@ impl Spawner {
         node_env: &Option<BTreeMap<String, EnvValue>>,
         prepared: PreparedGit,
     ) -> Result<Option<tokio::process::Command>, eyre::Error> {
-        let PreparedGit {
-            clone_dir,
-            reuse,
-            checkout,
-        } = prepared;
+        let PreparedGit { clone_dir, reuse } = prepared;
 
         let rev_str = rev_str(rev);
         let refname = rev.clone().map(|rev| match rev {
@@ -451,24 +453,32 @@ impl Spawner {
             GitRepoRev::Rev(rev) => rev,
         });
 
-        if reuse {
-            logger
-                .log(
-                    LogLevel::Info,
-                    None,
-                    format!("reusing {repo_addr}{rev_str}"),
-                )
-                .await;
-            let refname_cloned = refname.clone();
-            let clone_dir = clone_dir.clone();
-            let repository = fetch_changes(clone_dir, refname_cloned).await?;
-            if checkout {
+        match reuse {
+            ReuseOptions::NewClone => {
+                let repository = clone_into(repo_addr, rev, &clone_dir, logger).await?;
                 checkout_tree(&repository, refname)?;
             }
-        } else {
-            let repository = clone_into(repo_addr, rev, &clone_dir, logger).await?;
-            if checkout {
+            ReuseOptions::ReuseAfterFetch => {
+                logger
+                    .log(
+                        LogLevel::Info,
+                        None,
+                        format!("fetching changes and reusing {repo_addr}{rev_str}"),
+                    )
+                    .await;
+                let refname_cloned = refname.clone();
+                let clone_dir = clone_dir.clone();
+                let repository = fetch_changes(clone_dir, refname_cloned).await?;
                 checkout_tree(&repository, refname)?;
+            }
+            ReuseOptions::Reuse => {
+                logger
+                    .log(
+                        LogLevel::Info,
+                        None,
+                        format!("reusing up-to-date {repo_addr}{rev_str}"),
+                    )
+                    .await;
             }
         };
         if let Some(build) = &node.build {
@@ -995,9 +1005,19 @@ async fn path_spawn_command(
 }
 
 struct PreparedGit {
+    /// The directory that should contain the checked-out repository.
     clone_dir: PathBuf,
-    reuse: bool,
-    checkout: bool,
+    /// Specifies whether an existing repo should be reused.
+    reuse: ReuseOptions,
+}
+
+enum ReuseOptions {
+    /// Create a new clone of the repository.
+    NewClone,
+    /// Reuse an existing up-to-date clone of the repository.
+    Reuse,
+    /// Update an older clone of the repository, then reuse it.
+    ReuseAfterFetch,
 }
 
 fn clone_dir_exists(dir: &PathBuf, repos_in_use: &BTreeMap<PathBuf, BTreeSet<Uuid>>) -> bool {
