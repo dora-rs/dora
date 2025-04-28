@@ -421,18 +421,26 @@ async fn start_inner(
                                 Ok(dataflow)
                             };
                             match inner.await {
-                                Ok(mut dataflow) => {
-                                    dataflow.spawn_result_tx = Some(reply_sender);
-                                    running_dataflows.insert(dataflow.uuid, dataflow);
+                                Ok(dataflow) => {
+                                    let uuid = dataflow.uuid;
+                                    running_dataflows.insert(uuid, dataflow);
+                                    let _ = reply_sender.send(Ok(
+                                        ControlRequestReply::DataflowStartTriggered { uuid },
+                                    ));
                                 }
                                 Err(err) => {
                                     let _ = reply_sender.send(Err(err));
                                 }
                             }
                         }
+                        ControlRequest::WaitForSpawn { dataflow_id } => {
+                            if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                                dataflow.spawn_result_tx.push(reply_sender);
+                            }
+                        }
                         ControlRequest::Check { dataflow_uuid } => {
                             let status = match &running_dataflows.get(&dataflow_uuid) {
-                                Some(_) => ControlRequestReply::DataflowStarted {
+                                Some(_) => ControlRequestReply::DataflowSpawned {
                                     uuid: dataflow_uuid,
                                 },
                                 None => ControlRequestReply::DataflowStopped {
@@ -726,9 +734,9 @@ async fn start_inner(
                                         "spawned"
                                     }
                                 );
-                                if let Some(reply_tx) = dataflow.spawn_result_tx.take() {
+                                for reply_tx in dataflow.spawn_result_tx.drain(..) {
                                     let _ =
-                                        reply_tx.send(Ok(ControlRequestReply::DataflowStarted {
+                                        reply_tx.send(Ok(ControlRequestReply::DataflowSpawned {
                                             uuid: dataflow_id,
                                         }));
                                 }
@@ -739,8 +747,8 @@ async fn start_inner(
                         }
                         Err(err) => {
                             tracing::warn!("error while spawning dataflow `{dataflow_id}`");
-                            if let Some(reply_tx) = dataflow.spawn_result_tx.take() {
-                                let _ = reply_tx.send(Err(err));
+                            for reply_tx in dataflow.spawn_result_tx.drain(..) {
+                                let _ = reply_tx.send(Err(eyre!(format!("{err:?}"))));
                             }
                         }
                     };
@@ -857,7 +865,7 @@ struct RunningDataflow {
     log_subscribers: Vec<LogSubscriber>,
 
     pending_spawn_results: BTreeSet<DaemonId>,
-    spawn_result_tx: Option<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+    spawn_result_tx: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
 
     build_only: bool,
 }
@@ -1088,7 +1096,7 @@ async fn start_dataflow(
         reply_senders: Vec::new(),
         log_subscribers: Vec::new(),
         pending_spawn_results: daemons,
-        spawn_result_tx: None,
+        spawn_result_tx: Vec::new(),
         build_only,
     })
 }

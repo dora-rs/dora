@@ -18,6 +18,9 @@ pub enum ControlRequest {
         uv: bool,
         build_only: bool,
     },
+    WaitForSpawn {
+        dataflow_id: Uuid,
+    },
     Reload {
         dataflow_id: Uuid,
         node_id: NodeId,
