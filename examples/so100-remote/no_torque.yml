@@ -3,7 +3,7 @@ nodes:
     path: dora-rustypot
     inputs:
       tick: dora/timer/millis/33
-      pose: pytorch-kinematics/action
+      #pose: pytorch-kinematics/action
     outputs:
       - pose
     env:
@@ -20,7 +20,7 @@ nodes:
       - pose
       - action
     env:
-      URDF_PATH: so100.urdf
+      URDF_PATH: so100_2.urdf
       END_EFFECTOR_LINK: "Fixed_Jaw"
       so100_transform: 0 -0.3 0
 
@@ -30,7 +30,7 @@ nodes:
     inputs:
       # series_so100: so100/pose
       series_pose: pytorch-kinematics/pose
-      #jointstate_so100: so100/position
+      jointstate_so100: so100/pose
     env:
-      so100_urdf: so100.urdf
+      so100_urdf: so100_2.urdf
       so100_transform: 0 -0.3 0
