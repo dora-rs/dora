@@ -204,6 +204,11 @@ class RobotKinematics:
             pos_tolerance=1e-3,
         )
         solution_angles = ik_solver.solve(target_pose)
+        if solution_angles.err_rot > 1e-4 or solution_angles.err_pos > 1e-3:
+            print(
+                f"IK did not converge: pos_err={solution_angles.err_pos}, rot_err={solution_angles.err_rot}"
+            )
+            return None
         return solution_angles.solutions.detach()
 
 
@@ -246,9 +251,22 @@ def main():
                             ),
                         )
                         solution = robot.compute_ik(target, last_known_state)
+                        if solution is None:
+                            continue
 
+                        solution = solution.numpy().ravel()
+                        delta_angles = solution - last_known_state
+
+                        valid = np.all(
+                            (delta_angles >= -np.pi) & (delta_angles <= np.pi)
+                        )
+                        if not valid:
+                            print(
+                                "IK solution is not valid, as the rotation are too wide. skipping."
+                            )
+                            continue
                         metadata["encoding"] = "jointstate"
-                        last_known_state = solution.numpy().ravel()
+                        last_known_state = solution
                         solution = pa.array(last_known_state)
                         node.send_output(event["id"], solution, metadata=metadata)
                 case "jointstate":

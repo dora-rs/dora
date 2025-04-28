@@ -10,6 +10,7 @@ nodes:
       PORT: /dev/ttyACM0
       CONFIG: follower.right.json
       TORQUE: true
+      IDS: 1 2 3 4 5 6
 
   - id: parse_keyboard
     path: parse_keyboard.py
@@ -34,7 +35,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      # series_so100: so100/pose
+      series_so100: so100/pose
       series_pose: pytorch-kinematics/pose
       series_action: pytorch-kinematics/action
       jointstate_so100: so100/pose

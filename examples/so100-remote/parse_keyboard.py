@@ -2,23 +2,95 @@
 
 import time
 
-import numpy as np
 import pyarrow as pa
 from dora import Node
 
 node = Node()
 
+target_x = -0.08
+target_y = -0.20
+
+place_x = -0.08
+place_y = 0.20
 
 now = time.time()
+time.sleep(1.5)
 
-for j in range(0, 100):
-    for i in range(110):
-        time.sleep(0.033)
-        y = 0.0 + (j * 0.1)
-        x = -0.1 - (i * 0.01)
+node.send_output(
+    "action",
+    pa.array([target_y, target_x, 0.15, -1.6, -0.0, -1]),
+    metadata={"encoding": "xyzrpy"},
+)
 
-        node.send_output(
-            "action",
-            pa.array([0.0 + (j * 0.05), -0.1 - (i * 0.001), 0.1, -1.6, -0.9, -3.14]),
-            metadata={"encoding": "xyzrpy"},
-        )
+time.sleep(0.8)
+
+node.send_output(
+    "action",
+    pa.array([target_y, target_x, 0.15, -1.6, -0.0, -1]),
+    metadata={"encoding": "xyzrpy"},
+)
+
+time.sleep(0.5)
+
+node.send_output(
+    "action",
+    pa.array([target_y, target_x, 0.09, -1.6, -0.0, -1]),
+    metadata={"encoding": "xyzrpy"},
+)
+time.sleep(0.2)
+
+
+node.send_output(
+    "action",
+    pa.array([target_y, target_x, 0.09, -1.6, -0.0, -3]),
+    metadata={"encoding": "xyzrpy"},
+)
+
+
+time.sleep(1.0)
+
+node.send_output(
+    "action",
+    pa.array([target_y, target_x, 0.15, -1.6, -0.0, -3]),
+    metadata={"encoding": "xyzrpy"},
+)
+
+time.sleep(0.3)
+
+
+node.send_output(
+    "action",
+    pa.array([place_y, place_x, 0.15, -1.6, -0.0, -3]),
+    metadata={"encoding": "xyzrpy"},
+)
+
+time.sleep(1.0)
+
+node.send_output(
+    "action",
+    pa.array([place_y, place_x, 0.10, -1.6, -0.0, -3]),
+    metadata={"encoding": "xyzrpy"},
+)
+
+time.sleep(0.2)
+
+node.send_output(
+    "action",
+    pa.array([place_y, place_x, 0.10, -1.6, -0.0, -1]),
+    metadata={"encoding": "xyzrpy"},
+)
+time.sleep(1.0)
+
+node.send_output(
+    "action",
+    pa.array([place_y, place_x, 0.15, -1.6, -0.0, -3]),
+    metadata={"encoding": "xyzrpy"},
+)
+
+time.sleep(1.0)
+
+node.send_output(
+    "action",
+    pa.array([place_y, place_x, 0.15, -1.6, -0.0, -3]),
+    metadata={"encoding": "xyzrpy"},
+)
