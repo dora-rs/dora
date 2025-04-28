@@ -364,8 +364,22 @@ impl Spawner {
         let build = build.to_owned();
         let uv = self.uv;
         let node_env = node_env.clone();
+        let mut logger = logger.try_clone().await.context("failed to clone logger")?;
+        let (stdout_tx, mut stdout) = tokio::sync::mpsc::channel(10);
         let task = tokio::task::spawn_blocking(move || {
-            run_build_command(&build, &working_dir, uv, &node_env).context("build command failed")
+            run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
+                .context("build command failed")
+        });
+        tokio::spawn(async move {
+            while let Some(line) = stdout.recv().await {
+                logger
+                    .log(
+                        LogLevel::Info,
+                        Some("build command".into()),
+                        line.unwrap_or_else(|err| format!("io err: {}", err.kind())),
+                    )
+                    .await;
+            }
         });
         task.await??;
         Ok(())

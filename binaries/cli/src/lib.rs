@@ -377,7 +377,10 @@ fn run(args: Args) -> eyre::Result<()> {
             coordinator_port,
             uv,
         } => {
-            start_dataflow(dataflow, None, coordinator_addr, coordinator_port, uv, true)?;
+            let (_, _, _, mut session, uuid) =
+                start_dataflow(dataflow, None, coordinator_addr, coordinator_port, uv, true)?;
+            // wait until build is finished
+            wait_until_dataflow_started(uuid, &mut session, true)?;
         }
         Command::New {
             args,
@@ -459,6 +462,9 @@ fn run(args: Args) -> eyre::Result<()> {
                     coordinator_socket,
                     log_level,
                 )?
+            } else {
+                // wait until dataflow is started
+                wait_until_dataflow_started(dataflow_id, &mut session, false)?;
             }
         }
         Command::List {
@@ -659,11 +665,11 @@ fn start_dataflow(
         let result: ControlRequestReply =
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
-            ControlRequestReply::DataflowStarted { uuid } => {
+            ControlRequestReply::DataflowStartTriggered { uuid } => {
                 if build_only {
-                    eprintln!("dataflow build successful");
+                    eprintln!("dataflow build triggered");
                 } else {
-                    eprintln!("{uuid}");
+                    eprintln!("dataflow start triggered: {uuid}");
                 }
                 uuid
             }
@@ -678,6 +684,31 @@ fn start_dataflow(
         session,
         dataflow_id,
     ))
+}
+
+fn wait_until_dataflow_started(
+    dataflow_id: Uuid,
+    session: &mut Box<TcpRequestReplyConnection>,
+    build_only: bool,
+) -> eyre::Result<()> {
+    let reply_raw = session
+        .request(&serde_json::to_vec(&ControlRequest::WaitForSpawn { dataflow_id }).unwrap())
+        .wrap_err("failed to send start dataflow message")?;
+
+    let result: ControlRequestReply =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    match result {
+        ControlRequestReply::DataflowSpawned { uuid } => {
+            if build_only {
+                eprintln!("dataflow build finished");
+            } else {
+                eprintln!("dataflow started: {uuid}");
+            }
+        }
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
+    }
+    Ok(())
 }
 
 fn stop_dataflow_interactive(

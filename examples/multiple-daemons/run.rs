@@ -153,7 +153,21 @@ async fn start_dataflow(
         .await?;
     let result = reply.await??;
     let uuid = match result {
-        ControlRequestReply::DataflowStarted { uuid } => uuid,
+        ControlRequestReply::DataflowStartTriggered { uuid } => uuid,
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
+    };
+
+    let (reply_sender, reply) = oneshot::channel();
+    coordinator_events_tx
+        .send(Event::Control(ControlEvent::IncomingRequest {
+            request: ControlRequest::WaitForSpawn { dataflow_id: uuid },
+            reply_sender,
+        }))
+        .await?;
+    let result = reply.await??;
+    let uuid = match result {
+        ControlRequestReply::DataflowSpawned { uuid } => uuid,
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     };
