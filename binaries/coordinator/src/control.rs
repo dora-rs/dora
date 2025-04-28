@@ -155,7 +155,7 @@ async fn handle_request(
 ) -> eyre::Result<ControlRequestReply> {
     let (reply_tx, reply_rx) = oneshot::channel();
     let event = ControlEvent::IncomingRequest {
-        request,
+        request: request.clone(),
         reply_sender: reply_tx,
     };
 
@@ -165,7 +165,7 @@ async fn handle_request(
 
     reply_rx
         .await
-        .unwrap_or(Ok(ControlRequestReply::CoordinatorStopped))
+        .wrap_err_with(|| format!("no coordinator reply to {request:?}"))?
 }
 
 #[derive(Debug)]
