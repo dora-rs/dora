@@ -30,7 +30,11 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{net::TcpStream, sync::mpsc, task::JoinHandle};
+use tokio::{
+    net::TcpStream,
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use uuid::Uuid;
 
@@ -371,8 +375,14 @@ async fn start_inner(
                                             DataflowResult::ok_empty(uuid, clock.new_timestamp())
                                         }),
                                 };
-                                for sender in finished_dataflow.reply_senders {
+                                for sender in finished_dataflow.stop_reply_senders {
                                     let _ = sender.send(Ok(reply.clone()));
+                                }
+                                if !matches!(
+                                    finished_dataflow.spawn_result,
+                                    SpawnResult::Spawned { .. }
+                                ) {
+                                    log::error!("pending spawn result on dataflow finish");
                                 }
                             }
                         }
@@ -435,7 +445,10 @@ async fn start_inner(
                         }
                         ControlRequest::WaitForSpawn { dataflow_id } => {
                             if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                                dataflow.spawn_result_tx.push(reply_sender);
+                                dataflow.spawn_result.register(reply_sender);
+                            } else {
+                                let _ =
+                                    reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
                             }
                         }
                         ControlRequest::Check { dataflow_uuid } => {
@@ -508,7 +521,7 @@ async fn start_inner(
 
                             match dataflow {
                                 Ok(dataflow) => {
-                                    dataflow.reply_senders.push(reply_sender);
+                                    dataflow.stop_reply_senders.push(reply_sender);
                                 }
                                 Err(err) => {
                                     let _ = reply_sender.send(Err(err));
@@ -541,7 +554,7 @@ async fn start_inner(
 
                                 match dataflow {
                                     Ok(dataflow) => {
-                                        dataflow.reply_senders.push(reply_sender);
+                                        dataflow.stop_reply_senders.push(reply_sender);
                                     }
                                     Err(err) => {
                                         let _ = reply_sender.send(Err(err));
@@ -734,12 +747,10 @@ async fn start_inner(
                                         "spawned"
                                     }
                                 );
-                                for reply_tx in dataflow.spawn_result_tx.drain(..) {
-                                    let _ =
-                                        reply_tx.send(Ok(ControlRequestReply::DataflowSpawned {
-                                            uuid: dataflow_id,
-                                        }));
-                                }
+                                dataflow.spawn_result.set_result(Ok(
+                                    ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
+                                ));
+
                                 if dataflow.build_only {
                                     running_dataflows.remove(&dataflow_id);
                                 }
@@ -747,9 +758,7 @@ async fn start_inner(
                         }
                         Err(err) => {
                             tracing::warn!("error while spawning dataflow `{dataflow_id}`");
-                            for reply_tx in dataflow.spawn_result_tx.drain(..) {
-                                let _ = reply_tx.send(Err(eyre!(format!("{err:?}"))));
-                            }
+                            dataflow.spawn_result.set_result(Err(err));
                         }
                     };
                 }
@@ -860,14 +869,68 @@ struct RunningDataflow {
     exited_before_subscribe: Vec<NodeId>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
 
-    reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+    spawn_result: SpawnResult,
+    stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
 
     log_subscribers: Vec<LogSubscriber>,
 
     pending_spawn_results: BTreeSet<DaemonId>,
-    spawn_result_tx: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
 
     build_only: bool,
+}
+
+pub enum SpawnResult {
+    Pending {
+        result_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+    },
+    Spawned {
+        result: eyre::Result<ControlRequestReply>,
+    },
+}
+
+impl Default for SpawnResult {
+    fn default() -> Self {
+        Self::Pending {
+            result_senders: Vec::new(),
+        }
+    }
+}
+
+impl SpawnResult {
+    fn register(
+        &mut self,
+        reply_sender: tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>,
+    ) {
+        match self {
+            SpawnResult::Pending { result_senders } => result_senders.push(reply_sender),
+            SpawnResult::Spawned { result } => {
+                Self::send_result_to(result, reply_sender);
+            }
+        }
+    }
+
+    fn set_result(&mut self, result: eyre::Result<ControlRequestReply>) {
+        match self {
+            SpawnResult::Pending { result_senders } => {
+                for sender in result_senders.drain(..) {
+                    Self::send_result_to(&result, sender);
+                }
+                *self = SpawnResult::Spawned { result };
+            }
+            SpawnResult::Spawned { .. } => {}
+        }
+    }
+
+    fn send_result_to(
+        result: &eyre::Result<ControlRequestReply>,
+        sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+    ) {
+        let result = match result {
+            Ok(r) => Ok(r.clone()),
+            Err(err) => Err(eyre!("{err:?}")),
+        };
+        let _ = sender.send(result);
+    }
 }
 
 struct ArchivedDataflow {
@@ -1093,10 +1156,10 @@ async fn start_dataflow(
         exited_before_subscribe: Default::default(),
         daemons: daemons.clone(),
         nodes,
-        reply_senders: Vec::new(),
+        spawn_result: SpawnResult::default(),
+        stop_reply_senders: Vec::new(),
         log_subscribers: Vec::new(),
         pending_spawn_results: daemons,
-        spawn_result_tx: Vec::new(),
         build_only,
     })
 }
