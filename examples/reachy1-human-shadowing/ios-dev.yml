@@ -1,7 +1,7 @@
 nodes:
   - id: camera
-    build: pip install -e ../../node-hub/dora-pyrealsense
-    path: dora-pyrealsense
+    build: pip install -e ../../node-hub/dora-ios-lidar
+    path: dora-ios-lidar
     inputs:
       tick: dora/timer/millis/100
     outputs:
@@ -34,5 +34,6 @@ nodes:
       realsense/points3d: dora-mediapipe/points3d
       jointstate_reachy: human-shadowing/pose
     env:
-      # git clone chttps://github.com/haixuanTao/reachy_description
-      reachy_urdf: reachy_description/reachy.urdf
+      # git clone git clone https://github.com/aubrune/reachy_description.git
+      # Replace package path with local path relative to the urdf. Ex: meshes/...
+      reachy_urdf: /home/peter/Documents/work/reachy_description/reachy.urdf
