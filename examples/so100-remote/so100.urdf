@@ -95,7 +95,7 @@
     <child
       link="Rotation_Pitch" />
     <axis
-      xyz="0 -1 0" />
+      xyz="0 1 0" />
       <!-- note for the so100 arm there is no well defined effort/velocity limits at the moment -->
     <limit
       lower="-2.1"

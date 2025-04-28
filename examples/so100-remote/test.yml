@@ -36,8 +36,8 @@ nodes:
     inputs:
       # series_so100: so100/pose
       series_pose: pytorch-kinematics/pose
-      # series_action: pytorch-kinematics/action
-      #jointstate_so100: so100/position
+      series_action: pytorch-kinematics/action
+      jointstate_so100: so100/pose
     env:
       so100_urdf: so100_2.urdf
       so100_transform: 0 -0.3 0
