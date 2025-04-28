@@ -88,8 +88,8 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
                 ),
             )
             .unwrap();
-            chains.insert(path, chain);
         }
+        chains.insert(path, chain);
     }
 
     Ok(chains)
@@ -113,11 +113,14 @@ pub fn update_visualization(
             .world_transform()
             .context("Could not get world transform")?;
         let link_to_parent = if link_name != "base_link" {
-            let parent = link.parent().context("could not get parent")?;
-            parent
-                .world_transform()
-                .context("Could not get world transform")?
-                .inv_mul(&link_to_world)
+            if let Some(parent) = link.parent() {
+                parent
+                    .world_transform()
+                    .context("Could not get world transform")?
+                    .inv_mul(&link_to_world)
+            } else {
+                link_to_world
+            }
         } else {
             link_to_world
         };

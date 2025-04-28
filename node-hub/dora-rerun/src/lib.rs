@@ -4,13 +4,13 @@ use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
     arrow::{
-        array::{Array, AsArray, Float32Array, Float64Array, StringArray, UInt16Array, UInt8Array},
+        array::{Array, AsArray, Float64Array, StringArray, UInt16Array, UInt8Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
     into_vec, DoraNode, Event, Parameter,
 };
-use eyre::{eyre, Context, ContextCompat, Result};
+use eyre::{eyre, Context, Result};
 
 use rerun::{
     components::ImageBuffer,
@@ -319,11 +319,7 @@ pub fn lib_main() -> Result<()> {
                 };
                 mask_cache.insert(id.clone(), masks.clone());
             } else if id.as_str().contains("jointstate") {
-                let buffer: &Float32Array = data
-                    .as_any()
-                    .downcast_ref()
-                    .context("jointstate is not float32")?;
-                let mut positions: Vec<f32> = buffer.values().to_vec();
+                let mut positions: Vec<f32> = into_vec(&data)?;
 
                 // Match file name
                 let mut id = id.as_str().replace("jointstate_", "");
@@ -343,7 +339,11 @@ pub fn lib_main() -> Result<()> {
 
                     update_visualization(&rec, chain, &id, &positions)?;
                 } else {
-                    println!("Could not find chain for {}", id);
+                    println!(
+                        "Could not find chain for {}. Only contains: {:#?}",
+                        id,
+                        chains.keys()
+                    );
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
