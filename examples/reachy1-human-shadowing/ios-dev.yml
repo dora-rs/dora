@@ -36,4 +36,4 @@ nodes:
     env:
       # git clone git clone https://github.com/aubrune/reachy_description.git
       # Replace package path with local path relative to the urdf. Ex: meshes/...
-      reachy_urdf: /home/peter/Documents/work/reachy_description/reachy.urdf
+      reachy_urdf: reachy_description/reachy.urdf

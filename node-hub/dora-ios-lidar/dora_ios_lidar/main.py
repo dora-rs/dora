@@ -135,7 +135,7 @@ class DemoApp:
                         "width": depth.shape[1],
                         "height": depth.shape[0],
                         "encoding": "mono16",
-                        "focal": [
+                        "focal_length": [
                             int(f_0),
                             int(f_1),
                         ],

@@ -495,7 +495,7 @@ if __name__ == "__main__":
     node = Node()
     current_joint_array = np.array([0, 0, 0, 0, 0, 0, 0])
     position_history = None
-    side = os.getenv("SIDE", "right").lower()
+    side = os.getenv("SIDE", "left").lower()
 
     ids = get_landmark_indices(side, mp_pose)
     current_joint_array = initial_pose[:7]
