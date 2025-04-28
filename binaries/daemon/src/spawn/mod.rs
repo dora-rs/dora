@@ -21,7 +21,7 @@ use dora_message::{
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
-    descriptor::{EnvValue, GitRepoRev},
+    descriptor::EnvValue,
     id::NodeId,
     DataflowId,
 };
@@ -31,7 +31,7 @@ use dora_node_api::{
     Metadata,
 };
 use eyre::{ContextCompat, WrapErr};
-use git2::FetchOptions;
+use git::GitFolder;
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -45,8 +45,8 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tracing::error;
-use url::Url;
-use uuid::Uuid;
+
+mod git;
 
 #[derive(Clone)]
 pub struct Spawner {
@@ -62,7 +62,7 @@ pub struct Spawner {
 
 impl Spawner {
     pub async fn prepare_node(
-        mut self,
+        self,
         node: ResolvedNode,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         logger: &mut NodeLogger<'_>,
@@ -106,7 +106,15 @@ impl Spawner {
             ..
         }) = &node.kind
         {
-            Some(self.prepare_git_node(repo, rev, repos_in_use).await?)
+            let target_dir = self.working_dir.join("build");
+            let git_folder = GitFolder::choose_clone_dir(
+                self.dataflow_id,
+                repo.clone(),
+                rev.clone(),
+                &target_dir,
+                repos_in_use,
+            )?;
+            Some(git_folder)
         } else {
             None
         };
@@ -135,35 +143,26 @@ impl Spawner {
         logger: &mut NodeLogger<'_>,
         dataflow_id: uuid::Uuid,
         node_config: NodeConfig,
-        prepared_git: Option<PreparedGit>,
+        git_folder: Option<GitFolder>,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
     ) -> eyre::Result<PreparedNode> {
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                let mut command = match &n.source {
-                    dora_message::descriptor::NodeSource::Local => {
-                        if let Some(build) = &n.build {
-                            self.build_node(logger, &node.env, self.working_dir.clone(), build)
-                                .await?;
-                        }
-                        if self.build_only {
-                            None
-                        } else {
-                            path_spawn_command(&self.working_dir, self.uv, logger, &n, true).await?
-                        }
-                    }
-                    dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
-                        self.git_node_spawn_command(
-                            &n,
-                            repo,
-                            rev,
-                            logger,
-                            &node.env,
-                            prepared_git.unwrap(),
-                        )
-                        .await?
-                    }
+                let build_dir = match git_folder {
+                    Some(git_folder) => git_folder.prepare(logger).await?,
+                    None => self.working_dir.clone(),
                 };
+
+                if let Some(build) = &n.build {
+                    self.build_node(logger, &node.env, build_dir.clone(), build)
+                        .await?;
+                }
+                let mut command = if self.build_only {
+                    None
+                } else {
+                    path_spawn_command(&build_dir, self.uv, logger, n, true).await?
+                };
+
                 if let Some(command) = &mut command {
                     command.current_dir(&self.working_dir);
                     command.stdin(Stdio::null());
@@ -346,162 +345,6 @@ impl Spawner {
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
         })
-    }
-
-    async fn prepare_git_node(
-        &mut self,
-        repo_addr: &String,
-        rev: &Option<GitRepoRev>,
-        repos_in_use: &mut BTreeMap<PathBuf, BTreeSet<DataflowId>>,
-    ) -> eyre::Result<PreparedGit> {
-        let dataflow_id = self.dataflow_id;
-        let repo_url = Url::parse(repo_addr).context("failed to parse git repository URL")?;
-        let target_dir = self.working_dir.join("build");
-
-        let clone_dir_base = {
-            let base = {
-                let mut path =
-                    target_dir.join(repo_url.host_str().context("git URL has no hostname")?);
-
-                path.extend(repo_url.path_segments().context("no path in git URL")?);
-                path
-            };
-            match rev {
-                None => base,
-                Some(rev) => match rev {
-                    GitRepoRev::Branch(branch) => base.join("branch").join(branch),
-                    GitRepoRev::Tag(tag) => base.join("tag").join(tag),
-                    GitRepoRev::Rev(rev) => base.join("rev").join(rev),
-                },
-            }
-        };
-        let clone_dir = if clone_dir_exists(&clone_dir_base, repos_in_use) {
-            let used_by_other_dataflow =
-                self.used_by_other_dataflow(dataflow_id, &clone_dir_base, repos_in_use);
-            if used_by_other_dataflow {
-                // don't reuse, choose new directory
-                // (TODO reuse if still up to date)
-
-                let dir_name = clone_dir_base.file_name().unwrap().to_str().unwrap();
-                let mut i = 1;
-                loop {
-                    let new_path = clone_dir_base.with_file_name(format!("{dir_name}-{i}"));
-                    if clone_dir_exists(&new_path, repos_in_use)
-                        && self.used_by_other_dataflow(dataflow_id, &new_path, repos_in_use)
-                    {
-                        i += 1;
-                    } else {
-                        break new_path;
-                    }
-                }
-            } else {
-                clone_dir_base
-            }
-        } else {
-            clone_dir_base
-        };
-        let clone_dir = dunce::simplified(&clone_dir).to_owned();
-
-        let reuse = if clone_dir_exists(&clone_dir, repos_in_use) {
-            let empty = BTreeSet::new();
-            let in_use = repos_in_use.get(&clone_dir).unwrap_or(&empty);
-            let used_by_other_dataflow = in_use.iter().any(|&id| id != dataflow_id);
-            if used_by_other_dataflow {
-                // The directory is currently in use by another dataflow. We currently don't
-                // support reusing the same clone across multiple dataflow runs. Above, we
-                // choose a new directory if we detect such a case. So this `if` branch
-                // should never be reached.
-                eyre::bail!("clone_dir is already in use by other dataflow")
-            } else if in_use.is_empty() {
-                // The cloned repo is not used by any dataflow, so we can safely reuse it. However,
-                // the clone might be still on an older commit, so we need to do a `git fetch`
-                // before we reuse it.
-                ReuseOptions::ReuseAfterFetch
-            } else {
-                // This clone is already used for another node of this dataflow. We will do a
-                // `git fetch` operation for the first node of this dataflow, so we don't need
-                // to do it again for other nodes of the dataflow. So we can simply reuse the
-                // directory without doing any additional git operations.
-                ReuseOptions::Reuse
-            }
-        } else {
-            ReuseOptions::NewClone
-        };
-        repos_in_use
-            .entry(clone_dir.clone())
-            .or_default()
-            .insert(dataflow_id);
-
-        Ok(PreparedGit { clone_dir, reuse })
-    }
-
-    async fn git_node_spawn_command(
-        &mut self,
-        node: &dora_core::descriptor::CustomNode,
-        repo_addr: &String,
-        rev: &Option<GitRepoRev>,
-        logger: &mut NodeLogger<'_>,
-        node_env: &Option<BTreeMap<String, EnvValue>>,
-        prepared: PreparedGit,
-    ) -> Result<Option<tokio::process::Command>, eyre::Error> {
-        let PreparedGit { clone_dir, reuse } = prepared;
-
-        let rev_str = rev_str(rev);
-        let refname = rev.clone().map(|rev| match rev {
-            GitRepoRev::Branch(branch) => format!("refs/remotes/origin/{branch}"),
-            GitRepoRev::Tag(tag) => format!("refs/tags/{tag}"),
-            GitRepoRev::Rev(rev) => rev,
-        });
-
-        match reuse {
-            ReuseOptions::NewClone => {
-                let repository = clone_into(repo_addr, rev, &clone_dir, logger).await?;
-                checkout_tree(&repository, refname)?;
-            }
-            ReuseOptions::ReuseAfterFetch => {
-                logger
-                    .log(
-                        LogLevel::Info,
-                        None,
-                        format!("fetching changes and reusing {repo_addr}{rev_str}"),
-                    )
-                    .await;
-                let refname_cloned = refname.clone();
-                let clone_dir = clone_dir.clone();
-                let repository = fetch_changes(clone_dir, refname_cloned).await?;
-                checkout_tree(&repository, refname)?;
-            }
-            ReuseOptions::Reuse => {
-                logger
-                    .log(
-                        LogLevel::Info,
-                        None,
-                        format!("reusing up-to-date {repo_addr}{rev_str}"),
-                    )
-                    .await;
-            }
-        };
-        if let Some(build) = &node.build {
-            self.build_node(logger, node_env, clone_dir.clone(), build)
-                .await?;
-        }
-        if self.build_only {
-            Ok(None)
-        } else {
-            path_spawn_command(&clone_dir, self.uv, logger, node, true).await
-        }
-    }
-
-    fn used_by_other_dataflow(
-        &mut self,
-        dataflow_id: uuid::Uuid,
-        clone_dir_base: &PathBuf,
-        repos_in_use: &mut BTreeMap<PathBuf, BTreeSet<DataflowId>>,
-    ) -> bool {
-        let empty = BTreeSet::new();
-        let in_use = repos_in_use.get(clone_dir_base).unwrap_or(&empty);
-        let used_by_other_dataflow = in_use.iter().any(|&id| id != dataflow_id);
-        used_by_other_dataflow
     }
 
     async fn build_node(
@@ -804,109 +647,6 @@ impl PreparedNode {
     }
 }
 
-fn rev_str(rev: &Option<GitRepoRev>) -> String {
-    match rev {
-        Some(GitRepoRev::Branch(branch)) => format!(" (branch {branch})"),
-        Some(GitRepoRev::Tag(tag)) => format!(" (tag {tag})"),
-        Some(GitRepoRev::Rev(rev)) => format!(" (rev {rev})"),
-        None => String::new(),
-    }
-}
-
-async fn clone_into(
-    repo_addr: &String,
-    rev: &Option<GitRepoRev>,
-    clone_dir: &Path,
-    logger: &mut NodeLogger<'_>,
-) -> eyre::Result<git2::Repository> {
-    if let Some(parent) = clone_dir.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("failed to create parent directory for git clone")?;
-    }
-
-    let rev_str = rev_str(rev);
-    logger
-        .log(
-            LogLevel::Info,
-            None,
-            format!("cloning {repo_addr}{rev_str} into {}", clone_dir.display()),
-        )
-        .await;
-    let rev: Option<GitRepoRev> = rev.clone();
-    let clone_into = clone_dir.to_owned();
-    let repo_addr = repo_addr.clone();
-    let task = tokio::task::spawn_blocking(move || {
-        let mut builder = git2::build::RepoBuilder::new();
-        let mut fetch_options = git2::FetchOptions::new();
-        fetch_options.download_tags(git2::AutotagOption::All);
-        builder.fetch_options(fetch_options);
-        if let Some(GitRepoRev::Branch(branch)) = &rev {
-            builder.branch(branch);
-        }
-        builder
-            .clone(&repo_addr, &clone_into)
-            .context("failed to clone repo")
-    });
-    let repo = task.await??;
-    Ok(repo)
-}
-
-async fn fetch_changes(
-    repo_dir: PathBuf,
-    refname: Option<String>,
-) -> Result<git2::Repository, eyre::Error> {
-    let fetch_changes = tokio::task::spawn_blocking(move || {
-        let repository = git2::Repository::open(&repo_dir).context("failed to open git repo")?;
-
-        {
-            let mut remote = repository
-                .find_remote("origin")
-                .context("failed to find remote `origin` in repo")?;
-            remote
-                .connect(git2::Direction::Fetch)
-                .context("failed to connect to remote")?;
-            let default_branch = remote
-                .default_branch()
-                .context("failed to get default branch for remote")?;
-            let fetch = match &refname {
-                Some(refname) => refname,
-                None => default_branch
-                    .as_str()
-                    .context("failed to read default branch as string")?,
-            };
-            let mut fetch_options = FetchOptions::new();
-            fetch_options.download_tags(git2::AutotagOption::All);
-            remote
-                .fetch(&[&fetch], Some(&mut fetch_options), None)
-                .context("failed to fetch from git repo")?;
-        }
-        Result::<_, eyre::Error>::Ok(repository)
-    });
-    let repository = fetch_changes.await??;
-    Ok(repository)
-}
-
-fn checkout_tree(repository: &git2::Repository, refname: Option<String>) -> eyre::Result<()> {
-    if let Some(refname) = refname {
-        let (object, reference) = repository
-            .revparse_ext(&refname)
-            .context("failed to parse ref")?;
-        repository
-            .checkout_tree(&object, None)
-            .context("failed to checkout ref")?;
-        match reference {
-            Some(reference) => repository
-                .set_head(reference.name().context("failed to get reference_name")?)
-                .context("failed to set head")?,
-            None => repository
-                .set_head_detached(object.id())
-                .context("failed to set detached head")?,
-        }
-    }
-    Ok(())
-}
-
 async fn path_spawn_command(
     working_dir: &Path,
     uv: bool,
@@ -1002,24 +742,4 @@ async fn path_spawn_command(
     };
 
     Ok(Some(cmd))
-}
-
-struct PreparedGit {
-    /// The directory that should contain the checked-out repository.
-    clone_dir: PathBuf,
-    /// Specifies whether an existing repo should be reused.
-    reuse: ReuseOptions,
-}
-
-enum ReuseOptions {
-    /// Create a new clone of the repository.
-    NewClone,
-    /// Reuse an existing up-to-date clone of the repository.
-    Reuse,
-    /// Update an older clone of the repository, then reuse it.
-    ReuseAfterFetch,
-}
-
-fn clone_dir_exists(dir: &PathBuf, repos_in_use: &BTreeMap<PathBuf, BTreeSet<Uuid>>) -> bool {
-    repos_in_use.contains_key(dir) || dir.exists()
 }
