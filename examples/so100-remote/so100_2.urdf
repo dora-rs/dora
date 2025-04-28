@@ -5,7 +5,7 @@
 <robot
   name="SO_5DOF_ARM100_8j_URDF.SLDASM">
   <link
-    name="Base">
+    name="base_link">
     <inertial>
       <origin
         xyz="-2.45960666746703E-07 0.0311418169687909 0.0175746661003382"
@@ -91,11 +91,11 @@
       xyz="0 -0.0452 0.0165"
       rpy="1.5708 0 0" />
     <parent
-      link="Base" />
+      link="base_link" />
     <child
       link="Rotation_Pitch" />
     <axis
-      xyz="0 1 0" />
+      xyz="0 -1 0" />
   </joint>
   <link
     name="Upper_Arm">
@@ -248,7 +248,7 @@
     type="continuous">
     <origin
       xyz="0 0.0052 0.1349"
-      rpy="0 0 0" />
+      rpy="-1.57 0 0" />
     <parent
       link="Lower_Arm" />
     <child
@@ -301,7 +301,7 @@
     type="continuous">
     <origin
       xyz="0 -0.0601 0"
-      rpy="0 0 0" />
+      rpy="0 1.57 0" />
     <parent
       link="Wrist_Pitch_Roll" />
     <child
@@ -354,7 +354,7 @@
     type="continuous">
     <origin
       xyz="-0.0202 -0.0244 0"
-      rpy="3.1416 0 3.1416" />
+      rpy="0 0 0" />
     <parent
       link="Fixed_Jaw" />
     <child
