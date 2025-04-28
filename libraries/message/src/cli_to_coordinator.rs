@@ -7,7 +7,7 @@ use crate::{
     id::{NodeId, OperatorId},
 };
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
     Start {
         dataflow: Descriptor,
