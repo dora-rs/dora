@@ -4,6 +4,21 @@ This example shows how to create dora operators and custom nodes with C++.
 
 Dora does not provide a C++ API yet, but we can create adapters for either the C or Rust API. The `operator-rust-api` and `node-rust-api` folders implement an example operator and node based on dora's Rust API, using the `cxx` crate for bridging. The `operator-c-api` and `node-c-api` show how to create operators and nodes based on dora's C API. Both approaches work, so you can choose the API that fits your application better.
 
+## Install Dora cpp library
+You can use the following script to install the latest dora cpp api.
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dora-rs/dora/blob/main/install_libdora.sh | sudo -E bash
+```
+If you want to install other versions, you can download them from https://github.com/dora-rs/dora/tags.
+If you have it installed, you can compile your Dora node with the C API like this:
+~~~bash
+clang++ -std=c++11 -I/usr/local/include/dora -o main main.cc -L/usr/local/lib -ldora_node_api_c
+~~~
+If you're writing a Dora node in C++ and need to use the `dora_node_api_cxx` binding (generated using Rust's `cxx` crate), use the following:
+```bash
+clang++ -std=c++17 -I/usr/local/include/dora main.cc -ldora_node_api_cxx -o main
+```
+
 ## Compile and Run
 
 To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all required build steps and then starts the dataflow. Use the following command to run it: `cargo run --example cxx-dataflow`.

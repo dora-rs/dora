@@ -111,11 +111,11 @@ jobs:
           echo "Copying library files..."
           case "$RUNNER_OS" in
             "Linux" | "macOS")
-              cp target/${{ matrix.target }}/release/*.a dist/lib/ || echo "No libdora_node_api_c.a found"
+              cp target/${{ matrix.target }}/debug/*.a dist/lib/ || echo "No libdora_node_api_c.a found"
               cp target/${{ matrix.target }}/debug/libdora_node_api_cxx.a dist/lib || echo "No libdora_node_api_cxx.a found"
               ;;
             "Windows")
-              cp target/${{ matrix.target }}/release/*.lib dist/lib/ || echo "No dora_node_api_c found"
+              cp target/${{ matrix.target }}/debug/*.lib dist/lib/ || echo "No dora_node_api_c found"
               cp target/${{ matrix.target }}/debug/libdora_node_api_cxx.a dist/lib || echo "No libdora_node_api_cxx.a found"
               ;;
           esac

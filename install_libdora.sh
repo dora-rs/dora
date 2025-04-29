@@ -55,7 +55,7 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
-  echo "Error: 'jq' not found!" >&2
+  echo "Error: 'jq' not found! Please install it (e.g. 'brew install jq' or 'apt install jq')" >&2
   exit 1
 fi
 
@@ -64,7 +64,7 @@ PLATFORM="$(detect_platform)"
 echo "    => PLATFORM: $PLATFORM"
 
 echo "==> Fetching latest Dora release info from GitHub..."
-LATEST_JSON=$(curl -s https://api.github.com/repos/starlitxiling/dora-rerun/releases/latest)
+LATEST_JSON=$(curl -s https://api.github.com/repos/dora-rs/dora/releases/latest)
 
 if [ -z "$LATEST_JSON" ]; then
   echo "Error: failed to fetch release info from GitHub!"
@@ -122,15 +122,17 @@ echo "==> Extracting $CHOSEN_ASSET_NAME ..."
 tar -zxvf "$CHOSEN_ASSET_NAME"
 
 FILE_TO_FIX="include/operator.h"
-OLD_PATH="../operator-rust-api/operator.h"
-NEW_PATH="operator.h"
 
-if [ -f "$FILE_TO_FIX" ] && grep -q "$OLD_PATH" "$FILE_TO_FIX"; then
-  echo "==> Fixing include path in $FILE_TO_FIX ..."
+if [ -f "$FILE_TO_FIX" ]; then
+  echo "==> Fixing include paths in $FILE_TO_FIX ..."
   if sed --version 2>/dev/null | grep -q "GNU"; then
-    sed -i "s|$OLD_PATH|$NEW_PATH|g" "$FILE_TO_FIX"
+    sed -i 's|../operator-rust-api/operator.h|operator.h|g' "$FILE_TO_FIX"
+    sed -i 's|#include "../../../apis/c/operator/operator_api.h"|#include "operator_api.h"|' "$FILE_TO_FIX"
+    sed -i 's|#include "../build/dora-operator-api.h"|#include "dora-operator-api.h"|' "$FILE_TO_FIX"
   else
-    sed -i "" "s|$OLD_PATH|$NEW_PATH|g" "$FILE_TO_FIX"
+    sed -i '' 's|../operator-rust-api/operator.h|operator.h|g' "$FILE_TO_FIX"
+    sed -i '' 's|#include "../../../apis/c/operator/operator_api.h"|#include "operator_api.h"|' "$FILE_TO_FIX"
+    sed -i '' 's|#include "../build/dora-operator-api.h"|#include "dora-operator-api.h"|' "$FILE_TO_FIX"
   fi
 fi
 
