@@ -1,6 +1,8 @@
-use attach::attach_dataflow;
+use attach::{attach_dataflow, print_log_message};
 use colored::Colorize;
-use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
+use communication_layer_request_reply::{
+    RequestReplyLayer, TcpConnection, TcpLayer, TcpRequestReplyConnection,
+};
 use dora_coordinator::Event;
 use dora_core::{
     descriptor::{source_is_url, Descriptor, DescriptorExt},
@@ -13,6 +15,7 @@ use dora_daemon::Daemon;
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
+    common::LogMessage,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult, DataflowStatus},
 };
 #[cfg(feature = "tracing")]
@@ -21,7 +24,11 @@ use dora_tracing::{set_up_tracing_opts, FileLogging};
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
-use std::{env::current_dir, io::Write, net::SocketAddr};
+use std::{
+    env::current_dir,
+    io::Write,
+    net::{SocketAddr, TcpStream},
+};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
@@ -377,10 +384,17 @@ fn run(args: Args) -> eyre::Result<()> {
             coordinator_port,
             uv,
         } => {
-            let (_, _, _, mut session, uuid) =
-                start_dataflow(dataflow, None, coordinator_addr, coordinator_port, uv, true)?;
+            let coordinator_socket = (coordinator_addr, coordinator_port).into();
+            let (_, _, mut session, uuid) =
+                start_dataflow(dataflow, None, coordinator_socket, uv, true)?;
             // wait until build is finished
-            wait_until_dataflow_started(uuid, &mut session, true)?;
+            wait_until_dataflow_started(
+                uuid,
+                &mut session,
+                true,
+                coordinator_socket,
+                log::LevelFilter::Info,
+            )?;
         }
         Command::New {
             args,
@@ -413,7 +427,8 @@ fn run(args: Args) -> eyre::Result<()> {
                 let name = if uuid.is_some() { None } else { Some(dataflow) };
                 logs::logs(&mut *session, uuid, name, node)?
             } else {
-                let active = list.get_active();
+                let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> =
+                    list.get_active();
                 let uuid = match &active[..] {
                     [] => bail!("No dataflows are running"),
                     [uuid] => uuid.clone(),
@@ -432,15 +447,9 @@ fn run(args: Args) -> eyre::Result<()> {
             hot_reload,
             uv,
         } => {
-            let (dataflow, dataflow_descriptor, coordinator_socket, mut session, dataflow_id) =
-                start_dataflow(
-                    dataflow,
-                    name,
-                    coordinator_addr,
-                    coordinator_port,
-                    uv,
-                    false,
-                )?;
+            let coordinator_socket = (coordinator_addr, coordinator_port).into();
+            let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
+                start_dataflow(dataflow, name, coordinator_socket, uv, false)?;
 
             let attach = match (attach, detach) {
                 (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -464,7 +473,13 @@ fn run(args: Args) -> eyre::Result<()> {
                 )?
             } else {
                 // wait until dataflow is started
-                wait_until_dataflow_started(dataflow_id, &mut session, false)?;
+                wait_until_dataflow_started(
+                    dataflow_id,
+                    &mut session,
+                    false,
+                    coordinator_socket,
+                    log::LevelFilter::Info,
+                )?;
             }
         }
         Command::List {
@@ -620,20 +635,10 @@ fn run(args: Args) -> eyre::Result<()> {
 fn start_dataflow(
     dataflow: String,
     name: Option<String>,
-    coordinator_addr: IpAddr,
-    coordinator_port: u16,
+    coordinator_socket: SocketAddr,
     uv: bool,
     build_only: bool,
-) -> Result<
-    (
-        PathBuf,
-        Descriptor,
-        SocketAddr,
-        Box<TcpRequestReplyConnection>,
-        Uuid,
-    ),
-    eyre::Error,
-> {
+) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
@@ -643,7 +648,6 @@ fn start_dataflow(
         .parent()
         .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
         .to_owned();
-    let coordinator_socket = (coordinator_addr, coordinator_port).into();
     let mut session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to dora coordinator")?;
     let dataflow_id = {
@@ -677,20 +681,45 @@ fn start_dataflow(
             other => bail!("unexpected start dataflow reply: {other:?}"),
         }
     };
-    Ok((
-        dataflow,
-        dataflow_descriptor,
-        coordinator_socket,
-        session,
-        dataflow_id,
-    ))
+    Ok((dataflow, dataflow_descriptor, session, dataflow_id))
 }
 
 fn wait_until_dataflow_started(
     dataflow_id: Uuid,
     session: &mut Box<TcpRequestReplyConnection>,
     build_only: bool,
+    coordinator_addr: SocketAddr,
+    log_level: log::LevelFilter,
 ) -> eyre::Result<()> {
+    // subscribe to log messages
+    let mut log_session = TcpConnection {
+        stream: TcpStream::connect(coordinator_addr)
+            .wrap_err("failed to connect to dora coordinator")?,
+    };
+    log_session
+        .send(
+            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+                dataflow_id,
+                level: log_level,
+            })
+            .wrap_err("failed to serialize message")?,
+        )
+        .wrap_err("failed to send log subscribe request to coordinator")?;
+    std::thread::spawn(move || {
+        while let Ok(raw) = log_session.receive() {
+            let parsed: eyre::Result<LogMessage> =
+                serde_json::from_slice(&raw).context("failed to parse log message");
+            match parsed {
+                Ok(log_message) => {
+                    print_log_message(log_message);
+                }
+                Err(err) => {
+                    tracing::warn!("failed to parse log message: {err:?}")
+                }
+            }
+        }
+    });
+
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::WaitForSpawn { dataflow_id }).unwrap())
         .wrap_err("failed to send start dataflow message")?;
