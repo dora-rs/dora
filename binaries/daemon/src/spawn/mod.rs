@@ -403,6 +403,10 @@ impl PreparedNode {
         &self.node.id
     }
 
+    pub fn dynamic(&self) -> bool {
+        self.node.kind.dynamic()
+    }
+
     pub async fn spawn(mut self, logger: &mut NodeLogger<'_>) -> eyre::Result<RunningNode> {
         let mut child = match &mut self.command {
             Some(command) => command.spawn().wrap_err(self.spawn_error_msg)?,
@@ -555,6 +559,7 @@ impl PreparedNode {
         });
 
         let node_id = self.node.id.clone();
+        let dynamic_node = self.node.kind.dynamic();
         let (log_finish_tx, log_finish_rx) = oneshot::channel();
         let clock = self.clock.clone();
         let daemon_tx = self.daemon_tx.clone();
@@ -566,6 +571,7 @@ impl PreparedNode {
                 dataflow_id,
                 node_id,
                 exit_status,
+                dynamic_node,
             }
             .into();
             let event = Timestamped {
