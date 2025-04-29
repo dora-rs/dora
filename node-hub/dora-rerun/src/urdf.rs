@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use eyre::{Context, ContextCompat, Result};
-use k::Chain;
+use k::{Chain, Translation3};
 use rerun::{
-    components::RotationAxisAngle, external::log::warn, transform, Angle, LineStrips3D, Points3D,
-    RecordingStream, Rotation3D, Vec3D,
+    components::RotationAxisAngle, Angle, LineStrips3D, RecordingStream, Rotation3D, Vec3D,
 };
 pub struct MyIntersperse<T, I> {
     iterator: I,
@@ -91,6 +90,14 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
                 ),
             )
             .unwrap();
+            let mut pose = chain.origin();
+            pose.append_translation_mut(&Translation3::new(
+                transform[0],
+                transform[1],
+                transform[2],
+            ));
+
+            chain.set_origin(pose);
             chains.insert(path, chain);
         }
     }
@@ -135,7 +142,6 @@ pub fn update_visualization(
         );
         rec.log(entity_path.clone(), &point_transform)
             .context("Could not log transform")?;
-        let child = link.world_transform().unwrap();
     }
 
     let mut last_transform = [0.0; 3];
