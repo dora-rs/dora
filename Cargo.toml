@@ -182,6 +182,10 @@ name = "cxx-ros2-dataflow"
 path = "examples/c++-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]
 
+[[example]]
+name = "rerun-viewer"
+path = "examples/rerun-viewer/run.rs"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
