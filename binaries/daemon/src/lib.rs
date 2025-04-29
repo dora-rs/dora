@@ -885,9 +885,7 @@ impl Daemon {
                                 node_id.clone(),
                                 Err(NodeError {
                                     timestamp: self.clock.new_timestamp(),
-                                    cause: NodeErrorCause::Other {
-                                        stderr: format!("spawn failed: {err:?}"),
-                                    },
+                                    cause: NodeErrorCause::FailedToSpawn(format!("{err:?}")),
                                     exit_status: NodeExitStatus::Unknown,
                                 }),
                             );
@@ -993,9 +991,9 @@ impl Daemon {
                     }
                     let node_err: NodeError = NodeError {
                         timestamp: clock.new_timestamp(),
-                        cause: NodeErrorCause::Other {
-                            stderr: format!("preparing for spawn failed: {err:?}"),
-                        },
+                        cause: NodeErrorCause::FailedToSpawn(format!(
+                            "preparing for spawn failed: {err:?}"
+                        )),
                         exit_status: NodeExitStatus::Unknown,
                     };
                     let send_result = events_tx.send(node_result(node_id, Err(node_err))).await;
@@ -1047,9 +1045,7 @@ impl Daemon {
                     Err(err) => {
                         let node_err = NodeError {
                             timestamp: clock.new_timestamp(),
-                            cause: NodeErrorCause::Other {
-                                stderr: format!("spawn failed: {err:?}"),
-                            },
+                            cause: NodeErrorCause::FailedToSpawn(format!("spawn failed: {err:?}")),
                             exit_status: NodeExitStatus::Unknown,
                         };
                         if spawn_result.is_ok() {
