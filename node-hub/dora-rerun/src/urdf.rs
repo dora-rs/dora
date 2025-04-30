@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
 use eyre::{Context, ContextCompat, Result};
-use k::{Chain, Translation3};
-use rerun::{
-    components::RotationAxisAngle, Angle, LineStrips3D, RecordingStream, Rotation3D, Vec3D,
-};
+use k::{nalgebra::Quaternion, Chain, Translation3, UnitQuaternion};
+use rerun::{RecordingStream, Vec3D};
 pub struct MyIntersperse<T, I> {
     iterator: I,
     sep: T,
@@ -79,24 +77,21 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
                 .split(' ')
                 .map(|x| x.parse::<f32>().unwrap())
                 .collect::<Vec<f32>>();
-            rec.log(
-                path.clone(),
-                &rerun::Transform3D::from_translation_rotation(
-                    [transform[0], transform[1], transform[2]],
-                    Rotation3D::AxisAngle(RotationAxisAngle::new(
-                        [0., 0., 0.],
-                        Angle::from_degrees(0.0),
-                    )),
-                ),
-            )
-            .unwrap();
+
             let mut pose = chain.origin();
+
+            if transform.len() == 7 {
+                let quaternion =
+                    Quaternion::new(transform[3], transform[4], transform[5], transform[6])
+                        .normalize(); // Example quaternion
+                let rot = UnitQuaternion::from_quaternion(quaternion);
+                pose.append_rotation_mut(&rot);
+            }
             pose.append_translation_mut(&Translation3::new(
                 transform[0],
                 transform[1],
                 transform[2],
             ));
-
             chain.set_origin(pose);
             chains.insert(path, chain);
         }
@@ -144,25 +139,5 @@ pub fn update_visualization(
             .context("Could not log transform")?;
     }
 
-    let mut last_transform = [0.0; 3];
-
-    for joint in chain.iter_joints() {
-        let transform = joint.world_transform().unwrap();
-        let transform = transform.to_matrix();
-        let transform = transform.column(3);
-        if last_transform == [0.0; 3] {
-            last_transform = [transform[0], transform[1], transform[2]];
-        }
-        rec.log(
-            format!("link/{}", joint.name),
-            &LineStrips3D::new(&[[
-                [last_transform[0], last_transform[1], last_transform[2]],
-                [transform[0], transform[1], transform[2]],
-            ]
-            .to_vec()]),
-        )
-        .context("Could not log transform")?;
-        last_transform = [transform[0], transform[1], transform[2]];
-    }
     Ok(())
 }
