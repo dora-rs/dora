@@ -8,7 +8,6 @@ nodes:
       - pose
     env:
       PORT: /dev/ttyACM0
-      CONFIG: follower.right.json
       TORQUE: true
       IDS: 1 2 3 4 5 6
 
@@ -16,6 +15,15 @@ nodes:
     path: parse_keyboard.py
     outputs:
       - action
+
+  - id: camera
+    build: pip install -e ../../node-hub/dora-pyrealsense
+    path: dora-pyrealsense
+    inputs:
+      tick: dora/timer/millis/33
+    outputs:
+      - image
+      - depth
 
   - id: pytorch-kinematics
     build: pip install -e ../../node-hub/dora-pytorch-kinematics
@@ -27,18 +35,21 @@ nodes:
       - pose
       - action
     env:
-      URDF_PATH: so100_2.urdf
+      URDF_PATH: so100.urdf
       END_EFFECTOR_LINK: "Moving Jaw"
-      so100_transform: 0 -0.3 0
+      TRANSFORM: -0.18 0.02 -0.65 0.7 0 0 0.7
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      series_so100: so100/pose
-      series_pose: pytorch-kinematics/pose
-      series_action: pytorch-kinematics/action
-      jointstate_so100: so100/pose
+      #series_so100: so100/pose
+      # series_pose: pytorch-kinematics/pose
+      series_so100: pytorch-kinematics/action
+      jointstate_so100: pytorch-kinematics/action
+      camera/image: camera/image
+      camera/depth: camera/depth
     env:
-      so100_urdf: so100_2.urdf
-      so100_transform: 0 -0.3 0
+      so100_urdf: so100.urdf
+      so100_transform: -0.18 0.02 -0.65 0.7 0 0 0.7
+      CAMERA_PITCH: -3.1415

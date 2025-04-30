@@ -10,6 +10,20 @@ import torch
 from dora import Node
 from pytorch_kinematics.transforms.rotation_conversions import matrix_to_euler_angles
 
+TRANSFORM = np.array(os.getenv("TRANSFORM", "0. 0. 0. 0. 0. 0. 1.").split(" ")).astype(
+    np.float32
+)
+pos = torch.tensor([TRANSFORM[0], TRANSFORM[1], TRANSFORM[2]])
+rot = torch.tensor(
+    [
+        TRANSFORM[3],
+        TRANSFORM[4],
+        TRANSFORM[5],
+        TRANSFORM[6],
+    ],
+)
+ROB_TF = pk.Transform3d(pos=pos, rot=rot)
+
 
 def get_xyz_rpy_array_from_transform3d(
     transform: "pytorch_kinematics.transforms.Transform3d", convention: str = "XYZ"
@@ -134,9 +148,6 @@ class RobotKinematics:
 
         """
         # robot frame
-        pos = torch.tensor([0.0, 0.0, 0.0])
-        rot = torch.tensor([0.0, 0.0, 0.0])
-        rob_tf = pk.Transform3d(pos=pos, rot=rot)
 
         angles_tensor = self._prepare_joint_tensor(
             joint_angles, batch_dim_required=False
@@ -145,7 +156,7 @@ class RobotKinematics:
         goal_in_rob_frame_tf = self.chain.forward_kinematics(
             angles_tensor, end_only=True
         )
-        goal_tf = rob_tf.compose(goal_in_rob_frame_tf)
+        goal_tf = ROB_TF.compose(goal_in_rob_frame_tf)
         return goal_tf
 
     def compute_ik(
@@ -250,6 +261,7 @@ def main():
                                 torch.tensor(target[3:6]), convention="XYZ"
                             ),
                         )
+                        target = ROB_TF.inverse().compose(target)
                         solution = robot.compute_ik(target, last_known_state)
                         if solution is None:
                             continue
@@ -275,7 +287,7 @@ def main():
                     # Apply Forward Kinematics
                     target = robot.compute_fk(target)
                     target = np.array(get_xyz_rpy_array_from_transform3d(target))
-                    target = pa.array(target.ravel())
+                    target = pa.array(target.ravel(), type=pa.float32())
                     metadata["encoding"] = "xyzrpy"
                     node.send_output(event["id"], target, metadata=metadata)
 

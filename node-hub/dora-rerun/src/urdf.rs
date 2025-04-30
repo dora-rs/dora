@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use eyre::{Context, ContextCompat, Result};
 use k::{nalgebra::Quaternion, Chain, Translation3, UnitQuaternion};
@@ -64,6 +64,12 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
         let chain = k::Chain::<f32>::from_urdf_file(&urdf_path).context("Could not load URDF")?;
 
         let transform = key.replace("_urdf", "_transform");
+
+        if PathBuf::from(&urdf_path).file_name() != PathBuf::from(&path).file_name() {
+            return Err(eyre::eyre!(
+                "URDF path should be the same as the key without _urdf or _URDF. Got {} instead of {}", urdf_path, path
+            ));
+        }
         if let Err(err) = rec.log_file_from_path(&urdf_path, None, false) {
             println!("Could not log file: {}. Errored with {}", urdf_path, err);
             println!("Make sure to install urdf loader with:");
@@ -71,6 +77,7 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
                 "pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git"
             )
         };
+
         // Get transform by replacing URDF_ with TRANSFORM_
         if let Ok(transform) = std::env::var(transform) {
             let transform = transform
