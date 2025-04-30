@@ -1,7 +1,7 @@
 use crate::{
     log::{self, NodeLogger},
     node_communication::spawn_listener_loop,
-    node_inputs, CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
+    node_inputs, CoreNodeKindExt, DoraCommand, DoraEvent, Event, OutputId, RunningNode,
 };
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
@@ -51,6 +51,7 @@ pub async fn spawn_node(
     node_stderr_most_recent: Arc<ArrayQueue<String>>,
     uv: bool,
     logger: &mut NodeLogger<'_>,
+    dora_command: &DoraCommand,
 ) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
     logger
@@ -301,9 +302,7 @@ pub async fn spawn_node(
                     cmd
                 }
             } else if python_operators.is_empty() && other_operators {
-                let mut cmd = tokio::process::Command::new(
-                    std::env::current_exe().wrap_err("failed to get current executable path")?,
-                );
+                let mut cmd = dora_command.to_tokio_command();
                 cmd.arg("runtime");
                 cmd
             } else {
