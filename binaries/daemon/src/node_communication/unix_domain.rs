@@ -23,6 +23,7 @@ pub async fn listener_loop(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    wait_for_stop: bool,
 ) {
     loop {
         match listener
@@ -39,6 +40,7 @@ pub async fn listener_loop(
                     daemon_tx.clone(),
                     queue_sizes.clone(),
                     clock.clone(),
+                    wait_for_stop,
                 ));
             }
         }
@@ -51,8 +53,9 @@ async fn handle_connection_loop(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    wait_for_stop: bool,
 ) {
-    Listener::run(UnixConnection(connection), daemon_tx, clock).await
+    Listener::run(UnixConnection(connection), daemon_tx, clock, wait_for_stop).await
 }
 
 struct UnixConnection(UnixStream);

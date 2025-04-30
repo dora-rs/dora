@@ -380,14 +380,14 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
 ///
 /// :rtype: None
 #[pyfunction]
-#[pyo3(signature = (dataflow_path, uv=None))]
-pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
+#[pyo3(signature = (dataflow_path, uv=None, wait_for_stop=false))]
+pub fn run(dataflow_path: String, uv: Option<bool>, wait_for_stop: bool) -> eyre::Result<()> {
     let dataflow_path = resolve_dataflow(dataflow_path).context("could not resolve dataflow")?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
-    let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv.unwrap_or_default()))?;
+    let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv.unwrap_or_default(), wait_for_stop))?;
     match result.is_ok() {
         true => Ok(()),
         false => Err(eyre::eyre!(

@@ -16,6 +16,7 @@ pub async fn listener_loop(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    wait_for_stop: bool,
 ) {
     let (tx, rx) = flume::bounded(0);
     tokio::task::spawn_blocking(move || {
@@ -39,7 +40,7 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx, clock).await
+    Listener::run(connection, daemon_tx, clock, wait_for_stop).await
 }
 
 enum Operation {

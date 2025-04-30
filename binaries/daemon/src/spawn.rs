@@ -51,6 +51,7 @@ pub async fn spawn_node(
     node_stderr_most_recent: Arc<ArrayQueue<String>>,
     uv: bool,
     logger: &mut NodeLogger<'_>,
+    wait_for_stop: bool,
 ) -> eyre::Result<RunningNode> {
     let node_id = node.id.clone();
     logger
@@ -72,6 +73,7 @@ pub async fn spawn_node(
         dataflow_descriptor.communication.local,
         queue_sizes,
         clock.clone(),
+        wait_for_stop,
     )
     .await?;
     let send_stdout_to = node

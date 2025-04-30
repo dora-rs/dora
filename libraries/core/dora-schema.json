@@ -272,6 +272,13 @@
             "string",
             "null"
           ]
+        },
+        "wait_for_stop": {
+          "description": "Whether the node's event stream should stay open after all inputs closed. Defaults to true for source nodes.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": true

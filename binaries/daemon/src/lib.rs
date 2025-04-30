@@ -106,6 +106,7 @@ impl Daemon {
         coordinator_addr: SocketAddr,
         machine_id: Option<String>,
         local_listen_port: u16,
+        wait_for_stop: bool,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
 
@@ -137,12 +138,13 @@ impl Daemon {
             None,
             clock,
             Some(remote_daemon_events_tx),
+            wait_for_stop,
         )
         .await
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path, uv: bool) -> eyre::Result<DataflowResult> {
+    pub async fn run_dataflow(dataflow_path: &Path, uv: bool, wait_for_stop: bool) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canonicalize dataflow path")?
@@ -192,6 +194,7 @@ impl Daemon {
             Some(exit_when_done),
             clock.clone(),
             None,
+            wait_for_stop,
         );
 
         let spawn_result = reply_rx
@@ -223,6 +226,7 @@ impl Daemon {
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
         remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+        wait_for_stop: bool,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -376,13 +380,14 @@ impl Daemon {
             timestamp: watchdog_clock.new_timestamp(),
         });
         let events = (external_events, dora_events, watchdog_interval).merge();
-        daemon.run_inner(events).await
+        daemon.run_inner(events, wait_for_stop).await
     }
 
     #[tracing::instrument(skip(incoming_events, self), fields(?self.daemon_id))]
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
+        wait_for_stop: bool,
     ) -> eyre::Result<DaemonRunResult> {
         let mut events = incoming_events;
 
@@ -394,7 +399,7 @@ impl Daemon {
 
             match inner {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
-                    let status = self.handle_coordinator_event(event, reply_tx).await?;
+                    let status = self.handle_coordinator_event(event, reply_tx, wait_for_stop).await?;
 
                     match status {
                         RunStatus::Continue => {}
@@ -480,6 +485,7 @@ impl Daemon {
         &mut self,
         event: DaemonCoordinatorEvent,
         reply_tx: Sender<Option<DaemonCoordinatorReply>>,
+        wait_for_stop: bool,
     ) -> eyre::Result<RunStatus> {
         let status = match event {
             DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes {
@@ -509,6 +515,7 @@ impl Daemon {
                         dataflow_descriptor,
                         spawn_nodes,
                         uv,
+                        wait_for_stop,
                     )
                     .await;
                 if let Err(err) = &result {
@@ -758,6 +765,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
+        wait_for_stop: bool,
     ) -> eyre::Result<()> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
         let dataflow =
@@ -840,6 +848,7 @@ impl Daemon {
                     node_stderr_most_recent,
                     uv,
                     &mut logger,
+                    wait_for_stop,
                 )
                 .await
                 .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))

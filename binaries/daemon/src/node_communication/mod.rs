@@ -42,6 +42,7 @@ pub async fn spawn_listener_loop(
     config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
+    wait_for_stop: bool,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         LocalCommunicationConfig::Tcp => {
@@ -60,7 +61,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
+                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock, wait_for_stop).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -94,7 +95,7 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock));
+                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock, wait_for_stop));
             }
 
             {
@@ -105,7 +106,7 @@ pub async fn spawn_listener_loop(
                 let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, wait_for_stop).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -118,7 +119,7 @@ pub async fn spawn_listener_loop(
                 let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, wait_for_stop).await;
                     tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
                 });
             }
@@ -130,7 +131,7 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, wait_for_stop).await;
                     tracing::debug!(
                         "events close listener loop finished for `{drop_loop_node_id}`"
                     );
@@ -164,7 +165,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
+                unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock, wait_for_stop).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -185,6 +186,7 @@ struct Listener {
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     clock: Arc<uhlc::HLC>,
+    wait_for_stop: bool,
 }
 
 impl Listener {
@@ -192,6 +194,7 @@ impl Listener {
         mut connection: C,
         daemon_tx: mpsc::Sender<Timestamped<Event>>,
         hlc: Arc<uhlc::HLC>,
+        wait_for_stop: bool,
     ) {
         // receive the first message
         let message = match connection
@@ -233,6 +236,7 @@ impl Listener {
                             subscribed_drop_events: None,
                             queue: VecDeque::new(),
                             clock: hlc.clone(),
+                            wait_for_stop,
                         };
                         match listener
                             .run_inner(connection)
