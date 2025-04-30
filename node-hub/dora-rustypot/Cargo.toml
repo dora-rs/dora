@@ -9,4 +9,4 @@ edition = "2021"
 dora-node-api = "0.3.11"
 eyre = "0.6.12"
 rustypot = { git = "https://github.com/pollen-robotics/rustypot", branch = "next-release-1.0" }
-serialport = "4.7.1"
+serialport = { version = "4.7.1", default-features = false }

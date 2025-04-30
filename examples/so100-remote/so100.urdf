@@ -95,13 +95,9 @@
     <child
       link="Rotation_Pitch" />
     <axis
-      xyz="0 1 0" />
+      xyz="0 -1 0" />
       <!-- note for the so100 arm there is no well defined effort/velocity limits at the moment -->
-    <limit
-      lower="-2.1"
-      upper="2.1"
-      effort="0"
-      velocity="0" />
+
   </joint>
   <link
     name="Upper_Arm">
@@ -148,18 +144,14 @@
     type="revolute">
     <origin
       xyz="0 0.1025 0.0306"
-      rpy="1.5708 0 0" />
+      rpy="0 0 0" />
     <parent
       link="Rotation_Pitch" />
     <child
       link="Upper_Arm" />
     <axis
-      xyz="-1 0 0" />
-    <limit
-      lower="-0.1"
-      upper="3.45"
-      effort="0"
-      velocity="0" />
+      xyz="1 0 0" />
+
   </joint>
   <link
     name="Lower_Arm">
@@ -206,18 +198,13 @@
     type="revolute">
     <origin
       xyz="0 0.11257 0.028"
-      rpy="-1.5708 0 0" />
+      rpy="-0.1 0 0" />
     <parent
       link="Upper_Arm" />
     <child
       link="Lower_Arm" />
     <axis
       xyz="1 0 0" />
-    <limit 
-      lower="-0.2"
-      upper="3.14159"
-      effort="0"
-      velocity="0" />
   </joint>
   <link
     name="Wrist_Pitch_Roll">
@@ -322,7 +309,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="Wrist_Roll_Follower_SO101.stl" />
+          filename="Wrist_Roll_Follower_SO101.STL" />
       </geometry>
     </collision>
   </link>
@@ -337,12 +324,8 @@
     <child
       link="Fixed_Jaw" />
     <axis
-      xyz="0 -1 0" />
-    <limit 
-      lower="-3.14159"
-      upper="3.14159"
-      effort="0"
-      velocity="0" />
+      xyz="0 1 0" />
+
   </joint>
   <link
     name="Moving Jaw">
@@ -380,7 +363,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="Moving_Jaw_SO101.stl" />
+          filename="Moving_Jaw_SO101.STL" />
       </geometry>
     </collision>
   </link>
@@ -396,10 +379,6 @@
       link="Moving Jaw" />
     <axis
       xyz="0 0 1" />
-    <limit 
-      lower="0"
-      upper="1.7"
-      effort="0"
-      velocity="0" />
+
   </joint>
 </robot>
