@@ -43,13 +43,15 @@ nodes:
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      #series_so100: so100/pose
       # series_pose: pytorch-kinematics/pose
-      series_so100: pytorch-kinematics/action
-      jointstate_so100: pytorch-kinematics/action
+      series_so100_inference: pytorch-kinematics/action
+      jointstate_so100: so100/pose
+      jointstate_so100_inference: pytorch-kinematics/action
       camera/image: camera/image
       camera/depth: camera/depth
     env:
       so100_urdf: so100.urdf
+      so100_inference_urdf: so100_inference.urdf
       so100_transform: -0.18 0.02 -0.65 0.7 0 0 0.7
+      so100_inference_transform: -0.18 0.02 -0.65 0.7 0 0 0.7
       CAMERA_PITCH: -3.1415
