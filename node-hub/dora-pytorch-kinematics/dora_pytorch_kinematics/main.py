@@ -204,7 +204,7 @@ class RobotKinematics:
         # Instantiate and run the IK solver (core pytorch_kinematics objects/methods)
         ik_solver = pk.PseudoInverseIK(
             self.chain,
-            max_iterations=1_000,
+            max_iterations=5_000,
             retry_configs=q_init,
             joint_limits=torch.tensor(self.chain.get_joint_limits()),
             early_stopping_any_converged=True,
@@ -215,9 +215,9 @@ class RobotKinematics:
             pos_tolerance=1e-3,
         )
         solution_angles = ik_solver.solve(target_pose)
-        if solution_angles.err_rot > 1e-4 or solution_angles.err_pos > 1e-3:
+        if solution_angles.err_rot > 1e-3 or solution_angles.err_pos > 1e-2:
             print(
-                f"IK did not converge: pos_err={solution_angles.err_pos}, rot_err={solution_angles.err_rot}"
+                f"IK did not converge: pos_err={solution_angles.err_pos}, rot_err={solution_angles.err_rot} for target {target_pose}"
             )
             return None
         return solution_angles.solutions.detach()
@@ -261,9 +261,12 @@ def main():
                                 torch.tensor(target[3:6]), convention="XYZ"
                             ),
                         )
-                        target = ROB_TF.inverse().compose(target)
-                        solution = robot.compute_ik(target, last_known_state)
+                        rob_target = ROB_TF.inverse().compose(target)
+                        solution = robot.compute_ik(rob_target, last_known_state)
                         if solution is None:
+                            print(
+                                "No IK Solution for :", target, "skipping this frame."
+                            )
                             continue
 
                         solution = solution.numpy().ravel()
