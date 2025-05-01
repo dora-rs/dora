@@ -89,7 +89,8 @@ def yuv420p_to_bgr_opencv(yuv_array, width, height):
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same
+    # values as the ENV variables.
     """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
         description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image.",

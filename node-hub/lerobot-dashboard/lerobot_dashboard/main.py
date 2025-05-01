@@ -1,4 +1,4 @@
-"""Following Dora node is a minimalistic interface that shows two images and text in a Pygame window."""
+"""A minimalistic interface that shows two images and text in a Pygame window."""
 
 import argparse
 import os
@@ -11,7 +11,10 @@ from dora import Node
 def main():
     """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
-        description="LeRobot Record: This node is used to record episodes of a robot interacting with the environment.",
+        description=(
+            "LeRobot Record: This node is used to record episodes of a robot "
+            "interacting with the environment."
+        ),
     )
 
     parser.add_argument(

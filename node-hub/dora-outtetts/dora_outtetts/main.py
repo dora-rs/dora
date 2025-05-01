@@ -45,7 +45,8 @@ def create_speaker(interface, path):
     """TODO: Add docstring."""
     speaker = interface.create_speaker(
         audio_path=path,
-        # If transcript is not provided, it will be automatically transcribed using Whisper
+        # If transcript is not provided, it will be automatically transcribed using
+        # Whisper
         transcript=None,  # Set to None to use Whisper for transcription
         whisper_model="turbo",  # Optional: specify Whisper model (default: "turbo")
         whisper_device=None,  # Optional: specify device for Whisper (default: None)
@@ -97,7 +98,8 @@ def main(arg_list: list[str] | None = None):
                 )
 
             elif event["id"] == "text":
-                # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
+                # Warning: Make sure to add my_output_id and my_input_id within the
+                # dataflow.
                 text = event["value"][0].as_py()
                 output = interface.generate(
                     text=text,

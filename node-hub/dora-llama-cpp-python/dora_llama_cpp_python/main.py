@@ -41,7 +41,8 @@ def get_model():
         else:
             # Load from HuggingFace
             logging.info(
-                f"Downloading model {MODEL_NAME_OR_PATH} with pattern {MODEL_FILE_PATTERN}"
+                f"Downloading model {MODEL_NAME_OR_PATH} with pattern "
+                f"{MODEL_FILE_PATTERN}"
             )
             llm = Llama.from_pretrained(
                 repo_id=MODEL_NAME_OR_PATH,

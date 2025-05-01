@@ -13,7 +13,10 @@ from ffmpeg import FFmpeg
 def main():
     """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
-        description="Video Encoder: This node is used to record episodes of a robot interacting with the environment.",
+        description=(
+            "Video Encoder: This node is used to record episodes of a robot "
+            "interacting with the environment."
+        ),
     )
 
     parser.add_argument(

@@ -27,8 +27,11 @@ class DemoApp:
         self.stop = False
 
     def on_new_frame(self):
-        """on_new_frame method is called from non-main thread, therefore cannot be used for presenting UI."""
-        self.event.set()  # Notify the main thread to stop waiting and process new frame.
+        """TODO: Add docstring."""
+        # on_new_frame method is called from non-main thread, therefore cannot be used
+        # for presenting UI.
+        # Notify the main thread to stop waiting and process new frame.
+        self.event.set()
 
     def on_stream_stopped(self):
         """TODO: Add docstring."""

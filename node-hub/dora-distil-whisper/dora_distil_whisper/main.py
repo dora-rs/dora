@@ -32,9 +32,11 @@ def remove_text_noise(text: str, text_noise="") -> str:
             text  # Return the original text if text_noise is empty or just whitespace
         )
 
-    # Helper function to normalize text (remove punctuation, make lowercase, and handle hyphens)
+    # Helper function to normalize text (remove punctuation, make lowercase, and handle
+    # hyphens)
     def normalize(s):
-        # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as equivalent
+        # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as
+        # equivalent
         s = re.sub(r"-", " ", s)
         # Remove other punctuation and convert to lowercase
         return re.sub(r"[^\w\s]", "", s).lower()

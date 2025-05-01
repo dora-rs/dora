@@ -9,7 +9,8 @@ from dora import Node
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same
+    # values as the ENV variables.
     """TODO: Add docstring."""
     parser = argparse.ArgumentParser(description="Simple arrow sender")
 
@@ -38,7 +39,8 @@ def main():
 
     if data is None:
         raise ValueError(
-            "No data provided. Please specify `DATA` environment argument or as `--data` argument",
+            "No data provided. Please specify `DATA` environment argument or as "
+            "`--data` argument",
         )
     try:
         data = ast.literal_eval(data)

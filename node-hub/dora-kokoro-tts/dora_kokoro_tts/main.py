@@ -27,7 +27,8 @@ def main():
                 if re.findall(r'[\u4e00-\u9fff]+', text):
                     pipeline = KPipeline(lang_code="z")
                 elif pipeline.lang_code != "a":
-                    pipeline = KPipeline(lang_code="a")  # <= make sure lang_code matches voice
+                    # make sure lang_code matches voice
+                    pipeline = KPipeline(lang_code="a")
 
                 generator = pipeline(
                     text,

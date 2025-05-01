@@ -1,4 +1,8 @@
-"""Mujoco Client: This node is used to represent simulated robot, it can be used to read virtual positions, or can be controlled."""
+"""Implements the Mujoco Client node.
+
+This node is used to represent simulated robot, it can be used to read virtual
+positions, or can be controlled.
+"""
 
 import argparse
 import json
@@ -90,8 +94,8 @@ class Client:
 def main():
     """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
-        description="MujoCo Client: This node is used to represent a MuJoCo simulation. It can be used instead of a "
-        "follower arm to test the dataflow.",
+        description="MujoCo Client: This node is used to represent a MuJoCo "
+        "simulation. It can be used instead of a follower arm to test the dataflow.",
     )
 
     parser.add_argument(
@@ -124,8 +128,8 @@ def main():
     # Check if config is set
     if not os.environ.get("CONFIG") and args.config is None:
         raise ValueError(
-            "The configuration is not set. Please set the configuration of the simulated motors in the environment "
-            "variables or as an argument.",
+            "The configuration is not set. Please set the configuration of the "
+            "simulated motors in the environment variables or as an argument.",
         )
 
     with open(os.environ.get("CONFIG") if args.config is None else args.config) as file:
