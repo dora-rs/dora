@@ -11,6 +11,7 @@ on:
 
 env:
   RUST_LOG: INFO
+  SCCACHE_DISABLE: 1  # Disable sccache to fix musllinux toolchain issues
 
 jobs:
   test:
