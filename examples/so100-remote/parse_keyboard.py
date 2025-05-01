@@ -11,94 +11,85 @@ target_y = -0.02
 target_x = 0.00
 
 place_x = -0.02
-place_y = -0.1
-
-top_z = -0.50
+place_y = 0.2
+place_z = -0.48
+top_z = -0.44
 low_z = -0.57
 
 roll = 1.86
 pitch = 1.43
-yaw_closed = 0.8
-yaw_opened = -0.5
-
-now = time.time()
-time.sleep(1.5)
-
-node.send_output(
-    "action",
-    pa.array([target_x, target_y, top_z, roll, pitch, yaw_closed]),
-    metadata={"encoding": "xyzrpy"},
-)
-
-time.sleep(0.8)
-
-node.send_output(
-    "action",
-    pa.array([target_x, target_y, top_z, roll, pitch, yaw_closed]),
-    metadata={"encoding": "xyzrpy"},
-)
-
-time.sleep(0.5)
-
-node.send_output(
-    "action",
-    pa.array([target_x, target_y, low_z, roll, pitch, yaw_closed]),
-    metadata={"encoding": "xyzrpy"},
-)
-time.sleep(0.2)
+yaw_open = 0.8
+yaw_close = -0.5
 
 
-node.send_output(
-    "action",
-    pa.array([target_x, target_y, low_z, roll, pitch, yaw_opened]),
-    metadata={"encoding": "xyzrpy"},
-)
+def grab(target_x, target_y, low_z, top_z, roll, pitch, yaw_open, yaw_close):
+    node.send_output(
+        "action",
+        pa.array([target_x, target_y, top_z, roll, pitch, yaw_open]),
+        metadata={"encoding": "xyzrpy"},
+    )
+
+    time.sleep(0.8)
+
+    node.send_output(
+        "action",
+        pa.array([target_x, target_y, low_z, roll, pitch, yaw_open]),
+        metadata={"encoding": "xyzrpy"},
+    )
+    time.sleep(0.2)
 
 
-time.sleep(1.0)
+    node.send_output(
+        "action",
+        pa.array([target_x, target_y, low_z, roll, pitch, yaw_close]),
+        metadata={"encoding": "xyzrpy"},
+    )
 
-node.send_output(
-    "action",
-    pa.array([target_x, target_y, top_z, roll, pitch, yaw_opened]),
-    metadata={"encoding": "xyzrpy"},
-)
+    time.sleep(1.0)
 
-time.sleep(0.3)
+    node.send_output(
+        "action",
+        pa.array([target_x, target_y, top_z, roll, pitch, yaw_close]),
+        metadata={"encoding": "xyzrpy"},
+    )
 
 
-node.send_output(
-    "action",
-    pa.array([place_x, place_y, top_z, roll, pitch, yaw_opened]),
-    metadata={"encoding": "xyzrpy"},
-)
+def place(place_x, place_y, place_z, top_z, roll, pitch, yaw_open, yaw_close):
 
-time.sleep(1.0)
+    node.send_output(
+        "action",
+        pa.array([place_x, place_y, top_z, roll, pitch, yaw_close]),
+        metadata={"encoding": "xyzrpy"},
+    )
 
-node.send_output(
-    "action",
-    pa.array([place_x, place_y, low_z, roll, pitch, yaw_opened]),
-    metadata={"encoding": "xyzrpy"},
-)
+    time.sleep(1.0)
 
-time.sleep(0.2)
+    node.send_output(
+        "action",
+        pa.array([place_x, place_y, place_z, roll, pitch, yaw_close]),
+        metadata={"encoding": "xyzrpy"},
+    )
 
-node.send_output(
-    "action",
-    pa.array([place_x, place_y, low_z, roll, pitch, yaw_closed]),
-    metadata={"encoding": "xyzrpy"},
-)
-time.sleep(1.0)
+    time.sleep(1.0)
 
-node.send_output(
-    "action",
-    pa.array([place_x, place_y, top_z, roll, pitch, yaw_opened]),
-    metadata={"encoding": "xyzrpy"},
-)
+    node.send_output(
+        "action",
+        pa.array([place_x, place_y, place_z, roll, pitch, yaw_open]),
+        metadata={"encoding": "xyzrpy"},
+    )
+    time.sleep(0.5)
 
-time.sleep(1.0)
+    node.send_output(
+        "action",
+        pa.array([place_x, place_y, place_z, roll, pitch, yaw_close]),
+        metadata={"encoding": "xyzrpy"},
+    )
 
-node.send_output(
-    "action",
-    pa.array([place_x, place_y, top_z, roll, pitch, yaw_opened]),
-    metadata={"encoding": "xyzrpy"},
-)
+    time.sleep(0.5)
+
+    node.send_output(
+        "action",
+        pa.array([place_x, place_y, top_z, roll, pitch, yaw_close]),
+        metadata={"encoding": "xyzrpy"},
+    )
+
