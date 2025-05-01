@@ -1,4 +1,5 @@
 """TODO: Add docstring."""
+
 import os
 import re
 
@@ -8,11 +9,12 @@ from kokoro import KPipeline
 
 LANGUAGE = os.getenv("LANGUAGE", "en")
 
+
 def main():
     """TODO: Add docstring."""
     if LANGUAGE in ["en", "english"]:
         pipeline = KPipeline(lang_code="a")
-    elif LANGUAGE in ["zh","ch","chinese"]:
+    elif LANGUAGE in ["zh", "ch", "chinese"]:
         pipeline = KPipeline(lang_code="z")
     else:
         print("warning: Defaulting to english speaker as language not found")
@@ -24,7 +26,7 @@ def main():
         if event["type"] == "INPUT":
             if event["id"] == "text":
                 text = event["value"][0].as_py()
-                if re.findall(r'[\u4e00-\u9fff]+', text):
+                if re.findall(r"[\u4e00-\u9fff]+", text):
                     pipeline = KPipeline(lang_code="z")
                 elif pipeline.lang_code != "a":
                     # make sure lang_code matches voice

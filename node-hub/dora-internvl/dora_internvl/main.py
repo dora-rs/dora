@@ -20,8 +20,13 @@ def build_transform(input_size):
     mean, std = IMAGENET_MEAN, IMAGENET_STD
     return transforms.Compose(
         [
-            transforms.Lambda(lambda img: img.convert("RGB") if img.mode != "RGB" else img),
-            transforms.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+            transforms.Lambda(
+                lambda img: img.convert("RGB") if img.mode != "RGB" else img,
+            ),
+            transforms.Resize(
+                (input_size, input_size),
+                interpolation=InterpolationMode.BICUBIC,
+            ),
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std),
         ],
@@ -46,7 +51,11 @@ def find_closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_
 
 
 def dynamic_preprocess(
-    image, min_num=1, max_num=12, image_size=448, use_thumbnail=False,
+    image,
+    min_num=1,
+    max_num=12,
+    image_size=448,
+    use_thumbnail=False,
 ):
     """TODO: Add docstring."""
     orig_width, orig_height = image.size
@@ -64,7 +73,11 @@ def dynamic_preprocess(
 
     # find the closest aspect ratio to the target
     target_aspect_ratio = find_closest_aspect_ratio(
-        aspect_ratio, target_ratios, orig_width, orig_height, image_size,
+        aspect_ratio,
+        target_ratios,
+        orig_width,
+        orig_height,
+        image_size,
     )
 
     # calculate the target width and height
@@ -97,7 +110,10 @@ def load_image(image_array: np.array, input_size=448, max_num=12):
     image = Image.fromarray(image_array).convert("RGB")
     transform = build_transform(input_size=input_size)
     images = dynamic_preprocess(
-        image, image_size=input_size, use_thumbnail=True, max_num=max_num,
+        image,
+        image_size=input_size,
+        use_thumbnail=True,
+        max_num=max_num,
     )
     pixel_values = [transform(image) for image in images]
     return torch.stack(pixel_values)
@@ -110,7 +126,8 @@ def main():
     model_path = os.getenv("MODEL", "OpenGVLab/InternVL2-1B")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-    # If you want to load a model using multiple GPUs, please refer to the `Multiple GPUs` section.
+    # If you want to load a model using multiple GPUs, please refer to the
+    # `Multiple GPUs` section.
     model = (
         AutoModel.from_pretrained(
             model_path,
@@ -123,7 +140,9 @@ def main():
         .to(device)
     )
     tokenizer = AutoTokenizer.from_pretrained(
-        model_path, trust_remote_code=True, use_fast=False,
+        model_path,
+        trust_remote_code=True,
+        use_fast=False,
     )
 
     node = Node()
@@ -172,7 +191,10 @@ def main():
                     )
                     generation_config = dict(max_new_tokens=1024, do_sample=True)
                     response = model.chat(
-                        tokenizer, pixel_values, question, generation_config,
+                        tokenizer,
+                        pixel_values,
+                        question,
+                        generation_config,
                     )
                     node.send_output(
                         "text",

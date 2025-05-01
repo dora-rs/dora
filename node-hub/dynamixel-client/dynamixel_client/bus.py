@@ -29,13 +29,15 @@ def wrap_joints_and_values(
 
     :param joints: A list, numpy array, or pyarrow array of joint names.
     :type joints: Union[list[str], np.array, pa.Array]
-    :param values: A single integer value, or a list, numpy array, or pyarrow array of integer values.
-                   If a single integer is provided, it will be broadcasted to all joints.
+    :param values: A single integer value, or a list, numpy array, or pyarrow array of
+                   integer values. If a single integer is provided, it will be
+                   broadcasted to all joints.
     :type values: Union[int, list[int], np.array, pa.Array]
 
     :return: A structured array with two fields:
              - "joints": A string field containing the names of the joints.
-             - "values": An Int32Array containing the values corresponding to the joints.
+             - "values": An Int32Array containing the values corresponding to the
+             joints.
     :rtype: pa.StructArray
 
     :raises ValueError: If lengths of joints and values do not match.
@@ -46,14 +48,16 @@ def wrap_joints_and_values(
     values = [100, 200, 300]
     struct_array = wrap_joints_and_values(joints, values)
 
-    This example wraps the given joints and their corresponding values into a structured array.
+    This example wraps the given joints and their corresponding values into a structured
+    array.
 
     Another example with a single integer value:
     joints = ["shoulder_pan", "shoulder_lift", "elbow_flex"]
     value = 150
     struct_array = wrap_joints_and_values(joints, value)
 
-    This example broadcasts the single integer value to all joints and wraps them into a structured array.
+    This example broadcasts the single integer value to all joints and wraps them into a
+    structured array.
 
     """
     if isinstance(values, int):
@@ -71,7 +75,9 @@ def wrap_joints_and_values(
         mask = values.is_null()
 
     return pa.StructArray.from_arrays(
-        arrays=[joints, values], names=["joints", "values"], mask=mask,
+        arrays=[joints, values],
+        names=["joints", "values"],
+        mask=mask,
     ).drop_null()
 
 
@@ -248,8 +254,8 @@ class DynamixelBus:
                 ]
             else:
                 raise NotImplementedError(
-                    f"Value of the number of bytes to be sent is expected to be in [1, 2, 4], but {packet_bytes_size} "
-                    f"is provided instead.",
+                    f"Value of the number of bytes to be sent is expected to be in "
+                    f"[1, 2, 4], but {packet_bytes_size} is provided instead.",
                 )
 
             if init_group:
@@ -260,8 +266,8 @@ class DynamixelBus:
         comm = self.group_writers[group_key].txPacket()
         if comm != COMM_SUCCESS:
             raise ConnectionError(
-                f"Write failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}",
+                f"Write failed due to communication error on port {self.port} for "
+                f"group_key {group_key}: {self.packet_handler.getTxRxResult(comm)}",
             )
 
     def read(self, data_name: str, motor_names: pa.Array) -> pa.StructArray:
@@ -291,14 +297,16 @@ class DynamixelBus:
         comm = self.group_readers[group_key].txRxPacket()
         if comm != COMM_SUCCESS:
             raise ConnectionError(
-                f"Read failed due to communication error on port {self.port} for group_key {group_key}: "
-                f"{self.packet_handler.getTxRxResult(comm)}",
+                f"Read failed due to communication error on port {self.port} for "
+                f"group_key {group_key}: {self.packet_handler.getTxRxResult(comm)}",
             )
 
         values = pa.array(
             [
                 self.group_readers[group_key].getData(
-                    idx, packet_address, packet_bytes_size,
+                    idx,
+                    packet_address,
+                    packet_bytes_size,
                 )
                 for idx in motor_ids
             ],

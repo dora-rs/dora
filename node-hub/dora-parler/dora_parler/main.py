@@ -18,7 +18,8 @@ from transformers import (
     set_seed,
 )
 
-device = "cuda:0"  # if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+# if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu" # noqa: E501
+device = "cuda:0"
 torch_dtype = torch.float16 if device != "cpu" else torch.float32
 
 DEFAULT_PATH = "ylacombe/parler-tts-mini-jenny-30H"
@@ -33,7 +34,9 @@ if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
         MODEL_NAME_OR_PATH = snapshot_download(MODEL_NAME_OR_PATH)
 
 model = ParlerTTSForConditionalGeneration.from_pretrained(
-    MODEL_NAME_OR_PATH, torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+    MODEL_NAME_OR_PATH,
+    torch_dtype=torch_dtype,
+    low_cpu_mem_usage=True,
 ).to(device)
 model.generation_config.cache_implementation = "static"
 model.forward = torch.compile(model.forward, mode="default")
@@ -46,7 +49,8 @@ SEED = 42
 
 default_text = "Hello, my name is Reachy the best robot in the world !"
 default_description = (
-    "Jenny delivers her words quite expressively, in a very confined sounding environment with clear audio quality.",
+    "Jenny delivers her words quite expressively, in a very confined sounding "
+    "environment with clear audio quality.",
 )
 
 
@@ -78,7 +82,10 @@ class InterruptStoppingCriteria(StoppingCriteria):
         self.stop_signal = False
 
     def __call__(
-        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs,
+        self,
+        input_ids: torch.LongTensor,
+        scores: torch.FloatTensor,
+        **kwargs,
     ) -> bool:
         """TODO: Add docstring."""
         return self.stop_signal

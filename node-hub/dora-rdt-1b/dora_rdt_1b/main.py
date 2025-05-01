@@ -18,7 +18,8 @@ from dora_rdt_1b.RoboticsDiffusionTransformer.configs.state_vec import (
 
 VISION_DEFAULT_PATH = "robotics-diffusion-transformer/rdt-1b"
 ROBOTIC_MODEL_NAME_OR_PATH = os.getenv(
-    "ROBOTIC_MODEL_NAME_OR_PATH", VISION_DEFAULT_PATH,
+    "ROBOTIC_MODEL_NAME_OR_PATH",
+    VISION_DEFAULT_PATH,
 )
 LANGUAGE_EMBEDDING_PATH = os.getenv("LANGUAGE_EMBEDDING", "lang_embed.pt")
 
@@ -55,7 +56,7 @@ def get_policy():
 
 def get_vision_model():
     """TODO: Add docstring."""
-    from dora_rdt_1b.RoboticsDiffusionTransformer.models.multimodal_encoder.siglip_encoder import (
+    from dora_rdt_1b.RoboticsDiffusionTransformer.models.multimodal_encoder.siglip_encoder import (  # noqa: E501
         SiglipVisionTower,
     )
 
@@ -79,9 +80,11 @@ def get_language_embeddings():
         map_location=device,
     )
 
+    # Size: (b, L_lang, D) or None, language condition tokens (variable length),
+    # dimension D is assumed to be the same as the hidden size.
     return lang_embeddings.unsqueeze(
         0,
-    )  # Size:  (b, L_lang, D) or None, language condition tokens (variable length),    dimension D is assumed to be the same as the hidden size.
+    )
 
 
 def expand2square(pil_img, background_color):
@@ -99,15 +102,17 @@ def expand2square(pil_img, background_color):
 
 
 def process_image(rgbs_lst, image_processor, vision_encoder):
-    # previous_image_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/img.jpeg"
+    # previous_image_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/img.jpeg"  # noqa: E501
     # # previous_image = None # if t = 0
     # previous_image = Image.fromarray(previous_image_path).convert("RGB")  # if t > 0
 
-    # current_image_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/img.jpeg"
+    # current_image_path = "/mnt/hpfs/1ms.ai/dora/node-hub/dora-rdt-1b/dora_rdt_1b/RoboticsDiffusionTransformer/img.jpeg"  # noqa: E501
     # current_image = Image.fromarray(current_image_path).convert("RGB")
 
-    # here I suppose you only have an image from exterior (e.g., 3rd person view) and you don't have any state information
-    # the images should arrange in sequence [exterior_image, right_wrist_image, left_wrist_image] * image_history_size (e.g., 2)
+    # here I suppose you only have an image from exterior (e.g., 3rd person view) and
+    # you don't have any state information the images should arrange in sequence
+    # [exterior_image, right_wrist_image, left_wrist_image] * image_history_size
+    # (e.g., 2)
     # rgbs_lst = [[previous_image, None, None], [current_image, None, None]]
     # if your have an right_wrist_image, then it should be
     # rgbs_lst = [
@@ -163,21 +168,27 @@ def get_states(proprio):
 
     b, n = 1, 1  # batch size and state history size
     states = torch.zeros(
-        (b, n, config["model"]["state_token_dim"]), device=DEVICE, dtype=DTYPE,
+        (b, n, config["model"]["state_token_dim"]),
+        device=DEVICE,
+        dtype=DTYPE,
     )
     # suppose you do not have proprio
-    # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
+    # it's kind of tricky, I strongly suggest adding proprio as input and further
+    # fine-tuning
     proprio = torch.tensor(proprio, device=DEVICE, dtype=DTYPE).reshape(
         (1, 1, -1),
     )  # b, n = 1, 1  # batch size and state history size
 
     # if you have proprio, you can do like this
-    # format like this: [arm_joint_0_pos, arm_joint_1_pos, arm_joint_2_pos, arm_joint_3_pos, arm_joint_4_pos, arm_joint_5_pos, arm_joint_6_pos, gripper_open]
+    # format like this: [arm_joint_0_pos, arm_joint_1_pos, arm_joint_2_pos,
+    # arm_joint_3_pos, arm_joint_4_pos, arm_joint_5_pos, arm_joint_6_pos, gripper_open]
     # proprio = torch.tensor([0, 1, 2, 3, 4, 5, 6, 0.5]).reshape((1, 1, -1))
     states[:, :, state_indices] = proprio
 
     state_elem_mask = torch.zeros(
-        (1, config["model"]["state_token_dim"]), device=DEVICE, dtype=torch.bool,
+        (1, config["model"]["state_token_dim"]),
+        device=DEVICE,
+        dtype=torch.bool,
     )
 
     state_elem_mask[:, state_indices] = True
@@ -213,7 +224,11 @@ def main():
                     metadata = event["metadata"]
                     encoding = metadata["encoding"]
 
-                    if encoding == "bgr8" or encoding == "rgb8" or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]:
+                    if (
+                        encoding == "bgr8"
+                        or encoding == "rgb8"
+                        or encoding in ["jpeg", "jpg", "jpe", "bmp", "webp", "png"]
+                    ):
                         channels = 3
                         storage_type = np.uint8
                     else:
@@ -243,7 +258,8 @@ def main():
                     else:
                         raise RuntimeError(f"Unsupported image encoding: {encoding}")
                     frames[f"last_{event_id}"] = frames.get(
-                        event_id, Image.fromarray(frame),
+                        event_id,
+                        Image.fromarray(frame),
                     )
                     frames[event_id] = Image.fromarray(frame)
                 elif "jointstate" in event_id:
@@ -270,7 +286,9 @@ def main():
                         ],
                     ]
                     image_embeds = process_image(
-                        rgbs_lst, image_processor, vision_encoder,
+                        rgbs_lst,
+                        image_processor,
+                        vision_encoder,
                     )
 
                     ## Embed states
@@ -285,19 +303,24 @@ def main():
                     actions = rdt.predict_action(
                         lang_tokens=lang_embeddings,
                         lang_attn_mask=torch.ones(
-                            lang_embeddings.shape[:2], dtype=torch.bool, device=DEVICE,
+                            lang_embeddings.shape[:2],
+                            dtype=torch.bool,
+                            device=DEVICE,
                         ),
                         img_tokens=image_embeds,
                         state_tokens=states,  # how can I get this?
                         action_mask=state_elem_mask.unsqueeze(1),  # how can I get this?
                         ctrl_freqs=torch.tensor(
-                            [25.0], device=DEVICE,
+                            [25.0],
+                            device=DEVICE,
                         ),  # would this default work?
                     )  # (1, chunk_size, 128)
 
                     # select the meaning action via STATE_INDICES
                     action = actions[
-                        :, :, state_indices,
+                        :,
+                        :,
+                        state_indices,
                     ]  # (1, chunk_size, len(STATE_INDICES)) = (1, chunk_size, 7+ 1)
                     action = action.detach().float().to("cpu").numpy()
                     node.send_output("action", pa.array(action.ravel()))

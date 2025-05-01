@@ -93,7 +93,10 @@ def main():
     # values as the ENV variables.
     """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
-        description="OpenCV Plotter: This node is used to plot text and bounding boxes on an image.",
+        description=(
+            "OpenCV Plotter: This node is used to plot text and bounding boxes on an "
+            "image."
+        ),
     )
 
     parser.add_argument(

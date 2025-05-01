@@ -1,4 +1,5 @@
 """TODO: Add docstring."""
+
 import os
 import time
 
@@ -89,7 +90,9 @@ def main():
             goto(
                 {
                     joint: pos
-                    for joint, pos in zip(reachy.r_arm.joints.values(), joint_pose, strict=False)
+                    for joint, pos in zip(
+                        reachy.r_arm.joints.values(), joint_pose, strict=False
+                    )
                 },
                 duration=0.200,
             )
@@ -124,7 +127,9 @@ def main():
                     {
                         joint: pos
                         for joint, pos in zip(
-                            reachy.r_arm.joints.values(), default_pose, strict=False,
+                            reachy.r_arm.joints.values(),
+                            default_pose,
+                            strict=False,
                         )
                     },
                     duration=3,

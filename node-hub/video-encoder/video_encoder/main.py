@@ -1,4 +1,5 @@
 """TODO : Doc String."""
+
 import argparse
 import os
 from pathlib import Path
@@ -119,7 +120,10 @@ def main():
                         .option("y")
                         .input(str(out_dir / "frame_%06d.png"), f="image2", r=fps)
                         .output(
-                            str(video_path), vcodec="libx264", g=2, pix_fmt="yuv444p",
+                            str(video_path),
+                            vcodec="libx264",
+                            g=2,
+                            pix_fmt="yuv444p",
                         )
                     )
 

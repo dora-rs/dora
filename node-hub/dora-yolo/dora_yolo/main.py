@@ -14,7 +14,10 @@ def main():
     # values as the ENV variables.
     """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
-        description="UltraLytics YOLO: This node is used to perform object detection using the UltraLytics YOLO model.",
+        description=(
+            "UltraLytics YOLO: This node is used to perform object detection using "
+            "the UltraLytics YOLO model."
+        ),
     )
 
     parser.add_argument(

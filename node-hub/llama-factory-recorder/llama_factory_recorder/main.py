@@ -19,9 +19,9 @@ DEFAULT_QUESTION = os.getenv(
 def write_dict_to_json(file_path, key: str, new_data):
     """Write a dictionary to a JSON file.
 
-    If the JSON file already contains an object with the given key mapping to a list of entries,
-    the new data will be appended to that list. Otherwise, a new key is created with a list
-    containing the provided dictionary.
+    If the JSON file already contains an object with the given key mapping to a list of
+    entries, the new data will be appended to that list. Otherwise, a new key is created
+    with a list containing the provided dictionary.
 
     Parameters
     ----------
@@ -54,9 +54,13 @@ def write_dict_to_json(file_path, key: str, new_data):
 
 
 def save_image_and_add_to_json(
-    frame_dict: dict, root_path, llama_root_path, jsonl_file, messages,
+    frame_dict: dict,
+    root_path,
+    llama_root_path,
+    jsonl_file,
+    messages,
 ):
-    """Save an image from a NumPy array and add a new JSON object as a line to a JSONL file.
+    """Save an image from a NumPy array and add a new object as a line to a JSONL file.
 
     The function generates a sequential numeric image filename starting from 0 and
     follows the provided template structure.
@@ -74,7 +78,8 @@ def save_image_and_add_to_json(
     messages : list of dict
         List of dictionaries, each containing 'content' and 'role'.
 
-    The image is saved as a PNG file, and the JSONL entry includes the 'messages' and 'images' keys.
+    The image is saved as a PNG file, and the JSONL entry includes the 'messages' and
+    'images' keys.
 
     """
     # Create the root directory if it doesn't exist
@@ -114,7 +119,8 @@ def main():
     node = Node()
 
     assert os.getenv("LLAMA_FACTORY_ROOT_PATH"), (
-        "LLAMA_FACTORY_ROOT_PATH is not set, Either git clone the repo or set the environment variable"
+        "LLAMA_FACTORY_ROOT_PATH is not set, Either git clone the repo or set the "
+        "environment variable"
     )
     llama_factory_root_path = Path(os.getenv("LLAMA_FACTORY_ROOT_PATH")) / "data"
 

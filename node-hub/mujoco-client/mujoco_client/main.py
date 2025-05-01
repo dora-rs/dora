@@ -113,7 +113,10 @@ def main():
     )
 
     parser.add_argument(
-        "--config", type=str, help="The configuration of the joints.", default=None,
+        "--config",
+        type=str,
+        help="The configuration of the joints.",
+        default=None,
     )
 
     args = parser.parse_args()

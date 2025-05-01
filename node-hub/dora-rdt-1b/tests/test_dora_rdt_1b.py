@@ -81,8 +81,10 @@ def test_load_dummy_image():
     current_image_path = "/path/to/img.jpeg"
     current_image = Image.open(current_image_path).convert("RGB")
 
-    # here I suppose you only have an image from exterior (e.g., 3rd person view) and you don't have any state information
-    # the images should arrange in sequence [exterior_image, right_wrist_image, left_wrist_image] * image_history_size (e.g., 2)
+    # here I suppose you only have an image from exterior (e.g., 3rd person view) and
+    # you don't have any state information the images should arrange in sequence
+    # [exterior_image, right_wrist_image, left_wrist_image] * image_history_size
+    # (e.g., 2)
     rgbs_lst = [[previous_image, None, None], [current_image, None, None]]
     # if your have an right_wrist_image, then it should be
     # rgbs_lst = [
@@ -172,7 +174,8 @@ def test_dummy_states():
         return
 
     # suppose you do not have proprio
-    # it's kind of tricky, I strongly suggest adding proprio as input and further fine-tuning
+    # it's kind of tricky, I strongly suggest adding proprio as input and further
+    # fine-tuning
     b, n = 1, 1  # batch size and state history size
     states = torch.zeros(
         (b, n, config["model"]["state_token_dim"]),
@@ -181,7 +184,8 @@ def test_dummy_states():
     )
 
     # if you have proprio, you can do like this
-    # format like this: [arm_joint_0_pos, arm_joint_1_pos, arm_joint_2_pos, arm_joint_3_pos, arm_joint_4_pos, arm_joint_5_pos, arm_joint_6_pos, gripper_open]
+    # format like this: [arm_joint_0_pos, arm_joint_1_pos, arm_joint_2_pos,
+    # arm_joint_3_pos, arm_joint_4_pos, arm_joint_5_pos, arm_joint_6_pos, gripper_open]
     # proprio = torch.tensor([0, 1, 2, 3, 4, 5, 6, 0.5]).reshape((1, 1, -1))
     # states[:, :, state_indices] = proprio
 

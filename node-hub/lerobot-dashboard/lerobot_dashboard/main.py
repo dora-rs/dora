@@ -81,7 +81,9 @@ def main():
                 }
 
                 image_left = pygame.image.frombuffer(
-                    image["data"], (image["width"], image["height"]), "BGR",
+                    image["data"],
+                    (image["width"], image["height"]),
+                    "BGR",
                 )
 
             elif event_id == "image_right":
@@ -94,7 +96,9 @@ def main():
                 }
 
                 image_right = pygame.image.frombuffer(
-                    image["data"], (image["width"], image["height"]), "BGR",
+                    image["data"],
+                    (image["width"], image["height"]),
+                    "BGR",
                 )
 
             elif event_id == "tick":

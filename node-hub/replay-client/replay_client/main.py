@@ -1,6 +1,7 @@
-"""Replay Client: This node is used to represent a leader robot and send a sequence of goals to the dataflow,.
+"""Implement the Replay Client.
 
-reading a dataset of actions and joints from a specific episode.
+This node is used to represent a leader robot and send a sequence of goals to the
+dataflow, reading a dataset of actions and joints from a specific episode.
 """
 
 import argparse
@@ -78,7 +79,10 @@ class Client:
 def main():
     """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
-        description="Replay Client: This node is used to replay a sequence of goals for a followee robot.",
+        description=(
+            "Replay Client: This node is used to replay a sequence of goals for a "
+            "followee robot."
+        ),
     )
 
     parser.add_argument(

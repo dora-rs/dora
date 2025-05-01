@@ -43,7 +43,8 @@ def main():
                 len(speech_timestamps) > 0
                 and len(audio) > MIN_AUDIO_SAMPLING_DURATION_MS * sr / 1000
             ):
-                # Check if the audio is not cut at the end. And only return if there is a long time spent
+                # Check if the audio is not cut at the end. And only return if there is
+                # a long time spent
                 if speech_timestamps[-1]["end"] == len(audio):
                     node.send_output(
                         "timestamp_start",
