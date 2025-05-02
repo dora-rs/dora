@@ -204,7 +204,7 @@ class RobotKinematics:
         # Instantiate and run the IK solver (core pytorch_kinematics objects/methods)
         ik_solver = pk.PseudoInverseIK(
             self.chain,
-            max_iterations=5_000,
+            max_iterations=1_000,
             retry_configs=q_init,
             joint_limits=torch.tensor(self.chain.get_joint_limits()),
             early_stopping_any_converged=True,
