@@ -11,7 +11,7 @@ from dora import Node
 from pytorch_kinematics.transforms.rotation_conversions import matrix_to_euler_angles
 
 TRANSFORM = np.array(os.getenv("TRANSFORM", "0. 0. 0. 0. 0. 0. 1.").split(" ")).astype(
-    np.float32
+    np.float32,
 )
 pos = torch.tensor([TRANSFORM[0], TRANSFORM[1], TRANSFORM[2]])
 rot = torch.tensor(
@@ -26,9 +26,11 @@ ROB_TF = pk.Transform3d(pos=pos, rot=rot)
 
 
 def get_xyz_rpy_array_from_transform3d(
-    transform: "pytorch_kinematics.transforms.Transform3d", convention: str = "XYZ"
+    transform: "pk.transforms.Transform3d", convention: str = "XYZ",
 ) -> torch.Tensor:
-    """Extracts translation (xyz) and rotation (RPY Euler angles in radians)
+    """XYZ-RPY conversion.
+    
+    Extract translation (xyz) and rotation (RPY Euler angles in radians)
     from a pytorch_kinematics Transform3d object and returns them concatenated
     into a single tensor.
 
@@ -59,7 +61,7 @@ def get_xyz_rpy_array_from_transform3d(
     # Convert the rotation matrix to Euler angles in radians
     # The matrix_to_euler_angles function likely exists based on pytorch3d's structure
     rpy = matrix_to_euler_angles(
-        rotation_matrix, convention=convention
+        rotation_matrix, convention=convention,
     )  # Shape (..., 3)
 
     # Concatenate xyz and rpy along the last dimension
@@ -67,9 +69,7 @@ def get_xyz_rpy_array_from_transform3d(
 
 
 class RobotKinematics:
-    """Concise wrapper for pytorch_kinematics FK and IK operations,
-    closely mirroring library usage patterns.
-    """
+    """wrapper for pytorch_kinematics FK and IK operations."""
 
     def __init__(
         self,
@@ -77,7 +77,7 @@ class RobotKinematics:
         end_effector_link: str,
         device: Union[str, torch.device] = "cpu",
     ):
-        """Initializes the kinematic chain from a URDF.
+        """Initialize the kinematic chain from a URDF.
 
         Args:
             urdf_path (str): Path to the URDF file.
@@ -89,7 +89,7 @@ class RobotKinematics:
         try:
             # Load kinematic chain (core pytorch_kinematics object)
             self.chain = pk.build_serial_chain_from_urdf(
-                open(urdf_path, mode="rb").read(), end_effector_link
+                open(urdf_path, mode="rb").read(), end_effector_link,
             ).to(device=self.device)
         except Exception as e:
             raise RuntimeError(f"Failed to build chain from URDF: {urdf_path}") from e
@@ -97,14 +97,14 @@ class RobotKinematics:
         self.num_joints = len(self.chain.get_joint_parameter_names(exclude_fixed=True))
         # Default initial guess for IK if none provided
         self._default_q = torch.zeros(
-            (1, self.num_joints), device=self.device, dtype=torch.float32
+            (1, self.num_joints), device=self.device, dtype=torch.float32,
         )
         # print(f"Initialized RobotKinematicsConcise: {self.num_joints} joints, EE='{end_effector_link}', device='{self.device}'") # Optional print
 
     def _prepare_joint_tensor(
-        self, joints: Union[List[float], torch.Tensor], batch_dim_required: bool = True
+        self, joints: Union[List[float], torch.Tensor], batch_dim_required: bool = True,
     ) -> torch.Tensor:
-        """Validates and formats joint angles input tensor."""
+        """Validate and formats joint angles input tensor."""
         if isinstance(joints, list):
             j = torch.tensor(joints, dtype=torch.float32, device=self.device)
         elif isinstance(joints, np.ndarray):
@@ -113,7 +113,7 @@ class RobotKinematics:
             j = joints.to(device=self.device, dtype=torch.float32)
         else:
             raise TypeError(
-                "Joints must be a list or torch.Tensor and got: ", joints.type
+                "Joints must be a list or torch.Tensor and got: ", joints.type,
             )
 
         if j.ndim == 1:
@@ -124,7 +124,7 @@ class RobotKinematics:
         elif j.ndim == 2:
             if j.shape[1] != self.num_joints:
                 raise ValueError(
-                    f"Expected {self.num_joints} joints (dim 1), got {j.shape[1]}"
+                    f"Expected {self.num_joints} joints (dim 1), got {j.shape[1]}",
                 )
             if batch_dim_required and j.shape[0] != 1:
                 # Most common IK solvers expect batch=1 for initial guess, FK can handle batches
@@ -135,9 +135,9 @@ class RobotKinematics:
         return j
 
     def compute_fk(
-        self, joint_angles: Union[List[float], torch.Tensor]
+        self, joint_angles: Union[List[float], torch.Tensor],
     ) -> pk.Transform3d:
-        """Computes Forward Kinematics (FK).
+        """Compute Forward Kinematics (FK).
 
         Args:
             joint_angles (Union[List[float], torch.Tensor]): Joint angles (radians).
@@ -150,11 +150,11 @@ class RobotKinematics:
         # robot frame
 
         angles_tensor = self._prepare_joint_tensor(
-            joint_angles, batch_dim_required=False
+            joint_angles, batch_dim_required=False,
         )  # FK handles batches naturally
         # Direct call to pytorch_kinematics FK
         goal_in_rob_frame_tf = self.chain.forward_kinematics(
-            angles_tensor, end_only=True
+            angles_tensor, end_only=True,
         )
         goal_tf = ROB_TF.compose(goal_in_rob_frame_tf)
         return goal_tf
@@ -167,7 +167,7 @@ class RobotKinematics:
         lr: float = 0.1,
         error_tolerance: float = 1e-4,
     ) -> Tuple[torch.Tensor, bool]:
-        """Computes Inverse Kinematics (IK) using PseudoInverseIK.
+        """Compute Inverse Kinematics (IK) using PseudoInverseIK.
 
         Args:
             target_pose (pk.Transform3d): Target end-effector pose (batch size 1).
@@ -186,7 +186,7 @@ class RobotKinematics:
         target_pose = target_pose.to(device=self.device)
         if target_pose.get_matrix().shape[0] != 1:
             raise ValueError(
-                "target_pose must have batch size 1 for this IK method."
+                "target_pose must have batch size 1 for this IK method.",
             )  # Common limitation
 
         # Prepare initial guess (q_init)
@@ -196,7 +196,7 @@ class RobotKinematics:
         )
         if q_init.shape[0] != 1:
             raise ValueError(
-                "initial_guess must result in batch size 1 for this IK setup."
+                "initial_guess must result in batch size 1 for this IK setup.",
             )  # Enforce batch=1 for guess
 
         q_init = q_init.requires_grad_(True)  # Need gradient for solver
@@ -217,7 +217,7 @@ class RobotKinematics:
         solution_angles = ik_solver.solve(target_pose)
         if solution_angles.err_rot > 1e-3 or solution_angles.err_pos > 1e-2:
             print(
-                f"IK did not converge: pos_err={solution_angles.err_pos}, rot_err={solution_angles.err_rot} for target {target_pose}"
+                f"IK did not converge: pos_err={solution_angles.err_pos}, rot_err={solution_angles.err_rot} for target {target_pose}",
             )
             return None
         return solution_angles.solutions.detach()
@@ -243,7 +243,7 @@ def main():
                         target = event["value"].to_numpy()
                         target = target.astype(np.float32)
                         target = pk.Transform3d(
-                            pos=target[:3], rot=torch.tensor(target[3:7])
+                            pos=target[:3], rot=torch.tensor(target[3:7]),
                         )
                         solution = robot.compute_ik(target, last_known_state)
                         metadata["encoding"] = "jointstate"
@@ -258,14 +258,14 @@ def main():
                         target = pk.Transform3d(
                             pos=target[:3],
                             rot=pk.transforms.euler_angles_to_matrix(
-                                torch.tensor(target[3:6]), convention="XYZ"
+                                torch.tensor(target[3:6]), convention="XYZ",
                             ),
                         )
                         rob_target = ROB_TF.inverse().compose(target)
                         solution = robot.compute_ik(rob_target, last_known_state)
                         if solution is None:
                             print(
-                                "No IK Solution for :", target, "skipping this frame."
+                                "No IK Solution for :", target, "skipping this frame.",
                             )
                             continue
 
@@ -273,11 +273,11 @@ def main():
                         delta_angles = solution - last_known_state
 
                         valid = np.all(
-                            (delta_angles >= -np.pi) & (delta_angles <= np.pi)
+                            (delta_angles >= -np.pi) & (delta_angles <= np.pi),
                         )
                         if not valid:
                             print(
-                                "IK solution is not valid, as the rotation are too wide. skipping."
+                                "IK solution is not valid, as the rotation are too wide. skipping.",
                             )
                             continue
                         metadata["encoding"] = "jointstate"
