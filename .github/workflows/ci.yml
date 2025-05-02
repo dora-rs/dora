@@ -11,7 +11,6 @@ on:
 
 env:
   RUST_LOG: INFO
-  SCCACHE_DISABLE: 1  # Disable sccache to fix musllinux toolchain issues
 
 jobs:
   test:
@@ -519,6 +518,10 @@ jobs:
           - runner: macos-13
             target: x86_64-apple-darwin
       fail-fast: false
+    env:
+      # Disable sccache only for musllinux targets to fix toolchain compatibility issues
+      # For other targets, keep sccache enabled (0) to benefit from caching
+      SCCACHE_DISABLE: ${{ contains(matrix.platform.target, 'musl') && 1 || 0 }}
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
