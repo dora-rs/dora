@@ -17,10 +17,6 @@ fn main() -> Result<()> {
         .split(&[',', ' '][..])
         .map(|s| s.parse::<u8>().unwrap())
         .collect::<Vec<u8>>();
-    let torque = std::env::var("TORQUE")
-        .unwrap_or_else(|_| "false".to_string())
-        .parse::<bool>()
-        .context("Invalid torque")?;
 
     let serial_port = serialport::new(serialportname, baudrate)
         .timeout(Duration::from_millis(1000))
@@ -30,10 +26,17 @@ fn main() -> Result<()> {
         .with_protocol_v1()
         .with_serial_port(serial_port);
 
-    if torque {
+    if let Ok(torque) = std::env::var("TORQUE") {
         let truthies = vec![true; ids.len()];
+
         c.write_torque_enable(&ids, &truthies)
             .expect("could not enable torque");
+
+        if let Ok(torque_limit) = torque.parse::<u16>() {
+            let limits = vec![torque_limit; ids.len()];
+            c.write_torque_limit(&ids, &limits)
+                .expect("could not enable torque");
+        }
     } else {
         let falsies = vec![false; ids.len()];
         c.write_torque_enable(&ids, &falsies)

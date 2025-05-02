@@ -10,7 +10,7 @@ nodes:
       - pose
     env:
       PORT: /dev/ttyACM0
-      TORQUE: true
+      TORQUE: 2000
       IDS: 1 2 3 4 5 6
 
   - id: camera
