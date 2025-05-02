@@ -501,6 +501,11 @@ jobs:
     strategy:
       matrix:
         platform:
+          # Test matrix includes 8 different targets:
+          # - 3 GNU Linux targets (x86_64, i686, aarch64)
+          # - 2 musllinux targets (aarch64, armv7)
+          # - 2 Windows targets (x86_64)
+          # - 2 macOS targets (aarch64, x86_64)
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04
