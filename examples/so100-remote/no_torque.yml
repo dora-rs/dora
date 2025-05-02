@@ -9,7 +9,6 @@ nodes:
     env:
       PORT: /dev/ttyACM0
       IDS: 1 2 3 4 5 6
-      TORQUE: false
 
   - id: camera
     build: pip install -e ../../node-hub/dora-pyrealsense

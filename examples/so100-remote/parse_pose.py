@@ -6,7 +6,7 @@ import pyarrow as pa
 from dora import Node
 
 node = Node()
-top_z = -0.48
+top_z = -0.5
 low_z = -0.57
 
 roll = 1.86
@@ -30,7 +30,7 @@ def grab(target_x, target_y, low_z, top_z, roll, pitch, yaw_open, yaw_close, las
         pa.array([target_x, target_y, low_z, roll, pitch, yaw_open]),
         metadata={"encoding": "xyzrpy"},
     )
-    time.sleep(0.5)
+    time.sleep(0.2)
 
 
     node.send_output(
@@ -39,13 +39,15 @@ def grab(target_x, target_y, low_z, top_z, roll, pitch, yaw_open, yaw_close, las
         metadata={"encoding": "xyzrpy"},
     )
 
-    time.sleep(0.5)
+    time.sleep(0.4)
 
     node.send_output(
         "action",
         pa.array([target_x, target_y, top_z, roll, pitch, yaw_close]),
         metadata={"encoding": "xyzrpy"},
     )
+
+    time.sleep(0.5)
 
     node.send_output(
         "action",
@@ -71,7 +73,16 @@ def place(place_x, place_y, place_z, top_z, roll, pitch, yaw_open, yaw_close, la
         metadata={"encoding": "xyzrpy"},
     )
 
-    time.sleep(0.5)
+    time.sleep(0.2)
+
+
+    node.send_output(
+        "action",
+        pa.array([place_x, place_y, place_z, roll, pitch, yaw_open]),
+        metadata={"encoding": "xyzrpy"},
+    )    
+    
+    time.sleep(0.3)
 
 
     node.send_output(
@@ -80,8 +91,7 @@ def place(place_x, place_y, place_z, top_z, roll, pitch, yaw_open, yaw_close, la
         metadata={"encoding": "xyzrpy"},
     )    
     
-    time.sleep(0.7)
-
+    time.sleep(0.3)
 
     node.send_output(
         "action",
@@ -89,6 +99,7 @@ def place(place_x, place_y, place_z, top_z, roll, pitch, yaw_open, yaw_close, la
         metadata={"encoding": "xyzrpy"},
     )
         
+time.sleep(0.6)
 
 
 node.send_output(
@@ -116,9 +127,7 @@ for event in node:
             
 
             # Adjust z with the size of the gripper
-            z = z + 0.073
-            # y = y - 0.01
-            x = x - 0.01
+            z = z + 0.063
             match action:
                 case "grab":
                     grab(
@@ -134,7 +143,6 @@ for event in node:
                         last_y
                     )
                 case "release":
-                    y = y - 0.02
                     place(
                         x,
                         y,
