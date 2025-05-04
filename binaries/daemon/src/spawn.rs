@@ -85,6 +85,7 @@ pub async fn spawn_node(
         daemon_communication,
         dataflow_descriptor,
         dynamic: node.kind.dynamic(),
+        wait_for_stop: node.wait_for_stop,
     };
 
     let mut child = match node.kind {

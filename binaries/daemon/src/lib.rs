@@ -152,14 +152,14 @@ impl Daemon {
 
         let descriptor = read_as_descriptor(dataflow_path).await?;
         descriptor.check(&working_dir)?;
-        let nodes = descriptor.resolve_aliases_and_set_defaults()?;
+        let resolved_nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
         let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
         let spawn_command = SpawnDataflowNodes {
             dataflow_id,
             working_dir,
-            spawn_nodes: nodes.keys().cloned().collect(),
-            nodes,
+            spawn_nodes: resolved_nodes.keys().cloned().collect(),
+            nodes: resolved_nodes,
             dataflow_descriptor: descriptor,
             uv,
         };

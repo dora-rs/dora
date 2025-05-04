@@ -179,4 +179,6 @@ out/
 #Miscellaneous
 yolo.yml
 
+dora_wait_test/*
+
 ~*
