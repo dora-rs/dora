@@ -25,6 +25,7 @@ pub struct NodeConfig {
     pub daemon_communication: DaemonCommunication,
     pub dataflow_descriptor: Descriptor,
     pub dynamic: bool,
+    pub wait_for_stop: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

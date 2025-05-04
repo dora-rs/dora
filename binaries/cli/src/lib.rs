@@ -105,8 +105,6 @@ enum Command {
         // Use UV to run nodes.
         #[clap(long, action)]
         uv: bool,
-        #[clap(long, action)]
-        wait_for_stop: bool,
     },
     /// Spawn coordinator and daemon in local mode (with default config)
     Up {
@@ -295,17 +293,14 @@ enum Lang {
 }
 
 pub fn lib_main(args: Args) {
-    // 设置 wait_for_stop 为 true，这样默认情况下程序会等待数据流执行完成
-    // 这确保了数据流的完整生命周期被正确管理，并且在运行结束前不会退出
-    // 特别是在运行命令行工具时，用户通常期望程序在完成所有工作后才返回控制权
-    if let Err(err) = run(args, true) {
+    if let Err(err) = run(args) {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:?}");
         std::process::exit(1);
     }
 }
 
-fn run(args: Args, wait_for_stop: bool) -> eyre::Result<()> {
+fn run(args: Args) -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     match &args.command {
         Command::Daemon {
@@ -385,13 +380,13 @@ fn run(args: Args, wait_for_stop: bool) -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Run { dataflow, uv, wait_for_stop } => {
+        Command::Run { dataflow, uv } => {
             let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
             let rt = Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .context("tokio runtime failed")?;
-            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv, wait_for_stop))?;
+            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv))?;
             handle_dataflow_result(result, None)?
         }
         Command::Up { config } => {
@@ -553,11 +548,11 @@ fn run(args: Args, wait_for_stop: bool) -> eyre::Result<()> {
                             );
                         }
 
-                        let result = Daemon::run_dataflow(&dataflow_path, false, true).await?;
+                        let result = Daemon::run_dataflow(&dataflow_path, false).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id, local_listen_port, true).await
+                        Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), machine_id, local_listen_port).await
                     }
                 }
             })

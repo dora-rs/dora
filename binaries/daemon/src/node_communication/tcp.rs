@@ -21,7 +21,6 @@ pub async fn listener_loop(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
-    wait_for_stop: bool,
 ) {
     loop {
         match listener
@@ -38,7 +37,6 @@ pub async fn listener_loop(
                     daemon_tx.clone(),
                     queue_sizes.clone(),
                     clock.clone(),
-                    wait_for_stop,
                 ));
             }
         }
@@ -51,13 +49,12 @@ async fn handle_connection_loop(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
-    wait_for_stop: bool,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, clock, wait_for_stop).await
+    Listener::run(TcpConnection(connection), daemon_tx, clock).await
 }
 
 struct TcpConnection(TcpStream);
