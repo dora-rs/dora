@@ -29,6 +29,9 @@
   <a href="https://pypi.org/project/dora-rs/">
     <img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPi Latest Release"/>
   </a>
+    <a href="https://github.com/dora-rs/dora/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/dora-rs/dora" alt="PyPi Latest Release"/>
+  </a>      
 </div>
 <div align="center">
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
