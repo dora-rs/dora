@@ -5,13 +5,13 @@
 </p>
 
 <h2 align="center">
-  <a href="https://www.dora-rs.ai">Website</a>
+  <a href="https://www.dora-rs.ai">官网</a>
   |
   <a href="https://dora-rs.ai/docs/guides/getting-started/conversation_py/">Python API</a>
   |
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
   |
-  <a href="https://www.dora-rs.ai/docs/guides/">Guide</a>
+  <a href="https://www.dora-rs.ai/docs/guides/">指南</a>
   |
   <a href="https://discord.gg/6eMGGutkfE">Discord</a>
 </h2>
@@ -95,68 +95,68 @@
 
 ## Node Hub
 
-> Feel free to modify this README with your own nodes so that it benefits the community.
+> 欢迎自由修改本README文档，添加您开发的节点说明，让整个社区共同受益！
 
 | Type                          | Title                                                                                               | Support             | Description                                      | Downloads                                                                     | License                                                                    |
 | ----------------------------- | --------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Camera                        | [PyOrbbeckSDK](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyorbbecksdk)                | 📐                  | Image and depth from Orbbeck Camera              | ![Downloads](https://img.shields.io/pypi/dm/dora-pyorbbecksdk?label=%20)      | ![License](https://img.shields.io/pypi/l/dora-pyorbbecksdk?label=%20)      |
-| Camera                        | [PyRealsense](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyrealsense)                  | Linux🆗 <br> Mac🛠️  | Image and depth from Realsense                   | ![Downloads](https://img.shields.io/pypi/dm/dora-pyrealsense?label=%20)       | ![License](https://img.shields.io/pypi/l/dora-pyrealsense?label=%20)       |
-| Camera                        | [OpenCV Video Capture](https://github.com/dora-rs/dora/blob/main/node-hub/opencv-video-capture)     | ✅                  | Image stream from OpenCV Camera                  | ![Downloads](https://img.shields.io/pypi/dm/opencv-video-capture?label=%20)   | ![License](https://img.shields.io/pypi/l/opencv-video-capture?label=%20)   |
-| Peripheral                    | [Keyboard](https://github.com/dora-rs/dora/blob/main/node-hub/dora-keyboard)                        | ✅                  | Keyboard char listener                           | ![Downloads](https://img.shields.io/pypi/dm/dora-keyboard?label=%20)          | ![License](https://img.shields.io/pypi/l/dora-keyboard?label=%20)          |
-| Peripheral                    | [Microphone](https://github.com/dora-rs/dora/blob/main/node-hub/dora-microphone)                    | ✅                  | Audio from microphone                            | ![Downloads](https://img.shields.io/pypi/dm/dora-microphone?label=%20)        | ![License](https://img.shields.io/pypi/l/dora-microphone?label=%20)        |
-| Peripheral                    | [PyAudio(Speaker)](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyaudio)                 | ✅                  | Output audio from speaker                        | ![Downloads](https://img.shields.io/pypi/dm/dora-pyaudio?label=%20)           | ![License](https://img.shields.io/pypi/l/dora-pyaudio?label=%20)           |
-| Actuator                      | [Feetech](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/feetech-client)                | 📐                  | Feetech Client                                   |                                                                               |                                                                            |
-| Actuator                      | [Dynamixel](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dynamixel-client)            | 📐                  | Dynamixel Client                                 |                                                                               |                                                                            |
-| Chassis                       | [Agilex - UGV](https://github.com/dora-rs/dora/blob/main/node-hub/dora-ugv)                         | 🆗                  | Robomaster Client                                | ![Downloads](https://img.shields.io/pypi/dm/dora-ugv?label=%20)               | ![License](https://img.shields.io/pypi/l/dora-ugv?label=%20)               |
-| Chassis                       | [DJI - Robomaster S1](https://huggingface.co/datasets/dora-rs/dora-robomaster)                      | 📐                  | Robomaster Client                                |                                                                               |                                                                            |
-| Chassis                       | [Dora Kit Car](https://github.com/dora-rs/dora/blob/main/node-hub/dora-kit-car)                     | 🆗                  | Open Source Chassis                              | ![Downloads](https://img.shields.io/pypi/dm/dora-kit-car?label=%20)           | ![License](https://img.shields.io/pypi/l/dora-kit-car?label=%20)           |
-| Arm                           | [Alex Koch - Low Cost Robot](https://github.com/dora-rs/dora-lerobot/blob/main/robots/alexk-lcr)    | 📐                  | Alex Koch - Low Cost Robot Client                |                                                                               |                                                                            |
-| Arm                           | [Lebai - LM3](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/lebai-client)              | 📐                  | Lebai client                                     |                                                                               |                                                                            |
-| Arm                           | [Agilex - Piper](https://github.com/dora-rs/dora/blob/main/node-hub/dora-piper)                     | 🆗                  | Agilex arm client                                | ![Downloads](https://img.shields.io/pypi/dm/dora-piper?label=%20)             | ![License](https://img.shields.io/pypi/l/dora-piper?label=%20)             |
-| Robot                         | [Pollen - Reachy 1](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dora-reachy1)        | 📐                  | Reachy 1 Client                                  |                                                                               |                                                                            |
-| Robot                         | [Pollen - Reachy 2](https://github.com/dora-rs/dora/blob/main/node-hub/dora-reachy2)                | 🆗                  | Reachy 2 client                                  | ![Downloads](https://img.shields.io/pypi/dm/dora-reachy2?label=%20)           | ![License](https://img.shields.io/pypi/l/dora-reachy2?label=%20)           |
-| Robot                         | [Trossen - Aloha](https://github.com/dora-rs/dora-lerobot/blob/main/robots/aloha)                   | 📐                  | Aloha client                                     |                                                                               |                                                                            |
-| Voice Activity Detection(VAD) | [Silero VAD](https://github.com/dora-rs/dora/blob/main/node-hub/dora-vad)                           | ✅                  | Silero Voice activity detection                  | ![Downloads](https://img.shields.io/pypi/dm/dora-vad?label=%20)               | ![License](https://img.shields.io/pypi/l/dora-vad?label=%20)               |
-| Speech to Text(STT)           | [Whisper](https://github.com/dora-rs/dora/blob/main/node-hub/dora-distil-whisper)                   | ✅                  | Transcribe audio to text                         | ![Downloads](https://img.shields.io/pypi/dm/dora-distil-whisper?label=%20)    | ![License](https://img.shields.io/pypi/l/dora-distil-whisper?label=%20)    |
-| Object Detection              | [Yolov8](https://github.com/dora-rs/dora/blob/main/node-hub/dora-yolo)                              | ✅                  | Object detection                                 | ![Downloads](https://img.shields.io/pypi/dm/dora-yolo?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-yolo?label=%20)              |
-| Segmentation                  | [SAM2](https://github.com/dora-rs/dora/blob/main/node-hub/dora-sam2)                                | Cuda✅ <br> Metal🛠️ | Segment Anything                                 | ![Downloads](https://img.shields.io/pypi/dm/dora-sam2?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-sam2?label=%20)              |
-| Large Language Model(LLM)     | [Qwen2.5](https://github.com/dora-rs/dora/blob/main/node-hub/dora-qwen)                             | ✅                  | Large Language Model using Qwen                  | ![Downloads](https://img.shields.io/pypi/dm/dora-qwen?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-qwen?label=%20)              |
-| Vision Language Model(VLM)    | [Qwen2.5-vl](https://github.com/dora-rs/dora/blob/main/node-hub/dora-qwen2-5-vl)                    | ✅                  | Vision Language Model using Qwen2.5 VL           | ![Downloads](https://img.shields.io/pypi/dm/dora-qwen2-5-vl?label=%20)        | ![License](https://img.shields.io/pypi/l/dora-qwen2-5-vl?label=%20)        |
-| Vision Language Model(VLM)    | [InternVL](https://github.com/dora-rs/dora/blob/main/node-hub/dora-internvl)                        | 🆗                  | InternVL is a vision language model              | ![Downloads](https://img.shields.io/pypi/dm/dora-internvl?label=%20)          | ![License](https://img.shields.io/pypi/l/dora-internvl?label=%20)          |
-| Vision Language Action(VLA)   | [RDT-1B](https://github.com/dora-rs/dora/blob/main/node-hub/dora-rdt-1b)                            | 🆗                  | Infer policy using Robotic Diffusion Transformer | ![Downloads](https://img.shields.io/pypi/dm/dora-rdt-1b?label=%20)            | ![License](https://img.shields.io/pypi/l/dora-rdt-1b?label=%20)            |
-| Translation                   | [ArgosTranslate](https://github.com/dora-rs/dora/blob/main/node-hub/dora-argotranslate)             | 🆗                  | Open Source translation engine                   | ![Downloads](https://img.shields.io/pypi/dm/dora-argotranslate?label=%20)     | ![License](https://img.shields.io/pypi/l/dora-argotranslate?label=%20)     |
-| Translation                   | [Opus MT](https://github.com/dora-rs/dora/blob/main/node-hub/dora-opus)                             | 🆗                  | Translate text between language                  | ![Downloads](https://img.shields.io/pypi/dm/dora-opus?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-opus?label=%20)              |
-| Text to Speech(TTS)           | [Kokoro TTS](https://github.com/dora-rs/dora/blob/main/node-hub/dora-kokoro-tts)                    | ✅                  | Efficient Text to Speech                         | ![Downloads](https://img.shields.io/pypi/dm/dora-kokoro-tts?label=%20)        | ![License](https://img.shields.io/pypi/l/dora-kokoro-tts?label=%20)        |
-| Recorder                      | [Llama Factory Recorder](https://github.com/dora-rs/dora/blob/main/node-hub/llama-factory-recorder) | 🆗                  | Record data to train LLM and VLM                 | ![Downloads](https://img.shields.io/pypi/dm/llama-factory-recorder?label=%20) | ![License](https://img.shields.io/pypi/l/llama-factory-recorder?label=%20) |
-| Recorder                      | [LeRobot Recorder](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/lerobot-dashboard)    | 📐                  | LeRobot Recorder helper                          |                                                                               |                                                                            |
-| Visualization                 | [Plot](https://github.com/dora-rs/dora/blob/main/node-hub/opencv-plot)                              | ✅                  | Simple OpenCV plot visualization                 | ![Downloads](https://img.shields.io/pypi/dm/dora-yolo?label=%20)              | ![License](https://img.shields.io/pypi/l/opencv-plot?label=%20)            |
-| Visualization                 | [Rerun](https://github.com/dora-rs/dora/blob/main/node-hub/dora-rerun)                              | ✅                  | Visualization tool                               | ![Downloads](https://img.shields.io/pypi/dm/dora-rerun?label=%20)             | ![License](https://img.shields.io/pypi/l/dora-rerun?label=%20)             |
-| Simulator                     | [Mujoco](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/mujoco-client)                  | 📐                  | Mujoco Simulator                                 |                                                                               |                                                                            |
-| Simulator                     | [Carla](https://github.com/dora-rs/dora-drives)                                                     | 📐                  | Carla Simulator                                  |                                                                               |                                                                            |
-| Simulator                     | [Gymnasium](https://github.com/dora-rs/dora-lerobot/blob/main/gym_dora)                             | 📐                  | Experimental OpenAI Gymnasium bridge             |                                                                               |                                                                            |
+| 相机                        | [PyOrbbeckSDK](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyorbbecksdk)                | 📐                  | 奥比中光深度相机              | ![Downloads](https://img.shields.io/pypi/dm/dora-pyorbbecksdk?label=%20)      | ![License](https://img.shields.io/pypi/l/dora-pyorbbecksdk?label=%20)      |
+| 相机                        | [PyRealsense](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyrealsense)                  | Linux🆗 <br> Mac🛠️  | Realsense深度相机                   | ![Downloads](https://img.shields.io/pypi/dm/dora-pyrealsense?label=%20)       | ![License](https://img.shields.io/pypi/l/dora-pyrealsense?label=%20)       |
+| 相机                        | [OpenCV Video Capture](https://github.com/dora-rs/dora/blob/main/node-hub/opencv-video-capture)     | ✅                  | OpenCV 相机的图像流                  | ![Downloads](https://img.shields.io/pypi/dm/opencv-video-capture?label=%20)   | ![License](https://img.shields.io/pypi/l/opencv-video-capture?label=%20)   |
+| 外围设备                    | [Keyboard](https://github.com/dora-rs/dora/blob/main/node-hub/dora-keyboard)                        | ✅                  | 键盘监听                           | ![Downloads](https://img.shields.io/pypi/dm/dora-keyboard?label=%20)          | ![License](https://img.shields.io/pypi/l/dora-keyboard?label=%20)          |
+| 外围设备                    | [Microphone](https://github.com/dora-rs/dora/blob/main/node-hub/dora-microphone)                    | ✅                  | 麦克风🎤                            | ![Downloads](https://img.shields.io/pypi/dm/dora-microphone?label=%20)        | ![License](https://img.shields.io/pypi/l/dora-microphone?label=%20)        |
+| 外围设备                    | [PyAudio(Speaker)](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyaudio)                 | ✅                  | 扬声器🔉                        | ![Downloads](https://img.shields.io/pypi/dm/dora-pyaudio?label=%20)           | ![License](https://img.shields.io/pypi/l/dora-pyaudio?label=%20)           |
+| 执行器                      | [Feetech](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/feetech-client)                | 📐                  | Feetech                                    |                                                                               |                                                                            |
+| 执行器                      | [Dynamixel](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dynamixel-client)            | 📐                  | Dynamixel                                  |                                                                               |                                                                            |
+| 底盘                       | [Agilex - UGV](https://github.com/dora-rs/dora/blob/main/node-hub/dora-ugv)                         | 🆗                  | Robomaster                               | ![Downloads](https://img.shields.io/pypi/dm/dora-ugv?label=%20)               | ![License](https://img.shields.io/pypi/l/dora-ugv?label=%20)               |
+| 底盘                       | [DJI - Robomaster S1](https://huggingface.co/datasets/dora-rs/dora-robomaster)                      | 📐                  | Robomaster                                |                                                                               |                                                                            |
+| 底盘                       | [Dora Kit Car](https://github.com/dora-rs/dora/blob/main/node-hub/dora-kit-car)                     | 🆗                  | 开源 Dora kit 底盘                              | ![Downloads](https://img.shields.io/pypi/dm/dora-kit-car?label=%20)           | ![License](https://img.shields.io/pypi/l/dora-kit-car?label=%20)           |
+| 机械臂                           | [Alex Koch - Low Cost Robot](https://github.com/dora-rs/dora-lerobot/blob/main/robots/alexk-lcr)    | 📐                  | Alex Koch - 低成本机器人                |                                                                               |                                                                            |
+| 机械臂                           | [Lebai - LM3](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/lebai-client)              | 📐                  | 乐白机械臂                                     |                                                                               |                                                                            |
+| 机械臂                           | [Agilex - Piper](https://github.com/dora-rs/dora/blob/main/node-hub/dora-piper)                     | 🆗                  | Agilex 机械臂                                | ![Downloads](https://img.shields.io/pypi/dm/dora-piper?label=%20)             | ![License](https://img.shields.io/pypi/l/dora-piper?label=%20)             |
+| 机器人                         | [Pollen - Reachy 1](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/dora-reachy1)        | 📐                  | Reachy 1                                   |                                                                               |                                                                            |
+| 机器人                         | [Pollen - Reachy 2](https://github.com/dora-rs/dora/blob/main/node-hub/dora-reachy2)                | 🆗                  | Reachy 2                                  | ![Downloads](https://img.shields.io/pypi/dm/dora-reachy2?label=%20)           | ![License](https://img.shields.io/pypi/l/dora-reachy2?label=%20)           |
+| 机器人                         | [Trossen - Aloha](https://github.com/dora-rs/dora-lerobot/blob/main/robots/aloha)                   | 📐                  | Aloha                                      |                                                                               |                                                                            |
+| 语音活动检测(VAD) | [Silero VAD](https://github.com/dora-rs/dora/blob/main/node-hub/dora-vad)                           | ✅                  | Silero 语音活动检测                  | ![Downloads](https://img.shields.io/pypi/dm/dora-vad?label=%20)               | ![License](https://img.shields.io/pypi/l/dora-vad?label=%20)               |
+| 语音转文本(STT)           | [Whisper](https://github.com/dora-rs/dora/blob/main/node-hub/dora-distil-whisper)                   | ✅                  | 将音频转录为文本                         | ![Downloads](https://img.shields.io/pypi/dm/dora-distil-whisper?label=%20)    | ![License](https://img.shields.io/pypi/l/dora-distil-whisper?label=%20)    |
+| 目标检测              | [Yolov8](https://github.com/dora-rs/dora/blob/main/node-hub/dora-yolo)                              | ✅                  | 目标检测                                 | ![Downloads](https://img.shields.io/pypi/dm/dora-yolo?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-yolo?label=%20)              |
+| 分割                  | [SAM2](https://github.com/dora-rs/dora/blob/main/node-hub/dora-sam2)                                | Cuda✅ <br> Metal🛠️ | 分割万物                                 | ![Downloads](https://img.shields.io/pypi/dm/dora-sam2?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-sam2?label=%20)              |
+| 大语言模型(LLM)     | [Qwen2.5](https://github.com/dora-rs/dora/blob/main/node-hub/dora-qwen)                             | ✅                  | 千问大语言模型                  | ![Downloads](https://img.shields.io/pypi/dm/dora-qwen?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-qwen?label=%20)              |
+| 视觉语言模型(VLM)    | [Qwen2.5-vl](https://github.com/dora-rs/dora/blob/main/node-hub/dora-qwen2-5-vl)                    | ✅                  | 千问2.5多模态模型           | ![Downloads](https://img.shields.io/pypi/dm/dora-qwen2-5-vl?label=%20)        | ![License](https://img.shields.io/pypi/l/dora-qwen2-5-vl?label=%20)        |
+| 视觉语言模型(VLM)    | [InternVL](https://github.com/dora-rs/dora/blob/main/node-hub/dora-internvl)                        | 🆗                  | InternVL 视觉语言模型              | ![Downloads](https://img.shields.io/pypi/dm/dora-internvl?label=%20)          | ![License](https://img.shields.io/pypi/l/dora-internvl?label=%20)          |
+| 视觉语言行为(VLA)   | [RDT-1B](https://github.com/dora-rs/dora/blob/main/node-hub/dora-rdt-1b)                            | 🆗                  | 基于Robotic Diffusion Transformer的策略推理系统 | ![Downloads](https://img.shields.io/pypi/dm/dora-rdt-1b?label=%20)            | ![License](https://img.shields.io/pypi/l/dora-rdt-1b?label=%20)            |
+| 翻译                   | [ArgosTranslate](https://github.com/dora-rs/dora/blob/main/node-hub/dora-argotranslate)             | 🆗                  | 开源的翻译引擎                   | ![Downloads](https://img.shields.io/pypi/dm/dora-argotranslate?label=%20)     | ![License](https://img.shields.io/pypi/l/dora-argotranslate?label=%20)     |
+| 翻译                   | [Opus MT](https://github.com/dora-rs/dora/blob/main/node-hub/dora-opus)                             | 🆗                  | 实时多语言文本互译                  | ![Downloads](https://img.shields.io/pypi/dm/dora-opus?label=%20)              | ![License](https://img.shields.io/pypi/l/dora-opus?label=%20)              |
+| 文本转语音(TTS)           | [Kokoro TTS](https://github.com/dora-rs/dora/blob/main/node-hub/dora-kokoro-tts)                    | ✅                  | 高效文本转语音（TTS）                         | ![Downloads](https://img.shields.io/pypi/dm/dora-kokoro-tts?label=%20)        | ![License](https://img.shields.io/pypi/l/dora-kokoro-tts?label=%20)        |
+| 记录                     | [Llama Factory Recorder](https://github.com/dora-rs/dora/blob/main/node-hub/llama-factory-recorder) | 🆗                  | 大语言模型(LLM)与视觉语言模型(VLM)训练数据采集方案                | ![Downloads](https://img.shields.io/pypi/dm/llama-factory-recorder?label=%20) | ![License](https://img.shields.io/pypi/l/llama-factory-recorder?label=%20) |
+| 记录                     | [LeRobot Recorder](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/lerobot-dashboard)    | 📐                  | LeRobot 数据采集助手                          |                                                                               |                                                                            |
+| 可视化                 | [Plot](https://github.com/dora-rs/dora/blob/main/node-hub/opencv-plot)                              | ✅                  | 简易OpenCV可视化工具                 | ![Downloads](https://img.shields.io/pypi/dm/dora-yolo?label=%20)              | ![License](https://img.shields.io/pypi/l/opencv-plot?label=%20)            |
+| 可视化                 | [Rerun](https://github.com/dora-rs/dora/blob/main/node-hub/dora-rerun)                              | ✅                  | 可视化工具                               | ![Downloads](https://img.shields.io/pypi/dm/dora-rerun?label=%20)             | ![License](https://img.shields.io/pypi/l/dora-rerun?label=%20)             |
+| 仿真                     | [Mujoco](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/mujoco-client)                  | 📐                  | Mujoco 仿真                                 |                                                                               |                                                                            |
+| 仿真                     | [Carla](https://github.com/dora-rs/dora-drives)                                                     | 📐                  | Carla 仿真                                  |                                                                               |                                                                            |
+| 仿真                     | [Gymnasium](https://github.com/dora-rs/dora-lerobot/blob/main/gym_dora)                             | 📐                  | 实验性 OpenAI Gymnasium 桥接模块             |                                                                               |                                                                            |
 
 ## Examples
 
 | Type           | Title                                                                                                        | Description                                         | Last Commit                                                                                                        |
 | -------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Audio          | [Speech to Text(STT)](https://github.com/dora-rs/dora/blob/main/examples/speech-to-text)                     | Transform speech to text.                           | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fspeech-to-text&label=%20)        |
-| Audio          | [Translation](https://github.com/dora-rs/dora/blob/main/examples/translation)                                | Translate audio in real time.                       | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Ftranslation&label=%20)           |
-| Vision         | [Vision Language Model(VLM)](https://github.com/dora-rs/dora/blob/main/examples/vlm)                         | Use a VLM to understand images.                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fvlm&label=%20)                   |
-| Vision         | [YOLO](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                                   | Use YOLO to detect object within image.             | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)       |
-| Vision         | [Camera](https://github.com/dora-rs/dora/blob/main/examples/camera)                                          | Simple webcam plot example                          | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcamera&label=%20)                |
-| Model Training | [Piper RDT](https://github.com/dora-rs/dora/blob/main/examples/piper)                                        | Piper RDT Pipeline                                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpiper&label=%20)                 |
-| Model Training | [LeRobot - Alexander Koch](https://raw.githubusercontent.com/dora-rs/dora-lerobot/refs/heads/main/README.md) | Training Alexander Koch Low Cost Robot with LeRobot | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-lerobot?path=robots&label=%20)                   |
-| ROS2           | [C++ ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/c++-ros2-dataflow)                     | Example using C++ ROS2                              | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20) |
-| ROS2           | [Rust ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/rust-ros2-dataflow)                   | Example using Rust ROS2                             | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-ros2-dataflow&label=%20)    |
-| ROS2           | [Python ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/python-ros2-dataflow)               | Example using Python ROS2                           | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-ros2-dataflow&label=%20)  |
-| Benchmark      | [GPU Benchmark](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                           | GPU Benchmark of dora-rs                            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
-| Benchmark      | [CPU Benchmark](https://github.com/dora-rs/dora-benchmark/blob/main)                                         | CPU Benchmark of dora-rs                            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-benchmark?path=dora-rs&label=%20)                |
-| Tutorial       | [Rust Example](https://github.com/dora-rs/dora/blob/main/examples/rust-dataflow)                             | Example using Rust                                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-dataflow&label=%20)         |
-| Tutorial       | [Python Example](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                         | Example using Python                                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)       |
-| Tutorial       | [CMake Example](https://github.com/dora-rs/dora/blob/main/examples/cmake-dataflow)                           | Example using CMake                                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcmake-dataflow&label=%20)        |
-| Tutorial       | [C Example](https://github.com/dora-rs/dora/blob/main/examples/c-dataflow)                                   | Example with C node                                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc-dataflow&label=%20)            |
-| Tutorial       | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                            | Example using CUDA Zero Copy                        | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
-| Tutorial       | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                               | Example with C++ node                               | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)      |
+| 语音          | [Speech to Text(STT)](https://github.com/dora-rs/dora/blob/main/examples/speech-to-text)                     | 将语音转换为文本                           | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fspeech-to-text&label=%20)        |
+| 语音          | [Translation](https://github.com/dora-rs/dora/blob/main/examples/translation)                                | 实时翻译音频                       | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Ftranslation&label=%20)           |
+| 视觉         | [Vision Language Model(VLM)](https://github.com/dora-rs/dora/blob/main/examples/vlm)                         | 使用视觉语言模型（VLM）来理解图像                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fvlm&label=%20)                   |
+| 视觉         | [YOLO](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                                   | 使用 YOLO 在图像中检测物体             | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)       |
+| 视觉         | [Camera](https://github.com/dora-rs/dora/blob/main/examples/camera)                                          | 简单的网络摄像头图像绘制示例                          | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcamera&label=%20)                |
+| 模型训练 | [Piper RDT](https://github.com/dora-rs/dora/blob/main/examples/piper)                                        | Piper RDT 数据处理流水线                                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpiper&label=%20)                 |
+| 模型训练 | [LeRobot - Alexander Koch](https://raw.githubusercontent.com/dora-rs/dora-lerobot/refs/heads/main/README.md) | 使用 LeRobot 来训练 Alexander Koc 低成本机器人 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-lerobot?path=robots&label=%20)                   |
+| ROS2           | [C++ ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/c++-ros2-dataflow)                     | 使用 C++ 开发的 ROS2 示例                              | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20) |
+| ROS2           | [Rust ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/rust-ros2-dataflow)                   | 使用 Rust 开发的 ROS 2 示例                             | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-ros2-dataflow&label=%20)    |
+| ROS2           | [Python ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/python-ros2-dataflow)               | 使用 Python 开发的 ROS 2 示例                           | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-ros2-dataflow&label=%20)  |
+| 基准      | [GPU Benchmark](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                           | dora-rs 的 GPU 性能基准测试                            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
+| 基准      | [CPU Benchmark](https://github.com/dora-rs/dora-benchmark/blob/main)                                         | dora-rs 的 CPU 性能基准测试                            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-benchmark?path=dora-rs&label=%20)                |
+| 指南       | [Rust Example](https://github.com/dora-rs/dora/blob/main/examples/rust-dataflow)                             | Rust示例                                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-dataflow&label=%20)         |
+| 指南       | [Python Example](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                         | Python示例                                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)       |
+| 指南       | [CMake Example](https://github.com/dora-rs/dora/blob/main/examples/cmake-dataflow)                           | CMake示例                                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcmake-dataflow&label=%20)        |
+| 指南       | [C Example](https://github.com/dora-rs/dora/blob/main/examples/c-dataflow)                                   | C节点示例                                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc-dataflow&label=%20)            |
+| 指南       | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                            | CUDA 零拷贝示例                        | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
+| 指南       | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                               | C++ 节点示例                               | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)      |
 
 ## 快速开始
 
@@ -225,7 +225,7 @@ dora run yolo.yml --uv
 cat yolo.yml
 ```
 
-- Resulting in:
+- 输出示例:
 
 ```yaml
 nodes:
@@ -257,54 +257,55 @@ nodes:
       boxes2d: object-detection/bbox
 ```
 
-- In the above example, we can understand that the camera is sending image to both the rerun viewer as well as a yolo model that generates bounding box that is visualized within rerun.
+- 通过上例可知：摄像头将图像数据同时传输至以下两个终端：1、 Rerun 可视化平台 - 实时显示原始视频流。 2、YOLO 模型 - 生成目标检测框数据后，回传至 Rerun 进行可视化渲染
 
-### Documentation
+### 文档
 
-The full documentation is available on [our website](https://dora-rs.ai/).
-A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/) of our website.
+完整文档详见 [官网](https://dora-rs.ai/)。
+官网上的 [指引](https://dora-rs.ai/docs/guides/) 提供丰富指南文档
 
-## What is Dora? And what features does Dora offer?
+## Dora 是什么？ Dora 具备哪些功能
 
-**D**ataflow-**O**riented **R**obotic **A**rchitecture (`dora-rs`) is a framework that makes creation of robotic applications fast and simple.
+**D**ataflow-**O**riented **R**obotic **A**rchitecture (`dora-rs`) 是一个能让机器人应用程序的创建变得快速且简单的框架。
 
-`dora-rs` implements a declarative dataflow paradigm where tasks are split between nodes isolated as individual processes.
+`dora-rs` 实现了一种声明式的数据流范式，在这种范式中，任务被划分到作为独立进程而隔离的节点之间。
 
-The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
+这种数据流范式的优势在于创建了一个抽象层，使得机器人应用程序具有模块化特点，并且易于配置。 
 
-### TCP Communication and Shared Memory
+### TCP通信与共享内存
 
-Communication between nodes is handled with shared memory on a same machine and TCP on distributed machines. Our shared memory implementation tracks messages across processes and discards them when obsolete. Shared memory slots are cached to avoid new memory allocation.
+节点之间的通信在同一台机器上通过共享内存来处理，而在分布式机器上则通过TCP（传输控制协议）来处理。我们的共享内存实现会跟踪跨进程的消息，并在消息过时的时候将其丢弃。共享内存插槽会被缓存起来，以避免进行新的内存分配。 
 
-### Arrow Message Format
+### Arrow 息格式
 
-Nodes communicate with Apache Arrow Data Format.
+节点之间采用 Apache Arrow 数据格式进行通信。
 
-[Apache Arrow](https://github.com/apache/arrow-rs) is a universal memory format for flat and hierarchical data. The Arrow memory format supports zero-copy reads for lightning-fast data access without serialization overhead. It defines a C data interface without any build-time or link-time dependency requirement, that means that `dora-rs` has **no compilation step** beyond the native compiler of your favourite language.
+[Apache Arrow](https://github.com/apache/arrow-rs) 是一种适用于扁平化和层级化数据的通用内存格式。该内存格式支持零拷贝读取，无需序列化开销即可实现闪电般快速的数据访问。其定义的C数据接口不要求任何构建时或链接时依赖，这意味着除您所用编程语言的原生编译器外，`dora-rs` 无需额外的编译步骤。
 
-### Opentelemetry
 
-dora-rs uses Opentelemetry to record all your logs, metrics and traces. This means that the data and telemetry can be linked using a shared abstraction.
+### 可观测性
 
-[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectable by most backends such as elasticsearch, prometheus, Datadog...
+dora-rs 使用 Opentelemetry 来记录您所有的日志、指标和追踪信息。这意味着数据和遥测信息可以通过一个共享的抽象进行链接。
 
-Opentelemetry is language independent, backend agnostic, and easily collect distributed data, making it perfect for dora-rs applications.
+[Opentelemetry](https://opentelemetry.io/) 是一个开源的可观测性标准，使得 dora-rs 的遥测数据可以被大多数后端收集，例如 Elasticsearch、Prometheus、Datadog 等。
 
-### ROS2 Bridge
+Opentelemetry 具有语言无关、后端无关的特性，并且能够轻松收集分布式数据，非常适合 dora-rs 应用程序。
 
-**Note**: this feature is marked as unstable.
+### ROS2 桥接 (ROS2 Bridge)
 
-- Compilation Free Message passing to ROS 2
-- Automatic conversion ROS 2 Message <-> Arrow Array
+**注意:** 此功能标记为不稳定 (unstable)
+
+- 免编译消息传递到 ROS 2
+- ROS 2 消息 <-> Arrow 数组自动转换。
 
 ```python
 import pyarrow as pa
 
-# Configuration Boilerplate...
+# 配置样板代码...
 turtle_twist_writer = ...
 
-## Arrow Based ROS2 Twist Message
-## which does not require ROS2 import
+## 基于 Arrow 的 ROS2 Twist 消息
+## 无需导入 ROS2
 message = pa.array([{
             "linear": {
                 "x": 1,
@@ -317,34 +318,34 @@ message = pa.array([{
 turtle_twist_writer.publish(message)
 ```
 
-> You might want to use ChatGPT to write the Arrow Formatting: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
+> 您可以借助 ChatGPT 自动生成 Arrow 数据格式代码: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
 
-## Zenoh Integration for Distributed Dataflow (Experimental)
+## 使用 Zenoh 的分布式数据流 (Distributed Dataflow with Zenoh)
 
-Zenoh is a high-performance pub/sub and query protocol that unifies data in motion and at rest. In **dora-rs**, Zenoh is used for remote communication between nodes running on different machines, enabling distributed dataflow across networks.
+**dora-rs** 支持使用 Zenoh（一种高性能的发布/订阅和查询协议）进行分布式数据流，以解决跨多台机器运行数据流的需求 。
 
-### What is Zenoh?
+### 什么是 Zenoh?
 
-- **Definition:**  
-  [Zenoh](https://zenoh.io) is an open-source communication middleware offering pub/sub and query capabilities.
-- **Benefits in DORA:**
-  - Simplifies communication between distributed nodes.
-  - Handles NAT traversal and inter-network communication.
-  - Integrates with DORA to manage remote data exchange while local communication still uses efficient shared memory.
+- **定义:**  
+  [Zenoh](https://zenoh.io) 是一款开源的通信中间件，提供发布 / 订阅以及查询功能。
+- **在 DORA 中的优势:**
+  - 简化分布式节点之间的通信；
+  - 处理网络地址转换（NAT）遍历以及网络间通信；
+  - 与 DORA 集成，在本地通信仍使用高效共享内存的同时，管理远程数据交换；
 
-### Enabling Zenoh Support
+### 开启 Zenoh 支持
 
-1. **Run a Zenoh Router (`zenohd`):**  
-   Launch a Zenoh daemon to mediate communication. For example, using Docker:
+1. **运行 Zenoh 路由 (`zenohd`):**  
+   启动一个 Zenoh 守护进程来协调通信。例如，使用 Docker 来操作:
 
    ```bash
    docker run -p 7447:7447 -p 8000:8000 --name zenoh-router eclipse/zenohd:latest
    ```
 
 ````markdown
-## Create a Zenoh Configuration File 🎛️
+## 创建一个 Zenoh 配置文件 🎛️
 
-Create a file (e.g., `zenoh.json5`) with the router endpoint details:
+创建一个包含路由器端点详细信息的 Zenoh 配置文件(例如 `zenoh.json5`)：
 
 ```json5
 {
@@ -357,9 +358,9 @@ Create a file (e.g., `zenoh.json5`) with the router endpoint details:
 
 ---
 
-## Launch DORA Daemons with Zenoh Enabled 🚀
+## Zenoh 开启后，启用 DORA 守候进程 🚀
 
-On each machine, export the configuration and start the daemon:
+在每台机器上，导出配置并启动守护进程：
 
 ```bash
 export ZENOH_CONFIG=/path/to/zenoh.json5
@@ -368,9 +369,9 @@ dora daemon --coordinator-addr <COORD_IP> --machine-id <MACHINE_NAME>
 
 ---
 
-## Deploy Distributed Nodes via YAML 📄
+## 通过 YAML 部署分布式节点 📄
 
-Mark nodes for remote deployment using the `_unstable_deploy` key:
+使用 _unstable_deploy 键标记要进行远程部署的节点：
 
 ```yaml
 nodes:
@@ -388,9 +389,9 @@ nodes:
 
 ---
 
-## Start the Coordinator and Dataflow 🏁
+## 启动 Coordinator 和 Dataflow 🏁
 
-Run the coordinator on a designated machine and start the dataflow:
+在指定的机器上运行 `coordinator` 并启动 `dataflow` ：
 
 ```bash
 dora coordinator
@@ -399,7 +400,7 @@ dora start dataflow.yml
 
 ---
 
-## YAML Example for Distributed Dataflow 📘
+## 分布式数据流的 YAML 示例 📘
 
 ```yaml
 communication:
@@ -422,34 +423,34 @@ nodes:
       - result
 ```
 
-## Contributing
+## 贡献
 
-We are passionate about supporting contributors of all levels of experience and would love to see
-you get involved in the project. See the
-[contributing guide](https://github.com/dora-rs/dora/blob/main/CONTRIBUTING.md) to get started.
+我们热衷于支持各种经验水平的贡献者，并且非常希望看到您参与到这个项目中来。请查看 [贡献指南](https://github.com/dora-rs/dora/blob/main/CONTRIBUTING.md) 以着手参与。
 
-## Discussions
 
-Our main communication channels are:
+## 讨论
+
+我们主要的沟通渠道如下: 
 
 - [Our Discord server](https://discord.gg/6eMGGutkfE)
 - [Our Github Project Discussion](https://github.com/orgs/dora-rs/discussions)
+- [Dora中文社区](https://doracc.com)
 
-Feel free to reach out on any topic, issues or ideas.
+可以就任何话题、问题或想法与我们联系。
 
-We also have [a contributing guide](CONTRIBUTING.md).
+我们还有一份[贡献指南](CONTRIBUTING.md)。
 
-## License
+## 许可证
 
-This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for more information.
+该项目采用 Apache-2.0 许可证授权。 查看 [NOTICE.md](NOTICE.md) 文件了解详情。
 
 ---
 
-## Further Resources 📚
+## 进一步资源  📚
 
-- [Zenoh Documentation](https://zenoh.io/docs/)
+- [Zenoh 文档](https://zenoh.io/docs/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
-- [Dora Autoware Localization Demo](https://github.com/dora-rs/dora-autoware-localization-demo)
+- [Dora Autoware 定位演示](https://github.com/dora-rs/dora-autoware-localization-demo)
 
 ```
 
