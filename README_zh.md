@@ -77,13 +77,13 @@
 |                                   | dora-rs                                                                                                                                                                                          |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                  |
-| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ x64_86 ✅<br>Windows: x64_86 🆗<br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
-| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                          |
-| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                          |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                    |
-| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                 |
-| **Configuration**                 | YAML ✅                                                                                                                                                                                          |
-| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                |
+| **操作系统**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ x64_86 ✅<br>Windows: x64_86 🆗<br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
+| **消息格式**                | Arrow ✅ <br> 标准规范 🛠️                                                                                                                                                          |
+| **本地通信模块**           | 共享内存 ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                          |
+| **远程通信模块**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                    |
+| **指标、追踪与日志** | Opentelemetry 📐                                                                                                                                                                                 |
+| **配置**                 | YAML ✅                                                                                                                                                                                          |
+| **包管理**               | [pip](https://pypi.org/): Python 节点 ✅ Rust 节点 ✅ C/C++ 节点 🛠️ <br>[cargo](https://crates.io/): Rust 节点 ✅                                                                                |
 
 > - ⭐ = 推荐方案
 > - ✅ = 一级支持（官方全面支持）
