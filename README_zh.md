@@ -34,13 +34,14 @@
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
-English [简体中文](./README_zh.md)
+简体中文 [English](./README.md)
 
-## Highlights
+## 亮点
 
-- 🚀 dora-rs is a framework to run realtime multi-AI and multi-hardware applications.
-- 🦀 dora-rs internals are 100% Rust making it extremely fast compared to alternative such as being ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark) than `ros2`.
-- ❇️ Includes a large set of pre-packaged nodes for fast prototyping which simplifies integration of hardware, algorithms, and AI models.
+*   🚀 `dora-rs` 是一个运行实时多`AI`和多硬件应用的框架。
+*   🦀 `dora-rs` 的核心 `100%` 使用 `Rust` 语言开发，相比同类框架具有极速性能，比`ros2`快 ⚡️ [10-17倍](https://github.com/dora-rs/dora-benchmark)。
+*   ❇️ 内置大量预封装节点，支持快速原型开发，可简化硬件、算法与`AI`模型的集成流程。
+
 
 <p align="center">
   <picture align="center">
@@ -52,26 +53,26 @@ English [简体中文](./README_zh.md)
 
 <p align="center">
  <a href="https://github.com/dora-rs/dora-benchmark/" >
-  <i>Latency benchmark with Python API for both framework, sending 40M of random bytes.</i>
+  <i>针对两个框架的 Python API 进行延迟基准测试（发送40兆随机字节数据）。</i>
   </a>
 </p>
 
-## Latest News 🎉
+## 最新动态 🎉
 
 <details open>
 <summary><b>2025</b></summary>
 
-\[04/05\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
+\[04/05\] 新增功能支持：dora-cotracker：实现视频帧任意点位追踪，dora-rav1e：支持12bit高色深AV1编码，dora-dav1d：完成AV1格式解码支持
 
-- \[03/05\] Add support for dora async Python.
-- \[03/05\] Add support for Microsoft Phi4, Microsoft Magma.
-- \[03/05\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
-- \[03/04\] Add support for Zenoh for distributed dataflow.
-- \[03/04\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
-- \[02/25\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
+- \[03/05\] 新增 dora 异步 Python 支持
+- \[03/05\] 新增 Microsoft Phi4 和 Microsoft Magma 支持
+- \[03/05\] dora-rs 成功入选 [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb)，并公布以下项目 [**创意列表**](https://github.com/dora-rs/dora/wiki/GSoC_2025) 
+- \[03/04\] 新增 Zenoh 分布式数据流支持
+- \[03/04\] 新增 Meta SAM2、Kokoro（TTS）支持，并基于 `llama.cpp` 优化 Qwen2.5 性能表现
+- \[02/25\] 新增 Qwen2.5（大语言模型）、Qwen2.5-VL（视觉语言模型）及 outetts（TTS语音合成）支持
 </details>
 
-## Support Matrix
+## 支持矩阵
 
 |                                   | dora-rs                                                                                                                                                                                          |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -84,13 +85,13 @@ English [简体中文](./README_zh.md)
 | **Configuration**                 | YAML ✅                                                                                                                                                                                          |
 | **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                |
 
-> - ⭐ = Recommended
-> - ✅ = First Class Support
-> - 🆗 = Best Effort Support
-> - 📐 = Experimental and looking for contributions
-> - 🛠️ = Unsupported but hoped for through contributions
+> - ⭐ = 推荐方案
+> - ✅ = 一级支持（官方全面支持）
+> - 🆗 = 尽力支持（社区主导支持）
+> - 📐 = 实验性功能（期待贡献）
+> - 🛠️ = 暂不支持（期待社区贡献实现）
 >
-> Everything is open for contributions 🙋
+> 开放共建，欢迎来PR！ 🙋
 
 ## Node Hub
 
@@ -157,38 +158,38 @@ English [简体中文](./README_zh.md)
 | Tutorial       | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                            | Example using CUDA Zero Copy                        | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
 | Tutorial       | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                               | Example with C++ node                               | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)      |
 
-## Getting Started
+## 快速开始
 
-### Installation
+### 安装
 
 ```bash
 pip install dora-rs-cli
 ```
 
 <details close>
-<summary><b>Additional installation methods</b></summary>
+<summary><b>其他安装方式</b></summary>
 
-Install dora with our standalone installers, or from [crates.io](https://crates.io/crates/dora-cli):
+您可以通过以下两种方式安装 dora, 或者通过 [crates.io](https://crates.io/crates/dora-cli):
 
-### With cargo
+### 使用 cargo
 
 ```bash
 cargo install dora-cli
 ```
 
-### With Github release for macOS and Linux
+### macOS/Linux 系统用户可通过 GitHub Releases 获取安装包
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
-### With Github release for Windows
+### Windows 用户可通过 GitHub Releases 获取安装程序
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dorareleases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
-### With Source
+### 通过源码
 
 ```bash
 git clone https://github.com/dora-rs/dora.git
@@ -199,26 +200,26 @@ PATH=$PATH:$(pwd)/target/release
 
 </details>
 
-### Run
+### 运行
 
-- Run the yolo python example:
+- 运行 yolo python 示例:
 
 ```bash
-## Create a virtual environment
+## 创建一个虚拟环境
 uv venv --seed -p 3.11
 
-## Install nodes dependencies of a remote graph
+## 安装远程计算图的节点依赖
 dora build https://raw.githubusercontent.com/dora-rs/dora/refs/heads/main/examples/object-detection/yolo.yml --uv
 
-## Run yolo graph
+## 运行 yolo 计算图
 dora run yolo.yml --uv
 ```
 
-> Make sure to have a webcam
+> 请确保已连接可用摄像头
 
-To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
+停止数据流可以同时按住 <kbd>ctrl</kbd>+<kbd>c</kbd>
 
-- To understand what is happening, you can look at the dataflow with:
+- 查看实时数据流运行状态：
 
 ```bash
 cat yolo.yml
