@@ -434,7 +434,6 @@ nodes:
 
 - [Our Discord server](https://discord.gg/6eMGGutkfE)
 - [Our Github Project Discussion](https://github.com/orgs/dora-rs/discussions)
-- [Dora中文社区](https://doracc.com)
 
 可以就任何话题、问题或想法与我们联系。
 
