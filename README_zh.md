@@ -451,7 +451,3 @@ nodes:
 - [Zenoh 文档](https://zenoh.io/docs/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
 - [Dora Autoware 定位演示](https://github.com/dora-rs/dora-autoware-localization-demo)
-
-```
-
-```

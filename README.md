@@ -449,7 +449,3 @@ This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for 
 - [Zenoh Documentation](https://zenoh.io/docs/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
 - [Dora Autoware Localization Demo](https://github.com/dora-rs/dora-autoware-localization-demo)
-
-```
-
-```
