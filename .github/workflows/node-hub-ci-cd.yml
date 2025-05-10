@@ -18,12 +18,34 @@ jobs:
     outputs:
       folders: ${{ steps.jobs.outputs.folders }}
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v4
 
       - id: jobs
         uses: kmanimaran/list-folder-action@v4
         with:
           path: ./node-hub
+    
+  lint:
+    runs-on: ubuntu-24.04
+    needs: [find-jobs]
+    name: Lint
+    strategy:
+      fail-fast: ${{ github.event_name != 'workflow_dispatch' && !(github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')) }}
+      matrix:
+        folder: ${{ fromJson(needs.find-jobs.outputs.folders )}}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      
+      - name: Run linting
+        working-directory: node-hub/${{ matrix.folder }}
+        run: |
+          uv tool install ruff
+          ruff check .
 
   ci:
     runs-on: ${{ matrix.platform }}
