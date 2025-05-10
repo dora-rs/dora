@@ -58,6 +58,8 @@ for event in node:
             elif "follow" in text:
                 text = f"Given the prompt: {text}. Output the bounding boxes for the given followed object"
                 node.send_output("text", pa.array([text]), {"image_id": "image_left"})
+                node.send_output("follow_pose", pa.array([1.0]))
+                
             elif "grab " in text:
                 text = f"Given the prompt: {text}. Output the bounding boxes for the given grabbed object"
                 node.send_output(

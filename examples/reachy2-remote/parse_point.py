@@ -43,7 +43,7 @@ for event in node:
             x = 0
 
         if x_distance > (height * 0.7):
-            x = 0.7
+            x = 0.6
         elif x_distance > (height * 0.5):
             x = 0.6
         elif x_distance > (height * 0.25):
@@ -51,12 +51,12 @@ for event in node:
         else:
             x = 0
             
-        if x_distance < (height * 0.25):
-            print("ARRIVED!")
-            time.sleep(1.0)
-            if time.time() - arrive_time > 4.0:
-                node.send_output("arrived", pa.array([]))
-                arrive_time = time.time()
+        # if x_distance < (height * 0.25):
+            # print("ARRIVED!")
+            # time.sleep(1.0)
+            # if time.time() - arrive_time > 4.0:
+                # node.send_output("arrived", pa.array([]))
+                # arrive_time = time.time()
         # Action
         action = pa.array([x, y, 0, 0, 0, rz])
         node.send_output("action", action)

@@ -15,21 +15,21 @@ IMAGE_RESIZE_RATIO = float(os.getenv("IMAGE_RESIZE_RATIO", "1.0"))
 l_init_pose = [
     -7.0631310641087435,
     -10.432298603362307,
-    24.429809104404114,
-    -132.15000828778648,
-    -1.5494749438811133,
-    -21.749917789205202,
-    8.099312596108344,
+    57.429809104404114,
+    -126.15000828778648,
+    -3.5494749438811133,
+    -35.749917789205202,
+    0.999312596108344,
     100,
 ]
 r_init_pose = [
     -5.60273587426976,
     10.780818397272316,
-    -27.868146823156042,
+    -57.868146823156042,
     -126.15650363072193,
     3.961108018106834,
     -35.43682799906162,
-    350.9236448374495,
+    0.9236448374495,
     100,
 ]
 r_release_closed_pose = [
@@ -39,7 +39,7 @@ r_release_closed_pose = [
     -97.63648867582175,
     -19.91084837404425,
     22.10184328619011,
-    366.71351223614494,
+    6.71351223614494,
     0,
 ]
 
@@ -50,7 +50,7 @@ r_release_opened_pose = [
     -97.63648867582175,
     -19.91084837404425,
     22.10184328619011,
-    366.71351223614494,
+    6.71351223614494,
     100,
 ]
 
@@ -108,7 +108,7 @@ node.send_output(
     pa.array(l_init_pose),
     metadata={"encoding": "jointstate", "duration": 2},
 )
-node.send_output("look", pa.array([0.35, 0, 0]))
+node.send_output("look", pa.array([0, 0, 0]))
 
 
 for event in node:
@@ -298,3 +298,29 @@ for event in node:
                     pa.array(l_init_pose),
                     metadata={"encoding": "jointstate", "duration": 1},
                 )
+
+        elif event["id"] == "follow_pose":
+            node.send_output(
+                "action_l_arm",
+                pa.array(
+                    [
+                        0,-15,0,0,0,0,0,
+                        0
+                    ],
+                ),
+                metadata={"encoding": "jointstate", "duration": "0.75"},
+            )
+            
+            event, cache = wait_for_event(id="response_l_arm", cache=cache)
+
+            node.send_output(
+                "action_r_arm",
+                pa.array(
+                    [
+                        0,15,0,0,0,0,0,
+                        0
+                    ],
+                ),
+                metadata={"encoding": "jointstate", "duration": "0.75"},
+            )
+            event, cache = wait_for_event(id="response_r_arm", cache=cache)

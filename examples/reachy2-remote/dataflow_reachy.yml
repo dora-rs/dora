@@ -1,88 +1,63 @@
 nodes:
   - id: camera
+    build: pip install -e ../../node-hub/dora-reachy2
     path: dora-reachy2-camera
-    _unstable_deploy:
-      machine: encoder
     inputs:
-      tick: dora/timer/millis/20
+      image_left: dora/timer/millis/50
     outputs:
       - image_left
-      - image_depth
-      - depth
     env:
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
-      ROBOT_IP: 127.0.0.1
+      # IMAGE_WIDTH: 640
+      # IMAGE_HEIGHT: 480
+      ROBOT_IP: 172.18.131.66
+
+  - id: camera_depth
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-camera
+    inputs:
+      depth: dora/timer/millis/50
+    outputs:
+      - depth
+      - image_depth
+    env:
+      # IMAGE_WIDTH: 640
+      # IMAGE_HEIGHT: 480
+      ROBOT_IP: 172.18.131.66
 
   - id: reachy-left-arm
     build: pip install -e ../../node-hub/dora-reachy2
     path: dora-reachy2-left-arm
-    _unstable_deploy:
-      machine: encoder
     inputs:
       pose: parse_pose/action_l_arm
     outputs:
       - response_l_arm
     env:
-      ROBOT_IP: 127.0.0.1
+      ROBOT_IP: 172.18.131.66
 
   - id: reachy-right-arm
     build: pip install -e ../../node-hub/dora-reachy2
     path: dora-reachy2-right-arm
-    _unstable_deploy:
-      machine: encoder
     inputs:
       pose: parse_pose/action_r_arm
     outputs:
       - response_r_arm
     env:
-      ROBOT_IP: 127.0.0.1
+      ROBOT_IP: 172.18.131.66
 
-  - id: rav1e-local-image
-    path: dora-rav1e
-    build: cargo build -p dora-rav1e --release
-    _unstable_deploy:
-      machine: encoder
+  - id: reachy-mobile-base
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-mobile-base
     inputs:
-      image_depth: camera/image_depth
-      image_left: camera/image_left
+      action_base: parse_point/action
+      action_whisper: parse_whisper/action
     outputs:
-      - image_left
-      - image_depth
+      - response_base
     env:
-      RAV1E_SPEED: 10
-
-  - id: rav1e-local-depth
-    path: dora-rav1e
-    build: cargo build -p dora-rav1e --release
-    _unstable_deploy:
-      machine: encoder
-    inputs:
-      depth: camera/depth
-    outputs:
-      - depth
-    env:
-      RAV1E_SPEED: 7
-
-  - id: dav1d-remote
-    path: dora-dav1d
-    build: cargo build -p dora-dav1d --release
-    _unstable_deploy:
-      machine: gpu
-    inputs:
-      image_depth: rav1e-local-image/image_depth
-      image_left: rav1e-local-image/image_left
-      depth: rav1e-local-depth/depth
-    outputs:
-      - image_left
-      - image_depth
-      - depth
+      ROBOT_IP: 172.18.131.66
 
   - id: dora-microphone
     build: pip install -e ../../node-hub/dora-microphone
     path: dora-microphone
-    _unstable_deploy:
-      machine: macbook
     inputs:
       tick: dora/timer/millis/2000
     outputs:
@@ -90,8 +65,6 @@ nodes:
 
   - id: dora-vad
     build: pip install -e ../../node-hub/dora-vad
-    _unstable_deploy:
-      machine: macbook
     path: dora-vad
     inputs:
       audio: dora-microphone/audio
@@ -100,8 +73,6 @@ nodes:
 
   - id: dora-distil-whisper
     build: pip install -e ../../node-hub/dora-distil-whisper
-    _unstable_deploy:
-      machine: gpu
     path: dora-distil-whisper
     inputs:
       input: dora-vad/audio
@@ -112,8 +83,6 @@ nodes:
 
   - id: parse_whisper
     path: parse_whisper.py
-    _unstable_deploy:
-      machine: gpu
     inputs:
       text: dora-distil-whisper/text
       arrived: parse_point/arrived
@@ -124,17 +93,16 @@ nodes:
       - text
       - action_release_left
       - action_release_right
+      - follow_pose
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
   - id: dora-qwenvl
     build: pip install -e ../../node-hub/dora-qwen2-5-vl
     path: dora-qwen2-5-vl
-    _unstable_deploy:
-      machine: gpu
     inputs:
-      image_left: dav1d-remote/image_left
-      image_depth: dav1d-remote/image_depth
+      image_left: camera/image_left
+      image_depth: camera_depth/image_depth
       text: parse_whisper/text
     outputs:
       - text
@@ -144,8 +112,6 @@ nodes:
 
   - id: parse_bbox
     path: parse_bbox.py
-    _unstable_deploy:
-      machine: gpu
     inputs:
       text: dora-qwenvl/text
       points: parse_whisper/points
@@ -158,10 +124,8 @@ nodes:
   - id: sam2
     build: pip install -e ../../node-hub/dora-sam2
     path: dora-sam2
-    _unstable_deploy:
-      machine: gpu
     inputs:
-      image_depth: dav1d-remote/image_depth
+      image_depth: camera_depth/image_depth
       boxes2d: parse_bbox/bbox_grab
     outputs:
       - masks
@@ -169,10 +133,8 @@ nodes:
   - id: tracker
     build: pip install -e ../../node-hub/dora-cotracker
     path: dora-cotracker
-    _unstable_deploy:
-      machine: gpu
     inputs:
-      image: dav1d-remote/image_left
+      image: camera/image_left
       boxes2d: parse_bbox/bbox_track
     outputs:
       - tracked_image
@@ -183,24 +145,21 @@ nodes:
   - id: box_coordinates
     build: pip install -e ../../node-hub/dora-object-to-pose
     path: dora-object-to-pose
-    _unstable_deploy:
-      machine: gpu
     inputs:
-      depth: dav1d-remote/depth
+      depth: camera_depth/depth
       masks: sam2/masks
     outputs:
       - pose
 
   - id: parse_pose
     path: parse_pose.py
-    _unstable_deploy:
-      machine: gpu
     inputs:
       pose: box_coordinates/pose
       response_r_arm: reachy-right-arm/response_r_arm
       response_l_arm: reachy-left-arm/response_l_arm
       release_left: parse_whisper/action_release_left
       release_right: parse_whisper/action_release_right
+      follow_pose: parse_whisper/follow_pose
     outputs:
       - action_r_arm
       - action_l_arm
@@ -209,8 +168,6 @@ nodes:
 
   - id: parse_point
     path: parse_point.py
-    _unstable_deploy:
-      machine: gpu
     inputs:
       points: tracker/points
     outputs:
@@ -219,32 +176,20 @@ nodes:
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
-  - id: reachy-mobile-base
-    build: pip install -e ../../node-hub/dora-reachy2
-    path: dora-reachy2-mobile-base
-    _unstable_deploy:
-      machine: encoder
-    inputs:
-      action_base: parse_point/action
-      action_whisper: parse_whisper/action
-    outputs:
-      - response_base
-    env:
-      ROBOT_IP: 127.0.0.1
-
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
-    _unstable_deploy:
-      machine: macbook
     inputs:
-      image: dav1d-remote/image_left
-      torso/image: dav1d-remote/image_depth
-      torso/depth: dav1d-remote/depth
-      torso/boxes2d: parse_bbox/bbox
+      head/boxes2d: parse_bbox/bbox_track
+      head/image: camera/image_left
+      torso/image: camera_depth/image_depth
+      torso/depth: camera_depth/depth
+      torso/boxes2d: parse_bbox/bbox_grab
       original_text: dora-distil-whisper/text
       parsed_text: parse_whisper/text
       qwenvl_text: dora-qwenvl/text
+      cotracker/tracked_image: tracker/tracked_image
+      head/points2d: tracker/points
     env:
-      RERUN_MEMORY_LIMIT: 5%
+      RERUN_MEMORY_LIMIT: 25%
       CAMERA_PITCH: 2.47

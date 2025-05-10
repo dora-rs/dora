@@ -15,7 +15,7 @@ use eyre::{eyre, Context, Result};
 use rerun::{
     components::ImageBuffer,
     external::{log::warn, re_types::ArrowBuffer},
-    ImageFormat, Points3D, SpawnOptions,
+    ImageFormat, Points2D, Points3D, SpawnOptions,
 };
 pub mod boxes2d;
 pub mod series;
@@ -100,7 +100,7 @@ pub fn lib_main() -> Result<()> {
         .unwrap_or("0.0".to_string())
         .parse::<f32>()
         .unwrap();
-
+    let mut color_cache: HashMap<DataId, rerun::Color> = HashMap::new();
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
             if id.as_str().contains("image") {
@@ -355,6 +355,32 @@ pub fn lib_main() -> Result<()> {
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
+            } else if id.as_str().contains("points2d") {
+                // Get color or assign random color in cache
+                let color = color_cache.get(&id);
+                let color = if let Some(color) = color {
+                    color.clone()
+                } else {
+                    let color = rerun::Color::from_rgb(200, 80, rand::random::<u8>());
+
+                    color_cache.insert(id.clone(), color.clone());
+                    color
+                };
+                let dataid = id;
+
+                // get a random color
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut points = vec![];
+                    let mut colors = vec![];
+                    buffer.chunks(2).for_each(|chunk| {
+                        points.push((chunk[0], chunk[1]));
+                        colors.push(color);
+                    });
+                    let points = Points2D::new(points).with_radii(vec![0.04; colors.len()]);
+
+                    rec.log(dataid.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
+                }
             } else {
                 println!("Could not find handler for {}", id);
             }

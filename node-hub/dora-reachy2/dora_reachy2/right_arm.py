@@ -9,17 +9,7 @@ from dora import Node
 from reachy2_sdk import ReachySDK
 from scipy.spatial.transform import Rotation
 
-ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.80")
-
-r_default_pose = [
-    38.058172640242475,
-    0.07798708660299236,
-    2.0084781702579564,
-    -129.76629958820868,
-    4.428130313456095,
-    -9.272674208719419,
-    354.280491569214,
-]
+ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.242")
 
 
 def r_arm_go_to_mixed_angles(reachy, x, y, z):
@@ -60,9 +50,6 @@ def r_arm_go_to_mixed_angles(reachy, x, y, z):
         except ValueError:
             continue
 
-    # Fallback to default pose if we need the arm to be within x and z limits.
-    if x < 0.3 and z > -0.2:
-        return r_default_pose
 
     print("Right arm: No solution found for x, y, z: ", x, y, z)
     return []

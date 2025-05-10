@@ -69,45 +69,7 @@ class VideoTrackingNode:
                         visible_tracks.append([int(pt[0]), int(pt[1])])
                 visible_tracks = np.array(visible_tracks, dtype=np.float32)
 
-                frame_viz = frame.copy()
-                num_input_stream = len(self.input_points)
-                # Draw input points in red
-                for i, (pt, vis) in enumerate(
-                    zip(tracks[:num_input_stream], visibility[:num_input_stream])
-                ):
-                    if vis > 0.5:
-                        x, y = int(pt[0]), int(pt[1])
-                        cv2.circle(
-                            frame_viz, (x, y), radius=3, color=(0, 255, 0), thickness=-1
-                        )
-                        cv2.putText(
-                            frame_viz,
-                            f"I{i}",
-                            (x + 5, y - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 0),
-                            1,
-                        )
 
-                # Draw clicked points in red
-                for i, (pt, vis) in enumerate(
-                    zip(tracks[num_input_stream:], visibility[num_input_stream:])
-                ):
-                    if vis > 0.5:
-                        x, y = int(pt[0]), int(pt[1])
-                        cv2.circle(
-                            frame_viz, (x, y), radius=3, color=(0, 0, 255), thickness=-1
-                        )
-                        cv2.putText(
-                            frame_viz,
-                            f"C{i}",
-                            (x + 5, y - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 0, 255),
-                            1,
-                        )
 
                 # Send tracked points
                 if len(visible_tracks) > 0:
@@ -123,7 +85,7 @@ class VideoTrackingNode:
                         },
                     )
 
-                return frame, frame_viz
+                return frame, None
 
         return None, None
 
