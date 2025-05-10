@@ -1,4 +1,5 @@
 """TODO: Add docstring."""
+
 import lebai_sdk
 
 lebai_sdk.init()
@@ -25,7 +26,11 @@ def main():
     r = 0  # 交融半径 (m)。用于指定路径的平滑效果
 
     lebai.movel(
-        cartesian_pose, a, v, t, r,
+        cartesian_pose,
+        a,
+        v,
+        t,
+        r,
     )  # 直线运动 https://help.lebai.ltd/sdk/motion.html#%E7%9B%B4%E7%BA%BF%E8%BF%90%E5%8A%A8
     lebai.wait_move()  # 等待运动完成
     # scene_number = "10000" #需要调用的场景编号

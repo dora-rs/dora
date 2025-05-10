@@ -23,7 +23,8 @@ if bool(os.getenv("USE_MODELSCOPE_HUB") in ["True", "true"]):
 
 SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
-    "You're a very succinct AI assistant, that describes image with a very short sentence.",
+    "You're a very succinct AI assistant, that describes image with a very short "
+    "sentence.",
 )
 ACTIVATION_WORDS = os.getenv("ACTIVATION_WORDS", "").split()
 
@@ -104,7 +105,8 @@ def generate(frames: dict, question, history, past_key_values=None, image_id=Non
     inputs = inputs.to(model.device)
 
     # Inference: Generation of the output
-    ## TODO: Add past_key_values to the inputs when https://github.com/huggingface/transformers/issues/34678 is fixed.
+    # TODO: Add past_key_values to the inputs when
+    # https://github.com/huggingface/transformers/issues/34678 is fixed.
     outputs = model.generate(
         **inputs,
         max_new_tokens=128,  # past_key_values=past_key_values

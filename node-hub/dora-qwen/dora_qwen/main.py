@@ -82,7 +82,8 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-            # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
+            # Warning: Make sure to add my_output_id and my_input_id within the
+            # dataflow.
             text = event["value"][0].as_py()
             words = text.lower().split()
 
