@@ -98,7 +98,7 @@ cache = {}
 
 
 ## ---- INIT ---
-node.send_output("look", pa.array([4.0, 0, 0]))
+node.send_output("look", pa.array([1.0, 0, 0]))
 
 
 for event in node:
@@ -165,6 +165,7 @@ for event in node:
                                     [x, -0.3, z + 0.1, 0, 0, 0, 100],
                                     [x, -0.3, z, 0, 0, 0, 0],
                                     [x, -0.3, z + 0.1, 0, 0, 0, 0],
+                                    [0.3, -0.3, -0.16, 0, 0, 0, 0],
                                 ],
                             ).ravel()
                             node.send_output("look", pa.array([x, -0.3, z]))
@@ -218,6 +219,7 @@ for event in node:
                                     [x, 0.3, z + 0.1, 0, 0, 0, 100],
                                     [x, 0.3, z, 0, 0, 0, 0],
                                     [x, 0.3, z + 0.1, 0, 0, 0, 0],
+                                    [0.3, 0.3, -0.16, 0, 0, 0, 0],
                                 ],
                             ).ravel()
 
@@ -237,7 +239,7 @@ for event in node:
                 case "release":
                     if len(values) == 0:
                         continue
-                    x = x + 0.01
+                    x = x - 0.02
                     z = z + 0.13
 
                     ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
@@ -281,7 +283,7 @@ for event in node:
                                 pa.array([0.0, y + 0.3, 0, 0, 0, 0]),
                                 metadata={"encoding": "xyzrpy", "duration": "1"},
                             )
-                            event = wait_for_event(id="translate_base")
+                            event = wait_for_event(id="translate_base", timeout=10)
                             node.send_output("look", pa.array([x, -0.3, z]))
                             trajectory = np.array(
                                 [
@@ -296,22 +298,21 @@ for event in node:
                                 pa.array(trajectory),
                                 metadata={"encoding": "xyzrpy", "duration": "0.75"},
                             )
-                            event = wait_for_event(id="response_r_arm")
+                            event = wait_for_event(id="response_r_arm", timeout=10)
                             node.send_output(
                                 "action_r_arm",
                                 pa.array(r_init_pose),
                                 metadata={"encoding": "jointstate", "duration": 1},
                             )
 
-                            event = wait_for_event(id="response_r_arm")
+                            event = wait_for_event(id="response_r_arm", timeout=10)
                             node.send_output(
                                 "translate_base",
                                 pa.array([0.0, -(y + 0.3), 0, 0, 0, 0]),
                                 metadata={"encoding": "xyzrpy", "duration": "1"},
                             )
-                            event = wait_for_event(id="translate_base")
+                            event = wait_for_event(id="translate_base", timeout=10)
                     else:
-                        y += 0.03
                         node.send_output(
                             "action_l_arm",
                             pa.array(trajectory),
@@ -332,7 +333,7 @@ for event in node:
                             )
                             arm_holding_object = None
                         else:
-                            print("Failed")
+                            print("----------------------Failed------------------")
                             # Send a mobile base command to move slightly left to facilitate the grasp
                             node.send_output(
                                 "translate_base",
@@ -450,3 +451,5 @@ for event in node:
                 metadata={"encoding": "jointstate", "duration": 2},
             )
             event = wait_for_event(id="response_l_arm", timeout=10)
+        elif event["id"] == "look_ahead":
+            node.send_output("look", pa.array([0.7, 0, 0]))

@@ -106,6 +106,7 @@ nodes:
       - action_release_right
       - follow_pose
       - raise_arm_pose
+      - look_ahead
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -173,6 +174,7 @@ nodes:
       release_right: parse_whisper/action_release_right
       follow_pose: parse_whisper/follow_pose
       raise_arm_pose: parse_whisper/raise_arm_pose
+      look_ahead: parse_whisper/look_ahead
       translate_base: reachy-mobile-base/response_base
     outputs:
       - action_r_arm

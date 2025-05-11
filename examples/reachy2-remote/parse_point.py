@@ -13,6 +13,7 @@ node = Node()
 IMAGE_RESIZE_RATIO = float(os.getenv("IMAGE_RESIZE_RATIO", "1.0"))
 
 arrive_time = time.time()
+arrived = False
 
 for event in node:
     if event["type"] == "INPUT":
@@ -50,15 +51,10 @@ for event in node:
             x = 0.8
         elif x_distance > (height * 0.25):
             x = 0.61
+        elif x_distance > (height * 0.1):
+            x = 0.3
         else:
             x = 0
-
-        # if x_distance < (height * 0.25):
-        # print("ARRIVED!")
-        # time.sleep(1.0)
-        # if time.time() - arrive_time > 4.0:
-        # node.send_output("arrived", pa.array([]))
-        # arrive_time = time.time()
-        # Action
+            node.send_output("arrived", pa.array([]))
         action = pa.array([x, y, 0, 0, 0, rz])
         node.send_output("action", action)
