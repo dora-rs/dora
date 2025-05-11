@@ -14,7 +14,7 @@ ROBOT_IP = os.getenv("ROBOT_IP", "127.0.0.1")
 
 def l_arm_go_to_mixed_angles(reachy, x, y, z):
     """TODO: Add docstring."""
-    for theta in range(-80, -60, 10):
+    for theta in range(-46, -46, 10):
         r = Rotation.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
@@ -26,10 +26,10 @@ def l_arm_go_to_mixed_angles(reachy, x, y, z):
         except ValueError:
             continue
 
-    for yaw in range(0, 90, 30):
+    for yaw in range(0, 30, 10):
 
         ## First try turning left
-        pitch = -90
+        pitch = -46
         r = Rotation.from_euler("ZYX", (-yaw, 0, 0), degrees=True) * Rotation.from_euler(
             "ZYX",
             (0, pitch, 0),

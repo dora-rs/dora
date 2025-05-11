@@ -11,6 +11,16 @@ nodes:
       # IMAGE_HEIGHT: 480
       ROBOT_IP: 172.18.131.66
 
+  - id: reachy-head
+    build: pip install -e ../../node-hub/dora-reachy2
+    path: dora-reachy2-head
+    inputs:
+      look: parse_pose/look
+    env:
+      # IMAGE_WIDTH: 640
+      # IMAGE_HEIGHT: 480
+      ROBOT_IP: 172.18.131.66
+
   - id: camera_depth
     build: pip install -e ../../node-hub/dora-reachy2
     path: dora-reachy2-camera
@@ -50,6 +60,7 @@ nodes:
     inputs:
       action_base: parse_point/action
       action_whisper: parse_whisper/action
+      translate_base: parse_pose/translate_base
     outputs:
       - response_base
     env:
@@ -94,6 +105,7 @@ nodes:
       - action_release_left
       - action_release_right
       - follow_pose
+      - raise_arm_pose
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -160,9 +172,13 @@ nodes:
       release_left: parse_whisper/action_release_left
       release_right: parse_whisper/action_release_right
       follow_pose: parse_whisper/follow_pose
+      raise_arm_pose: parse_whisper/raise_arm_pose
+      translate_base: reachy-mobile-base/response_base
     outputs:
       - action_r_arm
       - action_l_arm
+      - translate_base
+      - look
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -185,6 +201,7 @@ nodes:
       torso/image: camera_depth/image_depth
       torso/depth: camera_depth/depth
       torso/boxes2d: parse_bbox/bbox_grab
+      torso/masks: sam2/masks
       original_text: dora-distil-whisper/text
       parsed_text: parse_whisper/text
       qwenvl_text: dora-qwenvl/text

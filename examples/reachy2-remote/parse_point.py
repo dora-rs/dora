@@ -25,38 +25,40 @@ for event in node:
         # Do point 0 first
         if len(values) == 0:
             continue
-        elif len(values) > 1:
+        elif len(values) >= 1:
             point = values[-1]
 
         rz = int((width / 2) - point[0]) / (width / 2)
         x_distance = min(height, height - point[1])
         y = 0
         if abs(rz) > 0.75:
-            rz = np.deg2rad(45) * np.sign(rz)
+            rz = np.deg2rad(70) * np.sign(rz)
         elif abs(rz) > 0.5:
-            rz = np.deg2rad(30) * np.sign(rz)
+            rz = np.deg2rad(60) * np.sign(rz)
         elif abs(rz) > 0.3:
-            rz = np.deg2rad(20) * np.sign(rz)
+            rz = np.deg2rad(30) * np.sign(rz)
         elif abs(rz) > 0.1:
             rz = np.deg2rad(10) * np.sign(rz)
         else:
             x = 0
 
+        if x_distance > (height * 0.8):
+            x = 1.0
         if x_distance > (height * 0.7):
-            x = 0.6
+            x = 1.0
         elif x_distance > (height * 0.5):
-            x = 0.6
+            x = 0.8
         elif x_distance > (height * 0.25):
-            x = 0.5 
+            x = 0.61
         else:
             x = 0
-            
+
         # if x_distance < (height * 0.25):
-            # print("ARRIVED!")
-            # time.sleep(1.0)
-            # if time.time() - arrive_time > 4.0:
-                # node.send_output("arrived", pa.array([]))
-                # arrive_time = time.time()
+        # print("ARRIVED!")
+        # time.sleep(1.0)
+        # if time.time() - arrive_time > 4.0:
+        # node.send_output("arrived", pa.array([]))
+        # arrive_time = time.time()
         # Action
         action = pa.array([x, y, 0, 0, 0, rz])
         node.send_output("action", action)

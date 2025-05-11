@@ -376,7 +376,7 @@ pub fn lib_main() -> Result<()> {
                         points.push((chunk[0], chunk[1]));
                         colors.push(color);
                     });
-                    let points = Points2D::new(points).with_radii(vec![0.04; colors.len()]);
+                    let points = Points2D::new(points);
 
                     rec.log(dataid.as_str(), &points.with_colors(colors))
                         .context("could not log points")?;
