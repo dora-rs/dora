@@ -183,6 +183,7 @@ for event in node:
                                 metadata={"encoding": "xyzrpy", "duration": "1"},
                             )
                             event = wait_for_event(id="translate_base")
+                            arm_holding_object = "right"
                     else:
                         y += 0.03
                         node.send_output(
@@ -236,6 +237,7 @@ for event in node:
                                 metadata={"encoding": "xyzrpy", "duration": "1"},
                             )
                             event = wait_for_event(id="translate_base")
+                            arm_holding_object = "left"
                 case "release":
                     if len(values) == 0:
                         continue
@@ -254,6 +256,7 @@ for event in node:
                     if abs(y) > 0.5:
                         continue
                     if arm_holding_object is None:
+                        print("No arm holding object!!!")
                         continue
                     elif arm_holding_object == "right":
                         node.send_output(

@@ -58,9 +58,10 @@ for event in node:
                 node.send_output("points", pa.array([], type=pa.float64()))
             elif "follow" in text:
                 text = f"Given the prompt: {text}. Output the bounding boxes for the given followed object"
+                node.send_output("look_ahead", pa.array([1.0]))
+                time.sleep(0.5)  # Sync image
                 node.send_output("text", pa.array([text]), {"image_id": "image_left"})
                 node.send_output("follow_pose", pa.array([1.0]))
-                node.send_output("look_ahead", pa.array([1.0]))
             elif "raise your arms" in text:
                 node.send_output("raise_arm_pose", pa.array([1.0]))
             elif "grab " in text:
