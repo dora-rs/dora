@@ -1,14 +1,13 @@
 #!/usr/bin/env python
 """TODO: Add docstring."""
 
-
 import os
 import time
 
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import cudabuffer_to_torch, ipc_buffer_to_ipc_handle
+from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 from helper import record_results
 from tqdm import tqdm
 
@@ -17,7 +16,6 @@ torch.tensor([], device="cuda")
 
 pa.array([])
 pbar = tqdm(total=100)
-context = pa.cuda.Context()
 node = Node("node_2")
 
 
@@ -29,8 +27,6 @@ DEVICE = os.getenv("DEVICE", "cuda")
 
 NAME = f"dora torch {DEVICE}"
 
-ctx = pa.cuda.Context()
-
 while True:
     event = node.next()
     if event["type"] == "INPUT":
@@ -40,12 +36,12 @@ while True:
             # BEFORE
             handle = event["value"].to_numpy()
             torch_tensor = torch.tensor(handle, device="cuda")
+            scope = None
         else:
             # AFTER
-            # storage needs to be spawned in the same file as where it's used. Don't ask me why.
             ipc_handle = ipc_buffer_to_ipc_handle(event["value"])
-            cudabuffer = ctx.open_ipc_buffer(ipc_handle)
-            torch_tensor = cudabuffer_to_torch(cudabuffer, event["metadata"])  # on cuda
+            scope = open_ipc_handle(ipc_handle, event["metadata"])
+            torch_tensor = scope.__enter__()
     else:
         break
     t_received = time.perf_counter_ns()
@@ -53,7 +49,6 @@ while True:
 
     if length != current_size:
         if n > 0:
-
             pbar.close()
             pbar = tqdm(total=100)
             record_results(NAME, current_size, latencies)
@@ -68,5 +63,8 @@ while True:
 
     n += 1
     i += 1
+
+    if scope:
+        scope.__exit__(None, None, None)
 
 record_results(NAME, current_size, latencies)
