@@ -80,6 +80,10 @@ pub struct Node {
     pub inputs: BTreeMap<DataId, Input>,
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+    /// Whether the node's event stream should stay open after all inputs closed.
+    /// Defaults to true for source nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_stop: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +98,10 @@ pub struct ResolvedNode {
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
+
+    /// Whether the node's event stream should remain open after all inputs
+    /// are closed, waiting for an explicit stop command.
+    pub wait_for_stop: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
