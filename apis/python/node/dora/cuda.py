@@ -12,7 +12,7 @@ from numba.cuda.cudadrv.devices import get_context
 from numba.cuda.cudadrv.driver import IpcHandle
 
 
-import pickle
+import json
 
 from contextlib import contextmanager
 from typing import ContextManager
@@ -31,15 +31,19 @@ def torch_to_ipc_buffer(tensor: torch.TensorType) -> tuple[pa.array, dict]:
     """
     device_arr = to_device(tensor)
     ipch = get_context().get_ipc_handle(device_arr.gpu_data)
+    _, handle, size, source_info, offset = ipch.__reduce__()[1]
     metadata = {
         "shape": device_arr.shape,
         "strides": device_arr.strides,
         "dtype": device_arr.dtype.str,
+        "size": size,
+        "offset": offset,
+        "source_info": json.dumps(source_info),
     }
-    return pa.array(pickle.dumps(ipch), type=pa.uint8()), metadata
+    return pa.array(handle, pa.int8()), metadata
 
 
-def ipc_buffer_to_ipc_handle(handle_buffer: pa.array) -> IpcHandle:
+def ipc_buffer_to_ipc_handle(handle_buffer: pa.array, metadata: dict) -> IpcHandle:
     """Convert a buffer containing a serialized handler into cuda IPC Handle.
 
     example use:
@@ -48,13 +52,18 @@ def ipc_buffer_to_ipc_handle(handle_buffer: pa.array) -> IpcHandle:
 
     event = node.next()
 
-    ipc_handle = ipc_buffer_to_ipc_handle(event["value"])
+    ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
     with open_ipc_handle(ipc_handle, event["metadata"]) as tensor:
         pass
     ```
     """
-    handle_buffer = handle_buffer.buffers()[1]
-    return pickle.loads(handle_buffer.to_pybytes())
+    handle = handle_buffer.to_pylist()
+    return IpcHandle._rebuild(
+        handle,
+        metadata["size"],
+        json.loads(metadata["source_info"]),
+        metadata["offset"],
+    )
 
 
 @contextmanager
@@ -69,7 +78,7 @@ def open_ipc_handle(
 
     event = node.next()
 
-    ipc_handle = ipc_buffer_to_ipc_handle(event["value"])
+    ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
     with open_ipc_handle(ipc_handle, event["metadata"]) as tensor:
         pass
     ```

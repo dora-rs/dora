@@ -49,7 +49,7 @@ while True:
             torch_tensor = torch.tensor(handle, device="cuda")
         else:
             # AFTER
-            ipc_handle = ipc_buffer_to_ipc_handle(event["value"])
+            ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
             scope = open_ipc_handle(ipc_handle, event["metadata"])
             torch_tensor = scope.__enter__()
     else:
