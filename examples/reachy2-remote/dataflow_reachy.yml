@@ -97,6 +97,7 @@ nodes:
     inputs:
       text: dora-distil-whisper/text
       arrived: parse_point/arrived
+      success: parse_pose/success
     outputs:
       - bbox
       - action
@@ -116,7 +117,9 @@ nodes:
     inputs:
       image_left: camera/image_left
       image_depth: camera_depth/image_depth
-      text: parse_whisper/text
+      text:
+        source: parse_whisper/text
+        queue_size: 1000
     outputs:
       - text
     env:
@@ -181,6 +184,7 @@ nodes:
       - action_l_arm
       - translate_base
       - look
+      - success
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -211,4 +215,4 @@ nodes:
       head/points2d: tracker/points
     env:
       RERUN_MEMORY_LIMIT: 25%
-      CAMERA_PITCH: 2.47
+      CAMERA_PITCH: 2.40

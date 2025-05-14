@@ -15,9 +15,9 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
         _sum_x,
         _sum_y,
         sum_z,
-        sum_xy,
-        sum_x2,
-        sum_y2,
+        _sum_xy,
+        _sum_x2,
+        _sum_y2,
         n,
         x_min,
         x_max,
@@ -62,6 +62,64 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
             )
         },
     );
+
+    let (_mean_x, _mean_y, mean_z) = ((x_max + x_min) / 2., (y_max + y_min) / 2., sum_z / n);
+
+    // Second processing based on mean
+    let (
+        _sum_x,
+        _sum_y,
+        sum_z,
+        sum_xy,
+        sum_x2,
+        sum_y2,
+        n,
+        x_min,
+        x_max,
+        y_min,
+        y_max,
+        _z_min,
+        _z_max,
+    ) = points
+        .iter()
+        .filter(|(_x, _y, z)| (z - mean_z).abs() < 0.07)
+        .fold(
+            (
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, 10., -10.0,
+            ),
+            |(
+                acc_x,
+                acc_y,
+                acc_z,
+                acc_xy,
+                acc_x2,
+                acc_y2,
+                acc_n,
+                acc_x_min,
+                acc_x_max,
+                acc_y_min,
+                acc_y_max,
+                acc_z_min,
+                acc_z_max,
+            ),
+             (x, y, z)| {
+                (
+                    acc_x + x,
+                    acc_y + y,
+                    acc_z + z,
+                    acc_xy + x * y,
+                    acc_x2 + x * x,
+                    acc_y2 + y * y,
+                    acc_n + 1.,
+                    f32::min(acc_x_min, *x),
+                    f32::max(acc_x_max, *x),
+                    f32::min(acc_y_min, *y),
+                    f32::max(acc_y_max, *y),
+                    f32::min(acc_z_min, *z),
+                    f32::max(acc_z_max, *z),
+                )
+            },
+        );
     let (mean_x, mean_y, mean_z) = ((x_max + x_min) / 2., (y_max + y_min) / 2., sum_z / n);
 
     // Compute covariance and standard deviations
