@@ -9,7 +9,7 @@ requires-python = ">=3.9"
 
 dependencies = [
   "dora-rs >= 0.3.9",
-  "torch == 2.4.0",
+  "torch == 2.6.0",
   "torchvision >= 0.19",
   "torchaudio >= 2.1.0",
   "opencv-python >= 4.1.1",
