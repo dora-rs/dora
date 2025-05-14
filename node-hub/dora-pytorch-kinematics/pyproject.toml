@@ -1,0 +1,25 @@
+[project]
+name = "dora-pytorch-kinematics"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "dora-pytorch-kinematics"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = [
+    "dora-rs >= 0.3.9",
+    "pytorch-kinematics>=0.7.5",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-pytorch-kinematics = "dora_pytorch_kinematics.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+  "UP"
+]
