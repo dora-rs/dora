@@ -1,0 +1,12 @@
+[package]
+name = "dora-tcp"
+version.workspace = true
+edition.workspace = true
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dora-node-api = { workspace = true }
+tokio = { version = "1.45.0", features = ["full"] }
