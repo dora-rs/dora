@@ -27,7 +27,10 @@ def main():
                 reachy.mobile_base.send_speed_command()
             elif event["id"] == "translate_base":
                 [x, y, _z, _rx, _ry, rz] = event["value"].to_numpy()
-                reachy.mobile_base.translate_by(x, y, wait=True)
+                duration = float(event["metadata"].get("duration", 1))
+
+                if abs(y) <1:
+                    reachy.mobile_base.translate_by(x, y, wait=True, )
 
                 node.send_output("response_base", pa.array([True]))
             elif event["id"] == "action_whisper":

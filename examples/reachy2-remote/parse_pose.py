@@ -1,8 +1,6 @@
 """TODO: Add docstring."""
 
-import json
 import os
-
 import numpy as np
 import pyarrow as pa
 from dora import Node
@@ -32,7 +30,6 @@ r_init_pose = [
     0.9236448374495,
     100,
 ]
-
 
 
 def wait_for_event(id, timeout=None, cache={}):
@@ -74,30 +71,24 @@ for event in node:
             node.send_output("look", pa.array([x, y, z]))
 
             match action:
-                case "grab":
+                case "pick":
                     if len(values) == 0:
                         continue
                     x = x + 0.05
                     z = z + 0.03
 
-                    ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
-                    trajectory = np.array(
-                        [
-                            [x, y, z + 0.1, 0, 0, 0, 100],
-                            [x, y, z, 0, 0, 0, 0],
-                            [x, y, z + 0.1, 0, 0, 0, 0],
-                        ],
-                    ).ravel()
+                    if y < 0:  # right arm
+                        node.send_output("look", pa.array([x, y, z]))
 
-                    if y < 0:
-                    
                         # Send a mobile base command to move slightly left to facilitate the grasp
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, y + 0.3, 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base")
+                        node.send_output("look", pa.array([x, -0.3, z]))
+
                         trajectory = np.array(
                             [
                                 [x, -0.3, z + 0.1, 0, 0, 0, 100],
@@ -106,32 +97,37 @@ for event in node:
                                 [0.3, -0.3, -0.16, 0, 0, 0, 0],
                             ],
                         ).ravel()
-                        node.send_output("look", pa.array([x, -0.3, z]))
-
                         node.send_output(
                             "action_r_arm",
                             pa.array(trajectory),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
-
                         event = wait_for_event(id="response_r_arm")
+
+                        node.send_output("look", pa.array([x, -0.3, z]))
+
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, -(y + 0.3), 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base")
                         arm_holding_object = "right"
+                        node.send_output("look", pa.array([0.4, 0, 0]))
                         node.send_output("success", pa.array([True]))
 
-                    else:
+                    else:  # left arm
                         # Send a mobile base command to move slightly left to facilitate the grasp
+                        node.send_output("look", pa.array([x, y, z]))
+
+                        ## Move the base
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, y - 0.3, 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base")
+
                         node.send_output("look", pa.array([x, 0.3, z]))
                         trajectory = np.array(
                             [
@@ -141,20 +137,127 @@ for event in node:
                                 [0.3, 0.3, -0.16, 0, 0, 0, 0],
                             ],
                         ).ravel()
+                        node.send_output("look", pa.array([x, 0.3, z]))
 
                         node.send_output(
                             "action_l_arm",
                             pa.array(trajectory),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
 
                         event = wait_for_event(id="response_l_arm")
+                        if not (
+                            event is not None
+                            and event[0] is not None
+                            and event[0][0].as_py()
+                        ):
+                            node.send_output(
+                            "action_l_arm",
+                            pa.array(trajectory),
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
+                        )
+
+                            event = wait_for_event(id="response_l_arm")
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, -(y - 0.3), 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base")
+                        node.send_output("look", pa.array([0.4, 0.0, 0.0]))
+
+                        arm_holding_object = "left"
+                        node.send_output("success", pa.array([True]))
+                case "flip":
+                    if len(values) == 0:
+                        continue
+                    x = x + 0.05
+                    z = z + 0.03
+
+                    if y < 0:  # right arm
+                        node.send_output("look", pa.array([x, y, z]))
+
+                        # Send a mobile base command to move slightly left to facilitate the grasp
+                        node.send_output(
+                            "translate_base",
+                            pa.array([0.0, y + 0.3, 0, 0, 0, 0]),
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
+                        )
+                        event = wait_for_event(id="translate_base")
+                        node.send_output("look", pa.array([x, -0.3, z]))
+
+                        trajectory = np.array(
+                            [
+                                [x, -0.3, z + 0.1, 0, 0, 0, 100],
+                                [x, -0.3, z, 0, 0, 0, 0],
+                                [x, -0.3, z + 0.1, 0, 0, 0, 0],
+                                [x, -0.3, z + 0.1, -np.pi, 0, 0, 0],
+                                [x, -0.3, z, -np.pi, 0, 0, 100],
+                                [x, -0.3, z + 0.1, -np.pi, 0, 0, 100],
+                                [x, -0.3, z + 0.1, 0, 0, 0, 100],
+                            ],
+                        ).ravel()
+                        node.send_output(
+                            "action_r_arm",
+                            pa.array(trajectory),
+                            metadata={"encoding": "xyzrpy", "duration": "0.8"},
+                        )
+                        event = wait_for_event(id="response_r_arm")
+
+                        node.send_output("look", pa.array([x, -0.3, z]))
+
+                        node.send_output(
+                            "translate_base",
+                            pa.array([0.0, -(y + 0.3), 0, 0, 0, 0]),
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
+                        )
+                        event = wait_for_event(id="translate_base")
+                        arm_holding_object = "right"
+                        node.send_output("look", pa.array([0.4, 0, 0]))
+                        node.send_output("success", pa.array([True]))
+
+                    else:  # left arm
+                        # Send a mobile base command to move slightly left to facilitate the grasp
+                        node.send_output("look", pa.array([x, y, z]))
+
+                        ## Move the base
+                        node.send_output(
+                            "translate_base",
+                            pa.array([0.0, y - 0.3, 0, 0, 0, 0]),
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
+                        )
+                        event = wait_for_event(id="translate_base")
+
+                        node.send_output("look", pa.array([x, 0.3, z]))
+                        trajectory = np.array(
+                            [
+                                [x, 0.3, z + 0.1, 0, 0, 0, 100],
+                                [x, 0.3, z, 0, 0, 0, 0],
+                                [x, 0.3, z + 0.1, 0, 0, 0, 0],
+                                [x, 0.3, z + 0.1, -np.pi, 0, 0, 0],
+                                [x, 0.3, z, -np.pi, 0, 0, 100],
+                                [x, 0.3, z + 0.1, -np.pi, 0, 0, 100],
+                                [x, 0.3, z + 0.1, 0, 0, 0, 100],
+                            ],
+                        ).ravel()
+                        node.send_output("look", pa.array([x, 0.3, z]))
+
+                        node.send_output(
+                            "action_l_arm",
+                            pa.array(trajectory),
+                            metadata={"encoding": "xyzrpy", "duration": "0.8"},
+                        )
+
+                        event = wait_for_event(id="response_l_arm")
+
+                        node.send_output(
+                            "translate_base",
+                            pa.array([0.0, -(y - 0.3), 0, 0, 0, 0]),
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
+                        )
+                        event = wait_for_event(id="translate_base")
+                        node.send_output("look", pa.array([0.4, 0.0, 0.0]))
+
                         arm_holding_object = "left"
                         node.send_output("success", pa.array([True]))
 
@@ -165,13 +268,6 @@ for event in node:
                     z = z + 0.13
 
                     ## Clip the Maximum and minim values for the height of the arm to avoid collision or weird movement.
-                    trajectory = np.array(
-                        [
-                            [x, y, z + 0.1, 0, 0, 0, 0],
-                            [x, y, z, 0, 0, 0, 100],
-                            [x, y, z + 0.1, 0, 0, 0, 100],
-                        ],
-                    ).ravel()
                     node.send_output("look", pa.array([x, y, z]))
                     if abs(y) > 0.5:
                         continue
@@ -179,12 +275,11 @@ for event in node:
                         print("No arm holding object!!!")
                         continue
                     elif arm_holding_object == "right":
-                        
                         # Send a mobile base command to move slightly left to facilitate the grasp
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, y + 0.3, 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base", timeout=10)
                         node.send_output("look", pa.array([x, -0.3, z]))
@@ -199,29 +294,48 @@ for event in node:
                         node.send_output(
                             "action_r_arm",
                             pa.array(trajectory),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="response_r_arm", timeout=10)
+                        if not (
+                            event is not None
+                            and event[0] is not None
+                            and event[0][0].as_py()
+                        ):
+                            trajectory = np.array(
+                                [
+                                    [x, 0.3, -0.2, 0, 0, 0, 0],
+                                    [x, 0.3, -0.2, 0, 0, 0, 100],
+                                    [x, 0.3, -0.2, 0, 0, 0, 100],
+                                ],
+                            ).ravel()
+
+                            node.send_output(
+                                "action_l_arm",
+                                pa.array(trajectory),
+                                metadata={"encoding": "xyzrpy", "duration": "0.3"},
+                            )
                         node.send_output(
                             "action_r_arm",
                             pa.array(r_init_pose),
-                            metadata={"encoding": "jointstate", "duration": "0.6"},
+                            metadata={"encoding": "jointstate", "duration": "0.7"},
                         )
 
                         event = wait_for_event(id="response_r_arm", timeout=10)
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, -(y + 0.3), 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base", timeout=10)
                         node.send_output("success", pa.array([True]))
+                        node.send_output("look", pa.array([0.4, 0.0, 0.0]))
 
                     else:
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, y - 0.3, 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base")
                         trajectory = np.array(
@@ -236,25 +350,43 @@ for event in node:
                         node.send_output(
                             "action_l_arm",
                             pa.array(trajectory),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="response_l_arm")
+                        if not (
+                            event is not None
+                            and event[0] is not None
+                            and event[0][0].as_py()
+                        ):
+                            trajectory = np.array(
+                                [
+                                    [x, 0.3, -0.2, 0, 0, 0, 0],
+                                    [x, 0.3, -0.2, 0, 0, 0, 100],
+                                    [x, 0.3, -0.2, 0, 0, 0, 100],
+                                ],
+                            ).ravel()
+
+                            node.send_output(
+                                "action_l_arm",
+                                pa.array(trajectory),
+                                metadata={"encoding": "xyzrpy", "duration": "0.3"},
+                            )
 
                         node.send_output(
                             "action_l_arm",
                             pa.array(l_init_pose),
-                            metadata={"encoding": "jointstate", "duration": "0.6"},
+                            metadata={"encoding": "jointstate", "duration": "0.7"},
                         )
                         event = wait_for_event(id="response_l_arm")
 
                         node.send_output(
                             "translate_base",
                             pa.array([0.0, -(y - 0.3), 0, 0, 0, 0]),
-                            metadata={"encoding": "xyzrpy", "duration": "0.6"},
+                            metadata={"encoding": "xyzrpy", "duration": "0.3"},
                         )
                         event = wait_for_event(id="translate_base")
                         node.send_output("success", pa.array([True]))
-
+                        node.send_output("look", pa.array([0.4, 0.0, 0.0]))
 
         elif event["id"] == "release_right":
             node.send_output(
@@ -277,29 +409,6 @@ for event in node:
                 node.send_output(
                     "action_r_arm",
                     pa.array(r_init_pose),
-                    metadata={"encoding": "jointstate", "duration": 1},
-                )
-        elif event["id"] == "release_left":
-            node.send_output(
-                "action_l_arm",
-                pa.array(
-                    [
-                        0.4,
-                        0,
-                        -0.16,
-                        0,
-                        0,
-                        0,
-                        100,
-                    ],
-                ),
-                metadata={"encoding": "xyzrpy", "duration": "0.75"},
-            )
-            event, cache = wait_for_event(id="response_l_arm", cache=cache)
-            if event is not None and event[0]:
-                node.send_output(
-                    "action_l_arm",
-                    pa.array(l_init_pose),
                     metadata={"encoding": "jointstate", "duration": 1},
                 )
 
@@ -330,11 +439,13 @@ for event in node:
                 metadata={"encoding": "jointstate", "duration": 2},
             )
             event = wait_for_event(id="response_r_arm", timeout=10)
+
             node.send_output(
                 "action_l_arm",
                 pa.array(l_init_pose),
                 metadata={"encoding": "jointstate", "duration": 2},
             )
             event = wait_for_event(id="response_l_arm", timeout=10)
+
         elif event["id"] == "look_ahead":
             node.send_output("look", pa.array([0.7, 0, 0]))

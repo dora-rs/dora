@@ -7,7 +7,7 @@ from dora import Node
 from kokoro import KPipeline
 
 LANGUAGE = os.getenv("LANGUAGE", "en")
-
+VOICE = os.getenv("VOICE", "af_heart")
 def main():
     """TODO: Add docstring."""
     if LANGUAGE in ["en", "english"]:
@@ -31,7 +31,7 @@ def main():
 
                 generator = pipeline(
                     text,
-                    voice="af_heart",  # <= change voice here
+                    voice=VOICE,  # <= change voice here
                     speed=1.2,
                     split_pattern=r"\n+",
                 )

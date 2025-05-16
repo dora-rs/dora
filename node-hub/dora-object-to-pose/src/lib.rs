@@ -82,7 +82,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
         _z_max,
     ) = points
         .iter()
-        .filter(|(_x, _y, z)| (z - mean_z).abs() < 0.07)
+        .filter(|(_x, _y, z)| (z - mean_z).abs() < 0.05)
         .fold(
             (
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, 10., -10.0,

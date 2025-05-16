@@ -50,8 +50,9 @@ def main():
                 [roll, _pitch, yaw] = reachy.head.get_current_positions()
             if "look" in event["id"]:
                 [x, y, z] = event["value"].to_numpy()
+                duration = event["metadata"].get("duration", 0.5)
                 reachy.head.cancel_all_goto()
-                reachy.head.look_at(x, y, z, duration=0.5)
+                reachy.head.look_at(x, y, z, duration=float(duration))
 
     if reachy.head is not None:
         reachy.head.turn_off()

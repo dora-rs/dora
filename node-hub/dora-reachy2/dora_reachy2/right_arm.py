@@ -9,47 +9,48 @@ from dora import Node
 from reachy2_sdk import ReachySDK
 from scipy.spatial.transform import Rotation
 
-ROBOT_IP = os.getenv("ROBOT_IP", "10.42.0.242")
+ROBOT_IP = os.getenv("ROBOT_IP", "127.0.0.1")
 
 
-def r_arm_go_to_mixed_angles(reachy, x, y, z):
+def r_arm_go_to_mixed_angles(reachy, x, y, z, roll):
     """TODO: Add docstring."""
     for theta in range(-46, -46, 10):
+        theta = -60
+
         r = Rotation.from_euler("zyx", [0, theta, 0], degrees=True)
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
         transform[:3, 3] = [x, y, z]
 
         try:
-            return reachy.r_arm.inverse_kinematics(transform)
-
+            joint=reachy.r_arm.inverse_kinematics(transform)
+            if roll:
+                joint[-1] = joint[-1] + 180
+            return joint
         except ValueError:
             continue
 
     for yaw in range(0, 30, 10):
 
         ## First try turning left
-        pitch = -46
+        pitch = -60
         r = Rotation.from_euler("ZYX", (yaw, 0, 0), degrees=True) * Rotation.from_euler(
             "ZYX",
             (0, pitch, 0),
             degrees=True,
-        )
+        ) 
         transform = np.eye(4)
         transform[:3, :3] = r.as_matrix()
         transform[:3, 3] = [x, y, z]
 
         try:
-            return reachy.r_arm.inverse_kinematics(transform)
+            joint=reachy.r_arm.inverse_kinematics(transform)
+            if roll:
+                joint[-1] = joint[-1] + 180
+            return joint
+
         except ValueError:
             pass
-
-        try:
-            return reachy.r_arm.inverse_kinematics(transform)
-
-        except ValueError:
-            continue
-
 
     print("Right arm: No solution found for x, y, z: ", x, y, z)
     return []
@@ -104,11 +105,11 @@ def main():
                         x = value[0]
                         y = value[1]
                         z = value[2]
-                        _r = value[3]
+                        r = value[3]
                         _p = value[4]
                         _y = value[5]
                         gripper = value[6]
-                        joints = r_arm_go_to_mixed_angles(reachy, x, y, z)
+                        joints = r_arm_go_to_mixed_angles(reachy, x, y, z, np.rad2deg(r))
                         response_ik = len(joints) > 0
                         if response_ik:
                             joint_values.append((joints, gripper))

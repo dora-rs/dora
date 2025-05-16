@@ -70,7 +70,7 @@ for event in node:
                 )
             elif image_id == "image_depth":
                 node.send_output(
-                    "bbox_grab",
+                    "bbox_pick",
                     pa.array(bboxes.ravel()),
                     metadata,
                 )

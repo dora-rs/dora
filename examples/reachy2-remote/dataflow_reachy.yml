@@ -108,6 +108,8 @@ nodes:
       - follow_pose
       - raise_arm_pose
       - look_ahead
+      - emotion
+      - speech
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -133,7 +135,7 @@ nodes:
       points: parse_whisper/points
     outputs:
       - bbox_track
-      - bbox_grab
+      - bbox_pick
     env:
       IMAGE_RESIZE_RATIO: "1.0"
 
@@ -142,7 +144,7 @@ nodes:
     path: dora-sam2
     inputs:
       image_depth: camera_depth/image_depth
-      boxes2d: parse_bbox/bbox_grab
+      boxes2d: parse_bbox/bbox_pick
     outputs:
       - masks
 
@@ -179,6 +181,7 @@ nodes:
       raise_arm_pose: parse_whisper/raise_arm_pose
       look_ahead: parse_whisper/look_ahead
       translate_base: reachy-mobile-base/response_base
+      emotion: parse_whisper/emotion
     outputs:
       - action_r_arm
       - action_l_arm
@@ -206,9 +209,10 @@ nodes:
       head/image: camera/image_left
       torso/image: camera_depth/image_depth
       torso/depth: camera_depth/depth
-      torso/boxes2d: parse_bbox/bbox_grab
+      torso/boxes2d: parse_bbox/bbox_pick
       torso/masks: sam2/masks
       original_text: dora-distil-whisper/text
+      emotion_text: parse_whisper/emotion
       parsed_text: parse_whisper/text
       qwenvl_text: dora-qwenvl/text
       cotracker/tracked_image: tracker/tracked_image
@@ -216,3 +220,19 @@ nodes:
     env:
       RERUN_MEMORY_LIMIT: 25%
       CAMERA_PITCH: 2.40
+
+  - id: dora-kokoro-tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
+    inputs:
+      text: parse_whisper/speech
+    outputs:
+      - audio
+    env:
+      VOICE: bm_fable
+
+  - id: dora-pyaudio
+    build: pip install -e ../../node-hub/dora-pyaudio
+    path: dora-pyaudio
+    inputs:
+      audio: dora-kokoro-tts/audio
