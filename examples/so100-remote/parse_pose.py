@@ -6,7 +6,7 @@ import pyarrow as pa
 from dora import Node
 
 node = Node()
-top_z = -0.5
+top_z = -0.43
 low_z = -0.57
 
 roll = 1.86
@@ -127,9 +127,10 @@ for event in node:
             
 
             # Adjust z with the size of the gripper
-            z = z + 0.063
+            z = z + 0.075
             match action:
                 case "grab":
+                    y = y + -0.01
                     grab(
                         x,
                         y,
