@@ -1796,10 +1796,11 @@ impl ProcessId {
 
     pub fn kill(&mut self) -> bool {
         if let Some(pid) = self.0 {
+            let pid = Pid::from(pid as usize);
             let mut system = sysinfo::System::new();
-            system.refresh_processes();
+            system.refresh_process(pid);
 
-            if let Some(process) = system.process(Pid::from(pid as usize)) {
+            if let Some(process) = system.process(pid) {
                 process.kill();
                 self.mark_as_stopped();
                 return true;
