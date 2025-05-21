@@ -20,9 +20,10 @@ pub fn init(
     tx: flume::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    wait_for_stop: bool,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
+    let join_handle = std::thread::spawn(move || event_stream_loop(node_id_cloned, tx, channel, clock, wait_for_stop));
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -90,6 +91,7 @@ fn event_stream_loop(
     tx: flume::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    wait_for_stop: bool,
 ) {
     let mut tx = Some(tx);
     let mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)> = Vec::new();
@@ -135,8 +137,13 @@ fn event_stream_loop(
                     data: Some(data), ..
                 } => data.drop_token(),
                 NodeEvent::AllInputsClosed => {
-                    // close the event stream
-                    tx = None;
+                    if !wait_for_stop {
+                        // close the event stream only if we are NOT waiting for stop
+                        tracing::debug!("All inputs closed and wait_for_stop is false for node `{node_id}`, closing event stream.");
+                        tx = None;
+                    } else {
+                        tracing::debug!("All inputs closed for node `{node_id}` but wait_for_stop is true, keeping event stream open.");
+                    }
                     // skip this internal event
                     continue;
                 }

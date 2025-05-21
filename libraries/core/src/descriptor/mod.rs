@@ -10,6 +10,7 @@ use std::{
     process::Stdio,
 };
 use tokio::process::Command;
+use tracing::info;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
@@ -82,7 +83,7 @@ impl DescriptorExt for Descriptor {
                     build: node.build,
                     send_stdout_as: node.send_stdout_as,
                     run_config: NodeRunConfig {
-                        inputs: node.inputs,
+                        inputs: node.inputs.clone(),
                         outputs: node.outputs,
                     },
                     envs: None,
@@ -97,6 +98,11 @@ impl DescriptorExt for Descriptor {
                 }),
             };
 
+            // Calculate the final wait_for_stop value
+            let final_wait_for_stop = node.wait_for_stop.unwrap_or_else(|| node.inputs.is_empty());
+
+            info!(node_id = %node.id, "Calculated final_wait_for_stop for node: {}", final_wait_for_stop);
+
             resolved.insert(
                 node.id.clone(),
                 ResolvedNode {
@@ -106,6 +112,7 @@ impl DescriptorExt for Descriptor {
                     env: node.env,
                     deploy: node.deploy,
                     kind,
+                    wait_for_stop: final_wait_for_stop,
                 },
             );
         }
