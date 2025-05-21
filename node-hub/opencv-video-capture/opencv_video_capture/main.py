@@ -15,10 +15,13 @@ FLIP = os.getenv("FLIP", "")
 
 
 def main():
-    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same values as the ENV variables.
+    # Handle dynamic nodes, ask for the name of the node in the dataflow, and the same
+    # values as the ENV variables.
     """TODO: Add docstring."""
     parser = argparse.ArgumentParser(
-        description="OpenCV Video Capture: This node is used to capture video from a camera.",
+        description=(
+            "OpenCV Video Capture: This node is used to capture video from a camera."
+        ),
     )
 
     parser.add_argument(
@@ -32,7 +35,10 @@ def main():
         "--path",
         type=int,
         required=False,
-        help="The path of the device to capture (e.g. /dev/video1, or an index like 0, 1...",
+        help=(
+            "The path of the device to capture (e.g. /dev/video1, or an index like "
+            "0, 1...)"
+        ),
         default=0,
     )
     parser.add_argument(

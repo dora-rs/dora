@@ -42,6 +42,7 @@ processor = AutoProcessor.from_pretrained(
 USE_FLASH_ATTN = False
 try:
     import flash_attn as _  # noqa
+
     USE_FLASH_ATTN = True
 except (ImportError, ModuleNotFoundError):
     pass
@@ -98,13 +99,19 @@ BAD_SENTENCES = [
     "translator elisabeth buffard reviewer denise rq",
     "Translator Elisabeth Buffard Reviewer Denise RQ.",
     "Translator Denise RQ Reviewer Denise RQ.",
-    "the company also has a presence the united states canada brazil argentina mexico colombia peru chile uruguay",
-    "the company also has a presence the united states canada brazil mexico argentina colombia chile peru and uruguay",
-    "the company also has a presence the united states canada brazil argentina mexico and the united kingdom",
-    "the company also presence in the united states canada brazil argentina mexico colombia peru chile uruguay",
-    "The company also has a presence in the United States, Canada, Brazil, Argentina, Mexico, Colombia, Peru, Chile, and Uruguay."
+    "the company also has a presence the united states canada brazil argentina mexico "
+    "colombia peru chile uruguay",
+    "the company also has a presence the united states canada brazil mexico argentina "
+    "colombia chile peru and uruguay",
+    "the company also has a presence the united states canada brazil argentina mexico "
+    "and the united kingdom",
+    "the company also presence in the united states canada brazil argentina mexico "
+    "colombia peru chile uruguay",
+    "The company also has a presence in the United States, Canada, Brazil, Argentina, "
+    "Mexico, Colombia, Peru, Chile, and Uruguay."
     "the company also has presence in the united states canada the united kingdom",
-    "company also has a presence the united states canada brazil argentina colombia mexico peru chile and uruguay",
+    "company also has a presence the united states canada brazil argentina colombia "
+    "mexico peru chile and uruguay",
     "the company also has a presence the united states canada and the united kingdom",
     "the company also announced that it will acquire the online retailer zappos",
     "the company has a market capitalization of 15 trillion yen",
@@ -130,9 +137,11 @@ def remove_text_noise(text: str, text_noise="") -> str:
             text  # Return the original text if text_noise is empty or just whitespace
         )
 
-    # Helper function to normalize text (remove punctuation, make lowercase, and handle hyphens)
+    # Helper function to normalize text
+    # (remove punctuation, make lowercase, and handle hyphens)
     def normalize(s):
-        # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as equivalent
+        # Replace hyphens with spaces to treat "Notre-Dame" and "notre dame" as
+        # equivalent
         s = re.sub(r"-", " ", s)
         # Remove other punctuation and convert to lowercase
         return re.sub(r"[^\w\s]", "", s).lower()
@@ -257,7 +266,10 @@ def main():
                 else:
                     audio_prompt = ""
 
-                prompt = f"{user_prompt}{audio_prompt}{image_prompt}{text}{prompt_suffix}{assistant_prompt}"
+                prompt = (
+                    f"{user_prompt}{audio_prompt}{image_prompt}{text}{prompt_suffix}"
+                    f"{assistant_prompt}"
+                )
 
                 # Process input
                 inputs = processor(
