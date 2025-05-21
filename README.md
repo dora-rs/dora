@@ -29,6 +29,9 @@
   <a href="https://pypi.org/project/dora-rs/">
     <img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPi Latest Release"/>
   </a>
+    <a href="https://github.com/dora-rs/dora/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/dora-rs/dora" alt="PyPi Latest Release"/>
+  </a>      
 </div>
 <div align="center">
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -315,154 +318,6 @@ turtle_twist_writer.publish(message)
 ```
 
 > You might want to use ChatGPT to write the Arrow Formatting: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
-
-## Zenoh Integration for Distributed Dataflow (Experimental)
-
-Zenoh is a high-performance pub/sub and query protocol that unifies data in motion and at rest. In **dora-rs**, Zenoh is used for remote communication between nodes running on different machines, enabling distributed dataflow across networks.
-
-### What is Zenoh?
-
-- **Definition:**
-  [Zenoh](https://zenoh.io) is an open-source communication middleware offering pub/sub and query capabilities.
-- **Benefits in DORA:**
-  - Simplifies communication between distributed nodes.
-  - Handles NAT traversal and inter-network communication.
-  - Integrates with DORA to manage remote data exchange while local communication still uses efficient shared memory.
-
-### Enabling Zenoh Support
-
-1. **Run a Zenoh Router (`zenohd`):**
-   Launch a Zenoh daemon to mediate communication. For example, using Docker:
-
-   ```bash
-   docker run -p 7447:7447 -p 8000:8000 --name zenoh-router eclipse/zenohd:latest
-   ```
-
-````markdown
-## Create a Zenoh Configuration File 🎛️
-
-Create a file (e.g., `zenoh.json5`) with the router endpoint details:
-
-```json5
-{
-  connect: {
-    endpoints: ["tcp/203.0.113.10:7447"],
-  },
-}
-```
-````
-
----
-
-## Launch DORA Daemons with Zenoh Enabled 🚀
-
-On each machine, export the configuration and start the daemon:
-
-```bash
-export ZENOH_CONFIG=/path/to/zenoh.json5
-dora daemon --coordinator-addr <COORD_IP> --machine-id <MACHINE_NAME>
-```
-
----
-
-## Deploy Distributed Nodes via YAML 📄
-
-Mark nodes for remote deployment using the `_unstable_deploy` key:
-
-```yaml
-nodes:
-  - id: camera_node
-    outputs: [image]
-
-  - id: processing_node
-    _unstable_deploy:
-      machine: robot1
-      path: /home/robot/dora-nodes/processing_node
-    inputs:
-      image: camera_node/image
-    outputs: [result]
-```
-
----
-
-## Start the Coordinator and Dataflow 🏁
-
-Run the coordinator on a designated machine and start the dataflow:
-
-```bash
-dora coordinator
-dora start dataflow.yml
-```
-
----
-
-## YAML Example for Distributed Dataflow 📘
-
-```yaml
-communication:
-  zenoh: {}
-
-nodes:
-  - id: camera_node
-    custom:
-      run: ./camera_driver.py
-    outputs:
-      - image
-
-  - id: processing_node
-    _unstable_deploy:
-      machine: robot1
-      path: /home/robot/dora-nodes/processing_node
-    inputs:
-      image: camera_node/image
-    outputs:
-      - result
-```
-
-## Node Configuration Fields
-
-Each entry in the top-level `nodes:` list defines a Dora node. Besides `id`, `path`/`operators`/`custom`, `inputs`, and `outputs`, nodes can have the following optional configuration fields:
-
-- `name: string`: An optional human-readable name for the node.
-- `description: string`: An optional description of the node's purpose.
-- `env: map`: A map of environment variables to set for the node process.
-- `build: string`: A command or script to build the node before running.
-- `args: string`: Arguments to pass to the node executable (for `path` or `custom` nodes).
-- `deploy: map`: Configuration for deploying the node (e.g., `machine: "machine-id"`).
-- `send_stdout_as: string`: [Experimental] Route the node's stdout/stderr as data to another node's input.
-- **`wait_for_stop: boolean` (New):** Controls the behavior of the node's event stream after all its declared inputs have closed.
-
-  - If set to `false` (or omitted for nodes _with_ inputs), the event stream (`node.next()` or `events.recv()`) will close (return `None`) after all inputs are closed. This allows the node to finish naturally.
-  - If set to `true` (or omitted for nodes _without_ inputs, i.e., source nodes), the event stream will remain open even after all inputs are closed (or if there were no inputs initially). The stream will only close when an explicit `Stop` event is received (e.g., due to Ctrl+C or `dora stop`). This ensures source nodes can run indefinitely until stopped and perform cleanup actions.
-  - **Default Behavior:**
-    - Nodes **without** any `inputs` defined default to `wait_for_stop: true`.
-    - Nodes **with** `inputs` defined default to `wait_for_stop: false`.
-  - **Example:**
-
-    ```yaml
-    nodes:
-      - id: source_node # No inputs, defaults to wait_for_stop: true
-        path: ./my_source
-        outputs: [data]
-
-      - id: processing_node # Has inputs, defaults to wait_for_stop: false
-        path: ./my_processor
-        inputs:
-          data_in: source_node/data
-        outputs: [result]
-
-      - id: persistent_source # Explicitly wait for stop (same as default here)
-        path: ./another_source
-        wait_for_stop: true
-        outputs: [signal]
-
-      - id: quick_processor # Explicitly finish when input closes
-        path: ./quick_one
-        inputs:
-          signal_in: persistent_source/signal
-        wait_for_stop: false # Same as default here
-        outputs: [done]
-    ```
 
 ## Contributing
 
