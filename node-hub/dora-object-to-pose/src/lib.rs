@@ -14,7 +14,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
     let (
         _sum_x,
         _sum_y,
-        _sum_z,
+        sum_z,
         sum_xy,
         sum_x2,
         sum_y2,
@@ -23,8 +23,8 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
         x_max,
         y_min,
         y_max,
-        z_min,
-        z_max,
+        _z_min,
+        _z_max,
     ) = points.iter().fold(
         (
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, 10., -10.0,
@@ -62,11 +62,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
             )
         },
     );
-    let (mean_x, mean_y, mean_z) = (
-        (x_max + x_min) / 2.,
-        (y_max + y_min) / 2.,
-        (z_max + z_min) / 2.,
-    );
+    let (mean_x, mean_y, mean_z) = ((x_max + x_min) / 2., (y_max + y_min) / 2., sum_z / n);
 
     // Compute covariance and standard deviations
     let cov = sum_xy / n - mean_x * mean_y;

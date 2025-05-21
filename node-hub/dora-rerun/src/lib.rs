@@ -3,12 +3,14 @@
 use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
-    arrow::array::{Array, Float32Array, Float64Array, StringArray, UInt16Array, UInt8Array},
-    arrow::{array::AsArray, datatypes::Float32Type},
+    arrow::{
+        array::{Array, AsArray, Float64Array, StringArray, UInt16Array, UInt8Array},
+        datatypes::Float32Type,
+    },
     dora_core::config::DataId,
-    DoraNode, Event, Parameter,
+    into_vec, DoraNode, Event, Parameter,
 };
-use eyre::{eyre, Context, ContextCompat, Result};
+use eyre::{eyre, Context, Result};
 
 use rerun::{
     components::ImageBuffer,
@@ -315,12 +317,21 @@ pub fn lib_main() -> Result<()> {
                     continue;
                 };
                 mask_cache.insert(id.clone(), masks.clone());
-            } else if id.as_str().contains("jointstate") {
-                let buffer: &Float32Array = data
-                    .as_any()
-                    .downcast_ref()
-                    .context("jointstate is not float32")?;
-                let mut positions: Vec<f32> = buffer.values().to_vec();
+            } else if id.as_str().contains("jointstate") || id.as_str().contains("pose") {
+                let encoding = if let Some(Parameter::String(encoding)) =
+                    metadata.parameters.get("encoding")
+                {
+                    encoding
+                } else {
+                    "jointstate"
+                };
+                if encoding != "jointstate" {
+                    warn!("Got unexpected encoding: {} on position pose", encoding);
+                    continue;
+                }
+                // Convert to Vec<f32>
+                let mut positions: Vec<f32> =
+                    into_vec(&data).context("Could not parse jointstate as vec32")?;
 
                 // Match file name
                 let mut id = id.as_str().replace("jointstate_", "");
