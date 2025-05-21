@@ -34,10 +34,13 @@ def handle_event(text: str):
     elif (
         ("pick" in text and "place" in text)
         or ("make a hot dog" in text)
+        or ("make a vegetarian hot dog" in text)
         or ("cook" in text)
     ):
         if "make a hot dog" in text:
-            text = "pick the sausage, place it on the black grill, wait, flip the sausage, wait, pick the sausage, place it on the bread, speak it's ready!"
+            text = "pick the sausage, place it on the black grill, wait, flip the sausage on the grill, wait, pick the sausage on the grill, place it on the hot dog bun, speak it's ready!"
+        if "make a vegetarian hot dog" in text:
+            text = "pick the cucumber, place it on the black grill, wait, flip the cucumber on the grill, wait, pick the cucumber on the grill, place it on the hot dog bun, speak it's ready!"
         elif "cook" in text:
             # Match 'grill' followed by two words
             match = re.search(r"\bcook\b\s+(\w+)\s+(\w+)", text)
@@ -62,7 +65,7 @@ def handle_event(text: str):
 
         node.send_output("speech", pa.array(["I'm going to " + text]))
 
-        text = f"Given the prompt: {text}. Output the bounding boxes for the given picked object"
+        text = f"Given the prompt: {text}. Output the bounding boxes for the object to be picked"
 
         node.send_output(
             "text",
@@ -104,7 +107,7 @@ def handle_event(text: str):
 
         node.send_output("speech", pa.array(["I'm going to " + text]))
 
-        text = f"Given the prompt: {text}. Output the bounding boxes for the flipped object"
+        text = f"Given the prompt: {text}. Output the bounding boxes for the object to flip"
         node.send_output(
             "text",
             pa.array([text]),
