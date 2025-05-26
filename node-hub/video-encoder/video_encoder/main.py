@@ -1,4 +1,5 @@
 """TODO : Doc String."""
+
 import argparse
 import os
 from pathlib import Path
@@ -13,7 +14,10 @@ from ffmpeg import FFmpeg
 def main():
     """Handle dynamic nodes, ask for the name of the node in the dataflow."""
     parser = argparse.ArgumentParser(
-        description="Video Encoder: This node is used to record episodes of a robot interacting with the environment.",
+        description=(
+            "Video Encoder: This node is used to record episodes of a robot "
+            "interacting with the environment."
+        ),
     )
 
     parser.add_argument(
@@ -116,7 +120,10 @@ def main():
                         .option("y")
                         .input(str(out_dir / "frame_%06d.png"), f="image2", r=fps)
                         .output(
-                            str(video_path), vcodec="libx264", g=2, pix_fmt="yuv444p",
+                            str(video_path),
+                            vcodec="libx264",
+                            g=2,
+                            pix_fmt="yuv444p",
                         )
                     )
 

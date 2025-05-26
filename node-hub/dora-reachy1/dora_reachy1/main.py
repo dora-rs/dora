@@ -1,4 +1,5 @@
 """TODO: Add docstring."""
+
 import os
 import time
 
@@ -70,7 +71,12 @@ def main():
     default_pose = r_arm_inverse_kinematics(reachy, r_arm_pose, [0, 0, 0])
 
     goto(
-        {joint: pos for joint, pos in zip(reachy.r_arm.joints.values(), default_pose, strict=False)},
+        {
+            joint: pos
+            for joint, pos in zip(
+                reachy.r_arm.joints.values(), default_pose, strict=False
+            )
+        },
         duration=3,
     )
 
@@ -84,7 +90,9 @@ def main():
             goto(
                 {
                     joint: pos
-                    for joint, pos in zip(reachy.r_arm.joints.values(), joint_pose, strict=False)
+                    for joint, pos in zip(
+                        reachy.r_arm.joints.values(), joint_pose, strict=False
+                    )
                 },
                 duration=0.200,
             )
@@ -119,7 +127,9 @@ def main():
                     {
                         joint: pos
                         for joint, pos in zip(
-                            reachy.r_arm.joints.values(), default_pose, strict=False,
+                            reachy.r_arm.joints.values(),
+                            default_pose,
+                            strict=False,
                         )
                     },
                     duration=3,
