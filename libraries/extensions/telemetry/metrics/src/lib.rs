@@ -31,7 +31,7 @@ pub fn init_metrics() -> SdkMeterProvider {
         .build()
 }
 
-pub async fn init_meter_provider(meter_id: String) -> Result<SdkMeterProvider> {
+pub async fn run_metrics_monitor(meter_id: String) -> Result<()> {
     let meter_provider = init_metrics();
     global::set_meter_provider(meter_provider.clone());
     let scope = InstrumentationScope::builder(meter_id)
@@ -40,5 +40,5 @@ pub async fn init_meter_provider(meter_id: String) -> Result<SdkMeterProvider> {
     let meter = global::meter_with_scope(scope);
 
     init_process_observer(meter).await.unwrap();
-    Ok(meter_provider)
+    Ok(())
 }

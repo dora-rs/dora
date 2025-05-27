@@ -16,8 +16,7 @@ use dora_message::{
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult, DataflowStatus},
 };
 #[cfg(feature = "tracing")]
-use dora_tracing::set_up_tracing;
-use dora_tracing::{set_up_tracing_opts, FileLogging};
+use dora_tracing::TracingBuilder;
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
@@ -311,34 +310,42 @@ fn run(args: Args) -> eyre::Result<()> {
                 .as_ref()
                 .map(|id| format!("{name}-{id}"))
                 .unwrap_or(name.to_string());
-            let stdout = (!quiet).then_some("info,zenoh=warn");
-            let file = Some(FileLogging {
-                file_name: filename,
-                filter: LevelFilter::INFO,
-            });
-            set_up_tracing_opts(name, stdout, file)
-                .context("failed to set up tracing subscriber")?;
+
+            let mut builder = TracingBuilder::new(name);
+            if !quiet {
+                builder = builder.with_stdout("info,zenoh=warn");
+            }
+            builder = builder.with_file(filename, LevelFilter::INFO)?;
+            builder
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
             // Do not set the runtime in the cli.
         }
         Command::Coordinator { quiet, .. } => {
             let name = "dora-coordinator";
-            let stdout = (!quiet).then_some("info");
-            let file = Some(FileLogging {
-                file_name: name.to_owned(),
-                filter: LevelFilter::INFO,
-            });
-            set_up_tracing_opts(name, stdout, file)
-                .context("failed to set up tracing subscriber")?;
+            let mut builder = TracingBuilder::new(name);
+            if !quiet {
+                builder = builder.with_stdout("info");
+            }
+            builder = builder.with_file(name, LevelFilter::INFO)?;
+            builder
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
         Command::Run { .. } => {
-            let log_level = std::env::var("RUST_LOG").ok().or(Some("info".to_string()));
-            set_up_tracing_opts("run", log_level.as_deref(), None)
-                .context("failed to set up tracing subscriber")?;
+            let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
+            TracingBuilder::new("run")
+                .with_stdout(log_level)
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
         _ => {
-            set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
+            TracingBuilder::new("dora-cli")
+                .with_stdout("warn")
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
     };
 

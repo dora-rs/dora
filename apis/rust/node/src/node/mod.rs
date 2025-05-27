@@ -32,9 +32,10 @@ use std::{
 use tracing::{info, warn};
 
 #[cfg(feature = "metrics")]
-use dora_metrics::init_meter_provider;
+use dora_metrics::run_metrics_monitor;
 #[cfg(feature = "tracing")]
-use dora_tracing::set_up_tracing;
+use dora_tracing::TracingBuilder;
+
 use tokio::runtime::{Handle, Runtime};
 
 pub mod arrow_utils;
@@ -81,8 +82,12 @@ impl DoraNode {
             serde_yaml::from_str(&raw).context("failed to deserialize node config")?
         };
         #[cfg(feature = "tracing")]
-        set_up_tracing(node_config.node_id.as_ref())
-            .context("failed to set up tracing subscriber")?;
+        {
+            TracingBuilder::new(node_config.node_id.as_ref())
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
+        }
+
         Self::init(node_config)
     }
 
@@ -156,24 +161,20 @@ impl DoraNode {
         let id = format!("{}/{}", dataflow_id, node_id);
 
         #[cfg(feature = "metrics")]
-        match &rt {
-            TokioRuntime::Runtime(rt) => rt.spawn(async {
-                if let Err(e) = init_meter_provider(id)
+        {
+            let monitor_task = async move {
+                if let Err(e) = run_metrics_monitor(id.clone())
                     .await
-                    .context("failed to init metrics provider")
+                    .wrap_err("metrics monitor exited unexpectedly")
                 {
-                    warn!("could not create metric provider with err: {:#?}", e);
+                    warn!("metrics monitor failed: {:#?}", e);
                 }
-            }),
-            TokioRuntime::Handle(handle) => handle.spawn(async {
-                if let Err(e) = init_meter_provider(id)
-                    .await
-                    .context("failed to init metrics provider")
-                {
-                    warn!("could not create metric provider with err: {:#?}", e);
-                }
-            }),
-        };
+            };
+            match &rt {
+                TokioRuntime::Runtime(rt) => rt.spawn(monitor_task),
+                TokioRuntime::Handle(handle) => handle.spawn(monitor_task),
+            };
+        }
 
         let event_stream = EventStream::init(
             dataflow_id,
