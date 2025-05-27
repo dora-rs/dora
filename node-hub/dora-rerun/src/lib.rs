@@ -12,11 +12,7 @@ use dora_node_api::{
 };
 use eyre::{eyre, Context, Result};
 
-use rerun::{
-    components::ImageBuffer,
-    external::{log::warn, re_types::ArrowBuffer},
-    ImageFormat, Points3D, SpawnOptions,
-};
+use rerun::{components::ImageBuffer, external::log::warn, ImageFormat, Points3D, SpawnOptions};
 pub mod boxes2d;
 pub mod series;
 pub mod urdf;
@@ -56,7 +52,7 @@ pub fn lib_main() -> Result<()> {
             let opt = std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
 
             rerun::RecordingStreamBuilder::new("dora-rerun")
-                .connect_tcp_opts(std::net::SocketAddr::V4(opt.parse()?), None)
+                .connect_grpc_opts(opt, None)
                 .context("Could not connect to rerun visualization")?
         }
         Ok("SAVE") => {
@@ -132,7 +128,6 @@ pub fn lib_main() -> Result<()> {
                     let buffer: Vec<u8> =
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
                     image_cache.insert(id.clone(), buffer.clone());
-                    let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
                     // let tensordata = ImageBuffer(buffer);
@@ -147,7 +142,6 @@ pub fn lib_main() -> Result<()> {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     image_cache.insert(id.clone(), buffer.values().to_vec());
                     let buffer: &[u8] = buffer.values();
-                    let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
 
