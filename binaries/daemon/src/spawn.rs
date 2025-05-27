@@ -27,7 +27,7 @@ use dora_node_api::{
     arrow_utils::{copy_array_into_sample, required_data_size},
     Metadata,
 };
-use eyre::{ContextCompat, WrapErr};
+use eyre::{bail, ContextCompat, WrapErr};
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -301,14 +301,43 @@ pub async fn spawn_node(
                     cmd
                 }
             } else if python_operators.is_empty() && other_operators {
-                let mut cmd = tokio::process::Command::new(
-                    std::env::current_exe().wrap_err("failed to get current executable path")?,
-                );
-                cmd.arg("runtime");
-                cmd
+                let current_exe =
+                    std::env::current_exe().wrap_err("failed to get current executable path")?;
+
+                // Check if the current executable is a dora binary
+                if current_exe.ends_with("dora") {
+                    let mut cmd = tokio::process::Command::new(
+                        std::env::current_exe()
+                            .wrap_err("failed to get current executable path")?,
+                    );
+                    cmd.arg("runtime");
+                    cmd
+
+                // Check if the current executable is a python binary meaning that dora is installed within the python environment
+                } else if current_exe.ends_with("python") || current_exe.ends_with("python3") {
+                    // Use the current executable to spawn runtime
+                    let mut cmd = tokio::process::Command::new(
+                        std::env::current_exe()
+                            .wrap_err("failed to get current executable path")?,
+                    );
+
+                    tracing::info!(
+                        "spawning: python -uc import dora; dora.start_runtime() # {}",
+                        node.id
+                    );
+
+                    cmd.args([
+                        "-c",
+                        format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                    ]);
+                    cmd
+                } else {
+                    bail!("Could not figure out dora installation. Could you try to reinstall dora or run it with `dora` command?");
+                }
             } else {
-                eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
+                bail!("Could not figure out dora installation. Could you try to reinstall dora or run it with `dora` command?");
             };
+
             command.current_dir(working_dir);
 
             let runtime_config = RuntimeConfig {
