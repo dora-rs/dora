@@ -138,6 +138,7 @@ impl DoraNode {
             daemon_communication,
             dataflow_descriptor,
             dynamic: _,
+            wait_for_stop,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -181,6 +182,7 @@ impl DoraNode {
             &daemon_communication,
             input_config,
             clock.clone(),
+            wait_for_stop,
         )
         .wrap_err("failed to init event stream")?;
         let drop_stream =
