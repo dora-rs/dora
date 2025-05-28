@@ -99,7 +99,32 @@ impl DescriptorExt for Descriptor {
             };
 
             // Calculate the final wait_for_stop value
-            let final_wait_for_stop = node.wait_for_stop.unwrap_or_else(|| node.inputs.is_empty());
+            let final_wait_for_stop = if let Some(wait_for_stop_override) = node.wait_for_stop {
+                wait_for_stop_override
+            } else {
+                match &kind {
+                    CoreNodeKind::Runtime(runtime_node) => {
+                        // If *any* operator has an empty `inputs` map, then `final_wait_for_stop` should be `true`.
+                        // If *all* operators have non-empty `inputs` maps, then `final_wait_for_stop` should be `false`.
+                        // This is equivalent to checking if any operator has no inputs.
+                        runtime_node
+                            .operators
+                            .iter()
+                            .any(|op| op.config.inputs.is_empty())
+                    }
+                    CoreNodeKind::Custom(custom_node) => custom_node.run_config.inputs.is_empty(),
+                    // Based on CoreNodeKind definition, Runtime and Custom are exhaustive.
+                    // Adding a fallback just in case, though it should ideally not be reached.
+                    // The previous default was node.inputs.is_empty()
+                    #[allow(unreachable_patterns)]
+                    _ => {
+                        // This case should ideally not be reached if CoreNodeKind only has Runtime and Custom.
+                        // Fallback to original logic for safety, though it might not be perfectly analogous
+                        // as `node.inputs` might not be directly equivalent for unhandled kinds.
+                        node.inputs.is_empty()
+                    }
+                }
+            };
 
             info!(node_id = %node.id, "Calculated final_wait_for_stop for node: {}", final_wait_for_stop);
 

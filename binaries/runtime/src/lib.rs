@@ -199,7 +199,10 @@ async fn run(
 
                         operator_channels.remove(&operator_id);
 
+                        // Exit if all operators have finished, regardless of wait_for_stop setting
+                        // because there's nothing left to do
                         if operator_channels.is_empty() {
+                            tracing::trace!("all operators have finished -> exiting runtime loop");
                             break;
                         }
                     }
@@ -303,11 +306,30 @@ async fn run(
                 if let Some(open_inputs) = open_operator_inputs.get_mut(&operator_id) {
                     open_inputs.remove(&input_id);
                     if open_inputs.is_empty() {
-                        // all inputs of the node were closed -> close its event channel
-                        tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
-                        open_operator_inputs.remove(&operator_id);
-                        operator_channels.remove(&operator_id);
+                        // all inputs of the operator were closed
+                        if !config.wait_for_stop {
+                            // If wait_for_stop is false, close the event channel immediately
+                            tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
+                            open_operator_inputs.remove(&operator_id);
+                            operator_channels.remove(&operator_id);
+                        } else {
+                            // If wait_for_stop is true, keep the channel open to receive stop signals
+                            // but mark that all inputs are closed
+                            tracing::trace!("all inputs of operator {}/{operator_id} were closed, but wait_for_stop is true -> keeping event channel open for stop signal", node.id());
+                            open_operator_inputs.remove(&operator_id);
+                            // Note: operator_channels is NOT removed here - the operator can still receive stop signals
+                        }
                     }
+                }
+
+                // Check if we should exit: if wait_for_stop is true but all operators have no more inputs
+                // and are just waiting for stop signals, we should exit instead of waiting indefinitely
+                if config.wait_for_stop
+                    && open_operator_inputs.is_empty()
+                    && !operator_channels.is_empty()
+                {
+                    tracing::trace!("wait_for_stop is true, all operator inputs are closed, but operators are still waiting for stop -> exiting runtime loop");
+                    break;
                 }
             }
             RuntimeEvent::Event(Event::Error(err)) => eyre::bail!("received error event: {err}"),

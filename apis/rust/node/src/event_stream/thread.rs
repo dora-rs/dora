@@ -23,7 +23,9 @@ pub fn init(
     wait_for_stop: bool,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(move || event_stream_loop(node_id_cloned, tx, channel, clock, wait_for_stop));
+    let join_handle = std::thread::spawn(move || {
+        event_stream_loop(node_id_cloned, tx, channel, clock, wait_for_stop)
+    });
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 

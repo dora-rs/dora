@@ -52,7 +52,7 @@ impl EventStream {
         daemon_communication: &DaemonCommunication,
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
-         wait_for_stop: bool,
+        wait_for_stop: bool,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -148,7 +148,8 @@ impl EventStream {
 
         let (tx, rx) = flume::bounded(100_000_000);
 
-        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone(), wait_for_stop)?;
+        let thread_handle =
+            thread::init(node_id.clone(), tx, channel, clock.clone(), wait_for_stop)?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
