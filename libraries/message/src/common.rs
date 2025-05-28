@@ -32,6 +32,9 @@ pub struct NodeError {
 
 impl std::fmt::Display for NodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let NodeErrorCause::FailedToSpawn(err) = &self.cause {
+            return write!(f, "failed to spawn node: {err}");
+        }
         match &self.exit_status {
             NodeExitStatus::Success => write!(f, "<success>"),
             NodeExitStatus::IoError(err) => write!(f, "I/O error while reading exit status: {err}"),
@@ -68,6 +71,7 @@ impl std::fmt::Display for NodeError {
                 f,
                 ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
             )?,
+            NodeErrorCause::FailedToSpawn(_) => unreachable!(), // handled above
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
                 let line: &str = "---------------------------------------------------------------------------------\n";
@@ -88,6 +92,7 @@ pub enum NodeErrorCause {
     Cascading {
         caused_by_node: NodeId,
     },
+    FailedToSpawn(String),
     Other {
         stderr: String,
     },

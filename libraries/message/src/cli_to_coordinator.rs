@@ -7,7 +7,7 @@ use crate::{
     id::{NodeId, OperatorId},
 };
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
     Start {
         dataflow: Descriptor,
@@ -16,6 +16,10 @@ pub enum ControlRequest {
         // binaries from CLI to coordinator/daemon
         local_working_dir: PathBuf,
         uv: bool,
+        build_only: bool,
+    },
+    WaitForSpawn {
+        dataflow_id: Uuid,
     },
     Reload {
         dataflow_id: Uuid,
