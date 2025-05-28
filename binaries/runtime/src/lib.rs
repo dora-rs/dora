@@ -130,7 +130,7 @@ async fn run(
         .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
-    let (mut node, mut daemon_events) = DoraNode::init(config)?;
+    let (mut node, mut daemon_events) = DoraNode::init(config.clone())?;
     let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
     tokio::task::spawn_blocking(move || {
         while let Some(event) = daemon_events.recv() {
