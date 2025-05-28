@@ -310,22 +310,12 @@ pub async fn spawn_node(
                     .and_then(|s| s.to_str())
                     .context("failed to get file name from current executable")?;
 
-                // Check if the current executable is a dora binary
-                if file_name.ends_with("dora") {
-                    let mut cmd = tokio::process::Command::new(
-                        std::env::current_exe()
-                            .wrap_err("failed to get current executable path")?,
-                    );
-                    cmd.arg("runtime");
-                    cmd
-
                 // Check if the current executable is a python binary meaning that dora is installed within the python environment
-                } else if file_name.ends_with("python") || file_name.ends_with("python3") {
+                if file_name.ends_with("python") || file_name.ends_with("python3") {
                     // Use the current executable to spawn runtime
-                    let mut cmd = tokio::process::Command::new(
-                        std::env::current_exe()
-                            .wrap_err("failed to get current executable path")?,
-                    );
+                    let python = get_python_path()
+                        .wrap_err("Could not find python path when spawning custom node")?;
+                    let mut cmd = tokio::process::Command::new(python);
 
                     tracing::info!(
                         "spawning: python -uc import dora; dora.start_runtime() # {}",
@@ -338,7 +328,12 @@ pub async fn spawn_node(
                     ]);
                     cmd
                 } else {
-                    bail!("Could not figure out dora installation. Could you try to reinstall dora or run it with `dora` command?");
+                    let mut cmd = tokio::process::Command::new(
+                        std::env::current_exe()
+                            .wrap_err("failed to get current executable path")?,
+                    );
+                    cmd.arg("runtime");
+                    cmd
                 }
             } else {
                 bail!("Could not figure out dora installation. Could you try to reinstall dora or run it with `dora` command?");
