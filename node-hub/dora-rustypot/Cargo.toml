@@ -10,3 +10,19 @@ dora-node-api = { workspace = true }
 eyre = "0.6.12"
 rustypot = { version = "1.0" }
 serialport = { version = "4.7.1", default-features = false }
+pyo3 = { workspace = true, features = [
+    "extension-module",
+    "abi3",
+    "eyre",
+    "generate-import-lib",
+], optional = true }
+
+
+[features]
+default = []
+python = ["pyo3"]
+
+[lib]
+name = "dora_rustypot"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]

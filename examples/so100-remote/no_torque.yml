@@ -1,6 +1,7 @@
 nodes:
   - id: so100
     path: dora-rustypot
+    build: pip install -e ../../node-hub/dora-rustypot
     inputs:
       tick: dora/timer/millis/33
       #pose: pytorch-kinematics/action
