@@ -3,14 +3,14 @@ requires = ["maturin>=0.13.2"]
 build-backend = "maturin"
 
 [project]
-name = "dora-rerun"
+name = "dora-rustypot"
 dynamic = ["version"]
 license = { text = "MIT" }
 requires-python = ">=3.10"
 
-dependencies = ["rerun-loader-urdf", 'rerun_sdk==0.23.1']
+dependencies = []
 
-scripts = { "dora-rerun" = "dora_rerun:py_main" }
+scripts = { "dora-rustypot" = "dora_rustypot:py_main" }
 
 [tool.maturin]
 features = ["python", "pyo3/extension-module"]
@@ -26,6 +26,3 @@ extend-select = [
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
 ]
-
-[tool.uv.sources]
-rerun-loader-urdf = { git = "https://github.com/haixuanTao/rerun-loader-python-example-urdf.git", branch = "patch-2" }

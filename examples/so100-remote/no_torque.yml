@@ -1,0 +1,50 @@
+nodes:
+  - id: so100
+    path: dora-rustypot
+    build: pip install -e ../../node-hub/dora-rustypot
+    inputs:
+      tick: dora/timer/millis/33
+      #pose: pytorch-kinematics/action
+    outputs:
+      - pose
+    env:
+      PORT: /dev/ttyACM0
+      IDS: 1 2 3 4 5 6
+
+  - id: camera
+    build: pip install -e ../../node-hub/dora-pyrealsense
+    path: dora-pyrealsense
+    inputs:
+      tick: dora/timer/millis/33
+    outputs:
+      - image
+      - depth
+
+  - id: pytorch-kinematics
+    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      pose: so100/pose
+    outputs:
+      - pose
+      - action
+    env:
+      # Link to your installation of so100-urdf.
+      # https://huggingface.co/datasets/haixuantao/urdfs/resolve/main/so100/so100_urdf.zip
+      URDF_PATH: $HOME/Downloads/so100_urdf/so100.urdf
+      END_EFFECTOR_LINK: "Moving Jaw"
+      TRANSFORM: -0.2 -0.01 -0.57 0.7 0 0 0.7
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_so100: so100/pose
+      camera/image: camera/image
+      camera/depth: camera/depth
+    env:
+      # Link to your installation of so100-urdf.
+      # https://huggingface.co/datasets/haixuantao/urdfs/resolve/main/so100/so100_urdf.zip
+      so100_urdf: $HOME/Downloads/so100_urdf/so100.urdf
+      so100_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
+      CAMERA_PITCH: -3.1415
