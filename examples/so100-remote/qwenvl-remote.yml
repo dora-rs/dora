@@ -54,6 +54,8 @@ nodes:
       camera/boxes2d: parse_bbox/bbox
       camera/masks: sam2/masks
     env:
+      # Link to your installation of so100-urdf.
+      # https://huggingface.co/datasets/haixuantao/urdfs/resolve/main/so100/so100_urdf.zip
       so100_urdf: /home/xavier/Downloads/so100_urdf/so100.urdf
       so100_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
       so100_inference_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
