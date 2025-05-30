@@ -1,6 +1,6 @@
 nodes:
   - id: camera
-    build: pip install opencv-video-capture
+    build: pip install -e ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     inputs:
       tick: dora/timer/millis/100
@@ -18,8 +18,9 @@ nodes:
       - points2d
 
   - id: plot
-    build: pip install dora-rerun
+    build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
       image: camera/image
-      series_mediapipe: dora-mediapipe/points2d
+      # Make sure to add a 2d viewer to see the points
+      points2d: dora-mediapipe/points2d
