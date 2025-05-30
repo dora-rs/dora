@@ -30,7 +30,7 @@ nodes:
     env:
       # Link to your installation of so100-urdf.
       # https://huggingface.co/datasets/haixuantao/urdfs/resolve/main/so100/so100_urdf.zip
-      URDF_PATH: /home/xavier/Downloads/so100_urdf/so100.urdf
+      URDF_PATH: $HOME/Downloads/so100_urdf/so100.urdf
       END_EFFECTOR_LINK: "Moving Jaw"
       TRANSFORM: -0.2 -0.01 -0.57 0.7 0 0 0.7
 
@@ -38,13 +38,12 @@ nodes:
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      series_fk: pytorch-kinematics/pose
       jointstate_so100: so100/pose
       camera/image: camera/image
       camera/depth: camera/depth
     env:
       # Link to your installation of so100-urdf.
       # https://huggingface.co/datasets/haixuantao/urdfs/resolve/main/so100/so100_urdf.zip
-      so100_urdf: /home/xavier/Downloads/so100_urdf/so100.urdf
+      so100_urdf: $HOME/Downloads/so100_urdf/so100.urdf
       so100_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
       CAMERA_PITCH: -3.1415
