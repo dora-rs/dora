@@ -4,7 +4,7 @@ use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
     arrow::{
-        array::{Array, AsArray, Float32Array, Float64Array, StringArray, UInt16Array, UInt8Array},
+        array::{Array, AsArray, Float64Array, StringArray, UInt16Array, UInt8Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
@@ -12,7 +12,9 @@ use dora_node_api::{
 };
 use eyre::{eyre, Context, Result};
 
-use rerun::{components::ImageBuffer, external::log::warn, ImageFormat, Points3D, SpawnOptions};
+use rerun::{
+    components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
+};
 pub mod boxes2d;
 pub mod series;
 pub mod urdf;
@@ -373,6 +375,33 @@ pub fn lib_main() -> Result<()> {
                         colors.push(color);
                     });
                     let points = Points3D::new(points).with_radii(vec![0.013; colors.len()]);
+
+                    rec.log(dataid.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
+                }
+            } else if id.as_str().contains("points2d") {
+                // Get color or assign random color in cache
+                let color = color_cache.get(&id);
+                let color = if let Some(color) = color {
+                    color.clone()
+                } else {
+                    let color =
+                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+
+                    color_cache.insert(id.clone(), color.clone());
+                    color
+                };
+                let dataid = id;
+
+                // get a random color
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut points = vec![];
+                    let mut colors = vec![];
+                    buffer.chunks(2).for_each(|chunk| {
+                        points.push((chunk[0], chunk[1]));
+                        colors.push(color);
+                    });
+                    let points = Points2D::new(points);
 
                     rec.log(dataid.as_str(), &points.with_colors(colors))
                         .context("could not log points")?;
