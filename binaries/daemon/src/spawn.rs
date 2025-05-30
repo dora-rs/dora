@@ -269,7 +269,7 @@ pub async fn spawn_node(
                         "-n",
                         conda_env,
                         "python",
-                        "-c",
+                        "-uc",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
                     ]);
                     command
@@ -295,7 +295,7 @@ pub async fn spawn_node(
                     };
                     // Force python to always flush stdout/stderr buffer
                     cmd.args([
-                        "-c",
+                        "-uc",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
                     ]);
                     cmd
@@ -323,7 +323,7 @@ pub async fn spawn_node(
                     );
 
                     cmd.args([
-                        "-c",
+                        "-uc",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
                     ]);
                     cmd
@@ -336,7 +336,10 @@ pub async fn spawn_node(
                     cmd
                 }
             } else {
-                bail!("Could not figure out dora installation. Could you try to reinstall dora or run it with `dora` command?");
+                bail!(
+                    "Cannot spawn runtime with both Python and non-Python operators. \
+                       Please use a single operator or ensure that all operators are Python-based."
+                );
             };
 
             command.current_dir(working_dir);
