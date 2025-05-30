@@ -1,8 +1,6 @@
 nodes:
   - id: so100
     path: dora-rustypot
-    _unstable_deploy:
-      machine: local
     inputs:
       tick: dora/timer/millis/33
       pose:
@@ -18,10 +16,8 @@ nodes:
   - id: camera
     build: pip install -e ../../node-hub/dora-pyrealsense
     path: dora-pyrealsense
-    _unstable_deploy:
-      machine: local
     inputs:
-      tick: dora/timer/millis/33
+      tick: dora/timer/millis/100
     outputs:
       - image
       - depth
@@ -31,8 +27,6 @@ nodes:
     path: dora-pytorch-kinematics
     _unstable_deploy:
       machine: gpu
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
     inputs:
       pose: so100/pose
       action:
@@ -44,18 +38,15 @@ nodes:
     env:
       URDF_PATH: so100.urdf
       END_EFFECTOR_LINK: "Moving Jaw"
-      TRANSFORM: -0.18 0.02 -0.65 0.7 0 0 0.7
+      TRANSFORM: -0.2 -0.01 -0.57 0.7 0 0 0.7
 
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
-    _unstable_deploy:
-      machine: local
     inputs:
       #series_so100: so100/pose
       # series_pose: pytorch-kinematics/pose
       jointstate_so100: so100/pose
-      jointstate_so100_inference: pytorch-kinematics/action
       camera/image: camera/image
       camera/depth: camera/depth
       text_whisper: dora-distil-whisper/text
@@ -63,28 +54,21 @@ nodes:
       camera/boxes2d: parse_bbox/bbox
       camera/masks: sam2/masks
     env:
-      so100_urdf: so100.urdf
-      so100_inference_urdf: so100_inference.urdf
-      so100_transform: -0.18 0.02 -0.65 0.7 0 0 0.7
-      so100_inference_transform: -0.18 0.02 -0.65 0.7 0 0 0.7
+      so100_urdf: /home/xavier/Downloads/so100_urdf/so100.urdf
+      so100_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
+      so100_inference_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
       CAMERA_PITCH: -3.1415
 
   - id: dora-microphone
     build: pip install node-hub/dora-microphone
     path: dora-microphone
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
-    _unstable_deploy:
-      machine: local
     inputs:
       tick: dora/timer/millis/2000
     outputs:
       - audio
 
   - id: parse_whisper
-    path: examples/remote-so100/parse_whisper.py
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
+    path: parse_whisper.py
     _unstable_deploy:
       machine: gpu
     inputs:
@@ -95,8 +79,6 @@ nodes:
   - id: dora-qwenvl
     build: pip install node-hub/dora-qwen2-5-vl
     path: dora-qwen2-5-vl
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
     _unstable_deploy:
       machine: gpu
     inputs:
@@ -109,11 +91,7 @@ nodes:
       IMAGE_RESIZE_RATIO: "1.0"
 
   - id: parse_bbox
-    path: examples/remote-so100/parse_bbox.py
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
-    _unstable_deploy:
-      machine: gpu
+    path: parse_bbox.py
     inputs:
       text: dora-qwenvl/text
     outputs:
@@ -124,10 +102,8 @@ nodes:
   - id: sam2
     build: pip install node-hub/dora-sam2
     path: dora-sam2
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
     _unstable_deploy:
-      machine: gpus
+      machine: gpu
     inputs:
       image: camera/image
       boxes2d: parse_bbox/bbox
@@ -137,8 +113,6 @@ nodes:
   - id: box_coordinates
     build: pip install node-hub/dora-object-to-pose
     path: dora-object-to-pose
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
     _unstable_deploy:
       machine: gpu
     inputs:
@@ -150,9 +124,7 @@ nodes:
       CAMERA_PITCH: -3.1415
 
   - id: parse_pose
-    path: examples/remote-so100/parse_pose.py
-    _unstable_deploy:
-      machine: gpu
+    path: parse_pose.py
     inputs:
       pose: box_coordinates/pose
     outputs:
@@ -161,10 +133,6 @@ nodes:
   - id: dora-vad
     build: pip install node-hub/dora-vad
     path: dora-vad
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
-    _unstable_deploy:
-      machine: gpu
     inputs:
       audio: dora-microphone/audio
     outputs:
@@ -173,8 +141,6 @@ nodes:
   - id: dora-distil-whisper
     build: pip install node-hub/dora-distil-whisper
     path: dora-distil-whisper
-    git: https://github.com/dora-rs/dora.git
-    rev: f4c10569f7c44e04f44f15fe42e2a82eca4b6cb2 # pinned commit, update this when changing the message crate
     _unstable_deploy:
       machine: gpu
     inputs:

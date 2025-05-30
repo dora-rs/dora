@@ -10,21 +10,53 @@ nodes:
       - pose
     env:
       PORT: /dev/ttyACM0
-      TORQUE: 5000
+      TORQUE: 3000
       IDS: 1 2 3 4 5 6
 
   - id: camera
     build: pip install -e ../../node-hub/dora-pyrealsense
     path: dora-pyrealsense
     inputs:
-      tick: dora/timer/millis/33
+      tick: dora/timer/millis/150
+    outputs:
+      - image
+      - depth
+
+  - id: rav1e-local
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      image: camera/image
+    outputs:
+      - image
+
+  - id: rav1e-depth
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      depth: camera/depth
+    outputs:
+      - depth
+    env:
+      RAV1E_SPEED: 5
+
+  - id: dav1d
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      image: rav1e-local/image
+      depth: rav1e-depth/depth
     outputs:
       - image
       - depth
 
   - id: pytorch-kinematics
-    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    build: pip install node-hub/dora-pytorch-kinematics
     path: dora-pytorch-kinematics
+    _unstable_deploy:
+      machine: gpu
     inputs:
       pose: so100/pose
       action:
@@ -34,7 +66,7 @@ nodes:
       - pose
       - action
     env:
-      URDF_PATH: /home/xavier/Downloads/so100_urdf/so100.urdf
+      URDF_PATH: so100.urdf
       END_EFFECTOR_LINK: "Moving Jaw"
       TRANSFORM: -0.2 -0.01 -0.57 0.7 0 0 0.7
 
@@ -45,7 +77,6 @@ nodes:
       #series_so100: so100/pose
       # series_pose: pytorch-kinematics/pose
       jointstate_so100: so100/pose
-      jointstate_so100_inference: pytorch-kinematics/action
       camera/image: camera/image
       camera/depth: camera/depth
       text_whisper: dora-distil-whisper/text
@@ -55,11 +86,10 @@ nodes:
     env:
       so100_urdf: /home/xavier/Downloads/so100_urdf/so100.urdf
       so100_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
-      so100_inference_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
       CAMERA_PITCH: -3.1415
 
   - id: dora-microphone
-    build: pip install -e ../../node-hub/dora-microphone
+    build: pip install node-hub/dora-microphone
     path: dora-microphone
     inputs:
       tick: dora/timer/millis/2000
@@ -72,12 +102,16 @@ nodes:
       text: dora-distil-whisper/text
     outputs:
       - text
+    env:
+      SPEED: 1.5
 
   - id: dora-qwenvl
-    build: pip install -e ../../node-hub/dora-qwen2-5-vl
+    build: pip install node-hub/dora-qwen2-5-vl
     path: dora-qwen2-5-vl
+    _unstable_deploy:
+      machine: gpu
     inputs:
-      image: camera/image
+      image: dav1d/image
       text: parse_whisper/text
     outputs:
       - text
@@ -95,19 +129,23 @@ nodes:
       IMAGE_RESIZE_RATIO: "1.0"
 
   - id: sam2
-    build: pip install -e ../../node-hub/dora-sam2
+    build: pip install node-hub/dora-sam2
     path: dora-sam2
+    _unstable_deploy:
+      machine: gpu
     inputs:
-      image: camera/image
+      image: dav1d/image
       boxes2d: parse_bbox/bbox
     outputs:
       - masks
 
   - id: box_coordinates
-    build: pip install -e ../../node-hub/dora-object-to-pose
+    build: pip install node-hub/dora-object-to-pose
     path: dora-object-to-pose
+    _unstable_deploy:
+      machine: gpu
     inputs:
-      depth: camera/depth
+      depth: dav1d/depth
       masks: sam2/masks
     outputs:
       - pose
@@ -122,7 +160,7 @@ nodes:
       - action
 
   - id: dora-vad
-    build: pip install -e ../../node-hub/dora-vad
+    build: pip install node-hub/dora-vad
     path: dora-vad
     inputs:
       audio: dora-microphone/audio
@@ -130,8 +168,10 @@ nodes:
       - audio
 
   - id: dora-distil-whisper
-    build: pip install -e ../../node-hub/dora-distil-whisper
+    build: pip install node-hub/dora-distil-whisper
     path: dora-distil-whisper
+    _unstable_deploy:
+      machine: gpu
     inputs:
       input: dora-vad/audio
     outputs:

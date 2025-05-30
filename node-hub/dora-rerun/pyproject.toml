@@ -28,4 +28,4 @@ extend-select = [
 ]
 
 [tool.uv.sources]
-rerun-loader-urdf = { git = "thttps://github.com/haixuanTao/rerun-loader-python-example-urdf.git", branch = "patch-2" }
+rerun-loader-urdf = { git = "https://github.com/haixuanTao/rerun-loader-python-example-urdf.git", branch = "patch-2" }

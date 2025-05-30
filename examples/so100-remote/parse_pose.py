@@ -51,7 +51,7 @@ def grab(target_x, target_y, low_z, top_z, roll, pitch, yaw_open, yaw_close, las
 
     node.send_output(
         "action",
-        pa.array([0.05, 0.04, top_z, roll, pitch, yaw_close]),
+        pa.array([0.05, 0.0, top_z, roll, pitch, yaw_close]),
         metadata={"encoding": "xyzrpy"},
     )
         
@@ -95,7 +95,7 @@ def place(place_x, place_y, place_z, top_z, roll, pitch, yaw_open, yaw_close, la
 
     node.send_output(
         "action",
-        pa.array([0.05, 0.04, top_z, roll, pitch, yaw_open]),
+        pa.array([0.05, 0.0, top_z, roll, pitch, yaw_open]),
         metadata={"encoding": "xyzrpy"},
     )
         
@@ -104,7 +104,7 @@ time.sleep(0.6)
 
 node.send_output(
     "action",
-    pa.array([0.05, 0.04, top_z, roll, pitch, yaw_open]),
+    pa.array([0.05, 0.0, top_z, roll, pitch, yaw_open]),
     metadata={"encoding": "xyzrpy"},
 )
 
@@ -127,7 +127,7 @@ for event in node:
             
 
             # Adjust z with the size of the gripper
-            z = z + 0.075
+            z = z + 0.06
             match action:
                 case "grab":
                     y = y + -0.01
