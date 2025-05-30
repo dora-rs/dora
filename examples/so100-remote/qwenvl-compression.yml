@@ -84,7 +84,7 @@ nodes:
       camera/boxes2d: parse_bbox/bbox
       camera/masks: sam2/masks
     env:
-      so100_urdf: /home/xavier/Downloads/so100_urdf/so100.urdf
+      so100_urdf: $HOME/Downloads/so100_urdf/so100.urdf
       so100_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
       CAMERA_PITCH: -3.1415
 
