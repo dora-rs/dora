@@ -5,15 +5,14 @@ use dora_core::{
     descriptor::OperatorConfig,
 };
 use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use dora_metrics::init_meter_provider;
+use dora_metrics::run_metrics_monitor;
 use dora_node_api::{DoraNode, Event};
+use dora_tracing::TracingBuilder;
 use eyre::{bail, Context, Result};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use operator::{run_operator, OperatorEvent, StopReason};
 
-#[cfg(feature = "tracing")]
-use dora_tracing::set_up_tracing;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
@@ -37,7 +36,12 @@ pub fn main() -> eyre::Result<()> {
     } = config;
     let node_id = config.node_id.clone();
     #[cfg(feature = "tracing")]
-    set_up_tracing(node_id.as_ref()).context("failed to set up tracing subscriber")?;
+    {
+        TracingBuilder::new(node_id.as_ref())
+            .with_stdout("warn")
+            .build()
+            .wrap_err("failed to set up tracing subscriber")?;
+    }
 
     let dataflow_descriptor = config.dataflow_descriptor.clone();
 
@@ -123,7 +127,7 @@ async fn run(
     init_done: oneshot::Receiver<Result<()>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
-    let _meter_provider = init_meter_provider(config.node_id.to_string());
+    let _meter_provider = run_metrics_monitor(config.node_id.to_string());
     init_done
         .await
         .wrap_err("the `init_done` channel was closed unexpectedly")?
