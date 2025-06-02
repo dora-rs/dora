@@ -8,7 +8,7 @@ authors = [
 description = "Dora dora-distil-whisper"
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 
 dependencies = [
   "dora-rs >= 0.3.9",
@@ -16,7 +16,9 @@ dependencies = [
   "pyarrow >= 5.0.0",
   "transformers >= 4.0.0",
   "accelerate >= 0.29.2",
-  "torch >= 2.2.0",
+  "torch >= 2.7.0",
+  "torchvision >= 0.22",
+  "torchaudio >= 2.7.0",
   "modelscope >= 1.18.1",
   "mlx-whisper >= 0.4.1; sys_platform == 'darwin'",
 ]
