@@ -8,7 +8,7 @@ authors = [
 description = "Dora dora-distil-whisper"
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 
 dependencies = [
   "dora-rs >= 0.3.9",
