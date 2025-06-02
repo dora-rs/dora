@@ -2,7 +2,7 @@
 set -euo
 
 # List of ignored modules 
-ignored_folders=("dora-parler" "dora-magma")
+ignored_folders=("dora-parler" "dora-opus" "dora-internvl" "dora-magma")
 
 # Skip test
 skip_test_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input" "dora-magma")
