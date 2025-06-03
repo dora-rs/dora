@@ -10,3 +10,4 @@ repository.workspace = true
 [dependencies]
 dora-node-api = { workspace = true }
 tokio = { version = "1.45.0", features = ["full"] }
+eyre = "0.6.8"
