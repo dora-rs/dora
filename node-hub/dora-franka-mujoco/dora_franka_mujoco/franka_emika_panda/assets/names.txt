@@ -65,4 +65,3 @@ link7_5.obj
 link7_6.obj
 link7_7.obj
 link7.stl
-names.txt
