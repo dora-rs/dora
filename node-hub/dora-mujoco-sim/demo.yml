@@ -1,0 +1,28 @@
+nodes:
+  - id: mujoco_sim
+    build: pip install -e .
+    path: dora-mujoco-sim
+    inputs:
+      tick: dora/timer/millis/2  # 500 Hz data collection
+        # control_input: controller/output
+        # render_request: visualizer/request
+        # change_model: config/model_change
+    outputs:
+      - joint_positions
+      - joint_velocities 
+      - sensor_data
+      - rendered_frame
+
+  # - id: controller
+  #   # Your control logic node
+  #   inputs:
+  #     joint_positions: mujoco_sim/joint_positions
+  #   outputs:
+  #     - output
+
+  # - id: data_collector
+  #   # Your data collection node
+  #   inputs:
+  #     joint_positions: mujoco_sim/joint_positions
+  #     joint_velocities: mujoco_sim/joint_velocities
+  #     sensor_data: mujoco_sim/sensor_data
