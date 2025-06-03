@@ -27,7 +27,7 @@ use dora_node_api::{
     arrow_utils::{copy_array_into_sample, required_data_size},
     Metadata,
 };
-use eyre::{ContextCompat, WrapErr};
+use eyre::{bail, ContextCompat, WrapErr};
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -269,7 +269,7 @@ pub async fn spawn_node(
                         "-n",
                         conda_env,
                         "python",
-                        "-c",
+                        "-uc",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
                     ]);
                     command
@@ -295,20 +295,53 @@ pub async fn spawn_node(
                     };
                     // Force python to always flush stdout/stderr buffer
                     cmd.args([
-                        "-c",
+                        "-uc",
                         format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
                     ]);
                     cmd
                 }
             } else if python_operators.is_empty() && other_operators {
-                let mut cmd = tokio::process::Command::new(
-                    std::env::current_exe().wrap_err("failed to get current executable path")?,
-                );
-                cmd.arg("runtime");
-                cmd
+                let current_exe =
+                    std::env::current_exe().wrap_err("failed to get current executable path")?;
+                let mut file_name = current_exe.clone();
+                file_name.set_extension("");
+                let file_name = file_name
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .context("failed to get file name from current executable")?;
+
+                // Check if the current executable is a python binary meaning that dora is installed within the python environment
+                if file_name.ends_with("python") || file_name.ends_with("python3") {
+                    // Use the current executable to spawn runtime
+                    let python = get_python_path()
+                        .wrap_err("Could not find python path when spawning custom node")?;
+                    let mut cmd = tokio::process::Command::new(python);
+
+                    tracing::info!(
+                        "spawning: python -uc import dora; dora.start_runtime() # {}",
+                        node.id
+                    );
+
+                    cmd.args([
+                        "-uc",
+                        format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                    ]);
+                    cmd
+                } else {
+                    let mut cmd = tokio::process::Command::new(
+                        std::env::current_exe()
+                            .wrap_err("failed to get current executable path")?,
+                    );
+                    cmd.arg("runtime");
+                    cmd
+                }
             } else {
-                eyre::bail!("Runtime can not mix Python Operator with other type of operator.");
+                bail!(
+                    "Cannot spawn runtime with both Python and non-Python operators. \
+                       Please use a single operator or ensure that all operators are Python-based."
+                );
             };
+
             command.current_dir(working_dir);
 
             let runtime_config = RuntimeConfig {
