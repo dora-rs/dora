@@ -2,7 +2,7 @@
 name = "dora-franka-mujoco"
 version = "0.1.0"
 authors = [{ name = "Your Name", email = "email@email.com" }]
-description = "dora-franka-mujoco"
+description = "MuJoCo-based Franka Emika Panda robot simulation node for Dora"
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
@@ -10,7 +10,10 @@ requires-python = ">=3.8"
 dependencies = [
     "dora-rs >= 0.3.9",
     "mujoco >= 3.1.6",
+    "numpy >= 1.21.0",
     "pyarrow >= 14.0.1",
+    "scipy >= 1.7.0",
+    "huggingface_hub >= 0.16.0",
 ]
 
 [dependency-groups]
