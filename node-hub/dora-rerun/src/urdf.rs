@@ -101,6 +101,9 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
             ));
             chain.set_origin(pose);
             chains.insert(path, chain);
+        } else {
+            // If no transform is set, use the default origin
+            chains.insert(path, chain);
         }
     }
 
