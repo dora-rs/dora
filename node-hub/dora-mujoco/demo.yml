@@ -1,17 +1,17 @@
 nodes:
   - id: mujoco_sim
     build: pip install -e .
-    path: dora-mujoco-sim
+    path: dora-mujoco
     inputs:
       tick: dora/timer/millis/2  # 500 Hz data collection
         # control_input: controller/output
-        # render_request: visualizer/request
-        # change_model: config/model_change
     outputs:
       - joint_positions
       - joint_velocities 
+      - actuator_controls
       - sensor_data
-      - rendered_frame
+    env:
+      MODEL_NAME: "go2"  # Load Franka Panda from robot-descriptions
 
   # - id: controller
   #   # Your control logic node
