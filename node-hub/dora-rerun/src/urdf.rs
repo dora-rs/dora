@@ -127,8 +127,7 @@ pub fn update_visualization(
         let link_to_world = link
             .world_transform()
             .context("Could not get world transform")?;
-        let link_to_parent = if link_name != "base_link" {
-            let parent = link.parent().context("could not get parent")?;
+        let link_to_parent = if let Some(parent) = link.parent() {
             parent
                 .world_transform()
                 .context("Could not get world transform")?
