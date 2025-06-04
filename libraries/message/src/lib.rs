@@ -26,6 +26,7 @@ pub use arrow_data;
 pub use arrow_schema;
 
 pub type DataflowId = uuid::Uuid;
+pub type SessionId = uuid::Uuid;
 pub type BuildId = uuid::Uuid;
 
 fn current_crate_version() -> semver::Version {

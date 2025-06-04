@@ -10,7 +10,7 @@ use crate::{
     common::{DaemonId, GitSource},
     descriptor::{Descriptor, ResolvedNode},
     id::{NodeId, OperatorId},
-    DataflowId,
+    BuildId, DataflowId, SessionId,
 };
 
 pub use crate::common::Timestamped;
@@ -60,8 +60,16 @@ pub enum DaemonCoordinatorEvent {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct BuildDataflowNodes {
+    pub build_id: Uuid,
     pub session_id: Uuid,
-    pub working_dir: PathBuf,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub git_sources: BTreeMap<NodeId, GitSource>,
     pub prev_git_sources: BTreeMap<NodeId, GitSource>,
@@ -72,9 +80,17 @@ pub struct BuildDataflowNodes {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct SpawnDataflowNodes {
-    pub session_id: Option<Uuid>,
+    pub build_id: Option<BuildId>,
+    pub session_id: SessionId,
     pub dataflow_id: DataflowId,
-    pub working_dir: PathBuf,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub dataflow_descriptor: Descriptor,
     pub spawn_nodes: BTreeSet<NodeId>,

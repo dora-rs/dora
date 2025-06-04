@@ -13,6 +13,7 @@ pub enum ControlRequestReply {
         session_id: Uuid,
     },
     DataflowBuildFinished {
+        build_id: Uuid,
         session_id: Uuid,
         result: Result<(), String>,
     },

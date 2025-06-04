@@ -8,7 +8,7 @@ use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
-    BuildId,
+    SessionId,
 };
 use eyre::Context;
 use tokio::net::TcpStream;
@@ -95,7 +95,7 @@ impl<'a> DataflowLogger<'a> {
 }
 
 pub struct NodeBuildLogger<'a> {
-    session_id: BuildId,
+    session_id: SessionId,
     node_id: NodeId,
     logger: CowMut<'a, DaemonLogger>,
 }
@@ -133,7 +133,7 @@ impl DaemonLogger {
         }
     }
 
-    pub fn for_node_build(&mut self, session_id: BuildId, node_id: NodeId) -> NodeBuildLogger {
+    pub fn for_node_build(&mut self, session_id: SessionId, node_id: NodeId) -> NodeBuildLogger {
         NodeBuildLogger {
             session_id,
             node_id,
@@ -170,7 +170,7 @@ impl DaemonLogger {
 
     pub async fn log_build(
         &mut self,
-        session_id: BuildId,
+        session_id: SessionId,
         level: LogLevel,
         node_id: Option<NodeId>,
         message: impl Into<String>,

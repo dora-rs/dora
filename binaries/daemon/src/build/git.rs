@@ -1,5 +1,5 @@
 use crate::log::NodeBuildLogger;
-use dora_message::{common::LogLevel, descriptor::GitRepoRev, BuildId, DataflowId};
+use dora_message::{common::LogLevel, descriptor::GitRepoRev, DataflowId, SessionId};
 use eyre::{ContextCompat, WrapErr};
 use git2::FetchOptions;
 use itertools::Itertools;
@@ -15,7 +15,7 @@ pub struct GitManager {
     /// Directories that are currently in use by running dataflows.
     clones_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
     /// Builds that are prepared, but not done yet.
-    prepared_builds: BTreeMap<BuildId, PreparedBuild>,
+    prepared_builds: BTreeMap<SessionId, PreparedBuild>,
     reuse_for: BTreeMap<PathBuf, PathBuf>,
 }
 
@@ -36,7 +36,7 @@ impl GitManager {
         prev_commit_hash: Option<String>,
         target_dir: &Path,
     ) -> eyre::Result<GitFolder> {
-        let clone_dir = Self::clone_dir_path(&target_dir, session_id, &repo_url, &commit_hash)?;
+        let clone_dir = Self::clone_dir_path(&target_dir, &repo_url, &commit_hash)?;
 
         if let Some(using) = self.clones_in_use.get(&clone_dir) {
             if !using.is_empty() {
@@ -60,7 +60,7 @@ impl GitManager {
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
             let prev_clone_dir =
-                Self::clone_dir_path(&target_dir, session_id, &repo_url, &previous_commit_hash)?;
+                Self::clone_dir_path(&target_dir, &repo_url, &previous_commit_hash)?;
 
             if self
                 .clones_in_use
@@ -109,7 +109,7 @@ impl GitManager {
             .unwrap_or(false)
     }
 
-    pub fn clone_dir_ready(&self, session_id: BuildId, dir: &Path) -> bool {
+    pub fn clone_dir_ready(&self, session_id: SessionId, dir: &Path) -> bool {
         self.prepared_builds
             .get(&session_id)
             .map(|p| p.planned_clone_dirs.contains(dir))
@@ -117,7 +117,7 @@ impl GitManager {
             || dir.exists()
     }
 
-    pub fn register_ready_clone_dir(&mut self, session_id: BuildId, dir: PathBuf) -> bool {
+    pub fn register_ready_clone_dir(&mut self, session_id: SessionId, dir: PathBuf) -> bool {
         self.prepared_builds
             .entry(session_id)
             .or_default()
@@ -127,13 +127,10 @@ impl GitManager {
 
     fn clone_dir_path(
         base_dir: &Path,
-        session_id: BuildId,
         repo_url: &Url,
         commit_hash: &String,
     ) -> eyre::Result<PathBuf> {
-        let mut path = base_dir
-            .join(&session_id.to_string())
-            .join(repo_url.host_str().context("git URL has no hostname")?);
+        let mut path = base_dir.join(repo_url.host_str().context("git URL has no hostname")?);
         path.extend(repo_url.path_segments().context("no path in git URL")?);
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())

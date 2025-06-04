@@ -6,26 +6,39 @@ use crate::{
     common::GitSource,
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
+    SessionId,
 };
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
     Build {
+        session_id: SessionId,
         dataflow: Descriptor,
         git_sources: BTreeMap<NodeId, GitSource>,
         prev_git_sources: BTreeMap<NodeId, GitSource>,
-        // TODO: remove this once we figure out deploying of node/operator
-        // binaries from CLI to coordinator/daemon
-        local_working_dir: PathBuf,
+        /// Allows overwriting the base working dir when CLI and daemon are
+        /// running on the same machine.
+        ///
+        /// Must not be used for multi-machine dataflows.
+        ///
+        /// Note that nodes with git sources still use a subdirectory of
+        /// the base working dir.
+        local_working_dir: Option<PathBuf>,
         uv: bool,
     },
     Start {
-        session_id: Option<Uuid>,
+        build_id: Option<Uuid>,
+        session_id: Uuid,
         dataflow: Descriptor,
         name: Option<String>,
-        // TODO: remove this once we figure out deploying of node/operator
-        // binaries from CLI to coordinator/daemon
-        local_working_dir: PathBuf,
+        /// Allows overwriting the base working dir when CLI and daemon are
+        /// running on the same machine.
+        ///
+        /// Must not be used for multi-machine dataflows.
+        ///
+        /// Note that nodes with git sources still use a subdirectory of
+        /// the base working dir.
+        local_working_dir: Option<PathBuf>,
         uv: bool,
     },
     WaitForSpawn {

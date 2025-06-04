@@ -11,7 +11,7 @@ use dora_core::{
 use dora_message::{
     common::{GitSource, LogLevel, Timestamped},
     descriptor::EnvValue,
-    BuildId,
+    SessionId,
 };
 use eyre::Context;
 use tokio::sync::mpsc;
@@ -22,8 +22,8 @@ mod git;
 
 #[derive(Clone)]
 pub struct Builder {
-    pub session_id: BuildId,
-    pub working_dir: PathBuf,
+    pub session_id: SessionId,
+    pub base_working_dir: PathBuf,
     pub daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub dataflow_descriptor: Descriptor,
     /// clock is required for generating timestamps when dropping messages early because queue is full
@@ -44,7 +44,7 @@ impl Builder {
 
         let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
             let repo_url = Url::parse(&repo).context("failed to parse git repository URL")?;
-            let target_dir = self.working_dir.join("build");
+            let target_dir = self.base_working_dir.join("git");
             let prev_hash = prev_git.filter(|p| p.repo == repo).map(|p| p.commit_hash);
             let git_folder = git_manager.choose_clone_dir(
                 self.session_id,
@@ -79,7 +79,7 @@ impl Builder {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {
                     Some(git_folder) => git_folder.prepare(logger).await?,
-                    None => self.working_dir.join(self.session_id.to_string()),
+                    None => self.base_working_dir,
                 };
 
                 if let Some(build) = &n.build {
@@ -91,11 +91,17 @@ impl Builder {
                 // run build commands
                 for operator in &n.operators {
                     if let Some(build) = &operator.config.build {
-                        build_node(logger, &node.env, self.working_dir.clone(), build, self.uv)
-                            .await?;
+                        build_node(
+                            logger,
+                            &node.env,
+                            self.base_working_dir.clone(),
+                            build,
+                            self.uv,
+                        )
+                        .await?;
                     }
                 }
-                self.working_dir.clone()
+                self.base_working_dir.clone()
             }
         };
         Ok(PreparedNode {

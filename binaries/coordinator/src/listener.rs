@@ -112,6 +112,21 @@ pub async fn handle_connection(
                         break;
                     }
                 }
+                DaemonEvent::BuildResult {
+                    build_id,
+                    session_id,
+                    result,
+                } => {
+                    let event = Event::DataflowBuildResult {
+                        build_id,
+                        session_id,
+                        daemon_id,
+                        result: result.map_err(|err| eyre::eyre!(err)),
+                    };
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
                 DaemonEvent::SpawnResult {
                     dataflow_id,
                     result,

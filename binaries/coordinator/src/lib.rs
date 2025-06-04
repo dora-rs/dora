@@ -20,7 +20,7 @@ use dora_message::{
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
     descriptor::{Descriptor, ResolvedNode},
-    BuildId,
+    BuildId, DataflowId, SessionId,
 };
 use eyre::{bail, eyre, ContextCompat, Result, WrapErr};
 use futures::{future::join_all, stream::FuturesUnordered, Future, Stream, StreamExt};
@@ -33,6 +33,7 @@ use std::{
         btree_map::{Entry, OccupiedEntry},
         BTreeMap, BTreeSet, HashMap,
     },
+    env::current_dir,
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -202,13 +203,15 @@ async fn start_inner(
 
     let mut events = (abortable_events, daemon_events).merge();
 
-    let mut running_dataflows: HashMap<Uuid, RunningDataflow> = HashMap::new();
-    let mut dataflow_results: HashMap<Uuid, BTreeMap<DaemonId, DataflowDaemonResult>> =
+    let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+
+    let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+    let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
         HashMap::new();
-    let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
+    let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections = DaemonConnections::default();
 
-    let mut build_log_subscribers: BTreeMap<BuildId, LogSubscriber> = Default::default();
+    let mut build_log_subscribers: BTreeMap<SessionId, LogSubscriber> = Default::default();
 
     while let Some(event) = events.next().await {
         // used below for measuring the event handling duration
@@ -411,6 +414,7 @@ async fn start_inner(
                 } => {
                     match request {
                         ControlRequest::Build {
+                            session_id,
                             dataflow,
                             git_sources,
                             prev_git_sources,
@@ -418,9 +422,10 @@ async fn start_inner(
                             uv,
                         } => {
                             // assign a random build id
-                            let session_id = BuildId::new_v4();
+                            let build_id = SessionId::new_v4();
 
                             let result = build_dataflow(
+                                build_id,
                                 session_id,
                                 dataflow,
                                 git_sources,
@@ -443,6 +448,7 @@ async fn start_inner(
                             }
                         }
                         ControlRequest::Start {
+                            build_id,
                             session_id,
                             dataflow,
                             name,
@@ -462,6 +468,7 @@ async fn start_inner(
                                     }
                                 }
                                 let dataflow = start_dataflow(
+                                    build_id,
                                     session_id,
                                     dataflow,
                                     local_working_dir,
@@ -779,6 +786,42 @@ async fn start_inner(
                 tracing::info!("Daemon `{daemon_id}` exited");
                 daemon_connections.remove(&daemon_id);
             }
+            Event::DataflowBuildResult {
+                build_id,
+                session_id,
+                daemon_id,
+                result,
+            } => match running_builds.get_mut(&build_id) {
+                Some(build) => {
+                    build.pending_build_results.remove(&daemon_id);
+                    match result {
+                        Ok(()) => {}
+                        Err(err) => {
+                            build.errors.push(format!("{err:?}"));
+                        }
+                    };
+                    if build.pending_build_results.is_empty() {
+                        tracing::info!("dataflow build finished: `{build_id}`");
+                        let build = running_builds.remove(&build_id).unwrap();
+                        let result = if build.errors.is_empty() {
+                            Ok(())
+                        } else {
+                            Err(format!("build failed: {}", build.errors.join("\n\n")))
+                        };
+
+                        build.build_result_sender.send(Ok(
+                            ControlRequestReply::DataflowBuildFinished {
+                                build_id,
+                                session_id,
+                                result,
+                            },
+                        ));
+                    }
+                }
+                None => {
+                    tracing::warn!("received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map");
+                }
+            },
             Event::DataflowSpawnResult {
                 dataflow_id,
                 daemon_id,
@@ -836,7 +879,7 @@ async fn send_log_message(dataflow: &mut RunningDataflow, message: &LogMessage) 
 
 async fn send_log_message_to_subscriber(
     message: &LogMessage,
-    mut subscriber: OccupiedEntry<'_, BuildId, LogSubscriber>,
+    mut subscriber: OccupiedEntry<'_, SessionId, LogSubscriber>,
 ) {
     let send_result = tokio::time::timeout(
         Duration::from_millis(100),
@@ -914,6 +957,19 @@ async fn send_heartbeat_message(
     tcp_send(connection, &message)
         .await
         .wrap_err("failed to send heartbeat message to daemon")
+}
+
+struct RunningBuild {
+    build_id: BuildId,
+    /// The IDs of the daemons that the build is running on.
+    daemons: BTreeSet<DaemonId>,
+
+    errors: Vec<String>,
+    build_result_sender: tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>,
+
+    log_subscribers: Vec<LogSubscriber>,
+
+    pending_build_results: BTreeSet<DaemonId>,
 }
 
 struct RunningDataflow {
@@ -1180,11 +1236,12 @@ async fn retrieve_logs(
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 async fn build_dataflow(
-    session_id: BuildId,
+    build_id: BuildId,
+    session_id: SessionId,
     dataflow: Descriptor,
     git_sources: BTreeMap<NodeId, GitSource>,
     prev_git_sources: BTreeMap<NodeId, GitSource>,
-    working_dir: PathBuf,
+    local_working_dir: Option<PathBuf>,
     clock: &HLC,
     uv: bool,
     daemon_connections: &mut DaemonConnections,
@@ -1210,8 +1267,9 @@ async fn build_dataflow(
         );
 
         let build_command = BuildDataflowNodes {
+            build_id,
             session_id,
-            working_dir: working_dir.clone(),
+            local_working_dir: local_working_dir.clone(),
             nodes: nodes.clone(),
             git_sources: git_sources_by_daemon
                 .remove(&machine.as_ref())
@@ -1278,9 +1336,10 @@ async fn build_dataflow_on_machine(
 }
 
 async fn start_dataflow(
-    session_id: Option<Uuid>,
+    build_id: Option<BuildId>,
+    session_id: SessionId,
     dataflow: Descriptor,
-    working_dir: PathBuf,
+    local_working_dir: Option<PathBuf>,
     name: Option<String>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
@@ -1291,9 +1350,10 @@ async fn start_dataflow(
         daemons,
         nodes,
     } = spawn_dataflow(
+        build_id,
         session_id,
         dataflow,
-        working_dir,
+        local_working_dir,
         daemon_connections,
         clock,
         uv,
@@ -1388,6 +1448,12 @@ pub enum Event {
     DaemonExit {
         daemon_id: dora_message::common::DaemonId,
     },
+    DataflowBuildResult {
+        build_id: BuildId,
+        session_id: SessionId,
+        daemon_id: DaemonId,
+        result: eyre::Result<()>,
+    },
     DataflowSpawnResult {
         dataflow_id: uuid::Uuid,
         daemon_id: DaemonId,
@@ -1417,6 +1483,7 @@ impl Event {
             Event::CtrlC => "CtrlC",
             Event::Log(_) => "Log",
             Event::DaemonExit { .. } => "DaemonExit",
+            Event::DataflowBuildResult { .. } => "DataflowBuildResult",
             Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
         }
     }
