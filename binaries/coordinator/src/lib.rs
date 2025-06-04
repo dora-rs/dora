@@ -363,7 +363,7 @@ async fn start_inner(
                                 send_log_message(
                                     &mut finished_dataflow,
                                     &LogMessage {
-                                        build_id: None,
+                                        session_id: None,
                                         dataflow_id: Some(dataflow_id),
                                         node_id: None,
                                         daemon_id: None,
@@ -418,10 +418,10 @@ async fn start_inner(
                             uv,
                         } => {
                             // assign a random build id
-                            let build_id = BuildId::new_v4();
+                            let session_id = BuildId::new_v4();
 
                             let result = build_dataflow(
-                                build_id,
+                                session_id,
                                 dataflow,
                                 git_sources,
                                 prev_git_sources,
@@ -434,7 +434,7 @@ async fn start_inner(
                             match result {
                                 Ok(()) => {
                                     let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowBuildTriggered { build_id },
+                                        ControlRequestReply::DataflowBuildTriggered { session_id },
                                     ));
                                 }
                                 Err(err) => {
@@ -443,7 +443,7 @@ async fn start_inner(
                             }
                         }
                         ControlRequest::Start {
-                            build_id,
+                            session_id,
                             dataflow,
                             name,
                             local_working_dir,
@@ -462,7 +462,7 @@ async fn start_inner(
                                     }
                                 }
                                 let dataflow = start_dataflow(
-                                    build_id,
+                                    session_id,
                                     dataflow,
                                     local_working_dir,
                                     name,
@@ -769,8 +769,8 @@ async fn start_inner(
                         send_log_message(dataflow, &message).await;
                     }
                 }
-                if let Some(build_id) = message.build_id {
-                    if let Entry::Occupied(subscriber) = build_log_subscribers.entry(build_id) {
+                if let Some(session_id) = message.session_id {
+                    if let Entry::Occupied(subscriber) = build_log_subscribers.entry(session_id) {
                         send_log_message_to_subscriber(&message, subscriber).await;
                     }
                 }
@@ -1180,7 +1180,7 @@ async fn retrieve_logs(
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 async fn build_dataflow(
-    build_id: BuildId,
+    session_id: BuildId,
     dataflow: Descriptor,
     git_sources: BTreeMap<NodeId, GitSource>,
     prev_git_sources: BTreeMap<NodeId, GitSource>,
@@ -1206,11 +1206,11 @@ async fn build_dataflow(
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let nodes_on_machine = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
-            "Running dataflow build `{build_id}` on machine `{machine:?}` (nodes: {nodes_on_machine:?})"
+            "Running dataflow build `{session_id}` on machine `{machine:?}` (nodes: {nodes_on_machine:?})"
         );
 
         let build_command = BuildDataflowNodes {
-            build_id,
+            session_id,
             working_dir: working_dir.clone(),
             nodes: nodes.clone(),
             git_sources: git_sources_by_daemon
@@ -1234,7 +1234,7 @@ async fn build_dataflow(
         daemons.insert(daemon_id);
     }
 
-    tracing::info!("successfully triggered dataflow build `{build_id}`",);
+    tracing::info!("successfully triggered dataflow build `{session_id}`",);
 
     Ok(())
 }
@@ -1278,7 +1278,7 @@ async fn build_dataflow_on_machine(
 }
 
 async fn start_dataflow(
-    build_id: Option<Uuid>,
+    session_id: Option<Uuid>,
     dataflow: Descriptor,
     working_dir: PathBuf,
     name: Option<String>,
@@ -1291,7 +1291,7 @@ async fn start_dataflow(
         daemons,
         nodes,
     } = spawn_dataflow(
-        build_id,
+        session_id,
         dataflow,
         working_dir,
         daemon_connections,

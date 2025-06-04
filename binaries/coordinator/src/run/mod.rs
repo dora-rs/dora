@@ -22,7 +22,7 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
-    build_id: Option<BuildId>,
+    session_id: Option<BuildId>,
     dataflow: Descriptor,
     working_dir: PathBuf,
     daemon_connections: &mut DaemonConnections,
@@ -42,7 +42,7 @@ pub(super) async fn spawn_dataflow(
         );
 
         let spawn_command = SpawnDataflowNodes {
-            build_id,
+            session_id,
             dataflow_id: uuid,
             working_dir: working_dir.clone(),
             nodes: nodes.clone(),

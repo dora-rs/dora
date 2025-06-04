@@ -10,10 +10,10 @@ pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowBuildTriggered {
-        build_id: Uuid,
+        session_id: Uuid,
     },
     DataflowBuildFinished {
-        build_id: Uuid,
+        session_id: Uuid,
         result: Result<(), String>,
     },
     DataflowStartTriggered {

@@ -30,13 +30,13 @@ struct PreparedBuild {
 impl GitManager {
     pub fn choose_clone_dir(
         &mut self,
-        build_id: uuid::Uuid,
+        session_id: uuid::Uuid,
         repo_url: Url,
         commit_hash: String,
         prev_commit_hash: Option<String>,
         target_dir: &Path,
     ) -> eyre::Result<GitFolder> {
-        let clone_dir = Self::clone_dir_path(&target_dir, build_id, &repo_url, &commit_hash)?;
+        let clone_dir = Self::clone_dir_path(&target_dir, session_id, &repo_url, &commit_hash)?;
 
         if let Some(using) = self.clones_in_use.get(&clone_dir) {
             if !using.is_empty() {
@@ -50,7 +50,7 @@ impl GitManager {
             }
         }
 
-        let reuse = if self.clone_dir_ready(build_id, &clone_dir) {
+        let reuse = if self.clone_dir_ready(session_id, &clone_dir) {
             // The directory already contains a checkout of the commit we're interested in.
             // So we can simply reuse the directory without doing any additional git
             // operations.
@@ -60,7 +60,7 @@ impl GitManager {
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
             let prev_clone_dir =
-                Self::clone_dir_path(&target_dir, build_id, &repo_url, &previous_commit_hash)?;
+                Self::clone_dir_path(&target_dir, session_id, &repo_url, &previous_commit_hash)?;
 
             if self
                 .clones_in_use
@@ -97,7 +97,7 @@ impl GitManager {
                 commit_hash,
             }
         };
-        self.register_ready_clone_dir(build_id, clone_dir);
+        self.register_ready_clone_dir(session_id, clone_dir);
 
         Ok(GitFolder { reuse })
     }
@@ -109,17 +109,17 @@ impl GitManager {
             .unwrap_or(false)
     }
 
-    pub fn clone_dir_ready(&self, build_id: BuildId, dir: &Path) -> bool {
+    pub fn clone_dir_ready(&self, session_id: BuildId, dir: &Path) -> bool {
         self.prepared_builds
-            .get(&build_id)
+            .get(&session_id)
             .map(|p| p.planned_clone_dirs.contains(dir))
             .unwrap_or(false)
             || dir.exists()
     }
 
-    pub fn register_ready_clone_dir(&mut self, build_id: BuildId, dir: PathBuf) -> bool {
+    pub fn register_ready_clone_dir(&mut self, session_id: BuildId, dir: PathBuf) -> bool {
         self.prepared_builds
-            .entry(build_id)
+            .entry(session_id)
             .or_default()
             .planned_clone_dirs
             .insert(dir)
@@ -127,12 +127,12 @@ impl GitManager {
 
     fn clone_dir_path(
         base_dir: &Path,
-        build_id: BuildId,
+        session_id: BuildId,
         repo_url: &Url,
         commit_hash: &String,
     ) -> eyre::Result<PathBuf> {
         let mut path = base_dir
-            .join(&build_id.to_string())
+            .join(&session_id.to_string())
             .join(repo_url.host_str().context("git URL has no hostname")?);
         path.extend(repo_url.path_segments().context("no path in git URL")?);
         let path = path.join(commit_hash);

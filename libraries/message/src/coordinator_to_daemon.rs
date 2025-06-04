@@ -60,7 +60,7 @@ pub enum DaemonCoordinatorEvent {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct BuildDataflowNodes {
-    pub build_id: Uuid,
+    pub session_id: Uuid,
     pub working_dir: PathBuf,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub git_sources: BTreeMap<NodeId, GitSource>,
@@ -72,7 +72,7 @@ pub struct BuildDataflowNodes {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct SpawnDataflowNodes {
-    pub build_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
     pub dataflow_id: DataflowId,
     pub working_dir: PathBuf,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,

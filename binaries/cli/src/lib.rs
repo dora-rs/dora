@@ -633,7 +633,7 @@ fn run(args: Args) -> eyre::Result<()> {
 }
 
 fn start_dataflow(
-    build_id: Option<Uuid>,
+    session_id: Option<Uuid>,
     dataflow: String,
     name: Option<String>,
     coordinator_socket: SocketAddr,
@@ -656,7 +656,7 @@ fn start_dataflow(
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Start {
-                    build_id,
+                    session_id,
                     dataflow,
                     name,
                     local_working_dir: working_dir,

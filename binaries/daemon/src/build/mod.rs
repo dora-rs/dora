@@ -22,7 +22,7 @@ mod git;
 
 #[derive(Clone)]
 pub struct Builder {
-    pub build_id: BuildId,
+    pub session_id: BuildId,
     pub working_dir: PathBuf,
     pub daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub dataflow_descriptor: Descriptor,
@@ -47,7 +47,7 @@ impl Builder {
             let target_dir = self.working_dir.join("build");
             let prev_hash = prev_git.filter(|p| p.repo == repo).map(|p| p.commit_hash);
             let git_folder = git_manager.choose_clone_dir(
-                self.build_id,
+                self.session_id,
                 repo_url,
                 commit_hash,
                 prev_hash,
@@ -79,7 +79,7 @@ impl Builder {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {
                     Some(git_folder) => git_folder.prepare(logger).await?,
-                    None => self.working_dir.join(self.build_id.to_string()),
+                    None => self.working_dir.join(self.session_id.to_string()),
                 };
 
                 if let Some(build) = &n.build {

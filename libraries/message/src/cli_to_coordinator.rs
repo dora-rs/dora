@@ -20,7 +20,7 @@ pub enum ControlRequest {
         uv: bool,
     },
     Start {
-        build_id: Option<Uuid>,
+        session_id: Option<Uuid>,
         dataflow: Descriptor,
         name: Option<String>,
         // TODO: remove this once we figure out deploying of node/operator

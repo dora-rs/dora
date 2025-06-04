@@ -1,17 +1,15 @@
 use crate::{
     log::{self, NodeLogger},
-    node_communication::spawn_listener_loop,
-    node_inputs, CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
+    CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
 };
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_arrow_convert::IntoArrow;
 use dora_core::{
-    build::run_build_command,
     config::DataId,
     descriptor::{
-        resolve_path, source_is_url, CustomNode, Descriptor, OperatorDefinition, OperatorSource,
-        PythonSource, ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
+        resolve_path, source_is_url, Descriptor, ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE,
+        SHELL_SOURCE,
     },
     get_python_path,
     uhlc::HLC,
@@ -31,12 +29,8 @@ use dora_node_api::{
     Metadata,
 };
 use eyre::{ContextCompat, WrapErr};
-use git::GitFolder;
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    future::Future,
     path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
 };
 use tokio::{
@@ -314,7 +308,7 @@ impl PreparedNode {
                         .log(LogMessage {
                             daemon_id: Some(daemon_id.clone()),
                             dataflow_id: Some(dataflow_id),
-                            build_id: None,
+                            session_id: None,
                             level: LogLevel::Info,
                             node_id: Some(node_id.clone()),
                             target: Some("stdout".into()),
