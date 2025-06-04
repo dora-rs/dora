@@ -10,7 +10,7 @@ use dora_message::{
     daemon_to_coordinator::DaemonCoordinatorReply,
     descriptor::{Descriptor, ResolvedNode},
     id::NodeId,
-    SessionId,
+    BuildId, SessionId,
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use itertools::Itertools;
@@ -22,7 +22,7 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
-    build_id: Option<SessionId>,
+    build_id: Option<BuildId>,
     session_id: SessionId,
     dataflow: Descriptor,
     local_working_dir: Option<PathBuf>,

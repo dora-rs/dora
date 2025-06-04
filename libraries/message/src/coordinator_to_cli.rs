@@ -3,18 +3,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{common::DaemonId, id::NodeId};
+use crate::{common::DaemonId, id::NodeId, BuildId, SessionId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowBuildTriggered {
-        build_id: Uuid,
+        build_id: BuildId,
     },
     DataflowBuildFinished {
-        build_id: Uuid,
-        session_id: Uuid,
+        build_id: BuildId,
+        session_id: SessionId,
         result: Result<(), String>,
     },
     DataflowStartTriggered {

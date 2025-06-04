@@ -539,6 +539,7 @@ impl Daemon {
 
                 let result = self
                     .build_dataflow(
+                        build_id,
                         session_id,
                         base_working_dir,
                         nodes,
@@ -874,6 +875,7 @@ impl Daemon {
 
     async fn build_dataflow(
         &mut self,
+        build_id: BuildId,
         session_id: SessionId,
         base_working_dir: PathBuf,
         nodes: BTreeMap<NodeId, ResolvedNode>,
@@ -899,7 +901,7 @@ impl Daemon {
             let dynamic_node = node.kind.dynamic();
 
             let node_id = node.id.clone();
-            let mut logger = self.logger.for_node_build(session_id, node_id.clone());
+            let mut logger = self.logger.for_node_build(build_id, node_id.clone());
             logger.log(LogLevel::Info, "building").await;
             let git_source = git_sources.get(&node_id).cloned();
             let prev_git_source = prev_git_sources.get(&node_id).cloned();
@@ -925,12 +927,7 @@ impl Daemon {
                 }
                 Err(err) => {
                     self.logger
-                        .log_build(
-                            session_id,
-                            LogLevel::Error,
-                            Some(node_id),
-                            format!("{err:?}"),
-                        )
+                        .log_build(build_id, LogLevel::Error, Some(node_id), format!("{err:?}"))
                         .await;
                     return Err(err);
                 }
@@ -2011,7 +2008,7 @@ impl Daemon {
     fn base_working_dir(
         &self,
         local_working_dir: Option<PathBuf>,
-        session_id: Uuid,
+        session_id: SessionId,
     ) -> eyre::Result<PathBuf> {
         match local_working_dir {
             Some(working_dir) => {

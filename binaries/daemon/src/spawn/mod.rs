@@ -560,7 +560,7 @@ impl PreparedNode {
                         .log(LogMessage {
                             daemon_id: Some(daemon_id.clone()),
                             dataflow_id: Some(dataflow_id),
-                            session_id: None,
+                            build_id: None,
                             level: LogLevel::Info,
                             node_id: Some(node_id.clone()),
                             target: Some("stdout".into()),

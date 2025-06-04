@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 use url::Url;
-use uuid::Uuid;
 
 #[derive(Default)]
 pub struct GitManager {
@@ -30,7 +29,7 @@ struct PreparedBuild {
 impl GitManager {
     pub fn choose_clone_dir(
         &mut self,
-        session_id: uuid::Uuid,
+        session_id: SessionId,
         repo_url: Url,
         commit_hash: String,
         prev_commit_hash: Option<String>,

@@ -2,7 +2,9 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     Event,
 };
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, BuildId,
+};
 use eyre::{eyre, Context};
 use futures::{
     future::{self, Either},
@@ -114,6 +116,17 @@ async fn handle_requests(
             break;
         }
 
+        if let Ok(ControlRequest::BuildLogSubscribe { build_id, level }) = request {
+            let _ = tx
+                .send(ControlEvent::BuildLogSubscribe {
+                    build_id,
+                    level,
+                    connection,
+                })
+                .await;
+            break;
+        }
+
         let result = match request {
             Ok(request) => handle_request(request, &tx).await,
             Err(err) => Err(err),
@@ -176,6 +189,11 @@ pub enum ControlEvent {
     },
     LogSubscribe {
         dataflow_id: Uuid,
+        level: log::LevelFilter,
+        connection: TcpStream,
+    },
+    BuildLogSubscribe {
+        build_id: BuildId,
         level: log::LevelFilter,
         connection: TcpStream,
     },

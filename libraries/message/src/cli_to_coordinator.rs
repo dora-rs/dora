@@ -6,7 +6,7 @@ use crate::{
     common::GitSource,
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
-    SessionId,
+    BuildId, SessionId,
 };
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -27,11 +27,11 @@ pub enum ControlRequest {
         uv: bool,
     },
     WaitForBuild {
-        build_id: Uuid,
+        build_id: BuildId,
     },
     Start {
-        build_id: Option<Uuid>,
-        session_id: Uuid,
+        build_id: Option<BuildId>,
+        session_id: SessionId,
         dataflow: Descriptor,
         name: Option<String>,
         /// Allows overwriting the base working dir when CLI and daemon are
@@ -77,7 +77,7 @@ pub enum ControlRequest {
         level: log::LevelFilter,
     },
     BuildLogSubscribe {
-        build_id: Uuid,
+        build_id: BuildId,
         level: log::LevelFilter,
     },
 }

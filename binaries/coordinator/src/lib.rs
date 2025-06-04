@@ -29,11 +29,7 @@ use itertools::Itertools;
 use log_subscriber::LogSubscriber;
 use run::SpawnedDataflow;
 use std::{
-    collections::{
-        btree_map::{Entry, OccupiedEntry},
-        BTreeMap, BTreeSet, HashMap,
-    },
-    env::current_dir,
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -204,14 +200,13 @@ async fn start_inner(
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+    let mut build_log_subscribers: BTreeMap<BuildId, Vec<LogSubscriber>> = Default::default();
 
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
         HashMap::new();
     let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections = DaemonConnections::default();
-
-    let mut build_log_subscribers: BTreeMap<SessionId, LogSubscriber> = Default::default();
 
     while let Some(event) = events.next().await {
         // used below for measuring the event handling duration
@@ -364,9 +359,9 @@ async fn start_inner(
                                 let mut finished_dataflow = entry.remove();
                                 let dataflow_id = finished_dataflow.uuid;
                                 send_log_message(
-                                    &mut finished_dataflow,
+                                    &mut finished_dataflow.log_subscribers,
                                     &LogMessage {
-                                        session_id: None,
+                                        build_id: None,
                                         dataflow_id: Some(dataflow_id),
                                         node_id: None,
                                         daemon_id: None,
@@ -422,7 +417,7 @@ async fn start_inner(
                             uv,
                         } => {
                             // assign a random build id
-                            let build_id = SessionId::new_v4();
+                            let build_id = BuildId::generate();
 
                             let result = build_dataflow(
                                 build_id,
@@ -445,6 +440,14 @@ async fn start_inner(
                                 Err(err) => {
                                     let _ = reply_sender.send(Err(err));
                                 }
+                            }
+                        }
+                        ControlRequest::WaitForBuild { build_id } => {
+                            if let Some(build) = running_builds.get_mut(&build_id) {
+                                build.spawn_result.register(reply_sender);
+                            } else {
+                                let _ =
+                                    reply_sender.send(Err(eyre!("unknown build id {build_id}")));
                             }
                         }
                         ControlRequest::Start {
@@ -702,6 +705,11 @@ async fn start_inner(
                                 "LogSubscribe request should be handled separately"
                             )));
                         }
+                        ControlRequest::BuildLogSubscribe { .. } => {
+                            let _ = reply_sender.send(Err(eyre::eyre!(
+                                "BuildLogSubscribe request should be handled separately"
+                            )));
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
@@ -715,6 +723,16 @@ async fn start_inner(
                             .log_subscribers
                             .push(LogSubscriber::new(level, connection));
                     }
+                }
+                ControlEvent::BuildLogSubscribe {
+                    build_id,
+                    level,
+                    connection,
+                } => {
+                    build_log_subscribers
+                        .entry(build_id)
+                        .or_default()
+                        .push(LogSubscriber::new(level, connection));
                 }
             },
             Event::DaemonHeartbeatInterval => {
@@ -773,12 +791,12 @@ async fn start_inner(
             Event::Log(message) => {
                 if let Some(dataflow_id) = &message.dataflow_id {
                     if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
-                        send_log_message(dataflow, &message).await;
+                        send_log_message(&mut dataflow.log_subscribers, &message).await;
                     }
                 }
-                if let Some(session_id) = message.session_id {
-                    if let Entry::Occupied(subscriber) = build_log_subscribers.entry(session_id) {
-                        send_log_message_to_subscriber(&message, subscriber).await;
+                if let Some(build_id) = message.build_id {
+                    if let Some(subscribers) = build_log_subscribers.get_mut(&build_id) {
+                        send_log_message(subscribers, &message).await;
                     }
                 }
             }
@@ -865,8 +883,8 @@ async fn start_inner(
     Ok(())
 }
 
-async fn send_log_message(dataflow: &mut RunningDataflow, message: &LogMessage) {
-    for subscriber in &mut dataflow.log_subscribers {
+async fn send_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &LogMessage) {
+    for subscriber in log_subscribers.iter_mut() {
         let send_result =
             tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message));
 
@@ -874,25 +892,7 @@ async fn send_log_message(dataflow: &mut RunningDataflow, message: &LogMessage) 
             subscriber.close();
         }
     }
-    dataflow.log_subscribers.retain(|s| !s.is_closed());
-}
-
-async fn send_log_message_to_subscriber(
-    message: &LogMessage,
-    mut subscriber: OccupiedEntry<'_, SessionId, LogSubscriber>,
-) {
-    let send_result = tokio::time::timeout(
-        Duration::from_millis(100),
-        subscriber.get_mut().send_message(message),
-    );
-
-    if send_result.await.is_err() {
-        subscriber.get_mut().close();
-    }
-
-    if subscriber.get_mut().is_closed() {
-        subscriber.remove();
-    }
+    log_subscribers.retain(|s| !s.is_closed());
 }
 
 fn dataflow_result(

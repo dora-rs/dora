@@ -12,7 +12,7 @@ use dora_message::{
     common::{GitSource, LogLevel, Timestamped},
     descriptor::EnvValue,
     id::NodeId,
-    BuildId, SessionId,
+    SessionId,
 };
 use eyre::Context;
 use tokio::sync::mpsc;

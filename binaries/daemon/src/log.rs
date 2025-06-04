@@ -8,7 +8,7 @@ use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
-    SessionId,
+    BuildId,
 };
 use eyre::Context;
 use tokio::net::TcpStream;
@@ -95,7 +95,7 @@ impl<'a> DataflowLogger<'a> {
 }
 
 pub struct NodeBuildLogger<'a> {
-    session_id: SessionId,
+    build_id: BuildId,
     node_id: NodeId,
     logger: CowMut<'a, DaemonLogger>,
 }
@@ -107,13 +107,13 @@ impl NodeBuildLogger<'_> {
 
     pub async fn log(&mut self, level: LogLevel, message: impl Into<String>) {
         self.logger
-            .log_build(self.session_id, level, Some(self.node_id.clone()), message)
+            .log_build(self.build_id, level, Some(self.node_id.clone()), message)
             .await
     }
 
     pub async fn try_clone(&self) -> eyre::Result<NodeBuildLogger<'static>> {
         Ok(NodeBuildLogger {
-            session_id: self.session_id,
+            build_id: self.build_id,
             node_id: self.node_id.clone(),
             logger: CowMut::Owned(self.logger.try_clone().await?),
         })
@@ -133,9 +133,9 @@ impl DaemonLogger {
         }
     }
 
-    pub fn for_node_build(&mut self, session_id: SessionId, node_id: NodeId) -> NodeBuildLogger {
+    pub fn for_node_build(&mut self, build_id: BuildId, node_id: NodeId) -> NodeBuildLogger {
         NodeBuildLogger {
-            session_id,
+            build_id,
             node_id,
             logger: CowMut::Borrowed(self),
         }
@@ -154,7 +154,7 @@ impl DaemonLogger {
         message: impl Into<String>,
     ) {
         let message = LogMessage {
-            session_id: None,
+            build_id: None,
             daemon_id: Some(self.daemon_id.clone()),
             dataflow_id,
             node_id,
@@ -170,13 +170,13 @@ impl DaemonLogger {
 
     pub async fn log_build(
         &mut self,
-        session_id: SessionId,
+        build_id: BuildId,
         level: LogLevel,
         node_id: Option<NodeId>,
         message: impl Into<String>,
     ) {
         let message = LogMessage {
-            session_id: Some(session_id),
+            build_id: Some(build_id),
             daemon_id: Some(self.daemon_id.clone()),
             dataflow_id: None,
             node_id,
@@ -239,7 +239,7 @@ impl Logger {
         match message.level {
             LogLevel::Error => {
                 tracing::error!(
-                    session_id = ?message.session_id.map(|id| id.to_string()),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
                     dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,
@@ -252,7 +252,7 @@ impl Logger {
             }
             LogLevel::Warn => {
                 tracing::warn!(
-                    session_id = ?message.session_id.map(|id| id.to_string()),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
                     dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,
@@ -265,7 +265,7 @@ impl Logger {
             }
             LogLevel::Info => {
                 tracing::info!(
-                    session_id = ?message.session_id.map(|id| id.to_string()),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
                     dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,
@@ -278,7 +278,7 @@ impl Logger {
             }
             LogLevel::Debug => {
                 tracing::debug!(
-                    session_id = ?message.session_id.map(|id| id.to_string()),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
                     dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,

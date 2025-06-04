@@ -60,8 +60,8 @@ pub enum DaemonCoordinatorEvent {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct BuildDataflowNodes {
-    pub build_id: Uuid,
-    pub session_id: Uuid,
+    pub build_id: BuildId,
+    pub session_id: SessionId,
     /// Allows overwriting the base working dir when CLI and daemon are
     /// running on the same machine.
     ///
