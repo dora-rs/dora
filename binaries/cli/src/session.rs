@@ -3,14 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use dora_message::{common::GitSource, id::NodeId, BuildId};
+use dora_message::{common::GitSource, id::NodeId, BuildId, SessionId};
 use eyre::{Context, ContextCompat};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DataflowSession {
     pub build_id: Option<BuildId>,
-    pub session_id: Uuid,
+    pub session_id: SessionId,
     pub git_sources: BTreeMap<NodeId, GitSource>,
 }
 
@@ -18,7 +17,7 @@ impl Default for DataflowSession {
     fn default() -> Self {
         Self {
             build_id: None,
-            session_id: Uuid::new_v4(),
+            session_id: SessionId::generate(),
             git_sources: Default::default(),
         }
     }
@@ -29,7 +28,7 @@ impl DataflowSession {
         let session_file = session_file_path(dataflow_path)?;
         if session_file.exists() {
             if let Ok(parsed) = deserialize(&session_file) {
-                return Ok((parsed));
+                return Ok(parsed);
             } else {
                 tracing::warn!("failed to read dataflow session file, regenerating (you might need to run `dora build` again)");
             }

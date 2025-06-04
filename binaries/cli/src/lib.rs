@@ -17,19 +17,18 @@ use dora_message::{
     cli_to_coordinator::ControlRequest,
     common::LogMessage,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult, DataflowStatus},
-    BuildId, SessionId,
+    BuildId,
 };
 #[cfg(feature = "tracing")]
 use dora_tracing::set_up_tracing;
 use dora_tracing::{set_up_tracing_opts, FileLogging};
 use duration_str::parse;
-use eyre::{bail, Context, ContextCompat};
+use eyre::{bail, Context};
 use formatting::FormatDataflowError;
 use std::{
     env::current_dir,
     io::Write,
     net::{SocketAddr, TcpStream},
-    path::Path,
 };
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -403,7 +402,7 @@ fn run(args: Args) -> eyre::Result<()> {
         } => template::create(args, internal_create_with_path_dependencies)?,
         Command::Run { dataflow, uv } => {
             let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-            let dataflow_session = DataflowSession::read_session(&dataflow)
+            let dataflow_session = DataflowSession::read_session(&dataflow_path)
                 .context("failed to read DataflowSession")?;
 
             let rt = Builder::new_multi_thread()
@@ -647,7 +646,7 @@ fn build_dataflow(
     dataflow: String,
     coordinator_socket: SocketAddr,
     uv: bool,
-) -> eyre::Result<(Box<TcpRequestReplyConnection>, Uuid)> {
+) -> eyre::Result<(Box<TcpRequestReplyConnection>, BuildId)> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
@@ -669,13 +668,13 @@ fn build_dataflow(
     };
     let mut session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to dora coordinator")?;
-    let dataflow_id = {
+    let build_id = {
         let dataflow = dataflow_descriptor.clone();
         let session: &mut TcpRequestReplyConnection = &mut *session;
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Build {
-                    session_id: dataflow_session.build_id,
+                    session_id: dataflow_session.session_id,
                     dataflow,
                     git_sources,
                     prev_git_sources: dataflow_session.git_sources.clone(),
@@ -697,15 +696,15 @@ fn build_dataflow(
             other => bail!("unexpected start dataflow reply: {other:?}"),
         }
     };
-    Ok((session, dataflow_id))
+    Ok((session, build_id))
 }
 
 fn wait_until_dataflow_built(
-    build_id: Uuid,
+    build_id: BuildId,
     session: &mut Box<TcpRequestReplyConnection>,
     coordinator_addr: SocketAddr,
     log_level: log::LevelFilter,
-) -> eyre::Result<()> {
+) -> eyre::Result<BuildId> {
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_addr)
@@ -742,18 +741,16 @@ fn wait_until_dataflow_built(
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
-        ControlRequestReply::DataflowBuildFinished {
-            build_id,
-            session_id,
-            result,
-        } => match result {
-            Ok(()) => eprintln!("dataflow build finished successfully"),
+        ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
+            Ok(()) => {
+                eprintln!("dataflow build finished successfully");
+                Ok(build_id)
+            }
             Err(err) => bail!("{err}"),
         },
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     }
-    Ok(())
 }
 
 fn start_dataflow(
@@ -789,8 +786,8 @@ fn start_dataflow(
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Start {
-                    build_id,
-                    session_id,
+                    build_id: dataflow_session.build_id,
+                    session_id: dataflow_session.session_id,
                     dataflow,
                     name,
                     local_working_dir,

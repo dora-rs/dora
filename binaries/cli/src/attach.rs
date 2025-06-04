@@ -185,6 +185,7 @@ pub fn attach_dataflow(
 
 pub fn print_log_message(log_message: LogMessage) {
     let LogMessage {
+        build_id,
         dataflow_id,
         node_id,
         daemon_id,
@@ -201,7 +202,16 @@ pub fn print_log_message(log_message: LogMessage) {
         log::Level::Info => "INFO ".green(),
         other => format!("{other:5}").normal(),
     };
-    let dataflow = format!(" dataflow `{dataflow_id}`").cyan();
+    let dataflow = if let Some(dataflow_id) = dataflow_id {
+        format!(" dataflow `{dataflow_id}`").cyan()
+    } else {
+        String::new().cyan()
+    };
+    let build = if let Some(build_id) = build_id {
+        format!(" build `{build_id}`").cyan()
+    } else {
+        String::new().cyan()
+    };
     let daemon = match daemon_id {
         Some(id) => format!(" on daemon `{id}`"),
         None => " on default daemon".to_string(),
@@ -216,7 +226,7 @@ pub fn print_log_message(log_message: LogMessage) {
         None => "".normal(),
     };
 
-    println!("{level}{dataflow}{daemon}{node}{target}: {message}");
+    println!("{level}{build}{dataflow}{daemon}{node}{target}: {message}");
 }
 
 enum AttachEvent {

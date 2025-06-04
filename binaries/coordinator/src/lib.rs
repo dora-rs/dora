@@ -200,7 +200,6 @@ async fn start_inner(
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
-    let mut build_log_subscribers: BTreeMap<BuildId, Vec<LogSubscriber>> = Default::default();
 
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
@@ -389,7 +388,7 @@ async fn start_inner(
                                 }
                                 if !matches!(
                                     finished_dataflow.spawn_result,
-                                    SpawnResult::Spawned { .. }
+                                    CachedResult::Cached { .. }
                                 ) {
                                     log::error!("pending spawn result on dataflow finish");
                                 }
@@ -432,7 +431,8 @@ async fn start_inner(
                             )
                             .await;
                             match result {
-                                Ok(()) => {
+                                Ok(build) => {
+                                    running_builds.insert(build_id, build);
                                     let _ = reply_sender.send(Ok(
                                         ControlRequestReply::DataflowBuildTriggered { build_id },
                                     ));
@@ -444,7 +444,7 @@ async fn start_inner(
                         }
                         ControlRequest::WaitForBuild { build_id } => {
                             if let Some(build) = running_builds.get_mut(&build_id) {
-                                build.spawn_result.register(reply_sender);
+                                build.build_result.register(reply_sender);
                             } else {
                                 let _ =
                                     reply_sender.send(Err(eyre!("unknown build id {build_id}")));
@@ -729,10 +729,11 @@ async fn start_inner(
                     level,
                     connection,
                 } => {
-                    build_log_subscribers
-                        .entry(build_id)
-                        .or_default()
-                        .push(LogSubscriber::new(level, connection));
+                    if let Some(build) = running_builds.get_mut(&build_id) {
+                        build
+                            .log_subscribers
+                            .push(LogSubscriber::new(level, connection));
+                    }
                 }
             },
             Event::DaemonHeartbeatInterval => {
@@ -795,8 +796,8 @@ async fn start_inner(
                     }
                 }
                 if let Some(build_id) = message.build_id {
-                    if let Some(subscribers) = build_log_subscribers.get_mut(&build_id) {
-                        send_log_message(subscribers, &message).await;
+                    if let Some(build) = running_builds.get_mut(&build_id) {
+                        send_log_message(&mut build.log_subscribers, &message).await;
                     }
                 }
             }
@@ -820,19 +821,15 @@ async fn start_inner(
                     };
                     if build.pending_build_results.is_empty() {
                         tracing::info!("dataflow build finished: `{build_id}`");
-                        let build = running_builds.remove(&build_id).unwrap();
+                        let mut build = running_builds.remove(&build_id).unwrap();
                         let result = if build.errors.is_empty() {
                             Ok(())
                         } else {
                             Err(format!("build failed: {}", build.errors.join("\n\n")))
                         };
 
-                        build.build_result_sender.send(Ok(
-                            ControlRequestReply::DataflowBuildFinished {
-                                build_id,
-                                session_id,
-                                result,
-                            },
+                        build.build_result.set_result(Ok(
+                            ControlRequestReply::DataflowBuildFinished { build_id, result },
                         ));
                     }
                 }
@@ -960,12 +957,8 @@ async fn send_heartbeat_message(
 }
 
 struct RunningBuild {
-    build_id: BuildId,
-    /// The IDs of the daemons that the build is running on.
-    daemons: BTreeSet<DaemonId>,
-
     errors: Vec<String>,
-    build_result_sender: tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>,
+    build_result: CachedResult,
 
     log_subscribers: Vec<LogSubscriber>,
 
@@ -982,7 +975,7 @@ struct RunningDataflow {
     exited_before_subscribe: Vec<NodeId>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
 
-    spawn_result: SpawnResult,
+    spawn_result: CachedResult,
     stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
 
     log_subscribers: Vec<LogSubscriber>,
@@ -990,16 +983,16 @@ struct RunningDataflow {
     pending_spawn_results: BTreeSet<DaemonId>,
 }
 
-pub enum SpawnResult {
+pub enum CachedResult {
     Pending {
         result_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
     },
-    Spawned {
+    Cached {
         result: eyre::Result<ControlRequestReply>,
     },
 }
 
-impl Default for SpawnResult {
+impl Default for CachedResult {
     fn default() -> Self {
         Self::Pending {
             result_senders: Vec::new(),
@@ -1007,14 +1000,14 @@ impl Default for SpawnResult {
     }
 }
 
-impl SpawnResult {
+impl CachedResult {
     fn register(
         &mut self,
         reply_sender: tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>,
     ) {
         match self {
-            SpawnResult::Pending { result_senders } => result_senders.push(reply_sender),
-            SpawnResult::Spawned { result } => {
+            CachedResult::Pending { result_senders } => result_senders.push(reply_sender),
+            CachedResult::Cached { result } => {
                 Self::send_result_to(result, reply_sender);
             }
         }
@@ -1022,13 +1015,13 @@ impl SpawnResult {
 
     fn set_result(&mut self, result: eyre::Result<ControlRequestReply>) {
         match self {
-            SpawnResult::Pending { result_senders } => {
+            CachedResult::Pending { result_senders } => {
                 for sender in result_senders.drain(..) {
                     Self::send_result_to(&result, sender);
                 }
-                *self = SpawnResult::Spawned { result };
+                *self = CachedResult::Cached { result };
             }
-            SpawnResult::Spawned { .. } => {}
+            CachedResult::Cached { .. } => {}
         }
     }
 
@@ -1245,7 +1238,7 @@ async fn build_dataflow(
     clock: &HLC,
     uv: bool,
     daemon_connections: &mut DaemonConnections,
-) -> eyre::Result<()> {
+) -> eyre::Result<RunningBuild> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
     let mut git_sources_by_daemon = git_sources
@@ -1294,7 +1287,12 @@ async fn build_dataflow(
 
     tracing::info!("successfully triggered dataflow build `{session_id}`",);
 
-    Ok(())
+    Ok(RunningBuild {
+        errors: Vec::new(),
+        build_result: CachedResult::default(),
+        log_subscribers: Vec::new(),
+        pending_build_results: daemons,
+    })
 }
 
 async fn build_dataflow_on_machine(
@@ -1370,7 +1368,7 @@ async fn start_dataflow(
         exited_before_subscribe: Default::default(),
         daemons: daemons.clone(),
         nodes,
-        spawn_result: SpawnResult::default(),
+        spawn_result: CachedResult::default(),
         stop_reply_senders: Vec::new(),
         log_subscribers: Vec::new(),
         pending_spawn_results: daemons,
