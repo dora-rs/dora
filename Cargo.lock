@@ -2955,6 +2955,7 @@ dependencies = [
  "dora-operator-api-c",
  "dora-runtime",
  "dora-tracing",
+ "dunce",
  "duration-str",
  "env_logger 0.11.7",
  "eyre",

@@ -11,7 +11,8 @@ use dora_core::{
 use dora_message::{
     common::{GitSource, LogLevel, Timestamped},
     descriptor::EnvValue,
-    SessionId,
+    id::NodeId,
+    BuildId, SessionId,
 };
 use eyre::Context;
 use tokio::sync::mpsc;
@@ -32,14 +33,14 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub async fn prepare_node(
+    pub async fn build_node(
         self,
         node: ResolvedNode,
         git: Option<GitSource>,
         prev_git: Option<GitSource>,
         logger: &mut NodeBuildLogger<'_>,
         git_manager: &mut GitManager,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuiltNode>>> {
         logger.log(LogLevel::Debug, "building node").await;
 
         let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
@@ -62,19 +63,16 @@ impl Builder {
             .try_clone()
             .await
             .wrap_err("failed to clone logger")?;
-        let task = async move {
-            self.prepare_node_inner(node, &mut logger, prepared_git)
-                .await
-        };
+        let task = async move { self.build_node_inner(node, &mut logger, prepared_git).await };
         Ok(task)
     }
 
-    async fn prepare_node_inner(
+    async fn build_node_inner(
         self,
         node: ResolvedNode,
         logger: &mut NodeBuildLogger<'_>,
         git_folder: Option<GitFolder>,
-    ) -> eyre::Result<PreparedNode> {
+    ) -> eyre::Result<BuiltNode> {
         let node_working_dir = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {
@@ -104,12 +102,7 @@ impl Builder {
                 self.base_working_dir.clone()
             }
         };
-        Ok(PreparedNode {
-            node_working_dir,
-            node,
-            clock: self.clock,
-            daemon_tx: self.daemon_tx,
-        })
+        Ok(BuiltNode { node_working_dir })
     }
 }
 
@@ -145,9 +138,11 @@ pub async fn build_node(
     Ok(())
 }
 
-pub struct PreparedNode {
-    node_working_dir: PathBuf,
-    node: ResolvedNode,
-    clock: Arc<HLC>,
-    daemon_tx: mpsc::Sender<Timestamped<Event>>,
+pub struct BuiltNode {
+    pub node_working_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildInfo {
+    pub node_working_dirs: BTreeMap<NodeId, PathBuf>,
 }

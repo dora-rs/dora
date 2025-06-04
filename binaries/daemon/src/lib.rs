@@ -76,7 +76,10 @@ use dora_tracing::telemetry::serialize_context;
 #[cfg(feature = "telemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::{build::GitManager, pending::DataflowStatus};
+use crate::{
+    build::{BuildInfo, GitManager},
+    pending::DataflowStatus,
+};
 
 const STDERR_LOG_LINES: usize = 10;
 
@@ -104,12 +107,14 @@ pub struct Daemon {
 
     logger: DaemonLogger,
 
+    sessions: BTreeMap<SessionId, BuildId>,
+    builds: BTreeMap<BuildId, BuildInfo>,
     git_manager: GitManager,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
-struct NodePrepareTask<F> {
+struct NodeBuildTask<F> {
     node_id: NodeId,
     dynamic_node: bool,
     task: F,
@@ -160,7 +165,6 @@ impl Daemon {
         dataflow_path: &Path,
         build_id: Option<BuildId>,
         session_id: SessionId,
-        local_working_dir: Option<PathBuf>,
         uv: bool,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
@@ -179,7 +183,7 @@ impl Daemon {
             build_id,
             session_id,
             dataflow_id,
-            local_working_dir,
+            local_working_dir: Some(working_dir),
             spawn_nodes: nodes.keys().cloned().collect(),
             nodes,
             dataflow_descriptor: descriptor,
@@ -309,6 +313,8 @@ impl Daemon {
             zenoh_session,
             remote_daemon_events_tx,
             git_manager: Default::default(),
+            builds: Default::default(),
+            sessions: Default::default(),
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -433,6 +439,16 @@ impl Daemon {
                     session_id,
                     result,
                 } => {
+                    let (build_info, result) = match result {
+                        Ok(build_info) => (Some(build_info), Ok(())),
+                        Err(err) => (None, Err(err)),
+                    };
+                    if let Some(build_info) = build_info {
+                        self.builds.insert(build_id, build_info);
+                        if let Some(old_build_id) = self.sessions.insert(session_id, build_id) {
+                            self.builds.remove(&old_build_id);
+                        }
+                    }
                     if let Some(connection) = &mut self.coordinator_connection {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
@@ -858,7 +874,7 @@ impl Daemon {
 
     async fn build_dataflow(
         &mut self,
-        session_id: uuid::Uuid,
+        session_id: SessionId,
         base_working_dir: PathBuf,
         nodes: BTreeMap<NodeId, ResolvedNode>,
         git_sources: BTreeMap<NodeId, GitSource>,
@@ -866,7 +882,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         local_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>>> {
         let builder = build::Builder {
             session_id,
             base_working_dir,
@@ -878,7 +894,7 @@ impl Daemon {
 
         let mut tasks = Vec::new();
 
-        // build nodes and set up subscriptions
+        // build nodes
         for node in nodes.into_values().filter(|n| local_nodes.contains(&n.id)) {
             let dynamic_node = node.kind.dynamic();
 
@@ -890,7 +906,7 @@ impl Daemon {
 
             match builder
                 .clone()
-                .prepare_node(
+                .build_node(
                     node,
                     git_source,
                     prev_git_source,
@@ -901,7 +917,7 @@ impl Daemon {
                 .wrap_err_with(|| format!("failed to build node `{node_id}`"))
             {
                 Ok(result) => {
-                    tasks.push(NodePrepareTask {
+                    tasks.push(NodeBuildTask {
                         node_id,
                         task: result,
                         dynamic_node,
@@ -922,22 +938,28 @@ impl Daemon {
         }
 
         let task = async move {
+            let mut info = BuildInfo {
+                node_working_dirs: Default::default(),
+            };
             let mut errors = Vec::new();
             for task in tasks {
-                let NodePrepareTask {
+                let NodeBuildTask {
                     node_id,
                     dynamic_node,
                     task,
                 } = task;
                 match task.await {
-                    Ok(node) => {}
+                    Ok(node) => {
+                        info.node_working_dirs
+                            .insert(node_id, node.node_working_dir);
+                    }
                     Err(err) => {
                         errors.push((node_id, err));
                     }
                 }
             }
             if errors.is_empty() {
-                Ok(())
+                Ok(info)
             } else {
                 let mut message = "failed to build dataflow:\n".to_owned();
                 for (node_id, err) in errors {
@@ -981,6 +1003,11 @@ impl Daemon {
 
         let mut stopped = Vec::new();
 
+        let node_working_dirs = build_id
+            .and_then(|build_id| self.builds.get(&build_id))
+            .map(|info| info.node_working_dirs.clone())
+            .unwrap_or_default();
+
         // calculate info about mappings
         for node in nodes.values() {
             let local = spawn_nodes.contains(&node.id);
@@ -1019,7 +1046,6 @@ impl Daemon {
 
         let spawner = Spawner {
             dataflow_id,
-            working_dir,
             daemon_tx: self.events_tx.clone(),
             dataflow_descriptor,
             clock: self.clock.clone(),
@@ -1049,19 +1075,18 @@ impl Daemon {
                 logger
                     .log(LogLevel::Info, Some("daemon".into()), "spawning")
                     .await;
+                let node_working_dir = node_working_dirs
+                    .get(&node_id)
+                    .unwrap_or(&base_working_dir)
+                    .clone();
                 match spawner
                     .clone()
-                    .prepare_node(
-                        node,
-                        node_stderr_most_recent,
-                        &mut logger,
-                        &mut self.repos_in_use,
-                    )
+                    .spawn_node(node, node_working_dir, node_stderr_most_recent, &mut logger)
                     .await
                     .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
                     Ok(result) => {
-                        tasks.push(NodePrepareTask {
+                        tasks.push(NodeBuildTask {
                             node_id,
                             task: result,
                             dynamic_node,
@@ -1159,7 +1184,7 @@ impl Daemon {
     async fn spawn_prepared_nodes(
         dataflow_id: Uuid,
         mut logger: DataflowLogger<'_>,
-        tasks: Vec<NodePrepareTask<impl Future<Output = eyre::Result<spawn::PreparedNode>>>>,
+        tasks: Vec<NodeBuildTask<impl Future<Output = eyre::Result<spawn::PreparedNode>>>>,
         events_tx: mpsc::Sender<Timestamped<Event>>,
         clock: Arc<HLC>,
     ) -> eyre::Result<()> {
@@ -1175,7 +1200,7 @@ impl Daemon {
         let mut failed_to_prepare = None;
         let mut prepared_nodes = Vec::new();
         for task in tasks {
-            let NodePrepareTask {
+            let NodeBuildTask {
                 node_id,
                 dynamic_node,
                 task,
@@ -1747,9 +1772,12 @@ impl Daemon {
                     .clone(),
             };
 
-            self.repos_in_use.values_mut().for_each(|dataflows| {
-                dataflows.remove(&dataflow_id);
-            });
+            self.git_manager
+                .clones_in_use
+                .values_mut()
+                .for_each(|dataflows| {
+                    dataflows.remove(&dataflow_id);
+                });
 
             logger
                 .log(
@@ -2483,7 +2511,7 @@ pub enum Event {
     BuildDataflowResult {
         build_id: BuildId,
         session_id: SessionId,
-        result: eyre::Result<()>,
+        result: eyre::Result<BuildInfo>,
     },
     SpawnDataflowResult {
         dataflow_id: Uuid,

@@ -10,7 +10,7 @@ pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowBuildTriggered {
-        session_id: Uuid,
+        build_id: Uuid,
     },
     DataflowBuildFinished {
         build_id: Uuid,

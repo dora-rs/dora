@@ -60,7 +60,7 @@ pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
 ], optional = true }
-
+dunce = "1.0.5"
 
 [lib]
 name = "dora_cli"

@@ -13,7 +13,7 @@ use uuid::Uuid;
 #[derive(Default)]
 pub struct GitManager {
     /// Directories that are currently in use by running dataflows.
-    clones_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
+    pub clones_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
     /// Builds that are prepared, but not done yet.
     prepared_builds: BTreeMap<SessionId, PreparedBuild>,
     reuse_for: BTreeMap<PathBuf, PathBuf>,
@@ -210,17 +210,6 @@ impl GitFolder {
     }
 }
 
-fn used_by_other_dataflow(
-    dataflow_id: uuid::Uuid,
-    clone_dir_base: &PathBuf,
-    repos_in_use: &mut BTreeMap<PathBuf, BTreeSet<DataflowId>>,
-) -> bool {
-    let empty = BTreeSet::new();
-    let in_use = repos_in_use.get(clone_dir_base).unwrap_or(&empty);
-    let used_by_other_dataflow = in_use.iter().any(|&id| id != dataflow_id);
-    used_by_other_dataflow
-}
-
 enum ReuseOptions {
     /// Create a new clone of the repository.
     NewClone {
@@ -337,8 +326,4 @@ fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Resu
     }
 
     Ok(())
-}
-
-fn clone_dir_exists(dir: &PathBuf, repos_in_use: &BTreeMap<PathBuf, BTreeSet<Uuid>>) -> bool {
-    repos_in_use.contains_key(dir) || dir.exists()
 }

@@ -439,7 +439,7 @@ async fn start_inner(
                             match result {
                                 Ok(()) => {
                                     let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowBuildTriggered { session_id },
+                                        ControlRequestReply::DataflowBuildTriggered { build_id },
                                     ));
                                 }
                                 Err(err) => {
