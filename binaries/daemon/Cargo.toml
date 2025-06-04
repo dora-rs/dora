@@ -47,3 +47,4 @@ zenoh = "1.1.1"
 url = "2.5.4"
 git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 dunce = "1.0.5"
+itertools = "0.14"

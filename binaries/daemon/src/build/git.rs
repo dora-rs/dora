@@ -2,6 +2,7 @@ use crate::log::NodeBuildLogger;
 use dora_message::{common::LogLevel, descriptor::GitRepoRev, BuildId, DataflowId};
 use eyre::{ContextCompat, WrapErr};
 use git2::FetchOptions;
+use itertools::Itertools;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -30,17 +31,23 @@ impl GitManager {
     pub fn choose_clone_dir(
         &mut self,
         build_id: uuid::Uuid,
-        previous_build: Option<uuid::Uuid>,
         repo_url: Url,
         commit_hash: String,
+        prev_commit_hash: Option<String>,
         target_dir: &Path,
     ) -> eyre::Result<GitFolder> {
         let clone_dir = Self::clone_dir_path(&target_dir, build_id, &repo_url, &commit_hash)?;
 
-        if self.clones_in_use.contains_key(&clone_dir) {
-            // The directory is currently in use by another dataflow. This should never
-            // happen as we generate a new build ID on every build.
-            eyre::bail!("clone_dir is already in use by other dataflow")
+        if let Some(using) = self.clones_in_use.get(&clone_dir) {
+            if !using.is_empty() {
+                // The directory is currently in use by another dataflow. Rebuilding
+                // while a dataflow is running could lead to unintended behavior.
+                eyre::bail!(
+                    "the build directory is still in use by the following \
+                    dataflows, please stop them before rebuilding: {}",
+                    using.iter().join(", ")
+                )
+            }
         }
 
         let reuse = if self.clone_dir_ready(build_id, &clone_dir) {
@@ -50,10 +57,10 @@ impl GitManager {
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
             }
-        } else if let Some(previous_build_id) = previous_build {
+        } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
             let prev_clone_dir =
-                Self::clone_dir_path(&target_dir, previous_build_id, &repo_url, &commit_hash)?;
+                Self::clone_dir_path(&target_dir, build_id, &repo_url, &previous_commit_hash)?;
 
             if self
                 .clones_in_use

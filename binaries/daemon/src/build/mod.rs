@@ -9,8 +9,7 @@ use dora_core::{
     uhlc::HLC,
 };
 use dora_message::{
-    common::{LogLevel, Timestamped},
-    coordinator_to_daemon::GitSource,
+    common::{GitSource, LogLevel, Timestamped},
     descriptor::EnvValue,
     BuildId,
 };
@@ -24,7 +23,6 @@ mod git;
 #[derive(Clone)]
 pub struct Builder {
     pub build_id: BuildId,
-    pub prev_build_id: Option<BuildId>,
     pub working_dir: PathBuf,
     pub daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub dataflow_descriptor: Descriptor,
@@ -38,6 +36,7 @@ impl Builder {
         self,
         node: ResolvedNode,
         git: Option<GitSource>,
+        prev_git: Option<GitSource>,
         logger: &mut NodeBuildLogger<'_>,
         git_manager: &mut GitManager,
     ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>>> {
@@ -46,11 +45,12 @@ impl Builder {
         let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
             let repo_url = Url::parse(&repo).context("failed to parse git repository URL")?;
             let target_dir = self.working_dir.join("build");
+            let prev_hash = prev_git.filter(|p| p.repo == repo).map(|p| p.commit_hash);
             let git_folder = git_manager.choose_clone_dir(
                 self.build_id,
-                self.prev_build_id,
                 repo_url,
-                commit_hash.clone(),
+                commit_hash,
+                prev_hash,
                 &target_dir,
             )?;
             Some(git_folder)

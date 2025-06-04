@@ -7,7 +7,7 @@ use std::{
 use uuid::Uuid;
 
 use crate::{
-    common::DaemonId,
+    common::{DaemonId, GitSource},
     descriptor::{Descriptor, ResolvedNode},
     id::{NodeId, OperatorId},
     DataflowId,
@@ -64,15 +64,10 @@ pub struct BuildDataflowNodes {
     pub working_dir: PathBuf,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub git_sources: BTreeMap<NodeId, GitSource>,
+    pub prev_git_sources: BTreeMap<NodeId, GitSource>,
     pub dataflow_descriptor: Descriptor,
     pub nodes_on_machine: BTreeSet<NodeId>,
     pub uv: bool,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
-pub struct GitSource {
-    pub repo: String,
-    pub commit_hash: String,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

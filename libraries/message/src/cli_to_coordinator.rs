@@ -1,8 +1,9 @@
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use uuid::Uuid;
 
 use crate::{
+    common::GitSource,
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
 };
@@ -11,6 +12,8 @@ use crate::{
 pub enum ControlRequest {
     Build {
         dataflow: Descriptor,
+        git_sources: BTreeMap<NodeId, GitSource>,
+        prev_git_sources: BTreeMap<NodeId, GitSource>,
         // TODO: remove this once we figure out deploying of node/operator
         // binaries from CLI to coordinator/daemon
         local_working_dir: PathBuf,

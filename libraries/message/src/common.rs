@@ -240,3 +240,9 @@ impl std::fmt::Display for DaemonId {
         write!(f, "{}", self.uuid)
     }
 }
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
+pub struct GitSource {
+    pub repo: String,
+    pub commit_hash: String,
+}

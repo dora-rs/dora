@@ -10,7 +10,7 @@ use dora_core::{
 };
 use dora_message::{
     cli_to_coordinator::ControlRequest,
-    common::DaemonId,
+    common::{DaemonId, GitSource},
     coordinator_to_cli::{
         ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
         DataflowStatus, LogLevel, LogMessage,
@@ -412,6 +412,8 @@ async fn start_inner(
                     match request {
                         ControlRequest::Build {
                             dataflow,
+                            git_sources,
+                            prev_git_sources,
                             local_working_dir,
                             uv,
                         } => {
@@ -421,6 +423,8 @@ async fn start_inner(
                             let result = build_dataflow(
                                 build_id,
                                 dataflow,
+                                git_sources,
+                                prev_git_sources,
                                 local_working_dir,
                                 &clock,
                                 uv,
@@ -1178,12 +1182,23 @@ async fn retrieve_logs(
 async fn build_dataflow(
     build_id: BuildId,
     dataflow: Descriptor,
+    git_sources: BTreeMap<NodeId, GitSource>,
+    prev_git_sources: BTreeMap<NodeId, GitSource>,
     working_dir: PathBuf,
     clock: &HLC,
     uv: bool,
     daemon_connections: &mut DaemonConnections,
 ) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+
+    let mut git_sources_by_daemon = git_sources
+        .into_iter()
+        .into_grouping_map_by(|(id, _)| nodes.get(id).and_then(|n| n.deploy.machine.as_ref()))
+        .collect();
+    let mut prev_git_sources_by_daemon = prev_git_sources
+        .into_iter()
+        .into_grouping_map_by(|(id, _)| nodes.get(id).and_then(|n| n.deploy.machine.as_ref()))
+        .collect();
 
     let nodes_by_daemon = nodes.values().into_group_map_by(|n| &n.deploy.machine);
 
@@ -1198,6 +1213,12 @@ async fn build_dataflow(
             build_id,
             working_dir: working_dir.clone(),
             nodes: nodes.clone(),
+            git_sources: git_sources_by_daemon
+                .remove(&machine.as_ref())
+                .unwrap_or_default(),
+            prev_git_sources: prev_git_sources_by_daemon
+                .remove(&machine.as_ref())
+                .unwrap_or_default(),
             dataflow_descriptor: dataflow.clone(),
             nodes_on_machine,
             uv,
