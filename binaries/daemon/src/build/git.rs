@@ -31,11 +31,10 @@ impl GitManager {
         &mut self,
         build_id: uuid::Uuid,
         previous_build: Option<uuid::Uuid>,
-        repo_addr: String,
+        repo_url: Url,
         commit_hash: String,
         target_dir: &Path,
     ) -> eyre::Result<GitFolder> {
-        let repo_url = Url::parse(&repo_addr).context("failed to parse git repository URL")?;
         let clone_dir = Self::clone_dir_path(&target_dir, build_id, &repo_url, &commit_hash)?;
 
         if self.clones_in_use.contains_key(&clone_dir) {

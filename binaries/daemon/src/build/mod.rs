@@ -1,4 +1,5 @@
 pub use git::GitManager;
+use url::Url;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,6 +15,7 @@ use dora_core::{
 };
 use dora_message::{
     common::{LogLevel, Timestamped},
+    coordinator_to_daemon::GitSource,
     daemon_to_node::NodeConfig,
     descriptor::{EnvValue, GitRepoRev, ResolvedNodeSource},
     id::NodeId,
@@ -42,11 +44,11 @@ impl Builder {
     pub async fn prepare_node(
         self,
         node: ResolvedNode,
+        git: Option<GitSource>,
         logger: &mut DaemonLogger,
         git_manager: &mut GitManager,
     ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>>> {
         let build_id = self.build_id;
-        let node_id = node.id.clone();
         logger
             .log_build(
                 build_id,
@@ -56,16 +58,13 @@ impl Builder {
             )
             .await;
 
-        let prepared_git = if let dora_core::descriptor::CoreNodeKind::Custom {
-            source: ResolvedNodeSource::GitCommit { repo, commit_hash },
-            ..
-        } = &node.kind
-        {
+        let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
+            let repo_url = Url::parse(&repo).context("failed to parse git repository URL")?;
             let target_dir = self.working_dir.join("build");
             let git_folder = git_manager.choose_clone_dir(
                 self.build_id,
                 self.prev_build_id,
-                repo.clone(),
+                repo_url,
                 commit_hash.clone(),
                 &target_dir,
             )?;

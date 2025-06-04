@@ -15,7 +15,9 @@ use dora_message::{
         DaemonId, DataMessage, DropToken, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
     },
     coordinator_to_cli::DataflowResult,
-    coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes},
+    coordinator_to_daemon::{
+        BuildDataflowNodes, DaemonCoordinatorEvent, GitSource, SpawnDataflowNodes,
+    },
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
     },
@@ -477,6 +479,7 @@ impl Daemon {
                 build_id,
                 working_dir,
                 nodes,
+                git_sources,
                 dataflow_descriptor,
                 nodes_on_machine,
                 uv,
@@ -497,6 +500,7 @@ impl Daemon {
                         build_id,
                         working_dir,
                         nodes,
+                        git_sources,
                         dataflow_descriptor,
                         nodes_on_machine,
                         uv,
@@ -831,15 +835,27 @@ impl Daemon {
     async fn build_dataflow(
         &mut self,
         build_id: uuid::Uuid,
+        prev_build_id: Option<uuid::Uuid>,
         working_dir: PathBuf,
         nodes: BTreeMap<NodeId, ResolvedNode>,
+        git_sources: BTreeMap<NodeId, GitSource>,
         dataflow_descriptor: Descriptor,
         local_nodes: BTreeSet<NodeId>,
         uv: bool,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
+        let builder = build::Builder {
+            build_id,
+            prev_build_id,
+            working_dir,
+            daemon_tx: self.events_tx.clone(),
+            dataflow_descriptor,
+            clock: self.clock.clone(),
+            uv,
+        };
+
         let mut tasks = Vec::new();
 
-        // spawn nodes and set up subscriptions
+        // build nodes and set up subscriptions
         for node in nodes.into_values().filter(|n| local_nodes.contains(&n.id)) {
             let dynamic_node = node.kind.dynamic();
 
@@ -847,16 +863,13 @@ impl Daemon {
             self.logger
                 .log_build(build_id, LogLevel::Info, None, "building")
                 .await;
-            match spawner
+            let git_source = git_sources.get(&node_id);
+
+            match builder
                 .clone()
-                .prepare_node(
-                    node,
-                    node_stderr_most_recent,
-                    &mut logger,
-                    &mut self.repos_in_use,
-                )
+                .prepare_node(node, git_source, &mut self.logger, &mut self.git_manager)
                 .await
-                .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
+                .wrap_err_with(|| format!("failed to build node `{node_id}`"))
             {
                 Ok(result) => {
                     tasks.push(NodePrepareTask {
@@ -866,38 +879,46 @@ impl Daemon {
                     });
                 }
                 Err(err) => {
-                    logger
-                        .log(LogLevel::Error, Some("daemon".into()), format!("{err:?}"))
+                    self.logger
+                        .log_build(
+                            build_id,
+                            LogLevel::Error,
+                            Some(node.id.clone()),
+                            format!("{err:?}"),
+                        )
                         .await;
-                    self.dataflow_node_results
-                        .entry(dataflow_id)
-                        .or_default()
-                        .insert(
-                            node_id.clone(),
-                            Err(NodeError {
-                                timestamp: self.clock.new_timestamp(),
-                                cause: NodeErrorCause::FailedToSpawn(format!("{err:?}")),
-                                exit_status: NodeExitStatus::Unknown,
-                            }),
-                        );
-                    stopped.push((node_id.clone(), dynamic_node));
+                    return Err(err);
                 }
             }
         }
-        for (node_id, dynamic) in stopped {
-            self.handle_node_stop(dataflow_id, &node_id, dynamic)
-                .await?;
-        }
 
-        let spawn_result = Self::spawn_prepared_nodes(
-            dataflow_id,
-            logger,
-            tasks,
-            self.events_tx.clone(),
-            self.clock.clone(),
-        );
+        let task = async move {
+            let mut errors = Vec::new();
+            for task in tasks {
+                let NodePrepareTask {
+                    node_id,
+                    dynamic_node,
+                    task,
+                } = task;
+                match task.await {
+                    Ok(node) => {}
+                    Err(err) => {
+                        errors.push((node_id, err));
+                    }
+                }
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                let mut message = "failed to build dataflow:\n".to_owned();
+                for (node_id, err) in errors {
+                    message.push_str(&format!("- {node_id}: {err:?}\n-------------------\n\n"));
+                }
+                Err(eyre::eyre!(message))
+            }
+        };
 
-        Ok(spawn_result)
+        Ok(task)
     }
 
     async fn spawn_dataflow(

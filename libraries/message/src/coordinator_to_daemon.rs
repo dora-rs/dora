@@ -63,9 +63,16 @@ pub struct BuildDataflowNodes {
     pub build_id: Uuid,
     pub working_dir: PathBuf,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
+    pub git_sources: BTreeMap<NodeId, GitSource>,
     pub dataflow_descriptor: Descriptor,
     pub nodes_on_machine: BTreeSet<NodeId>,
     pub uv: bool,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct GitSource {
+    pub repo: String,
+    pub commit_hash: String,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
