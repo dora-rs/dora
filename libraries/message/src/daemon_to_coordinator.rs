@@ -77,6 +77,7 @@ impl DataflowDaemonResult {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorReply {
+    TriggerBuildResult(Result<(), String>),
     TriggerSpawnResult(Result<(), String>),
     ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),

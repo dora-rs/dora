@@ -633,11 +633,11 @@ fn run(args: Args) -> eyre::Result<()> {
 }
 
 fn start_dataflow(
+    build_id: Option<Uuid>,
     dataflow: String,
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
-    build_only: bool,
 ) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
@@ -656,11 +656,11 @@ fn start_dataflow(
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Start {
+                    build_id,
                     dataflow,
                     name,
                     local_working_dir: working_dir,
                     uv,
-                    build_only,
                 })
                 .unwrap(),
             )

@@ -10,6 +10,7 @@ use dora_message::{
     daemon_to_coordinator::DaemonCoordinatorReply,
     descriptor::{Descriptor, ResolvedNode},
     id::NodeId,
+    BuildId,
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use itertools::Itertools;
@@ -21,12 +22,12 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
+    build_id: Option<BuildId>,
     dataflow: Descriptor,
     working_dir: PathBuf,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
-    build_only: bool,
 ) -> eyre::Result<SpawnedDataflow> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
@@ -37,18 +38,17 @@ pub(super) async fn spawn_dataflow(
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let spawn_nodes = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
-            "{} dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})",
-            if build_only { "Building" } else { "Spawning" }
+            "Spawning dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})"
         );
 
         let spawn_command = SpawnDataflowNodes {
+            build_id,
             dataflow_id: uuid,
             working_dir: working_dir.clone(),
             nodes: nodes.clone(),
             dataflow_descriptor: dataflow.clone(),
             spawn_nodes,
             uv,
-            build_only,
         };
         let message = serde_json::to_vec(&Timestamped {
             inner: DaemonCoordinatorEvent::Spawn(spawn_command),
@@ -57,19 +57,11 @@ pub(super) async fn spawn_dataflow(
 
         let daemon_id = spawn_dataflow_on_machine(daemon_connections, machine.as_deref(), &message)
             .await
-            .wrap_err_with(|| {
-                format!(
-                    "failed to {} dataflow on machine `{machine:?}`",
-                    if build_only { "build" } else { "spawn" }
-                )
-            })?;
+            .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
         daemons.insert(daemon_id);
     }
 
-    tracing::info!(
-        "successfully triggered dataflow {} `{uuid}`",
-        if build_only { "build" } else { "spawn" }
-    );
+    tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
 
     Ok(SpawnedDataflow {
         uuid,

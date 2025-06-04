@@ -5,6 +5,7 @@ use crate::{
 pub use control::ControlEvent;
 use dora_core::{
     config::{NodeId, OperatorId},
+    descriptor::DescriptorExt,
     uhlc::{self, HLC},
 };
 use dora_message::{
@@ -14,17 +15,24 @@ use dora_message::{
         ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
         DataflowStatus, LogLevel, LogMessage,
     },
-    coordinator_to_daemon::{DaemonCoordinatorEvent, RegisterResult, Timestamped},
+    coordinator_to_daemon::{
+        BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
+    },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
     descriptor::{Descriptor, ResolvedNode},
+    BuildId,
 };
 use eyre::{bail, eyre, ContextCompat, Result, WrapErr};
 use futures::{future::join_all, stream::FuturesUnordered, Future, Stream, StreamExt};
 use futures_concurrency::stream::Merge;
+use itertools::Itertools;
 use log_subscriber::LogSubscriber;
 use run::SpawnedDataflow;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{
+        btree_map::{Entry, OccupiedEntry},
+        BTreeMap, BTreeSet, HashMap,
+    },
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -200,6 +208,8 @@ async fn start_inner(
     let mut archived_dataflows: HashMap<Uuid, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections = DaemonConnections::default();
 
+    let mut build_log_subscribers: BTreeMap<BuildId, LogSubscriber> = Default::default();
+
     while let Some(event) = events.next().await {
         // used below for measuring the event handling duration
         let start = Instant::now();
@@ -353,7 +363,8 @@ async fn start_inner(
                                 send_log_message(
                                     &mut finished_dataflow,
                                     &LogMessage {
-                                        dataflow_id,
+                                        build_id: None,
+                                        dataflow_id: Some(dataflow_id),
                                         node_id: None,
                                         daemon_id: None,
                                         level: LogLevel::Info,
@@ -399,12 +410,40 @@ async fn start_inner(
                     reply_sender,
                 } => {
                     match request {
+                        ControlRequest::Build {
+                            dataflow,
+                            local_working_dir,
+                            uv,
+                        } => {
+                            // assign a random build id
+                            let build_id = BuildId::new_v4();
+
+                            let result = build_dataflow(
+                                build_id,
+                                dataflow,
+                                local_working_dir,
+                                &clock,
+                                uv,
+                                &mut daemon_connections,
+                            )
+                            .await;
+                            match result {
+                                Ok(()) => {
+                                    let _ = reply_sender.send(Ok(
+                                        ControlRequestReply::DataflowBuildTriggered { build_id },
+                                    ));
+                                }
+                                Err(err) => {
+                                    let _ = reply_sender.send(Err(err));
+                                }
+                            }
+                        }
                         ControlRequest::Start {
+                            build_id,
                             dataflow,
                             name,
                             local_working_dir,
                             uv,
-                            build_only,
                         } => {
                             let name = name.or_else(|| names::Generator::default().next());
 
@@ -419,13 +458,13 @@ async fn start_inner(
                                     }
                                 }
                                 let dataflow = start_dataflow(
+                                    build_id,
                                     dataflow,
                                     local_working_dir,
                                     name,
                                     &mut daemon_connections,
                                     &clock,
                                     uv,
-                                    build_only,
                                 )
                                 .await?;
                                 Ok(dataflow)
@@ -721,8 +760,15 @@ async fn start_inner(
                 }
             }
             Event::Log(message) => {
-                if let Some(dataflow) = running_dataflows.get_mut(&message.dataflow_id) {
-                    send_log_message(dataflow, &message).await;
+                if let Some(dataflow_id) = &message.dataflow_id {
+                    if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
+                        send_log_message(dataflow, &message).await;
+                    }
+                }
+                if let Some(build_id) = message.build_id {
+                    if let Entry::Occupied(subscriber) = build_log_subscribers.entry(build_id) {
+                        send_log_message_to_subscriber(&message, subscriber).await;
+                    }
                 }
             }
             Event::DaemonExit { daemon_id } => {
@@ -739,21 +785,10 @@ async fn start_inner(
                     match result {
                         Ok(()) => {
                             if dataflow.pending_spawn_results.is_empty() {
-                                tracing::info!(
-                                    "successfully {} dataflow `{dataflow_id}`",
-                                    if dataflow.build_only {
-                                        "built"
-                                    } else {
-                                        "spawned"
-                                    }
-                                );
+                                tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
                                 dataflow.spawn_result.set_result(Ok(
                                     ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
                                 ));
-
-                                if dataflow.build_only {
-                                    running_dataflows.remove(&dataflow_id);
-                                }
                             }
                         }
                         Err(err) => {
@@ -793,6 +828,24 @@ async fn send_log_message(dataflow: &mut RunningDataflow, message: &LogMessage) 
         }
     }
     dataflow.log_subscribers.retain(|s| !s.is_closed());
+}
+
+async fn send_log_message_to_subscriber(
+    message: &LogMessage,
+    mut subscriber: OccupiedEntry<'_, BuildId, LogSubscriber>,
+) {
+    let send_result = tokio::time::timeout(
+        Duration::from_millis(100),
+        subscriber.get_mut().send_message(message),
+    );
+
+    if send_result.await.is_err() {
+        subscriber.get_mut().close();
+    }
+
+    if subscriber.get_mut().is_closed() {
+        subscriber.remove();
+    }
 }
 
 fn dataflow_result(
@@ -875,8 +928,6 @@ struct RunningDataflow {
     log_subscribers: Vec<LogSubscriber>,
 
     pending_spawn_results: BTreeSet<DaemonId>,
-
-    build_only: bool,
 }
 
 pub enum SpawnResult {
@@ -1123,26 +1174,108 @@ async fn retrieve_logs(
     reply_logs.map_err(|err| eyre!(err))
 }
 
+#[tracing::instrument(skip(daemon_connections, clock))]
+async fn build_dataflow(
+    build_id: BuildId,
+    dataflow: Descriptor,
+    working_dir: PathBuf,
+    clock: &HLC,
+    uv: bool,
+    daemon_connections: &mut DaemonConnections,
+) -> eyre::Result<()> {
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+
+    let nodes_by_daemon = nodes.values().into_group_map_by(|n| &n.deploy.machine);
+
+    let mut daemons = BTreeSet::new();
+    for (machine, nodes_on_machine) in &nodes_by_daemon {
+        let nodes_on_machine = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
+        tracing::debug!(
+            "Running dataflow build `{build_id}` on machine `{machine:?}` (nodes: {nodes_on_machine:?})"
+        );
+
+        let build_command = BuildDataflowNodes {
+            build_id,
+            working_dir: working_dir.clone(),
+            nodes: nodes.clone(),
+            dataflow_descriptor: dataflow.clone(),
+            nodes_on_machine,
+            uv,
+        };
+        let message = serde_json::to_vec(&Timestamped {
+            inner: DaemonCoordinatorEvent::Build(build_command),
+            timestamp: clock.new_timestamp(),
+        })?;
+
+        let daemon_id = build_dataflow_on_machine(daemon_connections, machine.as_deref(), &message)
+            .await
+            .wrap_err_with(|| format!("failed to build dataflow on machine `{machine:?}`"))?;
+        daemons.insert(daemon_id);
+    }
+
+    tracing::info!("successfully triggered dataflow build `{build_id}`",);
+
+    Ok(())
+}
+
+async fn build_dataflow_on_machine(
+    daemon_connections: &mut DaemonConnections,
+    machine: Option<&str>,
+    message: &[u8],
+) -> Result<DaemonId, eyre::ErrReport> {
+    let daemon_id = match machine {
+        Some(machine) => daemon_connections
+            .get_matching_daemon_id(machine)
+            .wrap_err_with(|| format!("no matching daemon for machine id {machine:?}"))?
+            .clone(),
+        None => daemon_connections
+            .unnamed()
+            .next()
+            .wrap_err("no unnamed daemon connections")?
+            .clone(),
+    };
+
+    let daemon_connection = daemon_connections
+        .get_mut(&daemon_id)
+        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
+    tcp_send(&mut daemon_connection.stream, message)
+        .await
+        .wrap_err("failed to send build message to daemon")?;
+
+    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+        .await
+        .wrap_err("failed to receive build reply from daemon")?;
+    match serde_json::from_slice(&reply_raw)
+        .wrap_err("failed to deserialize build reply from daemon")?
+    {
+        DaemonCoordinatorReply::TriggerBuildResult(result) => result
+            .map_err(|e| eyre!(e))
+            .wrap_err("daemon returned an error")?,
+        _ => bail!("unexpected reply"),
+    }
+    Ok(daemon_id)
+}
+
 async fn start_dataflow(
+    build_id: Option<Uuid>,
     dataflow: Descriptor,
     working_dir: PathBuf,
     name: Option<String>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
-    build_only: bool,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
         daemons,
         nodes,
     } = spawn_dataflow(
+        build_id,
         dataflow,
         working_dir,
         daemon_connections,
         clock,
         uv,
-        build_only,
     )
     .await?;
     Ok(RunningDataflow {
@@ -1160,7 +1293,6 @@ async fn start_dataflow(
         stop_reply_senders: Vec::new(),
         log_subscribers: Vec::new(),
         pending_spawn_results: daemons,
-        build_only,
     })
 }
 

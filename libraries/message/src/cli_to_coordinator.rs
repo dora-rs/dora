@@ -9,14 +9,21 @@ use crate::{
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
+    Build {
+        dataflow: Descriptor,
+        // TODO: remove this once we figure out deploying of node/operator
+        // binaries from CLI to coordinator/daemon
+        local_working_dir: PathBuf,
+        uv: bool,
+    },
     Start {
+        build_id: Option<Uuid>,
         dataflow: Descriptor,
         name: Option<String>,
         // TODO: remove this once we figure out deploying of node/operator
         // binaries from CLI to coordinator/daemon
         local_working_dir: PathBuf,
         uv: bool,
-        build_only: bool,
     },
     WaitForSpawn {
         dataflow_id: Uuid,

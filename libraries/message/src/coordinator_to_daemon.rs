@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use uuid::Uuid;
+
 use crate::{
     common::DaemonId,
     descriptor::{Descriptor, ResolvedNode},
@@ -33,6 +35,7 @@ impl RegisterResult {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
+    Build(BuildDataflowNodes),
     Spawn(SpawnDataflowNodes),
     AllNodesReady {
         dataflow_id: DataflowId,
@@ -56,12 +59,22 @@ pub enum DaemonCoordinatorEvent {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct BuildDataflowNodes {
+    pub build_id: Uuid,
+    pub working_dir: PathBuf,
+    pub nodes: BTreeMap<NodeId, ResolvedNode>,
+    pub dataflow_descriptor: Descriptor,
+    pub nodes_on_machine: BTreeSet<NodeId>,
+    pub uv: bool,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct SpawnDataflowNodes {
+    pub build_id: Option<Uuid>,
     pub dataflow_id: DataflowId,
     pub working_dir: PathBuf,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub dataflow_descriptor: Descriptor,
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
-    pub build_only: bool,
 }

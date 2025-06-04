@@ -9,10 +9,26 @@ use crate::{common::DaemonId, id::NodeId};
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
-    DataflowStartTriggered { uuid: Uuid },
-    DataflowSpawned { uuid: Uuid },
-    DataflowReloaded { uuid: Uuid },
-    DataflowStopped { uuid: Uuid, result: DataflowResult },
+    DataflowBuildTriggered {
+        build_id: Uuid,
+    },
+    DataflowBuildFinished {
+        build_id: Uuid,
+        result: Result<(), String>,
+    },
+    DataflowStartTriggered {
+        uuid: Uuid,
+    },
+    DataflowSpawned {
+        uuid: Uuid,
+    },
+    DataflowReloaded {
+        uuid: Uuid,
+    },
+    DataflowStopped {
+        uuid: Uuid,
+        result: DataflowResult,
+    },
     DataflowList(DataflowList),
     DestroyOk,
     DaemonConnected(bool),

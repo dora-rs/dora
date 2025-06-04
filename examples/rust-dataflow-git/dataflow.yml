@@ -2,8 +2,8 @@ nodes:
   - id: rust-node
     git: https://github.com/dora-rs/dora.git
     rev: e31b2a34 # pinned commit, update this when changing the message crate
-    build: cargo build -p rust-dataflow-example-node
-    path: target/debug/rust-dataflow-example-node
+    build: cargo build --manifest-path build/github.com/dora-rs/dora.git/e31b2a34/Cargo.toml -p rust-dataflow-example-node
+    path: build/github.com/dora-rs/dora.git/e31b2a34/target/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:

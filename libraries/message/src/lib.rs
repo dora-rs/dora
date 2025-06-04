@@ -26,6 +26,7 @@ pub use arrow_data;
 pub use arrow_schema;
 
 pub type DataflowId = uuid::Uuid;
+pub type BuildId = uuid::Uuid;
 
 fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
