@@ -1,5 +1,5 @@
 [project]
-name = "dora-mujoco-sim"
+name = "dora-mujoco"
 version = "0.1.0"
 authors = [{ name = "Your Name", email = "email@email.com" }]
 description = "MuJoCo simulation node for Dora"
@@ -19,7 +19,7 @@ dependencies = [
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
-dora-mujoco-sim = "dora_mujoco_sim.main:main"
+dora-mujoco = "dora_mujoco.main:main"
 
 [tool.ruff.lint]
 extend-select = [

@@ -1,0 +1,41 @@
+nodes:
+  - id: gamepad
+    build: pip install -e ../../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: mujoco_sim
+    build: pip install -e ../../../node-hub/dora-mujoco
+    path: dora-mujoco
+    inputs:
+      tick: dora/timer/millis/2  # 500 Hz simulation
+      control_input: franka_gamepad_controller/joint_commands
+    outputs:
+      - joint_positions
+      - joint_velocities 
+      - actuator_controls
+      - sensor_data
+    env:
+      MODEL_NAME: "panda"
+
+  - id: franka_gamepad_controller
+    path: nodes/franka_gamepad_controller.py
+    inputs:
+      joint_positions: mujoco_sim/joint_positions
+      raw_control: gamepad/raw_control
+      # target_pose: pose_publisher/target_pose  # Optional
+    outputs:
+      - joint_commands
+      - ee_position
+
+  # Optional: uncomment to also have programmatic control
+  # - id: pose_publisher
+  #   path: ../02_target_pose_control/nodes/pose_publisher.py
+  #   inputs:
+  #     tick: dora/timer/millis/20000  # New pose every 20 seconds
+  #   outputs:
+  #     - target_pose
