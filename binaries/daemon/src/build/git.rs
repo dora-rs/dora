@@ -1,4 +1,4 @@
-use crate::log::NodeLogger;
+use crate::log::NodeBuildLogger;
 use dora_message::{common::LogLevel, descriptor::GitRepoRev, BuildId, DataflowId};
 use eyre::{ContextCompat, WrapErr};
 use git2::FetchOptions;
@@ -139,7 +139,7 @@ pub struct GitFolder {
 }
 
 impl GitFolder {
-    pub async fn prepare(self, logger: &mut NodeLogger<'_>) -> eyre::Result<PathBuf> {
+    pub async fn prepare(self, logger: &mut NodeBuildLogger<'_>) -> eyre::Result<PathBuf> {
         let GitFolder { reuse } = self;
 
         let clone_dir = match reuse {
@@ -164,7 +164,6 @@ impl GitFolder {
                 logger
                     .log(
                         LogLevel::Info,
-                        None,
                         format!("fetching changes after copying {}", from.display()),
                     )
                     .await;
@@ -185,7 +184,6 @@ impl GitFolder {
                 logger
                     .log(
                         LogLevel::Info,
-                        None,
                         format!("fetching changes after renaming {}", from.display()),
                     )
                     .await;
@@ -198,7 +196,6 @@ impl GitFolder {
                 logger
                     .log(
                         LogLevel::Info,
-                        None,
                         format!("reusing up-to-date {}", dir.display()),
                     )
                     .await;
@@ -255,7 +252,7 @@ fn rev_str(rev: &Option<GitRepoRev>) -> String {
 async fn clone_into(
     repo_addr: Url,
     clone_dir: &Path,
-    logger: &mut NodeLogger<'_>,
+    logger: &mut NodeBuildLogger<'_>,
 ) -> eyre::Result<git2::Repository> {
     if let Some(parent) = clone_dir.parent() {
         tokio::fs::create_dir_all(parent)
@@ -266,7 +263,6 @@ async fn clone_into(
     logger
         .log(
             LogLevel::Info,
-            None,
             format!("cloning {repo_addr} into {}", clone_dir.display()),
         )
         .await;

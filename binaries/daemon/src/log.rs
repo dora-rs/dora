@@ -94,6 +94,32 @@ impl<'a> DataflowLogger<'a> {
     }
 }
 
+pub struct NodeBuildLogger<'a> {
+    build_id: BuildId,
+    node_id: NodeId,
+    logger: CowMut<'a, DaemonLogger>,
+}
+
+impl NodeBuildLogger<'_> {
+    pub fn inner(&self) -> &DaemonLogger {
+        &self.logger
+    }
+
+    pub async fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+        self.logger
+            .log_build(self.build_id, level, Some(self.node_id.clone()), message)
+            .await
+    }
+
+    pub async fn try_clone(&self) -> eyre::Result<NodeBuildLogger<'static>> {
+        Ok(NodeBuildLogger {
+            build_id: self.build_id,
+            node_id: self.node_id.clone(),
+            logger: CowMut::Owned(self.logger.try_clone().await?),
+        })
+    }
+}
+
 pub struct DaemonLogger {
     daemon_id: DaemonId,
     logger: Logger,
@@ -103,6 +129,14 @@ impl DaemonLogger {
     pub fn for_dataflow(&mut self, dataflow_id: Uuid) -> DataflowLogger {
         DataflowLogger {
             dataflow_id,
+            logger: CowMut::Borrowed(self),
+        }
+    }
+
+    pub fn for_node_build(&mut self, build_id: BuildId, node_id: NodeId) -> NodeBuildLogger {
+        NodeBuildLogger {
+            build_id,
+            node_id,
             logger: CowMut::Borrowed(self),
         }
     }
