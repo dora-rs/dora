@@ -26,6 +26,9 @@ pub enum ControlRequest {
         local_working_dir: Option<PathBuf>,
         uv: bool,
     },
+    WaitForBuild {
+        build_id: Uuid,
+    },
     Start {
         build_id: Option<Uuid>,
         session_id: Uuid,
@@ -71,6 +74,10 @@ pub enum ControlRequest {
     ConnectedMachines,
     LogSubscribe {
         dataflow_id: Uuid,
+        level: log::LevelFilter,
+    },
+    BuildLogSubscribe {
+        build_id: Uuid,
         level: log::LevelFilter,
     },
 }
