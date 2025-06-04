@@ -69,7 +69,7 @@ pub struct BuildDataflowNodes {
     pub uv: bool,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
 pub struct GitSource {
     pub repo: String,
     pub commit_hash: String,

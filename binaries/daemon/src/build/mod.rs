@@ -79,7 +79,7 @@ impl Builder {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {
                     Some(git_folder) => git_folder.prepare(logger).await?,
-                    None => self.working_dir.clone(),
+                    None => self.working_dir.join(self.build_id.to_string()),
                 };
 
                 if let Some(build) = &n.build {

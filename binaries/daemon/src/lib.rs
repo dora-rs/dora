@@ -860,14 +860,13 @@ impl Daemon {
             let dynamic_node = node.kind.dynamic();
 
             let node_id = node.id.clone();
-            self.logger
-                .log_build(build_id, LogLevel::Info, None, "building")
-                .await;
-            let git_source = git_sources.get(&node_id);
+            let mut logger = self.logger.for_node_build(build_id, node_id.clone());
+            logger.log(LogLevel::Info, "building").await;
+            let git_source = git_sources.get(&node_id).cloned();
 
             match builder
                 .clone()
-                .prepare_node(node, git_source, &mut self.logger, &mut self.git_manager)
+                .prepare_node(node, git_source, &mut logger, &mut self.git_manager)
                 .await
                 .wrap_err_with(|| format!("failed to build node `{node_id}`"))
             {
@@ -880,12 +879,7 @@ impl Daemon {
                 }
                 Err(err) => {
                     self.logger
-                        .log_build(
-                            build_id,
-                            LogLevel::Error,
-                            Some(node.id.clone()),
-                            format!("{err:?}"),
-                        )
+                        .log_build(build_id, LogLevel::Error, Some(node_id), format!("{err:?}"))
                         .await;
                     return Err(err);
                 }
