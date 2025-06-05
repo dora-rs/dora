@@ -44,10 +44,3 @@ dora build gamepad_control.yml
 dora run gamepad_control.yml
 ```
 
-## Next Steps
-
-After completing this tutorial, you'll understand how to:
-- Build modular robotics applications with Dora
-- Create robot-specific controllers
-- Design scalable dataflow architectures
-
