@@ -64,28 +64,28 @@ English [简体中文](./README_zh.md)
 <details open>
 <summary><b>2025</b></summary>
 
-\[04/05\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
-
-- \[03/05\] Add support for dora async Python.
-- \[03/05\] Add support for Microsoft Phi4, Microsoft Magma.
-- \[03/05\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
-- \[03/04\] Add support for Zenoh for distributed dataflow.
-- \[03/04\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
+- \[05/25\] Add support for dora-pytorch-kinematics for fk and ik, dora-mediapipe for pose estimation, dora-rustypot for rust serialport read/write, points2d and points3d visualization in rerun.
+- \[04/25\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
+- \[03/25\] Add support for dora async Python.
+- \[03/25\] Add support for Microsoft Phi4, Microsoft Magma.
+- \[03/25\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
+- \[03/25\] Add support for Zenoh for distributed dataflow.
+- \[03/25\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
 - \[02/25\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
 </details>
 
 ## Support Matrix
 
-|                                   | dora-rs                                                                                                                                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                  |
-| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ x64_86 ✅<br>Windows: x64_86 🆗<br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
-| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                          |
-| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                          |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                    |
-| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                 |
-| **Configuration**                 | YAML ✅                                                                                                                                                                                          |
-| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                |
+|                                   | dora-rs                                                                                                                                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                                      |
+| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ x64_86 ✅<br>Windows: x64_86 🆗 <br>WSL: x64_86 🆗 <br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
+| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                                              |
+| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                                              |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                                        |
+| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                                     |
+| **Configuration**                 | YAML ✅                                                                                                                                                                                                              |
+| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                                    |
 
 > - ⭐ = Recommended
 > - ✅ = First Class Support
@@ -346,6 +346,6 @@ This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for 
 
 ## Further Resources 📚
 
-- [Zenoh Documentation](https://zenoh.io/docs/)
+- [Zenoh Documentation](https://zenoh.io/docs/getting-started/first-app/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
 - [Dora Autoware Localization Demo](https://github.com/dora-rs/dora-autoware-localization-demo)

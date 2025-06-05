@@ -3,17 +3,17 @@
 use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
-    arrow::array::{Array, Float32Array, Float64Array, StringArray, UInt16Array, UInt8Array},
-    arrow::{array::AsArray, datatypes::Float32Type},
+    arrow::{
+        array::{Array, AsArray, Float64Array, StringArray, UInt16Array, UInt8Array},
+        datatypes::Float32Type,
+    },
     dora_core::config::DataId,
-    DoraNode, Event, Parameter,
+    into_vec, DoraNode, Event, Parameter,
 };
-use eyre::{eyre, Context, ContextCompat, Result};
+use eyre::{eyre, Context, Result};
 
 use rerun::{
-    components::ImageBuffer,
-    external::{log::warn, re_types::ArrowBuffer},
-    ImageFormat, Points3D, SpawnOptions,
+    components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
 };
 pub mod boxes2d;
 pub mod series;
@@ -32,6 +32,7 @@ pub fn lib_main() -> Result<()> {
     // Setup an image cache to paint depth images.
     let mut image_cache = HashMap::new();
     let mut mask_cache: HashMap<DataId, Vec<bool>> = HashMap::new();
+    let mut color_cache: HashMap<DataId, rerun::Color> = HashMap::new();
     let mut options = SpawnOptions::default();
 
     let memory_limit = match std::env::var("RERUN_MEMORY_LIMIT") {
@@ -54,7 +55,7 @@ pub fn lib_main() -> Result<()> {
             let opt = std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
 
             rerun::RecordingStreamBuilder::new("dora-rerun")
-                .connect_tcp_opts(std::net::SocketAddr::V4(opt.parse()?), None)
+                .connect_grpc_opts(opt, None)
                 .context("Could not connect to rerun visualization")?
         }
         Ok("SAVE") => {
@@ -130,7 +131,6 @@ pub fn lib_main() -> Result<()> {
                     let buffer: Vec<u8> =
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
                     image_cache.insert(id.clone(), buffer.clone());
-                    let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
                     // let tensordata = ImageBuffer(buffer);
@@ -145,7 +145,6 @@ pub fn lib_main() -> Result<()> {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     image_cache.insert(id.clone(), buffer.values().to_vec());
                     let buffer: &[u8] = buffer.values();
-                    let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
 
@@ -315,12 +314,21 @@ pub fn lib_main() -> Result<()> {
                     continue;
                 };
                 mask_cache.insert(id.clone(), masks.clone());
-            } else if id.as_str().contains("jointstate") {
-                let buffer: &Float32Array = data
-                    .as_any()
-                    .downcast_ref()
-                    .context("jointstate is not float32")?;
-                let mut positions: Vec<f32> = buffer.values().to_vec();
+            } else if id.as_str().contains("jointstate") || id.as_str().contains("pose") {
+                let encoding = if let Some(Parameter::String(encoding)) =
+                    metadata.parameters.get("encoding")
+                {
+                    encoding
+                } else {
+                    "jointstate"
+                };
+                if encoding != "jointstate" {
+                    warn!("Got unexpected encoding: {} on position pose", encoding);
+                    continue;
+                }
+                // Convert to Vec<f32>
+                let mut positions: Vec<f32> =
+                    into_vec(&data).context("Could not parse jointstate as vec32")?;
 
                 // Match file name
                 let mut id = id.as_str().replace("jointstate_", "");
@@ -344,6 +352,60 @@ pub fn lib_main() -> Result<()> {
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
+            } else if id.as_str().contains("points3d") {
+                // Get color or assign random color in cache
+                let color = color_cache.get(&id);
+                let color = if let Some(color) = color {
+                    color.clone()
+                } else {
+                    let color =
+                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+
+                    color_cache.insert(id.clone(), color.clone());
+                    color
+                };
+                let dataid = id;
+
+                // get a random color
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut points = vec![];
+                    let mut colors = vec![];
+                    buffer.chunks(3).for_each(|chunk| {
+                        points.push((chunk[0], chunk[1], chunk[2]));
+                        colors.push(color);
+                    });
+                    let points = Points3D::new(points).with_radii(vec![0.013; colors.len()]);
+
+                    rec.log(dataid.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
+                }
+            } else if id.as_str().contains("points2d") {
+                // Get color or assign random color in cache
+                let color = color_cache.get(&id);
+                let color = if let Some(color) = color {
+                    color.clone()
+                } else {
+                    let color =
+                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+
+                    color_cache.insert(id.clone(), color.clone());
+                    color
+                };
+                let dataid = id;
+
+                // get a random color
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut points = vec![];
+                    let mut colors = vec![];
+                    buffer.chunks(2).for_each(|chunk| {
+                        points.push((chunk[0], chunk[1]));
+                        colors.push(color);
+                    });
+                    let points = Points2D::new(points);
+
+                    rec.log(dataid.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
+                }
             } else {
                 println!("Could not find handler for {}", id);
             }
