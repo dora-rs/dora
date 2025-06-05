@@ -101,6 +101,9 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
             ));
             chain.set_origin(pose);
             chains.insert(path, chain);
+        } else {
+            // If no transform is set, use the default origin
+            chains.insert(path, chain);
         }
     }
 
@@ -124,8 +127,7 @@ pub fn update_visualization(
         let link_to_world = link
             .world_transform()
             .context("Could not get world transform")?;
-        let link_to_parent = if link_name != "base_link" {
-            let parent = link.parent().context("could not get parent")?;
+        let link_to_parent = if let Some(parent) = link.parent() {
             parent
                 .world_transform()
                 .context("Could not get world transform")?
