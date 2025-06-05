@@ -10,7 +10,7 @@ use dora_node_api::{
     dora_core::config::DataId,
     into_vec, DoraNode, Event, Parameter,
 };
-use eyre::{eyre, Context, Result};
+use eyre::{bail, eyre, Context, Result};
 
 use rerun::{
     components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
@@ -20,6 +20,19 @@ pub mod series;
 pub mod urdf;
 use series::update_series;
 use urdf::{init_urdf, update_visualization};
+
+static KEYS: &[&str] = &[
+    "image",
+    "depth",
+    "text",
+    "boxes2d",
+    "masks",
+    "jointstate",
+    "pose",
+    "series",
+    "points3d",
+    "points2d",
+];
 
 pub fn lib_main() -> Result<()> {
     // rerun `serve()` requires to have a running Tokio runtime in the current context.
@@ -102,6 +115,22 @@ pub fn lib_main() -> Result<()> {
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
+            // Check if the id contains more than one key
+            if KEYS
+                .iter()
+                .filter(|&&key| id.as_str().contains(key))
+                .count()
+                > 1
+            {
+                bail!(
+                    "Event id `{}` contains more than one visualization keyword: {:?}, please only use one of them.",
+                    id,
+                    KEYS.iter()
+                        .filter(|&&key| id.as_str().contains(key))
+                        .collect::<Vec<_>>()
+                );
+            }
+
             if id.as_str().contains("image") {
                 let height =
                     if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
@@ -348,7 +377,7 @@ pub fn lib_main() -> Result<()> {
 
                     update_visualization(&rec, chain, &id, &positions)?;
                 } else {
-                    println!("Could not find chain for {}", id);
+                    println!("Could not find chain for {}. You may not have set its", id);
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
