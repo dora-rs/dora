@@ -9,4 +9,4 @@ nodes:
       - joint_velocities 
       - sensor_data
     env:
-      MODEL_NAME: "go2"  # Load Franka Panda from robot-descriptions
+      MODEL_NAME: "panda"  # Load Franka Panda from robot-descriptions

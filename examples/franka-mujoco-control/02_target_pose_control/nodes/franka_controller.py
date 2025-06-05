@@ -1,7 +1,4 @@
 """Franka robot controller node for Dora.
-
-This controller uses the same proven control approach as the original 
-dora-franka-mujoco node, adapted for the modular architecture.
 """
 
 import time
@@ -16,14 +13,19 @@ class FrankaController:
     """Franka Panda robot controller using proven MuJoCo-based control."""
     
     def __init__(self):
-        # Load the same model to get proper kinematics
+        """
+        Initialize the Franka robot controller with MuJoCo simulation.
+        Sets up the robot model, simulation data, and control parameters for end-effector
+        pose control using operational space control with nullspace projection.
+        """
+
         self.model = load_robot_description("panda_mj_description", variant="scene")
         self.data = mujoco.MjData(self.model)
         
         # Get the hand body ID for end-effector control
         self.hand_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "hand")
         
-        # Control parameters (exactly from dora-franka-mujoco)
+        # Control parameters
         self.integration_dt = 0.1
         self.damping = 1e-4
         self.Kpos = 0.95  # Position gain
@@ -43,10 +45,7 @@ class FrankaController:
         
         # Initialize target position to current end-effector position
         self.target_pos = self.data.body(self.hand_id).xpos.copy()
-        
         print("Franka Controller initialized with MuJoCo model")
-        print(f"Hand body ID: {self.hand_id}")
-        print(f"Initial target position: {self.target_pos}")
     
     def set_target_pose(self, pose_array):
         """Set target pose from input array."""
@@ -64,9 +63,6 @@ class FrankaController:
     
     def apply_cartesian_control(self, current_joints):
         """Apply Cartesian control using the exact same method as dora-franka-mujoco."""
-        if current_joints is None or len(current_joints) < 7:
-            return self.home_pos
-        
         # Update our internal model state with current joint positions
         self.data.qpos[:7] = current_joints[:7]
         mujoco.mj_forward(self.model, self.data)
@@ -75,15 +71,7 @@ class FrankaController:
         current_ee_pos = self.data.body(self.hand_id).xpos.copy()
         current_ee_rot = self.data.body(self.hand_id).xmat.reshape(3, 3)
         
-        # Calculate position error
         pos_error = self.target_pos - current_ee_pos
-        pos_error_norm = np.linalg.norm(pos_error)
-        
-        # Log state periodically
-        # if pos_error_norm > 0.01:
-            # print(f"📍 Current: {current_ee_pos}")
-            # print(f"🎯 Target:  {self.target_pos}")
-            # print(f"📏 Error:   {pos_error_norm:.4f}m")
         
         # Construct 6D twist (3 position + 3 orientation)
         twist = np.zeros(6)
@@ -95,7 +83,7 @@ class FrankaController:
         rot_error = (desired_rot * current_rot.inv()).as_rotvec()
         twist[3:] = self.Kori * rot_error / self.integration_dt
         
-        # Get Jacobian for the hand body (exactly like dora-franka-mujoco)
+        # Get Jacobian for the hand body
         jacp = np.zeros((3, self.model.nv))  # Position Jacobian
         jacr = np.zeros((3, self.model.nv))  # Rotation Jacobian
         mujoco.mj_jacBody(self.model, self.data, jacp, jacr, self.hand_id)
