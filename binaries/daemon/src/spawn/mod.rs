@@ -7,11 +7,10 @@ use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_arrow_convert::IntoArrow;
 use dora_core::{
-    build::run_build_command,
     config::DataId,
     descriptor::{
-        resolve_path, source_is_url, CustomNode, Descriptor, OperatorDefinition, OperatorSource,
-        PythonSource, ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
+        resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
+        ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
     },
     get_python_path,
     uhlc::HLC,
@@ -21,9 +20,8 @@ use dora_message::{
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
-    descriptor::EnvValue,
     id::NodeId,
-    BuildId, DataflowId,
+    DataflowId,
 };
 use dora_node_api::{
     arrow::array::ArrayData,
@@ -32,7 +30,6 @@ use dora_node_api::{
 };
 use eyre::{ContextCompat, WrapErr};
 use std::{
-    collections::{BTreeMap, BTreeSet},
     future::Future,
     path::{Path, PathBuf},
     process::Stdio,
