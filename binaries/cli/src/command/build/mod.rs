@@ -3,7 +3,7 @@ use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::descriptor::NodeSource;
+use dora_message::{descriptor::NodeSource, BuildId};
 use eyre::Context;
 use std::collections::BTreeMap;
 
@@ -79,7 +79,7 @@ pub fn build(
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
-            build_dataflow_locally(
+            let build_info = build_dataflow_locally(
                 dataflow_descriptor,
                 &git_sources,
                 &dataflow_session,
@@ -88,6 +88,9 @@ pub fn build(
             )?;
 
             dataflow_session.git_sources = git_sources;
+            // generate a random BuildId and store the associated build info
+            dataflow_session.build_id = Some(BuildId::generate());
+            dataflow_session.local_build = Some(build_info);
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
@@ -122,8 +125,14 @@ pub fn build(
                 coordinator_socket(coordinator_addr, coordinator_port),
                 log::LevelFilter::Info,
             )?;
+
+            dataflow_session.build_id = Some(build_id);
+            dataflow_session.local_build = None;
+            dataflow_session
+                .write_out_for_dataflow(&dataflow_path)
+                .context("failed to write out dataflow session file")?;
         }
-    }
+    };
 
     Ok(())
 }

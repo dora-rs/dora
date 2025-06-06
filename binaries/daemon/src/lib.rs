@@ -2,6 +2,7 @@ use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
+    build::{self, BuildInfo, GitManager},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
         read_as_descriptor, CoreNodeKind, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
@@ -62,7 +63,6 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
 
-mod build;
 mod coordinator;
 mod local_listener;
 mod log;
@@ -76,10 +76,7 @@ use dora_tracing::telemetry::serialize_context;
 #[cfg(feature = "telemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::{
-    build::{BuildInfo, GitManager},
-    pending::DataflowStatus,
-};
+use crate::pending::DataflowStatus;
 
 const STDERR_LOG_LINES: usize = 10;
 
@@ -156,6 +153,7 @@ impl Daemon {
             None,
             clock,
             Some(remote_daemon_events_tx),
+            Default::default(),
         )
         .await
         .map(|_| ())
@@ -164,6 +162,7 @@ impl Daemon {
     pub async fn run_dataflow(
         dataflow_path: &Path,
         build_id: Option<BuildId>,
+        local_build: Option<BuildInfo>,
         session_id: SessionId,
         uv: bool,
     ) -> eyre::Result<DataflowResult> {
@@ -218,6 +217,16 @@ impl Daemon {
             Some(exit_when_done),
             clock.clone(),
             None,
+            if let Some(local_build) = local_build {
+                let Some(build_id) = build_id else {
+                    bail!("no build_id, but local_build set")
+                };
+                let mut builds = BTreeMap::new();
+                builds.insert(build_id, local_build);
+                builds
+            } else {
+                Default::default()
+            },
         );
 
         let spawn_result = reply_rx
@@ -249,6 +258,7 @@ impl Daemon {
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
         remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+        builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -313,7 +323,7 @@ impl Daemon {
             zenoh_session,
             remote_daemon_events_tx,
             git_manager: Default::default(),
-            builds: Default::default(),
+            builds,
             sessions: Default::default(),
         };
 
@@ -888,9 +898,6 @@ impl Daemon {
         let builder = build::Builder {
             session_id,
             base_working_dir,
-            daemon_tx: self.events_tx.clone(),
-            dataflow_descriptor,
-            clock: self.clock.clone(),
             uv,
         };
 
@@ -906,13 +913,18 @@ impl Daemon {
             let git_source = git_sources.get(&node_id).cloned();
             let prev_git_source = prev_git_sources.get(&node_id).cloned();
 
+            let logger_cloned = logger
+                .try_clone_impl()
+                .await
+                .wrap_err("failed to clone logger")?;
+
             match builder
                 .clone()
                 .build_node(
                     node,
                     git_source,
                     prev_git_source,
-                    &mut logger,
+                    logger_cloned,
                     &mut self.git_manager,
                 )
                 .await
@@ -926,9 +938,7 @@ impl Daemon {
                     });
                 }
                 Err(err) => {
-                    self.logger
-                        .log_build(build_id, LogLevel::Error, Some(node_id), format!("{err:?}"))
-                        .await;
+                    logger.log(LogLevel::Error, format!("{err:?}")).await;
                     return Err(err);
                 }
             }

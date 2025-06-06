@@ -15,6 +15,7 @@ pub fn run(dataflow: String, uv: bool) -> Result<(), eyre::Error> {
     let result = rt.block_on(Daemon::run_dataflow(
         &dataflow_path,
         dataflow_session.build_id,
+        dataflow_session.local_build,
         dataflow_session.session_id,
         uv,
     ))?;

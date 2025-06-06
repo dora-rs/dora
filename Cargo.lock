@@ -3006,6 +3006,8 @@ dependencies = [
  "dora-message",
  "dunce",
  "eyre",
+ "git2",
+ "itertools 0.14.0",
  "log",
  "once_cell",
  "schemars",
@@ -3015,6 +3017,7 @@ dependencies = [
  "serde_yaml 0.9.34+deprecated",
  "tokio",
  "tracing",
+ "url",
  "uuid 1.16.0",
  "which",
 ]

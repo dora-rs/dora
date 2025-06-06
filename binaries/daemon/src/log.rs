@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use dora_core::{config::NodeId, uhlc};
+use dora_core::{build::BuildLogger, config::NodeId, uhlc};
 use dora_message::{
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
@@ -101,22 +101,34 @@ pub struct NodeBuildLogger<'a> {
 }
 
 impl NodeBuildLogger<'_> {
-    pub fn inner(&self) -> &DaemonLogger {
-        &self.logger
-    }
-
     pub async fn log(&mut self, level: LogLevel, message: impl Into<String>) {
         self.logger
             .log_build(self.build_id, level, Some(self.node_id.clone()), message)
             .await
     }
 
-    pub async fn try_clone(&self) -> eyre::Result<NodeBuildLogger<'static>> {
+    pub async fn try_clone_impl(&self) -> eyre::Result<NodeBuildLogger<'static>> {
         Ok(NodeBuildLogger {
             build_id: self.build_id,
             node_id: self.node_id.clone(),
             logger: CowMut::Owned(self.logger.try_clone().await?),
         })
+    }
+}
+
+impl BuildLogger for NodeBuildLogger<'_> {
+    type Clone = NodeBuildLogger<'static>;
+
+    fn log_message(
+        &mut self,
+        level: LogLevel,
+        message: impl Into<String> + Send,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        self.log(level, message)
+    }
+
+    fn try_clone(&self) -> impl std::future::Future<Output = eyre::Result<Self::Clone>> + Send {
+        self.try_clone_impl()
     }
 }
 

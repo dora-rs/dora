@@ -1,4 +1,4 @@
-use crate::log::NodeBuildLogger;
+use crate::build::BuildLogger;
 use dora_message::{common::LogLevel, descriptor::GitRepoRev, DataflowId, SessionId};
 use eyre::{ContextCompat, WrapErr};
 use git2::FetchOptions;
@@ -142,7 +142,7 @@ pub struct GitFolder {
 }
 
 impl GitFolder {
-    pub async fn prepare(self, logger: &mut NodeBuildLogger<'_>) -> eyre::Result<PathBuf> {
+    pub async fn prepare(self, logger: &mut impl BuildLogger) -> eyre::Result<PathBuf> {
         let GitFolder { reuse } = self;
 
         let clone_dir = match reuse {
@@ -165,7 +165,7 @@ impl GitFolder {
                     .context("failed to copy repo clone")?;
 
                 logger
-                    .log(
+                    .log_message(
                         LogLevel::Info,
                         format!("fetching changes after copying {}", from.display()),
                     )
@@ -185,7 +185,7 @@ impl GitFolder {
                     .context("failed to rename repo clone")?;
 
                 logger
-                    .log(
+                    .log_message(
                         LogLevel::Info,
                         format!("fetching changes after renaming {}", from.display()),
                     )
@@ -197,7 +197,7 @@ impl GitFolder {
             }
             ReuseOptions::Reuse { dir } => {
                 logger
-                    .log(
+                    .log_message(
                         LogLevel::Info,
                         format!("reusing up-to-date {}", dir.display()),
                     )
@@ -244,7 +244,7 @@ fn rev_str(rev: &Option<GitRepoRev>) -> String {
 async fn clone_into(
     repo_addr: Url,
     clone_dir: &Path,
-    logger: &mut NodeBuildLogger<'_>,
+    logger: &mut impl BuildLogger,
 ) -> eyre::Result<git2::Repository> {
     if let Some(parent) = clone_dir.parent() {
         tokio::fs::create_dir_all(parent)
@@ -253,7 +253,7 @@ async fn clone_into(
     }
 
     logger
-        .log(
+        .log_message(
             LogLevel::Info,
             format!("cloning {repo_addr} into {}", clone_dir.display()),
         )
@@ -310,7 +310,7 @@ async fn fetch_changes(
 
 fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Result<()> {
     let (object, reference) = repository
-        .revparse_ext(&commit_hash)
+        .revparse_ext(commit_hash)
         .context("failed to parse ref")?;
     repository
         .checkout_tree(&object, None)

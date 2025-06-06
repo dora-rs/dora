@@ -508,7 +508,8 @@ fn run_cli(args: Args) -> eyre::Result<()> {
                         let dataflow_session =
                             DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
-                        let result = Daemon::run_dataflow(&dataflow_path, dataflow_session.build_id, dataflow_session.session_id, false).await?;
+                        let result = Daemon::run_dataflow(&dataflow_path,
+                            dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {

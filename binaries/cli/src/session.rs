@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use dora_core::build::BuildInfo;
 use dora_message::{common::GitSource, id::NodeId, BuildId, SessionId};
 use eyre::{Context, ContextCompat};
 
@@ -11,6 +12,7 @@ pub struct DataflowSession {
     pub build_id: Option<BuildId>,
     pub session_id: SessionId,
     pub git_sources: BTreeMap<NodeId, GitSource>,
+    pub local_build: Option<BuildInfo>,
 }
 
 impl Default for DataflowSession {
@@ -19,6 +21,7 @@ impl Default for DataflowSession {
             build_id: None,
             session_id: SessionId::generate(),
             git_sources: Default::default(),
+            local_build: Default::default(),
         }
     }
 }

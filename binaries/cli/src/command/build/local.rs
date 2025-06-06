@@ -1,14 +1,20 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    path::PathBuf,
+};
 
 use dora_core::{
-    build::run_build_command,
-    descriptor::{Descriptor, NodeExt, SINGLE_OPERATOR_DEFAULT_ID},
+    build::{BuildInfo, BuildLogger, Builder, GitManager},
+    descriptor::{self, Descriptor, NodeExt, ResolvedNode, SINGLE_OPERATOR_DEFAULT_ID},
 };
 use dora_message::{
     common::GitSource,
     id::{NodeId, OperatorId},
+    BuildId, SessionId,
 };
 use eyre::Context;
+use futures::executor::block_on;
 
 use crate::session::DataflowSession;
 
@@ -18,69 +24,102 @@ pub fn build_dataflow_locally(
     dataflow_session: &DataflowSession,
     working_dir: PathBuf,
     uv: bool,
-) -> eyre::Result<()> {
-    let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
-    let (stdout_tx, mut stdout) = tokio::sync::mpsc::channel::<std::io::Result<String>>(10);
+) -> eyre::Result<BuildInfo> {
+    let runtime = tokio::runtime::Runtime::new()?;
 
-    tokio::spawn(async move {
-        while let Some(line) = stdout.recv().await {
-            println!(
-                "{}",
-                line.unwrap_or_else(|err| format!("io err: {}", err.kind()))
-            );
-        }
-    });
+    runtime.block_on(build_dataflow(
+        dataflow_session.session_id,
+        working_dir,
+        nodes,
+        git_sources,
+        prev_git_sources,
+        local_nodes,
+        uv,
+    ))
+}
 
-    for node in dataflow.nodes {
-        match node.kind()? {
-            dora_core::descriptor::NodeKind::Standard(_) => {
-                let Some(build) = node.build.as_deref() else {
-                    continue;
-                };
-                run_build_command(build, &working_dir, uv, &node.env, stdout_tx.clone())
-                    .with_context(|| {
-                        format!("build command failed for standard node `{}`", node.id)
-                    })?
+async fn build_dataflow(
+    session_id: SessionId,
+    base_working_dir: PathBuf,
+    nodes: BTreeMap<NodeId, ResolvedNode>,
+    git_sources: BTreeMap<NodeId, GitSource>,
+    prev_git_sources: BTreeMap<NodeId, GitSource>,
+    local_nodes: BTreeSet<NodeId>,
+    uv: bool,
+) -> eyre::Result<BuildInfo> {
+    let builder = Builder {
+        session_id,
+        base_working_dir,
+        uv,
+    };
+
+    let mut git_manager = GitManager::default();
+
+    let mut tasks = Vec::new();
+
+    // build nodes
+    for node in nodes.into_values().filter(|n| local_nodes.contains(&n.id)) {
+        let node_id = node.id.clone();
+        let git_source = git_sources.get(&node_id).cloned();
+        let prev_git_source = prev_git_sources.get(&node_id).cloned();
+
+        let task = builder
+            .clone()
+            .build_node(
+                node,
+                git_source,
+                prev_git_source,
+                LocalBuildLogger,
+                &mut git_manager,
+            )
+            .await
+            .wrap_err_with(|| format!("failed to build node `{node_id}`"))?;
+        tasks.push((node_id, task));
+    }
+
+    let mut info = BuildInfo {
+        node_working_dirs: Default::default(),
+    };
+    let mut errors = Vec::new();
+    for (node_id, task) in tasks {
+        match task.await {
+            Ok(node) => {
+                info.node_working_dirs
+                    .insert(node_id, node.node_working_dir);
             }
-            dora_core::descriptor::NodeKind::Runtime(runtime_node) => {
-                for operator in &runtime_node.operators {
-                    let Some(build) = operator.config.build.as_deref() else {
-                        continue;
-                    };
-                    run_build_command(build, &working_dir, uv, &node.env, stdout_tx.clone())
-                        .with_context(|| {
-                            format!(
-                                "build command failed for operator `{}/{}`",
-                                node.id, operator.id
-                            )
-                        })?;
-                }
-            }
-            dora_core::descriptor::NodeKind::Custom(custom_node) => {
-                let Some(build) = custom_node.build.as_deref() else {
-                    continue;
-                };
-                run_build_command(build, &working_dir, uv, &node.env, stdout_tx.clone())
-                    .with_context(|| {
-                        format!("build command failed for custom node `{}`", node.id)
-                    })?
-            }
-            dora_core::descriptor::NodeKind::Operator(operator) => {
-                let Some(build) = operator.config.build.as_deref() else {
-                    continue;
-                };
-                run_build_command(build, &working_dir, uv, &node.env, stdout_tx.clone())
-                    .with_context(|| {
-                        format!(
-                            "build command failed for operator `{}/{}`",
-                            node.id,
-                            operator.id.as_ref().unwrap_or(&default_op_id)
-                        )
-                    })?;
+            Err(err) => {
+                errors.push((node_id, err));
             }
         }
     }
-    std::mem::drop(stdout_tx);
+    if errors.is_empty() {
+        Ok(info)
+    } else {
+        let mut message = "failed to build dataflow:\n".to_owned();
+        for (node_id, err) in errors {
+            message.push_str(&format!("- {node_id}: {err:?}\n-------------------\n\n"));
+        }
+        Err(eyre::eyre!(message))
+    }
+}
 
-    Ok(())
+struct LocalBuildLogger;
+
+impl BuildLogger for LocalBuildLogger {
+    type Clone = Self;
+
+    fn log_message(
+        &mut self,
+        level: log::Level,
+        message: impl Into<String> + Send,
+    ) -> impl Future<Output = ()> + Send {
+        async move {
+            let message: String = message.into();
+            println!("{level}: \t{message}");
+        }
+    }
+
+    fn try_clone(&self) -> impl Future<Output = eyre::Result<Self::Clone>> + Send {
+        async { Ok(LocalBuildLogger) }
+    }
 }
