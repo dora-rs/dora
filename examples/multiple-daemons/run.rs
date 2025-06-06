@@ -9,7 +9,7 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
-use dora_tracing::set_up_tracing_opts;
+use dora_tracing::TracingBuilder;
 use eyre::{bail, Context};
 
 use std::{
@@ -30,8 +30,9 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing_opts("multiple-daemon-runner", Some("debug"), None)
-        .wrap_err("failed to set up tracing subscriber")?;
+    TracingBuilder::new("multiple-daemon-runner")
+        .with_stdout("debug")
+        .build()?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
