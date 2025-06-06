@@ -1,12 +1,14 @@
 use std::{
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use dora_core::{config::NodeId, uhlc};
+use dora_core::{build::BuildLogger, config::NodeId, uhlc};
 use dora_message::{
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
+    BuildId,
 };
 use eyre::Context;
 use tokio::net::TcpStream;
@@ -39,11 +41,18 @@ impl NodeLogger<'_> {
             .log(level, Some(self.node_id.clone()), target, message)
             .await
     }
+
+    pub async fn try_clone(&self) -> eyre::Result<NodeLogger<'static>> {
+        Ok(NodeLogger {
+            node_id: self.node_id.clone(),
+            logger: self.logger.try_clone().await?,
+        })
+    }
 }
 
 pub struct DataflowLogger<'a> {
     dataflow_id: Uuid,
-    logger: &'a mut DaemonLogger,
+    logger: CowMut<'a, DaemonLogger>,
 }
 
 impl<'a> DataflowLogger<'a> {
@@ -57,12 +66,12 @@ impl<'a> DataflowLogger<'a> {
     pub fn reborrow(&mut self) -> DataflowLogger {
         DataflowLogger {
             dataflow_id: self.dataflow_id,
-            logger: self.logger,
+            logger: CowMut::Borrowed(&mut self.logger),
         }
     }
 
     pub fn inner(&self) -> &DaemonLogger {
-        self.logger
+        &self.logger
     }
 
     pub async fn log(
@@ -73,8 +82,53 @@ impl<'a> DataflowLogger<'a> {
         message: impl Into<String>,
     ) {
         self.logger
-            .log(level, self.dataflow_id, node_id, target, message)
+            .log(level, Some(self.dataflow_id), node_id, target, message)
             .await
+    }
+
+    pub async fn try_clone(&self) -> eyre::Result<DataflowLogger<'static>> {
+        Ok(DataflowLogger {
+            dataflow_id: self.dataflow_id,
+            logger: CowMut::Owned(self.logger.try_clone().await?),
+        })
+    }
+}
+
+pub struct NodeBuildLogger<'a> {
+    build_id: BuildId,
+    node_id: NodeId,
+    logger: CowMut<'a, DaemonLogger>,
+}
+
+impl NodeBuildLogger<'_> {
+    pub async fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+        self.logger
+            .log_build(self.build_id, level, Some(self.node_id.clone()), message)
+            .await
+    }
+
+    pub async fn try_clone_impl(&self) -> eyre::Result<NodeBuildLogger<'static>> {
+        Ok(NodeBuildLogger {
+            build_id: self.build_id,
+            node_id: self.node_id.clone(),
+            logger: CowMut::Owned(self.logger.try_clone().await?),
+        })
+    }
+}
+
+impl BuildLogger for NodeBuildLogger<'_> {
+    type Clone = NodeBuildLogger<'static>;
+
+    fn log_message(
+        &mut self,
+        level: LogLevel,
+        message: impl Into<String> + Send,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        self.log(level, message)
+    }
+
+    fn try_clone(&self) -> impl std::future::Future<Output = eyre::Result<Self::Clone>> + Send {
+        self.try_clone_impl()
     }
 }
 
@@ -87,7 +141,15 @@ impl DaemonLogger {
     pub fn for_dataflow(&mut self, dataflow_id: Uuid) -> DataflowLogger {
         DataflowLogger {
             dataflow_id,
-            logger: self,
+            logger: CowMut::Borrowed(self),
+        }
+    }
+
+    pub fn for_node_build(&mut self, build_id: BuildId, node_id: NodeId) -> NodeBuildLogger {
+        NodeBuildLogger {
+            build_id,
+            node_id,
+            logger: CowMut::Borrowed(self),
         }
     }
 
@@ -98,12 +160,13 @@ impl DaemonLogger {
     pub async fn log(
         &mut self,
         level: LogLevel,
-        dataflow_id: Uuid,
+        dataflow_id: Option<Uuid>,
         node_id: Option<NodeId>,
         target: Option<String>,
         message: impl Into<String>,
     ) {
         let message = LogMessage {
+            build_id: None,
             daemon_id: Some(self.daemon_id.clone()),
             dataflow_id,
             node_id,
@@ -117,8 +180,37 @@ impl DaemonLogger {
         self.logger.log(message).await
     }
 
+    pub async fn log_build(
+        &mut self,
+        build_id: BuildId,
+        level: LogLevel,
+        node_id: Option<NodeId>,
+        message: impl Into<String>,
+    ) {
+        let message = LogMessage {
+            build_id: Some(build_id),
+            daemon_id: Some(self.daemon_id.clone()),
+            dataflow_id: None,
+            node_id,
+            level,
+            target: Some("build".into()),
+            module_path: None,
+            file: None,
+            line: None,
+            message: message.into(),
+        };
+        self.logger.log(message).await
+    }
+
     pub(crate) fn daemon_id(&self) -> &DaemonId {
         &self.daemon_id
+    }
+
+    pub async fn try_clone(&self) -> eyre::Result<Self> {
+        Ok(Self {
+            daemon_id: self.daemon_id.clone(),
+            logger: self.logger.try_clone().await?,
+        })
     }
 }
 
@@ -158,29 +250,56 @@ impl Logger {
         // log message using tracing if reporting to coordinator is not possible
         match message.level {
             LogLevel::Error => {
-                if let Some(node_id) = message.node_id {
-                    tracing::error!("{}/{} errored:", message.dataflow_id.to_string(), node_id);
-                }
-                for line in message.message.lines() {
-                    tracing::error!("   {}", line);
-                }
+                tracing::error!(
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
             }
             LogLevel::Warn => {
-                if let Some(node_id) = message.node_id {
-                    tracing::warn!("{}/{} warned:", message.dataflow_id.to_string(), node_id);
-                }
-                for line in message.message.lines() {
-                    tracing::warn!("    {}", line);
-                }
+                tracing::warn!(
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
             }
             LogLevel::Info => {
-                if let Some(node_id) = message.node_id {
-                    tracing::info!("{}/{} info:", message.dataflow_id.to_string(), node_id);
-                }
-
-                for line in message.message.lines() {
-                    tracing::info!("    {}", line);
-                }
+                tracing::info!(
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
+            }
+            LogLevel::Debug => {
+                tracing::debug!(
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                    node_id = ?message.node_id.map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                );
             }
             _ => {}
         }
@@ -205,5 +324,41 @@ impl Logger {
             daemon_id: self.daemon_id.clone(),
             clock: self.clock.clone(),
         })
+    }
+}
+
+enum CowMut<'a, T> {
+    Borrowed(&'a mut T),
+    Owned(T),
+}
+
+impl<T> Deref for CowMut<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            CowMut::Borrowed(v) => v,
+            CowMut::Owned(v) => v,
+        }
+    }
+}
+
+impl<T> DerefMut for CowMut<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            CowMut::Borrowed(v) => v,
+            CowMut::Owned(v) => v,
+        }
+    }
+}
+
+struct Indent<'a>(&'a str);
+
+impl std::fmt::Display for Indent<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for line in self.0.lines() {
+            write!(f, "   {}", line)?;
+        }
+        Ok(())
     }
 }

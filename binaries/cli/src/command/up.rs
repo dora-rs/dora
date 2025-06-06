@@ -1,4 +1,4 @@
-use crate::{check::daemon_running, connect_to_coordinator, LOCALHOST};
+use crate::{command::check::daemon_running, connect_to_coordinator, LOCALHOST};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{bail, Context, ContextCompat};
