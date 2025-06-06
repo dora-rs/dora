@@ -42,12 +42,12 @@ impl DataflowSession {
     pub fn write_out_for_dataflow(&self, dataflow_path: &Path) -> eyre::Result<()> {
         let session_file = session_file_path(dataflow_path)?;
         std::fs::write(session_file, self.serialize()?)
-            .context("failed to write dataflow session file");
+            .context("failed to write dataflow session file")?;
         Ok(())
     }
 
     fn serialize(&self) -> eyre::Result<String> {
-        Ok(serde_yaml::to_string(&self).context("failed to serialize dataflow session file")?)
+        serde_yaml::to_string(&self).context("failed to serialize dataflow session file")
     }
 }
 

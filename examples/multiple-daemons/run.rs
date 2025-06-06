@@ -1,3 +1,4 @@
+use dora_cli::session::DataflowSession;
 use dora_coordinator::{ControlEvent, Event};
 use dora_core::{
     descriptor::{read_as_descriptor, DescriptorExt},
@@ -37,6 +38,7 @@ async fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     let dataflow = Path::new("dataflow.yml");
+    build_dataflow(dataflow).await?;
 
     let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
     let coordinator_bind = SocketAddr::new(
@@ -138,12 +140,17 @@ async fn start_dataflow(
         .check(&working_dir)
         .wrap_err("could not validate yaml")?;
 
+    let dataflow_session =
+        DataflowSession::read_session(dataflow).context("failed to read DataflowSession")?;
+
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
             request: ControlRequest::Start {
+                build_id: dataflow_session.build_id,
+                session_id: dataflow_session.session_id,
                 dataflow: dataflow_descriptor,
-                local_working_dir: working_dir,
+                local_working_dir: Some(working_dir),
                 name: None,
                 uv: false,
             },
@@ -225,6 +232,18 @@ async fn destroy(coordinator_events_tx: &Sender<Event>) -> eyre::Result<()> {
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     }
+}
+
+async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
+    let cargo = std::env::var("CARGO").unwrap();
+    let mut cmd = tokio::process::Command::new(&cargo);
+    cmd.arg("run");
+    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--").arg("build").arg(dataflow);
+    if !cmd.status().await?.success() {
+        bail!("failed to build dataflow");
+    };
+    Ok(())
 }
 
 async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {

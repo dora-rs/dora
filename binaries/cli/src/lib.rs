@@ -48,7 +48,8 @@ mod formatting;
 mod git;
 mod graph;
 mod logs;
-mod session;
+pub mod run;
+pub mod session;
 mod template;
 mod up;
 
@@ -303,14 +304,14 @@ enum Lang {
 }
 
 pub fn lib_main(args: Args) {
-    if let Err(err) = run(args) {
+    if let Err(err) = run_cli(args) {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:?}");
         std::process::exit(1);
     }
 }
 
-fn run(args: Args) -> eyre::Result<()> {
+fn run_cli(args: Args) -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     match &args.command {
         Command::Daemon {
@@ -403,24 +404,7 @@ fn run(args: Args) -> eyre::Result<()> {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Run { dataflow, uv } => {
-            let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-            let dataflow_session = DataflowSession::read_session(&dataflow_path)
-                .context("failed to read DataflowSession")?;
-
-            let rt = Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .context("tokio runtime failed")?;
-
-            let result = rt.block_on(Daemon::run_dataflow(
-                &dataflow_path,
-                dataflow_session.build_id,
-                dataflow_session.session_id,
-                uv,
-            ))?;
-            handle_dataflow_result(result, None)?
-        }
+        Command::Run { dataflow, uv } => run::run(dataflow, uv)?,
         Command::Up { config } => {
             up::up(config.as_deref())?;
         }

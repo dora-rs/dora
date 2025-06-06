@@ -3070,6 +3070,7 @@ dependencies = [
 name = "dora-examples"
 version = "0.0.0"
 dependencies = [
+ "dora-cli",
  "dora-coordinator",
  "dora-core",
  "dora-download",
@@ -3199,7 +3200,7 @@ name = "dora-node-api-python"
 version = "0.3.10"
 dependencies = [
  "arrow 54.2.1",
- "dora-daemon",
+ "dora-cli",
  "dora-download",
  "dora-node-api",
  "dora-operator-api-python",
