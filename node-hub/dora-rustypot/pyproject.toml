@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=0.13.2"]
+build-backend = "maturin"
+
+[project]
+name = "dora-rustypot"
+dynamic = ["version"]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+
+dependencies = []
+
+scripts = { "dora-rustypot" = "dora_rustypot:py_main" }
+
+[tool.maturin]
+features = ["python", "pyo3/extension-module"]
+
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]

@@ -1,5 +1,7 @@
 nodes:
   - id: benchmark_script
+    build: |
+      pip install ../mllm
     path: ../mllm/benchmark_script.py
     inputs:
       text: llm/text

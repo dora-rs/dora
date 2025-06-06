@@ -14,7 +14,7 @@ nodes:
 
   - id: rerun
     build: cargo build -p dora-rerun --release
-    path: dora-rerun
+    path: ../../target/release/dora-rerun
     inputs:
       image: camera/image
     env:

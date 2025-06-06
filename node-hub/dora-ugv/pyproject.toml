@@ -1,6 +1,6 @@
 [project]
 name = "dora-ugv"
-version = "0.3.10"
+version = "0.3.11"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for using Agilex UGV"
 license = { text = "MIT" }

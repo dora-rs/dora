@@ -1,0 +1,54 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-ios-lidar
+    path: dora-ios-lidar
+    inputs:
+      tick: dora/timer/millis/20
+    outputs:
+      - image
+      - depth
+    env:
+      IMAGE_WIDTH: 1280
+      IMAGE_HEIGHT: 720
+      ROTATE: ROTATE_90_CLOCKWISE
+
+  - id: rav1e-local
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      image: camera/image
+    outputs:
+      - image
+    env:
+      RAV1E_SPEED: 10
+
+  - id: rav1e-local-depth
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      depth: camera/depth
+    outputs:
+      - depth
+    env:
+      RAV1E_SPEED: 10
+  - id: dav1d-local-depth
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    inputs:
+      depth: rav1e-local-depth/depth
+    outputs:
+      - depth
+  - id: dav1d-local
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    inputs:
+      image: rav1e-local/image
+    outputs:
+      - image
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      image: dav1d-local/image
+      depth: dav1d-local-depth/depth

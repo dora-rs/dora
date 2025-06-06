@@ -1,18 +1,19 @@
 [project]
 name = "llama-factory-recorder"
-version = "0.3.10"
+version = "0.3.11"
 authors = [
-    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
-    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
+  { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+  { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
+license = { file = "MIT" }
 description = "Dora Node for VLM"
 
 requires-python = ">=3.8"
 
 dependencies = [
-    "dora-rs >= 0.3.9",
-    "pillow >= 10.4.0",
-    "opencv-python >= 4.1.1",
+  "dora-rs >= 0.3.9",
+  "pillow >= 10.4.0",
+  "opencv-python >= 4.1.1",
 ]
 
 [dependency-groups]

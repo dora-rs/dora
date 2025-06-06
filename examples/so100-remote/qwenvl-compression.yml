@@ -1,0 +1,180 @@
+nodes:
+  - id: so100
+    path: dora-rustypot
+    inputs:
+      tick: dora/timer/millis/33
+      pose:
+        source: pytorch-kinematics/action
+        queue_size: 100
+    outputs:
+      - pose
+    env:
+      PORT: /dev/ttyACM0
+      TORQUE: 3000
+      IDS: 1 2 3 4 5 6
+
+  - id: camera
+    build: pip install -e ../../node-hub/dora-pyrealsense
+    path: dora-pyrealsense
+    inputs:
+      tick: dora/timer/millis/150
+    outputs:
+      - image
+      - depth
+
+  - id: rav1e-local
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      image: camera/image
+    outputs:
+      - image
+
+  - id: rav1e-depth
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      depth: camera/depth
+    outputs:
+      - depth
+    env:
+      RAV1E_SPEED: 5
+
+  - id: dav1d
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      image: rav1e-local/image
+      depth: rav1e-depth/depth
+    outputs:
+      - image
+      - depth
+
+  - id: pytorch-kinematics
+    build: pip install node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      pose: so100/pose
+      action:
+        source: parse_pose/action
+        queue_size: 100
+    outputs:
+      - pose
+      - action
+    env:
+      URDF_PATH: so100.urdf
+      END_EFFECTOR_LINK: "Moving Jaw"
+      TRANSFORM: -0.2 -0.01 -0.57 0.7 0 0 0.7
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      #series_so100: so100/pose
+      # series_pose: pytorch-kinematics/pose
+      jointstate_so100: so100/pose
+      camera/image: camera/image
+      camera/depth: camera/depth
+      text_whisper: dora-distil-whisper/text
+      text_vlm: dora-qwenvl/text
+      camera/boxes2d: parse_bbox/bbox
+      camera/masks: sam2/masks
+    env:
+      so100_urdf: $HOME/Downloads/so100_urdf/so100.urdf
+      so100_transform: -0.2 -0.01 -0.57 0.7 0 0 0.7
+      CAMERA_PITCH: -3.1415
+
+  - id: dora-microphone
+    build: pip install node-hub/dora-microphone
+    path: dora-microphone
+    inputs:
+      tick: dora/timer/millis/2000
+    outputs:
+      - audio
+
+  - id: parse_whisper
+    path: parse_whisper.py
+    inputs:
+      text: dora-distil-whisper/text
+    outputs:
+      - text
+    env:
+      SPEED: 1.5
+
+  - id: dora-qwenvl
+    build: pip install node-hub/dora-qwen2-5-vl
+    path: dora-qwen2-5-vl
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      image: dav1d/image
+      text: parse_whisper/text
+    outputs:
+      - text
+    env:
+      DEFAULT_QUESTION: Output the bounding box of the suitcase.
+      IMAGE_RESIZE_RATIO: "1.0"
+
+  - id: parse_bbox
+    path: parse_bbox.py
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - bbox
+    env:
+      IMAGE_RESIZE_RATIO: "1.0"
+
+  - id: sam2
+    build: pip install node-hub/dora-sam2
+    path: dora-sam2
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      image: dav1d/image
+      boxes2d: parse_bbox/bbox
+    outputs:
+      - masks
+
+  - id: box_coordinates
+    build: pip install node-hub/dora-object-to-pose
+    path: dora-object-to-pose
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      depth: dav1d/depth
+      masks: sam2/masks
+    outputs:
+      - pose
+    env:
+      CAMERA_PITCH: -3.1415
+
+  - id: parse_pose
+    path: parse_pose.py
+    inputs:
+      pose: box_coordinates/pose
+    outputs:
+      - action
+
+  - id: dora-vad
+    build: pip install node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: dora-microphone/audio
+    outputs:
+      - audio
+
+  - id: dora-distil-whisper
+    build: pip install node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    _unstable_deploy:
+      machine: gpu
+    inputs:
+      input: dora-vad/audio
+    outputs:
+      - text
+    env:
+      TARGET_LANGUAGE: english

@@ -4,24 +4,35 @@ use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
     arrow::{
-        array::{Array, AsArray, Float32Array, Float64Array, StringArray, UInt8Array},
+        array::{Array, AsArray, Float64Array, StringArray, UInt16Array, UInt8Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
-    DoraNode, Event, Parameter,
+    into_vec, DoraNode, Event, Parameter,
 };
-use eyre::{eyre, Context, ContextCompat, Result};
+use eyre::{bail, eyre, Context, Result};
 
 use rerun::{
-    components::ImageBuffer,
-    external::{log::warn, re_types::ArrowBuffer},
-    ImageFormat, Points3D, SpawnOptions,
+    components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
 };
 pub mod boxes2d;
 pub mod series;
 pub mod urdf;
 use series::update_series;
 use urdf::{init_urdf, update_visualization};
+
+static KEYS: &[&str] = &[
+    "image",
+    "depth",
+    "text",
+    "boxes2d",
+    "masks",
+    "jointstate",
+    "pose",
+    "series",
+    "points3d",
+    "points2d",
+];
 
 pub fn lib_main() -> Result<()> {
     // rerun `serve()` requires to have a running Tokio runtime in the current context.
@@ -34,6 +45,7 @@ pub fn lib_main() -> Result<()> {
     // Setup an image cache to paint depth images.
     let mut image_cache = HashMap::new();
     let mut mask_cache: HashMap<DataId, Vec<bool>> = HashMap::new();
+    let mut color_cache: HashMap<DataId, rerun::Color> = HashMap::new();
     let mut options = SpawnOptions::default();
 
     let memory_limit = match std::env::var("RERUN_MEMORY_LIMIT") {
@@ -56,7 +68,7 @@ pub fn lib_main() -> Result<()> {
             let opt = std::env::var("RERUN_SERVER_ADDR").unwrap_or("127.0.0.1:9876".to_string());
 
             rerun::RecordingStreamBuilder::new("dora-rerun")
-                .connect_tcp_opts(std::net::SocketAddr::V4(opt.parse()?), None)
+                .connect_grpc_opts(opt, None)
                 .context("Could not connect to rerun visualization")?
         }
         Ok("SAVE") => {
@@ -96,9 +108,29 @@ pub fn lib_main() -> Result<()> {
         }
         Err(VarError::NotPresent) => (),
     };
+    let camera_pitch = std::env::var("CAMERA_PITCH")
+        .unwrap_or("0.0".to_string())
+        .parse::<f32>()
+        .unwrap();
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
+            // Check if the id contains more than one key
+            if KEYS
+                .iter()
+                .filter(|&&key| id.as_str().contains(key))
+                .count()
+                > 1
+            {
+                bail!(
+                    "Event id `{}` contains more than one visualization keyword: {:?}, please only use one of them.",
+                    id,
+                    KEYS.iter()
+                        .filter(|&&key| id.as_str().contains(key))
+                        .collect::<Vec<_>>()
+                );
+            }
+
             if id.as_str().contains("image") {
                 let height =
                     if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
@@ -128,7 +160,6 @@ pub fn lib_main() -> Result<()> {
                     let buffer: Vec<u8> =
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
                     image_cache.insert(id.clone(), buffer.clone());
-                    let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
                     // let tensordata = ImageBuffer(buffer);
@@ -143,7 +174,6 @@ pub fn lib_main() -> Result<()> {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     image_cache.insert(id.clone(), buffer.values().to_vec());
                     let buffer: &[u8] = buffer.values();
-                    let buffer = ArrowBuffer::from(buffer);
                     let image_buffer = ImageBuffer::try_from(buffer)
                         .context("Could not convert buffer to image buffer")?;
 
@@ -153,7 +183,7 @@ pub fn lib_main() -> Result<()> {
                     );
                     rec.log(id.as_str(), &image)
                         .context("could not log image")?;
-                } else if ["jpeg", "png"].contains(&encoding) {
+                } else if ["jpeg", "png", "avif"].contains(&encoding) {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     let buffer: &[u8] = buffer.values();
 
@@ -181,21 +211,77 @@ pub fn lib_main() -> Result<()> {
                 } else {
                     vec![640, 480]
                 };
-                let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
-                let points_3d = buffer.iter().enumerate().map(|(i, z)| {
-                    let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
-                    let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
-                    let z = z.unwrap_or_default() as f32;
+                let pitch = if let Some(Parameter::Float(pitch)) = metadata.parameters.get("pitch")
+                {
+                    *pitch as f32
+                } else {
+                    camera_pitch
+                };
+                let cos_theta = pitch.cos();
+                let sin_theta = pitch.sin();
 
-                    (
-                        (u - resolution[0] as f32) * z / focal_length[0] as f32,
-                        (v - resolution[1] as f32) * z / focal_length[1] as f32,
-                        z,
-                    )
-                });
-                let points_3d = Points3D::new(points_3d);
+                let points = match data.data_type() {
+                    dora_node_api::arrow::datatypes::DataType::Float64 => {
+                        let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
+
+                        let mut points = vec![];
+                        buffer.iter().enumerate().for_each(|(i, z)| {
+                            let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
+                            let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
+
+                            if let Some(z) = z {
+                                let z = z as f32;
+                                // Skip points that have empty depth or is too far away
+                                if z == 0. || z > 8.0 {
+                                    points.push((0., 0., 0.));
+                                    return;
+                                }
+                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
+                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
+                                let new_x = sin_theta * z + cos_theta * x;
+                                let new_y = -y;
+                                let new_z = cos_theta * z - sin_theta * x;
+
+                                points.push((new_x, new_y, new_z));
+                            } else {
+                                points.push((0., 0., 0.));
+                            }
+                        });
+                        Points3D::new(points)
+                    }
+                    dora_node_api::arrow::datatypes::DataType::UInt16 => {
+                        let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
+                        let mut points = vec![];
+                        buffer.iter().enumerate().for_each(|(i, z)| {
+                            let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
+                            let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
+
+                            if let Some(z) = z {
+                                let z = z as f32 / 1000.0; // Convert to meters
+                                                           // Skip points that have empty depth or is too far away
+                                if z == 0. || z > 8.0 {
+                                    points.push((0., 0., 0.));
+                                    return;
+                                }
+                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
+                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
+                                let new_x = sin_theta * z + cos_theta * x;
+                                let new_y = -y;
+                                let new_z = cos_theta * z - sin_theta * x;
+
+                                points.push((new_x, new_y, new_z));
+                            } else {
+                                points.push((0., 0., 0.));
+                            }
+                        });
+                        Points3D::new(points)
+                    }
+                    _ => {
+                        return Err(eyre!("Unsupported depth data type {}", data.data_type()));
+                    }
+                };
                 if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
-                    let colors = if let Some(mask) = mask_cache.get(&id.replace("depth", "mask")) {
+                    let colors = if let Some(mask) = mask_cache.get(&id.replace("depth", "masks")) {
                         let mask_length = color_buffer.len() / 3;
                         let number_masks = mask.len() / mask_length;
                         color_buffer
@@ -224,10 +310,7 @@ pub fn lib_main() -> Result<()> {
                             .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
                             .collect::<Vec<_>>()
                     };
-                    rec.log(id.as_str(), &points_3d.with_colors(colors))
-                        .context("could not log points")?;
-                } else {
-                    rec.log(id.as_str(), &points_3d)
+                    rec.log(id.as_str(), &points.with_colors(colors))
                         .context("could not log points")?;
                 }
             } else if id.as_str().contains("text") {
@@ -242,7 +325,7 @@ pub fn lib_main() -> Result<()> {
                 })?;
             } else if id.as_str().contains("boxes2d") {
                 boxes2d::update_boxes2d(&rec, id, data, metadata).context("update boxes 2d")?;
-            } else if id.as_str().contains("mask") {
+            } else if id.as_str().contains("masks") {
                 let masks = if let Some(data) = data.as_primitive_opt::<Float32Type>() {
                     let data = data
                         .iter()
@@ -260,12 +343,21 @@ pub fn lib_main() -> Result<()> {
                     continue;
                 };
                 mask_cache.insert(id.clone(), masks.clone());
-            } else if id.as_str().contains("jointstate") {
-                let buffer: &Float32Array = data
-                    .as_any()
-                    .downcast_ref()
-                    .context("jointstate is not float32")?;
-                let mut positions: Vec<f32> = buffer.values().to_vec();
+            } else if id.as_str().contains("jointstate") || id.as_str().contains("pose") {
+                let encoding = if let Some(Parameter::String(encoding)) =
+                    metadata.parameters.get("encoding")
+                {
+                    encoding
+                } else {
+                    "jointstate"
+                };
+                if encoding != "jointstate" {
+                    warn!("Got unexpected encoding: {} on position pose", encoding);
+                    continue;
+                }
+                // Convert to Vec<f32>
+                let mut positions: Vec<f32> =
+                    into_vec(&data).context("Could not parse jointstate as vec32")?;
 
                 // Match file name
                 let mut id = id.as_str().replace("jointstate_", "");
@@ -285,10 +377,64 @@ pub fn lib_main() -> Result<()> {
 
                     update_visualization(&rec, chain, &id, &positions)?;
                 } else {
-                    println!("Could not find chain for {}", id);
+                    println!("Could not find chain for {}. You may not have set its", id);
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
+            } else if id.as_str().contains("points3d") {
+                // Get color or assign random color in cache
+                let color = color_cache.get(&id);
+                let color = if let Some(color) = color {
+                    color.clone()
+                } else {
+                    let color =
+                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+
+                    color_cache.insert(id.clone(), color.clone());
+                    color
+                };
+                let dataid = id;
+
+                // get a random color
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut points = vec![];
+                    let mut colors = vec![];
+                    buffer.chunks(3).for_each(|chunk| {
+                        points.push((chunk[0], chunk[1], chunk[2]));
+                        colors.push(color);
+                    });
+                    let points = Points3D::new(points).with_radii(vec![0.013; colors.len()]);
+
+                    rec.log(dataid.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
+                }
+            } else if id.as_str().contains("points2d") {
+                // Get color or assign random color in cache
+                let color = color_cache.get(&id);
+                let color = if let Some(color) = color {
+                    color.clone()
+                } else {
+                    let color =
+                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+
+                    color_cache.insert(id.clone(), color.clone());
+                    color
+                };
+                let dataid = id;
+
+                // get a random color
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut points = vec![];
+                    let mut colors = vec![];
+                    buffer.chunks(2).for_each(|chunk| {
+                        points.push((chunk[0], chunk[1]));
+                        colors.push(color);
+                    });
+                    let points = Points2D::new(points);
+
+                    rec.log(dataid.as_str(), &points.with_colors(colors))
+                        .context("could not log points")?;
+                }
             } else {
                 println!("Could not find handler for {}", id);
             }
