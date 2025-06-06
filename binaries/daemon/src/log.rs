@@ -4,10 +4,11 @@ use std::{
     sync::Arc,
 };
 
-use dora_core::{config::NodeId, uhlc};
+use dora_core::{build::BuildLogger, config::NodeId, uhlc};
 use dora_message::{
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
+    BuildId,
 };
 use eyre::Context;
 use tokio::net::TcpStream;
@@ -81,7 +82,7 @@ impl<'a> DataflowLogger<'a> {
         message: impl Into<String>,
     ) {
         self.logger
-            .log(level, self.dataflow_id, node_id, target, message)
+            .log(level, Some(self.dataflow_id), node_id, target, message)
             .await
     }
 
@@ -90,6 +91,44 @@ impl<'a> DataflowLogger<'a> {
             dataflow_id: self.dataflow_id,
             logger: CowMut::Owned(self.logger.try_clone().await?),
         })
+    }
+}
+
+pub struct NodeBuildLogger<'a> {
+    build_id: BuildId,
+    node_id: NodeId,
+    logger: CowMut<'a, DaemonLogger>,
+}
+
+impl NodeBuildLogger<'_> {
+    pub async fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+        self.logger
+            .log_build(self.build_id, level, Some(self.node_id.clone()), message)
+            .await
+    }
+
+    pub async fn try_clone_impl(&self) -> eyre::Result<NodeBuildLogger<'static>> {
+        Ok(NodeBuildLogger {
+            build_id: self.build_id,
+            node_id: self.node_id.clone(),
+            logger: CowMut::Owned(self.logger.try_clone().await?),
+        })
+    }
+}
+
+impl BuildLogger for NodeBuildLogger<'_> {
+    type Clone = NodeBuildLogger<'static>;
+
+    fn log_message(
+        &mut self,
+        level: LogLevel,
+        message: impl Into<String> + Send,
+    ) -> impl std::future::Future<Output = ()> + Send {
+        self.log(level, message)
+    }
+
+    fn try_clone(&self) -> impl std::future::Future<Output = eyre::Result<Self::Clone>> + Send {
+        self.try_clone_impl()
     }
 }
 
@@ -106,6 +145,14 @@ impl DaemonLogger {
         }
     }
 
+    pub fn for_node_build(&mut self, build_id: BuildId, node_id: NodeId) -> NodeBuildLogger {
+        NodeBuildLogger {
+            build_id,
+            node_id,
+            logger: CowMut::Borrowed(self),
+        }
+    }
+
     pub fn inner(&self) -> &Logger {
         &self.logger
     }
@@ -113,17 +160,40 @@ impl DaemonLogger {
     pub async fn log(
         &mut self,
         level: LogLevel,
-        dataflow_id: Uuid,
+        dataflow_id: Option<Uuid>,
         node_id: Option<NodeId>,
         target: Option<String>,
         message: impl Into<String>,
     ) {
         let message = LogMessage {
+            build_id: None,
             daemon_id: Some(self.daemon_id.clone()),
             dataflow_id,
             node_id,
             level,
             target,
+            module_path: None,
+            file: None,
+            line: None,
+            message: message.into(),
+        };
+        self.logger.log(message).await
+    }
+
+    pub async fn log_build(
+        &mut self,
+        build_id: BuildId,
+        level: LogLevel,
+        node_id: Option<NodeId>,
+        message: impl Into<String>,
+    ) {
+        let message = LogMessage {
+            build_id: Some(build_id),
+            daemon_id: Some(self.daemon_id.clone()),
+            dataflow_id: None,
+            node_id,
+            level,
+            target: Some("build".into()),
             module_path: None,
             file: None,
             line: None,
@@ -181,7 +251,8 @@ impl Logger {
         match message.level {
             LogLevel::Error => {
                 tracing::error!(
-                    dataflow_id = message.dataflow_id.to_string(),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,
                     module_path = message.module_path,
@@ -193,7 +264,8 @@ impl Logger {
             }
             LogLevel::Warn => {
                 tracing::warn!(
-                    dataflow_id = message.dataflow_id.to_string(),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,
                     module_path = message.module_path,
@@ -205,7 +277,8 @@ impl Logger {
             }
             LogLevel::Info => {
                 tracing::info!(
-                    dataflow_id = message.dataflow_id.to_string(),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,
                     module_path = message.module_path,
@@ -217,7 +290,8 @@ impl Logger {
             }
             LogLevel::Debug => {
                 tracing::debug!(
-                    dataflow_id = message.dataflow_id.to_string(),
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
                     node_id = ?message.node_id.map(|id| id.to_string()),
                     target = message.target,
                     module_path = message.module_path,

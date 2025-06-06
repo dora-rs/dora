@@ -5,10 +5,10 @@ use std::{
 };
 
 use crate::{
-    common::DaemonId,
+    common::{DaemonId, GitSource},
     descriptor::{Descriptor, ResolvedNode},
     id::{NodeId, OperatorId},
-    DataflowId,
+    BuildId, DataflowId, SessionId,
 };
 
 pub use crate::common::Timestamped;
@@ -33,6 +33,7 @@ impl RegisterResult {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
+    Build(BuildDataflowNodes),
     Spawn(SpawnDataflowNodes),
     AllNodesReady {
         dataflow_id: DataflowId,
@@ -56,12 +57,39 @@ pub enum DaemonCoordinatorEvent {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct BuildDataflowNodes {
+    pub build_id: BuildId,
+    pub session_id: SessionId,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub git_sources: BTreeMap<NodeId, GitSource>,
+    pub prev_git_sources: BTreeMap<NodeId, GitSource>,
+    pub dataflow_descriptor: Descriptor,
+    pub nodes_on_machine: BTreeSet<NodeId>,
+    pub uv: bool,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct SpawnDataflowNodes {
+    pub build_id: Option<BuildId>,
+    pub session_id: SessionId,
     pub dataflow_id: DataflowId,
-    pub working_dir: PathBuf,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub dataflow_descriptor: Descriptor,
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
-    pub build_only: bool,
 }

@@ -2,6 +2,7 @@ use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
+    build::{self, BuildInfo, GitManager},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
         read_as_descriptor, CoreNodeKind, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
@@ -12,10 +13,11 @@ use dora_core::{
 };
 use dora_message::{
     common::{
-        DaemonId, DataMessage, DropToken, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
+        DaemonId, DataMessage, DropToken, GitSource, LogLevel, NodeError, NodeErrorCause,
+        NodeExitStatus,
     },
     coordinator_to_cli::DataflowResult,
-    coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes},
+    coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes},
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
     },
@@ -24,7 +26,7 @@ use dora_message::{
     descriptor::NodeSource,
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
-    DataflowId,
+    BuildId, DataflowId, SessionId,
 };
 use dora_node_api::{arrow::datatypes::DataType, Parameter};
 use eyre::{bail, eyre, Context, ContextCompat, Result};
@@ -38,6 +40,7 @@ use socket_stream_utils::socket_stream_send;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    env::current_dir,
     future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -101,12 +104,14 @@ pub struct Daemon {
 
     logger: DaemonLogger,
 
-    repos_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
+    sessions: BTreeMap<SessionId, BuildId>,
+    builds: BTreeMap<BuildId, BuildInfo>,
+    git_manager: GitManager,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
-struct NodePrepareTask<F> {
+struct NodeBuildTask<F> {
     node_id: NodeId,
     dynamic_node: bool,
     task: F,
@@ -148,12 +153,19 @@ impl Daemon {
             None,
             clock,
             Some(remote_daemon_events_tx),
+            Default::default(),
         )
         .await
         .map(|_| ())
     }
 
-    pub async fn run_dataflow(dataflow_path: &Path, uv: bool) -> eyre::Result<DataflowResult> {
+    pub async fn run_dataflow(
+        dataflow_path: &Path,
+        build_id: Option<BuildId>,
+        local_build: Option<BuildInfo>,
+        session_id: SessionId,
+        uv: bool,
+    ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canonicalize dataflow path")?
@@ -167,13 +179,14 @@ impl Daemon {
 
         let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
         let spawn_command = SpawnDataflowNodes {
+            build_id,
+            session_id,
             dataflow_id,
-            working_dir,
+            local_working_dir: Some(working_dir),
             spawn_nodes: nodes.keys().cloned().collect(),
             nodes,
             dataflow_descriptor: descriptor,
             uv,
-            build_only: false,
         };
 
         let clock = Arc::new(HLC::default());
@@ -204,6 +217,16 @@ impl Daemon {
             Some(exit_when_done),
             clock.clone(),
             None,
+            if let Some(local_build) = local_build {
+                let Some(build_id) = build_id else {
+                    bail!("no build_id, but local_build set")
+                };
+                let mut builds = BTreeMap::new();
+                builds.insert(build_id, local_build);
+                builds
+            } else {
+                Default::default()
+            },
         );
 
         let spawn_result = reply_rx
@@ -235,6 +258,7 @@ impl Daemon {
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
         remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+        builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -298,7 +322,9 @@ impl Daemon {
             clock,
             zenoh_session,
             remote_daemon_events_tx,
-            repos_in_use: Default::default(),
+            git_manager: Default::default(),
+            builds,
+            sessions: Default::default(),
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -418,14 +444,41 @@ impl Daemon {
                             .await?;
                     }
                 },
+                Event::BuildDataflowResult {
+                    build_id,
+                    session_id,
+                    result,
+                } => {
+                    let (build_info, result) = match result {
+                        Ok(build_info) => (Some(build_info), Ok(())),
+                        Err(err) => (None, Err(err)),
+                    };
+                    if let Some(build_info) = build_info {
+                        self.builds.insert(build_id, build_info);
+                        if let Some(old_build_id) = self.sessions.insert(session_id, build_id) {
+                            self.builds.remove(&old_build_id);
+                        }
+                    }
+                    if let Some(connection) = &mut self.coordinator_connection {
+                        let msg = serde_json::to_vec(&Timestamped {
+                            inner: CoordinatorRequest::Event {
+                                daemon_id: self.daemon_id.clone(),
+                                event: DaemonEvent::BuildResult {
+                                    build_id,
+                                    result: result.map_err(|err| format!("{err:?}")),
+                                },
+                            },
+                            timestamp: self.clock.new_timestamp(),
+                        })?;
+                        socket_stream_send(connection, &msg).await.wrap_err(
+                            "failed to send BuildDataflowResult message to dora-coordinator",
+                        )?;
+                    }
+                }
                 Event::SpawnDataflowResult {
                     dataflow_id,
                     result,
-                    build_only,
                 } => {
-                    if build_only {
-                        self.running.remove(&dataflow_id);
-                    }
                     if let Some(connection) = &mut self.coordinator_connection {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
@@ -437,9 +490,9 @@ impl Daemon {
                             },
                             timestamp: self.clock.new_timestamp(),
                         })?;
-                        socket_stream_send(connection, &msg)
-                            .await
-                            .wrap_err("failed to send Exit message to dora-coordinator")?;
+                        socket_stream_send(connection, &msg).await.wrap_err(
+                            "failed to send SpawnDataflowResult message to dora-coordinator",
+                        )?;
                     }
                 }
             }
@@ -476,35 +529,93 @@ impl Daemon {
         reply_tx: Sender<Option<DaemonCoordinatorReply>>,
     ) -> eyre::Result<RunStatus> {
         let status = match event {
-            DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes {
-                dataflow_id,
-                working_dir,
-                nodes,
+            DaemonCoordinatorEvent::Build(BuildDataflowNodes {
+                build_id,
+                session_id,
+                local_working_dir,
+                git_sources,
+                prev_git_sources,
                 dataflow_descriptor,
-                spawn_nodes,
+                nodes_on_machine,
                 uv,
-                build_only,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
 
-                // Use the working directory if it exists, otherwise use the working directory where the daemon is spawned
-                let working_dir = if working_dir.exists() {
-                    working_dir
-                } else {
-                    std::env::current_dir().wrap_err("failed to get current working dir")?
+                let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
+
+                let result = self
+                    .build_dataflow(
+                        build_id,
+                        session_id,
+                        base_working_dir,
+                        git_sources,
+                        prev_git_sources,
+                        dataflow_descriptor,
+                        nodes_on_machine,
+                        uv,
+                    )
+                    .await;
+                let (trigger_result, result_task) = match result {
+                    Ok(result_task) => (Ok(()), Some(result_task)),
+                    Err(err) => (Err(format!("{err:?}")), None),
                 };
+                let reply = DaemonCoordinatorReply::TriggerBuildResult(trigger_result);
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send `TriggerBuildResult` reply from daemon to coordinator")
+                });
+
+                let result_tx = self.events_tx.clone();
+                let clock = self.clock.clone();
+                if let Some(result_task) = result_task {
+                    tokio::spawn(async move {
+                        let message = Timestamped {
+                            inner: Event::BuildDataflowResult {
+                                build_id,
+                                session_id,
+                                result: result_task.await,
+                            },
+                            timestamp: clock.new_timestamp(),
+                        };
+                        let _ = result_tx
+                            .send(message)
+                            .map_err(|_| {
+                                error!(
+                                    "could not send `BuildResult` reply from daemon to coordinator"
+                                )
+                            })
+                            .await;
+                    });
+                }
+
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::Spawn(SpawnDataflowNodes {
+                build_id,
+                session_id,
+                dataflow_id,
+                local_working_dir,
+                nodes,
+                dataflow_descriptor,
+                spawn_nodes,
+                uv,
+            }) => {
+                match dataflow_descriptor.communication.remote {
+                    dora_core::config::RemoteCommunicationConfig::Tcp => {}
+                }
+
+                let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
 
                 let result = self
                     .spawn_dataflow(
+                        build_id,
                         dataflow_id,
-                        working_dir,
+                        base_working_dir,
                         nodes,
                         dataflow_descriptor,
                         spawn_nodes,
                         uv,
-                        build_only,
                     )
                     .await;
                 let (trigger_result, result_task) = match result {
@@ -524,7 +635,6 @@ impl Daemon {
                             inner: Event::SpawnDataflowResult {
                                 dataflow_id,
                                 result: result_task.await,
-                                build_only,
                             },
                             timestamp: clock.new_timestamp(),
                         };
@@ -770,15 +880,100 @@ impl Daemon {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn build_dataflow(
+        &mut self,
+        build_id: BuildId,
+        session_id: SessionId,
+        base_working_dir: PathBuf,
+        git_sources: BTreeMap<NodeId, GitSource>,
+        prev_git_sources: BTreeMap<NodeId, GitSource>,
+        dataflow_descriptor: Descriptor,
+        local_nodes: BTreeSet<NodeId>,
+        uv: bool,
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>>> {
+        let builder = build::Builder {
+            session_id,
+            base_working_dir,
+            uv,
+        };
+        let nodes = dataflow_descriptor.resolve_aliases_and_set_defaults()?;
+
+        let mut tasks = Vec::new();
+
+        // build nodes
+        for node in nodes.into_values().filter(|n| local_nodes.contains(&n.id)) {
+            let dynamic_node = node.kind.dynamic();
+
+            let node_id = node.id.clone();
+            let mut logger = self.logger.for_node_build(build_id, node_id.clone());
+            logger.log(LogLevel::Info, "building").await;
+            let git_source = git_sources.get(&node_id).cloned();
+            let prev_git_source = prev_git_sources.get(&node_id).cloned();
+
+            let logger_cloned = logger
+                .try_clone_impl()
+                .await
+                .wrap_err("failed to clone logger")?;
+
+            match builder
+                .clone()
+                .build_node(
+                    node,
+                    git_source,
+                    prev_git_source,
+                    logger_cloned,
+                    &mut self.git_manager,
+                )
+                .await
+                .wrap_err_with(|| format!("failed to build node `{node_id}`"))
+            {
+                Ok(result) => {
+                    tasks.push(NodeBuildTask {
+                        node_id,
+                        task: result,
+                        dynamic_node,
+                    });
+                }
+                Err(err) => {
+                    logger.log(LogLevel::Error, format!("{err:?}")).await;
+                    return Err(err);
+                }
+            }
+        }
+
+        let task = async move {
+            let mut info = BuildInfo {
+                node_working_dirs: Default::default(),
+            };
+            for task in tasks {
+                let NodeBuildTask {
+                    node_id,
+                    dynamic_node,
+                    task,
+                } = task;
+                let node = task
+                    .await
+                    .with_context(|| format!("failed to build node `{node_id}`"))?;
+                info.node_working_dirs
+                    .insert(node_id, node.node_working_dir);
+            }
+            Ok(info)
+        };
+
+        Ok(task)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_dataflow(
         &mut self,
-        dataflow_id: uuid::Uuid,
-        working_dir: PathBuf,
+        build_id: Option<BuildId>,
+        dataflow_id: DataflowId,
+        base_working_dir: PathBuf,
         nodes: BTreeMap<NodeId, ResolvedNode>,
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
-        build_only: bool,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
         let mut logger = self
             .logger
@@ -790,7 +985,8 @@ impl Daemon {
             RunningDataflow::new(dataflow_id, self.daemon_id.clone(), &dataflow_descriptor);
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                self.working_dir.insert(dataflow_id, working_dir.clone());
+                self.working_dir
+                    .insert(dataflow_id, base_working_dir.clone());
                 entry.insert(dataflow)
             }
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -799,6 +995,11 @@ impl Daemon {
         };
 
         let mut stopped = Vec::new();
+
+        let node_working_dirs = build_id
+            .and_then(|build_id| self.builds.get(&build_id))
+            .map(|info| info.node_working_dirs.clone())
+            .unwrap_or_default();
 
         // calculate info about mappings
         for node in nodes.values() {
@@ -838,12 +1039,10 @@ impl Daemon {
 
         let spawner = Spawner {
             dataflow_id,
-            working_dir,
             daemon_tx: self.events_tx.clone(),
             dataflow_descriptor,
             clock: self.clock.clone(),
             uv,
-            build_only,
         };
 
         let mut tasks = Vec::new();
@@ -869,19 +1068,18 @@ impl Daemon {
                 logger
                     .log(LogLevel::Info, Some("daemon".into()), "spawning")
                     .await;
+                let node_working_dir = node_working_dirs
+                    .get(&node_id)
+                    .unwrap_or(&base_working_dir)
+                    .clone();
                 match spawner
                     .clone()
-                    .prepare_node(
-                        node,
-                        node_stderr_most_recent,
-                        &mut logger,
-                        &mut self.repos_in_use,
-                    )
+                    .spawn_node(node, node_working_dir, node_stderr_most_recent, &mut logger)
                     .await
                     .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {
                     Ok(result) => {
-                        tasks.push(NodePrepareTask {
+                        tasks.push(NodeBuildTask {
                             node_id,
                             task: result,
                             dynamic_node,
@@ -979,7 +1177,7 @@ impl Daemon {
     async fn spawn_prepared_nodes(
         dataflow_id: Uuid,
         mut logger: DataflowLogger<'_>,
-        tasks: Vec<NodePrepareTask<impl Future<Output = eyre::Result<spawn::PreparedNode>>>>,
+        tasks: Vec<NodeBuildTask<impl Future<Output = eyre::Result<spawn::PreparedNode>>>>,
         events_tx: mpsc::Sender<Timestamped<Event>>,
         clock: Arc<HLC>,
     ) -> eyre::Result<()> {
@@ -995,7 +1193,7 @@ impl Daemon {
         let mut failed_to_prepare = None;
         let mut prepared_nodes = Vec::new();
         for task in tasks {
-            let NodePrepareTask {
+            let NodeBuildTask {
                 node_id,
                 dynamic_node,
                 task,
@@ -1567,9 +1765,12 @@ impl Daemon {
                     .clone(),
             };
 
-            self.repos_in_use.values_mut().for_each(|dataflows| {
-                dataflows.remove(&dataflow_id);
-            });
+            self.git_manager
+                .clones_in_use
+                .values_mut()
+                .for_each(|dataflows| {
+                    dataflows.remove(&dataflow_id);
+                });
 
             logger
                 .log(
@@ -1798,6 +1999,34 @@ impl Daemon {
             }
         }
         Ok(RunStatus::Continue)
+    }
+
+    fn base_working_dir(
+        &self,
+        local_working_dir: Option<PathBuf>,
+        session_id: SessionId,
+    ) -> eyre::Result<PathBuf> {
+        match local_working_dir {
+            Some(working_dir) => {
+                // check that working directory exists
+                if working_dir.exists() {
+                    Ok(working_dir)
+                } else {
+                    bail!(
+                        "working directory does not exist: {}",
+                        working_dir.display(),
+                    )
+                }
+            }
+            None => {
+                // use subfolder of daemon working dir
+                let daemon_working_dir =
+                    current_dir().context("failed to get daemon working dir")?;
+                Ok(daemon_working_dir
+                    .join("_work")
+                    .join(session_id.to_string()))
+            }
+        }
     }
 }
 
@@ -2272,10 +2501,14 @@ pub enum Event {
         dynamic_node: bool,
         result: Result<RunningNode, NodeError>,
     },
+    BuildDataflowResult {
+        build_id: BuildId,
+        session_id: SessionId,
+        result: eyre::Result<BuildInfo>,
+    },
     SpawnDataflowResult {
         dataflow_id: Uuid,
         result: eyre::Result<()>,
-        build_only: bool,
     },
 }
 
@@ -2298,6 +2531,7 @@ impl Event {
             Event::SecondCtrlC => "SecondCtrlC",
             Event::DaemonError(_) => "DaemonError",
             Event::SpawnNodeResult { .. } => "SpawnNodeResult",
+            Event::BuildDataflowResult { .. } => "BuildDataflowResult",
             Event::SpawnDataflowResult { .. } => "SpawnDataflowResult",
         }
     }

@@ -9,6 +9,7 @@ pub use dora_message::{config, uhlc};
 
 pub mod build;
 pub mod descriptor;
+pub mod git;
 pub mod metadata;
 pub mod topics;
 

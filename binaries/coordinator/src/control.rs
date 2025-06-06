@@ -2,7 +2,9 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
     Event,
 };
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, BuildId,
+};
 use eyre::{eyre, Context};
 use futures::{
     future::{self, Either},
@@ -79,6 +81,7 @@ async fn handle_requests(
     tx: mpsc::Sender<ControlEvent>,
     _finish_tx: mpsc::Sender<()>,
 ) {
+    let peer_addr = connection.peer_addr().ok();
     loop {
         let next_request = tcp_receive(&mut connection).map(Either::Left);
         let coordinator_stopped = tx.closed().map(Either::Right);
@@ -114,10 +117,28 @@ async fn handle_requests(
             break;
         }
 
-        let result = match request {
+        if let Ok(ControlRequest::BuildLogSubscribe { build_id, level }) = request {
+            let _ = tx
+                .send(ControlEvent::BuildLogSubscribe {
+                    build_id,
+                    level,
+                    connection,
+                })
+                .await;
+            break;
+        }
+
+        let mut result = match request {
             Ok(request) => handle_request(request, &tx).await,
             Err(err) => Err(err),
         };
+
+        if let Ok(ControlRequestReply::CliAndDefaultDaemonIps { cli, .. }) = &mut result {
+            if cli.is_none() {
+                // fill cli IP address in reply
+                *cli = peer_addr.map(|s| s.ip());
+            }
+        }
 
         let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err:?}")));
         let serialized: Vec<u8> =
@@ -176,6 +197,11 @@ pub enum ControlEvent {
     },
     LogSubscribe {
         dataflow_id: Uuid,
+        level: log::LevelFilter,
+        connection: TcpStream,
+    },
+    BuildLogSubscribe {
+        build_id: BuildId,
         level: log::LevelFilter,
         connection: TcpStream,
     },
