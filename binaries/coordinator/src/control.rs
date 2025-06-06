@@ -81,6 +81,7 @@ async fn handle_requests(
     tx: mpsc::Sender<ControlEvent>,
     _finish_tx: mpsc::Sender<()>,
 ) {
+    let peer_addr = connection.peer_addr().ok();
     loop {
         let next_request = tcp_receive(&mut connection).map(Either::Left);
         let coordinator_stopped = tx.closed().map(Either::Right);
@@ -127,10 +128,17 @@ async fn handle_requests(
             break;
         }
 
-        let result = match request {
+        let mut result = match request {
             Ok(request) => handle_request(request, &tx).await,
             Err(err) => Err(err),
         };
+
+        if let Ok(ControlRequestReply::CliAndDefaultDaemonIps { cli, .. }) = &mut result {
+            if cli.is_none() {
+                // fill cli IP address in reply
+                *cli = peer_addr.map(|s| s.ip());
+            }
+        }
 
         let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err:?}")));
         let serialized: Vec<u8> =

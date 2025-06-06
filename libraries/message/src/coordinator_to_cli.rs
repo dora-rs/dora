@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use uuid::Uuid;
 
@@ -34,6 +37,10 @@ pub enum ControlRequestReply {
     DaemonConnected(bool),
     ConnectedDaemons(BTreeSet<DaemonId>),
     Logs(Vec<u8>),
+    CliAndDefaultDaemonIps {
+        default_daemon: Option<IpAddr>,
+        cli: Option<IpAddr>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -80,4 +80,5 @@ pub enum ControlRequest {
         build_id: BuildId,
         level: log::LevelFilter,
     },
+    CliAndDefaultDaemonOnSameMachine,
 }

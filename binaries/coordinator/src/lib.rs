@@ -144,6 +144,10 @@ impl DaemonConnections {
         }
     }
 
+    fn get(&self, id: &DaemonId) -> Option<&DaemonConnection> {
+        self.daemons.get(id)
+    }
+
     fn get_mut(&mut self, id: &DaemonId) -> Option<&mut DaemonConnection> {
         self.daemons.get_mut(id)
     }
@@ -709,6 +713,22 @@ async fn start_inner(
                             let _ = reply_sender.send(Err(eyre::eyre!(
                                 "BuildLogSubscribe request should be handled separately"
                             )));
+                        }
+                        ControlRequest::CliAndDefaultDaemonOnSameMachine => {
+                            let mut default_daemon_ip = None;
+                            if let Some(default_id) = daemon_connections.unnamed().next() {
+                                if let Some(connection) = daemon_connections.get(default_id) {
+                                    if let Ok(addr) = connection.stream.peer_addr() {
+                                        default_daemon_ip = Some(addr.ip());
+                                    }
+                                }
+                            }
+                            let _ = reply_sender.send(Ok(
+                                ControlRequestReply::CliAndDefaultDaemonIps {
+                                    default_daemon: default_daemon_ip,
+                                    cli: None, // filled later
+                                },
+                            ));
                         }
                     }
                 }
