@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use eyre::{Context, ContextCompat, Result};
-use k::Chain;
-use rerun::{components::RotationAxisAngle, Angle, RecordingStream, Rotation3D, Vec3D};
+use k::{nalgebra::Quaternion, Chain, Translation3, UnitQuaternion};
+use rerun::{RecordingStream, Vec3D};
 pub struct MyIntersperse<T, I> {
     iterator: I,
     sep: T,
@@ -56,14 +56,20 @@ fn get_entity_path(link: &k::Node<f32>, urdf_path: &str) -> String {
 pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
     // Get all env variable that end with urdf
     let urdfs = std::env::vars()
-        .filter(|(key, _)| key.ends_with("_urdf"))
+        .filter(|(key, _)| key.ends_with("_urdf") || key.ends_with("_URDF"))
         .collect::<Vec<_>>();
     let mut chains = HashMap::new();
     for (key, urdf_path) in urdfs {
-        let path = key.replace("_urdf", ".urdf");
+        let path = key.replace("_urdf", ".urdf").replace("_URDF", ".urdf");
         let chain = k::Chain::<f32>::from_urdf_file(&urdf_path).context("Could not load URDF")?;
 
         let transform = key.replace("_urdf", "_transform");
+
+        if PathBuf::from(&urdf_path).file_name() != PathBuf::from(&path).file_name() {
+            return Err(eyre::eyre!(
+                "URDF path should be the same as the key without _urdf or _URDF. Got {} instead of {}", urdf_path, path
+            ));
+        }
         if let Err(err) = rec.log_file_from_path(&urdf_path, None, false) {
             println!("Could not log file: {}. Errored with {}", urdf_path, err);
             println!("Make sure to install urdf loader with:");
@@ -71,23 +77,32 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
                 "pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git"
             )
         };
+
         // Get transform by replacing URDF_ with TRANSFORM_
         if let Ok(transform) = std::env::var(transform) {
             let transform = transform
                 .split(' ')
                 .map(|x| x.parse::<f32>().unwrap())
                 .collect::<Vec<f32>>();
-            rec.log(
-                path.clone(),
-                &rerun::Transform3D::from_translation_rotation(
-                    [transform[0], transform[1], transform[2]],
-                    Rotation3D::AxisAngle(RotationAxisAngle::new(
-                        [0., 0., 0.],
-                        Angle::from_degrees(0.0),
-                    )),
-                ),
-            )
-            .unwrap();
+
+            let mut pose = chain.origin();
+
+            if transform.len() == 7 {
+                let quaternion =
+                    Quaternion::new(transform[3], transform[4], transform[5], transform[6])
+                        .normalize(); // Example quaternion
+                let rot = UnitQuaternion::from_quaternion(quaternion);
+                pose.append_rotation_mut(&rot);
+            }
+            pose.append_translation_mut(&Translation3::new(
+                transform[0],
+                transform[1],
+                transform[2],
+            ));
+            chain.set_origin(pose);
+            chains.insert(path, chain);
+        } else {
+            // If no transform is set, use the default origin
             chains.insert(path, chain);
         }
     }
@@ -112,8 +127,7 @@ pub fn update_visualization(
         let link_to_world = link
             .world_transform()
             .context("Could not get world transform")?;
-        let link_to_parent = if link_name != "base_link" {
-            let parent = link.parent().context("could not get parent")?;
+        let link_to_parent = if let Some(parent) = link.parent() {
             parent
                 .world_transform()
                 .context("Could not get world transform")?
@@ -126,14 +140,13 @@ pub fn update_visualization(
         let trans = link_to_parent_mat.column(3);
         let trans = trans.as_slice();
         let quat = link_to_parent.rotation.quaternion();
-        rec.log(
-            entity_path,
-            &rerun::Transform3D::from_translation_rotation(
-                Vec3D::new(trans[0], trans[1], trans[2]),
-                rerun::Quaternion::from([quat.i, quat.j, quat.k, quat.w]),
-            ),
-        )
-        .context("Could not log transform")?;
+        let point_transform = rerun::Transform3D::from_translation_rotation(
+            Vec3D::new(trans[0], trans[1], trans[2]),
+            rerun::Quaternion::from([quat.i, quat.j, quat.k, quat.w]),
+        );
+        rec.log(entity_path.clone(), &point_transform)
+            .context("Could not log transform")?;
     }
+
     Ok(())
 }

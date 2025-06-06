@@ -5,7 +5,7 @@ use std::path::Path;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing("python-dataflow-runner")?;
+    set_up_tracing("rerun-viewer-runner")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -13,18 +13,24 @@ async fn main() -> eyre::Result<()> {
 
     let uv = get_uv_path().context("Could not get uv binary")?;
 
-    run(&uv, &["venv", "-p", "3.10", "--seed"], None)
+    run(&uv, &["venv", "-p", "3.11", "--seed"], None)
         .await
         .context("failed to create venv")?;
     run(
         &uv,
-        &["pip", "install", "-e", "../../apis/python/node", "--reinstall"],
+        &[
+            "pip",
+            "install",
+            "-e",
+            "../../apis/python/node",
+            "--reinstall",
+        ],
         None,
     )
     .await
     .context("Unable to install develop dora-rs API")?;
 
-    let dataflow = Path::new("qwen2-5-vl-vision-only-dev.yml");
+    let dataflow = Path::new("dataflow.yml");
     run_dataflow(dataflow).await?;
 
     Ok(())

@@ -133,7 +133,9 @@ def main():
                                 )
 
             if "boxes2d" in event_id:
-
+                if len(event["value"]) == 0:
+                    node.send_output("masks", pa.array([]))
+                    continue
                 if isinstance(event["value"], pa.StructArray):
                     boxes2d = event["value"][0].get("bbox").values.to_numpy()
                     labels = (
@@ -162,7 +164,59 @@ def main():
                 ):
                     predictor.set_image(frames[image_id])
                     masks, _scores, last_pred = predictor.predict(
-                        box=boxes2d, point_labels=labels, multimask_output=False,
+                        box=boxes2d,
+                        point_labels=labels,
+                        multimask_output=False,
+                    )
+
+                    if len(masks.shape) == 4:
+                        masks = masks[:, 0, :, :]
+                        last_pred = last_pred[:, 0, :, :]
+                    else:
+                        masks = masks[0, :, :]
+                        last_pred = last_pred[0, :, :]
+
+                    masks = masks > 0
+                    metadata["image_id"] = image_id
+                    metadata["width"] = frames[image_id].width
+                    metadata["height"] = frames[image_id].height
+                    ## Mask to 3 channel image
+                    match return_type:
+                        case pa.Array:
+                            node.send_output("masks", pa.array(masks.ravel()), metadata)
+                        case pa.StructArray:
+                            node.send_output(
+                                "masks",
+                                pa.array(
+                                    [
+                                        {
+                                            "masks": masks.ravel(),
+                                            "labels": event["value"]["labels"],
+                                        },
+                                    ],
+                                ),
+                                metadata,
+                            )
+            elif "points" in event_id:
+                points = event["value"].to_numpy().reshape((-1, 2))
+                return_type = pa.Array
+                if len(frames) == 0:
+                    continue
+                first_image = next(iter(frames.keys()))
+                image_id = event["metadata"].get("image_id", first_image)
+                with (
+                    torch.inference_mode(),
+                    torch.autocast(
+                        "cuda",
+                        dtype=torch.bfloat16,
+                    ),
+                ):
+                    predictor.set_image(frames[image_id])
+                    labels = [i for i in range(len(points))]
+                    masks, _scores, last_pred = predictor.predict(
+                        points,
+                        point_labels=labels,
+                        multimask_output=False,
                     )
 
                     if len(masks.shape) == 4:

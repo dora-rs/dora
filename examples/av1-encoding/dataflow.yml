@@ -1,0 +1,62 @@
+nodes:
+  - id: camera
+    build: pip install ../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 0
+      IMAGE_WIDTH: 1280
+      IMAGE_HEIGHT: 720
+
+  - id: rav1e-local
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      image: camera/image
+    outputs:
+      - image
+
+  - id: dav1d-remote
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: decoder
+    inputs:
+      image: rav1e-local/image
+    outputs:
+      - image
+
+  - id: rav1e-remote
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    _unstable_deploy:
+      machine: decoder
+    inputs:
+      image: dav1d-remote/image
+    outputs:
+      - image
+
+  - id: dav1d-local
+    path: dora-dav1d
+    build: cargo build -p dora-dav1d --release
+    _unstable_deploy:
+      machine: encoder
+    inputs:
+      image: rav1e-remote/image
+    outputs:
+      - image
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    _unstable_deploy:
+      machine: encoder
+    path: dora-rerun
+    inputs:
+      image_decode: dav1d-local/image

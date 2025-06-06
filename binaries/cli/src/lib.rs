@@ -15,8 +15,7 @@ use dora_message::{
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult, DataflowStatus},
 };
 #[cfg(feature = "tracing")]
-use dora_tracing::set_up_tracing;
-use dora_tracing::{set_up_tracing_opts, FileLogging};
+use dora_tracing::TracingBuilder;
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
@@ -246,7 +245,7 @@ enum Command {
         #[clap(long)]
         quiet: bool,
     },
-
+    /// Dora CLI self-management commands
     Self_ {
         #[clap(subcommand)]
         command: SelfSubCommand,
@@ -255,10 +254,17 @@ enum Command {
 
 #[derive(Debug, clap::Subcommand)]
 enum SelfSubCommand {
+    /// Check for updates or update the CLI
     Update {
         /// Only check for updates without installing
         #[clap(long)]
         check_only: bool,
+    },
+    /// Remove The Dora CLI from the system
+    Uninstall {
+        /// Force uninstallation without confirmation
+        #[clap(long)]
+        force: bool,
     },
 }
 
@@ -310,34 +316,42 @@ fn run_cli(args: Args) -> eyre::Result<()> {
                 .as_ref()
                 .map(|id| format!("{name}-{id}"))
                 .unwrap_or(name.to_string());
-            let stdout = (!quiet).then_some("info,zenoh=warn");
-            let file = Some(FileLogging {
-                file_name: filename,
-                filter: LevelFilter::INFO,
-            });
-            set_up_tracing_opts(name, stdout, file)
-                .context("failed to set up tracing subscriber")?;
+
+            let mut builder = TracingBuilder::new(name);
+            if !quiet {
+                builder = builder.with_stdout("info,zenoh=warn");
+            }
+            builder = builder.with_file(filename, LevelFilter::INFO)?;
+            builder
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
         Command::Runtime => {
             // Do not set the runtime in the cli.
         }
         Command::Coordinator { quiet, .. } => {
             let name = "dora-coordinator";
-            let stdout = (!quiet).then_some("info");
-            let file = Some(FileLogging {
-                file_name: name.to_owned(),
-                filter: LevelFilter::INFO,
-            });
-            set_up_tracing_opts(name, stdout, file)
-                .context("failed to set up tracing subscriber")?;
+            let mut builder = TracingBuilder::new(name);
+            if !quiet {
+                builder = builder.with_stdout("info");
+            }
+            builder = builder.with_file(name, LevelFilter::INFO)?;
+            builder
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
         Command::Run { .. } => {
-            let log_level = std::env::var("RUST_LOG").ok().or(Some("info".to_string()));
-            set_up_tracing_opts("run", log_level.as_deref(), None)
-                .context("failed to set up tracing subscriber")?;
+            let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
+            TracingBuilder::new("run")
+                .with_stdout(log_level)
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
         _ => {
-            set_up_tracing("dora-cli").context("failed to set up tracing subscriber")?;
+            TracingBuilder::new("dora-cli")
+                .with_stdout("warn")
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
     };
 
@@ -571,6 +585,62 @@ fn run_cli(args: Args) -> eyre::Result<()> {
                             }
                         },
                         Err(e) => println!("Failed to update: {}", e),
+                    }
+                }
+            }
+            SelfSubCommand::Uninstall { force } => {
+                if !force {
+                    let confirmed =
+                        inquire::Confirm::new("Are you sure you want to uninstall Dora CLI?")
+                            .with_default(false)
+                            .prompt()
+                            .wrap_err("Uninstallation cancelled")?;
+
+                    if !confirmed {
+                        println!("Uninstallation cancelled");
+                        return Ok(());
+                    }
+                }
+
+                println!("Uninstalling Dora CLI...");
+                #[cfg(feature = "python")]
+                {
+                    println!("Detected Python installation...");
+
+                    // Try uv pip uninstall first
+                    let uv_status = std::process::Command::new("uv")
+                        .args(["pip", "uninstall", "dora-rs-cli"])
+                        .status();
+
+                    if let Ok(status) = uv_status {
+                        if status.success() {
+                            println!("Dora CLI has been successfully uninstalled via uv pip.");
+                            return Ok(());
+                        }
+                    }
+
+                    // Fall back to regular pip uninstall
+                    println!("Trying with pip...");
+                    let status = std::process::Command::new("pip")
+                        .args(["uninstall", "-y", "dora-rs-cli"])
+                        .status()
+                        .wrap_err("Failed to run pip uninstall")?;
+
+                    if status.success() {
+                        println!("Dora CLI has been successfully uninstalled via pip.");
+                    } else {
+                        bail!("Failed to uninstall Dora CLI via pip.");
+                    }
+                }
+                #[cfg(not(feature = "python"))]
+                {
+                    match self_replace::self_delete() {
+                        Ok(_) => {
+                            println!("Dora CLI has been successfully uninstalled.");
+                        }
+                        Err(e) => {
+                            bail!("Failed to uninstall Dora CLI: {}", e);
+                        }
                     }
                 }
             }

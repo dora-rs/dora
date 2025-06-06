@@ -1,6 +1,6 @@
 [project]
 name = "dora-pyrealsense"
-version = "0.3.10"
+version = "0.3.11"
 authors = [{ name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" }]
 description = "Dora Node for capturing video with Pyrealsense"
 license = { text = "MIT" }
@@ -8,12 +8,12 @@ readme = "README.md"
 requires-python = ">=3.8"
 
 dependencies = [
-    "dora-rs >= 0.3.9",
-    "numpy < 2.0.0",
-    "opencv-python >= 4.1.1",
-    "pyrealsense2-macosx >= 2.54.2; sys_platform == 'darwin'",
-    "pyrealsense2 == 2.54.1.5216; sys_platform == 'linux'",
-    "pyrealsense2 == 2.54.1.5216; sys_platform == 'windows'",
+  "dora-rs >= 0.3.9",
+  "numpy < 2.0.0",
+  "opencv-python >= 4.1.1",
+  "pyrealsense2-macosx >= 2.54.2; sys_platform == 'darwin'",
+  "pyrealsense2 == 2.55.1.6486; sys_platform == 'linux'",
+  "pyrealsense2 == 2.55.1.6486; sys_platform == 'windows'",
 ]
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
