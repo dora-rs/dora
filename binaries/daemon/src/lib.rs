@@ -946,32 +946,19 @@ impl Daemon {
             let mut info = BuildInfo {
                 node_working_dirs: Default::default(),
             };
-            let mut errors = Vec::new();
             for task in tasks {
                 let NodeBuildTask {
                     node_id,
                     dynamic_node,
                     task,
                 } = task;
-                match task.await {
-                    Ok(node) => {
-                        info.node_working_dirs
-                            .insert(node_id, node.node_working_dir);
-                    }
-                    Err(err) => {
-                        errors.push((node_id, err));
-                    }
-                }
+                let node = task
+                    .await
+                    .with_context(|| format!("failed to build node `{node_id}`"))?;
+                info.node_working_dirs
+                    .insert(node_id, node.node_working_dir);
             }
-            if errors.is_empty() {
-                Ok(info)
-            } else {
-                let mut message = "failed to build dataflow:\n".to_owned();
-                for (node_id, err) in errors {
-                    message.push_str(&format!("- {node_id}: {err:?}\n-------------------\n\n"));
-                }
-                Err(eyre::eyre!(message))
-            }
+            Ok(info)
         };
 
         Ok(task)

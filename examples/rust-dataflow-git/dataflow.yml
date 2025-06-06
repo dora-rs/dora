@@ -1,9 +1,9 @@
 nodes:
   - id: rust-node
     git: https://github.com/dora-rs/dora.git
-    rev: e31b2a34 # pinned commit, update this when changing the message crate
-    build: cargo build --manifest-path build/github.com/dora-rs/dora.git/e31b2a34/Cargo.toml -p rust-dataflow-example-node
-    path: build/github.com/dora-rs/dora.git/e31b2a34/target/debug/rust-dataflow-example-node
+    rev: a8c55b5a # pinned commit, update this when changing the message crate
+    build: cargo build -p rust-dataflow-example-node
+    path: target/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -11,7 +11,7 @@ nodes:
 
   - id: rust-status-node
     git: https://github.com/dora-rs/dora.git
-    rev: e31b2a34 # pinned commit, update this when changing the message crate
+    rev: a8c55b5a # pinned commit, update this when changing the message crate
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
     inputs:
@@ -22,7 +22,7 @@ nodes:
 
   - id: rust-sink
     git: https://github.com/dora-rs/dora.git
-    rev: e31b2a34 # pinned commit, update this when changing the message crate
+    rev: a8c55b5a # pinned commit, update this when changing the message crate
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink
     inputs:

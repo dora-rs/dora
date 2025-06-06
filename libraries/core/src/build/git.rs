@@ -1,6 +1,6 @@
 use crate::build::BuildLogger;
 use dora_message::{common::LogLevel, descriptor::GitRepoRev, DataflowId, SessionId};
-use eyre::{ContextCompat, WrapErr};
+use eyre::{bail, ContextCompat, WrapErr};
 use git2::FetchOptions;
 use itertools::Itertools;
 use std::{
@@ -145,15 +145,53 @@ impl GitFolder {
     pub async fn prepare(self, logger: &mut impl BuildLogger) -> eyre::Result<PathBuf> {
         let GitFolder { reuse } = self;
 
+        eprintln!("reuse: {reuse:?}");
         let clone_dir = match reuse {
             ReuseOptions::NewClone {
                 target_dir,
                 repo_url,
                 commit_hash,
             } => {
-                let repository = clone_into(repo_url, &target_dir, logger).await?;
-                checkout_tree(&repository, &commit_hash)?;
-                target_dir
+                logger
+                    .log_message(
+                        LogLevel::Info,
+                        format!(
+                            "cloning {repo_url}#{commit_hash} into {}",
+                            target_dir.display()
+                        ),
+                    )
+                    .await;
+                let clone_target = target_dir.clone();
+                let checkout_result = tokio::task::spawn_blocking(move || {
+                    let repository = clone_into(repo_url.clone(), &clone_target)
+                        .with_context(|| format!("failed to clone git repo from `{repo_url}`"))?;
+                    checkout_tree(&repository, &commit_hash)
+                        .with_context(|| format!("failed to checkout commit `{commit_hash}`"))
+                })
+                .await
+                .unwrap();
+
+                match checkout_result {
+                    Ok(()) => target_dir,
+                    Err(err) => {
+                        logger
+                            .log_message(LogLevel::Error, format!("{err:?}"))
+                            .await;
+                        // remove erroneous clone again
+                        if let Err(err) = std::fs::remove_dir_all(target_dir) {
+                            logger
+                                .log_message(
+                                    LogLevel::Error,
+                                    format!(
+                                        "failed to remove clone dir after clone/checkout error: {}",
+                                        err.kind()
+                                    ),
+                                )
+                                .await;
+                        }
+                        bail!(err)
+                    }
+                }
             }
             ReuseOptions::CopyAndFetch {
                 from,
@@ -209,6 +247,7 @@ impl GitFolder {
     }
 }
 
+#[derive(Debug)]
 enum ReuseOptions {
     /// Create a new clone of the repository.
     NewClone {
@@ -241,35 +280,21 @@ fn rev_str(rev: &Option<GitRepoRev>) -> String {
     }
 }
 
-async fn clone_into(
-    repo_addr: Url,
-    clone_dir: &Path,
-    logger: &mut impl BuildLogger,
-) -> eyre::Result<git2::Repository> {
+fn clone_into(repo_addr: Url, clone_dir: &Path) -> eyre::Result<git2::Repository> {
     if let Some(parent) = clone_dir.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
+        std::fs::create_dir_all(parent)
             .context("failed to create parent directory for git clone")?;
     }
 
-    logger
-        .log_message(
-            LogLevel::Info,
-            format!("cloning {repo_addr} into {}", clone_dir.display()),
-        )
-        .await;
     let clone_dir = clone_dir.to_owned();
-    let task = tokio::task::spawn_blocking(move || {
-        let mut builder = git2::build::RepoBuilder::new();
-        let mut fetch_options = git2::FetchOptions::new();
-        fetch_options.download_tags(git2::AutotagOption::All);
-        builder.fetch_options(fetch_options);
-        builder
-            .clone(repo_addr.as_str(), &clone_dir)
-            .context("failed to clone repo")
-    });
-    let repo = task.await??;
-    Ok(repo)
+
+    let mut builder = git2::build::RepoBuilder::new();
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.download_tags(git2::AutotagOption::All);
+    builder.fetch_options(fetch_options);
+    builder
+        .clone(repo_addr.as_str(), &clone_dir)
+        .context("failed to clone repo")
 }
 
 async fn fetch_changes(

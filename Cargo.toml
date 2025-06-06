@@ -89,6 +89,7 @@ pyo3 = { version = "0.23", features = [
     "multiple-pymethods",
 ] }
 pythonize = "0.23"
+git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 
 [package]
 name = "dora-examples"
