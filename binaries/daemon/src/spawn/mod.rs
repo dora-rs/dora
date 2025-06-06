@@ -7,11 +7,10 @@ use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_arrow_convert::IntoArrow;
 use dora_core::{
-    build::run_build_command,
     config::DataId,
     descriptor::{
-        resolve_path, source_is_url, CustomNode, Descriptor, OperatorDefinition, OperatorSource,
-        PythonSource, ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
+        resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
+        ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
     },
     get_python_path,
     uhlc::HLC,
@@ -21,7 +20,6 @@ use dora_message::{
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
-    descriptor::EnvValue,
     id::NodeId,
     DataflowId,
 };
@@ -31,9 +29,7 @@ use dora_node_api::{
     Metadata,
 };
 use eyre::{ContextCompat, WrapErr};
-use git::GitFolder;
 use std::{
-    collections::{BTreeMap, BTreeSet},
     future::Future,
     path::{Path, PathBuf},
     process::Stdio,
@@ -46,27 +42,23 @@ use tokio::{
 };
 use tracing::error;
 
-mod git;
-
 #[derive(Clone)]
 pub struct Spawner {
     pub dataflow_id: DataflowId,
-    pub working_dir: PathBuf,
     pub daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub dataflow_descriptor: Descriptor,
     /// clock is required for generating timestamps when dropping messages early because queue is full
     pub clock: Arc<HLC>,
     pub uv: bool,
-    pub build_only: bool,
 }
 
 impl Spawner {
-    pub async fn prepare_node(
+    pub async fn spawn_node(
         self,
         node: ResolvedNode,
+        node_working_dir: PathBuf,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         logger: &mut NodeLogger<'_>,
-        repos_in_use: &mut BTreeMap<PathBuf, BTreeSet<DataflowId>>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>>> {
         let dataflow_id = self.dataflow_id;
         let node_id = node.id.clone();
@@ -101,24 +93,6 @@ impl Spawner {
             dynamic: node.kind.dynamic(),
         };
 
-        let prepared_git = if let dora_core::descriptor::CoreNodeKind::Custom(CustomNode {
-            source: dora_message::descriptor::NodeSource::GitBranch { repo, rev },
-            ..
-        }) = &node.kind
-        {
-            let target_dir = self.working_dir.join("build");
-            let git_folder = GitFolder::choose_clone_dir(
-                self.dataflow_id,
-                repo.clone(),
-                rev.clone(),
-                &target_dir,
-                repos_in_use,
-            )?;
-            Some(git_folder)
-        } else {
-            None
-        };
-
         let mut logger = logger
             .try_clone()
             .await
@@ -126,10 +100,10 @@ impl Spawner {
         let task = async move {
             self.prepare_node_inner(
                 node,
+                node_working_dir,
                 &mut logger,
                 dataflow_id,
                 node_config,
-                prepared_git,
                 node_stderr_most_recent,
             )
             .await
@@ -138,33 +112,21 @@ impl Spawner {
     }
 
     async fn prepare_node_inner(
-        mut self,
+        self,
         node: ResolvedNode,
+        node_working_dir: PathBuf,
         logger: &mut NodeLogger<'_>,
         dataflow_id: uuid::Uuid,
         node_config: NodeConfig,
-        git_folder: Option<GitFolder>,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
     ) -> eyre::Result<PreparedNode> {
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                let build_dir = match git_folder {
-                    Some(git_folder) => git_folder.prepare(logger).await?,
-                    None => self.working_dir.clone(),
-                };
-
-                if let Some(build) = &n.build {
-                    self.build_node(logger, &node.env, build_dir.clone(), build)
-                        .await?;
-                }
-                let mut command = if self.build_only {
-                    None
-                } else {
-                    path_spawn_command(&build_dir, self.uv, logger, n, true).await?
-                };
+                let mut command =
+                    path_spawn_command(&node_working_dir, self.uv, logger, n, true).await?;
 
                 if let Some(command) = &mut command {
-                    command.current_dir(&self.working_dir);
+                    command.current_dir(&node_working_dir);
                     command.stdin(Stdio::null());
 
                     command.env(
@@ -205,14 +167,6 @@ impl Spawner {
                 (command, error_msg)
             }
             dora_core::descriptor::CoreNodeKind::Runtime(n) => {
-                // run build commands
-                for operator in &n.operators {
-                    if let Some(build) = &operator.config.build {
-                        self.build_node(logger, &node.env, self.working_dir.clone(), build)
-                            .await?;
-                    }
-                }
-
                 let python_operators: Vec<&OperatorDefinition> = n
                     .operators
                     .iter()
@@ -224,9 +178,7 @@ impl Spawner {
                     .iter()
                     .any(|x| !matches!(x.config.source, OperatorSource::Python { .. }));
 
-                let mut command = if self.build_only {
-                    None
-                } else if !python_operators.is_empty() && !other_operators {
+                let mut command = if !python_operators.is_empty() && !other_operators {
                     // Use python to spawn runtime if there is a python operator
 
                     // TODO: Handle multi-operator runtime once sub-interpreter is supported
@@ -304,7 +256,7 @@ impl Spawner {
                 };
 
                 if let Some(command) = &mut command {
-                    command.current_dir(&self.working_dir);
+                    command.current_dir(&node_working_dir);
 
                     command.env(
                         "DORA_RUNTIME_CONFIG",
@@ -337,7 +289,7 @@ impl Spawner {
         Ok(PreparedNode {
             command,
             spawn_error_msg: error_msg,
-            working_dir: self.working_dir,
+            node_working_dir,
             dataflow_id,
             node,
             node_config,
@@ -346,50 +298,12 @@ impl Spawner {
             node_stderr_most_recent,
         })
     }
-
-    async fn build_node(
-        &mut self,
-        logger: &mut NodeLogger<'_>,
-        node_env: &Option<BTreeMap<String, EnvValue>>,
-        working_dir: PathBuf,
-        build: &String,
-    ) -> Result<(), eyre::Error> {
-        logger
-            .log(
-                LogLevel::Info,
-                None,
-                format!("running build command: `{build}"),
-            )
-            .await;
-        let build = build.to_owned();
-        let uv = self.uv;
-        let node_env = node_env.clone();
-        let mut logger = logger.try_clone().await.context("failed to clone logger")?;
-        let (stdout_tx, mut stdout) = tokio::sync::mpsc::channel(10);
-        let task = tokio::task::spawn_blocking(move || {
-            run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
-                .context("build command failed")
-        });
-        tokio::spawn(async move {
-            while let Some(line) = stdout.recv().await {
-                logger
-                    .log(
-                        LogLevel::Info,
-                        Some("build command".into()),
-                        line.unwrap_or_else(|err| format!("io err: {}", err.kind())),
-                    )
-                    .await;
-            }
-        });
-        task.await??;
-        Ok(())
-    }
 }
 
 pub struct PreparedNode {
     command: Option<tokio::process::Command>,
     spawn_error_msg: String,
-    working_dir: PathBuf,
+    node_working_dir: PathBuf,
     dataflow_id: DataflowId,
     node: ResolvedNode,
     node_config: NodeConfig,
@@ -430,7 +344,7 @@ impl PreparedNode {
             .await;
 
         let dataflow_dir: PathBuf = self
-            .working_dir
+            .node_working_dir
             .join("out")
             .join(self.dataflow_id.to_string());
         if !dataflow_dir.exists() {
@@ -438,7 +352,7 @@ impl PreparedNode {
         }
         let (tx, mut rx) = mpsc::channel(10);
         let mut file = File::create(log::log_path(
-            &self.working_dir,
+            &self.node_working_dir,
             &self.dataflow_id,
             &self.node.id,
         ))
@@ -642,7 +556,8 @@ impl PreparedNode {
                     cloned_logger
                         .log(LogMessage {
                             daemon_id: Some(daemon_id.clone()),
-                            dataflow_id,
+                            dataflow_id: Some(dataflow_id),
+                            build_id: None,
                             level: LogLevel::Info,
                             node_id: Some(node_id.clone()),
                             target: Some("stdout".into()),

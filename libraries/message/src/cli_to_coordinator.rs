@@ -1,22 +1,48 @@
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use uuid::Uuid;
 
 use crate::{
+    common::GitSource,
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
+    BuildId, SessionId,
 };
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
+    Build {
+        session_id: SessionId,
+        dataflow: Descriptor,
+        git_sources: BTreeMap<NodeId, GitSource>,
+        prev_git_sources: BTreeMap<NodeId, GitSource>,
+        /// Allows overwriting the base working dir when CLI and daemon are
+        /// running on the same machine.
+        ///
+        /// Must not be used for multi-machine dataflows.
+        ///
+        /// Note that nodes with git sources still use a subdirectory of
+        /// the base working dir.
+        local_working_dir: Option<PathBuf>,
+        uv: bool,
+    },
+    WaitForBuild {
+        build_id: BuildId,
+    },
     Start {
+        build_id: Option<BuildId>,
+        session_id: SessionId,
         dataflow: Descriptor,
         name: Option<String>,
-        // TODO: remove this once we figure out deploying of node/operator
-        // binaries from CLI to coordinator/daemon
-        local_working_dir: PathBuf,
+        /// Allows overwriting the base working dir when CLI and daemon are
+        /// running on the same machine.
+        ///
+        /// Must not be used for multi-machine dataflows.
+        ///
+        /// Note that nodes with git sources still use a subdirectory of
+        /// the base working dir.
+        local_working_dir: Option<PathBuf>,
         uv: bool,
-        build_only: bool,
     },
     WaitForSpawn {
         dataflow_id: Uuid,
@@ -50,4 +76,9 @@ pub enum ControlRequest {
         dataflow_id: Uuid,
         level: log::LevelFilter,
     },
+    BuildLogSubscribe {
+        build_id: BuildId,
+        level: log::LevelFilter,
+    },
+    CliAndDefaultDaemonOnSameMachine,
 }

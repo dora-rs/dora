@@ -254,6 +254,12 @@ pub enum NodeSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum ResolvedNodeSource {
+    Local,
+    GitCommit { repo: String, commit_hash: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum GitRepoRev {
     Branch(String),
     Tag(String),

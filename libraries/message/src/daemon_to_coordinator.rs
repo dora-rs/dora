@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
-use crate::{common::DaemonId, current_crate_version, id::NodeId, versions_compatible, DataflowId};
+use crate::{
+    common::DaemonId, current_crate_version, id::NodeId, versions_compatible, BuildId, DataflowId,
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
@@ -46,6 +48,10 @@ impl DaemonRegisterRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum DaemonEvent {
+    BuildResult {
+        build_id: BuildId,
+        result: Result<(), String>,
+    },
     SpawnResult {
         dataflow_id: DataflowId,
         result: Result<(), String>,
@@ -77,6 +83,7 @@ impl DataflowDaemonResult {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorReply {
+    TriggerBuildResult(Result<(), String>),
     TriggerSpawnResult(Result<(), String>),
     ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),

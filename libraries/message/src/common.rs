@@ -5,14 +5,15 @@ use aligned_vec::{AVec, ConstAlign};
 use eyre::Context as _;
 use uuid::Uuid;
 
-use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, DataflowId};
+use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, BuildId, DataflowId};
 
 pub use log::Level as LogLevel;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct LogMessage {
-    pub dataflow_id: DataflowId,
+    pub build_id: Option<BuildId>,
+    pub dataflow_id: Option<DataflowId>,
     pub node_id: Option<NodeId>,
     pub daemon_id: Option<DaemonId>,
     pub level: LogLevel,
@@ -238,4 +239,10 @@ impl std::fmt::Display for DaemonId {
         }
         write!(f, "{}", self.uuid)
     }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
+pub struct GitSource {
+    pub repo: String,
+    pub commit_hash: String,
 }
