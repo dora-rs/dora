@@ -5,7 +5,6 @@ pub use crate::common::{
 };
 use crate::{
     common::DaemonId, current_crate_version, id::NodeId, versions_compatible, BuildId, DataflowId,
-    SessionId,
 };
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -51,7 +50,6 @@ impl DaemonRegisterRequest {
 pub enum DaemonEvent {
     BuildResult {
         build_id: BuildId,
-        session_id: SessionId,
         result: Result<(), String>,
     },
     SpawnResult {

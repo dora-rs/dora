@@ -465,7 +465,6 @@ impl Daemon {
                                 daemon_id: self.daemon_id.clone(),
                                 event: DaemonEvent::BuildResult {
                                     build_id,
-                                    session_id,
                                     result: result.map_err(|err| format!("{err:?}")),
                                 },
                             },
@@ -534,7 +533,6 @@ impl Daemon {
                 build_id,
                 session_id,
                 local_working_dir,
-                nodes,
                 git_sources,
                 prev_git_sources,
                 dataflow_descriptor,
@@ -552,7 +550,6 @@ impl Daemon {
                         build_id,
                         session_id,
                         base_working_dir,
-                        nodes,
                         git_sources,
                         prev_git_sources,
                         dataflow_descriptor,
@@ -883,12 +880,12 @@ impl Daemon {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn build_dataflow(
         &mut self,
         build_id: BuildId,
         session_id: SessionId,
         base_working_dir: PathBuf,
-        nodes: BTreeMap<NodeId, ResolvedNode>,
         git_sources: BTreeMap<NodeId, GitSource>,
         prev_git_sources: BTreeMap<NodeId, GitSource>,
         dataflow_descriptor: Descriptor,
@@ -900,6 +897,7 @@ impl Daemon {
             base_working_dir,
             uv,
         };
+        let nodes = dataflow_descriptor.resolve_aliases_and_set_defaults()?;
 
         let mut tasks = Vec::new();
 
@@ -979,6 +977,7 @@ impl Daemon {
         Ok(task)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_dataflow(
         &mut self,
         build_id: Option<BuildId>,

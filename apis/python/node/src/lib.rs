@@ -381,7 +381,7 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
 #[pyfunction]
 #[pyo3(signature = (dataflow_path, uv=None))]
 pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
-    dora_cli::run::run(dataflow_path, uv.unwrap_or_default())
+    dora_cli::command::run(dataflow_path, uv.unwrap_or_default())
 }
 
 #[pymodule]

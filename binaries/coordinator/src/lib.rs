@@ -827,7 +827,6 @@ async fn start_inner(
             }
             Event::DataflowBuildResult {
                 build_id,
-                session_id,
                 daemon_id,
                 result,
             } => match running_builds.get_mut(&build_id) {
@@ -1247,6 +1246,7 @@ async fn retrieve_logs(
     reply_logs.map_err(|err| eyre!(err))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(daemon_connections, clock))]
 async fn build_dataflow(
     build_id: BuildId,
@@ -1283,7 +1283,6 @@ async fn build_dataflow(
             build_id,
             session_id,
             local_working_dir: local_working_dir.clone(),
-            nodes: nodes.clone(),
             git_sources: git_sources_by_daemon
                 .remove(&machine.as_ref())
                 .unwrap_or_default(),
@@ -1353,6 +1352,7 @@ async fn build_dataflow_on_machine(
     Ok(daemon_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_dataflow(
     build_id: Option<BuildId>,
     session_id: SessionId,
@@ -1468,7 +1468,6 @@ pub enum Event {
     },
     DataflowBuildResult {
         build_id: BuildId,
-        session_id: SessionId,
         daemon_id: DaemonId,
         result: eyre::Result<()>,
     },

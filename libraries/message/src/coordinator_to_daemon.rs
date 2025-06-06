@@ -4,8 +4,6 @@ use std::{
     time::Duration,
 };
 
-use uuid::Uuid;
-
 use crate::{
     common::{DaemonId, GitSource},
     descriptor::{Descriptor, ResolvedNode},
@@ -70,7 +68,6 @@ pub struct BuildDataflowNodes {
     /// Note that nodes with git sources still use a subdirectory of
     /// the base working dir.
     pub local_working_dir: Option<PathBuf>,
-    pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub git_sources: BTreeMap<NodeId, GitSource>,
     pub prev_git_sources: BTreeMap<NodeId, GitSource>,
     pub dataflow_descriptor: Descriptor,

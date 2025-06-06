@@ -1,20 +1,11 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    future::Future,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 use dora_core::{
     build::{BuildInfo, BuildLogger, Builder, GitManager},
-    descriptor::{self, Descriptor, NodeExt, ResolvedNode, SINGLE_OPERATOR_DEFAULT_ID},
+    descriptor::{Descriptor, DescriptorExt},
 };
-use dora_message::{
-    common::GitSource,
-    id::{NodeId, OperatorId},
-    BuildId, SessionId,
-};
+use dora_message::{common::GitSource, id::NodeId};
 use eyre::Context;
-use futures::executor::block_on;
 
 use crate::session::DataflowSession;
 
@@ -28,37 +19,35 @@ pub fn build_dataflow_locally(
     let runtime = tokio::runtime::Runtime::new()?;
 
     runtime.block_on(build_dataflow(
-        dataflow_session.session_id,
-        working_dir,
-        nodes,
+        dataflow,
         git_sources,
-        prev_git_sources,
-        local_nodes,
+        dataflow_session,
+        working_dir,
         uv,
     ))
 }
 
 async fn build_dataflow(
-    session_id: SessionId,
+    dataflow: Descriptor,
+    git_sources: &BTreeMap<NodeId, GitSource>,
+    dataflow_session: &DataflowSession,
     base_working_dir: PathBuf,
-    nodes: BTreeMap<NodeId, ResolvedNode>,
-    git_sources: BTreeMap<NodeId, GitSource>,
-    prev_git_sources: BTreeMap<NodeId, GitSource>,
-    local_nodes: BTreeSet<NodeId>,
     uv: bool,
 ) -> eyre::Result<BuildInfo> {
     let builder = Builder {
-        session_id,
+        session_id: dataflow_session.session_id,
         base_working_dir,
         uv,
     };
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
     let mut git_manager = GitManager::default();
+    let prev_git_sources = &dataflow_session.git_sources;
 
     let mut tasks = Vec::new();
 
     // build nodes
-    for node in nodes.into_values().filter(|n| local_nodes.contains(&n.id)) {
+    for node in nodes.into_values() {
         let node_id = node.id.clone();
         let git_source = git_sources.get(&node_id).cloned();
         let prev_git_source = prev_git_sources.get(&node_id).cloned();
@@ -108,18 +97,12 @@ struct LocalBuildLogger;
 impl BuildLogger for LocalBuildLogger {
     type Clone = Self;
 
-    fn log_message(
-        &mut self,
-        level: log::Level,
-        message: impl Into<String> + Send,
-    ) -> impl Future<Output = ()> + Send {
-        async move {
-            let message: String = message.into();
-            println!("{level}: \t{message}");
-        }
+    async fn log_message(&mut self, level: log::Level, message: impl Into<String> + Send) {
+        let message: String = message.into();
+        println!("{level}: \t{message}");
     }
 
-    fn try_clone(&self) -> impl Future<Output = eyre::Result<Self::Clone>> + Send {
-        async { Ok(LocalBuildLogger) }
+    async fn try_clone(&self) -> eyre::Result<Self::Clone> {
+        Ok(LocalBuildLogger)
     }
 }

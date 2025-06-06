@@ -372,12 +372,12 @@ fn run_cli(args: Args) -> eyre::Result<()> {
             coordinator_port,
             uv,
             local,
-        } => command::build::build(dataflow, coordinator_addr, coordinator_port, uv, local)?,
+        } => command::build(dataflow, coordinator_addr, coordinator_port, uv, local)?,
         Command::New {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Run { dataflow, uv } => command::run::run(dataflow, uv)?,
+        Command::Run { dataflow, uv } => command::run(dataflow, uv)?,
         Command::Up { config } => {
             command::up::up(config.as_deref())?;
         }
@@ -394,7 +394,7 @@ fn run_cli(args: Args) -> eyre::Result<()> {
             if let Some(dataflow) = dataflow {
                 let uuid = Uuid::parse_str(&dataflow).ok();
                 let name = if uuid.is_some() { None } else { Some(dataflow) };
-                command::logs::logs(&mut *session, uuid, name, node)?
+                command::logs(&mut *session, uuid, name, node)?
             } else {
                 let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> =
                     list.get_active();
@@ -403,7 +403,7 @@ fn run_cli(args: Args) -> eyre::Result<()> {
                     [uuid] => uuid.clone(),
                     _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
                 };
-                command::logs::logs(&mut *session, Some(uuid.uuid), None, node)?
+                command::logs(&mut *session, Some(uuid.uuid), None, node)?
             }
         }
         Command::Start {
@@ -417,7 +417,7 @@ fn run_cli(args: Args) -> eyre::Result<()> {
             uv,
         } => {
             let coordinator_socket = (coordinator_addr, coordinator_port).into();
-            command::start::start(
+            command::start(
                 dataflow,
                 name,
                 coordinator_socket,

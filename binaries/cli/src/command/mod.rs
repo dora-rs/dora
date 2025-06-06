@@ -1,3 +1,8 @@
+pub use build::build;
+pub use logs::logs;
+pub use run::run;
+pub use start::start;
+
 use std::path::{Path, PathBuf};
 
 use communication_layer_request_reply::TcpRequestReplyConnection;
@@ -5,11 +10,11 @@ use dora_core::descriptor::Descriptor;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{bail, Context, ContextCompat};
 
-pub mod build;
+mod build;
 pub mod check;
-pub mod logs;
-pub mod run;
-pub mod start;
+mod logs;
+mod run;
+mod start;
 pub mod up;
 
 fn local_working_dir(
