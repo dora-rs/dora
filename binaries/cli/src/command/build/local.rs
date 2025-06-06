@@ -103,7 +103,7 @@ impl BuildLogger for LocalBuildLogger {
 
     async fn log_message(&mut self, level: log::Level, message: impl Into<String> + Send) {
         let message: String = message.into();
-        println!("node {}: \t{level}: \t{message}", self.node_id);
+        println!("{}: \t{level}: \t{message}", self.node_id);
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
