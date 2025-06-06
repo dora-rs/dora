@@ -58,7 +58,9 @@ async fn build_dataflow(
                 node,
                 git_source,
                 prev_git_source,
-                LocalBuildLogger,
+                LocalBuildLogger {
+                    node_id: node_id.clone(),
+                },
                 &mut git_manager,
             )
             .await
