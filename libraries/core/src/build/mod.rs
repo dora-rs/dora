@@ -37,8 +37,6 @@ impl Builder {
         mut logger: impl BuildLogger,
         git_manager: &mut GitManager,
     ) -> eyre::Result<impl Future<Output = eyre::Result<BuiltNode>>> {
-        logger.log_message(LogLevel::Debug, "building node").await;
-
         let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
             let repo_url = Url::parse(&repo).context("failed to parse git repository URL")?;
             let target_dir = self.base_working_dir.join("git");
@@ -65,6 +63,7 @@ impl Builder {
         logger: &mut impl BuildLogger,
         git_folder: Option<GitFolder>,
     ) -> eyre::Result<BuiltNode> {
+        logger.log_message(LogLevel::Debug, "building node").await;
         let node_working_dir = match &node.kind {
             CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {

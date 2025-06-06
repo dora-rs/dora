@@ -92,17 +92,21 @@ async fn build_dataflow(
     }
 }
 
-struct LocalBuildLogger;
+struct LocalBuildLogger {
+    node_id: NodeId,
+}
 
 impl BuildLogger for LocalBuildLogger {
     type Clone = Self;
 
     async fn log_message(&mut self, level: log::Level, message: impl Into<String> + Send) {
         let message: String = message.into();
-        println!("{level}: \t{message}");
+        println!("node {}: \t{level}: \t{message}", self.node_id);
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
-        Ok(LocalBuildLogger)
+        Ok(LocalBuildLogger {
+            node_id: self.node_id.clone(),
+        })
     }
 }
