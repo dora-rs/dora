@@ -67,7 +67,15 @@ impl Builder {
         let node_working_dir = match &node.kind {
             CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {
-                    Some(git_folder) => git_folder.prepare(logger).await?,
+                    Some(git_folder) => {
+                        let clone_dir = git_folder.prepare(logger).await?;
+                        tracing::warn!(
+                            "using git clone directory as working dir: \
+                            this behavior is unstable and might change \
+                            (see https://github.com/dora-rs/dora/pull/901)"
+                        );
+                        clone_dir
+                    }
                     None => self.base_working_dir,
                 };
 
