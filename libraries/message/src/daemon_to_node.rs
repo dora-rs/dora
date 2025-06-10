@@ -23,7 +23,7 @@ pub struct NodeConfig {
     pub node_id: NodeId,
     pub run_config: NodeRunConfig,
     pub daemon_communication: DaemonCommunication,
-    pub dataflow_descriptor: Descriptor,
+    pub dataflow_descriptor: serde_yaml::Value,
     pub dynamic: bool,
 }
 

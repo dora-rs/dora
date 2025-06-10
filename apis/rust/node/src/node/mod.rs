@@ -60,7 +60,7 @@ pub struct DoraNode {
     drop_stream: DropStream,
     cache: VecDeque<ShmemHandle>,
 
-    dataflow_descriptor: Descriptor,
+    dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     _rt: TokioRuntime,
 }
@@ -200,7 +200,7 @@ impl DoraNode {
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
-            dataflow_descriptor,
+            dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             _rt: rt,
         };
@@ -449,8 +449,15 @@ impl DoraNode {
     /// Returns the full dataflow descriptor that this node is part of.
     ///
     /// This method returns the parsed dataflow YAML file.
-    pub fn dataflow_descriptor(&self) -> &Descriptor {
-        &self.dataflow_descriptor
+    pub fn dataflow_descriptor(&self) -> eyre::Result<&Descriptor> {
+        match &self.dataflow_descriptor {
+            Ok(d) => Ok(d),
+            Err(err) => eyre::bail!(
+                "failed to parse dataflow descriptor: {err}\n\n
+                This might be caused by mismatched version numbers of dora \
+                daemon and the dora node API"
+            ),
+        }
     }
 }
 

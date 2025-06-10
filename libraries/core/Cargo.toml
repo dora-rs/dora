@@ -13,7 +13,7 @@ repository.workspace = true
 dora-message = { workspace = true }
 eyre = "0.6.8"
 serde = { version = "1.0.136", features = ["derive"] }
-serde_yaml = "0.9.11"
+serde_yaml = { workspace = true }
 once_cell = "1.13.0"
 which = "5.0.0"
 uuid = { version = "1.7", features = ["serde", "v7"] }
