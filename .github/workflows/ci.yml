@@ -409,6 +409,7 @@ jobs:
 
           # Run Rust queue latency test
           echo "Running CI Queue Size Latest Data Rust Test"
+          dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
           dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
       - name: "Test CLI (C)"
