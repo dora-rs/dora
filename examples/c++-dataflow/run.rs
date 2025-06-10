@@ -157,6 +157,7 @@ async fn build_cxx_node(
         clang.arg("-l").arg("m");
         clang.arg("-l").arg("rt");
         clang.arg("-l").arg("dl");
+        clang.arg("-l").arg("z");
         clang.arg("-pthread");
     }
     #[cfg(target_os = "windows")]
