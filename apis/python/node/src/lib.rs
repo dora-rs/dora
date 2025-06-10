@@ -230,7 +230,7 @@ impl Node {
     /// :rtype: dict
     pub fn dataflow_descriptor(&mut self, py: Python) -> eyre::Result<PyObject> {
         Ok(
-            pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor())
+            pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor()?)
                 .map(|x| x.unbind())?,
         )
     }
