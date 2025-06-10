@@ -1003,8 +1003,14 @@ impl Daemon {
                 .await
                 .wrap_err("failed to clone logger")?;
 
+            let mut builder = builder.clone();
+            if let Some(node_working_dir) =
+                node.deploy.as_ref().and_then(|d| d.working_dir.as_deref())
+            {
+                builder.base_working_dir = builder.base_working_dir.join(node_working_dir);
+            }
+
             match builder
-                .clone()
                 .build_node(
                     node,
                     git_source,
@@ -1157,7 +1163,13 @@ impl Daemon {
                     .await;
                 let node_working_dir = node_working_dirs
                     .get(&node_id)
-                    .unwrap_or(&base_working_dir)
+                    .cloned()
+                    .or_else(|| {
+                        node.deploy
+                            .as_ref()
+                            .and_then(|d| d.working_dir.as_ref().map(|d| base_working_dir.join(d)))
+                    })
+                    .unwrap_or(base_working_dir.clone())
                     .clone();
                 match spawner
                     .clone()
