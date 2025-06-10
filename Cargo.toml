@@ -191,3 +191,7 @@ path = "examples/rerun-viewer/run.rs"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[patch.crates-io]
+syntect = { git = "https://github.com/trishume/syntect.git", rev = "18bd359f974c1c65866c143aa845d72f49f543af" }
+tokenizers = { git = "https://github.com/huggingface/tokenizers.git", rev = "909fdde2a4ffedd9295206f705eb612be2a91b12" }
