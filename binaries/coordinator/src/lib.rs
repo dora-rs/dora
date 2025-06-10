@@ -1197,7 +1197,7 @@ async fn retrieve_logs(
     let machine_ids: Vec<Option<String>> = nodes
         .values()
         .filter(|node| node.id == node_id)
-        .map(|node| node.deploy.machine.clone())
+        .map(|node| node.deploy.as_ref().and_then(|d| d.machine.clone()))
         .collect();
 
     let machine_id = if let [machine_id] = &machine_ids[..] {
@@ -1263,14 +1263,24 @@ async fn build_dataflow(
 
     let mut git_sources_by_daemon = git_sources
         .into_iter()
-        .into_grouping_map_by(|(id, _)| nodes.get(id).and_then(|n| n.deploy.machine.as_ref()))
+        .into_grouping_map_by(|(id, _)| {
+            nodes
+                .get(id)
+                .and_then(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()))
+        })
         .collect();
     let mut prev_git_sources_by_daemon = prev_git_sources
         .into_iter()
-        .into_grouping_map_by(|(id, _)| nodes.get(id).and_then(|n| n.deploy.machine.as_ref()))
+        .into_grouping_map_by(|(id, _)| {
+            nodes
+                .get(id)
+                .and_then(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()))
+        })
         .collect();
 
-    let nodes_by_daemon = nodes.values().into_group_map_by(|n| &n.deploy.machine);
+    let nodes_by_daemon = nodes
+        .values()
+        .into_group_map_by(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()));
 
     let mut daemons = BTreeSet::new();
     for (machine, nodes_on_machine) in &nodes_by_daemon {
@@ -1283,11 +1293,9 @@ async fn build_dataflow(
             build_id,
             session_id,
             local_working_dir: local_working_dir.clone(),
-            git_sources: git_sources_by_daemon
-                .remove(&machine.as_ref())
-                .unwrap_or_default(),
+            git_sources: git_sources_by_daemon.remove(machine).unwrap_or_default(),
             prev_git_sources: prev_git_sources_by_daemon
-                .remove(&machine.as_ref())
+                .remove(machine)
                 .unwrap_or_default(),
             dataflow_descriptor: dataflow.clone(),
             nodes_on_machine,
@@ -1298,9 +1306,10 @@ async fn build_dataflow(
             timestamp: clock.new_timestamp(),
         })?;
 
-        let daemon_id = build_dataflow_on_machine(daemon_connections, machine.as_deref(), &message)
-            .await
-            .wrap_err_with(|| format!("failed to build dataflow on machine `{machine:?}`"))?;
+        let daemon_id =
+            build_dataflow_on_machine(daemon_connections, machine.map(|s| s.as_str()), &message)
+                .await
+                .wrap_err_with(|| format!("failed to build dataflow on machine `{machine:?}`"))?;
         daemons.insert(daemon_id);
     }
 

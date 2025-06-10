@@ -23,15 +23,15 @@ pub struct Descriptor {
     #[serde(default)]
     pub communication: CommunicationConfig,
     #[schemars(skip)]
-    #[serde(default, rename = "_unstable_deploy")]
-    pub deploy: Deploy,
+    #[serde(rename = "_unstable_deploy")]
+    pub deploy: Option<Deploy>,
     pub nodes: Vec<Node>,
     #[schemars(skip)]
     #[serde(default, rename = "_unstable_debug")]
     pub debug: Debug,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
@@ -58,8 +58,8 @@ pub struct Node {
 
     /// Unstable machine deployment configuration
     #[schemars(skip)]
-    #[serde(default, rename = "_unstable_deploy")]
-    pub deploy: Deploy,
+    #[serde(rename = "_unstable_deploy")]
+    pub deploy: Option<Deploy>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operators: Option<RuntimeNode>,
@@ -99,7 +99,7 @@ pub struct ResolvedNode {
     pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(default)]
-    pub deploy: Deploy,
+    pub deploy: Option<Deploy>,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,

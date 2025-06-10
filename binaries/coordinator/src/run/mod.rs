@@ -33,7 +33,9 @@ pub(super) async fn spawn_dataflow(
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
-    let nodes_by_daemon = nodes.values().into_group_map_by(|n| &n.deploy.machine);
+    let nodes_by_daemon = nodes
+        .values()
+        .into_group_map_by(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()));
 
     let mut daemons = BTreeSet::new();
     for (machine, nodes_on_machine) in &nodes_by_daemon {
@@ -57,9 +59,10 @@ pub(super) async fn spawn_dataflow(
             timestamp: clock.new_timestamp(),
         })?;
 
-        let daemon_id = spawn_dataflow_on_machine(daemon_connections, machine.as_deref(), &message)
-            .await
-            .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
+        let daemon_id =
+            spawn_dataflow_on_machine(daemon_connections, machine.map(|m| m.as_str()), &message)
+                .await
+                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
         daemons.insert(daemon_id);
     }
 
