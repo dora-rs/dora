@@ -35,7 +35,7 @@ impl GitManager {
         prev_commit_hash: Option<String>,
         target_dir: &Path,
     ) -> eyre::Result<GitFolder> {
-        let clone_dir = Self::clone_dir_path(&target_dir, &repo_url, &commit_hash)?;
+        let clone_dir = Self::clone_dir_path(target_dir, &repo_url, &commit_hash)?;
 
         if let Some(using) = self.clones_in_use.get(&clone_dir) {
             if !using.is_empty() {
@@ -59,7 +59,7 @@ impl GitManager {
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
             let prev_clone_dir =
-                Self::clone_dir_path(&target_dir, &repo_url, &previous_commit_hash)?;
+                Self::clone_dir_path(target_dir, &repo_url, &previous_commit_hash)?;
 
             if self
                 .clones_in_use
@@ -269,15 +269,6 @@ enum ReuseOptions {
         target_dir: PathBuf,
         commit_hash: String,
     },
-}
-
-fn rev_str(rev: &Option<GitRepoRev>) -> String {
-    match rev {
-        Some(GitRepoRev::Branch(branch)) => format!(" (branch {branch})"),
-        Some(GitRepoRev::Tag(tag)) => format!(" (tag {tag})"),
-        Some(GitRepoRev::Rev(rev)) => format!(" (rev {rev})"),
-        None => String::new(),
-    }
 }
 
 fn clone_into(repo_addr: Url, clone_dir: &Path) -> eyre::Result<git2::Repository> {

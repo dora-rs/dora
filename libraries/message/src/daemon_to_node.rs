@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use crate::{
     config::NodeRunConfig,
-    descriptor::{Descriptor, OperatorDefinition},
+    descriptor::OperatorDefinition,
     id::{DataId, NodeId, OperatorId},
     metadata::Metadata,
     DataflowId,

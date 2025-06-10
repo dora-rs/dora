@@ -158,10 +158,9 @@ impl DoraNode {
             ),
         };
 
-        let id = format!("{}/{}", dataflow_id, node_id);
-
         #[cfg(feature = "metrics")]
         {
+            let id = format!("{}/{}", dataflow_id, node_id);
             let monitor_task = async move {
                 if let Err(e) = run_metrics_monitor(id.clone())
                     .await
