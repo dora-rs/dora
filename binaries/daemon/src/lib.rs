@@ -174,6 +174,15 @@ impl Daemon {
             .to_owned();
 
         let descriptor = read_as_descriptor(dataflow_path).await?;
+        if let Some(node) = descriptor.nodes.iter().find(|n| n.deploy.is_some()) {
+            eyre::bail!(
+                "node {} has a `deploy` section, which is not supported in `dora run`\n\n
+                Instead, you need to spawn a `dora coordinator` and one or more `dora daemon`
+                instances and then use `dora start`.",
+                node.id
+            )
+        }
+
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 

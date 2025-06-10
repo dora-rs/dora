@@ -26,7 +26,7 @@ fn local_working_dir(
         if dataflow_descriptor
             .nodes
             .iter()
-            .all(|n| n.deploy.machine.is_none())
+            .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
             && cli_and_daemon_on_same_machine(coordinator_session)?
         {
             Some(

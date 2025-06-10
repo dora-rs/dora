@@ -36,11 +36,13 @@ pub fn check_dataflow(
                         if source_is_url(source) {
                             info!("{source} is a URL."); // TODO: Implement url check.
                         } else if let Some(remote_daemon_id) = remote_daemon_id {
-                            if let Some(machine) = &node.deploy.machine {
-                                if remote_daemon_id.contains(&machine.as_str())
-                                    || coordinator_is_remote
-                                {
-                                    info!("skipping path check for remote node `{}`", node.id);
+                            if let Some(deploy) = &node.deploy {
+                                if let Some(machine) = &deploy.machine {
+                                    if remote_daemon_id.contains(&machine.as_str())
+                                        || coordinator_is_remote
+                                    {
+                                        info!("skipping path check for remote node `{}`", node.id);
+                                    }
                                 }
                             }
                         } else if custom.build.is_some() {
