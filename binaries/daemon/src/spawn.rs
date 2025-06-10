@@ -89,7 +89,8 @@ impl Spawner {
             node_id: node_id.clone(),
             run_config: node.kind.run_config(),
             daemon_communication,
-            dataflow_descriptor: self.dataflow_descriptor.clone(),
+            dataflow_descriptor: serde_yaml::to_value(&self.dataflow_descriptor)
+                .context("failed to serialize dataflow descriptor to YAML")?,
             dynamic: node.kind.dynamic(),
         };
 

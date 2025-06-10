@@ -3030,7 +3030,7 @@ dependencies = [
  "git2",
  "itertools 0.14.0",
  "serde_json",
- "serde_yaml 0.8.26",
+ "serde_yaml 0.9.34+deprecated",
  "shared-memory-server",
  "sysinfo 0.30.13",
  "tokio",
@@ -3161,7 +3161,7 @@ dependencies = [
  "futures-concurrency",
  "futures-timer",
  "serde_json",
- "serde_yaml 0.8.26",
+ "serde_yaml 0.9.34+deprecated",
  "shared-memory-server",
  "shared_memory_extended",
  "tokio",
@@ -3212,7 +3212,7 @@ dependencies = [
  "futures",
  "pyo3",
  "pythonize",
- "serde_yaml 0.8.26",
+ "serde_yaml 0.9.34+deprecated",
  "tokio",
 ]
 
@@ -3293,7 +3293,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "pyo3",
- "serde_yaml 0.8.26",
+ "serde_yaml 0.9.34+deprecated",
 ]
 
 [[package]]
@@ -3419,7 +3419,7 @@ dependencies = [
  "libloading 0.7.4",
  "pyo3",
  "pythonize",
- "serde_yaml 0.8.26",
+ "serde_yaml 0.9.34+deprecated",
  "tokio",
  "tokio-stream",
  "tracing",
