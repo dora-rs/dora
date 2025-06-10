@@ -35,6 +35,7 @@ pub struct Descriptor {
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
+    pub working_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
