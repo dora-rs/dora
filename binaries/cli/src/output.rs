@@ -3,7 +3,7 @@ use dora_message::common::LogMessage;
 
 pub fn print_log_message(log_message: LogMessage) {
     let LogMessage {
-        build_id,
+        build_id: _,
         dataflow_id,
         node_id,
         daemon_id,
@@ -21,28 +21,26 @@ pub fn print_log_message(log_message: LogMessage) {
         other => format!("{other:5}").normal(),
     };
     let dataflow = if let Some(dataflow_id) = dataflow_id {
-        format!(" dataflow `{dataflow_id}`").cyan()
-    } else {
-        String::new().cyan()
-    };
-    let build = if let Some(build_id) = build_id {
-        format!(" build `{build_id}`").cyan()
+        format!(" dataflow `{dataflow_id}`\t").cyan()
     } else {
         String::new().cyan()
     };
     let daemon = match daemon_id {
-        Some(id) => format!(" on daemon `{id}`"),
-        None => " on default daemon".to_string(),
+        Some(id) => match id.machine_id() {
+            Some(machine_id) => format!(" on daemon `{machine_id}`\t"),
+            None => " on default daemon\t".to_string(),
+        },
+        None => " on default daemon\t".to_string(),
     }
     .bright_black();
     let node = match node_id {
-        Some(node_id) => format!(" {node_id}").bold(),
+        Some(node_id) => format!(" {node_id}\t").bold(),
         None => "".normal(),
     };
     let target = match target {
-        Some(target) => format!(" {target}").dimmed(),
+        Some(target) => format!(" {target}\t").dimmed(),
         None => "".normal(),
     };
 
-    println!("{level}{build}{dataflow}{daemon}{node}{target}: {message}");
+    println!("{level}\t{dataflow}{daemon}{node}{target}: {message}");
 }

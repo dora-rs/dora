@@ -235,9 +235,9 @@ impl DaemonId {
 impl std::fmt::Display for DaemonId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(id) = &self.machine_id {
-            write!(f, "{id}")?;
+            write!(f, "{id}-")?;
         }
-        Ok(())
+        write!(f, "{}", self.uuid)
     }
 }
 
