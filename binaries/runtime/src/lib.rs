@@ -318,10 +318,12 @@ async fn run(
                     if open_inputs.is_empty() {
                         // all inputs of the operator were closed
                         let Some(operator_config) = operators.get(&operator_id) else {
-                            tracing::warn!("received InputClosed event for unknown operator `{operator_id}`");
+                            tracing::warn!(
+                                "received InputClosed event for unknown operator `{operator_id}`"
+                            );
                             continue;
                         };
-                        
+
                         if !should_operator_wait_for_stop(operator_config) {
                             // If this operator should not wait for stop, close the event channel immediately
                             tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
@@ -473,29 +475,51 @@ mod tests {
     fn test_individual_operator_wait_for_stop_behavior() {
         // Test that each operator's wait_for_stop behavior is evaluated independently
         use std::collections::HashMap;
-        
+
         let mut operators = HashMap::new();
-        
+
         // Source operator - should wait for stop
         let source_config = create_test_operator_config(vec![], vec!["output"], None);
         operators.insert(OperatorId::from("source".to_string()), source_config);
-        
+
         // Processing operator - should not wait for stop
         let processing_config = create_test_operator_config(vec!["input"], vec!["output"], None);
-        operators.insert(OperatorId::from("processing".to_string()), processing_config);
-        
+        operators.insert(
+            OperatorId::from("processing".to_string()),
+            processing_config,
+        );
+
         // Sink with explicit wait - should wait for stop
         let sink_wait_config = create_test_operator_config(vec!["input"], vec![], Some(true));
         operators.insert(OperatorId::from("sink_wait".to_string()), sink_wait_config);
-        
+
         // Sink without wait - should not wait for stop
         let sink_no_wait_config = create_test_operator_config(vec!["input"], vec![], Some(false));
-        operators.insert(OperatorId::from("sink_no_wait".to_string()), sink_no_wait_config);
-        
+        operators.insert(
+            OperatorId::from("sink_no_wait".to_string()),
+            sink_no_wait_config,
+        );
+
         // Test individual operator wait_for_stop behavior - each operator should be evaluated independently
-        assert!(should_operator_wait_for_stop(operators.get(&OperatorId::from("source".to_string())).unwrap()));
-        assert!(!should_operator_wait_for_stop(operators.get(&OperatorId::from("processing".to_string())).unwrap()));
-        assert!(should_operator_wait_for_stop(operators.get(&OperatorId::from("sink_wait".to_string())).unwrap()));
-        assert!(!should_operator_wait_for_stop(operators.get(&OperatorId::from("sink_no_wait".to_string())).unwrap()));
+        assert!(should_operator_wait_for_stop(
+            operators
+                .get(&OperatorId::from("source".to_string()))
+                .unwrap()
+        ));
+        assert!(!should_operator_wait_for_stop(
+            operators
+                .get(&OperatorId::from("processing".to_string()))
+                .unwrap()
+        ));
+        assert!(should_operator_wait_for_stop(
+            operators
+                .get(&OperatorId::from("sink_wait".to_string()))
+                .unwrap()
+        ));
+        assert!(!should_operator_wait_for_stop(
+            operators
+                .get(&OperatorId::from("sink_no_wait".to_string()))
+                .unwrap()
+        ));
     }
 }
