@@ -151,6 +151,10 @@ pub struct OperatorConfig {
     pub build: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
+    /// Whether the operator's event stream should stay open after all inputs closed.
+    /// Defaults to true for source operators (operators with no inputs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_stop: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]

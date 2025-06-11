@@ -114,6 +114,16 @@ fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, us
     sizes
 }
 
+fn should_operator_wait_for_stop(config: &OperatorConfig) -> bool {
+    match config.wait_for_stop {
+        Some(wait) => wait,
+        None => {
+            // Default to true for source operators (operators with no inputs)
+            config.inputs.is_empty()
+        }
+    }
+}
+
 #[tracing::instrument(skip(operator_events, operator_channels), level = "trace")]
 async fn run(
     operators: HashMap<OperatorId, OperatorConfig>,
@@ -307,29 +317,24 @@ async fn run(
                     open_inputs.remove(&input_id);
                     if open_inputs.is_empty() {
                         // all inputs of the operator were closed
-                        if !config.wait_for_stop {
-                            // If wait_for_stop is false, close the event channel immediately
+                        let Some(operator_config) = operators.get(&operator_id) else {
+                            tracing::warn!("received InputClosed event for unknown operator `{operator_id}`");
+                            continue;
+                        };
+                        
+                        if !should_operator_wait_for_stop(operator_config) {
+                            // If this operator should not wait for stop, close the event channel immediately
                             tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
                             open_operator_inputs.remove(&operator_id);
                             operator_channels.remove(&operator_id);
                         } else {
-                            // If wait_for_stop is true, keep the channel open to receive stop signals
+                            // If this operator should wait for stop, keep the channel open to receive stop signals
                             // but mark that all inputs are closed
-                            tracing::trace!("all inputs of operator {}/{operator_id} were closed, but wait_for_stop is true -> keeping event channel open for stop signal", node.id());
+                            tracing::trace!("all inputs of operator {}/{operator_id} were closed, but operator wait_for_stop is true -> keeping event channel open for stop signal", node.id());
                             open_operator_inputs.remove(&operator_id);
                             // Note: operator_channels is NOT removed here - the operator can still receive stop signals
                         }
                     }
-                }
-
-                // Check if we should exit: if wait_for_stop is true but all operators have no more inputs
-                // and are just waiting for stop signals, we should exit instead of waiting indefinitely
-                if config.wait_for_stop
-                    && open_operator_inputs.is_empty()
-                    && !operator_channels.is_empty()
-                {
-                    tracing::trace!("wait_for_stop is true, all operator inputs are closed, but operators are still waiting for stop -> exiting runtime loop");
-                    break;
                 }
             }
             RuntimeEvent::Event(Event::Error(err)) => eyre::bail!("received error event: {err}"),
@@ -355,4 +360,142 @@ enum RuntimeEvent {
         event: OperatorEvent,
     },
     Event(Event),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_message::descriptor::{OperatorConfig, OperatorSource, PythonSource};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn create_test_operator_config(
+        inputs: Vec<&str>,
+        outputs: Vec<&str>,
+        wait_for_stop: Option<bool>,
+    ) -> OperatorConfig {
+        let inputs: BTreeMap<DataId, dora_message::config::Input> = inputs
+            .into_iter()
+            .map(|id| {
+                (
+                    DataId::from(id.to_string()),
+                    dora_message::config::Input {
+                        mapping: dora_message::config::InputMapping::Timer {
+                            interval: std::time::Duration::from_secs(1),
+                        },
+                        queue_size: None,
+                    },
+                )
+            })
+            .collect();
+
+        let outputs: BTreeSet<DataId> = outputs
+            .into_iter()
+            .map(|id| DataId::from(id.to_string()))
+            .collect();
+
+        OperatorConfig {
+            name: None,
+            description: None,
+            inputs,
+            outputs,
+            source: OperatorSource::Python(PythonSource {
+                source: "test.py".to_string(),
+                conda_env: None,
+            }),
+            build: None,
+            send_stdout_as: None,
+            wait_for_stop,
+        }
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_explicit_true() {
+        let config = create_test_operator_config(vec!["input1"], vec!["output1"], Some(true));
+        assert!(should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_explicit_false() {
+        let config = create_test_operator_config(vec!["input1"], vec!["output1"], Some(false));
+        assert!(!should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_source_operator_default() {
+        // Source operator (no inputs) should default to wait_for_stop = true
+        let config = create_test_operator_config(vec![], vec!["output1"], None);
+        assert!(should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_non_source_operator_default() {
+        // Non-source operator (has inputs) should default to wait_for_stop = false
+        let config = create_test_operator_config(vec!["input1"], vec!["output1"], None);
+        assert!(!should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_source_operator_explicit_false() {
+        // Source operator with explicit wait_for_stop = false should not wait
+        let config = create_test_operator_config(vec![], vec!["output1"], Some(false));
+        assert!(!should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_non_source_operator_explicit_true() {
+        // Non-source operator with explicit wait_for_stop = true should wait
+        let config = create_test_operator_config(vec!["input1"], vec!["output1"], Some(true));
+        assert!(should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_multiple_inputs() {
+        // Operator with multiple inputs should default to not wait
+        let config = create_test_operator_config(vec!["input1", "input2"], vec!["output1"], None);
+        assert!(!should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_no_outputs() {
+        // Sink operator (no outputs) with inputs should default to not wait
+        let config = create_test_operator_config(vec!["input1"], vec![], None);
+        assert!(!should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_should_operator_wait_for_stop_no_inputs_no_outputs() {
+        // Operator with no inputs and no outputs should default to wait (considered source)
+        let config = create_test_operator_config(vec![], vec![], None);
+        assert!(should_operator_wait_for_stop(&config));
+    }
+
+    #[test]
+    fn test_individual_operator_wait_for_stop_behavior() {
+        // Test that each operator's wait_for_stop behavior is evaluated independently
+        use std::collections::HashMap;
+        
+        let mut operators = HashMap::new();
+        
+        // Source operator - should wait for stop
+        let source_config = create_test_operator_config(vec![], vec!["output"], None);
+        operators.insert(OperatorId::from("source".to_string()), source_config);
+        
+        // Processing operator - should not wait for stop
+        let processing_config = create_test_operator_config(vec!["input"], vec!["output"], None);
+        operators.insert(OperatorId::from("processing".to_string()), processing_config);
+        
+        // Sink with explicit wait - should wait for stop
+        let sink_wait_config = create_test_operator_config(vec!["input"], vec![], Some(true));
+        operators.insert(OperatorId::from("sink_wait".to_string()), sink_wait_config);
+        
+        // Sink without wait - should not wait for stop
+        let sink_no_wait_config = create_test_operator_config(vec!["input"], vec![], Some(false));
+        operators.insert(OperatorId::from("sink_no_wait".to_string()), sink_no_wait_config);
+        
+        // Test individual operator wait_for_stop behavior - each operator should be evaluated independently
+        assert!(should_operator_wait_for_stop(operators.get(&OperatorId::from("source".to_string())).unwrap()));
+        assert!(!should_operator_wait_for_stop(operators.get(&OperatorId::from("processing".to_string())).unwrap()));
+        assert!(should_operator_wait_for_stop(operators.get(&OperatorId::from("sink_wait".to_string())).unwrap()));
+        assert!(!should_operator_wait_for_stop(operators.get(&OperatorId::from("sink_no_wait".to_string())).unwrap()));
+    }
 }
