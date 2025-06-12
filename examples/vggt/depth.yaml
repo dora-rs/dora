@@ -1,0 +1,26 @@
+nodes:
+  - id: camera
+    build: pip install opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 1
+
+  - id: dora-vggt
+    build: pip install -e ../../node-hub/dora-vggt
+    path: dora-vggt
+    inputs:
+      image: camera/image
+    outputs:
+      - depth
+      - image
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      camera/image: dora-vggt/image
+      camera/depth: dora-vggt/depth
