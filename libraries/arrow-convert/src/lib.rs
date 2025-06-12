@@ -1,4 +1,7 @@
-use arrow::array::{Array, Float32Array, Float64Array, Int32Array, Int64Array, UInt32Array};
+use arrow::array::{
+    Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, UInt16Array,
+    UInt32Array, UInt8Array,
+};
 use arrow::datatypes::DataType;
 use eyre::{eyre, ContextCompat, Result};
 use num::NumCast;
@@ -63,7 +66,11 @@ macro_rules! register_array_handlers {
 register_array_handlers! {
     (DataType::Float32, Float32Array, "float32"),
     (DataType::Float64, Float64Array, "float64"),
+    (DataType::Int8, Int8Array, "int8"),
+    (DataType::Int16, Int16Array, "int16"),
     (DataType::Int32, Int32Array, "int32"),
     (DataType::Int64, Int64Array, "int64"),
+    (DataType::UInt8, UInt8Array, "uint8"),
+    (DataType::UInt16, UInt16Array, "uint16"),
     (DataType::UInt32, UInt32Array, "uint32"),
 }
