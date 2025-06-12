@@ -1,0 +1,44 @@
+nodes:
+  - id: mujoco_sim
+    build: pip install -e ../../../node-hub/dora-mujoco
+    path: dora-mujoco
+    inputs:
+      tick: dora/timer/millis/2
+      control_input: franka_controller_pytorch/joint_commands
+    outputs:
+      - joint_positions
+      - joint_velocities 
+      - actuator_controls
+      - sensor_data
+    env:
+      MODEL_NAME: "panda"
+
+  - id: franka_controller_pytorch
+    path: nodes/franka_controller_pytorch.py
+    inputs:
+      joint_positions: mujoco_sim/joint_positions
+      joint_velocities: mujoco_sim/joint_velocities
+      target_pose: pose_publisher/target_pose
+      # fk_result: pytorch_kinematics/fk_result  # Make sure this matches the ACTUAL output name
+    outputs:
+      - joint_commands
+      - fk_request
+      - ee_position
+
+  # - id: pytorch_kinematics
+  #   build: pip install -e ../../../node-hub/dora-pytorch-kinematics
+  #   path: dora-pytorch-kinematics
+  #   inputs:
+  #     fk_request: franka_controller_pytorch/fk_request
+  #   outputs:
+  #     - fk_result  # Check this output name matches what this node produces
+  #   env:
+  #     URDF_PATH: "/home/shashwatgpatil/Downloads/panda.urdf"
+  #     END_EFFECTOR_LINK: "panda_hand"
+
+  - id: pose_publisher
+    path: nodes/pose_publisher.py
+    inputs:
+      tick: dora/timer/millis/10000
+    outputs:
+      - target_pose

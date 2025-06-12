@@ -1,11 +1,4 @@
-"""Target pose publisher node.
-
-This node demonstrates how to send target poses programmatically.
-It cycles through predefined poses to show the robot moving.
-"""
-
 import time
-import numpy as np
 import pyarrow as pa
 from dora import Node
 

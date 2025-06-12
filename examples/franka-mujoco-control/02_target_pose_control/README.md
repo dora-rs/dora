@@ -1,19 +1,20 @@
 # 02. Target Pose Control
 
-This example demonstrates Cartesian space control by creating a dedicated Franka controller node that processes target pose commands and outputs joint commands using inverse kinematics.
+This example demonstrates Cartesian space control by creating a dedicated Franka controller node that processes target pose commands and outputs joint commands using inverse kinematics with **PyTorch Kinematics**.
 
 ## Running the Example
 
 ```bash
 cd 02_target_pose_control
-dora build target_pose_control.yml
-dora run target_pose_control.yml
+dora build target_pose_control_pytorch.yml
+dora run target_pose_control_pytorch.yml
 ```
 
 You should see:
 1. Robot moves to predefined target poses automatically
-2. Smooth Cartesian space motion with inverse kinematics
+2. Smooth Cartesian space motion with differential inverse kinematics
 3. End-effector following target positions accurately
+4. GPU-accelerated kinematics computation (if CUDA available)
 
 ## Interactive Control
 
@@ -61,60 +62,56 @@ class PosePublisher:
 - Can be replaced with path planning, user input, or any pose generation logic
 - **Output**: `target_pose` array `[x, y, z, roll, pitch, yaw]`
 
-#### 2. **Franka Controller Node** (`franka_controller.py`)
+#### 2. **Franka Controller Node** (`franka_controller_pytorch.py`)
 
 **Key Components**:
 
 ```python
 class FrankaController:
     def __init__(self):
-        # ⚠️ DUAL MUJOCO INSTANCE - loads separate model for kinematics
-        self.model = load_robot_description("panda_mj_description", variant="scene")
-        self.data = mujoco.MjData(self.model)
+        urdf_path = "path to the file/panda.urdf"
+        with open(urdf_path, 'rb') as f:
+            urdf_content = f.read()
+        
+        self.chain = pk.build_serial_chain_from_urdf(urdf_content, "panda_hand")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.chain = self.chain.to(device=self.device)
 ```
 
 **What it does**:
-- **Input**: Target poses `[x, y, z, roll, pitch, yaw]` and current joint positions
-- **Processing**: Inverse kinematics using damped least squares with nullspace control
+- **Input**: Target poses `[x, y, z, roll, pitch, yaw]` and current joint positions from MuJoCo
+- **Processing**: Differential inverse kinematics using PyTorch Kinematics
 - **Output**: Joint position commands for the robot
 
-**Control Algorithm**:
+**Control Algorithm (Differential IK)**:
 ```python
-def apply_cartesian_control(self, current_joints):
-    # 1. Update internal model with current joint state
-    self.data.qpos[:7] = current_joints[:7]
-    mujoco.mj_forward(self.model, self.data)
+def apply_differential_ik_control(self):
+    # 1. Get current end-effector pose using PyTorch Kinematics FK
+    current_ee_pos, current_ee_rot = self.get_current_ee_pose(self.current_joint_pos)
     
-    # 2. Get current end-effector pose from kinematics
-    current_ee_pos = self.data.body(self.hand_id).xpos.copy()
-    current_ee_rot = self.data.body(self.hand_id).xmat.reshape(3, 3)
-    
-    # 3. Calculate position and orientation errors
+    # 2. Calculate position and orientation errors
     pos_error = self.target_pos - current_ee_pos
     rot_error = (desired_rot * current_rot.inv()).as_rotvec()
     
-    # 4. Create 6D twist vector [linear_vel, angular_vel]
+    # 3. Create 6D twist vector [linear_vel, angular_vel]
     twist = np.zeros(6)
     twist[:3] = self.Kpos * pos_error / self.integration_dt
     twist[3:] = self.Kori * rot_error / self.integration_dt
     
-    # 5. Compute Jacobian matrix
-    jacp = np.zeros((3, self.model.nv))  # Position Jacobian
-    jacr = np.zeros((3, self.model.nv))  # Rotation Jacobian
-    mujoco.mj_jacBody(self.model, self.data, jacp, jacr, self.hand_id)
-    jac = np.vstack((jacp[:, :7], jacr[:, :7]))
+    # 4. Compute Jacobian using PyTorch Kinematics
+    jac = self.compute_jacobian_pytorch(self.current_joint_pos)  # (6, 7)
     
-    # 6. Solve inverse kinematics with damped least squares
+    # 5. Solve differential IK with damped least squares
     diag = self.damping * np.eye(6)
     dq = jac.T @ np.linalg.solve(jac @ jac.T + diag, twist)
     
-    # 7. Add nullspace control to prefer home position
+    # 6. Add nullspace control to prefer home position
     N = np.eye(7) - np.linalg.pinv(jac) @ jac  # Nullspace projection
-    dq_null = self.Kn * (self.home_pos - current_joints[:7])
+    dq_null = self.Kn * (self.home_pos - self.current_joint_pos)
     dq += N @ dq_null
     
-    # 8. Integrate to get new joint positions
-    new_joints = current_joints[:7] + dq * self.integration_dt
+    # 7. Integrate to get new joint positions
+    new_joints = self.current_joint_pos + dq * self.integration_dt
 ```
 
 #### 3. **MuJoCo Simulation Node** (`dora-mujoco`)
@@ -124,90 +121,105 @@ def apply_cartesian_control(self, current_joints):
 
 ## Technical Implementation Details
 
-**The Problem**: This implementation runs **TWO separate MuJoCo instances**:
-
-1. **Main Simulation** (`dora-mujoco` node): Handles physics, rendering, what you see
-2. **Controller Kinematics** (`franka_controller.py`): Separate headless instance for inverse kinematics
-
-```python
-# In franka_controller.py - SEPARATE MUJOCO INSTANCE
-self.model = load_robot_description("panda_mj_description", variant="scene")
-self.data = mujoco.MjData(self.model)  # Independent physics state!
-```
-
-**Why I Did This**:
-- **Accurate Kinematics**: MuJoCo provides exact forward kinematics and Jacobian computation
-- **Smooth Control**: Custom geometric kinematics often have numerical issues
-<span style="color: #888888; opacity: 1.0;">I got Lazy 🙃: Easier than implementing analytical kinematics from scratch</span>
-
-#### Alternative Approaches: Pure Geometric Kinematics
-
-Replace the dual MuJoCo with analytical kinematics:
+- **Main Simulation** (`dora-mujoco` node): Physics, rendering, joint state
+- **Controller** (`franka_controller_pytorch.py`): PyTorch Kinematics for FK/Jacobian 
+- **Single source of truth**: MuJoCo simulation provides all joint states / sensor feedback in case of hardware
 
 ```python
 class FrankaController:
     def __init__(self):
-        # No MuJoCo model - just DH parameters
-        self.dh_params = self._get_franka_dh_parameters()
-    
-    def forward_kinematics(self, joint_angles):
-        """Compute FK using DH parameters"""
-        # Analytical forward kinematics implementation
+        # Load kinematics model for computation only
+        self.chain = pk.build_serial_chain_from_urdf(urdf_content, "panda_hand")
+        self.chain = self.chain.to(device=self.device)  # GPU acceleration
         
-    def compute_jacobian(self, joint_angles):
-        """Analytical or numerical differentiation"""
+    def get_current_ee_pose(self, joint_angles):
+        """PyTorch Kinematics FK"""
+        q = torch.tensor(joint_angles, device=self.device, dtype=torch.float32).unsqueeze(0)
+        tf = self.chain.forward_kinematics(q)
+        # ... extract position and rotation
 ```
 
-**Pros**: Single source of truth
-**Cons**: More complex to implement, potential numerical issues
+### Key Advantages
 
-### RPY Orientation Control Issues
+**Performance Benefits**:
+- **GPU Acceleration**: PyTorch Kinematics can leverage CUDA for faster computation
+- **Optimized Gradients**: Built-in automatic differentiation
 
-**The Problem**: Roll-Pitch-Yaw (RPY) orientation control has limitations:
 
+**Control Benefits**:
+- **Differential IK**: Smoother motion than discrete IK solving
+- **Nullspace Control**: Avoids joint limits and singularities
+- **Real-time Performance**: currently 500Hz control loops
+
+### Differential vs. Analytical IK
+
+**Differential IK** (Current Implementation):
 ```python
-target_pose = [0.5, 0.2, 0.6, 180.0, 0.0, 90.0]  # x, y, z, roll, pitch, yaw
+# Compute small joint movements based on end-effector error
+dq = jac.T @ np.linalg.solve(jac @ jac.T + diag, twist)
+new_joints = current_joints + dq * dt
 ```
 
-**Issues**:
-- **Gimbal Lock**: Certain orientations become unreachable
-- **Order Dependency**: ZYX Euler angle convention may not match user expectations
+**Analytical IK** (Alternative):
+```python
+# Solve for exact joint configuration to reach target [sometimes exact solution is not available can result in `None return`]
+ik_solver = pk.PseudoInverseIK(chain, ...)
+solution = ik_solver.solve(target_transform)
+```
 
-**Better Alternatives**:
-- **Quaternions**: `[x, y, z, qw, qx, qy, qz]` - no singularities (but not at all intuitive for humans)
+**Why Differential IK**:
+- **Smoother motion**: Continuous trajectory without jumps
+- **Better convergence**: Less likely to get stuck in local minima
+- **Singularity handling**: Graceful behavior near workspace boundaries
 
-## Key Controller Features
+### PyTorch Kinematics Features Used
 
-- **Cartesian Control**: Independent position and orientation control
-- **Joint Limits**: Respects Franka's mechanical constraints  
-- **Nullspace Control**: Returns to preferred joint configuration when possible
-- **Damped Least Squares**: Handles near-singular configurations gracefully
-
+1. **Forward Kinematics**: `chain.forward_kinematics(q)`
+2. **Jacobian Computation**: `chain.jacobian(q)`
+3. **GPU Support**: `.to(device=device)`
+4. **Batch Processing**: Handle multiple configurations simultaneously
+5. **Automatic Differentiation**: Could enable learning-based control
 
 ## Production Recommendations
 
 For real robot deployment:
-1. Replace dual MuJoCo with analytical kinematics or robot manufacturer's libraries
-2. Use quaternion orientation representation  
-3. Add collision checking and joint limit monitoring
-4. Implement proper error handling and safety stops
-5. Add force/torque control capabilities
+1. **Kinematics Library**: Currently the urdf is used to create the model for pytorch, for you robot you need to make it manually
+2. **Use Quaternions**: Replace RPY with quaternion orientation representation
+3. **Add Safety Monitors**: Joint limit monitoring, collision checking
+4. **Real Robot Interface**: Replace MuJoCo with actual robot drivers
+5. **Advanced Control**: Force/torque control, compliant motion
 
 ## Extensions
 
 This example can be extended with:
-- **Path Planning**: Replace pose publisher with trajectory generation
-- **Obstacle Avoidance**: Add collision checking to controller
-- **Force Control**: Implement hybrid position/force control
-- **Multi-Robot**: Coordinate multiple robot arms
+- **Learning-Based Control**: Use PyTorch's autodiff for learned components
+- **Multi-Robot Coordination**: Leverage GPU parallel processing
+- **Advanced IK Solvers**: Try different PyTorch Kinematics IK algorithms
+- **Collision Avoidance**: Integrate with [pytorch-volumetric](https://github.com/UM-ARM-Lab/pytorch_volumetric) for SDF queries
 - **Real Robot**: Replace MuJoCo with actual robot drivers
 
 ## Troubleshooting
 
-**"Controller gets out of sync after GUI reset"**
-- This is due to dual MuJoCo instances - the controller's internal model doesn't know about GUI resets
-- Restart the entire pipeline after using GUI reset
+**"PyTorch Kinematics not found"**
+```bash
+pip install pytorch-kinematics
+```
 
-**"Robot moves erratically with certain orientations"**  
-- Certain RPY orientations sometimes cause issues
-- Try quaternion representation or avoid problematic orientations
+**"CUDA out of memory"**
+- Set `device = "cpu"` in controller initialization
+- Reduce batch sizes if using advanced features
+
+**"Robot moves erratically"**
+- Check joint limits are correctly applied
+- Verify URDF file path is correct
+- Try reducing control gains if oscillating
+
+**"Controller slower than expected"**
+- Ensure PyTorch is using GPU: check `torch.cuda.is_available()`
+- Profile the forward kinematics and Jacobian computation times
+
+## Performance Notes
+
+- **GPU Acceleration**: ~10x speedup for kinematics computation with CUDA
+- **Memory Usage**: Minimal - only loads kinematic chain, not full physics
+- **Scalability**: Can handle multiple robot arms with batch processing

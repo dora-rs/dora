@@ -11,7 +11,7 @@ nodes:
       - actuator_controls
       - sensor_data
     env:
-      MODEL_NAME: "go2"  # Load Franka Panda from robot-descriptions
+      MODEL_NAME: "go2"  # Load go2 from robot-descriptions
 
   # - id: controller
   #   # Your control logic node
