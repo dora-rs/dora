@@ -34,7 +34,7 @@ You should see:
 ## What's Happening
 
 1. **Model Loading**: The `dora-mujoco` node loads the Franka model using `load_robot_description("panda_mj_description")`
-2. **Physics Loop**: Timer triggers simulation steps at 500Hz (This is dafault step time for Mujoco)
+2. **Physics Loop**: Timer triggers simulation steps at 500Hz (This is default step time for Mujoco)
 3. **Data Output**: Joint states are published 
 4. **Visualization**: MuJoCo viewer shows real-time simulation
 
