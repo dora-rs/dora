@@ -81,7 +81,7 @@ class MuJoCoSimulator:
             mujoco.mj_resetData(self.model, self.data)
         
         # Print model info for debugging
-        print(f"Model loaded successfully:")
+        print("Model loaded successfully:")
         print(f"  DOF (nq): {self.model.nq}")
         print(f"  Velocities (nv): {self.model.nv}")
         print(f"  Actuators (nu): {self.model.nu}")
@@ -103,9 +103,10 @@ class MuJoCoSimulator:
 
     def apply_control(self, control_input: np.ndarray):
         """Apply control input to the simulation.
-        
+
         Args:
             control_input: Control values for actuators
+
         """
         if control_input is None or len(control_input) == 0:
             return
