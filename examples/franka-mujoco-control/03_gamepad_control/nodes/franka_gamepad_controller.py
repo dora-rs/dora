@@ -1,27 +1,31 @@
-"""Enhanced Franka controller with gamepad support.
+"""Enhanced Franka controller with gamepad support using PyTorch Kinematics.
 """
 
 import json
 import time
 import numpy as np
 import pyarrow as pa
-import mujoco
+import torch
 from dora import Node
-from scipy.spatial import transform
-from robot_descriptions.loaders.mujoco import load_robot_description
+import pytorch_kinematics as pk
+from scipy.spatial.transform import Rotation
 
 class EnhancedFrankaController:
-    """Franka controller with gamepad and target pose support using proven MuJoCo control."""
+    """Franka controller with gamepad and target pose support using PyTorch Kinematics."""
     
     def __init__(self):
-        """Init"""
-        self.model = load_robot_description("panda_mj_description", variant="scene")
-        self.data = mujoco.MjData(self.model)
+        """Initialize controller with PyTorch Kinematics."""
+        # Load the robot model for IK and FK
+        urdf_path = "../franka_panda/panda.urdf"
+        with open(urdf_path, 'rb') as f:
+            urdf_content = f.read()
         
-        # Get the hand body ID for end-effector control
-        self.hand_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "hand")
-        # Get gripper actuator ID (like in original)
-        self.gripper_actuator = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, "actuator8")
+        # Build serial chain for kinematics
+        self.chain = pk.build_serial_chain_from_urdf(urdf_content, "panda_hand")
+        
+        # Move to GPU if available
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.chain = self.chain.to(device=self.device)
         
         # Control parameters
         self.integration_dt = 0.1
@@ -42,54 +46,67 @@ class EnhancedFrankaController:
         
         # Robot state
         self.current_joint_pos = None
-        self.target_pos = np.array([0.4, 0.0, 0.3])  # Conservative default target
+        self.target_pos = np.array([0.55, 0.0, 0.6])  # Conservative default target
         self.target_rpy = [180.0, 0.0, 90.0]  # Downward orientation
-        self.home_pos = np.array([0, 0, 0, -1.57079, 0, 1.57079, -0.7853])
+        self.home_pos = np.array([0, 0, 0, -1.67079, 0, 1.64079, -0.7853])
         
-        # Initialize simulation data with home position
-        self.data.qpos[:7] = self.home_pos
-        mujoco.mj_forward(self.model, self.data)
-        
-        # Initialize target position to current end-effector position
-        self.target_pos = self.data.body(self.hand_id).xpos.copy()
-        
-        print("Enhanced Franka Controller initialized with MuJoCo model")
-        # print(f"Hand body ID: {self.hand_id}")
-        # print(f"Gripper actuator ID: {self.gripper_actuator}")
+        print("Enhanced Franka Controller initialized with PyTorch Kinematics")
+        # print(f"Chain DOF: {len(self.chain.get_joint_parameter_names())}")
     
     def apply_deadzone(self, value, deadzone=None):
         """Apply deadzone to joystick input."""
         deadzone = deadzone or self.deadzone
         return 0.0 if abs(value) < deadzone else value
     
+    def get_current_ee_pose(self, joint_angles):
+        """Get current end-effector pose using PyTorch Kinematics forward kinematics."""
+        q = torch.tensor(joint_angles, device=self.device, dtype=torch.float32).unsqueeze(0)
+        # Forward kinematics
+        tf = self.chain.forward_kinematics(q)  # Returns Transform3d
+        # Extract position and rotation
+        transform_matrix = tf.get_matrix().squeeze(0).cpu().numpy()  # (4, 4)
+        position = transform_matrix[:3, 3]
+        rotation_matrix = transform_matrix[:3, :3]
+        
+        return position, rotation_matrix
+    
+    def compute_jacobian_pytorch(self, joint_angles):
+        """Compute Jacobian using PyTorch Kinematics."""
+        q = torch.tensor(joint_angles, device=self.device, dtype=torch.float32).unsqueeze(0)
+        # Compute Jacobian (returns 6x7 matrix: [linear_vel; angular_vel])
+        J = self.chain.jacobian(q)  # Shape: (1, 6, 7)
+        
+        return J.squeeze(0).cpu().numpy()  # Convert back to numpy (6, 7)
+    
     def process_gamepad_input(self, raw_control):
-        """Process gamepad input exactly like the original dora-franka-mujoco."""
+        """Process gamepad input exactly like the original."""
         axes = raw_control["axes"]
         buttons = raw_control["buttons"]
 
         # Reset position with START button
         if len(buttons) > 9 and buttons[9]:
-            # Reset to home position and update target
-            self.data.qpos[:7] = self.home_pos
-            mujoco.mj_forward(self.model, self.data)
-            self.target_pos = self.data.body(self.hand_id).xpos.copy()
-            print("Reset to home position")
+            # Reset target to a position based on home joint angles
+            if self.current_joint_pos is not None:
+                # Use current joint positions to get home EE position
+                home_ee_pos, _ = self.get_current_ee_pose(self.home_pos)
+                self.target_pos = home_ee_pos.copy()
+                print("Reset target to home position")
         
         # Gripper control with X and Y buttons (exactly like original)
         if len(buttons) > 0 and buttons[0]:  # X button - Close gripper
-            self.data.ctrl[self.gripper_actuator] = self.gripper_range[0]  
             self.gripper_state = 0.0
             print("Gripper: CLOSED")
         elif len(buttons) > 3 and buttons[3]:  # Y button - Open gripper
-            self.data.ctrl[self.gripper_actuator] = self.gripper_range[1]  
             self.gripper_state = 1.0
             print("Gripper: OPEN")
         
         # Speed scaling with bumpers (LB/RB)
         if len(buttons) > 4 and buttons[4]:  # LB
             self.speed_scale = max(0.1, self.speed_scale - 0.1)
+            print(f"Speed: {self.speed_scale:.1f}")
         if len(buttons) > 5 and buttons[5]:  # RB
             self.speed_scale = min(1.0, self.speed_scale + 0.1)
+            print(f"Speed: {self.speed_scale:.1f}")
         
         # Get cartesian control inputs with deadzone 
         dx = self.apply_deadzone(axes[0], self.deadzone) * self.speed_scale * 0.1
@@ -101,41 +118,32 @@ class EnhancedFrankaController:
             self.target_pos += np.array([dx, dy, dz])
             self.last_input_source = "gamepad"
             
-            # Debug output 
             # print(f"Gamepad control: dx={dx:.3f}, dy={dy:.3f}, dz={dz:.3f}")
             # print(f"New target: {self.target_pos}")
-            # print(f"Speed: {self.speed_scale:.1f}")
-            # print(f"Gripper: {'Open' if self.gripper_state > 0.5 else 'Closed'}")
-
 
     def process_target_pose(self, pose_array):
         """Process target pose command."""
         if len(pose_array) >= 3:
             self.target_pos = np.array(pose_array[:3])
+            print(f"Updated target position: {self.target_pos}")
         
         if len(pose_array) >= 6:
             self.target_rpy = list(pose_array[3:6])
+            print(f"Updated target orientation (RPY): {self.target_rpy}")
         
         self.last_input_source = "target_pose"
     
     def get_target_rotation_matrix(self):
         """Convert RPY to rotation matrix."""
         roll_rad, pitch_rad, yaw_rad = np.radians(self.target_rpy)
-        desired_rot = transform.Rotation.from_euler('ZYX', [yaw_rad, pitch_rad, roll_rad])
+        desired_rot = Rotation.from_euler('ZYX', [yaw_rad, pitch_rad, roll_rad])
         return desired_rot.as_matrix()
     
     def apply_cartesian_control(self, current_joints):
-        """Apply Cartesian control using the exact same method as dora-franka-mujoco."""
-        if current_joints is None or len(current_joints) < 7:
-            return np.concatenate([self.home_pos, [0]])  # Include gripper
-        
-        # Update our internal model state with current joint positions
-        self.data.qpos[:7] = current_joints[:7]
-        mujoco.mj_forward(self.model, self.data)
-        
-        # Get current end-effector pose
-        current_ee_pos = self.data.body(self.hand_id).xpos.copy()
-        current_ee_rot = self.data.body(self.hand_id).xmat.reshape(3, 3)
+        """Apply Cartesian control using PyTorch Kinematics differential IK."""
+        self.current_joint_pos = current_joints[:7]
+        # Get current end-effector pose using PyTorch Kinematics FK
+        current_ee_pos, current_ee_rot = self.get_current_ee_pose(self.current_joint_pos)
         
         # Calculate position error
         pos_error = self.target_pos - current_ee_pos
@@ -145,26 +153,20 @@ class EnhancedFrankaController:
         twist[:3] = self.Kpos * pos_error / self.integration_dt
         
         # Orientation control
-        current_rot = transform.Rotation.from_matrix(current_ee_rot)
-        desired_rot = transform.Rotation.from_matrix(self.get_target_rotation_matrix())
+        current_rot = Rotation.from_matrix(current_ee_rot)
+        desired_rot = Rotation.from_matrix(self.get_target_rotation_matrix())
         rot_error = (desired_rot * current_rot.inv()).as_rotvec()
         twist[3:] = self.Kori * rot_error / self.integration_dt
         
-        # Get Jacobian for the hand body (exactly like dora-franka-mujoco)
-        jacp = np.zeros((3, self.model.nv))  # Position Jacobian
-        jacr = np.zeros((3, self.model.nv))  # Rotation Jacobian
-        mujoco.mj_jacBody(self.model, self.data, jacp, jacr, self.hand_id)
-        
-        # Extract only the arm joints (first 7 DOF)
-        jac = np.vstack((jacp[:, :7], jacr[:, :7]))
-        
+        jac = self.compute_jacobian_pytorch(self.current_joint_pos)  # (6, 7)
         # Damped least squares inverse kinematics
         diag = self.damping * np.eye(6)
         dq = jac.T @ np.linalg.solve(jac @ jac.T + diag, twist)
         
         # Nullspace control - drive towards home position in nullspace
-        N = np.eye(7) - np.linalg.pinv(jac) @ jac  # Nullspace projection
-        dq_null = self.Kn * (self.home_pos - current_joints[:7])  # Nullspace velocity
+        jac_pinv = np.linalg.pinv(jac)
+        N = np.eye(7) - jac_pinv @ jac  # Nullspace projection matrix
+        dq_null = self.Kn * (self.home_pos - self.current_joint_pos)  # Nullspace velocity
         dq += N @ dq_null  # Add nullspace movement
         
         # Limit joint velocities
@@ -173,17 +175,32 @@ class EnhancedFrankaController:
             dq *= self.max_angvel / dq_abs_max
             
         # Integrate to get new joint positions
-        new_joints = current_joints[:7] + dq * self.integration_dt
+        new_joints = self.current_joint_pos + dq * self.integration_dt
         
-        # Apply joint limits (from MuJoCo model)
+        # Apply joint limits (Franka Panda limits)
+        joint_limits = np.array([
+            [-2.8973, 2.8973],
+            [-1.7628, 1.7628], 
+            [-2.8973, 2.8973],
+            [-3.0718, -0.0698],
+            [-2.8973, 2.8973],
+            [-0.0175, 3.7525],
+            [-2.8973, 2.8973]
+        ])
+        
         for i in range(7):
-            joint_range = self.model.jnt_range[i]
-            new_joints[i] = np.clip(new_joints[i], joint_range[0], joint_range[1])
-    
+            new_joints[i] = np.clip(new_joints[i], joint_limits[i][0], joint_limits[i][1])
+        
         # Return 8-dimensional control: 7 arm joints + gripper
         full_commands = np.zeros(8)
         full_commands[:7] = new_joints
-        full_commands[7] = self.data.ctrl[self.gripper_actuator]  # Current gripper state
+        # Map gripper state to control range
+        full_commands[7] = self.gripper_range[0] if self.gripper_state < 0.5 else self.gripper_range[1]
+        
+        # Debug output
+        # pos_error_mag = np.linalg.norm(pos_error)
+        # if pos_error_mag > 0.01:  # Only print if there's significant error
+        #     print(f"Position error: {pos_error_mag:.4f}")
     
         return full_commands
 
@@ -208,8 +225,8 @@ def main():
             
             if event["id"] == "joint_positions":
                 # Update current state and compute commands
-                controller.current_joint_pos = event["value"].to_numpy()
-                full_commands = controller.apply_cartesian_control(controller.current_joint_pos)
+                joint_positions = event["value"].to_numpy()
+                full_commands = controller.apply_cartesian_control(joint_positions)
                 
                 node.send_output(
                     "joint_commands",
@@ -218,11 +235,11 @@ def main():
                 )
                 
                 # Send current end-effector position
-                if controller.hand_id is not None:
-                    ee_pos = controller.data.body(controller.hand_id).xpos.copy()
+                if controller.current_joint_pos is not None:
+                    current_ee_pos, _ = controller.get_current_ee_pose(controller.current_joint_pos)
                     node.send_output(
                         "ee_position",
-                        pa.array(ee_pos, type=pa.float64()),
+                        pa.array(current_ee_pos, type=pa.float64()),
                         metadata={"timestamp": time.time()}
                     )
                 
