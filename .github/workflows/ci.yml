@@ -212,11 +212,11 @@ jobs:
           source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
           source /opt/ros/humble/setup.bash && ros2 run examples_rclcpp_minimal_service service_main &
           cargo run --example rust-ros2-dataflow --features="ros2-examples"
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         if: runner.os != 'Windows'
         with:
           python-version: "3.8"
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         if: runner.os == 'Windows'
         with:
           python-version: "3.10"
@@ -324,7 +324,7 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         with:
           # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
           python-version: "3.12"
