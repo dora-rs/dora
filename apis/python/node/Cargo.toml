@@ -24,7 +24,7 @@ eyre = "0.6"
 serde_yaml = { workspace = true }
 flume = "0.10.14"
 dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
-dora-cli = { workspace = true }
+# dora-cli = { workspace = true }
 dora-download = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
