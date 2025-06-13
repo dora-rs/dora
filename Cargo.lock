@@ -3201,6 +3201,7 @@ name = "dora-node-api-python"
 version = "0.3.11"
 dependencies = [
  "arrow",
+ "dora-cli",
  "dora-download",
  "dora-node-api",
  "dora-operator-api-python",
