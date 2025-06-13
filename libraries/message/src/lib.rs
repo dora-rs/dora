@@ -24,7 +24,7 @@ pub mod coordinator_to_cli;
 
 pub use arrow_data;
 pub use arrow_schema;
-use uuid::Uuid;
+use uuid::{Timestamp, Uuid};
 
 pub type DataflowId = uuid::Uuid;
 
@@ -35,7 +35,7 @@ pub struct SessionId(uuid::Uuid);
 
 impl SessionId {
     pub fn generate() -> Self {
-        Self(Uuid::new_v4())
+        Self(Uuid::new_v7(Timestamp::now(uuid::NoContext)))
     }
 }
 
@@ -52,7 +52,7 @@ pub struct BuildId(uuid::Uuid);
 
 impl BuildId {
     pub fn generate() -> Self {
-        Self(Uuid::new_v4())
+        Self(Uuid::new_v7(Timestamp::now(uuid::NoContext)))
     }
 }
 
