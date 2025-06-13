@@ -375,21 +375,21 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
-/// Run a Dataflow
-///
-/// :rtype: None
-#[pyfunction]
-#[pyo3(signature = (dataflow_path, uv=None))]
-pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
-    dora_cli::command::run(dataflow_path, uv.unwrap_or_default())
-}
+// /// Run a Dataflow
+// ///
+// /// :rtype: None
+// #[pyfunction]
+// #[pyo3(signature = (dataflow_path, uv=None))]
+// pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
+//     dora_cli::command::run(dataflow_path, uv.unwrap_or_default())
+// }
 
 #[pymodule]
 fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     dora_ros2_bridge_python::create_dora_ros2_bridge_module(&m)?;
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
-    m.add_function(wrap_pyfunction!(run, &m)?)?;
+    // m.add_function(wrap_pyfunction!(run, &m)?)?;
     m.add_class::<Node>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
     m.setattr("__author__", "Dora-rs Authors")?;
