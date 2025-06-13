@@ -3211,6 +3211,7 @@ dependencies = [
  "flume 0.10.14",
  "futures",
  "pyo3",
+ "pyo3-build-config",
  "pythonize",
  "serde_yaml 0.9.34+deprecated",
  "tokio",
