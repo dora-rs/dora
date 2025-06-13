@@ -1,9 +1,4 @@
-"""Gamepad controller node for Dora.
-
-This module provides a Dora node that reads input from a controller and publishes:
-1. velocity commands for robot control
-2. raw controller state for debugging and custom mappings
-"""
+"""Gamepad controller node for Dora."""
 
 from dora import Node
 import pygame
@@ -11,7 +6,7 @@ import pyarrow as pa
 import json
 
 class Controller:
-    """controller mapping."""
+    """Controller mapping."""
 
     def __init__(self):
         """Change this according to your controller mapping. Currently Logitech F710."""
@@ -33,8 +28,9 @@ class Controller:
             'BACK': 8,
             'START': 9,
             'LEFT-STICK': 10,
-            'RIGHT-STICK': 11
+            'RIGHT-STICK': 11,
         }
+        self.hatIndex = 0  # Index of the D-pad hat
 
 def main():
     node = Node("gamepad")
@@ -51,8 +47,9 @@ def main():
 
     controller = Controller()
     
-    max_linear_speed = 1.0  # Maximum speed in m/s
-    max_angular_speed = 1.5  # Maximum angular speed in rad/s
+    move_speed = 0.05  # Fixed increment for D-pad
+    max_linear_z_speed = 0.1  # Maximum linear Z speed
+    max_angular_speed = 0.8  # Maximum angular speed
     
     print(f"Detected controller: {joystick.get_name()}")
     print(f"Number of axes: {joystick.get_numaxes()}")
@@ -66,30 +63,64 @@ def main():
             # Get all controller states
             axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
             buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
+            
+            # Get hat state (D-pad)
+            dpad_x, dpad_y = 0, 0
+            if joystick.get_numhats() > 0:
+                dpad_x, dpad_y = joystick.get_hat(controller.hatIndex)
 
             # Create raw control state
             raw_control = {
                 "axes": axes,
                 "buttons": buttons,
+                "hats": [[dpad_x, dpad_y]],
                 "mapping": {
                     "axes": controller.axisNames,
                     "buttons": controller.buttonNames
                 }
             }
-            # print("raw_control:", raw_control)  # uncomment for debugging and re-map
 
-            # Regular cmd_vel processing
-            forward = -joystick.get_axis(controller.axisNames['LEFT-Y'])
-            turn = -joystick.get_axis(controller.axisNames['LEFT-X'])
-            
+            # cmd_vel processing:
+            # 1. D-pad vertical for X axis
+            # 2. D-pad horizontal for Y axis
+            # 3. Right stick vertical for Z axis
+            # 4. Right stick horizontal for rotation around Z
+            # 5. Left stick vertical for rotation around X
+            # 6. Left stick horizontal for rotation around Y
+
             deadzone = 0.05
-            forward = 0.0 if abs(forward) < deadzone else forward
-            turn = 0.0 if abs(turn) < deadzone else turn
+
+            # Linear X velocity from D-pad vertical
+            linear_x = 0.0
+            if dpad_y != 0:
+                linear_x = dpad_y * move_speed
+
+            # Linear Y velocity from D-pad horizontal
+            linear_y = 0.0
+            if dpad_x != 0:
+                linear_y = dpad_x * move_speed
             
-            forward_speed = forward * max_linear_speed
-            turn_speed = turn * max_angular_speed
-        
-            cmd_vel = [forward_speed, 0.0, 0.0, 0.0, 0.0, turn_speed]
+            # Linear Z velocity from right stick vertical
+            right_y = -joystick.get_axis(controller.axisNames['RIGHT-Y'])
+            right_y = 0.0 if abs(right_y) < deadzone else right_y
+            linear_z = right_y * max_linear_z_speed
+            
+            # Angular Z velocity (rotation) from right stick horizontal
+            right_x = -joystick.get_axis(controller.axisNames['RIGHT-X'])
+            right_x = 0.0 if abs(right_x) < deadzone else right_x
+            angular_z = right_x * max_angular_speed
+            
+            # Angular X velocity from left stick vertical
+            left_y = -joystick.get_axis(controller.axisNames['LEFT-Y'])
+            left_y = 0.0 if abs(left_y) < deadzone else left_y
+            angular_x = left_y * max_angular_speed
+            
+            # Angular Y velocity from left stick horizontal
+            left_x = -joystick.get_axis(controller.axisNames['LEFT-X'])
+            left_x = 0.0 if abs(left_x) < deadzone else left_x
+            angular_y = left_x * max_angular_speed
+            
+            cmd_vel = [linear_x, linear_y, linear_z, angular_x, angular_y, angular_z]
             
             node.send_output(
                 output_id="cmd_vel",
@@ -107,7 +138,6 @@ def main():
         print("\nExiting...")
     finally:
         pygame.quit()
-        # Send zero velocity at cleanup
         zero_cmd = [0.0] * 6
         node.send_output(
             output_id="cmd_vel",

@@ -20,22 +20,32 @@ nodes:
       - actuator_controls
       - sensor_data
     env:
-      MODEL_NAME: "panda"
+      MODEL_NAME: "kuka_iiwa14"
 
   - id: franka_gamepad_controller
     path: nodes/franka_gamepad_controller.py
     inputs:
       joint_positions: mujoco_sim/joint_positions
+      joint_velocities: mujoco_sim/joint_velocities
       raw_control: gamepad/raw_control
-      # target_pose: pose_publisher/target_pose  # Optional
+      cmd_vel: gamepad/cmd_vel
+      fk_result: pytorch_kinematics/fk_request
+      jacobian_result: pytorch_kinematics/jacobian_request
     outputs:
       - joint_commands
-      - ee_position
+      - fk_request
+      - jacobian_request
 
-  # Optional: uncomment to also have programmatic control
-  # - id: pose_publisher
-  #   path: ../02_target_pose_control/nodes/pose_publisher.py
-  #   inputs:
-  #     tick: dora/timer/millis/20000  # New pose every 20 seconds
-  #   outputs:
-  #     - target_pose
+  - id: pytorch_kinematics
+    build: pip install -e ../../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      fk_request: franka_gamepad_controller/fk_request
+      jacobian_request: franka_gamepad_controller/jacobian_request
+    outputs:
+      - fk_request  
+      - jacobian_request  
+    env:
+      URDF_PATH: "/home/shashwatgpatil/Dora-rs/dora/examples/franka-mujoco-control/kuka_iiwa/model.urdf"
+      END_EFFECTOR_LINK: "lbr_iiwa_link_7"  
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."

@@ -10,9 +10,9 @@ import torch
 from dora import Node
 from pytorch_kinematics.transforms.rotation_conversions import matrix_to_euler_angles
 
-TRANSFORM = np.array(os.getenv("TRANSFORM", "0. 0. 0. 0. 0. 0. 1.").split(" ")).astype(
+TRANSFORM = np.array(os.getenv("TRANSFORM", "0. 0. 0. 1. 0. 0. 0.").split(" ")).astype(
     np.float32,
-)
+) # wxyz format
 pos = torch.tensor([TRANSFORM[0], TRANSFORM[1], TRANSFORM[2]])
 rot = torch.tensor(
     [
@@ -117,15 +117,21 @@ class RobotKinematics:
             )
 
         if j.ndim == 1:
-            if j.shape[0] != self.num_joints:
-                raise ValueError(f"Expected {self.num_joints} joints, got {j.shape[0]}")
+            # Handle case with extra joints (e.g., gripper joints)
+            if j.shape[0] > self.num_joints:
+                j = j[:self.num_joints]  # Truncate griper or extra joints
+            elif j.shape[0] < self.num_joints:
+                raise ValueError(f"Expected at least {self.num_joints} joints, got {j.shape[0]}")
+            
             if batch_dim_required:
-                j = j.unsqueeze(0)  # Add batch dimension if needed (e.g., shape (1, N))
+                j = j.unsqueeze(0)  # Add batch dimension if needed
         elif j.ndim == 2:
-            if j.shape[1] != self.num_joints:
-                raise ValueError(
-                    f"Expected {self.num_joints} joints (dim 1), got {j.shape[1]}",
-                )
+            # Handle batched input with extra joints
+            if j.shape[1] > self.num_joints:
+                j = j[:, :self.num_joints]  # Truncate griper or extra joints
+            elif j.shape[1] < self.num_joints:
+                raise ValueError(f"Expected at least {self.num_joints} joints (dim 1), got {j.shape[1]}")
+            
             if batch_dim_required and j.shape[0] != 1:
                 # Most common IK solvers expect batch=1 for initial guess, FK can handle batches
                 # Relaxing this check slightly, but user should be aware for IK
@@ -222,6 +228,55 @@ class RobotKinematics:
             return None
         return solution_angles.solutions.detach()
 
+    def compute_jacobian(
+        self, joint_angles: Union[List[float], torch.Tensor]
+    ) -> torch.Tensor:
+        """Compute Jacobian matrix using PyTorch Kinematics.
+        
+        Args:
+            joint_angles (Union[List[float], torch.Tensor]): Joint angles (radians).
+                Shape (num_joints,) or (B, num_joints).
+                
+        Returns:
+            torch.Tensor: Jacobian matrix of shape (B, 6, num_joints) or (6, num_joints)
+                         where rows are [linear_vel_x, linear_vel_y, linear_vel_z, 
+                                       angular_vel_x, angular_vel_y, angular_vel_z]
+        """
+        angles_tensor = self._prepare_joint_tensor(
+            joint_angles, batch_dim_required=False
+        )
+        
+        # Ensure we have batch dimension for jacobian computation
+        if angles_tensor.ndim == 1:
+            angles_tensor = angles_tensor.unsqueeze(0)
+            squeeze_output = True
+        else:
+            squeeze_output = False
+            
+        # Compute Jacobian (returns shape: (B, 6, num_joints))
+        J = self.chain.jacobian(angles_tensor)
+        
+        # Remove batch dimension if input was 1D
+        if squeeze_output:
+            J = J.squeeze(0)
+            
+        return J
+
+    def compute_jacobian_numpy(
+        self, joint_angles: Union[List[float], torch.Tensor, np.ndarray]
+    ) -> np.ndarray:
+        """Compute Jacobian matrix and return as numpy array.
+        
+        Args:
+            joint_angles: Joint angles (radians). Can be list, torch.Tensor, or np.ndarray.
+                         Shape (num_joints,) or (B, num_joints).
+                         
+        Returns:
+            np.ndarray: Jacobian matrix as numpy array of shape (6, num_joints) or (B, 6, num_joints)
+        """
+        J = self.compute_jacobian(joint_angles)
+        return J.cpu().numpy()
+
 
 def main():
     """TODO: Add docstring."""
@@ -293,6 +348,18 @@ def main():
                     target = pa.array(target.ravel(), type=pa.float32())
                     metadata["encoding"] = "xyzrpy"
                     node.send_output(event["id"], target, metadata=metadata)
+                case "jacobian":
+                    # Compute Jacobian matrix
+                    joint_angles = event["value"].to_numpy()
+                    jacobian = robot.compute_jacobian_numpy(joint_angles)
+                    
+                    jacobian_flat = jacobian.flatten()
+                    jacobian_array = pa.array(jacobian_flat, type=pa.float32())
+                    
+                    metadata["encoding"] = "jacobian_result"
+                    metadata["jacobian_shape"] = list(jacobian.shape)
+                    
+                    node.send_output(event["id"], jacobian_array, metadata=metadata)
 
 
 if __name__ == "__main__":
