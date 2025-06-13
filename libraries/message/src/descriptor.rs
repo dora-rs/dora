@@ -23,18 +23,19 @@ pub struct Descriptor {
     #[serde(default)]
     pub communication: CommunicationConfig,
     #[schemars(skip)]
-    #[serde(default, rename = "_unstable_deploy")]
-    pub deploy: Deploy,
+    #[serde(rename = "_unstable_deploy")]
+    pub deploy: Option<Deploy>,
     pub nodes: Vec<Node>,
     #[schemars(skip)]
     #[serde(default, rename = "_unstable_debug")]
     pub debug: Debug,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     pub machine: Option<String>,
+    pub working_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -58,8 +59,8 @@ pub struct Node {
 
     /// Unstable machine deployment configuration
     #[schemars(skip)]
-    #[serde(default, rename = "_unstable_deploy")]
-    pub deploy: Deploy,
+    #[serde(rename = "_unstable_deploy")]
+    pub deploy: Option<Deploy>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operators: Option<RuntimeNode>,
@@ -70,6 +71,15 @@ pub struct Node {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,7 +100,7 @@ pub struct ResolvedNode {
     pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(default)]
-    pub deploy: Deploy,
+    pub deploy: Option<Deploy>,
 
     #[serde(flatten)]
     pub kind: CoreNodeKind,
@@ -216,7 +226,8 @@ pub struct CustomNode {
     /// args: some_node.py
     ///
     /// Source can match any executable in PATH.
-    pub source: String,
+    pub path: String,
+    pub source: NodeSource,
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
@@ -232,6 +243,28 @@ pub struct CustomNode {
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum NodeSource {
+    Local,
+    GitBranch {
+        repo: String,
+        rev: Option<GitRepoRev>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum ResolvedNodeSource {
+    Local,
+    GitCommit { repo: String, commit_hash: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum GitRepoRev {
+    Branch(String),
+    Tag(String),
+    Rev(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

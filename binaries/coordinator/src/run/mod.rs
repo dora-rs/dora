@@ -10,6 +10,7 @@ use dora_message::{
     daemon_to_coordinator::DaemonCoordinatorReply,
     descriptor::{Descriptor, ResolvedNode},
     id::NodeId,
+    BuildId, SessionId,
 };
 use eyre::{bail, eyre, ContextCompat, WrapErr};
 use itertools::Itertools;
@@ -21,8 +22,10 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
+    build_id: Option<BuildId>,
+    session_id: SessionId,
     dataflow: Descriptor,
-    working_dir: PathBuf,
+    local_working_dir: Option<PathBuf>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
@@ -30,7 +33,9 @@ pub(super) async fn spawn_dataflow(
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
-    let nodes_by_daemon = nodes.values().into_group_map_by(|n| &n.deploy.machine);
+    let nodes_by_daemon = nodes
+        .values()
+        .into_group_map_by(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()));
 
     let mut daemons = BTreeSet::new();
     for (machine, nodes_on_machine) in &nodes_by_daemon {
@@ -40,8 +45,10 @@ pub(super) async fn spawn_dataflow(
         );
 
         let spawn_command = SpawnDataflowNodes {
+            build_id,
+            session_id,
             dataflow_id: uuid,
-            working_dir: working_dir.clone(),
+            local_working_dir: local_working_dir.clone(),
             nodes: nodes.clone(),
             dataflow_descriptor: dataflow.clone(),
             spawn_nodes,
@@ -52,13 +59,14 @@ pub(super) async fn spawn_dataflow(
             timestamp: clock.new_timestamp(),
         })?;
 
-        let daemon_id = spawn_dataflow_on_machine(daemon_connections, machine.as_deref(), &message)
-            .await
-            .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
+        let daemon_id =
+            spawn_dataflow_on_machine(daemon_connections, machine.map(|m| m.as_str()), &message)
+                .await
+                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
         daemons.insert(daemon_id);
     }
 
-    tracing::info!("successfully spawned dataflow `{uuid}`");
+    tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
 
     Ok(SpawnedDataflow {
         uuid,
@@ -90,13 +98,14 @@ async fn spawn_dataflow_on_machine(
     tcp_send(&mut daemon_connection.stream, message)
         .await
         .wrap_err("failed to send spawn message to daemon")?;
+
     let reply_raw = tcp_receive(&mut daemon_connection.stream)
         .await
         .wrap_err("failed to receive spawn reply from daemon")?;
     match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize spawn reply from daemon")?
     {
-        DaemonCoordinatorReply::SpawnResult(result) => result
+        DaemonCoordinatorReply::TriggerSpawnResult(result) => result
             .map_err(|e| eyre!(e))
             .wrap_err("daemon returned an error")?,
         _ => bail!("unexpected reply"),

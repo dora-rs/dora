@@ -63,6 +63,7 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
         clang.arg("-l").arg("m");
         clang.arg("-l").arg("rt");
         clang.arg("-l").arg("dl");
+        clang.arg("-l").arg("z");
         clang.arg("-pthread");
     }
     #[cfg(target_os = "windows")]
@@ -93,6 +94,8 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
         clang.arg("-lsynchronization");
         clang.arg("-luser32");
         clang.arg("-lwinspool");
+        clang.arg("-lwinhttp");
+        clang.arg("-lrpcrt4");
 
         clang.arg("-Wl,-nodefaultlib:libcmt");
         clang.arg("-D_DLL");
@@ -107,6 +110,7 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
         clang.arg("-l").arg("pthread");
         clang.arg("-l").arg("c");
         clang.arg("-l").arg("m");
+        clang.arg("-l").arg("z");
     }
     clang.arg("-L").arg(root.join("target").join("debug"));
     clang
@@ -161,6 +165,8 @@ async fn build_c_operator(root: &Path) -> eyre::Result<()> {
         link.arg("-lsynchronization");
         link.arg("-luser32");
         link.arg("-lwinspool");
+        link.arg("-lwinhttp");
+        link.arg("-lrpcrt4");
 
         link.arg("-Wl,-nodefaultlib:libcmt");
         link.arg("-D_DLL");
