@@ -2948,6 +2948,7 @@ dependencies = [
  "log",
  "notify 5.2.0",
  "pyo3",
+ "pyo3-build-config",
  "self-replace",
  "self_update",
  "serde",
