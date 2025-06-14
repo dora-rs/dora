@@ -1,6 +1,6 @@
 # 01. Basic Simulation
 
-This example demonstrates the simplest possible setup: loading and running a Franka Panda robot simulation using the `dora-mujoco` node.
+This example demonstrates the simplest possible setup: loading and running a robot simulation using the `dora-mujoco` node.
 
 - Understand how the `dora-mujoco` node works
 - See how robot models are loaded from `robot-descriptions`
@@ -16,7 +16,7 @@ The simulation runs at 500Hz and outputs:
 ## Running the Example
 
 ```bash
-cd 01_basic_simulation
+cd basic_simulation
 dora build basic.yml
 dora run basic.yml
 ```

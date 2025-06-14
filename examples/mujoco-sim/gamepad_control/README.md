@@ -14,7 +14,7 @@ This example demonstrates real-time interactive control by connecting a gamepad 
 1. **Connect a gamepad** (Xbox/PlayStation controller via USB or Bluetooth)
 2. **Run the simulation**:
 ```bash
-cd 03_gamepad_control
+cd gamepad_control
 dora build gamepad_control.yml
 dora run gamepad_control.yml
 ```
