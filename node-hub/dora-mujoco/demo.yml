@@ -1,0 +1,28 @@
+nodes:
+  - id: mujoco_sim
+    build: pip install -e .
+    path: dora-mujoco
+    inputs:
+      tick: dora/timer/millis/2  # 500 Hz data collection
+        # control_input: controller/output
+    outputs:
+      - joint_positions
+      - joint_velocities 
+      - actuator_controls
+      - sensor_data
+    env:
+      MODEL_NAME: "go2"  # Load go2 from robot-descriptions
+
+  # - id: controller
+  #   # Your control logic node
+  #   inputs:
+  #     joint_positions: mujoco_sim/joint_positions
+  #   outputs:
+  #     - output
+
+  # - id: data_collector
+  #   # Your data collection node
+  #   inputs:
+  #     joint_positions: mujoco_sim/joint_positions
+  #     joint_velocities: mujoco_sim/joint_velocities
+  #     sensor_data: mujoco_sim/sensor_data
