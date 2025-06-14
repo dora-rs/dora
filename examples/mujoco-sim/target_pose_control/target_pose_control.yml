@@ -1,0 +1,48 @@
+nodes:
+  - id: mujoco_sim
+    build: pip install -e ../../../node-hub/dora-mujoco
+    path: dora-mujoco
+    inputs:
+      tick: dora/timer/millis/2
+      control_input: controller/joint_commands
+    outputs:
+      - joint_positions
+      - joint_velocities 
+      - actuator_controls
+      - sensor_data
+    env:
+      MODEL_NAME: "panda"
+
+  - id: controller
+    path: nodes/controller.py
+    inputs:
+      joint_positions: mujoco_sim/joint_positions
+      joint_velocities: mujoco_sim/joint_velocities
+      target_pose: pose_publisher/target_pose
+      fk_result: pytorch_kinematics/fk_request
+      jacobian_result: pytorch_kinematics/jacobian_request
+    outputs:
+      - joint_commands
+      - fk_request
+      - jacobian_request
+
+  - id: pytorch_kinematics
+    build: pip install -e ../../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      fk_request: controller/fk_request
+      jacobian_request: controller/jacobian_request
+    outputs:
+      - fk_request  
+      - jacobian_request  
+    env:
+      URDF_PATH: "../URDF/franka_panda/panda.urdf"
+      END_EFFECTOR_LINK: "panda_hand"
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."  # Pytorch kinematics uses wxyz format for quaternion
+
+  - id: pose_publisher
+    path: nodes/pose_publisher.py
+    inputs:
+      tick: dora/timer/millis/10000
+    outputs:
+      - target_pose
