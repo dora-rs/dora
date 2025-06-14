@@ -5,7 +5,7 @@ This comprehensive tutorial demonstrates how to build a robot control system usi
 ## Tutorial Structure
 
 ### [01. Basic Simulation](basic_simulation/)
-Load and run a Franka Panda simulation using the `dora-mujoco` node.
+Load a robot in simulation using the `dora-mujoco` node.
 - Learn the fundamentals of MuJoCo simulation in Dora
 - Understand the simulation node architecture
 - See how robot descriptions are loaded automatically

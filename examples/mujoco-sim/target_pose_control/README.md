@@ -5,9 +5,9 @@ This example demonstrates Cartesian space control by creating a Controller node 
 ## Running the Example
 
 ```bash
-cd 02_target_pose_control
-dora build target_pose_control_pytorch.yml
-dora run target_pose_control_pytorch.yml
+cd target_pose_control
+dora build target_pose_control.yml
+dora run target_pose_control.yml
 ```
 
 You should see:
