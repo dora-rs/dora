@@ -12,10 +12,10 @@ class GamepadFrankaController:
         self.damping = 1e-4
         self.Kpos = 0.95  # Position gain
         self.Kori = 0.95  # Orientation gain
-        self.max_angvel = 1.57  # Max joint velocity (rad/s)
 
         # Gamepad control parameters
         self.speed_scale = 0.5
+        self.max_angvel = 3.14 * self.speed_scale  # Max joint velocity (rad/s)
         
         # Robot state variables
         self.dof = None
@@ -39,14 +39,13 @@ class GamepadFrankaController:
         self.home_pos = np.zeros(self.dof)
     
     def process_cmd_vel(self, cmd_vel):
-        print(f"Processing cmd_vel: {cmd_vel}")
-        dx = cmd_vel[0] * self.speed_scale * 0.1
-        dy = cmd_vel[1] * self.speed_scale * 0.1
-        dz = cmd_vel[2] * self.speed_scale * 0.1
+        # print(f"Processing cmd_vel: {cmd_vel}")
+        delta = cmd_vel[:3] * 0.03
+        dx, dy, dz = delta
         
         # Update target position incrementally
         if abs(dx) > 0 or abs(dy) > 0 or abs(dz) > 0:
-            self.target_pos += np.array([dx, dy, dz])
+            self.target_pos += np.array([dx, -dy, dz])
     
     def process_gamepad_input(self, raw_control):
         buttons = raw_control["buttons"]
