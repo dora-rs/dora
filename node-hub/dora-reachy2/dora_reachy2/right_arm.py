@@ -37,7 +37,6 @@ def r_arm_go_to_mixed_angles(reachy, x, y, z):
             continue
 
     for yaw in range(0, 90, 30):
-
         ## First try turning left
         pitch = -90
         r = Rotation.from_euler("ZYX", (yaw, 0, 0), degrees=True) * Rotation.from_euler(
@@ -104,7 +103,6 @@ def main():
     for event in node:
         if event["type"] == "INPUT":
             if event["id"] == "pose":
-
                 values: np.array = event["value"].to_numpy(zero_copy_only=False)
                 encoding = event["metadata"]["encoding"]
                 wait = event["metadata"].get("wait", True)
@@ -126,7 +124,6 @@ def main():
                         if response_ik:
                             joint_values.append((joints, gripper))
                         else:
-
                             break
 
                     if not response_ik:
