@@ -28,7 +28,7 @@ class PosePublisher:
 def main():
     node = Node("pose_publisher")
     publisher = PosePublisher()
-    
+    time.sleep(3)  # Allow time for simulation to start
     for event in node:
         if event["type"] == "INPUT" and event["id"] == "tick":
             target_pose = publisher.get_next_pose()

@@ -241,6 +241,7 @@ class RobotKinematics:
             torch.Tensor: Jacobian matrix of shape (B, 6, num_joints) or (6, num_joints)
                          where rows are [linear_vel_x, linear_vel_y, linear_vel_z, 
                                        angular_vel_x, angular_vel_y, angular_vel_z]
+
         """
         angles_tensor = self._prepare_joint_tensor(
             joint_angles, batch_dim_required=False
@@ -273,6 +274,7 @@ class RobotKinematics:
                          
         Returns:
             np.ndarray: Jacobian matrix as numpy array of shape (6, num_joints) or (B, 6, num_joints)
+
         """
         J = self.compute_jacobian(joint_angles)
         return J.cpu().numpy()
@@ -325,7 +327,7 @@ def main():
                             continue
 
                         solution = solution.numpy().ravel()
-                        delta_angles = solution - last_known_state
+                        delta_angles = solution - last_known_state[:len(solution)] # match with dof
 
                         valid = np.all(
                             (delta_angles >= -np.pi) & (delta_angles <= np.pi),

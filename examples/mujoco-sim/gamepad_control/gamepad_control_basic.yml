@@ -23,29 +23,26 @@ nodes:
       MODEL_NAME: "kuka_iiwa14"
 
   - id: gamepad_controller
-    path: nodes/gamepad_controller.py
+    path: nodes/gamepad_controller_ik.py
     inputs:
       joint_positions: mujoco_sim/joint_positions
-      joint_velocities: mujoco_sim/joint_velocities
       raw_control: gamepad/raw_control
       cmd_vel: gamepad/cmd_vel
-      fk_result: pytorch_kinematics/fk_request
-      jacobian_result: pytorch_kinematics/jacobian_request
+      ik_request: pytorch_kinematics/ik_request
     outputs:
       - joint_commands
-      - fk_request
-      - jacobian_request
+      - ik_request
+      - joint_state
 
   - id: pytorch_kinematics
     build: pip install -e ../../../node-hub/dora-pytorch-kinematics
     path: dora-pytorch-kinematics
     inputs:
-      fk_request: gamepad_controller/fk_request
-      jacobian_request: gamepad_controller/jacobian_request
+      ik_request: gamepad_controller/ik_request
+      joint_state: gamepad_controller/joint_state
     outputs:
-      - fk_request  
-      - jacobian_request  
+      - ik_request
     env:
       URDF_PATH: "../URDF/kuka_iiwa/model.urdf"
-      END_EFFECTOR_LINK: "lbr_iiwa_link_7"  
+      END_EFFECTOR_LINK: "lbr_iiwa_link_7"
       TRANSFORM: "0. 0. 0. 1. 0. 0. 0."

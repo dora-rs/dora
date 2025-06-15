@@ -211,7 +211,7 @@ Robot-specific controllers should:
 ## Examples
 
 Complete working examples are available in:
-- `dora/examples/franka-mujoco-control/`
+- `dora/examples/mujoco-sim/`
   - Target pose control with Cartesian space control
   - Gamepad control with real-time interaction
 

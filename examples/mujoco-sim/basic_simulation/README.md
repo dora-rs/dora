@@ -13,7 +13,7 @@ The simulation runs at 500Hz and outputs:
 - Sensor data (if available)
 - Current simulation time
 
-## Running the Example
+### Running the Example
 
 ```bash
 cd basic_simulation
@@ -25,14 +25,14 @@ You should see:
 1. MuJoCo viewer window opens with GO2 robot
 2. Robot is effected by gravity (enabled by default)
 
-## What's Happening
+### What's Happening
 
-1. **Model Loading**: The `dora-mujoco` node loads the Franka model using `load_robot_description("go2_mj_description")`
+1. **Model Loading**: The `dora-mujoco` node loads the RoboDog (go2) model using `load_robot_description("go2_mj_description")`
 2. **Physics Loop**: Timer triggers simulation steps at 500Hz (This is default step time for Mujoco)
 3. **Data Output**: Joint states are published 
 4. **Visualization**: MuJoCo viewer shows real-time simulation
 
-## Configuration Details
+### Configuration Details
 
 The `basic.yml` configures:
 - Model name: `"go2"` you change this to other robots name
