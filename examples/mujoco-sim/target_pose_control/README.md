@@ -162,6 +162,6 @@ A dedicated kinematics computation node that provides three core robotic functio
 
 ## References
 
-This controller design draws inspiration from the kinematic control strategies presented in [mjctrl](https://github.com/kevinzakka/mjctrl), specifically the [differntial ik control example](https://github.com/kevinzakka/mjctrl/blob/main/diffik.py).
+This controller design draws inspiration from the kinematic control strategies presented in [mjctrl](https://github.com/kevinzakka/mjctrl), specifically the [differential ik control example](https://github.com/kevinzakka/mjctrl/blob/main/diffik.py).
 
 The URDF model for the robotic arms was sourced from the [PyBullet GitHub repository](https://github.com/bulletphysics/bullet3/tree/master/examples/pybullet/gym/pybullet_data). Or you could google search the robot and get its urdf.
