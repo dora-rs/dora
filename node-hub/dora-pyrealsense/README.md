@@ -13,7 +13,7 @@ wget https://raw.githubusercontent.com/IntelRealSense/librealsense/refs/heads/ma
 
 mkdir config
 cd config
-wget 
+wget https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/99-realsense-libusb.rules
 
 cd ..
 
