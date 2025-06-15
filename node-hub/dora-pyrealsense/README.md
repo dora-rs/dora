@@ -13,7 +13,8 @@ wget https://raw.githubusercontent.com/IntelRealSense/librealsense/refs/heads/ma
 
 mkdir config
 cd config
-wget https://raw.githubusercontent.com/IntelRealSense/librealsense/refs/heads/master/scripts/config/99-realsense-libusb.rules
+wget 
+
 cd ..
 
 chmod +x setup_udev_rules.sh
