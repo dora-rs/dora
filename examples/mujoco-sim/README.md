@@ -1,4 +1,4 @@
-# Franka MuJoCo Control Tutorial
+# MuJoCo Sim Tutorial
 
 This comprehensive tutorial demonstrates how to build a robot control system using Dora with the `dora-mujoco` simulation node and control logic.
 
