@@ -22,7 +22,7 @@ class MuJoCoSimulator:
         self.model_path_or_name = (
             os.getenv("MODEL_NAME") or 
             model_path_or_name or 
-            "go2"
+            "go2_mj_description"
         )
         
         self.model = None
