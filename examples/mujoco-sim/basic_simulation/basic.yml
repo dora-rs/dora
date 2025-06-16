@@ -3,10 +3,10 @@ nodes:
     build: pip install -e ../../../node-hub/dora-mujoco
     path: dora-mujoco
     inputs:
-      tick: dora/timer/millis/2  # 500 Hz simulation
+      tick: dora/timer/millis/2 # 500 Hz simulation
     outputs:
       - joint_positions
-      - joint_velocities 
+      - joint_velocities
       - sensor_data
     env:
-      MODEL_NAME: "go2"  # Load GO2
+      MODEL_NAME: "go2_mj_description" # Load GO2

@@ -12,15 +12,15 @@ nodes:
     build: pip install -e ../../../node-hub/dora-mujoco
     path: dora-mujoco
     inputs:
-      tick: dora/timer/millis/2  # 500 Hz simulation
+      tick: dora/timer/millis/2 # 500 Hz simulation
       control_input: gamepad_controller/joint_commands
     outputs:
       - joint_positions
-      - joint_velocities 
+      - joint_velocities
       - actuator_controls
       - sensor_data
     env:
-      MODEL_NAME: "kuka_iiwa14"
+      MODEL_NAME: "iiwa14_mj_description"
 
   - id: gamepad_controller
     path: nodes/gamepad_controller_differential_ik.py
@@ -43,9 +43,9 @@ nodes:
       fk_request: gamepad_controller/fk_request
       jacobian_request: gamepad_controller/jacobian_request
     outputs:
-      - fk_request  
-      - jacobian_request  
+      - fk_request
+      - jacobian_request
     env:
-      URDF_PATH: "../URDF/kuka_iiwa/model.urdf"
-      END_EFFECTOR_LINK: "lbr_iiwa_link_7"  
+      MODEL_NAME: "iiwa14_description"
+      END_EFFECTOR_LINK: "iiwa_link_7"
       TRANSFORM: "0. 0. 0. 1. 0. 0. 0."
