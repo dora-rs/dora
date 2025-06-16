@@ -91,7 +91,7 @@ class RobotKinematics:
         """
         self.device = torch.device(device)
         if urdf_path:
-            urdf = open(urdf, mode="rb").read()
+            urdf = open(urdf_path, mode="rb").read()
         # Load kinematic chain (core pytorch_kinematics object)
         self.chain = pk.build_serial_chain_from_urdf(
             urdf, end_effector_link,
