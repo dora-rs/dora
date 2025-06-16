@@ -29,48 +29,19 @@ class MuJoCoSimulator:
         self.data = None
         self.viewer = None
         self.state_data = {}
-        self.model_mapping = self._load_model_mapping()
+        self.load_model()
         
         print(f"MuJoCo Simulator initialized with model: {self.model_path_or_name}")
-        
-    def _load_model_mapping(self) -> dict:
-        """Load robot model mapping from JSON file."""
-        config_path = Path(__file__).parent / "robot_models.json"
-
-        with open(config_path) as f:
-            mapping_data = json.load(f)
-        
-        model_mapping = {}
-        for models in mapping_data.values():
-            model_mapping.update(models)
-            
-        return model_mapping
-            
 
     def load_model(self) -> bool:
         """Load MuJoCo model from path or robot description name."""
-        try:
-            model_path = Path(self.model_path_or_name)
-            if model_path.exists() and model_path.suffix == '.xml':
-                print(f"Loading model from direct path: {model_path}")
-                self.model = mujoco.MjModel.from_xml_path(str(model_path))
-                
-            else:
-                # Treat as model name - robot_descriptions 
-                description_name = self.model_mapping.get(
-                    self.model_path_or_name, 
-                    f"{self.model_path_or_name}_mj_description"
-                )
-                print(f"Loading model '{self.model_path_or_name}' using robot description: {description_name}")
-                self.model = load_robot_description(description_name, variant="scene")
-                
-        except Exception as e:
-            print(f"Error loading model '{self.model_path_or_name}': {e}")
-            print("Available models:")
-            for category, models in self._get_available_models().items():
-                print(f"  {category}: {', '.join(models.keys())}")
-            return False
-            
+        model_path = Path(self.model_path_or_name)
+        if model_path.exists() and model_path.suffix == '.xml':
+            print(f"Loading model from direct path: {model_path}")
+            self.model = mujoco.MjModel.from_xml_path(str(model_path))
+        else:
+            self.model = load_robot_description(self.model_path_or_name, variant="scene")
+
         # Initialize simulation data
         self.data = mujoco.MjData(self.model)
         
@@ -193,7 +164,7 @@ def main():
                 node.send_output(
                     "joint_positions", 
                     pa.array(state["qpos"]), 
-                    {"timestamp": current_time}
+                    {"timestamp": current_time, "encoding": "jointstate"}
                 )
                 
                 # Send joint velocities
