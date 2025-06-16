@@ -7,11 +7,11 @@ nodes:
       control_input: controller/joint_commands
     outputs:
       - joint_positions
-      - joint_velocities 
+      - joint_velocities
       - actuator_controls
       - sensor_data
     env:
-      MODEL_NAME: "panda"
+      MODEL_NAME: "panda_mj_description"
 
   - id: controller
     path: nodes/controller_ik.py
@@ -34,9 +34,9 @@ nodes:
       - ik_request
       - joint_state
     env:
-      URDF_PATH: "../URDF/franka_panda/panda.urdf"
+      MODEL_NAME: "panda_description"
       END_EFFECTOR_LINK: "panda_hand"
-      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."  # Pytorch kinematics uses wxyz format for quaternion
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0." # Pytorch kinematics uses wxyz format for quaternion
 
   - id: pose_publisher
     path: nodes/pose_publisher.py
