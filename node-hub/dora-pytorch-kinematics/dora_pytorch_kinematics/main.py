@@ -9,7 +9,6 @@ import pytorch_kinematics as pk
 import torch
 from dora import Node
 from pytorch_kinematics.transforms.rotation_conversions import matrix_to_euler_angles
-from robot_descriptions.loaders.mujoco import load_robot_description
 from pathlib import Path
 import importlib
 
@@ -84,6 +83,7 @@ class RobotKinematics:
         """Initialize the kinematic chain from a URDF.
 
         Args:
+            urdf (str): URDF string data of the URDF
             urdf_path (str): Path to the URDF file.
             end_effector_link (str): Name of the end-effector link.
             device (Union[str, torch.device]): Computation device ('cpu' or 'cuda').
@@ -284,14 +284,15 @@ class RobotKinematics:
 
 
 def load_robot_description_with_cache_substitution(robot_name: str) -> str:
-    """
-    Load a robot's URDF or MJCF file and replace package:// URIs with cache paths.
+    """Load a robot's URDF or MJCF file and replace package:// URIs with cache paths.
 
-    Parameters:
-    - robot_name: str (e.g., "iiwa7_description")
+    Args:
+        robot_name: str (e.g., "iiwa7_description"). The robot name handler
 
     Returns:
+    -------
     - str: File content with all package:// URIs replaced
+
     """
     try:
         # Dynamically import the robot description module
@@ -306,21 +307,12 @@ def load_robot_description_with_cache_substitution(robot_name: str) -> str:
             raise ValueError(f"No URDF or MJCF path found for '{robot_name}'.")
         print(f"Loading robot description from: {file_path}")
 
-        # Get the robot name used in package://<name>/...
-        package_prefix = robot_name.replace("_description", "") + "_description"
-
-        # Resolve cache directory from env or default
-        cache_dir = os.path.expanduser(
-            os.environ.get("ROBOT_DESCRIPTIONS_CACHE", "~/.cache/robot_descriptions")
-        )
-        cache_path = Path(cache_dir) 
-
         # Read and replace
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             content = f.read()
 
-        content = content.replace(f"package://", f"{cache_path}/")
-
+        print("URDF PATH: ", file_path)
+        content = content.encode("utf-8")
         return content
 
     except ModuleNotFoundError:
