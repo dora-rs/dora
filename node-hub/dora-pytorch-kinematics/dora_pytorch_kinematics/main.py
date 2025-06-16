@@ -9,6 +9,9 @@ import pytorch_kinematics as pk
 import torch
 from dora import Node
 from pytorch_kinematics.transforms.rotation_conversions import matrix_to_euler_angles
+from robot_descriptions.loaders.mujoco import load_robot_description
+from pathlib import Path
+import importlib
 
 TRANSFORM = np.array(os.getenv("TRANSFORM", "0. 0. 0. 1. 0. 0. 0.").split(" ")).astype(
     np.float32,
@@ -74,6 +77,7 @@ class RobotKinematics:
     def __init__(
         self,
         urdf_path: str,
+        urdf: str,
         end_effector_link: str,
         device: Union[str, torch.device] = "cpu",
     ):
@@ -86,13 +90,12 @@ class RobotKinematics:
 
         """
         self.device = torch.device(device)
-        try:
-            # Load kinematic chain (core pytorch_kinematics object)
-            self.chain = pk.build_serial_chain_from_urdf(
-                open(urdf_path, mode="rb").read(), end_effector_link,
-            ).to(device=self.device)
-        except Exception as e:
-            raise RuntimeError(f"Failed to build chain from URDF: {urdf_path}") from e
+        if urdf_path:
+            urdf = open(urdf, mode="rb").read()
+        # Load kinematic chain (core pytorch_kinematics object)
+        self.chain = pk.build_serial_chain_from_urdf(
+            urdf, end_effector_link,
+        ).to(device=self.device)
 
         self.num_joints = len(self.chain.get_joint_parameter_names(exclude_fixed=True))
         # Default initial guess for IK if none provided
@@ -280,89 +283,168 @@ class RobotKinematics:
         return J.cpu().numpy()
 
 
+def load_robot_description_with_cache_substitution(robot_name: str) -> str:
+    """
+    Load a robot's URDF or MJCF file and replace package:// URIs with cache paths.
+
+    Parameters:
+    - robot_name: str (e.g., "iiwa7_description")
+
+    Returns:
+    - str: File content with all package:// URIs replaced
+    """
+    try:
+        # Dynamically import the robot description module
+        desc_module = importlib.import_module(f"robot_descriptions.{robot_name}")
+
+        # Find the URDF or MJCF path
+        if hasattr(desc_module, "URDF_PATH"):
+            file_path = Path(desc_module.URDF_PATH)
+        elif hasattr(desc_module, "MJCF_PATH"):
+            file_path = Path(desc_module.MJCF_PATH)
+        else:
+            raise ValueError(f"No URDF or MJCF path found for '{robot_name}'.")
+        print(f"Loading robot description from: {file_path}")
+
+        # Get the robot name used in package://<name>/...
+        package_prefix = robot_name.replace("_description", "") + "_description"
+
+        # Resolve cache directory from env or default
+        cache_dir = os.path.expanduser(
+            os.environ.get("ROBOT_DESCRIPTIONS_CACHE", "~/.cache/robot_descriptions")
+        )
+        cache_path = Path(cache_dir) 
+
+        # Read and replace
+        with open(file_path, "r") as f:
+            content = f.read()
+
+        content = content.replace(f"package://", f"{cache_path}/")
+
+        return content
+
+    except ModuleNotFoundError:
+        raise ValueError(f"Robot '{robot_name}' not found.")
+    except Exception as e:
+        raise RuntimeError(f"Failed to process robot description: {e}")
+
+
 def main():
     """TODO: Add docstring."""
     node = Node()
 
-    urdf_path = os.getenv("URDF_PATH")
+    model = os.getenv("URDF_PATH")
     end_effector_link = os.getenv("END_EFFECTOR_LINK")
-    robot = RobotKinematics(urdf_path, end_effector_link)
+
+    if not model or not Path(model).exists():
+        model_name = os.getenv("MODEL_NAME")
+        model = load_robot_description_with_cache_substitution(model_name)
+        robot = RobotKinematics(urdf_path="", urdf=model, end_effector_link=end_effector_link)
+    else:
+        robot = RobotKinematics(urdf_path=model, urdf="", end_effector_link=end_effector_link)
     last_known_state = None
 
     for event in node:
         if event["type"] == "INPUT":
             metadata = event["metadata"]
 
-            match metadata["encoding"]:
-                case "xyzquat":
-                    # Apply Inverse Kinematics
-                    if last_known_state is not None:
-                        target = event["value"].to_numpy()
-                        target = target.astype(np.float32)
-                        target = pk.Transform3d(
-                            pos=target[:3], rot=torch.tensor(target[3:7]),
-                        )
-                        solution = robot.compute_ik(target, last_known_state)
-                        metadata["encoding"] = "jointstate"
-                        last_known_state = solution.numpy().ravel()
-                        solution = pa.array(last_known_state)
-                        node.send_output(event["id"], solution, metadata=metadata)
-                case "xyzrpy":
-                    # Apply Inverse Kinematics
-                    if last_known_state is not None:
-                        target = event["value"].to_numpy()
-                        target = target.astype(np.float32)
-                        target = pk.Transform3d(
-                            pos=target[:3],
-                            rot=pk.transforms.euler_angles_to_matrix(
-                                torch.tensor(target[3:6]), convention="XYZ",
-                            ),
-                        )
-                        rob_target = ROB_TF.inverse().compose(target)
-                        solution = robot.compute_ik(rob_target, last_known_state)
-                        if solution is None:
-                            print(
-                                "No IK Solution for :", target, "skipping this frame.",
-                            )
-                            continue
-
-                        solution = solution.numpy().ravel()
-                        delta_angles = solution - last_known_state[:len(solution)] # match with dof
-
-                        valid = np.all(
-                            (delta_angles >= -np.pi) & (delta_angles <= np.pi),
-                        )
-                        if not valid:
-                            print(
-                                "IK solution is not valid, as the rotation are too wide. skipping.",
-                            )
-                            continue
-                        metadata["encoding"] = "jointstate"
-                        last_known_state = solution
-                        solution = pa.array(last_known_state)
-                        node.send_output(event["id"], solution, metadata=metadata)
-                case "jointstate":
-                    target = event["value"].to_numpy()
-                    last_known_state = target
+            if event["id"] == "cmd_vel":
+                if last_known_state is not None:
+                    target_vel = event["value"].to_numpy() # expect 100ms
                     # Apply Forward Kinematics
-                    target = robot.compute_fk(target)
-                    target = np.array(get_xyz_rpy_array_from_transform3d(target))
+                    target = robot.compute_fk(last_known_state) 
+                    target = np.array(get_xyz_rpy_array_from_transform3d(target)) + target_vel
                     target = pa.array(target.ravel(), type=pa.float32())
-                    metadata["encoding"] = "xyzrpy"
-                    node.send_output(event["id"], target, metadata=metadata)
-                case "jacobian":
-                    # Compute Jacobian matrix
-                    joint_angles = event["value"].to_numpy()
-                    jacobian = robot.compute_jacobian_numpy(joint_angles)
-                    
-                    jacobian_flat = jacobian.flatten()
-                    jacobian_array = pa.array(jacobian_flat, type=pa.float32())
-                    
-                    metadata["encoding"] = "jacobian_result"
-                    metadata["jacobian_shape"] = list(jacobian.shape)
-                    
-                    node.send_output(event["id"], jacobian_array, metadata=metadata)
+                    target = pk.Transform3d(
+                        pos=target[:3],
+                        rot=pk.transforms.euler_angles_to_matrix(
+                            torch.tensor(target[3:6]), convention="XYZ",
+                        ),
+                    )
+                    rob_target = ROB_TF.inverse().compose(target)
+                    solution = robot.compute_ik(rob_target, last_known_state)
+                    if solution is None:
+                        print(
+                            "No IK Solution for :", target, "skipping this frame.",
+                        )
+                        continue
+                    solution = solution.numpy().ravel()
+                    metadata["encoding"] = "jointstate"
+                    last_known_state = solution
+                    solution = pa.array(last_known_state)
+                    node.send_output(event["id"], solution, metadata=metadata)
+            else:
+                match metadata["encoding"]:
+                    case "xyzquat":
+                        # Apply Inverse Kinematics
+                        if last_known_state is not None:
+                            target = event["value"].to_numpy()
+                            target = target.astype(np.float32)
+                            target = pk.Transform3d(
+                                pos=target[:3], rot=torch.tensor(target[3:7]),
+                            )
+                            rob_target = ROB_TF.inverse().compose(target)
+                            solution = robot.compute_ik(rob_target, last_known_state)
+                            metadata["encoding"] = "jointstate"
+                            last_known_state = solution.numpy().ravel()
+                            solution = pa.array(last_known_state)
+                            node.send_output(event["id"], solution, metadata=metadata)
+                    case "xyzrpy":
+                        # Apply Inverse Kinematics
+                        if last_known_state is not None:
+                            target = event["value"].to_numpy()
+                            target = target.astype(np.float32)
+                            target = pk.Transform3d(
+                                pos=target[:3],
+                                rot=pk.transforms.euler_angles_to_matrix(
+                                    torch.tensor(target[3:6]), convention="XYZ",
+                                ),
+                            )
+                            rob_target = ROB_TF.inverse().compose(target)
+                            solution = robot.compute_ik(rob_target, last_known_state)
+                            if solution is None:
+                                print(
+                                    "No IK Solution for :", target, "skipping this frame.",
+                                )
+                                continue
 
+                            solution = solution.numpy().ravel()
+                            delta_angles = solution - last_known_state[:len(solution)] # match with dof
+
+                            valid = np.all(
+                                (delta_angles >= -np.pi) & (delta_angles <= np.pi),
+                            )
+                            if not valid:
+                                print(
+                                    "IK solution is not valid, as the rotation are too wide. skipping.",
+                                )
+                                continue
+                            metadata["encoding"] = "jointstate"
+                            last_known_state = solution
+                            solution = pa.array(last_known_state)
+                            node.send_output(event["id"], solution, metadata=metadata)
+                    case "jointstate":
+                        target = event["value"].to_numpy()
+                        last_known_state = target
+                        # Apply Forward Kinematics
+                        target = robot.compute_fk(target)
+                        target = np.array(get_xyz_rpy_array_from_transform3d(target))
+                        target = pa.array(target.ravel(), type=pa.float32())
+                        metadata["encoding"] = "xyzrpy"
+                        node.send_output(event["id"], target, metadata=metadata)
+                    case "jacobian":
+                        # Compute Jacobian matrix
+                        joint_angles = event["value"].to_numpy()
+                        jacobian = robot.compute_jacobian_numpy(joint_angles)
+                        
+                        jacobian_flat = jacobian.flatten()
+                        jacobian_array = pa.array(jacobian_flat, type=pa.float32())
+                        
+                        metadata["encoding"] = "jacobian_result"
+                        metadata["jacobian_shape"] = list(jacobian.shape)
+                        
+                        node.send_output(event["id"], jacobian_array, metadata=metadata)
+                
 
 if __name__ == "__main__":
     main()
