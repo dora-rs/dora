@@ -108,7 +108,7 @@ def main():
             # Angular Z velocity (rotation) from right stick horizontal
             right_x = -joystick.get_axis(controller.axisNames['RIGHT-X'])
             right_x = 0.0 if abs(right_x) < deadzone else right_x
-            angular_z = right_x * max_angular_speed
+            angular_z = 0 * max_angular_speed # TODO: Make z non zero, but on my gamepad the value is never zero
             
             # Angular X velocity from left stick vertical
             left_y = -joystick.get_axis(controller.axisNames['LEFT-Y'])
@@ -121,18 +121,18 @@ def main():
             angular_y = left_x * max_angular_speed
             
             cmd_vel = [linear_x, linear_y, linear_z, angular_x, angular_y, angular_z]
-            
-            node.send_output(
-                output_id="cmd_vel",
-                data=pa.array(cmd_vel, type=pa.float64()),
-                metadata={"type": "cmd_vel"}
-            )
+            if any(cmd_vel):
+                node.send_output(
+                    output_id="cmd_vel",
+                    data=pa.array(cmd_vel, type=pa.float64()),
+                    metadata={"type": "cmd_vel"}
+                )
 
-            node.send_output(
-                output_id="raw_control",
-                data=pa.array([json.dumps(raw_control)], type=pa.string()),
-                metadata={"type": "raw_control"}
-            )
+                node.send_output(
+                    output_id="raw_control",
+                    data=pa.array([json.dumps(raw_control)], type=pa.string()),
+                    metadata={"type": "raw_control"}
+                )
 
     except KeyboardInterrupt:
         print("\nExiting...")
