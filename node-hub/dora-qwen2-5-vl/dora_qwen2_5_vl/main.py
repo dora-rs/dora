@@ -62,7 +62,9 @@ if ADAPTER_PATH != "":
 processor = AutoProcessor.from_pretrained(MODEL_NAME_OR_PATH, use_fast=True)
 
 
-def generate(frames: dict, texts: list[str], history, past_key_values=None, image_id=None):
+def generate(
+    frames: dict, texts: list[str], history, past_key_values=None, image_id=None
+):
     """Generate the response to the question given the image using Qwen2 model."""
     if image_id is not None:
         images = [frames[image_id]]
@@ -104,16 +106,19 @@ def generate(frames: dict, texts: list[str], history, past_key_values=None, imag
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": text.replace("<|user|>\n<|im_start|>\n", "")},
+                        {
+                            "type": "text",
+                            "text": text.replace("<|user|>\n<|im_start|>\n", ""),
+                        },
                     ],
                 }
             )
         elif text.startswith("<|user|>\n<|vision_start|>\n"):
             # Handle the case where the text starts with <|user|>\n<|vision_start|>
             image_url = text.replace("<|user|>\n<|vision_start|>\n", "")
-            
+
             # If the last message was from the user, append the image URL to it
-            if messages[-1]["role"] == "user" :
+            if messages[-1]["role"] == "user":
                 messages[-1]["content"].append(
                     {
                         "type": "image",
@@ -127,7 +132,7 @@ def generate(frames: dict, texts: list[str], history, past_key_values=None, imag
                         "content": [
                             {
                                 "type": "image",
-                                "image":  image_url,
+                                "image": image_url,
                             },
                         ],
                     }
@@ -143,31 +148,32 @@ def generate(frames: dict, texts: list[str], history, past_key_values=None, imag
             )
 
     # If the last message was from the user, append the image URL to it
-    if messages[-1]["role"] == "user" :
-            messages[-1]["content"] +=  [
-                {
-                    "type": "image",
-                    "image": image,
-                    "resized_height": image.size[1] * IMAGE_RESIZE_RATIO,
-                    "resized_width": image.size[0] * IMAGE_RESIZE_RATIO,
-                }
-                for image in images
-            ] 
+    if messages[-1]["role"] == "user":
+        messages[-1]["content"] += [
+            {
+                "type": "image",
+                "image": image,
+                "resized_height": image.size[1] * IMAGE_RESIZE_RATIO,
+                "resized_width": image.size[0] * IMAGE_RESIZE_RATIO,
+            }
+            for image in images
+        ]
     else:
-            messages.append(
-                  {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "image": image,
-                    "resized_height": image.size[1] * IMAGE_RESIZE_RATIO,
-                    "resized_width": image.size[0] * IMAGE_RESIZE_RATIO,
-                }
-                for image in images
-            ]
-        })
-   
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": image,
+                        "resized_height": image.size[1] * IMAGE_RESIZE_RATIO,
+                        "resized_width": image.size[0] * IMAGE_RESIZE_RATIO,
+                    }
+                    for image in images
+                ],
+            }
+        )
+
     tmp_history = history + messages
     # Preparation for inference
     text = processor.apply_chat_template(
@@ -203,19 +209,13 @@ def generate(frames: dict, texts: list[str], history, past_key_values=None, imag
         clean_up_tokenization_spaces=False,
     )
     if HISTORY:
-        history += [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": question},
-                ],
-            },
+        history = tmp_history + [
             {
                 "role": "assistant",
                 "content": [
                     {"type": "text", "text": output_text[0]},
                 ],
-            },
+            }
         ]
 
     return output_text[0], history, past_key_values
