@@ -1,4 +1,5 @@
 use colored::Colorize;
+use dora_core::build::LogLevelOrStdout;
 use dora_message::common::LogMessage;
 
 pub fn print_log_message(log_message: LogMessage) {
@@ -15,10 +16,14 @@ pub fn print_log_message(log_message: LogMessage) {
         message,
     } = log_message;
     let level = match level {
-        log::Level::Error => "ERROR".red(),
-        log::Level::Warn => "WARN ".yellow(),
-        log::Level::Info => "INFO ".green(),
-        other => format!("{other:5}").normal(),
+        LogLevelOrStdout::LogLevel(level) => match level {
+            log::Level::Error => "ERROR ".red(),
+            log::Level::Warn => "WARN  ".yellow(),
+            log::Level::Info => "INFO  ".green(),
+            log::Level::Debug => "DEBUG ".bright_blue(),
+            log::Level::Trace => "TRACE ".dimmed(),
+        },
+        LogLevelOrStdout::Stdout => "stdout".bright_blue().italic().dimmed(),
     };
     let dataflow = if let Some(dataflow_id) = dataflow_id {
         format!(" dataflow `{dataflow_id}`\t").cyan()

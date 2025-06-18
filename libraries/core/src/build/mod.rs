@@ -1,5 +1,5 @@
 pub use git::GitManager;
-pub use logger::BuildLogger;
+pub use logger::{BuildLogger, LogLevelOrStdout};
 
 use url::Url;
 
@@ -126,10 +126,7 @@ async fn build_node(
     tokio::spawn(async move {
         while let Some(line) = stdout.recv().await {
             logger
-                .log_message(
-                    LogLevel::Info,
-                    line.unwrap_or_else(|err| format!("io err: {}", err.kind())),
-                )
+                .log_stdout(line.unwrap_or_else(|err| format!("io err: {}", err.kind())))
                 .await;
         }
     });

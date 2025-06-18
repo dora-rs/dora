@@ -369,7 +369,7 @@ async fn start_inner(
                                         dataflow_id: Some(dataflow_id),
                                         node_id: None,
                                         daemon_id: None,
-                                        level: LogLevel::Info,
+                                        level: LogLevel::Info.into(),
                                         target: Some("coordinator".into()),
                                         module_path: None,
                                         file: None,

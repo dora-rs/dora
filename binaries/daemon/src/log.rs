@@ -4,7 +4,11 @@ use std::{
     sync::Arc,
 };
 
-use dora_core::{build::BuildLogger, config::NodeId, uhlc};
+use dora_core::{
+    build::{BuildLogger, LogLevelOrStdout},
+    config::NodeId,
+    uhlc,
+};
 use dora_message::{
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
@@ -101,9 +105,19 @@ pub struct NodeBuildLogger<'a> {
 }
 
 impl NodeBuildLogger<'_> {
-    pub async fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+    pub async fn log(
+        &mut self,
+        level: impl Into<LogLevelOrStdout> + Send,
+        message: impl Into<String>,
+    ) {
         self.logger
-            .log_build(self.build_id, level, Some(self.node_id.clone()), message)
+            .log_build(
+                self.build_id,
+                level.into(),
+                None,
+                Some(self.node_id.clone()),
+                message,
+            )
             .await
     }
 
@@ -121,7 +135,7 @@ impl BuildLogger for NodeBuildLogger<'_> {
 
     fn log_message(
         &mut self,
-        level: LogLevel,
+        level: impl Into<LogLevelOrStdout> + Send,
         message: impl Into<String> + Send,
     ) -> impl std::future::Future<Output = ()> + Send {
         self.log(level, message)
@@ -170,7 +184,7 @@ impl DaemonLogger {
             daemon_id: Some(self.daemon_id.clone()),
             dataflow_id,
             node_id,
-            level,
+            level: level.into(),
             target,
             module_path: None,
             file: None,
@@ -183,7 +197,8 @@ impl DaemonLogger {
     pub async fn log_build(
         &mut self,
         build_id: BuildId,
-        level: LogLevel,
+        level: LogLevelOrStdout,
+        target: Option<String>,
         node_id: Option<NodeId>,
         message: impl Into<String>,
     ) {
@@ -193,7 +208,7 @@ impl DaemonLogger {
             dataflow_id: None,
             node_id,
             level,
-            target: Some("build".into()),
+            target,
             module_path: None,
             file: None,
             line: None,
@@ -249,33 +264,7 @@ impl Logger {
 
         // log message using tracing if reporting to coordinator is not possible
         match message.level {
-            LogLevel::Error => {
-                tracing::error!(
-                    build_id = ?message.build_id.map(|id| id.to_string()),
-                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                    node_id = ?message.node_id.map(|id| id.to_string()),
-                    target = message.target,
-                    module_path = message.module_path,
-                    file = message.file,
-                    line = message.line,
-                    "{}",
-                    Indent(&message.message)
-                );
-            }
-            LogLevel::Warn => {
-                tracing::warn!(
-                    build_id = ?message.build_id.map(|id| id.to_string()),
-                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                    node_id = ?message.node_id.map(|id| id.to_string()),
-                    target = message.target,
-                    module_path = message.module_path,
-                    file = message.file,
-                    line = message.line,
-                    "{}",
-                    Indent(&message.message)
-                );
-            }
-            LogLevel::Info => {
+            LogLevelOrStdout::Stdout => {
                 tracing::info!(
                     build_id = ?message.build_id.map(|id| id.to_string()),
                     dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
@@ -286,22 +275,63 @@ impl Logger {
                     line = message.line,
                     "{}",
                     Indent(&message.message)
-                );
+                )
             }
-            LogLevel::Debug => {
-                tracing::debug!(
-                    build_id = ?message.build_id.map(|id| id.to_string()),
-                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                    node_id = ?message.node_id.map(|id| id.to_string()),
-                    target = message.target,
-                    module_path = message.module_path,
-                    file = message.file,
-                    line = message.line,
-                    "{}",
-                    Indent(&message.message)
-                );
-            }
-            _ => {}
+            LogLevelOrStdout::LogLevel(level) => match level {
+                LogLevel::Error => {
+                    tracing::error!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Warn => {
+                    tracing::warn!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Info => {
+                    tracing::info!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Debug => {
+                    tracing::debug!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                _ => {}
+            },
         }
     }
 
