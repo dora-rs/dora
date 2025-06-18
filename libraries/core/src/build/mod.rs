@@ -33,19 +33,17 @@ impl Builder {
         self,
         node: ResolvedNode,
         git: Option<GitSource>,
-        prev_git: Option<GitSource>,
+        prev_git: Option<PrevGitSource>,
         mut logger: impl BuildLogger,
         git_manager: &mut GitManager,
     ) -> eyre::Result<impl Future<Output = eyre::Result<BuiltNode>>> {
         let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
-            let repo_url = Url::parse(&repo).context("failed to parse git repository URL")?;
             let target_dir = self.base_working_dir.join("git");
-            let prev_hash = prev_git.filter(|p| p.repo == repo).map(|p| p.commit_hash);
             let git_folder = git_manager.choose_clone_dir(
                 self.session_id,
-                repo_url,
+                repo,
                 commit_hash,
-                prev_hash,
+                prev_git,
                 &target_dir,
             )?;
             Some(git_folder)
@@ -141,4 +139,10 @@ pub struct BuiltNode {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BuildInfo {
     pub node_working_dirs: BTreeMap<NodeId, PathBuf>,
+}
+
+pub struct PrevGitSource {
+    pub git_source: GitSource,
+    /// `True` if any nodes of this dataflow still require the source for building.
+    pub still_needed_for_this_build: bool,
 }

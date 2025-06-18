@@ -1,5 +1,5 @@
-use crate::build::BuildLogger;
-use dora_message::{common::LogLevel, descriptor::GitRepoRev, DataflowId, SessionId};
+use crate::build::{BuildLogger, PrevGitSource};
+use dora_message::{common::LogLevel, DataflowId, SessionId};
 use eyre::{bail, ContextCompat, WrapErr};
 use git2::FetchOptions;
 use itertools::Itertools;
@@ -30,12 +30,18 @@ impl GitManager {
     pub fn choose_clone_dir(
         &mut self,
         session_id: SessionId,
-        repo_url: Url,
+        repo: String,
         commit_hash: String,
-        prev_commit_hash: Option<String>,
+        prev_git: Option<PrevGitSource>,
         target_dir: &Path,
     ) -> eyre::Result<GitFolder> {
+        let repo_url = Url::parse(&repo).context("failed to parse git repository URL")?;
         let clone_dir = Self::clone_dir_path(target_dir, &repo_url, &commit_hash)?;
+
+        let prev_commit_hash = prev_git
+            .as_ref()
+            .filter(|p| p.git_source.repo == repo)
+            .map(|p| &p.git_source.commit_hash);
 
         if let Some(using) = self.clones_in_use.get(&clone_dir) {
             if !using.is_empty() {
@@ -58,27 +64,31 @@ impl GitManager {
             }
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
-            let prev_clone_dir =
-                Self::clone_dir_path(target_dir, &repo_url, &previous_commit_hash)?;
+            let prev_clone_dir = Self::clone_dir_path(target_dir, &repo_url, previous_commit_hash)?;
 
-            if self
-                .clones_in_use
-                .get(&prev_clone_dir)
-                .map(|ids| !ids.is_empty())
-                .unwrap_or(false)
-            {
-                // previous clone is still in use -> we cannot rename it, but we can copy it
-                ReuseOptions::CopyAndFetch {
-                    from: prev_clone_dir,
-                    target_dir: clone_dir.clone(),
-                    commit_hash,
-                }
-            } else if prev_clone_dir.exists() {
-                // there is an unused previous clone that is not in use -> rename it
-                ReuseOptions::RenameAndFetch {
-                    from: prev_clone_dir,
-                    target_dir: clone_dir.clone(),
-                    commit_hash,
+            if prev_clone_dir.exists() {
+                let still_needed = prev_git
+                    .map(|g| g.still_needed_for_this_build)
+                    .unwrap_or(false);
+                let used_by_others = self
+                    .clones_in_use
+                    .get(&prev_clone_dir)
+                    .map(|ids| !ids.is_empty())
+                    .unwrap_or(false);
+                if still_needed || used_by_others {
+                    // previous clone is still in use -> we cannot rename it, but we can copy it
+                    ReuseOptions::CopyAndFetch {
+                        from: prev_clone_dir,
+                        target_dir: clone_dir.clone(),
+                        commit_hash,
+                    }
+                } else {
+                    // there is an unused previous clone that is no longer needed -> rename it
+                    ReuseOptions::RenameAndFetch {
+                        from: prev_clone_dir,
+                        target_dir: clone_dir.clone(),
+                        commit_hash,
+                    }
                 }
             } else {
                 // no existing clone associated with previous build id
