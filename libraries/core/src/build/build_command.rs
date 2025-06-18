@@ -45,6 +45,9 @@ pub fn run_build_command(
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        cmd.env("CLICOLOR", "1");
+        cmd.env("CLICOLOR_FORCE", "1");
+
         let mut child = cmd
             .spawn()
             .wrap_err_with(|| format!("failed to spawn `{}`", build))?;
