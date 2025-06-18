@@ -151,8 +151,11 @@ async fn main() -> eyre::Result<()> {
                 Event::Stop => {
                     break;
                 }
+                Event::InputClosed { id, .. } => {
+                    info!("Input channel closed for id: {}", id);
+                }
                 event => {
-                    println!("Event: {event:#?}")
+                    eyre::bail!("unexpected event: {:#?}", event)
                 }
             },
         }
