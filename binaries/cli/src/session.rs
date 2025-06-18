@@ -49,6 +49,9 @@ impl DataflowSession {
             .context("session file has no file name")?
             .to_str()
             .context("session file name is no utf8")?;
+        if let Some(parent) = session_file.parent() {
+            std::fs::create_dir_all(parent).context("failed to create out dir")?;
+        }
         std::fs::write(&session_file, self.serialize()?)
             .context("failed to write dataflow session file")?;
         let gitignore = session_file.with_file_name(".gitignore");
@@ -88,6 +91,8 @@ fn session_file_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
         .wrap_err("dataflow path has no file stem")?
         .to_str()
         .wrap_err("dataflow file stem is not valid utf-8")?;
-    let session_file = dataflow_path.with_file_name(format!("{file_stem}.dora-session.yaml"));
+    let session_file = dataflow_path
+        .with_file_name("out")
+        .join(format!("{file_stem}.dora-session.yaml"));
     Ok(session_file)
 }
