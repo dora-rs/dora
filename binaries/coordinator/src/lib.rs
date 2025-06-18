@@ -1291,7 +1291,7 @@ async fn build_dataflow(
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let nodes_on_machine = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
-            "Running dataflow build `{session_id}` on machine `{machine:?}` (nodes: {nodes_on_machine:?})"
+            "Running dataflow build `{build_id}` on machine `{machine:?}` (nodes: {nodes_on_machine:?})"
         );
 
         let build_command = BuildDataflowNodes {
@@ -1318,7 +1318,7 @@ async fn build_dataflow(
         daemons.insert(daemon_id);
     }
 
-    tracing::info!("successfully triggered dataflow build `{session_id}`",);
+    tracing::info!("successfully triggered dataflow build `{build_id}`",);
 
     Ok(RunningBuild {
         errors: Vec::new(),
