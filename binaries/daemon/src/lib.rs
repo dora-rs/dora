@@ -2146,7 +2146,7 @@ impl Daemon {
                     current_dir().context("failed to get daemon working dir")?;
                 Ok(daemon_working_dir
                     .join("_work")
-                    .join(session_id.to_string()))
+                    .join(session_id.uuid().to_string()))
             }
         }
     }

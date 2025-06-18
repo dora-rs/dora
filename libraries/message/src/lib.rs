@@ -37,11 +37,9 @@ impl SessionId {
     pub fn generate() -> Self {
         Self(Uuid::new_v7(Timestamp::now(uuid::NoContext)))
     }
-}
 
-impl std::fmt::Display for SessionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SessionId({})", self.0)
+    pub fn uuid(&self) -> uuid::Uuid {
+        self.0
     }
 }
 
