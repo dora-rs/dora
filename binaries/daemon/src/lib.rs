@@ -2,7 +2,7 @@ use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
-    build::{self, BuildInfo, GitManager},
+    build::{self, BuildInfo, GitManager, PrevGitSource},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
         read_as_descriptor, CoreNodeKind, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
@@ -1011,6 +1011,10 @@ impl Daemon {
             logger.log(LogLevel::Info, "building").await;
             let git_source = git_sources.get(&node_id).cloned();
             let prev_git_source = prev_git_sources.get(&node_id).cloned();
+            let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
+                still_needed_for_this_build: git_sources.values().any(|s| s == &prev_source),
+                git_source: prev_source,
+            });
 
             let logger_cloned = logger
                 .try_clone_impl()
@@ -1028,7 +1032,7 @@ impl Daemon {
                 .build_node(
                     node,
                     git_source,
-                    prev_git_source,
+                    prev_git,
                     logger_cloned,
                     &mut self.git_manager,
                 )

@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use colored::Colorize;
 use dora_core::{
-    build::{BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout},
+    build::{BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout, PrevGitSource},
     descriptor::{Descriptor, DescriptorExt},
 };
 use dora_message::{common::GitSource, id::NodeId};
@@ -52,13 +52,17 @@ async fn build_dataflow(
         let node_id = node.id.clone();
         let git_source = git_sources.get(&node_id).cloned();
         let prev_git_source = prev_git_sources.get(&node_id).cloned();
+        let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
+            still_needed_for_this_build: git_sources.values().any(|s| s == &prev_source),
+            git_source: prev_source,
+        });
 
         let task = builder
             .clone()
             .build_node(
                 node,
                 git_source,
-                prev_git_source,
+                prev_git,
                 LocalBuildLogger {
                     node_id: node_id.clone(),
                 },
