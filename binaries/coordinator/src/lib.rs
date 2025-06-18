@@ -204,6 +204,7 @@ async fn start_inner(
     let mut events = (abortable_events, daemon_events).merge();
 
     let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+    let mut finished_builds: HashMap<BuildId, CachedResult> = HashMap::new();
 
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
@@ -449,6 +450,8 @@ async fn start_inner(
                         ControlRequest::WaitForBuild { build_id } => {
                             if let Some(build) = running_builds.get_mut(&build_id) {
                                 build.build_result.register(reply_sender);
+                            } else if let Some(result) = finished_builds.get_mut(&build_id) {
+                                result.register(reply_sender);
                             } else {
                                 let _ =
                                     reply_sender.send(Err(eyre!("unknown build id {build_id}")));
@@ -850,6 +853,8 @@ async fn start_inner(
                         build.build_result.set_result(Ok(
                             ControlRequestReply::DataflowBuildFinished { build_id, result },
                         ));
+
+                        finished_builds.insert(build_id, build.build_result);
                     }
                 }
                 None => {
