@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
+use colored::Colorize;
 use dora_core::{
     build::{BuildInfo, BuildLogger, Builder, GitManager},
     descriptor::{Descriptor, DescriptorExt},
@@ -89,8 +90,15 @@ impl BuildLogger for LocalBuildLogger {
     type Clone = Self;
 
     async fn log_message(&mut self, level: log::Level, message: impl Into<String> + Send) {
+        let level = match level {
+            log::Level::Error => "ERROR".red(),
+            log::Level::Warn => "WARN ".yellow(),
+            log::Level::Info => "INFO ".green(),
+            other => format!("{other:5}").normal(),
+        };
+        let node = self.node_id.to_string().bold().bright_black();
         let message: String = message.into();
-        println!("{}: \t{level}: \t{message}", self.node_id);
+        println!("{node}: \t{level}: \t{message}");
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
