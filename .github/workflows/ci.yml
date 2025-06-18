@@ -189,7 +189,7 @@ jobs:
           # only save caches for `main` branch
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: ros-tooling/setup-ros@v0.6
+      - uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
