@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use colored::Colorize;
 use dora_core::{
-    build::{BuildInfo, BuildLogger, Builder, GitManager},
+    build::{BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout},
     descriptor::{Descriptor, DescriptorExt},
 };
 use dora_message::{common::GitSource, id::NodeId};
@@ -89,16 +89,24 @@ struct LocalBuildLogger {
 impl BuildLogger for LocalBuildLogger {
     type Clone = Self;
 
-    async fn log_message(&mut self, level: log::Level, message: impl Into<String> + Send) {
-        let level = match level {
-            log::Level::Error => "ERROR".red(),
-            log::Level::Warn => "WARN ".yellow(),
-            log::Level::Info => "INFO ".green(),
-            other => format!("{other:5}").normal(),
+    async fn log_message(
+        &mut self,
+        level: impl Into<LogLevelOrStdout> + Send,
+        message: impl Into<String> + Send,
+    ) {
+        let level = match level.into() {
+            LogLevelOrStdout::LogLevel(level) => match level {
+                log::Level::Error => "ERROR ".red(),
+                log::Level::Warn => "WARN  ".yellow(),
+                log::Level::Info => "INFO  ".green(),
+                log::Level::Debug => "DEBUG ".bright_blue(),
+                log::Level::Trace => "TRACE ".dimmed(),
+            },
+            LogLevelOrStdout::Stdout => "stdout".italic().dimmed(),
         };
         let node = self.node_id.to_string().bold().bright_black();
         let message: String = message.into();
-        println!("{node}: \t{level}: \t{message}");
+        println!("{node}: {level}   {message}");
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
