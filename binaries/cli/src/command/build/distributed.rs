@@ -78,7 +78,7 @@ pub fn wait_until_dataflow_built(
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
                 Ok(log_message) => {
-                    print_log_message(log_message);
+                    print_log_message(log_message, false, true);
                 }
                 Err(err) => {
                     tracing::warn!("failed to parse log message: {err:?}")
