@@ -5,13 +5,13 @@ authors = [{ name = "Your Name", email = "email@email.com" }]
 description = "dora-pytorch-kinematics"
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 
 dependencies = [
-    "dora-rs >= 0.3.9",
-    "mujoco>=3.2.3",
-    "pytorch-kinematics>=0.7.5",
-    "robot-descriptions>=1.17.0",
+  "dora-rs >= 0.3.9",
+  "mujoco>=3.2.3",
+  "pytorch-kinematics>=0.7.5",
+  "robot-descriptions>=1.17.0",
 ]
 
 [dependency-groups]
@@ -22,6 +22,6 @@ dora-pytorch-kinematics = "dora_pytorch_kinematics.main:main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+  "D",  # pydocstyle
+  "UP",
 ]
