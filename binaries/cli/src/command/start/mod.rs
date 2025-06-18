@@ -56,12 +56,14 @@ pub fn start(
             log_level,
         )
     } else {
+        let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
         // wait until dataflow is started
         wait_until_dataflow_started(
             dataflow_id,
             &mut session,
             coordinator_socket,
             log::LevelFilter::Info,
+            print_daemon_name,
         )
     }
 }
@@ -120,6 +122,7 @@ fn wait_until_dataflow_started(
     session: &mut Box<TcpRequestReplyConnection>,
     coordinator_addr: SocketAddr,
     log_level: log::LevelFilter,
+    print_daemon_id: bool,
 ) -> eyre::Result<()> {
     // subscribe to log messages
     let mut log_session = TcpConnection {
@@ -141,7 +144,7 @@ fn wait_until_dataflow_started(
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
                 Ok(log_message) => {
-                    print_log_message(log_message);
+                    print_log_message(log_message, false, print_daemon_id);
                 }
                 Err(err) => {
                     tracing::warn!("failed to parse log message: {err:?}")

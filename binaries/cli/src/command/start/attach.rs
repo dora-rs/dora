@@ -33,6 +33,8 @@ pub fn attach_dataflow(
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
+    let print_daemon_name = nodes.values().any(|n| n.deploy.is_some());
+
     let working_dir = dataflow_path
         .canonicalize()
         .context("failed to canonicalize dataflow path")?
@@ -155,7 +157,7 @@ pub fn attach_dataflow(
             },
             Ok(AttachEvent::Control(control_request)) => control_request,
             Ok(AttachEvent::Log(Ok(log_message))) => {
-                print_log_message(log_message);
+                print_log_message(log_message, false, print_daemon_name);
                 continue;
             }
             Ok(AttachEvent::Log(Err(err))) => {
