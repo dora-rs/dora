@@ -1,11 +1,35 @@
-use std::{fs::File, io::Write, path::Path};
-
+use super::Executable;
 use dora_core::descriptor::{Descriptor, DescriptorExt};
 use eyre::Context;
+use std::{
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
-const MERMAID_TEMPLATE: &str = include_str!("mermaid-template.html");
+const MERMAID_TEMPLATE: &str = include_str!("graph/mermaid-template.html");
 
-pub(crate) fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Result<()> {
+#[derive(Debug, clap::Args)]
+/// Generate a visualization of the given graph using mermaid.js. Use --open to open browser.
+pub struct Graph {
+    /// Path to the dataflow descriptor file
+    #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+    dataflow: PathBuf,
+    /// Visualize the dataflow as a Mermaid diagram (instead of HTML)
+    #[clap(long, action)]
+    mermaid: bool,
+    /// Open the HTML visualization in the browser
+    #[clap(long, action)]
+    open: bool,
+}
+
+impl Executable for Graph {
+    fn execute(self) -> eyre::Result<()> {
+        create(self.dataflow, self.mermaid, self.open)
+    }
+}
+
+fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Result<()> {
     if mermaid {
         let visualized = visualize_as_mermaid(&dataflow)?;
         println!("{visualized}");
