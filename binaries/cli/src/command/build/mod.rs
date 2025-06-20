@@ -45,25 +45,31 @@ pub fn build(
         }
     }
 
-    let session = connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
+    let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
 
     let build_kind = if force_local {
-        // user explicitly requested a local build
+        log::info!("Building locally, as requested through `--force-local`");
+        BuildKind::Local
+    } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
+        log::info!("Building locally because dataflow does not contain any `deploy` sections");
         BuildKind::Local
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
+        log::info!("Building through coordinator, using the given cooridnator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
-            coordinator_session: session.context("failed to connect to coordinator")?,
+            coordinator_session: session().context("failed to connect to coordinator")?,
         }
     } else {
-        match session {
+        match session() {
             Ok(coordinator_session) => {
                 // we found a local coordinator instance at default port -> use it for building
+                log::info!("Found local dora coordinator instance -> building through coordinator");
                 BuildKind::ThroughCoordinator {
                     coordinator_session,
                 }
             }
             Err(_) => {
+                log::warn!("No dora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
