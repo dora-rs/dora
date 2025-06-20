@@ -63,6 +63,9 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
 
+pub use flume;
+pub use log::LogDestination;
+
 mod coordinator;
 mod local_listener;
 mod log;
@@ -146,6 +149,20 @@ impl Daemon {
                 future::Either::Right((events, _)) => events?,
             }
         };
+
+        let log_destination = {
+            // additional connection for logging
+            let stream = TcpStream::connect(coordinator_addr)
+                .await
+                .wrap_err("failed to connect log to dora-coordinator")?;
+            stream
+                .set_nodelay(true)
+                .wrap_err("failed to set TCP_NODELAY")?;
+            LogDestination::Coordinator {
+                coordinator_connection: stream,
+            }
+        };
+
         Self::run_general(
             (ReceiverStream::new(ctrlc_events), incoming_events).merge(),
             Some(coordinator_addr),
@@ -154,6 +171,7 @@ impl Daemon {
             clock,
             Some(remote_daemon_events_tx),
             Default::default(),
+            log_destination,
         )
         .await
         .map(|_| ())
@@ -165,6 +183,7 @@ impl Daemon {
         local_build: Option<BuildInfo>,
         session_id: SessionId,
         uv: bool,
+        log_destination: LogDestination,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -236,6 +255,7 @@ impl Daemon {
             } else {
                 Default::default()
             },
+            log_destination,
         );
 
         let spawn_result = reply_rx
@@ -260,6 +280,7 @@ impl Daemon {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_general(
         external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
         coordinator_addr: Option<SocketAddr>,
@@ -268,26 +289,13 @@ impl Daemon {
         clock: Arc<HLC>,
         remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
         builds: BTreeMap<BuildId, BuildInfo>,
+        log_destination: LogDestination,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
                     .await
                     .wrap_err("failed to connect to dora-coordinator")?;
-                stream
-                    .set_nodelay(true)
-                    .wrap_err("failed to set TCP_NODELAY")?;
-                Some(stream)
-            }
-            None => None,
-        };
-
-        // additional connection for logging
-        let logger_coordinator_connection = match coordinator_addr {
-            Some(addr) => {
-                let stream = TcpStream::connect(addr)
-                    .await
-                    .wrap_err("failed to connect log to dora-coordinator")?;
                 stream
                     .set_nodelay(true)
                     .wrap_err("failed to set TCP_NODELAY")?;
@@ -392,7 +400,7 @@ impl Daemon {
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             logger: Logger {
-                coordinator_connection: logger_coordinator_connection,
+                destination: log_destination,
                 daemon_id: daemon_id.clone(),
                 clock: clock.clone(),
             }
