@@ -21,7 +21,7 @@ eyre = "0.6.8"
 futures = "0.3.21"
 futures-concurrency = "7.1.0"
 libloading = "0.7.3"
-serde_yaml = "0.8.23"
+serde_yaml = { workspace = true }
 tokio = { version = "1.24.2", features = ["full"] }
 tokio-stream = "0.1.8"
 # pyo3-abi3 flag allow simpler linking. See: https://pyo3.rs/v0.13.2/building_and_distribution.html

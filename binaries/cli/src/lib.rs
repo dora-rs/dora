@@ -1,4 +1,3 @@
-use attach::attach_dataflow;
 use colored::Colorize;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_coordinator::Event;
@@ -9,7 +8,7 @@ use dora_core::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
-use dora_daemon::Daemon;
+use dora_daemon::{Daemon, LogDestination};
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
@@ -31,14 +30,12 @@ use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
 
-mod attach;
-mod build;
-mod check;
+pub mod command;
 mod formatting;
 mod graph;
-mod logs;
+pub mod output;
+pub mod session;
 mod template;
-mod up;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
@@ -82,9 +79,18 @@ enum Command {
         /// Path to the dataflow descriptor file
         #[clap(value_name = "PATH")]
         dataflow: String,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP")]
+        coordinator_addr: Option<IpAddr>,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT")]
+        coordinator_port: Option<u16>,
         // Use UV to build nodes.
         #[clap(long, action)]
         uv: bool,
+        // Run build on local machine
+        #[clap(long, action)]
+        local: bool,
     },
     /// Generate a new project or node. Choose the language between Rust, Python, C or C++.
     New {
@@ -292,14 +298,16 @@ enum Lang {
 }
 
 pub fn lib_main(args: Args) {
-    if let Err(err) = run(args) {
+    if let Err(err) = run_cli(args) {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:?}");
         std::process::exit(1);
     }
 }
 
-fn run(args: Args) -> eyre::Result<()> {
+fn run_cli(args: Args) -> eyre::Result<()> {
+    tracing_log::LogTracer::init()?;
+
     #[cfg(feature = "tracing")]
     match &args.command {
         Command::Daemon {
@@ -334,7 +342,7 @@ fn run(args: Args) -> eyre::Result<()> {
                 .build()
                 .wrap_err("failed to set up tracing subscriber")?;
         }
-        Command::Run { .. } => {
+        Command::Run { .. } | Command::Build { .. } => {
             let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
             TracingBuilder::new("run")
                 .with_stdout(log_level)
@@ -348,12 +356,6 @@ fn run(args: Args) -> eyre::Result<()> {
                 .wrap_err("failed to set up tracing subscriber")?;
         }
     };
-
-    let log_level = env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .build()
-        .filter();
 
     match args.command {
         Command::Check {
@@ -369,9 +371,9 @@ fn run(args: Args) -> eyre::Result<()> {
                     .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                     .to_owned();
                 Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
-                check::check_environment((coordinator_addr, coordinator_port).into())?
+                command::check::check_environment((coordinator_addr, coordinator_port).into())?
             }
-            None => check::check_environment((coordinator_addr, coordinator_port).into())?,
+            None => command::check::check_environment((coordinator_addr, coordinator_port).into())?,
         },
         Command::Graph {
             dataflow,
@@ -380,24 +382,20 @@ fn run(args: Args) -> eyre::Result<()> {
         } => {
             graph::create(dataflow, mermaid, open)?;
         }
-        Command::Build { dataflow, uv } => {
-            build::build(dataflow, uv)?;
-        }
+        Command::Build {
+            dataflow,
+            coordinator_addr,
+            coordinator_port,
+            uv,
+            local,
+        } => command::build(dataflow, coordinator_addr, coordinator_port, uv, local)?,
         Command::New {
             args,
             internal_create_with_path_dependencies,
         } => template::create(args, internal_create_with_path_dependencies)?,
-        Command::Run { dataflow, uv } => {
-            let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-            let rt = Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .context("tokio runtime failed")?;
-            let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv))?;
-            handle_dataflow_result(result, None)?
-        }
+        Command::Run { dataflow, uv } => command::run(dataflow, uv)?,
         Command::Up { config } => {
-            up::up(config.as_deref())?;
+            command::up::up(config.as_deref())?;
         }
         Command::Logs {
             dataflow,
@@ -412,15 +410,16 @@ fn run(args: Args) -> eyre::Result<()> {
             if let Some(dataflow) = dataflow {
                 let uuid = Uuid::parse_str(&dataflow).ok();
                 let name = if uuid.is_some() { None } else { Some(dataflow) };
-                logs::logs(&mut *session, uuid, name, node)?
+                command::logs(&mut *session, uuid, name, node)?
             } else {
-                let active = list.get_active();
+                let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> =
+                    list.get_active();
                 let uuid = match &active[..] {
                     [] => bail!("No dataflows are running"),
                     [uuid] => uuid.clone(),
                     _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
                 };
-                logs::logs(&mut *session, Some(uuid.uuid), None, node)?
+                command::logs(&mut *session, Some(uuid.uuid), None, node)?
             }
         }
         Command::Start {
@@ -433,48 +432,16 @@ fn run(args: Args) -> eyre::Result<()> {
             hot_reload,
             uv,
         } => {
-            let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-            let dataflow_descriptor =
-                Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
-            let working_dir = dataflow
-                .canonicalize()
-                .context("failed to canonicalize dataflow path")?
-                .parent()
-                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
-                .to_owned();
-
             let coordinator_socket = (coordinator_addr, coordinator_port).into();
-            let mut session = connect_to_coordinator(coordinator_socket)
-                .wrap_err("failed to connect to dora coordinator")?;
-            let dataflow_id = start_dataflow(
-                dataflow_descriptor.clone(),
+            command::start(
+                dataflow,
                 name,
-                working_dir,
-                &mut *session,
+                coordinator_socket,
+                attach,
+                detach,
+                hot_reload,
                 uv,
-            )?;
-
-            let attach = match (attach, detach) {
-                (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
-                (true, false) => true,
-                (false, true) => false,
-                (false, false) => {
-                    println!("attaching to dataflow (use `--detach` to run in background)");
-                    true
-                }
-            };
-
-            if attach {
-                attach_dataflow(
-                    dataflow_descriptor,
-                    dataflow,
-                    dataflow_id,
-                    &mut *session,
-                    hot_reload,
-                    coordinator_socket,
-                    log_level,
-                )?
-            }
+            )?
         }
         Command::List {
             coordinator_addr,
@@ -504,7 +471,7 @@ fn run(args: Args) -> eyre::Result<()> {
             config,
             coordinator_addr,
             coordinator_port,
-        } => up::destroy(
+        } => command::up::destroy(
             config.as_deref(),
             (coordinator_addr, coordinator_port).into(),
         )?,
@@ -554,8 +521,13 @@ fn run(args: Args) -> eyre::Result<()> {
                                 coordinator_addr
                             );
                         }
+                        let dataflow_session =
+                            DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
-                        let result = Daemon::run_dataflow(&dataflow_path, false).await?;
+                        let result = Daemon::run_dataflow(&dataflow_path,
+                            dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
+                            LogDestination::Tracing,
+                        ).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {
@@ -680,37 +652,6 @@ fn run(args: Args) -> eyre::Result<()> {
     };
 
     Ok(())
-}
-
-fn start_dataflow(
-    dataflow: Descriptor,
-    name: Option<String>,
-    local_working_dir: PathBuf,
-    session: &mut TcpRequestReplyConnection,
-    uv: bool,
-) -> Result<Uuid, eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::Start {
-                dataflow,
-                name,
-                local_working_dir,
-                uv,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send start dataflow message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStarted { uuid } => {
-            eprintln!("{uuid}");
-            Ok(uuid)
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
 }
 
 fn stop_dataflow_interactive(
@@ -862,6 +803,8 @@ use pyo3::{
     types::{PyModule, PyModuleMethods},
     wrap_pyfunction, Bound, PyResult, Python,
 };
+
+use crate::session::DataflowSession;
 
 #[cfg(feature = "python")]
 #[pyfunction]
