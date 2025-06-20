@@ -144,6 +144,10 @@ impl GitManager {
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())
     }
+
+    pub fn clear_planned_builds(&mut self, session_id: SessionId) {
+        self.prepared_builds.remove(&session_id);
+    }
 }
 
 pub struct GitFolder {
@@ -155,7 +159,7 @@ impl GitFolder {
     pub async fn prepare(self, logger: &mut impl BuildLogger) -> eyre::Result<PathBuf> {
         let GitFolder { reuse } = self;
 
-        eprintln!("reuse: {reuse:?}");
+        tracing::info!("reuse: {reuse:?}");
         let clone_dir = match reuse {
             ReuseOptions::NewClone {
                 target_dir,
@@ -208,9 +212,25 @@ impl GitFolder {
                 target_dir,
                 commit_hash,
             } => {
-                tokio::fs::copy(&from, &target_dir)
-                    .await
-                    .context("failed to copy repo clone")?;
+                let from_clone = from.clone();
+                let to = target_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    std::fs::create_dir_all(&to)
+                        .context("failed to create directory for copying git repo")?;
+                    fs_extra::dir::copy(
+                        &from_clone,
+                        &to,
+                        &fs_extra::dir::CopyOptions::new().content_only(true),
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed to copy repo clone from `{}` to `{}`",
+                            from_clone.display(),
+                            to.display()
+                        )
+                    })
+                })
+                .await??;
 
                 logger
                     .log_message(
