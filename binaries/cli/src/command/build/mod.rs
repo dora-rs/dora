@@ -72,7 +72,7 @@ pub fn build(
 
     match build_kind {
         BuildKind::Local => {
-            println!("running local build");
+            log::info!("running local build");
             // use dataflow dir as base working dir
             let local_working_dir = dunce::canonicalize(&dataflow_path)
                 .context("failed to canonicalize dataflow path")?

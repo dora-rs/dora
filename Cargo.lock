@@ -2959,6 +2959,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "tracing-log 0.2.0",
  "uuid 1.16.0",
  "webbrowser 0.8.15",
 ]
