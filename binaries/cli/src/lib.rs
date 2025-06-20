@@ -8,7 +8,7 @@ use dora_core::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
-use dora_daemon::Daemon;
+use dora_daemon::{Daemon, LogDestination};
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
@@ -342,7 +342,7 @@ fn run_cli(args: Args) -> eyre::Result<()> {
                 .build()
                 .wrap_err("failed to set up tracing subscriber")?;
         }
-        Command::Run { .. } => {
+        Command::Run { .. } | Command::Build { .. } => {
             let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
             TracingBuilder::new("run")
                 .with_stdout(log_level)
@@ -525,7 +525,9 @@ fn run_cli(args: Args) -> eyre::Result<()> {
                             DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
                         let result = Daemon::run_dataflow(&dataflow_path,
-                            dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false).await?;
+                            dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
+                            LogDestination::Tracing,
+                        ).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {
