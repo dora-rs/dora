@@ -998,6 +998,8 @@ impl Daemon {
             base_working_dir,
             uv,
         };
+        self.git_manager.clear_planned_builds(session_id);
+
         let nodes = dataflow_descriptor.resolve_aliases_and_set_defaults()?;
 
         let mut tasks = Vec::new();
