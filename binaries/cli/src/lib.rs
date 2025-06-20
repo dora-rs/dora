@@ -306,6 +306,8 @@ pub fn lib_main(args: Args) {
 }
 
 fn run_cli(args: Args) -> eyre::Result<()> {
+    tracing_log::LogTracer::init()?;
+
     #[cfg(feature = "tracing")]
     match &args.command {
         Command::Daemon {

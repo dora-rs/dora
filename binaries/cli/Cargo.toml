@@ -37,6 +37,7 @@ communication-layer-request-reply = { workspace = true }
 notify = "5.1.0"
 ctrlc = "3.2.5"
 tracing = "0.1.36"
+tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
 bat = "0.24.0"
 dora-daemon = { workspace = true }
