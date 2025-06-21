@@ -161,14 +161,16 @@ impl Logger {
         let node_id = message.node_id.as_ref();
 
         let id_str = match (daemon_id, dataflow_id, node_id) {
-            (Some(did), Some(dfid), Some(nid)) => format!("daemon:{} dataflow:{} {}", did, dfid, nid),
-            (Some(did), Some(dfid), None)      => format!("daemon:{} dataflow:{}", did, dfid),
-            (Some(did), None, Some(nid))       => format!("daemon:{} {}", did, nid),
-            (None, Some(dfid), Some(nid))      => format!("dataflow:{} {}", dfid, nid),
-            (Some(did), None, None)            => format!("daemon:{}", did),
-            (None, Some(dfid), None)           => format!("dataflow:{}", dfid),
-            (None, None, Some(nid))            => format!("{}", nid),
-            (None, None, None)                 => String::new(),
+            (Some(did), Some(dfid), Some(nid)) => {
+                format!("daemon:{} dataflow:{} {}", did, dfid, nid)
+            }
+            (Some(did), Some(dfid), None) => format!("daemon:{} dataflow:{}", did, dfid),
+            (Some(did), None, Some(nid)) => format!("daemon:{} {}", did, nid),
+            (None, Some(dfid), Some(nid)) => format!("dataflow:{} {}", dfid, nid),
+            (Some(did), None, None) => format!("daemon:{}", did),
+            (None, Some(dfid), None) => format!("dataflow:{}", dfid),
+            (None, None, Some(nid)) => format!("{}", nid),
+            (None, None, None) => String::new(),
         };
 
         let log_prefix = if id_str.is_empty() {
@@ -180,8 +182,8 @@ impl Logger {
         for line in message.message.lines() {
             match message.level {
                 LogLevel::Error => tracing::error!("{}{}", log_prefix, line),
-                LogLevel::Warn  => tracing::warn!("{}{}", log_prefix, line),
-                LogLevel::Info  => tracing::info!("{}{}", log_prefix, line),
+                LogLevel::Warn => tracing::warn!("{}{}", log_prefix, line),
+                LogLevel::Info => tracing::info!("{}{}", log_prefix, line),
                 LogLevel::Debug => tracing::debug!("{}{}", log_prefix, line),
                 LogLevel::Trace => tracing::trace!("{}{}", log_prefix, line),
             }
