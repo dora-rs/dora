@@ -211,7 +211,7 @@ impl Logger {
 }
 
 fn id_mode() -> String {
-    std::env::var("DORA_LOG_ID_MODE").unwrap_or_else(|_| "full".to_string())
+    std::env::var("DORA_LOG_ID_MODE").unwrap_or_else(|_| "none".to_string())
 }
 
 fn format_id(id: &impl ToString) -> Option<String> {
