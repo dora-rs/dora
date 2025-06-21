@@ -155,34 +155,36 @@ impl Logger {
             }
         }
 
-        // log message using tracing if reporting to coordinator is not possible
-        match message.level {
-            LogLevel::Error => {
-                if let Some(node_id) = message.node_id {
-                    tracing::error!("{}/{} errored:", message.dataflow_id.to_string(), node_id);
-                }
-                for line in message.message.lines() {
-                    tracing::error!("   {}", line);
-                }
-            }
-            LogLevel::Warn => {
-                if let Some(node_id) = message.node_id {
-                    tracing::warn!("{}/{} warned:", message.dataflow_id.to_string(), node_id);
-                }
-                for line in message.message.lines() {
-                    tracing::warn!("    {}", line);
-                }
-            }
-            LogLevel::Info => {
-                if let Some(node_id) = message.node_id {
-                    tracing::info!("{}/{} info:", message.dataflow_id.to_string(), node_id);
-                }
+        // Unified log output format
+        let daemon_id = message.daemon_id.as_ref().and_then(format_id);
+        let dataflow_id = format_id(&message.dataflow_id);
+        let node_id = message.node_id.as_ref();
 
-                for line in message.message.lines() {
-                    tracing::info!("    {}", line);
-                }
+        let id_str = match (daemon_id, dataflow_id, node_id) {
+            (Some(did), Some(dfid), Some(nid)) => format!("daemon:{} dataflow:{} {}", did, dfid, nid),
+            (Some(did), Some(dfid), None)      => format!("daemon:{} dataflow:{}", did, dfid),
+            (Some(did), None, Some(nid))       => format!("daemon:{} {}", did, nid),
+            (None, Some(dfid), Some(nid))      => format!("dataflow:{} {}", dfid, nid),
+            (Some(did), None, None)            => format!("daemon:{}", did),
+            (None, Some(dfid), None)           => format!("dataflow:{}", dfid),
+            (None, None, Some(nid))            => format!("{}", nid),
+            (None, None, None)                 => String::new(),
+        };
+
+        let log_prefix = if id_str.is_empty() {
+            String::new()
+        } else {
+            format!("[{}] ", id_str)
+        };
+
+        for line in message.message.lines() {
+            match message.level {
+                LogLevel::Error => tracing::error!("{}{}", log_prefix, line),
+                LogLevel::Warn  => tracing::warn!("{}{}", log_prefix, line),
+                LogLevel::Info  => tracing::info!("{}{}", log_prefix, line),
+                LogLevel::Debug => tracing::debug!("{}{}", log_prefix, line),
+                LogLevel::Trace => tracing::trace!("{}{}", log_prefix, line),
             }
-            _ => {}
         }
     }
 
@@ -205,5 +207,26 @@ impl Logger {
             daemon_id: self.daemon_id.clone(),
             clock: self.clock.clone(),
         })
+    }
+}
+
+fn id_mode() -> String {
+    std::env::var("DORA_LOG_ID_MODE").unwrap_or_else(|_| "full".to_string())
+}
+
+fn format_id(id: &impl ToString) -> Option<String> {
+    let mode = id_mode();
+    match mode.as_str() {
+        "full" => Some(id.to_string()),
+        "short" => {
+            let s = id.to_string();
+            if s.len() > 6 {
+                Some(s[s.len() - 6..].to_string())
+            } else {
+                Some(s)
+            }
+        }
+        "none" => None,
+        _ => Some(id.to_string()),
     }
 }
