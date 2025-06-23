@@ -10,7 +10,7 @@ use shared_memory_extended::{Shmem, ShmemConf};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event {
-    Stop,
+    Stop(StopCause),
     Reload {
         operator_id: Option<OperatorId>,
     },
@@ -23,6 +23,13 @@ pub enum Event {
         id: DataId,
     },
     Error(String),
+}
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum StopCause {
+    Manual,
+    AllInputsClosed,
 }
 
 pub enum RawData {

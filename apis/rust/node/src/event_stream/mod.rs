@@ -11,7 +11,7 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, Timestamped},
     DataflowId,
 };
-pub use event::{Event, MappedInputData, RawData};
+pub use event::{Event, MappedInputData, RawData, StopCause};
 use futures::{
     future::{select, Either},
     Stream, StreamExt,
@@ -199,7 +199,7 @@ impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
             EventItem::NodeEvent { event, ack_channel } => match event {
-                NodeEvent::Stop => Event::Stop,
+                NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::Input { id, metadata, data } => {
@@ -234,7 +234,7 @@ impl EventStream {
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
                 }
-                NodeEvent::AllInputsClosed => Event::Stop,
+                NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
             },
 
             EventItem::FatalError(err) => {
