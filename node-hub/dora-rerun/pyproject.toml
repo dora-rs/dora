@@ -8,7 +8,7 @@ dynamic = ["version"]
 license = { text = "MIT" }
 requires-python = ">=3.10"
 
-dependencies = ["rerun-loader-urdf", 'rerun_sdk==0.23.1']
+dependencies = ["rerun-loader-urdf", 'rerun_sdk>=0.23.1', "robot-descriptions"]
 
 scripts = { "dora-rerun" = "dora_rerun:py_main" }
 
@@ -28,4 +28,5 @@ extend-select = [
 ]
 
 [tool.uv.sources]
-rerun-loader-urdf = { git = "https://github.com/haixuanTao/rerun-loader-python-example-urdf.git", branch = "patch-2" }
+rerun-loader-urdf = { git = "https://github.com/dora-rs/rerun-loader-python-urdf.git" }
+robot-descriptions = { git = "https://github.com/robot-descriptions/robot_descriptions.py.git" }
