@@ -46,8 +46,8 @@ async fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Received input `{other}`"),
             },
-            Event::Stop => {
-                println!("Received manual stop")
+            Event::Stop(_) => {
+                println!("Received command");
             }
             Event::InputClosed { id } => {
                 println!("input `{id}` was closed");

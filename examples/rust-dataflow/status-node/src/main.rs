@@ -29,7 +29,7 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("ignoring unexpected input {other}"),
             },
-            Event::Stop => {}
+            Event::Stop(_) => {}
             Event::InputClosed { id } => {
                 println!("input `{id}` was closed");
                 if *id == "random" {
