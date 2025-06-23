@@ -165,7 +165,7 @@ async fn main() -> eyre::Result<()> {
                         _ => eyre::bail!("unexpected input id: {}", id),
                     };
                 }
-                Event::Stop => {
+                Event::Stop(_) => {
                     break;
                 }
                 event => {
