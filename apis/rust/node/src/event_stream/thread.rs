@@ -92,7 +92,6 @@ fn event_stream_loop(
     clock: Arc<uhlc::HLC>,
 ) {
     let mut tx = Some(tx);
-    let mut close_tx = false;
     let mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)> = Vec::new();
     let mut drop_tokens = Vec::new();
 
@@ -136,8 +135,10 @@ fn event_stream_loop(
                     data: Some(data), ..
                 } => data.drop_token(),
                 NodeEvent::AllInputsClosed => {
-                    close_tx = true;
-                    None
+                    // close the event stream
+                    tx = None;
+                    // skip this internal event
+                    continue;
                 }
                 _ => None,
             };
@@ -165,10 +166,6 @@ fn event_stream_loop(
             } else {
                 tracing::warn!("dropping event because event `tx` was already closed: `{inner:?}`");
             }
-
-            if close_tx {
-                tx = None;
-            };
         }
     };
     if let Err(err) = result {

@@ -230,15 +230,6 @@ impl<'de> Deserialize<'de> for ChatCompletionRequest {
     }
 }
 
-impl ChatCompletionRequest {
-    pub fn to_texts(&self) -> Vec<String> {
-        self.messages
-            .iter()
-            .flat_map(|message| message.to_texts())
-            .collect()
-    }
-}
-
 /// Message for comprising the conversation.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "role", rename_all = "lowercase")]
@@ -315,22 +306,6 @@ impl ChatCompletionRequestMessage {
             ChatCompletionRequestMessage::User(message) => message.name(),
             ChatCompletionRequestMessage::Assistant(message) => message.name(),
             ChatCompletionRequestMessage::Tool(_) => None,
-        }
-    }
-
-    /// The contents of the message.
-    pub fn to_texts(&self) -> Vec<String> {
-        match self {
-            ChatCompletionRequestMessage::System(message) => {
-                vec![String::from("<|system|>\n") + &message.content]
-            }
-            ChatCompletionRequestMessage::User(message) => message.content.to_texts(),
-            ChatCompletionRequestMessage::Assistant(message) => {
-                vec![String::from("<|assistant|>\n") + &message.content.clone().unwrap_or_default()]
-            }
-            ChatCompletionRequestMessage::Tool(message) => {
-                vec![String::from("<|tool|>\n") + &message.content.clone()]
-            }
         }
     }
 }
@@ -610,25 +585,6 @@ impl ChatCompletionUserMessageContent {
         match self {
             ChatCompletionUserMessageContent::Text(_) => "text",
             ChatCompletionUserMessageContent::Parts(_) => "parts",
-        }
-    }
-
-    pub fn to_texts(&self) -> Vec<String> {
-        match self {
-            ChatCompletionUserMessageContent::Text(text) => {
-                vec![String::from("user: ") + &text.clone()]
-            }
-            ChatCompletionUserMessageContent::Parts(parts) => parts
-                .iter()
-                .map(|part| match part {
-                    ContentPart::Text(text_part) => {
-                        String::from("<|user|>\n<|im_start|>\n") + &text_part.text.clone()
-                    }
-                    ContentPart::Image(image) => {
-                        String::from("<|user|>\n<|vision_start|>\n") + &image.image().url.clone()
-                    }
-                })
-                .collect(),
         }
     }
 }
