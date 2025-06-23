@@ -54,7 +54,7 @@ pub fn build(
         log::info!("Building locally because dataflow does not contain any `deploy` sections");
         BuildKind::Local
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
-        log::info!("Building through coordinator, using the given cooridnator socket information");
+        log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
             coordinator_session: session().context("failed to connect to coordinator")?,
