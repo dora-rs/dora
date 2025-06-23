@@ -43,6 +43,7 @@ async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--release");
     cmd.arg("--").arg("build").arg(dataflow).arg("--uv");
     if !cmd.status().await?.success() {
         bail!("failed to run dataflow");
@@ -51,6 +52,7 @@ async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--release");
     cmd.arg("--").arg("run").arg(dataflow).arg("--uv");
     if !cmd.status().await?.success() {
         bail!("failed to run dataflow");
