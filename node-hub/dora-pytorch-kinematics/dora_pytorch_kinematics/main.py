@@ -11,6 +11,8 @@ import torch
 from dora import Node
 from pytorch_kinematics.transforms.rotation_conversions import matrix_to_euler_angles
 
+POSITION_TOLERANCE = float(os.getenv("POSITION_TOLERANCE", "0.005"))
+ROTATION_TOLERANCE = float(os.getenv("ROTATION_TOLERANCE", "0.05"))  # in radians
 TRANSFORM = np.array(os.getenv("TRANSFORM", "0. 0. 0. 1. 0. 0. 0.").split(" ")).astype(
     np.float32,
 )  # wxyz format
@@ -229,18 +231,21 @@ class RobotKinematics:
         # Instantiate and run the IK solver (core pytorch_kinematics objects/methods)
         ik_solver = pk.PseudoInverseIK(
             self.chain,
-            max_iterations=1_000,
+            max_iterations=100_000,
             retry_configs=q_init,
             joint_limits=torch.tensor(self.chain.get_joint_limits()),
             early_stopping_any_converged=True,
-            early_stopping_no_improvement="all",
+            # early_stopping_no_improvement="all",
             debug=False,
             lr=0.05,
-            rot_tolerance=1e-4,
-            pos_tolerance=1e-3,
+            rot_tolerance=ROTATION_TOLERANCE,
+            pos_tolerance=POSITION_TOLERANCE,
         )
         solution_angles = ik_solver.solve(target_pose)
-        if solution_angles.err_rot > 1e-3 or solution_angles.err_pos > 1e-2:
+        if (
+            solution_angles.err_rot > ROTATION_TOLERANCE
+            or solution_angles.err_pos > POSITION_TOLERANCE
+        ):
             print(
                 f"IK did not converge: pos_err={solution_angles.err_pos}, rot_err={solution_angles.err_rot} for target {target_pose}",
             )
@@ -357,99 +362,96 @@ def main():
         robot = RobotKinematics(
             urdf_path=model, urdf="", end_effector_link=end_effector_link
         )
-    last_known_state = None
+    last_known_state = robot._default_q
 
     for event in node:
         if event["type"] == "INPUT":
             metadata = event["metadata"]
 
             if event["id"] == "cmd_vel":
-                if last_known_state is not None:
-                    target_vel = event["value"].to_numpy()  # expect 100ms
-                    # Apply Forward Kinematics
-                    target = robot.compute_fk(last_known_state)
-                    target = (
-                        np.array(get_xyz_rpy_array_from_transform3d(target))
-                        + target_vel
+                target_vel = event["value"].to_numpy()  # expect 100ms
+                # Apply Forward Kinematics
+                target = robot.compute_fk(last_known_state)
+                target = (
+                    np.array(get_xyz_rpy_array_from_transform3d(target).detach())
+                    + target_vel / 10
+                )
+                target = pa.array(target.ravel(), type=pa.float32())
+                target = pk.Transform3d(
+                    pos=target[:3],
+                    rot=pk.transforms.euler_angles_to_matrix(
+                        torch.tensor(target[3:6]),
+                        convention="XYZ",
+                    ),
+                )
+                rob_target = ROB_TF.inverse().compose(target)
+                solution = robot.compute_ik(rob_target, last_known_state)
+                if solution is None:
+                    print(
+                        "No IK Solution for :",
+                        target,
+                        "skipping this frame.",
                     )
-                    target = pa.array(target.ravel(), type=pa.float32())
-                    target = pk.Transform3d(
-                        pos=target[:3],
-                        rot=pk.transforms.euler_angles_to_matrix(
-                            torch.tensor(target[3:6]),
-                            convention="XYZ",
-                        ),
-                    )
-                    rob_target = ROB_TF.inverse().compose(target)
-                    solution = robot.compute_ik(rob_target, last_known_state)
-                    if solution is None:
-                        print(
-                            "No IK Solution for :",
-                            target,
-                            "skipping this frame.",
-                        )
-                        continue
-                    solution = solution.numpy().ravel()
-                    metadata["encoding"] = "jointstate"
-                    last_known_state = solution
-                    solution = pa.array(last_known_state)
-                    node.send_output(event["id"], solution, metadata=metadata)
+                    continue
+                solution = solution.numpy().ravel()
+                metadata["encoding"] = "jointstate"
+                last_known_state = solution
+                solution = pa.array(last_known_state)
+                node.send_output(event["id"], solution, metadata=metadata)
             else:
                 match metadata["encoding"]:
                     case "xyzquat":
                         # Apply Inverse Kinematics
-                        if last_known_state is not None:
-                            target = event["value"].to_numpy()
-                            target = target.astype(np.float32)
-                            target = pk.Transform3d(
-                                pos=target[:3],
-                                rot=torch.tensor(target[3:7]),
-                            )
-                            rob_target = ROB_TF.inverse().compose(target)
-                            solution = robot.compute_ik(rob_target, last_known_state)
-                            metadata["encoding"] = "jointstate"
-                            last_known_state = solution.numpy().ravel()
-                            solution = pa.array(last_known_state)
-                            node.send_output(event["id"], solution, metadata=metadata)
+                        target = event["value"].to_numpy()
+                        target = target.astype(np.float32)
+                        target = pk.Transform3d(
+                            pos=target[:3],
+                            rot=torch.tensor(target[3:7]),
+                        )
+                        rob_target = ROB_TF.inverse().compose(target)
+                        solution = robot.compute_ik(rob_target, last_known_state)
+                        metadata["encoding"] = "jointstate"
+                        last_known_state = solution.numpy().ravel()
+                        solution = pa.array(last_known_state)
+                        node.send_output(event["id"], solution, metadata=metadata)
                     case "xyzrpy":
                         # Apply Inverse Kinematics
-                        if last_known_state is not None:
-                            target = event["value"].to_numpy()
-                            target = target.astype(np.float32)
-                            target = pk.Transform3d(
-                                pos=target[:3],
-                                rot=pk.transforms.euler_angles_to_matrix(
-                                    torch.tensor(target[3:6]),
-                                    convention="XYZ",
-                                ),
+                        target = event["value"].to_numpy()
+                        target = target.astype(np.float32)
+                        target = pk.Transform3d(
+                            pos=target[:3],
+                            rot=pk.transforms.euler_angles_to_matrix(
+                                torch.tensor(target[3:6]),
+                                convention="XYZ",
+                            ),
+                        )
+                        rob_target = ROB_TF.inverse().compose(target)
+                        solution = robot.compute_ik(rob_target, last_known_state)
+                        if solution is None:
+                            print(
+                                "No IK Solution for :",
+                                target,
+                                "skipping this frame.",
                             )
-                            rob_target = ROB_TF.inverse().compose(target)
-                            solution = robot.compute_ik(rob_target, last_known_state)
-                            if solution is None:
-                                print(
-                                    "No IK Solution for :",
-                                    target,
-                                    "skipping this frame.",
-                                )
-                                continue
+                            continue
 
-                            solution = solution.numpy().ravel()
-                            delta_angles = (
-                                solution - last_known_state[: len(solution)]
-                            )  # match with dof
+                        solution = solution.numpy().ravel()
+                        delta_angles = (
+                            solution - last_known_state[: len(solution)]
+                        )  # match with dof
 
-                            valid = np.all(
-                                (delta_angles >= -np.pi) & (delta_angles <= np.pi),
+                        valid = np.all(
+                            (delta_angles >= -np.pi) & (delta_angles <= np.pi),
+                        )
+                        if not valid:
+                            print(
+                                "IK solution is not valid, as the rotation are too wide. skipping.",
                             )
-                            if not valid:
-                                print(
-                                    "IK solution is not valid, as the rotation are too wide. skipping.",
-                                )
-                                continue
-                            metadata["encoding"] = "jointstate"
-                            last_known_state = solution
-                            solution = pa.array(last_known_state)
-                            node.send_output(event["id"], solution, metadata=metadata)
+                            continue
+                        metadata["encoding"] = "jointstate"
+                        last_known_state = solution
+                        solution = pa.array(last_known_state)
+                        node.send_output(event["id"], solution, metadata=metadata)
                     case "jointstate":
                         target = event["value"].to_numpy()
                         last_known_state = target
