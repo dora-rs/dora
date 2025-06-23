@@ -20,7 +20,7 @@ pub use dora_message::{
     metadata::{Metadata, MetadataParameters, Parameter},
     DataflowId,
 };
-pub use event_stream::{merged, Event, EventStream, MappedInputData, RawData};
+pub use event_stream::{merged, Event, EventStream, MappedInputData, RawData, StopCause};
 pub use flume::Receiver;
 pub use node::{arrow_utils, DataSample, DoraNode, ZERO_COPY_THRESHOLD};
 

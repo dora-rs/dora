@@ -6,7 +6,7 @@ use std::{
 use arrow::pyarrow::ToPyArrow;
 use dora_node_api::{
     merged::{MergeExternalSend, MergedEvent},
-    DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter,
+    DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
 };
 use eyre::{Context, Result};
 use futures::{Stream, StreamExt};
@@ -146,7 +146,7 @@ impl PyEvent {
 
     fn ty(event: &Event) -> &str {
         match event {
-            Event::Stop => "STOP",
+            Event::Stop(_) => "STOP",
             Event::Input { .. } => "INPUT",
             Event::InputClosed { .. } => "INPUT_CLOSED",
             Event::Error(_) => "ERROR",
@@ -158,6 +158,11 @@ impl PyEvent {
         match event {
             Event::Input { id, .. } => Some(id),
             Event::InputClosed { id } => Some(id),
+            Event::Stop(cause) => match cause {
+                StopCause::Manual => Some("MANUAL"),
+                StopCause::AllInputsClosed => Some("ALL_INPUTS_CLOSED"),
+                &_ => None,
+            },
             _ => None,
         }
     }
