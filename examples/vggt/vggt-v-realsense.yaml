@@ -3,7 +3,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-pyrealsense
     path: dora-pyrealsense
     inputs:
-      tick: dora/timer/millis/100
+      tick: dora/timer/millis/300
     outputs:
       - image
       - depth
@@ -18,6 +18,8 @@ nodes:
     outputs:
       - depth
       - image
+    env:
+      CAMERA_HEIGHT: 0.50
 
   - id: plot
     build: pip install dora-rerun
