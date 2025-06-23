@@ -41,7 +41,7 @@ async fn main() -> eyre::Result<()> {
                     node.send_output(
                         mistral_output.clone(),
                         metadata.parameters,
-                        output.as_str().into_arrow(),
+                        output.into_arrow(),
                     )?;
                 }
                 other => eprintln!("Received input `{other}`"),
