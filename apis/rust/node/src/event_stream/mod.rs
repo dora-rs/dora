@@ -234,13 +234,7 @@ impl EventStream {
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
                 }
-                NodeEvent::AllInputsClosed => {
-                    let err = eyre!(
-                        "received `AllInputsClosed` event, which should be handled by background task"
-                    );
-                    tracing::error!("{err:?}");
-                    Event::Error(err.wrap_err("internal error").to_string())
-                }
+                NodeEvent::AllInputsClosed => Event::Stop,
             },
 
             EventItem::FatalError(err) => {
