@@ -182,7 +182,7 @@ impl<'lib> SharedLibraryOperator<'lib> {
             }
 
             let mut operator_event = match event {
-                Event::Stop => dora_operator_api_types::RawEvent {
+                Event::Stop(_) => dora_operator_api_types::RawEvent {
                     input: None,
                     input_closed: None,
                     stop: true,
