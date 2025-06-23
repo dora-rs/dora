@@ -57,20 +57,6 @@ impl IntoArrow for &str {
     }
 }
 
-impl IntoArrow for String {
-    type A = StringArray;
-    fn into_arrow(self) -> Self::A {
-        std::iter::once(Some(self)).collect()
-    }
-}
-
-impl IntoArrow for Vec<String> {
-    type A = StringArray;
-    fn into_arrow(self) -> Self::A {
-        StringArray::from(self)
-    }
-}
-
 impl IntoArrow for () {
     type A = arrow::array::NullArray;
 
