@@ -71,6 +71,11 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
                 .stdout;
             let response_str =
                 String::from_utf8(response).context("Could not parse robot descriptions")?;
+            // Only keep last line of the response
+            let response_str = response_str
+                .lines()
+                .last()
+                .context("Could not find last line in robot descriptions response")?;
             PathBuf::from(response_str.trim())
         } else {
             // Use the path directly
