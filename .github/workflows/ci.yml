@@ -342,7 +342,7 @@ jobs:
           # Test Python template Project
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
-          uv venv --seed -p 3.11
+          uv venv --seed -p 3.12
           uv pip install -e ../apis/python/node
           uv pip install ruff pytest
 
@@ -372,7 +372,7 @@ jobs:
           # Run Python Node Example
           echo "Running Python Node Example"
           dora up
-          uv venv --seed -p 3.11
+          uv venv --seed -p 3.12
           uv pip install -e apis/python/node
           dora build examples/python-dataflow/dataflow.yml --uv
           dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
