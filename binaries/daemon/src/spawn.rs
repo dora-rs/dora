@@ -548,7 +548,7 @@ impl PreparedNode {
                 // If log is an output, we're sending the logs to the dataflow
                 if let Some(stdout_output_name) = &send_stdout_to {
                     // Convert logs to DataMessage
-                    let array = message.into_arrow();
+                    let array = message.as_str().into_arrow();
 
                     let array: ArrayData = array.into();
                     let total_len = required_data_size(&array);

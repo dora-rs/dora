@@ -144,7 +144,7 @@ pub struct DoraEvent(Option<Event>);
 fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
     match &event.0 {
         Some(event) => match event {
-            Event::Stop => ffi::DoraEventType::Stop,
+            Event::Stop(_) => ffi::DoraEventType::Stop,
             Event::Input { .. } => ffi::DoraEventType::Input,
             Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
             Event::Error(_) => ffi::DoraEventType::Error,

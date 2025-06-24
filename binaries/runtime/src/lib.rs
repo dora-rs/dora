@@ -233,10 +233,10 @@ async fn run(
                     }
                 }
             }
-            RuntimeEvent::Event(Event::Stop) => {
+            RuntimeEvent::Event(Event::Stop(cause)) => {
                 // forward stop event to all operators and close the event channels
                 for (_, channel) in operator_channels.drain() {
-                    let _ = channel.send_async(Event::Stop).await;
+                    let _ = channel.send_async(Event::Stop(cause.clone())).await;
                 }
             }
             RuntimeEvent::Event(Event::Reload {
