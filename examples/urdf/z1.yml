@@ -16,6 +16,9 @@ nodes:
       - raw_control
     inputs:
       tick: dora/timer/millis/10
+    env:
+      MAX_LINEAR_SPEED: 0.01
+      MAX_ANGULAR_SPEED: 0.05
 
   - id: pytorch_kinematics
     build: pip install -e ../../node-hub/dora-pytorch-kinematics
@@ -26,5 +29,7 @@ nodes:
       - cmd_vel
     env:
       MODEL_NAME: "z1_description"
-      END_EFFECTOR_LINK: "link05"
+      END_EFFECTOR_LINK: "link06"
       TRANSFORM: "0. 0. 0. 1. 0. 0. 0."
+      POSITION_TOLERANCE: 0.001
+      ROTATION_TOLERANCE: 0.001

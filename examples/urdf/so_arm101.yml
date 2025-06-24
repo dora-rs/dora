@@ -16,6 +16,9 @@ nodes:
       - raw_control
     inputs:
       tick: dora/timer/millis/10
+    env:
+      MAX_LINEAR_SPEED: 0.01
+      MAX_ANGULAR_SPEED: 0.05
 
   - id: pytorch_kinematics
     build: pip install -e ../../node-hub/dora-pytorch-kinematics
@@ -29,4 +32,4 @@ nodes:
       END_EFFECTOR_LINK: "gripper"
       TRANSFORM: "0. 0. 0. 1. 0. 0. 0."
       POSITION_TOLERANCE: 0.01
-      ROTATION_TOLERANCE: 0.01
+      ROTATION_TOLERANCE: 0.03

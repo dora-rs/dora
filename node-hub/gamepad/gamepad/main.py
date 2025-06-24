@@ -5,7 +5,11 @@ import json
 import pyarrow as pa
 import pygame
 from dora import Node
+import os
 
+MAX_LINEAR_SPEED = float(os.getenv("MAX_LINEAR_SPEED", "0.05"))
+MAX_ANGULAR_SPEED = float(os.getenv("MAX_ANGULAR_SPEED", "0.8"))
+JOYSTICK_DEADZONE = float(os.getenv("JOYSTICK_DEADZONE", "0.2"))    
 
 class Controller:
     """Controller mapping."""
@@ -50,9 +54,6 @@ def main():
 
     controller = Controller()
 
-    move_speed = 0.05  # Fixed increment for D-pad
-    max_linear_z_speed = 0.1  # Maximum linear Z speed
-    max_angular_speed = 0.8  # Maximum angular speed
 
     print(f"Detected controller: {joystick.get_name()}")
     print(f"Number of axes: {joystick.get_numaxes()}")
@@ -90,39 +91,39 @@ def main():
         # 5. Left stick vertical for rotation around X
         # 6. Left stick horizontal for rotation around Y
 
-        deadzone = 0.05
+        deadzone = JOYSTICK_DEADZONE
 
         # Linear X velocity from D-pad vertical
         linear_x = 0.0
         if dpad_y != 0:
-            linear_x = dpad_y * move_speed
+            linear_x = dpad_y * MAX_LINEAR_SPEED
 
         # Linear Y velocity from D-pad horizontal
         linear_y = 0.0
         if dpad_x != 0:
-            linear_y = dpad_x * move_speed
+            linear_y = dpad_x * MAX_LINEAR_SPEED
 
         # Linear Z velocity from right stick vertical
         right_y = -joystick.get_axis(controller.axisNames["RIGHT-Y"])
         right_y = 0.0 if abs(right_y) < deadzone else right_y
-        linear_z = right_y * max_linear_z_speed
+        linear_z = right_y * MAX_LINEAR_SPEED
 
         # Angular Z velocity (rotation) from right stick horizontal
         right_x = -joystick.get_axis(controller.axisNames["RIGHT-X"])
         right_x = 0.0 if abs(right_x) < deadzone else right_x
         angular_z = (
-            right_x * max_angular_speed
+            right_x * MAX_ANGULAR_SPEED
         )  # TODO: Make z non zero, but on my gamepad the value is never zero
 
         # Angular X velocity from left stick vertical
         left_y = -joystick.get_axis(controller.axisNames["LEFT-Y"])
         left_y = 0.0 if abs(left_y) < deadzone else left_y
-        angular_x = left_y * max_angular_speed
+        angular_x = left_y * MAX_ANGULAR_SPEED
 
         # Angular Y velocity from left stick horizontal
         left_x = -joystick.get_axis(controller.axisNames["LEFT-X"])
         left_x = 0.0 if abs(left_x) < deadzone else left_x
-        angular_y = left_x * max_angular_speed
+        angular_y = left_x * MAX_ANGULAR_SPEED
 
         cmd_vel = [linear_x, linear_y, linear_z, angular_x, angular_y, angular_z]
         if any(cmd_vel):
