@@ -374,7 +374,7 @@ def main():
                 target = robot.compute_fk(last_known_state)
                 target = (
                     np.array(get_xyz_rpy_array_from_transform3d(target).detach())
-                    + target_vel / 10
+                    + target_vel
                 )
                 target = pa.array(target.ravel(), type=pa.float32())
                 target = pk.Transform3d(
