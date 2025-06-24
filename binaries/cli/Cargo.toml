@@ -27,7 +27,7 @@ dora-node-api-c = { workspace = true }
 dora-operator-api-c = { workspace = true }
 dora-download = { workspace = true }
 serde = { version = "1.0.136", features = ["derive"] }
-serde_yaml = "0.9.11"
+serde_yaml = { workspace = true }
 webbrowser = "0.8.3"
 serde_json = "1.0.86"
 termcolor = "1.1.3"
@@ -37,6 +37,7 @@ communication-layer-request-reply = { workspace = true }
 notify = "5.1.0"
 ctrlc = "3.2.5"
 tracing = "0.1.36"
+tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
 bat = "0.24.0"
 dora-daemon = { workspace = true }
@@ -50,7 +51,7 @@ tabwriter = "1.4.0"
 log = { version = "0.4.21", features = ["serde"] }
 colored = "2.1.0"
 env_logger = "0.11.3"
-self_update = { version = "0.27.0", features = [
+self_update = { version = "0.42.0", features = [
     "rustls",
     "archive-zip",
     "archive-tar",
@@ -61,7 +62,11 @@ pyo3 = { workspace = true, features = [
     "abi3",
 ], optional = true }
 self-replace = "1.5.0"
+dunce = "1.0.5"
+git2 = { workspace = true }
 
+[build-dependencies]
+pyo3-build-config = "0.23"
 
 [lib]
 name = "dora_cli"
