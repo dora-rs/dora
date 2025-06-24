@@ -112,6 +112,7 @@ async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--release");
     cmd.arg("--")
         .arg("daemon")
         .arg("--run-dataflow")
@@ -136,6 +137,7 @@ async fn build_cxx_node(
         clang.arg("-l").arg("m");
         clang.arg("-l").arg("rt");
         clang.arg("-l").arg("dl");
+        clang.arg("-l").arg("z");
         clang.arg("-pthread");
     }
     #[cfg(target_os = "windows")]

@@ -5,22 +5,35 @@ use aligned_vec::{AVec, ConstAlign};
 use eyre::Context as _;
 use uuid::Uuid;
 
-use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, DataflowId};
+use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, BuildId, DataflowId};
 
 pub use log::Level as LogLevel;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[must_use]
 pub struct LogMessage {
-    pub dataflow_id: DataflowId,
+    pub build_id: Option<BuildId>,
+    pub dataflow_id: Option<DataflowId>,
     pub node_id: Option<NodeId>,
     pub daemon_id: Option<DaemonId>,
-    pub level: LogLevel,
+    pub level: LogLevelOrStdout,
     pub target: Option<String>,
     pub module_path: Option<String>,
     pub file: Option<String>,
     pub line: Option<u32>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevelOrStdout {
+    LogLevel(LogLevel),
+    Stdout,
+}
+
+impl From<LogLevel> for LogLevelOrStdout {
+    fn from(level: LogLevel) -> Self {
+        Self::LogLevel(level)
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -32,6 +45,9 @@ pub struct NodeError {
 
 impl std::fmt::Display for NodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let NodeErrorCause::FailedToSpawn(err) = &self.cause {
+            return write!(f, "failed to spawn node: {err}");
+        }
         match &self.exit_status {
             NodeExitStatus::Success => write!(f, "<success>"),
             NodeExitStatus::IoError(err) => write!(f, "I/O error while reading exit status: {err}"),
@@ -68,6 +84,7 @@ impl std::fmt::Display for NodeError {
                 f,
                 ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
             )?,
+            NodeErrorCause::FailedToSpawn(_) => unreachable!(), // handled above
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
                 let line: &str = "---------------------------------------------------------------------------------\n";
@@ -88,6 +105,7 @@ pub enum NodeErrorCause {
     Cascading {
         caused_by_node: NodeId,
     },
+    FailedToSpawn(String),
     Other {
         stderr: String,
     },
@@ -233,4 +251,10 @@ impl std::fmt::Display for DaemonId {
         }
         write!(f, "{}", self.uuid)
     }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
+pub struct GitSource {
+    pub repo: String,
+    pub commit_hash: String,
 }
