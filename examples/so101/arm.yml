@@ -1,0 +1,62 @@
+nodes:
+  - id: gamepad
+    build: pip install -e ../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: arm_interface
+    build: pip install -e ../../node-hub/dora-rustypot
+    path: dora-rustypot
+    inputs:
+      tick: dora/timer/millis/10
+      pose: gamepad_controller/joint_commands
+    outputs:
+      - pose
+    env:
+      PORT: /dev/ttyACM0
+      IDS: 1 2 3 4 5 6
+
+  - id: gamepad_controller
+    path: nodes/so_101_controller.py
+    inputs:
+      joint_positions: arm_interface/pose
+      raw_control: gamepad/raw_control
+      cmd_vel: gamepad/cmd_vel
+      fk_result: pytorch_kinematics/fk_request
+      jacobian_result: pytorch_kinematics/jacobian_request
+    outputs:
+      - joint_commands
+      - fk_request
+      - jacobian_request
+
+  - id: pytorch_kinematics
+    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      fk_request: gamepad_controller/fk_request
+      jacobian_request: gamepad_controller/jacobian_request
+    outputs:
+      - fk_request  
+      - jacobian_request  
+    env:
+      URDF_PATH: SO101/so101_new_calib.urdf
+      END_EFFECTOR_LINK: "gripper"  
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_so101_new_calib: arm_interface/pose
+      # camera/image: camera/image
+      # camera/depth: camera/depth
+    env:
+      # Link to your installation of so100-urdf.
+      # https://huggingface.co/datasets/haixuantao/urdfs/resolve/main/so100/so100_urdf.zip
+      so101_new_calib_urdf:  SO101/so101_new_calib.urdf
+      so101_new_calib_transform: "0. 0. 0. 1. 0. 0. 0."
+      # CAMERA_PITCH: -3.1415

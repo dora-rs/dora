@@ -1,0 +1,41 @@
+nodes:
+  - id: gamepad
+    build: pip install -e ../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: arm_interface
+    build: pip install -e ../../node-hub/dora-rustypot
+    path: dora-rustypot
+    inputs:
+      tick: dora/timer/millis/10
+      pose: leader_interface/pose
+    outputs:
+      - pose
+    env:
+      PORT: /dev/ttyACM0
+      IDS: 1 2 3 4 5 6
+
+  - id: leader_interface
+    build: pip install -e ../../node-hub/dora-rustypot
+    path: dora-rustypot
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - pose  
+    env:
+      PORT: /dev/ttyACM1
+      IDS: 1 2 3 4 5 6
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_so101_new_calib: arm_interface/pose
+    env:
+      so101_new_calib_urdf:  SO101/so101_new_calib.urdf
+      so101_new_calib_transform: "0. 0. 0. 1. 0. 0. 0."
