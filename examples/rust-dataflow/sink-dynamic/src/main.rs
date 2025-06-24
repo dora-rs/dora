@@ -25,8 +25,8 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
-            Event::Stop => {
-                println!("Received manual stop");
+            Event::Stop(_) => {
+                println!("Received stop");
             }
             Event::InputClosed { id } => {
                 println!("Input `{id}` was closed");
