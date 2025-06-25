@@ -43,7 +43,8 @@ pub fn main() -> eyre::Result<()> {
             .wrap_err("failed to set up tracing subscriber")?;
     }
 
-    let dataflow_descriptor = config.dataflow_descriptor.clone();
+    let dataflow_descriptor = serde_yaml::from_value(config.dataflow_descriptor.clone())
+        .context("failed to parse dataflow descriptor")?;
 
     let operator_definition = if operators.is_empty() {
         bail!("no operators");

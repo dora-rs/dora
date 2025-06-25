@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use dora_daemon::Daemon;
 use dora_download::download_file;
 use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
@@ -231,7 +230,7 @@ impl Node {
     /// :rtype: dict
     pub fn dataflow_descriptor(&mut self, py: Python) -> eyre::Result<PyObject> {
         Ok(
-            pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor())
+            pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor()?)
                 .map(|x| x.unbind())?,
         )
     }
@@ -382,19 +381,7 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
 #[pyfunction]
 #[pyo3(signature = (dataflow_path, uv=None))]
 pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
-    let dataflow_path = resolve_dataflow(dataflow_path).context("could not resolve dataflow")?;
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
-    let result = rt.block_on(Daemon::run_dataflow(&dataflow_path, uv.unwrap_or_default()))?;
-    match result.is_ok() {
-        true => Ok(()),
-        false => Err(eyre::eyre!(
-            "Dataflow failed to run with error: {:?}",
-            result.node_results
-        )),
-    }
+    dora_cli::command::run(dataflow_path, uv.unwrap_or_default())
 }
 
 #[pymodule]

@@ -72,6 +72,7 @@ dora-metrics = { version = "0.3.11", path = "libraries/extensions/telemetry/metr
 dora-download = { version = "0.3.11", path = "libraries/extensions/download" }
 shared-memory-server = { version = "0.3.11", path = "libraries/shared-memory-server" }
 communication-layer-request-reply = { version = "0.3.11", path = "libraries/communication-layer/request-reply" }
+dora-cli = { version = "0.3.11", path = "binaries/cli" }
 dora-runtime = { version = "0.3.11", path = "binaries/runtime" }
 dora-daemon = { version = "0.3.11", path = "binaries/daemon" }
 dora-coordinator = { version = "0.3.11", path = "binaries/coordinator" }
@@ -79,7 +80,7 @@ dora-ros2-bridge = { version = "0.3.11", path = "libraries/extensions/ros2-bridg
 dora-ros2-bridge-msg-gen = { version = "0.3.11", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
-dora-message = { version = "0.4.4", path = "libraries/message" }
+dora-message = { version = "0.5.0-alpha", path = "libraries/message" }
 arrow = { version = "54.2.1" }
 arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }
@@ -91,6 +92,8 @@ pyo3 = { version = "0.23", features = [
     "multiple-pymethods",
 ] }
 pythonize = "0.23"
+git2 = { version = "0.18.0", features = ["vendored-openssl"] }
+serde_yaml = "0.9.33"
 
 [package]
 name = "dora-examples"
@@ -107,6 +110,7 @@ ros2-examples = []
 [dev-dependencies]
 eyre = "0.6.8"
 tokio = "1.24.2"
+dora-cli = { workspace = true }
 dora-coordinator = { workspace = true }
 dora-core = { workspace = true }
 dora-message = { workspace = true }
@@ -134,6 +138,10 @@ path = "examples/vlm/run.rs"
 [[example]]
 name = "rust-dataflow"
 path = "examples/rust-dataflow/run.rs"
+
+[[example]]
+name = "rust-dataflow-git"
+path = "examples/rust-dataflow-git/run.rs"
 
 [[example]]
 name = "rust-ros2-dataflow"

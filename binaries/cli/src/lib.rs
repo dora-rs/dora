@@ -5,10 +5,11 @@ use std::{
     path::PathBuf,
 };
 
-mod attach;
 mod commands;
 mod common;
 mod formatting;
+pub mod output;
+pub mod session;
 mod template;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));

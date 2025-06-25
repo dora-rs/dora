@@ -1,9 +1,10 @@
 use super::Executable;
-use crate::common::handle_dataflow_result;
+use crate::{common::handle_dataflow_result, session::DataflowSession};
 use dora_core::topics::{
     DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST,
 };
 
+use dora_daemon::LogDestination;
 #[cfg(feature = "tracing")]
 use dora_tracing::TracingBuilder;
 
@@ -62,24 +63,29 @@ impl Executable for Daemon {
             .build()
             .context("tokio runtime failed")?;
         rt.block_on(async {
-            match self.run_dataflow {
-                Some(dataflow_path) => {
-                    tracing::info!("Starting dataflow `{}`", dataflow_path.display());
-                    if self.coordinator_addr != LOCALHOST {
-                        tracing::info!(
-                            "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
-                            self.coordinator_addr
-                        );
-                    }
+                match self.run_dataflow {
+                    Some(dataflow_path) => {
+                        tracing::info!("Starting dataflow `{}`", dataflow_path.display());
+                        if self.coordinator_addr != LOCALHOST {
+                            tracing::info!(
+                                "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
+                                self.coordinator_addr
+                            );
+                        }
+                        let dataflow_session =
+                            DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
-                    let result = dora_daemon::Daemon::run_dataflow(&dataflow_path, false).await?;
-                    handle_dataflow_result(result, None)
+                        let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
+                            dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
+                            LogDestination::Tracing,
+                        ).await?;
+                        handle_dataflow_result(result, None)
+                    }
+                    None => {
+                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.local_listen_port).await
+                    }
                 }
-                None => {
-                    dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.local_listen_port).await
-                }
-            }
-        })
-        .context("failed to run dora-daemon")
+            })
+            .context("failed to run dora-daemon")
     }
 }
