@@ -12,6 +12,7 @@ use eyre::{bail, Context, ContextCompat};
 
 mod build;
 pub mod check;
+pub mod inspect;
 mod logs;
 mod run;
 mod start;
