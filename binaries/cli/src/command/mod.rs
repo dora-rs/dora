@@ -14,16 +14,12 @@ mod start;
 mod stop;
 mod up;
 
-use std::path::{Path, PathBuf};
-
 use build::Build;
 use check::Check;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use coordinator::Coordinator;
 use daemon::Daemon;
 use destroy::Destroy;
-use dora_core::descriptor::Descriptor;
-use eyre::{Context, ContextCompat};
+use eyre::Context;
 use graph::Graph;
 use list::ListArgs;
 use logs::LogsArgs;
@@ -34,8 +30,6 @@ use self_::SelfSubCommand;
 use start::Start;
 use stop::Stop;
 use up::Up;
-
-use crate::common::cli_and_daemon_on_same_machine;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
