@@ -1,11 +1,11 @@
 use colored::Colorize;
-use commands::Executable;
+use command::Executable;
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
 };
 
-mod commands;
+mod command;
 mod common;
 mod formatting;
 pub mod output;
@@ -19,7 +19,7 @@ const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 #[clap(version)]
 pub struct Args {
     #[clap(subcommand)]
-    command: commands::Command,
+    command: command::Command,
 }
 
 #[derive(Debug, clap::Args)]
