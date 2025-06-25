@@ -106,28 +106,3 @@ impl Executable for Command {
         }
     }
 }
-
-fn local_working_dir(
-    dataflow_path: &Path,
-    dataflow_descriptor: &Descriptor,
-    coordinator_session: &mut TcpRequestReplyConnection,
-) -> eyre::Result<Option<PathBuf>> {
-    Ok(
-        if dataflow_descriptor
-            .nodes
-            .iter()
-            .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
-            && cli_and_daemon_on_same_machine(coordinator_session)?
-        {
-            Some(
-                dunce::canonicalize(dataflow_path)
-                    .context("failed to canonicalize dataflow file path")?
-                    .parent()
-                    .context("dataflow path has no parent dir")?
-                    .to_owned(),
-            )
-        } else {
-            None
-        },
-    )
-}
