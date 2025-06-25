@@ -1,8 +1,9 @@
 """TODO: Add docstring."""
 
 import io
-from collections import deque as Deque
 import os
+from collections import deque as Deque
+
 import cv2
 import numpy as np
 import pyarrow as pa
@@ -10,22 +11,24 @@ import torch
 from dora import Node
 from PIL import Image
 from vggt.models.vggt import VGGT
+from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-from vggt.utils.geometry import unproject_depth_map_to_point_map
 
 CAMERA_HEIGHT = os.getenv("CAMERA_HEIGHT", "0.01")
 
 # bfloat16 is supported on Ampere GPUs (Compute Capability 8.0+)
 dtype = torch.bfloat16
 
+# Check if cuda is available and set the device accordingly
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 # Initialize the model and load the pretrained weights.
 # This will automatically download the model weights the first time it's run, which may take a while.
-model = VGGT.from_pretrained("facebook/VGGT-1B").to("cuda")
+model = VGGT.from_pretrained("facebook/VGGT-1B").to(device)
 model.eval()
 
-
-
+DEPTH_ENCODING = os.environ.get("DEPTH_ENCODING", "float64")
 
 
 def main():
@@ -35,7 +38,6 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-
             if "image" in event["id"]:
                 storage = event["value"]
                 metadata = event["metadata"]
@@ -83,7 +85,7 @@ def main():
                 raw_images.append(buffer)
 
                 with torch.no_grad():
-                    images = load_and_preprocess_images(raw_images).to("cuda")
+                    images = load_and_preprocess_images(raw_images).to(device)
 
                     images = images[None]  # add batch dimension
                     aggregated_tokens_list, ps_idx = model.aggregator(images)
@@ -99,25 +101,34 @@ def main():
                         aggregated_tokens_list, images, ps_idx
                     )
 
-           
                     # Construct 3D Points from Depth Maps and Cameras
                     # which usually leads to more accurate 3D points than point map branch
-                    point_map_by_unprojection = unproject_depth_map_to_point_map(depth_map.squeeze(0), 
-                                                                                extrinsic.squeeze(0), 
-                                                                                intrinsic.squeeze(0))
+                    point_map_by_unprojection = unproject_depth_map_to_point_map(
+                        depth_map.squeeze(0), extrinsic.squeeze(0), intrinsic.squeeze(0)
+                    )
 
                     # Get the last quartile of the 2nd axis
                     z_value = point_map_by_unprojection[0, :, :, 2]
                     z_first_quartile = np.quantile(z_value, 0.15)
                     scale_factor = float(CAMERA_HEIGHT) / z_first_quartile
-                    print(f"Scale factor: {scale_factor}, with height: {CAMERA_HEIGHT} and max depth: {point_map_by_unprojection[0, :, :, 2].min()}")
-                    print(f" 0. all min and max depth values: {point_map_by_unprojection[0, :, :, 0].min()} / {point_map_by_unprojection[0, :, :, 0].max()}")
-                    print(f" 1. all min and max depth values: {point_map_by_unprojection[0, :, :, 1].min()} / {point_map_by_unprojection[0, :, :, 1].max()}")
-                    print(f" 2. all min and max depth values: {point_map_by_unprojection[0, :, :, 2].min()} / {point_map_by_unprojection[0, :, :, 2].max()}")
+                    print(
+                        f"Scale factor: {scale_factor}, with height: {CAMERA_HEIGHT} and max depth: {point_map_by_unprojection[0, :, :, 2].min()}"
+                    )
+                    print(
+                        f" 0. all min and max depth values: {point_map_by_unprojection[0, :, :, 0].min()} / {point_map_by_unprojection[0, :, :, 0].max()}"
+                    )
+                    print(
+                        f" 1. all min and max depth values: {point_map_by_unprojection[0, :, :, 1].min()} / {point_map_by_unprojection[0, :, :, 1].max()}"
+                    )
+                    print(
+                        f" 2. all min and max depth values: {point_map_by_unprojection[0, :, :, 2].min()} / {point_map_by_unprojection[0, :, :, 2].max()}"
+                    )
                     print(f" first quartile of z values: {z_first_quartile}")
-                    
+
                     depth_map[depth_conf < 1.0] = 0.0  # Set low confidence pixels to 0
-                    depth_map = depth_map * scale_factor  # Scale depth map to the desired height
+                    depth_map = (
+                        depth_map * scale_factor
+                    )  # Scale depth map to the desired height
                     depth_map = depth_map.to(torch.float64)
 
                     intrinsic = intrinsic[-1][-1]
@@ -127,20 +138,24 @@ def main():
                     r_1 = intrinsic[1, 2]
                     depth_map = depth_map[-1][-1].cpu().numpy()
                     # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
+                    if DEPTH_ENCODING == "mono16":
+                        depth_map = (depth_map * 1000).astype(np.uint16)
+
                     node.send_output(
                         output_id="depth",
                         data=pa.array(depth_map.ravel()),
                         metadata={
                             "width": depth_map.shape[1],
                             "height": depth_map.shape[0],
-                        "focal": [
-                            int(f_0),
-                            int(f_1),
-                        ],
-                        "resolution": [
-                            int(r_0),
-                            int(r_1),
-                        ],
+                            "encoding": DEPTH_ENCODING,
+                            "focal": [
+                                int(f_0),
+                                int(f_1),
+                            ],
+                            "resolution": [
+                                int(r_0),
+                                int(r_1),
+                            ],
                         },
                     )
 

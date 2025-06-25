@@ -5,12 +5,12 @@ nodes:
     outputs:
       - text
     inputs:
-      text: dora-echo/echo
+      text: dora-qwen2.5-vl/text
 
-  - id: dora-echo
-    build: pip install -e ../../node-hub/dora-echo
-    path: dora-echo
+  - id: dora-qwen2.5-vl
+    build: pip install -e ../../node-hub/dora-qwen2-5-vl
+    path: dora-qwen2-5-vl
     inputs:
-      echo: dora-openai-server/text
+      text: dora-openai-server/text
     outputs:
-      - echo
+      - text

@@ -81,6 +81,20 @@ impl IntoArrow for NaiveTime {
     }
 }
 
+impl IntoArrow for String {
+    type A = StringArray;
+    fn into_arrow(self) -> Self::A {
+        std::iter::once(Some(self)).collect()
+    }
+}
+
+impl IntoArrow for Vec<String> {
+    type A = StringArray;
+    fn into_arrow(self) -> Self::A {
+        StringArray::from(self)
+    }
+}
+
 impl IntoArrow for NaiveDateTime {
     type A = arrow::array::TimestampNanosecondArray;
     fn into_arrow(self) -> Self::A {
