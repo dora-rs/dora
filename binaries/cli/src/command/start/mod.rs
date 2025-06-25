@@ -1,6 +1,6 @@
 use super::{default_tracing, Executable};
 use crate::{
-    commands::start::attach::attach_dataflow,
+    command::start::attach::attach_dataflow,
     common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
     output::print_log_message,
     session::DataflowSession,
