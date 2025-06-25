@@ -1,3 +1,5 @@
+use super::{default_tracing, Executable};
+use crate::common::resolve_dataflow;
 use dora_core::{
     config::OperatorId,
     descriptor::{Descriptor, DescriptorExt, NodeExt, SINGLE_OPERATOR_DEFAULT_ID},
@@ -6,7 +8,23 @@ use dora_message::descriptor::EnvValue;
 use eyre::{eyre, Context};
 use std::{collections::BTreeMap, path::Path, process::Command};
 
-use crate::resolve_dataflow;
+#[derive(Debug, clap::Args)]
+/// Run build commands provided in the given dataflow.
+pub struct Build {
+    /// Path to the dataflow descriptor file
+    #[clap(value_name = "PATH")]
+    dataflow: String,
+    // Use UV to build nodes.
+    #[clap(long, action)]
+    uv: bool,
+}
+
+impl Executable for Build {
+    fn execute(self) -> eyre::Result<()> {
+        default_tracing()?;
+        build(self.dataflow, self.uv)
+    }
+}
 
 pub fn build(dataflow: String, uv: bool) -> eyre::Result<()> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
