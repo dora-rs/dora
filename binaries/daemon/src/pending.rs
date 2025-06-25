@@ -59,6 +59,10 @@ impl PendingNodes {
         self.external_nodes = value;
     }
 
+    pub fn local_nodes_pending(&self) -> bool {
+        !self.local_nodes.is_empty()
+    }
+
     pub async fn handle_node_subscription(
         &mut self,
         node_id: NodeId,

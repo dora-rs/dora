@@ -43,7 +43,8 @@ pub fn main() -> eyre::Result<()> {
             .wrap_err("failed to set up tracing subscriber")?;
     }
 
-    let dataflow_descriptor = config.dataflow_descriptor.clone();
+    let dataflow_descriptor = serde_yaml::from_value(config.dataflow_descriptor.clone())
+        .context("failed to parse dataflow descriptor")?;
 
     let operator_definition = if operators.is_empty() {
         bail!("no operators");
@@ -232,10 +233,10 @@ async fn run(
                     }
                 }
             }
-            RuntimeEvent::Event(Event::Stop) => {
+            RuntimeEvent::Event(Event::Stop(cause)) => {
                 // forward stop event to all operators and close the event channels
                 for (_, channel) in operator_channels.drain() {
-                    let _ = channel.send_async(Event::Stop).await;
+                    let _ = channel.send_async(Event::Stop(cause.clone())).await;
                 }
             }
             RuntimeEvent::Event(Event::Reload {

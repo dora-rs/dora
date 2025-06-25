@@ -118,6 +118,9 @@ jobs:
       - name: "Rust Dataflow example"
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
+      - name: "Rust Git Dataflow example"
+        timeout-minutes: 30
+        run: cargo run --example rust-dataflow-git
       - name: "Multiple Daemons example"
         timeout-minutes: 30
         run: cargo run --example multiple-daemons
@@ -189,7 +192,7 @@ jobs:
           # only save caches for `main` branch
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - uses: ros-tooling/setup-ros@v0.6
+      - uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
@@ -209,11 +212,11 @@ jobs:
           source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
           source /opt/ros/humble/setup.bash && ros2 run examples_rclcpp_minimal_service service_main &
           cargo run --example rust-ros2-dataflow --features="ros2-examples"
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         if: runner.os != 'Windows'
         with:
           python-version: "3.8"
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         if: runner.os == 'Windows'
         with:
           python-version: "3.10"
@@ -321,7 +324,7 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         with:
           # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
           python-version: "3.12"
@@ -339,35 +342,42 @@ jobs:
           # Test Python template Project
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
-          uv venv --seed -p 3.11
+          uv venv --seed -p 3.12
           uv pip install -e ../apis/python/node
-          dora build dataflow.yml --uv
           uv pip install ruff pytest
+
+          echo "Running dora up"
+          dora up
+          echo "Running dora build"
+          dora build dataflow.yml --uv
 
           # Check Compliancy
           uv run ruff check .
           uv run pytest
 
           export OPERATING_MODE=SAVE
-          dora up
+          echo "Running dora list"
           dora list
           dora build dataflow.yml --uv
           echo "Running CI Python Test"
           dora start dataflow.yml --name ci-python-test --detach --uv
           sleep 10
+          echo "Running dora stop"
           dora stop --name ci-python-test  --grace-duration 5s
           dora destroy
+          sleep 5
 
           cd ..
 
           # Run Python Node Example
           echo "Running Python Node Example"
           dora up
-          uv venv --seed -p 3.11
+          uv venv --seed -p 3.12
           uv pip install -e apis/python/node
           dora build examples/python-dataflow/dataflow.yml --uv
           dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
           sleep 10
+          echo "Running dora stop"
           dora stop --name ci-python  --grace-duration 30s
 
           # Run Python Dynamic Node Example
@@ -376,15 +386,18 @@ jobs:
           dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
           uv run opencv-plot --name plot
           sleep 10
+          echo "Running dora stop"
           dora stop --name ci-python-dynamic  --grace-duration 30s
 
           # Run Python Operator Example
           echo "Running CI Operator Test"
           dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
           sleep 10
+          echo "Running dora stop"
           dora stop --name ci-python-operator  --grace-duration 30s
 
           dora destroy
+          sleep 5
 
           # Run Python queue latency test
           echo "Running CI Queue Latency Test"

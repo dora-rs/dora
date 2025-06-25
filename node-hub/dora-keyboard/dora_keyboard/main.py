@@ -11,6 +11,8 @@ def main():
     node = Node()
 
     always_none = node.next(timeout=0.001) is None
+    always_none = node.next(timeout=0.001) is None
+    print("Always None:", always_none)
     with keyboard.Events() as events:
         while True:
             if not always_none:

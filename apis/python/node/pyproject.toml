@@ -22,3 +22,11 @@ extend-select = [
     "D",  # pydocstyle
     "UP",
 ]
+
+[tool.maturin.target.x86_64-apple-darwin]
+# macOS deployment target SDK version
+macos-deployment-target = "14.5"
+
+[tool.maturin.target.aarch64-apple-darwin]
+# macOS deployment target SDK version
+macos-deployment-target = "14.5"
