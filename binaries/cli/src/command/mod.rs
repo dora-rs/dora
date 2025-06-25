@@ -14,12 +14,16 @@ mod start;
 mod stop;
 mod up;
 
+use std::path::{Path, PathBuf};
+
 use build::Build;
 use check::Check;
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use coordinator::Coordinator;
 use daemon::Daemon;
 use destroy::Destroy;
-use eyre::Context;
+use dora_core::descriptor::Descriptor;
+use eyre::{Context, ContextCompat};
 use graph::Graph;
 use list::ListArgs;
 use logs::LogsArgs;
@@ -30,6 +34,8 @@ use self_::SelfSubCommand;
 use start::Start;
 use stop::Stop;
 use up::Up;
+
+use crate::common::cli_and_daemon_on_same_machine;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
@@ -99,4 +105,29 @@ impl Executable for Command {
             Command::Runtime(args) => args.execute(),
         }
     }
+}
+
+fn local_working_dir(
+    dataflow_path: &Path,
+    dataflow_descriptor: &Descriptor,
+    coordinator_session: &mut TcpRequestReplyConnection,
+) -> eyre::Result<Option<PathBuf>> {
+    Ok(
+        if dataflow_descriptor
+            .nodes
+            .iter()
+            .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
+            && cli_and_daemon_on_same_machine(coordinator_session)?
+        {
+            Some(
+                dunce::canonicalize(dataflow_path)
+                    .context("failed to canonicalize dataflow file path")?
+                    .parent()
+                    .context("dataflow path has no parent dir")?
+                    .to_owned(),
+            )
+        } else {
+            None
+        },
+    )
 }
