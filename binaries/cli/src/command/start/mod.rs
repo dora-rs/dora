@@ -1,3 +1,7 @@
+//! The `dora start` command is used to spawn a dataflow in a pre-existing _dora network_. To create a dora network, spawn a `dora coordinator` and one or multiple `dora daemon` instances.
+//!
+//! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
+
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_message::{
