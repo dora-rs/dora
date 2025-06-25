@@ -1,0 +1,22 @@
+[project]
+name = "policy-act"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "policy-act"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = ["dora-rs >= 0.3.9"]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+policy-act = "policy_act.main:main"
+
+[tool.ruff]
+exclude = ["policy_act/Act"]
+
+[tool.black]
+extend.exclude = "policy_act/Act"
