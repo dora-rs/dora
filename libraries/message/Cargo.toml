@@ -1,7 +1,7 @@
 [package]
 name = "dora-message"
 # versioned separately from the other dora crates
-version = "0.4.4"
+version = "0.5.0-alpha"
 edition.workspace = true
 documentation.workspace = true
 description.workspace = true
@@ -23,7 +23,7 @@ aligned-vec = { version = "0.5.0", features = ["serde"] }
 semver = { version = "1.0.23", features = ["serde"] }
 schemars = "0.8.19"
 uhlc = "0.5.1"
-serde_yaml = "0.9.11"
+serde_yaml = { workspace = true }
 once_cell = "1.13.0"
 serde-with-expand-env = "1.1.0"
 bincode = "1.3.3"

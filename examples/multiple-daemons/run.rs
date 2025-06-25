@@ -1,3 +1,4 @@
+use dora_cli::session::DataflowSession;
 use dora_coordinator::{ControlEvent, Event};
 use dora_core::{
     descriptor::{read_as_descriptor, DescriptorExt},
@@ -8,7 +9,7 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
-use dora_tracing::set_up_tracing;
+use dora_tracing::TracingBuilder;
 use eyre::{bail, Context};
 
 use std::{
@@ -29,7 +30,9 @@ use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing("multiple-daemon-runner").wrap_err("failed to set up tracing subscriber")?;
+    TracingBuilder::new("multiple-daemon-runner")
+        .with_stdout("debug")
+        .build()?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -47,12 +50,15 @@ async fn main() -> eyre::Result<()> {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
     );
-    let (_coordinator_port, coordinator) = dora_coordinator::start(
+    let (coordinator_port, coordinator) = dora_coordinator::start(
         coordinator_bind,
         coordinator_control_bind,
         ReceiverStream::new(coordinator_events_rx),
     )
     .await?;
+
+    tracing::info!("coordinator running on {coordinator_port}");
+
     let coordinator_addr = Ipv4Addr::LOCALHOST;
     let daemon_a = run_daemon(coordinator_addr.to_string(), "A");
     let daemon_b = run_daemon(coordinator_addr.to_string(), "B");
@@ -135,12 +141,17 @@ async fn start_dataflow(
         .check(&working_dir)
         .wrap_err("could not validate yaml")?;
 
+    let dataflow_session =
+        DataflowSession::read_session(dataflow).context("failed to read DataflowSession")?;
+
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
             request: ControlRequest::Start {
+                build_id: dataflow_session.build_id,
+                session_id: dataflow_session.session_id,
                 dataflow: dataflow_descriptor,
-                local_working_dir: working_dir,
+                local_working_dir: Some(working_dir),
                 name: None,
                 uv: false,
             },
@@ -149,7 +160,21 @@ async fn start_dataflow(
         .await?;
     let result = reply.await??;
     let uuid = match result {
-        ControlRequestReply::DataflowStarted { uuid } => uuid,
+        ControlRequestReply::DataflowStartTriggered { uuid } => uuid,
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
+    };
+
+    let (reply_sender, reply) = oneshot::channel();
+    coordinator_events_tx
+        .send(Event::Control(ControlEvent::IncomingRequest {
+            request: ControlRequest::WaitForSpawn { dataflow_id: uuid },
+            reply_sender,
+        }))
+        .await?;
+    let result = reply.await??;
+    let uuid = match result {
+        ControlRequestReply::DataflowSpawned { uuid } => uuid,
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     };
@@ -215,6 +240,7 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--release");
     cmd.arg("--").arg("build").arg(dataflow);
     if !cmd.status().await?.success() {
         bail!("failed to build dataflow");
@@ -227,6 +253,7 @@ async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--release");
     cmd.arg("--")
         .arg("daemon")
         .arg("--machine-id")

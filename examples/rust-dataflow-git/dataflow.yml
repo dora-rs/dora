@@ -1,0 +1,29 @@
+nodes:
+  - id: rust-node
+    git: https://github.com/dora-rs/dora.git
+    rev: 64ab0d7c # pinned commit, update this when changing the message crate
+    build: cargo build -p rust-dataflow-example-node
+    path: target/debug/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - random
+
+  - id: rust-status-node
+    git: https://github.com/dora-rs/dora.git
+    rev: 64ab0d7c # pinned commit, update this when changing the message crate
+    build: cargo build -p rust-dataflow-example-status-node
+    path: target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/100
+      random: rust-node/random
+    outputs:
+      - status
+
+  - id: rust-sink
+    git: https://github.com/dora-rs/dora.git
+    rev: 64ab0d7c # pinned commit, update this when changing the message crate
+    build: cargo build -p rust-dataflow-example-sink
+    path: target/debug/rust-dataflow-example-sink
+    inputs:
+      message: rust-status-node/status

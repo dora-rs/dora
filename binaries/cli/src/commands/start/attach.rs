@@ -1,4 +1,3 @@
-use colored::Colorize;
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::descriptor::{resolve_path, CoreNodeKind, Descriptor, DescriptorExt};
 use dora_message::cli_to_coordinator::ControlRequest;
@@ -16,6 +15,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
+use crate::output::print_log_message;
 
 pub fn attach_dataflow(
     dataflow: Descriptor,
@@ -32,6 +32,8 @@ pub fn attach_dataflow(
     let mut node_path_lookup = HashMap::new();
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+
+    let print_daemon_name = nodes.values().any(|n| n.deploy.is_some());
 
     let working_dir = dataflow_path
         .canonicalize()
@@ -155,39 +157,7 @@ pub fn attach_dataflow(
             },
             Ok(AttachEvent::Control(control_request)) => control_request,
             Ok(AttachEvent::Log(Ok(log_message))) => {
-                let LogMessage {
-                    dataflow_id,
-                    node_id,
-                    daemon_id,
-                    level,
-                    target,
-                    module_path: _,
-                    file: _,
-                    line: _,
-                    message,
-                } = log_message;
-                let level = match level {
-                    log::Level::Error => "ERROR".red(),
-                    log::Level::Warn => "WARN ".yellow(),
-                    log::Level::Info => "INFO ".green(),
-                    other => format!("{other:5}").normal(),
-                };
-                let dataflow = format!(" dataflow `{dataflow_id}`").cyan();
-                let daemon = match daemon_id {
-                    Some(id) => format!(" on daemon `{id}`"),
-                    None => " on default daemon".to_string(),
-                }
-                .bright_black();
-                let node = match node_id {
-                    Some(node_id) => format!(" {node_id}").bold(),
-                    None => "".normal(),
-                };
-                let target = match target {
-                    Some(target) => format!(" {target}").dimmed(),
-                    None => "".normal(),
-                };
-
-                println!("{level}{dataflow}{daemon}{node}{target}: {message}");
+                print_log_message(log_message, false, print_daemon_name);
                 continue;
             }
             Ok(AttachEvent::Log(Err(err))) => {
@@ -202,7 +172,7 @@ pub fn attach_dataflow(
         let result: ControlRequestReply =
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
-            ControlRequestReply::DataflowStarted { uuid: _ } => (),
+            ControlRequestReply::DataflowSpawned { uuid: _ } => (),
             ControlRequestReply::DataflowStopped { uuid, result } => {
                 info!("dataflow {uuid} stopped");
                 break handle_dataflow_result(result, Some(uuid));
