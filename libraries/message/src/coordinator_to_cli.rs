@@ -37,6 +37,7 @@ pub enum ControlRequestReply {
     DaemonConnected(bool),
     ConnectedDaemons(BTreeSet<DaemonId>),
     Logs(Vec<u8>),
+    Inspect(Uuid),
     CliAndDefaultDaemonIps {
         default_daemon: Option<IpAddr>,
         cli: Option<IpAddr>,

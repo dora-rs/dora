@@ -12,7 +12,7 @@ default = ["zenoh"]
 zenoh = ["dep:zenoh"]
 
 [dependencies]
-zenoh = { version = "0.7.0-rc", optional = true, features = ["transport_tcp"] }
+zenoh = { workspace = true, optional = true, features = ["transport_tcp"] }
 flume = "0.10"
 
 [package.metadata.docs.rs]
