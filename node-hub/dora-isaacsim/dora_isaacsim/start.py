@@ -1,14 +1,13 @@
 from omni.isaac.kit import SimulationApp
 
-simulation_app = SimulationApp({
-    "headless": False,
-})
-
 import hydra
 from omegaconf import DictConfig
 
 from src.utils import set_seed
 
+simulation_app = SimulationApp({
+    "headless": False,
+})
 
 @hydra.main(config_path="./configs", config_name="stack_cube_dp_franka", version_base="1.3.2")
 def main(cfg: DictConfig):

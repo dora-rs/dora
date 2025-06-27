@@ -89,7 +89,7 @@ class BaseRobot:
             target_position (np.array): target translation of the target frame (in stage units) relative to the USD stage origin
             target_orientation (np.array): target orientation of the target frame relative to the USD stage global frame. Defaults to None.
             position_tolerance (float): l-2 norm of acceptable position error (in stage units) between the target and achieved translations. Defaults to None.
-            orientation tolerance (float): magnitude of rotation (in radians) separating the target orientation from the achieved orienatation.
+            orientation tolerance (float): magnitude of rotation (in radians) separating the target orientation from the achieved orientation.
                 orientation_tolerance is well defined for values between 0 and pi. Defaults to None.
 
         Returns:
@@ -149,7 +149,7 @@ class BaseRobot:
             # 获取全局坐标系下的位姿
             state = hand_prim.get_default_state()
             return np.concatenate([state.position, state.orientation], axis=-1)
-        except:
+        except Exception:
             hand_prim = RigidPrim(end_effector_path)
             # 获取全局坐标系下的位姿
             return hand_prim.get_world_pose()

@@ -15,11 +15,11 @@ nodes:
       - joint_pos
   
   - id: policy-act
-    build: pip install -e ../../node-hub/policy-act
-    path: ../../node-hub/policy-act/policy_act/main.py
+    build: pip install -e ./policy-act
+    path: ./policy-act/policy_act/main.py
     args: 
       --task_name stack_cube
-      --ckpt_dir ../../node-hub/policy-act/policy_act/assets/ckpt/
+      --ckpt_dir ./policy-act/policy_act/assets/ckpt/
       --policy_class ACT
       --kl_weight 10
       --chunk_size 20

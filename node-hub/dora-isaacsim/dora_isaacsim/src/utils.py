@@ -4,9 +4,11 @@ from omegaconf.listconfig import ListConfig
 from omni.isaac.dynamic_control import _dynamic_control
 from scipy.spatial.transform import Rotation
 
-dc = _dynamic_control.acquire_dynamic_control_interface()
 from omni.isaac.core.prims import XFormPrim
+import random
+import torch
 
+dc = _dynamic_control.acquire_dynamic_control_interface()
 
 def debug():
     import debugpy
@@ -31,11 +33,6 @@ def to_numpy_recursive(cfg):
 
 
 def set_seed(seed, deterministic=False):
-    import random
-
-    import numpy as np
-    import torch
-
     random.seed(seed)  # Python 内置随机模块
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -81,25 +78,25 @@ def set_prim_transform(stage, prim_path, translate=None, rotate=None, scale=None
     xprim = XFormPrim(prim_path=prim_path)
     xprim.set_world_pose(translate, rotate)
 
-def draw_single_point(pos, color="expert", size=15):
-    """
-    实时绘制单个轨迹点。
+# def draw_single_point(pos, color="expert", size=15):
+#     """
+#     实时绘制单个轨迹点。
 
-    Args:
-        pos: (x, y, z) 的三元组坐标
-        color: "expert"（绿色）或 "model"（蓝色），也支持自定义 RGB 元组
-        size: 点的大小
-    """
-    if color == "expert":
-        rgba = (0, 1, 0, 1)  # 绿色
-    elif color == "model":
-        rgba = (0, 0, 1, 1)  # 蓝色
-    elif isinstance(color, tuple) and len(color) in (3, 4):
-        if len(color) == 3:
-            rgba = (*color, 1.0)
-        else:
-            rgba = color
-    else:
-        raise ValueError("Unsupported color type")
+#     Args:
+#         pos: (x, y, z) 的三元组坐标
+#         color: "expert"（绿色）或 "model"（蓝色），也支持自定义 RGB 元组
+#         size: 点的大小
+#     """
+#     if color == "expert":
+#         rgba = (0, 1, 0, 1)  # 绿色
+#     elif color == "model":
+#         rgba = (0, 0, 1, 1)  # 蓝色
+#     elif isinstance(color, tuple) and len(color) in (3, 4):
+#         if len(color) == 3:
+#             rgba = (*color, 1.0)
+#         else:
+#             rgba = color
+#     else:
+#         raise ValueError("Unsupported color type")
 
-    _draw.draw_points([pos], [rgba], [size])
+#     _draw.draw_points([pos], [rgba], [size])

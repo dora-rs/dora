@@ -4,9 +4,37 @@
 
 ## Preparation
 
-1. Clone this repository;
-2. Download model parameters `policy_best.ckpt` and `dataset_stats.pkl` to `node-hub/policy-act/policy_act/assets/ckpt/`
-   + Here is an example [act_model](https://drive.google.com/drive/folders/1F1GcguN-Zlrq22FOAqiBiZu6iCwIX6EC?usp=sharing).
+1. Clone this repository.
+2. Create policy-act node
+
+```shell
+dora new --kind=node --lang=python policy-act
+cd ./policy-act
+git clone https://huggingface.co/berrylvz/policy_act
+```
+
+```shell
+policy-act
+├── policy_act
+│   ├── assets
+│   │   └── ckpt
+│   │       ├── dataset_stats.pkl
+│   │       └── policy_best.ckpt
+│   ├── constants.py
+│   ├── detr/
+│   ├── inference.py
+│   ├── infer_sim.py
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── main.py
+│   ├── policy.py
+│   └── utils.py
+├── pyproject.toml
+├── README.md
+└── tests
+    └── test_policy_act.py
+```
+
 3. Download [isaacsim](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/installation/download.html);
 4. Download [scenary](https://drive.google.com/drive/folders/1wZEysysqdKG0UYsZLl51Rdi7MFiYbfbP?usp=sharing) and unzip to `node-hub/dora-isaacsim/dora_isaacsim/assets/`
 
@@ -19,7 +47,7 @@ assets/
 └── stack_cube_franka.usd
 ```
 
-5. Change `ISAAC_PYTHON_PATH` in `./dataflow.yml` to `<path of isaacsim>/python.sh`;
+5. Change `ISAAC_PYTHON_PATH` in `./dataflow.yml` to `"<path of isaacsim>/python.sh"`;
 6. Create conda env;
 
 ```shell
@@ -31,14 +59,7 @@ pip install -r requirements.txt
 7. Install necessary packages into isaacsim
 
 ```shell
-<path of isaacsim>/python.sh -m pip install omegaconf==2.3.0 \
-              hydra-core==1.3.2 \
-              debugpy \
-              h5py==3.13.0 \
-              pyparsing==2.4.6 \
-              pyyaml==5.3.1 \
-              empy==3.3.2 \
-              scipy
+<path of isaacsim>/python.sh -m pip install -r requirements_isaacsim.txt
 ```
 
 ## Getting Started
@@ -66,8 +87,7 @@ dora start dataflow.yml
 
 Click on the Stage > /World/franka and press `F`.
 
-See `./assets/dora_isaacsim_act.mp4`.
-
+See https://youtu.be/oK5c1U3C87g.
 
 5. Close the dora-rs
 
@@ -94,12 +114,12 @@ nodes:
       - joint_pos
   
   - id: policy-act
-    build: pip install -e ../node-hub/policy-act
-    path: ../node-hub/policy-act/policy_act/main.py
+    build: pip install -e ./policy-act
+    path: ./policy-act/policy_act/main.py
     args: 
       --task_name stack_cube
       # path of model parameters (relative to the current dataflow file)
-      --ckpt_dir ../../node-hub/policy-act/policy_act/assets/ckpt/
+      --ckpt_dir ./policy-act/policy_act/assets/ckpt/
       --policy_class ACT
       --kl_weight 10
       --chunk_size 20
