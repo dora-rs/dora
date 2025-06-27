@@ -1,0 +1,30 @@
+nodes:
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_m710ic70: pytorch_kinematics/cmd_vel
+    env:
+      m710ic70_urdf: "fanuc_m710ic_description"
+      m710ic70_transform: "0. 0. 0. 1. 0. 0. 0."
+
+  - id: gamepad
+    build: pip install -e ../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: pytorch_kinematics
+    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      cmd_vel: gamepad/cmd_vel
+    outputs:
+      - cmd_vel
+    env:
+      MODEL_NAME: "fanuc_m710ic_description"
+      END_EFFECTOR_LINK: "tool0"
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."
