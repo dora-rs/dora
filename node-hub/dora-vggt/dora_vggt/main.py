@@ -15,7 +15,7 @@ from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
-CAMERA_HEIGHT = os.getenv("CAMERA_HEIGHT", "0.01")
+CAMERA_HEIGHT_Y = os.getenv("CAMERA_HEIGHT_Y", "0.115")
 
 # bfloat16 is supported on Ampere GPUs (Compute Capability 8.0+)
 dtype = torch.bfloat16
@@ -95,11 +95,14 @@ def main():
                     extrinsic, intrinsic = pose_encoding_to_extri_intri(
                         pose_enc, images.shape[-2:]
                     )
+                    print(f"Extrinsic: {extrinsic}")
+                    print(f"Intrinsic: {intrinsic}")
 
                     # Predict Depth Maps
                     depth_map, depth_conf = model.depth_head(
                         aggregated_tokens_list, images, ps_idx
                     )
+                    depth_map[depth_conf < 0.6] = 0.0  # Set low confidence pixels to 0
 
                     # Construct 3D Points from Depth Maps and Cameras
                     # which usually leads to more accurate 3D points than point map branch
@@ -108,11 +111,11 @@ def main():
                     )
 
                     # Get the last quartile of the 2nd axis
-                    z_value = point_map_by_unprojection[0, :, :, 2]
-                    z_first_quartile = np.quantile(z_value, 0.15)
-                    scale_factor = float(CAMERA_HEIGHT) / z_first_quartile
+                    z_value = point_map_by_unprojection[0, :, :, 2]  # S, H, W, 3
+                    scale_factor = 0.51
+
                     print(
-                        f"Scale factor: {scale_factor}, with height: {CAMERA_HEIGHT} and max depth: {point_map_by_unprojection[0, :, :, 2].min()}"
+                        f"Event Id: {event['id']} Scale factor: {scale_factor}, with height: {CAMERA_HEIGHT_Y} and max depth: {point_map_by_unprojection[0, :, :, 1].max()}"
                     )
                     print(
                         f" 0. all min and max depth values: {point_map_by_unprojection[0, :, :, 0].min()} / {point_map_by_unprojection[0, :, :, 0].max()}"
@@ -123,12 +126,17 @@ def main():
                     print(
                         f" 2. all min and max depth values: {point_map_by_unprojection[0, :, :, 2].min()} / {point_map_by_unprojection[0, :, :, 2].max()}"
                     )
-                    print(f" first quartile of z values: {z_first_quartile}")
 
-                    depth_map[depth_conf < 1.0] = 0.0  # Set low confidence pixels to 0
+                    print(
+                        f"Depth map before scaling: min and max: {depth_map.min()} / {depth_map.max()}"
+                    )
+
                     depth_map = (
                         depth_map * scale_factor
-                    )  # Scale depth map to the desired height
+                    )  # Scale depth map to the desired depth
+                    print(
+                        f"Depth map after scaling min and max in meters: {depth_map.min()} / {depth_map.max()}. Depth map shape: {depth_map.shape}"
+                    )
                     depth_map = depth_map.to(torch.float64)
 
                     intrinsic = intrinsic[-1][-1]
@@ -142,7 +150,7 @@ def main():
                         depth_map = (depth_map * 1000).astype(np.uint16)
 
                     node.send_output(
-                        output_id="depth",
+                        output_id=event["id"].replace("image", "depth"),
                         data=pa.array(depth_map.ravel()),
                         metadata={
                             "width": depth_map.shape[1],
@@ -166,7 +174,7 @@ def main():
 
                     # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                     node.send_output(
-                        output_id="image",
+                        output_id=event["id"],
                         data=pa.array(image.ravel()),
                         metadata={
                             "encoding": "rgb8",

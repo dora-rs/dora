@@ -26,7 +26,7 @@ def main():
 
     # Serial list
     serials = [device.get_info(rs.camera_info.serial_number) for device in devices]
-    if device_serial and (device_serial in serials):
+    if device_serial and (device_serial not in serials):
         raise ConnectionError(
             f"Device with serial {device_serial} not found within: {serials}.",
         )

@@ -1,3 +1,5 @@
+import time
+
 from dora import Node
 
 node = Node()
@@ -7,6 +9,7 @@ i = 0
 
 LEAD_TOPIC = "vggt_depth"
 
+current_time = time.strftime("%H:%M:%S")
 for event in node:
     if event["type"] == "INPUT":
         if LEAD_TOPIC in event["id"]:
@@ -17,11 +20,13 @@ for event in node:
             height = metadata["height"]
 
             # Save to file
-            filename = f"out/{event['id']}_{i}.{encoding}"
+            filename = f"out/{current_time}_{event['id']}_{i}.{encoding}"
             with open(filename, "wb") as f:
                 f.write(storage.to_numpy())
             for key, value in index_dict.items():
-                filename = f"out/{key}_{i}.{value['metadata']['encoding']}"
+                filename = (
+                    f"out/{current_time}_{key}_{i}.{value['metadata']['encoding']}"
+                )
                 with open(filename, "wb") as f:
                     f.write(value["value"])
             i += 1
