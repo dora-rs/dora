@@ -1,8 +1,27 @@
-use crate::{command::check::daemon_running, connect_to_coordinator, LOCALHOST};
+use super::check::daemon_running;
+use super::{default_tracing, Executable};
+use crate::{common::connect_to_coordinator, LOCALHOST};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{bail, Context, ContextCompat};
+use std::path::PathBuf;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
+
+#[derive(Debug, clap::Args)]
+/// Spawn coordinator and daemon in local mode (with default config)
+pub struct Up {
+    /// Use a custom configuration
+    #[clap(long, hide = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+    config: Option<PathBuf>,
+}
+
+impl Executable for Up {
+    fn execute(self) -> eyre::Result<()> {
+        default_tracing()?;
+        up(self.config.as_deref())
+    }
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
