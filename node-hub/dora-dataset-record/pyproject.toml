@@ -1,0 +1,31 @@
+[project]
+name = "dora-dataset-record"
+version = "0.1.0"
+authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
+description = "dora-dataset-record"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = ["dora-rs >= 0.3.9","pyarrow","lerobot"]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-dataset-record = "dora_dataset_record.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",   # pydocstyle
+  "UP"
+]
+ignore = [
+  "D100",  # Missing docstring in public module
+  "D103",  # Missing docstring in public function
+  "D104",  # Missing docstring in public package
+]
+
+[tool.uv.sources]
+lerobot = {git = "https://github.com/huggingface/lerobot.git" }
+
