@@ -20,7 +20,7 @@ nodes:
     outputs:
       - image
     env:
-      CAPTURE_PATH: "2"
+      CAPTURE_PATH: "1"
       ENCODING: "rgb8"
       IMAGE_WIDTH: "640"
       IMAGE_HEIGHT: "480"
@@ -48,7 +48,7 @@ nodes:
       PORT: "/dev/ttyACM0"
       IDS: "1,2,3,4,5,6"
 
-  - id: lerobot_recorder
+  - id: dataset_recorder
     build: pip install -e ../../node-hub/dora-dataset-record
     path: dora-dataset-record
     inputs:
@@ -59,12 +59,12 @@ nodes:
     outputs:
       - text
     env:
-      REPO_ID: "HF_username/name_of_dataset"
+      REPO_ID: "HF_username/Name_your_dataset" 
       SINGLE_TASK: "Pick up the cube and place it in the box"
-      ROBOT_TYPE: "your robot type" # e.g., "so101_follower", "ur5e" etc
+      ROBOT_TYPE: "so101_follower" # e.g., "koch", "franka", "ur5e" etc
 
       FPS: "30"
-      TOTAL_EPISODES: "5"
+      TOTAL_EPISODES: "50"
       EPISODE_DURATION_S: "60"
       RESET_DURATION_S: "15"
       
@@ -85,4 +85,4 @@ nodes:
     inputs:
       image_laptop: laptop_cam/image
       image_front: front_cam/image
-      text: lerobot_recorder/text
+      text: dataset_recorder/text

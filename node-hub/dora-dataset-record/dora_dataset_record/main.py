@@ -311,6 +311,7 @@ class DoraLeRobotRecorder:
         """Output message."""
         # Put message in queue to send
         self.message_queue.put(message)
+        print(message)
 
     def get_pending_messages(self):
         """Get all pending messages from the queue."""
