@@ -27,5 +27,4 @@ ignore = [
 ]
 
 [tool.uv.sources]
-lerobot = {git = "https://github.com/huggingface/lerobot.git" }
-
+lerobot = {git = "https://github.com/huggingface/lerobot.git", rev = "main"}
