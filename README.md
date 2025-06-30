@@ -62,6 +62,7 @@
 <details open>
 <summary><b>2025</b></summary>
 
+- \[06/25\] Add support for git based node, dora-vggt for multi-camera depth estimation, and adding robot_descriptions_py as a default way to get urdfs within dora.
 - \[05/25\] Add support for dora-pytorch-kinematics for fk and ik, dora-mediapipe for pose estimation, dora-rustypot for rust serialport read/write, points2d and points3d visualization in rerun.
 - \[04/25\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
 - \[03/25\] Add support for dora async Python.
