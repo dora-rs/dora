@@ -1,9 +1,9 @@
 [project]
 name = "dora-yolo"
-version = "0.3.11"
+version = "0.3.12-rc0"
 authors = [
-    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
-    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
+  { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+  { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
 ]
 description = "Dora Node for object detection with dora YOLOv8"
 license = { text = "MIT" }

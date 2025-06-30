@@ -1,9 +1,9 @@
 [project]
 name = "dora-pyorbbecksdk"
-version = "0.3.11"
+version = "0.3.12-rc0"
 authors = [
-    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
-    { name = "Xiang Yang", email = "Ryu-Yang@qq.com" },
+  { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+  { name = "Xiang Yang", email = "Ryu-Yang@qq.com" },
 ]
 description = "Dora Node for capturing video with PyOrbbeck SDK"
 license = { text = "MIT" }

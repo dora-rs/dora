@@ -8,7 +8,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 
 dependencies = [
-  "dora-rs == 0.3.11",
+  "dora-rs == 0.3.12-rc0",
   "numpy <=  2.0.0",
   "feetech-servo-sdk == 1.0.0",
   "pwm-position-control",

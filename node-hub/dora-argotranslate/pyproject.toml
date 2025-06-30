@@ -1,11 +1,11 @@
 [project]
 name = "dora-argotranslate"
-version = "0.3.11"
+version = "0.3.12-rc0"
 description = "Dora Node for Text translating using Argostranslate"
 authors = [
-    { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
-    { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
-    { name = "Félix Huang", email = "felix.huang.net@gmail.com" },
+  { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },
+  { name = "Enzo Le Van", email = "dev@enzo-le-van.fr" },
+  { name = "Félix Huang", email = "felix.huang.net@gmail.com" },
 ]
 license = { text = "MIT" }
 readme = "README.md"
