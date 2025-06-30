@@ -1,0 +1,88 @@
+nodes:
+  - id: laptop_cam
+    build: pip install opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/33
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: "0"
+      ENCODING: "rgb8"
+      IMAGE_WIDTH: "640"
+      IMAGE_HEIGHT: "480"
+
+  - id: front_cam
+    build: pip install opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/33
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: "2"
+      ENCODING: "rgb8"
+      IMAGE_WIDTH: "640"
+      IMAGE_HEIGHT: "480"
+
+  - id: so101
+    build: pip install -e ../../node-hub/dora-rustypot
+    path: dora-rustypot
+    inputs:
+      tick: dora/timer/millis/10
+      pose: leader_interface/pose
+    outputs:
+      - pose
+    env:
+      PORT: "/dev/ttyACM1"
+      IDS: "1,2,3,4,5,6"
+
+  - id: leader_interface
+    path: dora-rustypot
+    build: pip install -e ../../node-hub/dora-rustypot
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - pose
+    env:
+      PORT: "/dev/ttyACM0"
+      IDS: "1,2,3,4,5,6"
+
+  - id: lerobot_recorder
+    build: pip install -e ../../node-hub/dora-dataset-record
+    path: dora-dataset-record
+    inputs:
+      laptop: laptop_cam/image
+      front: front_cam/image
+      robot_state: so101/pose
+      robot_action: leader_interface/pose
+    outputs:
+      - text
+    env:
+      REPO_ID: "HF_username/name_of_dataset"
+      SINGLE_TASK: "Pick up the cube and place it in the box"
+      ROBOT_TYPE: "your robot type" # e.g., "so101_follower", "ur5e" etc
+
+      FPS: "30"
+      TOTAL_EPISODES: "5"
+      EPISODE_DURATION_S: "60"
+      RESET_DURATION_S: "15"
+      
+      CAMERA_NAMES: "laptop, front"
+      CAMERA_LAPTOP_RESOLUTION: "480,640,3"
+      CAMERA_FRONT_RESOLUTION: "480,640,3"
+      ROBOT_JOINTS: "shoulder_pan.pos,shoulder_lift.pos,elbow_flex.pos,wrist_flex.pos,wrist_roll.pos,gripper.pos"
+
+      # ROOT_PATH: "path where you want to save the dataset" # if not set, will save to ~.cache/huggingface/lerobot
+      USE_VIDEOS: "true"
+      PUSH_TO_HUB: "false"
+      PRIVATE: "false"
+      TAGS: "robotics, manipulation"
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      image_laptop: laptop_cam/image
+      image_front: front_cam/image
+      text: lerobot_recorder/text
