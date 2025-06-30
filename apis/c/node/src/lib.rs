@@ -3,13 +3,13 @@
 use arrow_array::UInt8Array;
 use dora_node_api::{arrow::array::AsArray, DoraNode, Event, EventStream};
 use eyre::Context;
-use std::{ffi::c_void, ptr, slice};
+use std::{ffi::c_void, ptr, slice, sync::{Arc, Mutex}};
 
 pub const HEADER_NODE_API: &str = include_str!("../node_api.h");
 
 struct DoraContext {
-    node: &'static mut DoraNode,
-    events: EventStream,
+    node: Arc<Mutex<DoraNode>>,
+    events: Arc<Mutex<EventStream>>,
 }
 
 /// Initializes a dora context from the environment variables that were set by
@@ -25,8 +25,10 @@ struct DoraContext {
 pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
     let context = || {
         let (node, events) = DoraNode::init_from_env()?;
-        let node = Box::leak(Box::new(node));
-        Result::<_, eyre::Report>::Ok(DoraContext { node, events })
+        Result::<_, eyre::Report>::Ok(DoraContext { 
+            node: Arc::new(Mutex::new(node)),
+            events: Arc::new(Mutex::new(events))
+        })
     };
     let context = match context().context("failed to initialize node") {
         Ok(n) => n,
@@ -49,11 +51,9 @@ pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
 /// freeing, the pointer must not be used anymore.
 #[no_mangle]
 pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
-    let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
-    // drop all fields except for `node`
-    let DoraContext { node, .. } = *context;
-    // convert the `'static` reference back to a Box, then drop it
-    let _ = unsafe { Box::from_raw(node as *const DoraNode as *mut DoraNode) };
+    // Convert the raw pointer back to a Box<DoraContext> and drop it
+    // This will properly clean up both node and events fields
+    let _: Box<DoraContext> = Box::from_raw(context.cast());
 }
 
 /// Waits for the next incoming event for the node.
@@ -71,12 +71,24 @@ pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
 /// The `context` argument must be a dora context created through
 /// [`init_dora_context_from_env`]. The context must be still valid, i.e., not
 /// freed yet.
+///
+/// ## Thread Safety
+///
+/// This function is now thread-safe. Multiple threads can call this function
+/// concurrently with the same context pointer. The underlying event stream
+/// is protected by a mutex to ensure thread-safe access.
 #[no_mangle]
 pub unsafe extern "C" fn dora_next_event(context: *mut c_void) -> *mut c_void {
-    let context: &mut DoraContext = unsafe { &mut *context.cast() };
-    match context.events.recv() {
-        Some(event) => Box::into_raw(Box::new(event)).cast(),
-        None => ptr::null_mut(),
+    let context: &DoraContext = unsafe { &*context.cast() };
+    match context.events.lock() {
+        Ok(mut events) => match events.recv() {
+            Some(event) => Box::into_raw(Box::new(event)).cast(),
+            None => ptr::null_mut(),
+        },
+        Err(err) => {
+            tracing::error!("Failed to acquire events lock: {err}");
+            ptr::null_mut()
+        }
     }
 }
 
@@ -241,6 +253,12 @@ pub unsafe extern "C" fn free_dora_event(event: *mut c_void) {
 ///   UTF8-encoded string.
 /// - The `data_ptr` and `data_len` fields must be the start pointer and length
 ///   a byte array.
+///
+/// ## Thread Safety
+///
+/// This function is now thread-safe. Multiple threads can call this function
+/// concurrently with the same context pointer. The underlying node is protected
+/// by a mutex to ensure thread-safe access.
 #[no_mangle]
 pub unsafe extern "C" fn dora_send_output(
     context: *mut c_void,
@@ -252,7 +270,7 @@ pub unsafe extern "C" fn dora_send_output(
     match unsafe { try_send_output(context, id_ptr, id_len, data_ptr, data_len) } {
         Ok(()) => 0,
         Err(err) => {
-            tracing::error!("{err:?}");
+            tracing::error!("Failed to send output: {err}");
             -1
         }
     }
@@ -265,13 +283,15 @@ unsafe fn try_send_output(
     data_ptr: *const u8,
     data_len: usize,
 ) -> eyre::Result<()> {
-    let context: &mut DoraContext = unsafe { &mut *context.cast() };
-    let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
-    let output_id = id.to_owned().into();
-    let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-    context
-        .node
-        .send_output_raw(output_id, Default::default(), data.len(), |out| {
+    let context: &DoraContext = &*context.cast();
+    let id = std::str::from_utf8(std::slice::from_raw_parts(id_ptr, id_len))
+        .wrap_err("output ID is not valid UTF-8")?;
+    let data = std::slice::from_raw_parts(data_ptr, data_len);
+
+    match context.node.lock() {
+        Ok(mut node) => node.send_output_raw(id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
-        })
+        }),
+        Err(err) => Err(eyre::eyre!("Failed to acquire node lock: {err}"))
+    }
 }
