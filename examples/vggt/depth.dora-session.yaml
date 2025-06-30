@@ -1,8 +1,0 @@
-build_id: 2b402c1e-e52e-45e9-86e5-236b33a77369
-session_id: 275de19c-e605-4865-bc5f-2f15916bade9
-git_sources: {}
-local_build:
-  node_working_dirs:
-    camera: /Users/xaviertao/Documents/work/dora/examples/vggt
-    dora-vggt: /Users/xaviertao/Documents/work/dora/examples/vggt
-    plot: /Users/xaviertao/Documents/work/dora/examples/vggt
