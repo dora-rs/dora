@@ -1,17 +1,13 @@
 [project]
 name = "gamepad"
-version = "0.1.0"
+version = "0.3.12-rc1"
 authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
 description = "gamepad"
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
 
-dependencies = [
-    "dora-rs >= 0.3.6",
-    "pygame >= 2.5.0",
-    "pyarrow >= 14.0.1"
-]
+dependencies = ["dora-rs >= 0.3.6", "pygame >= 2.5.0", "pyarrow >= 14.0.1"]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]

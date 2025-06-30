@@ -1,6 +1,6 @@
 [project]
 name = "dora-gradio"
-version = "0.2.0"
+version = "0.3.12-rc1"
 authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
 description = "dora-gradio"
 license = { text = "MIT" }
@@ -14,7 +14,7 @@ dependencies = [
     "numpy >= 1.26.0",
     "opencv-python >= 4.8.0",
     "fastrtc >= 0.0.16",
-    "librosa >= 0.10.1"
+    "librosa >= 0.10.1",
 ]
 
 [dependency-groups]
@@ -24,4 +24,4 @@ dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 dora-gradio = "dora_gradio.main:main"
 
 [tool.ruff]
-ignore = ["F841"]  # Ignore unused variable warnings
+ignore = ["F841"] # Ignore unused variable warnings

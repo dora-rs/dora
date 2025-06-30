@@ -1,6 +1,6 @@
 [project]
 name = "dora-cotracker"
-version = "0.1.0"
+version = "0.3.12-rc1"
 authors = [{ name = "Shashwat Patil", email = "shashwatpatil974@gmail.com" }]
 description = "A Dora node implementing real-time object tracking using Facebook's CoTracker model"
 license = "CC-BY-1.0"
