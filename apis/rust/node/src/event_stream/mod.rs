@@ -11,7 +11,7 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, Timestamped},
     DataflowId,
 };
-pub use event::{Event, MappedInputData, RawData, StopCause};
+pub use event::{Event, StopCause};
 use futures::{
     future::{select, Either},
     Stream, StreamExt,
@@ -19,17 +19,18 @@ use futures::{
 use futures_timer::Delay;
 use scheduler::{Scheduler, NON_INPUT_EVENT};
 
-use self::{
-    event::SharedMemoryData,
-    thread::{EventItem, EventStreamThreadHandle},
+use self::thread::{EventItem, EventStreamThreadHandle};
+use crate::{
+    daemon_connection::DaemonChannel,
+    event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
-use crate::daemon_connection::DaemonChannel;
 use dora_core::{
     config::{Input, NodeId},
     uhlc,
 };
 use eyre::{eyre, Context};
 
+mod data_conversion;
 mod event;
 pub mod merged;
 mod scheduler;
