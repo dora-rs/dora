@@ -1,7 +1,7 @@
 """TODO: Add docstring."""
-import os
 import io
-from collections import deque as Deque
+import os
+from collections import deque
 
 import cv2
 import numpy as np
@@ -30,7 +30,7 @@ model.eval()
 def main():
     """TODO: Add docstring."""
     node = Node()
-    raw_images = Deque(maxlen=VGGT_NUM_IMAGES)
+    raw_images = deque(maxlen=VGGT_NUM_IMAGES)
 
     for event in node:
         if event["type"] == "INPUT":
@@ -90,7 +90,7 @@ def main():
                     pose_enc = model.camera_head(aggregated_tokens_list)[-1]
                     # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
                     extrinsic, intrinsic = pose_encoding_to_extri_intri(
-                        pose_enc, images.shape[-2:]
+                        pose_enc, images.shape[-2:],
                     )
                     intrinsic = intrinsic[-1][-1]
                     f_0 = intrinsic[0, 0]
@@ -100,7 +100,7 @@ def main():
 
                     # Predict Depth Maps
                     depth_map, depth_conf = model.depth_head(
-                        aggregated_tokens_list, images, ps_idx
+                        aggregated_tokens_list, images, ps_idx,
                     )
                     depth_map[depth_conf < 1.0] = 0.0  # Set low confidence pixels to 0
                     depth_map = depth_map.to(torch.float64)
