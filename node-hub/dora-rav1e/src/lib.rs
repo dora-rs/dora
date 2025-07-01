@@ -336,7 +336,7 @@ pub fn lib_main() -> Result<()> {
                     if let Some(buffer) = data.as_primitive_opt::<UInt16Type>() {
                         let mut buffer = buffer.values().to_vec();
                         if std::env::var("FILL_ZEROS")
-                            .map(|s| s != "false")
+                            .map(|s| s.to_lowercase() != "false")
                             .unwrap_or(true)
                         {
                             fill_zeros_toward_center_y_plane_in_place(&mut buffer, width, height);
@@ -370,7 +370,28 @@ pub fn lib_main() -> Result<()> {
                                 let data = pkt.data;
                                 match output_encoding.as_str() {
                                     "avif" => {
-                                        warn!("avif encoding not supported for mono16");
+                                        metadata.parameters.insert(
+                                            "encoding".to_string(),
+                                            Parameter::String("avif".to_string()),
+                                        );
+
+                                        let data = avif_serialize::Aviffy::new()
+                                            .full_color_range(false)
+                                            .set_seq_profile(0)
+                                            .set_monochrome(true)
+                                            .to_vec(
+                                                &data,
+                                                None,
+                                                enc.width as u32,
+                                                enc.height as u32,
+                                                enc.bit_depth as u8,
+                                            );
+
+                                        let arrow = data.into_arrow();
+
+                                        node.send_output(id, metadata.parameters.clone(), arrow)
+                                            .context("could not send output")
+                                            .unwrap();
                                     }
                                     _ => {
                                         metadata.parameters.insert(
