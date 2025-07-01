@@ -42,6 +42,20 @@ pub mod arrow_utils;
 mod control_channel;
 mod drop_stream;
 
+/// The data size threshold at which we start using shared memory.
+///
+/// Shared memory works by sharing memory pages. This means that the smallest
+/// memory region that can be shared is one memory page, which is typically
+/// 4KiB.
+///
+/// Using shared memory for messages smaller than the page size still requires
+/// sharing a full page, so we have some memory overhead. We also have some
+/// performance overhead because we need to issue multiple syscalls. For small
+/// messages it is faster to send them over a traditional TCP stream (or similar).
+///
+/// This hardcoded threshold value specifies which messages are sent through
+/// shared memory. Messages that are smaller than this threshold are sent through
+/// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 enum TokioRuntime {
