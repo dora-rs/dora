@@ -20,7 +20,7 @@ nodes:
       - cmd_vel
     env:
       MODEL_NAME: "so_arm101_description"
-      END_EFFECTOR_LINK: "gripper"  
+      END_EFFECTOR_LINK: "gripper"
       TRANSFORM: "0. 0. 0. 1. 0. 0. 0."
       POSITION_TOLERANCE: 0.01
       ROTATION_TOLERANCE: 0.03
@@ -37,12 +37,12 @@ nodes:
       MAX_LINEAR_SPEED: 0.01
       MAX_ANGULAR_SPEED: 0.05
 
-  # comment below path if you don't want to visualize the arm in rerun 
+  # comment below path if you don't want to visualize the arm in rerun
   - id: plot
     build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
-      jointstate_so101_new_calib: pytorch_kinematics/cmd_vel
+      jointstate_so101_new_calib: so101/pose
     env:
       so101_new_calib_urdf: "so_arm101_description"
       so101_new_calib_transform: "0. 0. 0. 1. 0. 0. 0."
