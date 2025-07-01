@@ -2,9 +2,11 @@ use std::{ptr::NonNull, sync::Arc};
 
 use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::IntoArrow;
-use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
+use dora_message::metadata::ArrowTypeInfo;
 use eyre::Context;
 use shared_memory_server::{Shmem, ShmemConf};
+
+use crate::arrow_utils::buffer_into_arrow_array;
 
 pub enum RawData {
     Empty,
@@ -37,47 +39,15 @@ impl RawData {
     }
 }
 
-pub struct SharedMemoryData {
-    pub data: MappedInputData,
-    pub _drop: flume::Sender<()>,
-}
-
-fn buffer_into_arrow_array(
-    raw_buffer: &arrow::buffer::Buffer,
-    type_info: &ArrowTypeInfo,
-) -> eyre::Result<arrow::array::ArrayData> {
-    if raw_buffer.is_empty() {
-        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
-    }
-
-    let mut buffers = Vec::new();
-    for BufferOffset { offset, len } in &type_info.buffer_offsets {
-        buffers.push(raw_buffer.slice_with_length(*offset, *len));
-    }
-
-    let mut child_data = Vec::new();
-    for child_type_info in &type_info.child_data {
-        child_data.push(buffer_into_arrow_array(raw_buffer, child_type_info)?)
-    }
-
-    arrow::array::ArrayData::try_new(
-        type_info.data_type.clone(),
-        type_info.len,
-        type_info
-            .validity
-            .clone()
-            .map(arrow::buffer::Buffer::from_vec),
-        type_info.offset,
-        buffers,
-        child_data,
-    )
-    .context("Error creating Arrow array")
-}
-
 impl std::fmt::Debug for RawData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Data").finish_non_exhaustive()
     }
+}
+
+pub struct SharedMemoryData {
+    pub data: MappedInputData,
+    pub _drop: flume::Sender<()>,
 }
 
 pub struct MappedInputData {
