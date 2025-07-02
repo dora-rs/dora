@@ -12027,7 +12027,7 @@ dependencies = [
  "hyper 1.6.0",
  "indicatif",
  "log",
- "quick-xml 0.37.2",
+ "quick-xml 0.37.5",
  "regex",
  "reqwest",
  "self-replace",
