@@ -8,12 +8,16 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
 use std::env::var;
+use std::vec;
 
 use dora_node_api::arrow::array::AsArray;
 use dora_node_api::arrow::datatypes::{UInt16Type, UInt8Type};
 use dora_node_api::dora_core::config::DataId;
-use dora_node_api::{DoraNode, Event, IntoArrow, Metadata, Parameter};
+use dora_node_api::{DoraNode, Event, IntoArrow, Metadata, MetadataParameters, Parameter};
 use eyre::{Context as EyreContext, Result};
+use little_exif::exif_tag::ExifTag;
+use little_exif::metadata::Metadata as ExifMetadata;
+use little_exif::rational::uR64;
 use log::warn;
 use rav1e::color::{ColorDescription, MatrixCoefficients};
 // Encode the same tiny blank frame 30 times
@@ -54,6 +58,25 @@ pub fn fill_zeros_toward_center_y_plane_in_place(y: &mut [u16], width: usize, he
             }
         }
     }
+}
+
+fn metadata_to_exif(metadata: &MetadataParameters) -> Result<Vec<u8>> {
+    let mut metadata_exif = ExifMetadata::new();
+    metadata_exif.set_tag(ExifTag::Software("dora-rs".to_string()));
+    if let Some(Parameter::ListInt(focal_lengths)) = metadata.get("focal") {
+        metadata_exif.set_tag(ExifTag::FocalLength(
+            focal_lengths
+                .iter()
+                .map(|&f| uR64 {
+                    nominator: f as u32,
+                    denominator: 1,
+                })
+                .collect::<Vec<_>>(),
+        ));
+    }
+
+    let vector = metadata_exif.as_u8_vec(little_exif::filetype::FileExtension::HEIF)?;
+    return Ok(vector);
 }
 
 fn bgr8_to_yuv420(bgr_data: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
@@ -159,9 +182,18 @@ fn send_yuv(
                 } else {
                     MatrixCoefficients::BT709
                 };
-                let data = avif_serialize::Aviffy::new()
+                let mut aviffy = avif_serialize::Aviffy::new();
+                aviffy
                     .set_chroma_subsampling((true, true))
-                    .set_seq_profile(0)
+                    .set_seq_profile(0);
+
+                let aviffy = if let Ok(exif) = metadata_to_exif(&metadata.parameters) {
+                    aviffy.set_exif(exif)
+                } else {
+                    &mut aviffy
+                };
+
+                let data = aviffy
                     .matrix_coefficients(match matrix_coefficients {
                         MatrixCoefficients::Identity => {
                             avif_serialize::constants::MatrixCoefficients::Rgb
@@ -375,17 +407,27 @@ pub fn lib_main() -> Result<()> {
                                             Parameter::String("avif".to_string()),
                                         );
 
-                                        let data = avif_serialize::Aviffy::new()
+                                        let mut aviffy = avif_serialize::Aviffy::new();
+                                        aviffy
                                             .full_color_range(false)
                                             .set_seq_profile(0)
-                                            .set_monochrome(true)
-                                            .to_vec(
-                                                &data,
-                                                None,
-                                                enc.width as u32,
-                                                enc.height as u32,
-                                                enc.bit_depth as u8,
-                                            );
+                                            .set_monochrome(true);
+
+                                        let aviffy = if let Ok(exif) =
+                                            metadata_to_exif(&metadata.parameters)
+                                        {
+                                            aviffy.set_exif(exif)
+                                        } else {
+                                            &mut aviffy
+                                        };
+
+                                        let data = aviffy.to_vec(
+                                            &data,
+                                            None,
+                                            enc.width as u32,
+                                            enc.height as u32,
+                                            enc.bit_depth as u8,
+                                        );
 
                                         let arrow = data.into_arrow();
 
