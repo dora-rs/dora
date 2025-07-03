@@ -193,8 +193,6 @@ jobs:
       matrix:
         platform:
           - runner: macos-13
-            target: x86_64
-          - runner: macos-13
             target: aarch64
         repository:
           - path: apis/python/node
