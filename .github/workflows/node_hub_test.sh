@@ -61,14 +61,6 @@ else
             maturin publish --skip-existing
         fi
         
-        # x86_64-apple-darwin
-        rustup target add x86_64-apple-darwin
-        maturin build --target x86_64-apple-darwin --zig  --release
-        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
-        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
-            maturin publish --target x86_64-apple-darwin --skip-existing --zig
-        fi
-
     elif [[ "$(uname)" = "Linux" ]]; then
         if [ -f "$dir/Cargo.toml" ]; then
             echo "Running build and tests for Rust project in $dir..."
