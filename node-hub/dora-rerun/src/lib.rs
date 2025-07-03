@@ -12,6 +12,7 @@ use dora_node_api::{
 };
 use eyre::{bail, eyre, Context, Result};
 
+use pinyin::ToPinyin;
 use rerun::{
     components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
 };
@@ -317,7 +318,24 @@ pub fn lib_main() -> Result<()> {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {
                     if let Some(str) = string {
-                        rec.log(id.as_str(), &rerun::TextLog::new(str))
+                        let chars = str.chars().collect::<Vec<_>>();
+                        let mut new_string = vec![];
+                        for char in chars {
+                            // Check if the character is a Chinese character
+                            if char.is_ascii() || char.is_control() {
+                                new_string.push(char);
+                                continue;
+                            }
+                            // If it is a Chinese character, replace it with its pinyin
+                            if let Some(pinyin) = char.to_pinyin() {
+                                for char in pinyin.with_tone().chars() {
+                                    new_string.push(char);
+                                }
+                                new_string.push(' ');
+                            }
+                        }
+                        let pinyined_str = new_string.iter().collect::<String>();
+                        rec.log(id.as_str(), &rerun::TextLog::new(pinyined_str))
                             .wrap_err("Could not log text")
                     } else {
                         Ok(())
