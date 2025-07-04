@@ -1165,8 +1165,9 @@ dependencies = [
 
 [[package]]
 name = "avif-serialize"
-version = "0.8.4"
-source = "git+https://github.com/haixuantao/avif-serialize#667a6bb006f14adc5a217c03eb2d5af49e7ac05c"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ea8ef51aced2b9191c08197f55450d830876d9933f8f48a429b354f1d496b42"
 dependencies = [
  "arrayvec",
 ]
@@ -6395,9 +6396,9 @@ checksum = "b4ce301924b7887e9d637144fdade93f9dfff9b60981d4ac161db09720d39aa5"
 
 [[package]]
 name = "little_exif"
-version = "0.6.9-beta.1"
+version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d1ec10e5465734b7d52c0acf732cf606f3129af347dff310d27ce4ccfe7d07f"
+checksum = "9ebaa2b90127fb33dcf2ec1f5be8b496e92d5d1736789decca8eb2798c52f2e7"
 dependencies = [
  "crc",
  "log",
