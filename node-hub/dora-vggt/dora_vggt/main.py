@@ -146,6 +146,14 @@ def main():
                             "encoding": "rgb8",
                             "width": image.shape[1],
                             "height": image.shape[0],
+                            "focal": [
+                                int(f_0),
+                                int(f_1),
+                            ],
+                            "resolution": [
+                                int(r_0),
+                                int(r_1),
+                            ],
                         },
                     )
 
