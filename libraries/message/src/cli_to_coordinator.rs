@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::{
     common::GitSource,
     descriptor::Descriptor,
-    id::{NodeId, OperatorId},
+    id::{DataId, NodeId, OperatorId},
     BuildId, SessionId,
 };
 
@@ -66,7 +66,14 @@ pub enum ControlRequest {
     Logs {
         uuid: Option<Uuid>,
         name: Option<String>,
-        node: String,
+        node: NodeId,
+    },
+    Inspect {
+        uuid: Option<Uuid>,
+        name: Option<String>,
+        outputs: Vec<(NodeId, DataId)>,
+        inspector_id: Uuid,
+        stop: bool,
     },
     Destroy,
     List,

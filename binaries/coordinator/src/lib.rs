@@ -20,6 +20,7 @@ use dora_message::{
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
     descriptor::{Descriptor, ResolvedNode},
+    id::DataId,
     BuildId, DataflowId, SessionId,
 };
 use eyre::{bail, eyre, ContextCompat, Result, WrapErr};
@@ -640,12 +641,48 @@ async fn start_inner(
                                         &running_dataflows,
                                         &archived_dataflows,
                                         uuid,
-                                        node.into(),
+                                        node,
                                         &mut daemon_connections,
                                         clock.new_timestamp(),
                                     )
                                     .await
                                     .map(ControlRequestReply::Logs);
+                                    let _ = reply_sender.send(reply);
+                                }
+                                Err(err) => {
+                                    let _ = reply_sender.send(Err(err));
+                                }
+                            }
+                        }
+                        ControlRequest::Inspect {
+                            uuid,
+                            name,
+                            outputs,
+                            inspector_id,
+                            stop,
+                        } => {
+                            let dataflow_uuid = if let Some(uuid) = uuid {
+                                Ok(uuid)
+                            } else if let Some(name) = name {
+                                resolve_name(name, &running_dataflows, &archived_dataflows)
+                            } else {
+                                Err(eyre!("No uuid"))
+                            };
+
+                            match dataflow_uuid {
+                                Ok(uuid) => {
+                                    let reply = inspect_outputs(
+                                        &running_dataflows,
+                                        &archived_dataflows,
+                                        uuid,
+                                        outputs,
+                                        inspector_id,
+                                        stop,
+                                        &mut daemon_connections,
+                                        clock.new_timestamp(),
+                                    )
+                                    .await
+                                    .map(|_| ControlRequestReply::Inspect(uuid));
                                     let _ = reply_sender.send(reply);
                                 }
                                 Err(err) => {
@@ -1175,33 +1212,15 @@ async fn reload_dataflow(
     Ok(())
 }
 
-async fn retrieve_logs(
-    running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+fn daemon_connection_by_node_id<'conn>(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
     dataflow_id: Uuid,
-    node_id: NodeId,
-    daemon_connections: &mut DaemonConnections,
-    timestamp: uhlc::Timestamp,
-) -> eyre::Result<Vec<u8>> {
-    let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
-        dataflow.nodes.clone()
-    } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
-        dataflow.nodes.clone()
-    } else {
-        bail!("No dataflow found with UUID `{dataflow_id}`")
-    };
-
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::Logs {
-            dataflow_id,
-            node_id: node_id.clone(),
-        },
-        timestamp,
-    })?;
-
+    node_id: &NodeId,
+    daemon_connections: &'conn mut DaemonConnections,
+) -> eyre::Result<&'conn mut DaemonConnection> {
     let machine_ids: Vec<Option<String>> = nodes
         .values()
-        .filter(|node| node.id == node_id)
+        .filter(|node| node.id == *node_id)
         .map(|node| node.deploy.as_ref().and_then(|d| d.machine.clone()))
         .collect();
 
@@ -1232,6 +1251,35 @@ async fn retrieve_logs(
     let daemon_connection = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?;
+    Ok(daemon_connection)
+}
+
+async fn retrieve_logs(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<Vec<u8>> {
+    let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
+        dataflow.nodes.clone()
+    } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
+        dataflow.nodes.clone()
+    } else {
+        bail!("No dataflow found with UUID `{dataflow_id}`")
+    };
+
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::Logs {
+            dataflow_id,
+            node_id: node_id.clone(),
+        },
+        timestamp,
+    })?;
+
+    let daemon_connection =
+        daemon_connection_by_node_id(&nodes, dataflow_id, &node_id, daemon_connections)?;
     tcp_send(&mut daemon_connection.stream, &message)
         .await
         .wrap_err("failed to send logs message to daemon")?;
@@ -1249,6 +1297,55 @@ async fn retrieve_logs(
     tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 
     reply_logs.map_err(|err| eyre!(err))
+}
+
+async fn inspect_outputs(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    dataflow_id: Uuid,
+    outputs: Vec<(NodeId, DataId)>,
+    inspector_id: Uuid,
+    stop: bool,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<()> {
+    let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
+        dataflow.nodes.clone()
+    } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
+        dataflow.nodes.clone()
+    } else {
+        bail!("No dataflow found with UUID `{dataflow_id}`")
+    };
+
+    for (node_id, data_ids) in &outputs.iter().chunk_by(|(node, _)| node) {
+        let daemon_connection =
+            daemon_connection_by_node_id(&nodes, dataflow_id, node_id, daemon_connections)?;
+        let message = serde_json::to_vec(&Timestamped {
+            inner: DaemonCoordinatorEvent::Inspect {
+                dataflow_id,
+                output_ids: data_ids.cloned().collect(),
+                inspector_id,
+                stop,
+            },
+            timestamp,
+        })?;
+        tcp_send(&mut daemon_connection.stream, &message)
+            .await
+            .wrap_err("failed to send inspect message to daemon")?;
+
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
+            .await
+            .wrap_err("failed to retrieve inspect reply from daemon")?;
+        let reply_inspect = match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize inspect reply from daemon")?
+        {
+            DaemonCoordinatorReply::InspectResult(result) => result,
+            other => bail!("unexpected reply after sending inspect: {other:?}"),
+        };
+        reply_inspect.map_err(|err| eyre!(err))?;
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

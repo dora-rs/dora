@@ -17,7 +17,7 @@ pub fn logs(
                 &serde_json::to_vec(&ControlRequest::Logs {
                     uuid,
                     name,
-                    node: node.clone(),
+                    node: node.clone().into(),
                 })
                 .wrap_err("")?,
             )

@@ -2,9 +2,10 @@ use colored::Colorize;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_coordinator::Event;
 use dora_core::{
+    config::InputMapping,
     descriptor::{source_is_url, Descriptor, DescriptorExt},
     topics::{
-        DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT,
+        open_zenoh_session, DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT,
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
     },
 };
@@ -13,20 +14,26 @@ use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult, DataflowStatus},
+    metadata::{ArrowTypeInfo, BufferOffset},
 };
 #[cfg(feature = "tracing")]
 use dora_tracing::TracingBuilder;
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
-use std::{env::current_dir, io::Write, net::SocketAddr};
+use std::{
+    env::current_dir,
+    io::Write,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
     time::Duration,
 };
 use tabwriter::TabWriter;
-use tokio::runtime::Builder;
+use tokio::{runtime::Builder, task::JoinSet};
 use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
 
@@ -194,6 +201,21 @@ enum Command {
         /// Show logs for the given node
         #[clap(value_name = "NAME")]
         node: String,
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+    },
+    /// Inspect data in terminal.
+    Inspect {
+        /// Identifier of the dataflow
+        #[clap(long, short, value_name = "UUID_OR_NAME")]
+        dataflow: Option<String>,
+        /// Data to inspect, e.g. `node_id/output_id`
+        #[clap(value_name = "DATA")]
+        data: Vec<String>,
         /// Address of the dora coordinator
         #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
         coordinator_addr: IpAddr,
@@ -405,22 +427,111 @@ fn run_cli(args: Args) -> eyre::Result<()> {
         } => {
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-            let list = query_running_dataflows(&mut *session)
-                .wrap_err("failed to query running dataflows")?;
-            if let Some(dataflow) = dataflow {
-                let uuid = Uuid::parse_str(&dataflow).ok();
-                let name = if uuid.is_some() { None } else { Some(dataflow) };
-                command::logs(&mut *session, uuid, name, node)?
-            } else {
-                let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> =
-                    list.get_active();
-                let uuid = match &active[..] {
-                    [] => bail!("No dataflows are running"),
-                    [uuid] => uuid.clone(),
-                    _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
-                };
-                command::logs(&mut *session, Some(uuid.uuid), None, node)?
+            let (uuid, name) = resolve_dataflow_identifier(&mut *session, dataflow.as_deref())?;
+            command::logs(&mut *session, uuid, name, node)?
+        }
+        Command::Inspect {
+            dataflow,
+            data,
+            coordinator_addr,
+            coordinator_port,
+        } => {
+            if data.is_empty() {
+                bail!("No data to inspect provided. Please provide at least one `node_id/output_id` pair.");
             }
+            let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+                .wrap_err("failed to connect to dora coordinator")?;
+            let (uuid, name) = resolve_dataflow_identifier(&mut *session, dataflow.as_deref())?;
+            let data = data
+                .into_iter()
+                .map(|s| {
+                    match serde_json::from_value::<InputMapping>(serde_json::Value::String(
+                        s.clone(),
+                    )) {
+                        Ok(InputMapping::User(user)) => Ok((user.source, user.output)),
+                        Ok(_) => {
+                            bail!("Reserved input mapping cannot be inspected")
+                        }
+                        Err(e) => bail!("Invalid output id `{s}`: {e}"),
+                    }
+                })
+                .collect::<eyre::Result<Vec<_>>>()?;
+            let inspector_id = Uuid::new_v4();
+            let dataflow_id = command::inspect::toggle_inspect(
+                &mut *session,
+                uuid,
+                name.clone(),
+                data.clone(),
+                inspector_id,
+                false,
+            )?;
+
+            let outputs = data.clone();
+
+            let finalizer = move || {
+                eprintln!("\nStopping inspection...");
+                if let Err(err) = command::inspect::toggle_inspect(
+                    &mut *session,
+                    uuid,
+                    name,
+                    data,
+                    inspector_id,
+                    true,
+                ) {
+                    eprintln!("Error while stopping inspection: {err}");
+                }
+            };
+            let finalizer = Arc::new(Mutex::new(Some(finalizer)));
+            ctrlc::set_handler({
+                let finalizer = finalizer.clone();
+                move || {
+                    if let Some(finalizer) = finalizer.lock().unwrap().take() {
+                        finalizer();
+                    }
+                    std::process::exit(0);
+                }
+            })
+            .expect("failed to set ctrlc handler");
+
+            let rt = Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("tokio runtime failed")?;
+            let result = rt.block_on(async move {
+                let zenoh_session = open_zenoh_session(Some(coordinator_addr))
+                    .await
+                    .context("failed to open zenoh session")?;
+
+                let mut join_set = JoinSet::new();
+                for (node_id, output_id) in outputs {
+                    join_set.spawn(command::inspect::log_to_terminal(
+                        zenoh_session.clone(),
+                        dataflow_id,
+                        node_id,
+                        output_id,
+                    ));
+                }
+                while let Some(res) = join_set.join_next().await {
+                    match res {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            eprintln!("Error while inspecting output: {e}");
+                        }
+                        Err(e) => {
+                            eprintln!("Join error: {e}");
+                        }
+                    }
+                }
+
+                Result::<_, eyre::Error>::Ok(())
+            });
+
+            if let Err(e) = result {
+                eprintln!("Error while inspecting data: {e}");
+            }
+            if let Some(finalizer) = finalizer.lock().unwrap().take() {
+                finalizer();
+            };
         }
         Command::Start {
             dataflow,
@@ -652,6 +763,63 @@ fn run_cli(args: Args) -> eyre::Result<()> {
     };
 
     Ok(())
+}
+
+fn buffer_into_arrow_array(
+    raw_buffer: &arrow::buffer::Buffer,
+    type_info: &ArrowTypeInfo,
+) -> eyre::Result<arrow::array::ArrayData> {
+    if raw_buffer.is_empty() {
+        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
+    }
+
+    let mut buffers = Vec::new();
+    for BufferOffset { offset, len } in &type_info.buffer_offsets {
+        buffers.push(raw_buffer.slice_with_length(*offset, *len));
+    }
+
+    let mut child_data = Vec::new();
+    for child_type_info in &type_info.child_data {
+        child_data.push(buffer_into_arrow_array(raw_buffer, child_type_info)?)
+    }
+
+    arrow::array::ArrayData::try_new(
+        type_info.data_type.clone(),
+        type_info.len,
+        type_info
+            .validity
+            .clone()
+            .map(arrow::buffer::Buffer::from_vec),
+        type_info.offset,
+        buffers,
+        child_data,
+    )
+    .context("Error creating Arrow array")
+}
+
+fn resolve_dataflow_identifier(
+    session: &mut TcpRequestReplyConnection,
+    dataflow: Option<&str>,
+) -> eyre::Result<(Option<Uuid>, Option<String>)> {
+    if let Some(dataflow) = dataflow {
+        let uuid = Uuid::parse_str(dataflow).ok();
+        let name = if uuid.is_some() {
+            None
+        } else {
+            Some(dataflow.to_owned())
+        };
+        Ok((uuid, name))
+    } else {
+        let list =
+            query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+        let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
+        let uuid = match &active[..] {
+            [] => bail!("No dataflows are running"),
+            [uuid] => uuid.clone(),
+            _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
+        };
+        Ok((Some(uuid.uuid), None))
+    }
 }
 
 fn stop_dataflow_interactive(
