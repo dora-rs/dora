@@ -25,8 +25,8 @@ pyo3 = { workspace = true, features = [
     "eyre",
     "generate-import-lib",
 ], optional = true }
-avif-serialize = { git = "https://github.com/haixuantao/avif-serialize" }
-little_exif = { version = "0.6.9-beta.1" }
+avif-serialize = { version = "0.8.5" }
+little_exif = { version = "0.6.9" }
 
 
 [lib]

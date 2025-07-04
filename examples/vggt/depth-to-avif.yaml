@@ -22,7 +22,7 @@ nodes:
 
   - id: rav1e-depth
     path: dora-rav1e
-    build: cargo build -p dora-rav1e --release
+    build: pip install -e ../../node-hub/dora-rav1e
     inputs:
       depth: dora-vggt/depth
     outputs:
@@ -32,7 +32,7 @@ nodes:
 
   - id: rav1e-image
     path: dora-rav1e
-    build: cargo build -p dora-rav1e --release
+    build: pip install -e ../../node-hub/dora-rav1e
     inputs:
       image: dora-vggt/image
     outputs:
