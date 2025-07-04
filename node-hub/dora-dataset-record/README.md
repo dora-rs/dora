@@ -19,7 +19,7 @@ uv pip install -e .
 
 ### 2. Usage Guide
 
-Create a dataflow file, see `examples/lerobot-dataset-record/dataflow.yml`:
+Create a dataflow file, see `examples/lerobot-dataset-record/dataset_record.yml`:
 
 ```yaml
 nodes:
@@ -71,8 +71,8 @@ nodes:
 ### 3. Start Recording the dataset
 
 ```bash
-dora build dataflow.yml
-dora run dataflow.yml
+dora build dataset_record.yml
+dora run dataset_record.yml
 ```
 
 The node will send instructions on dora-rerun, about episode starting, reset time, Saving episodes etc.

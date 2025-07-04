@@ -134,4 +134,58 @@ python lerobot/scripts/train.py \
 ```
 
 You can monitor your training progress on wandb
-> For more details regarding training check [lerobot](https://huggingface.co/docs/lerobot/en/il_robots#train-a-policy) guide on Imitation learning for SO101 and testing your policy
+> For more details regarding training check [lerobot](https://huggingface.co/docs/lerobot/en/il_robots#train-a-policy) guide on Imitation learning for SO101
+
+## Policy Inference and Testing
+
+After training your policy, you can test it on your SO101 arm using the `policy_inference.yml`.
+
+Edit the `policy_inference.yml` file and update the following settings based on your hardware setup:
+
+#### 1. Camera Configuration
+
+Update the camera device IDs to match your setup (same as recording):
+
+```yaml
+# Laptop camera
+CAPTURE_PATH: "0"  # Usually 0 for built-in laptop camera
+
+# External camera  
+CAPTURE_PATH: "1"  # Change this to your external camera device ID
+```
+
+#### 2. SO101 Robot Port
+
+Set the correct USB port for your follower SO101 arm:
+
+```yaml
+PORT: "/dev/ttyACM1"  # Update this to match your follower robot port
+```
+
+#### 3. Model Configuration
+
+Update the path to your trained model and task description:
+
+```yaml
+MODEL_PATH: "./outputs/train/act_so101_test/checkpoints/last/pretrained_model"  # Path to your trained model
+TASK_DESCRIPTION: "Pick up the red cube and place it in the blue box"
+```
+
+#### 4. Camera Settings
+
+Ensure camera settings match your recording configuration:
+
+```yaml
+CAMERA_NAMES: "laptop, front"  # Must match training setup
+CAMERA_LAPTOP_RESOLUTION: "480,640,3"  # Must match training
+CAMERA_FRONT_RESOLUTION: "480,640,3"   # Must match training
+```
+
+### Start Policy Inference
+
+Once you've updated the configuration:
+
+```bash
+dora build policy_inference.yml
+dora run policy_inference.yml
+```
