@@ -1,20 +1,21 @@
 """TODO."""
 
-from dora import Node
-import pyarrow as pa
 import os
-import time
-import numpy as np
-import threading
 import queue
-import cv2
-from typing import Any
+import threading
+import time
 from pathlib import Path
+from typing import Any
 
+import cv2
+import numpy as np
+import pyarrow as pa
+from dora import Node
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.common.policies.factory import get_policy_class
-from lerobot.common.utils.control_utils import predict_action
-from lerobot.common.utils.utils import get_safe_torch_device
+from lerobot.policies.factory import get_policy_class
+from lerobot.utils.control_utils import predict_action
+from lerobot.utils.utils import get_safe_torch_device
+
 
 class DoraPolicyInference:
     """Policy inference node for LeRobot policies."""
@@ -25,10 +26,10 @@ class DoraPolicyInference:
 
         self.data_buffer = {}
         self.buffer_lock = threading.Lock()
-        self.cameras = self._parse_cameras()        
+        self.cameras = self._parse_cameras()
         self.task_description = os.getenv("TASK_DESCRIPTION", "")
 
-        self.policy = None        
+        self.policy = None
         self.inference_fps = int(os.getenv("INFERENCE_FPS", "30"))
         self.last_inference_time = None
         self.inference_interval = 1.0 / self.inference_fps
@@ -40,12 +41,14 @@ class DoraPolicyInference:
     def _parse_cameras(self) -> dict:
         """Parse camera configuration from environment variables."""
         camera_names_str = os.getenv("CAMERA_NAMES", "laptop,front")
-        camera_names = [name.strip() for name in camera_names_str.split(',')]
+        camera_names = [name.strip() for name in camera_names_str.split(",")]
 
         cameras = {}
         for camera_name in camera_names:
-            resolution = os.getenv(f"CAMERA_{camera_name.upper()}_RESOLUTION", "480,640,3")
-            dims = [int(d.strip()) for d in resolution.split(',')]
+            resolution = os.getenv(
+                f"CAMERA_{camera_name.upper()}_RESOLUTION", "480,640,3"
+            )
+            dims = [int(d.strip()) for d in resolution.split(",")]
             cameras[camera_name] = dims
 
         return cameras
@@ -57,14 +60,13 @@ class DoraPolicyInference:
             raise ValueError("MODEL_PATH environment variable must be set correctly.")
 
         config = PreTrainedConfig.from_pretrained(model_path)
-        self.device = get_safe_torch_device(config.device) # get device automatically 
+        self.device = get_safe_torch_device(config.device)  # get device automatically
         config.device = self.device.type
 
         # Get the policy class and load pretrained weights
         policy_cls = get_policy_class(config.type)
         self.policy = policy_cls.from_pretrained(
-            pretrained_name_or_path=model_path,
-            config=config
+            pretrained_name_or_path=model_path, config=config
         )
 
         self.policy.eval()  # Set to evaluation mode
@@ -76,15 +78,19 @@ class DoraPolicyInference:
     def _start_timer(self):
         """Start the inference timing thread."""
         self.stop_timer = False
-        self.inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self.inference_thread = threading.Thread(
+            target=self._inference_loop, daemon=True
+        )
         self.inference_thread.start()
-    
+
     def _inference_loop(self):
         """Inference loop."""
         while not self.stop_timer and not self.shutdown:
             current_time = time.time()
-            if (self.last_inference_time is None or 
-                current_time - self.last_inference_time >= self.inference_interval):
+            if (
+                self.last_inference_time is None
+                or current_time - self.last_inference_time >= self.inference_interval
+            ):
                 self._run_inference()
                 self.last_inference_time = current_time
 
@@ -104,18 +110,24 @@ class DoraPolicyInference:
                 if camera_name in self.data_buffer:
                     image = self._convert_camera_data(
                         self.data_buffer[camera_name]["data"],
-                        self.data_buffer[camera_name]["metadata"])
+                        self.data_buffer[camera_name]["metadata"],
+                    )
                     observation[f"observation.images.{camera_name}"] = image
 
             state = self._convert_robot_data(self.data_buffer["robot_state"]["data"])
             observation["observation.state"] = state
 
-            action = predict_action(
-                observation=observation,
-                policy=self.policy,
-                device=self.device,
-                use_amp=self.policy.config.use_amp,
-                task=self.task_description).cpu().numpy()
+            action = (
+                predict_action(
+                    observation=observation,
+                    policy=self.policy,
+                    device=self.device,
+                    use_amp=self.policy.config.use_amp,
+                    task=self.task_description,
+                )
+                .cpu()
+                .numpy()
+            )
 
             # Convert from degrees to radians
             action = np.deg2rad(action)
@@ -153,7 +165,7 @@ class DoraPolicyInference:
             self.data_buffer[input_id] = {
                 "data": data,
                 "timestamp": time.time(),
-                "metadata": metadata
+                "metadata": metadata,
             }
 
     def get_pending_messages(self):
@@ -193,20 +205,16 @@ def main():
                 node.send_output(
                     output_id="robot_action",
                     data=pa.array(msg_data["action"]),
-                    metadata={}
+                    metadata={},
                 )
             elif msg_type == "status":
                 node.send_output(
-                    output_id="status",
-                    data=pa.array([msg_data]),
-                    metadata={}
+                    output_id="status", data=pa.array([msg_data]), metadata={}
                 )
-        
+
         if event["type"] == "INPUT":
             inference.handle_input(
-                event["id"], 
-                event["value"], 
-                event.get("metadata", {})
+                event["id"], event["value"], event.get("metadata", {})
             )
 
     # inference.shutdown() # Not sure when to shutdown the node, and how to identify task completion
