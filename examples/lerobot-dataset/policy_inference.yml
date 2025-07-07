@@ -21,7 +21,7 @@ nodes:
     outputs:
       - image
     env:
-      CAPTURE_PATH: "1"           # ← UPDATE: Your external camera device
+      CAPTURE_PATH: "1" # ← UPDATE: Your external camera device
       ENCODING: "rgb8"
       IMAGE_WIDTH: "640"
       IMAGE_HEIGHT: "480"
@@ -35,21 +35,21 @@ nodes:
     outputs:
       - pose
     env:
-      PORT: "/dev/ttyACM1"        # UPDATE your robot port
+      PORT: "/dev/ttyACM1" # UPDATE your robot port
       IDS: "1,2,3,4,5,6"
 
   - id: policy_inference
     build: pip install -e ../../node-hub/dora-policy-inference
     path: dora-policy-inference
     inputs:
-      laptop: laptop_cam/image   # the camera inputs should match the training setup
+      laptop: laptop_cam/image # the camera inputs should match the training setup
       front: front_cam/image
       robot_state: so101_follower/pose
     outputs:
       - robot_action
       - status
     env:
-      MODEL_PATH: "./outputs/train/your_policy/checkpoints/last/pretrained_model"  # Path to your trained model
+      MODEL_PATH: "./outputs/train/act_so101_test/checkpoints/last/pretrained_model/" # Path to your trained model
       TASK_DESCRIPTION: "Your task"
       ROBOT_TYPE: "so101_follower"
       CAMERA_NAMES: "laptop, front"

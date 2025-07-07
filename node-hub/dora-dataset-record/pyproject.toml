@@ -7,30 +7,25 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.8"
 
-dependencies = ["dora-rs >= 0.3.9","pyarrow","lerobot"]
+dependencies = ["dora-rs >= 0.3.9", "pyarrow", "lerobot[train]"]
 
 [dependency-groups]
 dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
 
 [project.scripts]
 dora-dataset-record = "dora_dataset_record.main:main"
+dora-dataset-lerobot-train = "dora_dataset_record.main:train_main"
 
 [tool.ruff.lint]
 extend-select = [
-  "D",   # pydocstyle
-  "UP"
+  "D",  # pydocstyle
+  "UP",
 ]
 ignore = [
-  "D100",  # Missing docstring in public module
-  "D103",  # Missing docstring in public function
-  "D104",  # Missing docstring in public package
+  "D100", # Missing docstring in public module
+  "D103", # Missing docstring in public function
+  "D104", # Missing docstring in public package
 ]
 
 [tool.uv.sources]
-lerobot = {git = "https://github.com/huggingface/lerobot.git", rev = "main"}
-
-[tool.uv.pip]
-git-config = [
-    "filter.lfs.smudge=git-lfs smudge --skip -- %f",
-    "filter.lfs.process=git-lfs filter-process --skip"
-]
+lerobot = { git = "https://github.com/huggingface/lerobot.git", rev = "main" }

@@ -1,15 +1,17 @@
 """TODO: Add docstring."""
 
-from dora import Node
-import pyarrow as pa
 import os
-import time
-import numpy as np
-import threading
 import queue
-import cv2
+import threading
+import time
 from typing import Any
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+
+import cv2
+import numpy as np
+import pyarrow as pa
+from dora import Node
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
 
 class DoraLeRobotRecorder:
     """Recorder class for LeRobot dataset."""
@@ -28,10 +30,16 @@ class DoraLeRobotRecorder:
         self.episode_index = 0
         self.start_time = None
         self.cameras = self._get_cameras()
-        self.total_episodes = int(os.getenv("TOTAL_EPISODES", "10")) # Default to 10 episodes
-        self.episode_duration = int(os.getenv("EPISODE_DURATION_S", "60")) # Default to 60 seconds
-        self.reset_duration = int(os.getenv("RESET_DURATION_S", "15")) # Default to 15 seconds
-        self.fps = int(os.getenv("FPS", "30")) # Default to 30 FPS
+        self.total_episodes = int(
+            os.getenv("TOTAL_EPISODES", "10")
+        )  # Default to 10 episodes
+        self.episode_duration = int(
+            os.getenv("EPISODE_DURATION_S", "60")
+        )  # Default to 60 seconds
+        self.reset_duration = int(
+            os.getenv("RESET_DURATION_S", "15")
+        )  # Default to 15 seconds
+        self.fps = int(os.getenv("FPS", "30"))  # Default to 30 FPS
 
         self.recording_started = False
         self.in_reset_phase = False
@@ -49,7 +57,7 @@ class DoraLeRobotRecorder:
         """Get Camera config."""
         camera_names_str = os.getenv("CAMERA_NAMES")
         if camera_names_str:
-            camera_names = [name.strip() for name in camera_names_str.split(',')]
+            camera_names = [name.strip() for name in camera_names_str.split(",")]
         else:
             return {}
 
@@ -57,10 +65,12 @@ class DoraLeRobotRecorder:
         for camera_name in camera_names:
             resolution = os.getenv(f"CAMERA_{camera_name.upper()}_RESOLUTION")
             if resolution:
-                dims = [int(d.strip()) for d in resolution.split(',')]
+                dims = [int(d.strip()) for d in resolution.split(",")]
                 cameras[camera_name] = dims
             else:
-                print(f"Warning: Set CAMERA_{camera_name.upper()}_RESOLUTION: \"height,width,channels\"")
+                print(
+                    f'Warning: Set CAMERA_{camera_name.upper()}_RESOLUTION: "height,width,channels"'
+                )
 
         return cameras
 
@@ -68,7 +78,7 @@ class DoraLeRobotRecorder:
         """Get robot joints."""
         joints_str = os.getenv("ROBOT_JOINTS")
         if joints_str:
-            return [joint.strip() for joint in joints_str.split(',')]
+            return [joint.strip() for joint in joints_str.split(",")]
         else:
             raise ValueError("ROBOT_JOINTS are not set.")
 
@@ -76,7 +86,7 @@ class DoraLeRobotRecorder:
         """Get tags for dataset."""
         tags_str = os.getenv("TAGS")
         if tags_str:
-            return [tag.strip() for tag in tags_str.split(',')]
+            return [tag.strip() for tag in tags_str.split(",")]
         return []
 
     def _setup_dataset(self):
@@ -85,34 +95,41 @@ class DoraLeRobotRecorder:
 
         joint_names = self._get_robot_joints()
         features["action"] = {
-            "dtype": "float32", 
+            "dtype": "float32",
             "shape": (len(joint_names),),
-            "names": joint_names}
+            "names": joint_names,
+        }
         features["observation.state"] = {
             "dtype": "float32",
             "shape": (len(joint_names),),
-            "names": joint_names}
+            "names": joint_names,
+        }
 
         self.use_videos = os.getenv("USE_VIDEOS", "true").lower() == "true"
         for camera_name in self.cameras:
             features[f"observation.images.{camera_name}"] = {
                 "dtype": "video" if self.use_videos else "image",
                 "shape": self.cameras[camera_name],
-                "names": ["height", "width", "channels"]}
+                "names": ["height", "width", "channels"],
+            }
 
         self.required_features = set(features.keys())
 
-        features.update({
-            "timestamp": {"dtype": "float32", "shape": [1]},
-            "frame_index": {"dtype": "int64", "shape": [1]},
-            "episode_index": {"dtype": "int64", "shape": [1]},
-            "index": {"dtype": "int64", "shape": [1]},
-            "task_index": {"dtype": "int64", "shape": [1]},
-        })
+        features.update(
+            {
+                "timestamp": {"dtype": "float32", "shape": [1]},
+                "frame_index": {"dtype": "int64", "shape": [1]},
+                "episode_index": {"dtype": "int64", "shape": [1]},
+                "index": {"dtype": "int64", "shape": [1]},
+                "task_index": {"dtype": "int64", "shape": [1]},
+            }
+        )
 
         repo_id = os.getenv("REPO_ID", None)
         if repo_id is None:
-            raise ValueError("REPO_ID environment variable must be set to create dataset")
+            raise ValueError(
+                "REPO_ID environment variable must be set to create dataset"
+            )
 
         self.dataset = LeRobotDataset.create(
             repo_id=repo_id,
@@ -122,7 +139,8 @@ class DoraLeRobotRecorder:
             robot_type=os.getenv("ROBOT_TYPE", "your_robot_type"),
             use_videos=self.use_videos,
             image_writer_processes=int(os.getenv("IMAGE_WRITER_PROCESSES", "0")),
-            image_writer_threads=int(os.getenv("IMAGE_WRITER_THREADS", "4")) * len(self.cameras),
+            image_writer_threads=int(os.getenv("IMAGE_WRITER_THREADS", "4"))
+            * len(self.cameras),
         )
 
     def _check_episode_timing(self):
@@ -167,7 +185,9 @@ class DoraLeRobotRecorder:
         """End current episode and save to dataset."""
         self.episode_active = False
         if self.frame_count > 0:
-            self._output(f"Saving episode index {self.episode_index} with {self.frame_count} frames")
+            self._output(
+                f"Saving episode index {self.episode_index} with {self.frame_count} frames"
+            )
             self.dataset.save_episode()
             self.episode_index += 1
         else:
@@ -177,12 +197,16 @@ class DoraLeRobotRecorder:
         """Start the reset phase between episodes."""
         self.in_reset_phase = True
         self.reset_start_time = time.time()
-        self._output(f"Reset phase started - {self.reset_duration}s break before next episode...")
+        self._output(
+            f"Reset phase started - {self.reset_duration}s break before next episode..."
+        )
 
     def _start_frame_timer(self):
         """Start the frame timer thread."""
         self.stop_timer = False
-        self.frame_timer_thread = threading.Thread(target=self._frame_timer_loop, daemon=True)
+        self.frame_timer_thread = threading.Thread(
+            target=self._frame_timer_loop, daemon=True
+        )
         self.frame_timer_thread.start()
 
     def _frame_timer_loop(self):
@@ -190,9 +214,13 @@ class DoraLeRobotRecorder:
         while not self.stop_timer and not self.shutdown:
             current_time = time.time()
 
-            if self.episode_active and not self.in_reset_phase and (
-                self.last_frame_time is None or 
-                current_time - self.last_frame_time >= self.frame_interval
+            if (
+                self.episode_active
+                and not self.in_reset_phase
+                and (
+                    self.last_frame_time is None
+                    or current_time - self.last_frame_time >= self.frame_interval
+                )
             ):
                 self._add_frame()
                 self.last_frame_time = current_time
@@ -212,7 +240,7 @@ class DoraLeRobotRecorder:
                 self.data_buffer[input_id] = {
                     "data": data,
                     "timestamp": time.time(),
-                    "metadata": metadata
+                    "metadata": metadata,
                 }
 
         should_stop = self._check_episode_timing()
@@ -242,7 +270,7 @@ class DoraLeRobotRecorder:
         """Convert camera data from 1D pyarrow array to numpy format."""
         height, width = metadata.get("height"), metadata.get("width")
         encoding = metadata.get("encoding")
-        image = dora_data.to_numpy().reshape(height, width, 3)  
+        image = dora_data.to_numpy().reshape(height, width, 3)
 
         if encoding == "bgr8":
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -266,18 +294,24 @@ class DoraLeRobotRecorder:
 
             for key, value in self.data_buffer.items():
                 if key == "robot_action":
-                    frame_data["action"] = self.convert_robot_data(self.data_buffer["robot_action"]["data"])
+                    frame_data["action"] = self.convert_robot_data(
+                        self.data_buffer["robot_action"]["data"]
+                    )
                 if key == "robot_state":
-                    frame_data["observation.state"] = self.convert_robot_data(self.data_buffer["robot_state"]["data"])
-                if {'height', 'width'} <= value.get('metadata', {}).keys():
+                    frame_data["observation.state"] = self.convert_robot_data(
+                        self.data_buffer["robot_state"]["data"]
+                    )
+                if {"height", "width"} <= value.get("metadata", {}).keys():
                     camera_name = key
                     image = self._convert_camera_data(
                         self.data_buffer[camera_name]["data"],
-                        self.data_buffer[camera_name]["metadata"]
+                        self.data_buffer[camera_name]["metadata"],
                     )
                     frame_data[f"observation.images.{camera_name}"] = image
 
-            missing_keys = self.required_features - set(frame_data.keys())  # Ensure all required features are present 
+            missing_keys = self.required_features - set(
+                frame_data.keys()
+            )  # Ensure all required features are present
             if missing_keys:
                 print(f"Missing required data in frame: {missing_keys}")
                 return
@@ -285,7 +319,7 @@ class DoraLeRobotRecorder:
             self.dataset.add_frame(
                 frame=frame_data,
                 task=os.getenv("SINGLE_TASK", "Your task"),
-                timestamp=ideal_timestamp
+                timestamp=ideal_timestamp,
             )
             self.frame_count += 1
 
@@ -302,10 +336,12 @@ class DoraLeRobotRecorder:
             self._output("Pushing dataset to hub...")
             self.dataset.push_to_hub(
                 tags=self._get_tags(),
-                private=os.getenv("PRIVATE", "false").lower() == "true"
+                private=os.getenv("PRIVATE", "false").lower() == "true",
             )
 
-        self._output(f"Dataset recording completed. Total episodes: {self.episode_index}")
+        self._output(
+            f"Dataset recording completed. Total episodes: {self.episode_index}"
+        )
 
     def _output(self, message: str):
         """Output message."""
@@ -320,6 +356,7 @@ class DoraLeRobotRecorder:
             messages.append(self.message_queue.get_nowait())
         return messages
 
+
 def main():
     node = Node()
     recorder = DoraLeRobotRecorder()
@@ -332,18 +369,28 @@ def main():
     for event in node:
         pending_messages = recorder.get_pending_messages()
         for message in pending_messages:
-            node.send_output(
-                output_id="text",
-                data=pa.array([message]),
-                metadata={})
+            node.send_output(output_id="text", data=pa.array([message]), metadata={})
 
         if event["type"] == "INPUT":
-            should_stop = recorder.handle_input(event["id"], event["value"], event.get("metadata", {}))
+            should_stop = recorder.handle_input(
+                event["id"], event["value"], event.get("metadata", {})
+            )
             if should_stop:
                 print("All episodes completed, stopping recording...")
                 break
 
     recorder._shutdown()
+
+
+def train_main():
+    from lerobot.scripts.train import train
+    from lerobot.utils.utils import (
+        init_logging,
+    )
+
+    init_logging()
+    train()
+
 
 if __name__ == "__main__":
     main()
