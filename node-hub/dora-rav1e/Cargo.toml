@@ -25,7 +25,8 @@ pyo3 = { workspace = true, features = [
     "eyre",
     "generate-import-lib",
 ], optional = true }
-avif-serialize = "0.8.4"
+avif-serialize = { version = "0.8.5" }
+little_exif = { version = "0.6.9" }
 
 
 [lib]
