@@ -1,13 +1,12 @@
 nodes:
   - id: camera
-    build: pip install opencv-video-capture
-    path: opencv-video-capture
+    build: pip install -e ../../node-hub/dora-pyrealsense
+    path: dora-pyrealsense
     inputs:
       tick: dora/timer/millis/100
     outputs:
       - image
-    env:
-      CAPTURE_PATH: 1
+      - depth
 
   - id: dora-vggt
     build: pip install -e ../../node-hub/dora-vggt
@@ -20,9 +19,9 @@ nodes:
     env:
       DEPTH_ENCODING: mono16
 
-  - id: rav1e-depth
+  - id: rav1e-depth-vggt
     path: dora-rav1e
-    build: pip install -e ../../node-hub/dora-rav1e
+    build: cargo build -p dora-rav1e --release
     inputs:
       depth: dora-vggt/depth
     outputs:
@@ -30,21 +29,21 @@ nodes:
     env:
       ENCODING: avif
 
-  - id: rav1e-image
+  - id: rav1e-depth-realsense
     path: dora-rav1e
-    build: pip install -e ../../node-hub/dora-rav1e
+    build: cargo build -p dora-rav1e --release
     inputs:
-      image: dora-vggt/image
+      depth: camera/depth
     outputs:
-      - image
+      - depth
     env:
       ENCODING: avif
 
   - id: bench
     path: image_saver.py
     inputs:
-      vggt_image: rav1e-image/image
-      vggt_depth: rav1e-depth/depth
+      camera_depth: rav1e-depth-vggt/depth
+      vggt_depth: rav1e-depth-realsense/depth
 
   - id: plot
     build: pip install dora-rerun
