@@ -13,6 +13,8 @@ dir=$(pwd)
 # Get the base name of the directory (without the path)
 base_dir=$(basename "$dir")
 
+export GIT_LFS_SKIP_SMUDGE=1 
+
 # Check if the directory name is in the ignored list
 if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then
     echo "Skipping $base_dir as we cannot test it on the CI..."
