@@ -8,17 +8,17 @@
 rustPlatform.buildRustPackage rec {
   pname = "dora-cli";
 
-  version = "0.3.11";
+  version = "0.3.12";
 
   src = fetchFromGitHub {
     owner = "dora-rs";
     repo = "dora";
     rev = "v${version}";
-    hash = "sha256-dnCHDGTtNZLjKOYmNfRMsop5CeiElctlGoWxuvmIxdA=";
+    hash = "sha256-ebcJq1FCxdBHM0f+PjoNP5YPaynsCe6+BEKHlL3l+Y4=";
   };
 
   useFetchCargoVendor = true;
-  cargoHash = "sha256-kwJGkxRvCht+aVN8X/elcESuNdYtU1pc0IgNkrlc9a0=";
+  cargoHash = "sha256-6D+ZTMYto+iPazvJEFWfgAcBtBzXHUGBtx8TS9/eTQ8=";
   nativeBuildInputs = [pkg-config];
   buildInputs = [openssl];
   OPENSSL_NO_VENDOR = 1;
