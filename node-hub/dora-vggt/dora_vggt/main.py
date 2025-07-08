@@ -1,7 +1,8 @@
 """TODO: Add docstring."""
-
 import io
-from collections import deque as Deque
+import os
+from collections import deque
+
 
 import cv2
 import numpy as np
@@ -13,26 +14,31 @@ from vggt.models.vggt import VGGT
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
+SCALE_FACTOR = float(os.getenv("SCALE_FACTOR", "1"))
+VGGT_NUM_IMAGES = int(os.getenv("VGGT_NUM_IMAGES", "2"))
 # bfloat16 is supported on Ampere GPUs (Compute Capability 8.0+)
 
 dtype = torch.bfloat16
 
+# Check if cuda is available and set the device accordingly
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 # Initialize the model and load the pretrained weights.
 # This will automatically download the model weights the first time it's run, which may take a while.
-model = VGGT.from_pretrained("facebook/VGGT-1B").to("cuda")
+model = VGGT.from_pretrained("facebook/VGGT-1B").to(device)
 model.eval()
 
+DEPTH_ENCODING = os.environ.get("DEPTH_ENCODING", "float64")
 # Import vecdeque
 
 
 def main():
     """TODO: Add docstring."""
     node = Node()
-    raw_images = Deque(maxlen=2)
+    raw_images = deque(maxlen=VGGT_NUM_IMAGES)
 
     for event in node:
         if event["type"] == "INPUT":
-
             if "image" in event["id"]:
                 storage = event["value"]
                 metadata = event["metadata"]
@@ -80,7 +86,7 @@ def main():
                 raw_images.append(buffer)
 
                 with torch.no_grad():
-                    images = load_and_preprocess_images(raw_images).to("cuda")
+                    images = load_and_preprocess_images(raw_images).to(device)
 
                     images = images[None]  # add batch dimension
                     aggregated_tokens_list, ps_idx = model.aggregator(images)
@@ -88,7 +94,7 @@ def main():
                     pose_enc = model.camera_head(aggregated_tokens_list)[-1]
                     # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
                     extrinsic, intrinsic = pose_encoding_to_extri_intri(
-                        pose_enc, images.shape[-2:]
+                        pose_enc, images.shape[-2:],
                     )
                     intrinsic = intrinsic[-1][-1]
                     f_0 = intrinsic[0, 0]
@@ -98,29 +104,32 @@ def main():
 
                     # Predict Depth Maps
                     depth_map, depth_conf = model.depth_head(
-                        aggregated_tokens_list, images, ps_idx
+                        aggregated_tokens_list, images, ps_idx,
                     )
-                    print(depth_conf.max())
                     depth_map[depth_conf < 1.0] = 0.0  # Set low confidence pixels to 0
                     depth_map = depth_map.to(torch.float64)
 
                     depth_map = depth_map[-1][-1].cpu().numpy()
-
+                    depth_map = SCALE_FACTOR * depth_map
                     # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
+                    if DEPTH_ENCODING == "mono16":
+                        depth_map = (depth_map * 1000).astype(np.uint16)
+
                     node.send_output(
-                        output_id="depth",
+                        output_id=event["id"].replace("image", "depth"),
                         data=pa.array(depth_map.ravel()),
                         metadata={
                             "width": depth_map.shape[1],
                             "height": depth_map.shape[0],
-                        "focal": [
-                            int(f_0),
-                            int(f_1),
-                        ],
-                        "resolution": [
-                            int(r_0),
-                            int(r_1),
-                        ],
+                            "encoding": DEPTH_ENCODING,
+                            "focal": [
+                                int(f_0),
+                                int(f_1),
+                            ],
+                            "resolution": [
+                                int(r_0),
+                                int(r_1),
+                            ],
                         },
                     )
 
@@ -129,18 +138,22 @@ def main():
                     # reorder pixels to be in last dimension
                     image = image.transpose(1, 2, 0)
 
-                    print(
-                        f"Image shape: {image.shape}, dtype: {image.dtype} and depth map shape: {depth_map.shape}, dtype: {depth_map.dtype}"
-                    )
-
                     # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
                     node.send_output(
-                        output_id="image",
+                        output_id=event["id"],
                         data=pa.array(image.ravel()),
                         metadata={
                             "encoding": "rgb8",
                             "width": image.shape[1],
                             "height": image.shape[0],
+                            "focal": [
+                                int(f_0),
+                                int(f_1),
+                            ],
+                            "resolution": [
+                                int(r_0),
+                                int(r_1),
+                            ],
                         },
                     )
 

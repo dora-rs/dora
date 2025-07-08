@@ -1,22 +1,46 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{common::DaemonId, id::NodeId};
+use crate::{common::DaemonId, id::NodeId, BuildId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
-    DataflowStarted { uuid: Uuid },
-    DataflowReloaded { uuid: Uuid },
-    DataflowStopped { uuid: Uuid, result: DataflowResult },
+    DataflowBuildTriggered {
+        build_id: BuildId,
+    },
+    DataflowBuildFinished {
+        build_id: BuildId,
+        result: Result<(), String>,
+    },
+    DataflowStartTriggered {
+        uuid: Uuid,
+    },
+    DataflowSpawned {
+        uuid: Uuid,
+    },
+    DataflowReloaded {
+        uuid: Uuid,
+    },
+    DataflowStopped {
+        uuid: Uuid,
+        result: DataflowResult,
+    },
     DataflowList(DataflowList),
     DestroyOk,
     DaemonConnected(bool),
     ConnectedDaemons(BTreeSet<DaemonId>),
     Logs(Vec<u8>),
+    CliAndDefaultDaemonIps {
+        default_daemon: Option<IpAddr>,
+        cli: Option<IpAddr>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

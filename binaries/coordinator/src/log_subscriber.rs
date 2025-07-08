@@ -17,9 +17,15 @@ impl LogSubscriber {
     }
 
     pub async fn send_message(&mut self, message: &LogMessage) -> eyre::Result<()> {
-        if message.level > self.level {
-            return Ok(());
+        match message.level {
+            dora_core::build::LogLevelOrStdout::LogLevel(level) => {
+                if level > self.level {
+                    return Ok(());
+                }
+            }
+            dora_core::build::LogLevelOrStdout::Stdout => {}
         }
+
         let message = serde_json::to_vec(&message)?;
         let connection = self.connection.as_mut().context("connection is closed")?;
         tcp_send(connection, &message)

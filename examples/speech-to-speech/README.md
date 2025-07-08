@@ -1,4 +1,4 @@
-# Dora Speech to Text example
+# Dora Speech to Speech example
 
 Make sure to have, dora, pip and cargo installed.
 
@@ -23,6 +23,6 @@ sudo apt-get install espeak
 ```bash
 uv venv --seed -p 3.11
 uv pip install -e ../../apis/python/node --reinstall
-dora build kokoro-dev.yml
-dora run kokoro-dev.yml
+dora build kokoro-dev.yml --uv
+dora run kokoro-dev.yml --uv
 ```

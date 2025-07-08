@@ -41,13 +41,13 @@ async fn main() -> eyre::Result<()> {
                     node.send_output(
                         mistral_output.clone(),
                         metadata.parameters,
-                        output.into_arrow(),
+                        output.as_str().into_arrow(),
                     )?;
                 }
                 other => eprintln!("Received input `{other}`"),
             },
-            Event::Stop => {
-                println!("Received manual stop")
+            Event::Stop(_) => {
+                println!("Received command");
             }
             Event::InputClosed { id } => {
                 println!("input `{id}` was closed");

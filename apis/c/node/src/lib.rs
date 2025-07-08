@@ -91,7 +91,7 @@ pub unsafe extern "C" fn dora_next_event(context: *mut c_void) -> *mut c_void {
 pub unsafe extern "C" fn read_dora_event_type(event: *const ()) -> EventType {
     let event: &Event = unsafe { &*event.cast() };
     match event {
-        Event::Stop => EventType::Stop,
+        Event::Stop(_) => EventType::Stop,
         Event::Input { .. } => EventType::Input,
         Event::InputClosed { .. } => EventType::InputClosed,
         Event::Error(_) => EventType::Error,
