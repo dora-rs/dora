@@ -12,6 +12,8 @@ pub mod output;
 pub mod session;
 mod template;
 
+pub use command::run_func;
+
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
