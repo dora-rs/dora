@@ -97,7 +97,9 @@ pub(crate) fn local_working_dir(
     )
 }
 
-pub(crate) fn cli_and_daemon_on_same_machine(session: &mut TcpRequestReplyConnection) -> eyre::Result<bool> {
+pub(crate) fn cli_and_daemon_on_same_machine(
+    session: &mut TcpRequestReplyConnection,
+) -> eyre::Result<bool> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine).unwrap())
         .wrap_err("failed to send start dataflow message")?;
