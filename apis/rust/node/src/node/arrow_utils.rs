@@ -11,7 +11,7 @@ fn required_data_size_inner(array: &ArrayData, next_offset: &mut usize) {
     for (buffer, spec) in array.buffers().iter().zip(&layout.buffers) {
         // consider alignment padding
         if let BufferSpec::FixedWidth { alignment, .. } = spec {
-            *next_offset = (*next_offset + alignment - 1) / alignment * alignment;
+            *next_offset = (*next_offset).div_ceil(*alignment) * alignment;
         }
         *next_offset += buffer.len();
     }
@@ -42,7 +42,7 @@ fn copy_array_into_sample_inner(
         );
         // add alignment padding
         if let BufferSpec::FixedWidth { alignment, .. } = spec {
-            *next_offset = (*next_offset + alignment - 1) / alignment * alignment;
+            *next_offset = (*next_offset).div_ceil(*alignment) * alignment;
         }
 
         target_buffer[*next_offset..][..len].copy_from_slice(buffer.as_slice());

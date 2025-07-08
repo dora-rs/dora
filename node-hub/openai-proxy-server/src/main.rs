@@ -96,7 +96,7 @@ async fn main() -> eyre::Result<()> {
                     )
                     .context("failed to send dora output")?;
 
-                    reply_channels.push_back((reply, 0 as u64, request.model));
+                    reply_channels.push_back((reply, 0_u64, request.model));
                 }
             },
             dora_node_api::merged::MergedEvent::Dora(event) => match event {
@@ -112,7 +112,7 @@ async fn main() -> eyre::Result<()> {
                             let data = data.as_string::<i32>();
                             let string = data.iter().fold("".to_string(), |mut acc, s| {
                                 if let Some(s) = s {
-                                    acc.push_str("\n");
+                                    acc.push('\n');
                                     acc.push_str(s);
                                 }
                                 acc
@@ -164,6 +164,7 @@ async fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::large_enum_variant)]
 enum ServerEvent {
     Result(eyre::Result<()>),
     ChatCompletionRequest {
