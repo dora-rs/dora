@@ -1,0 +1,44 @@
+nodes:
+  - id: camera
+    build: pip install opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 4
+
+  - id: dora-qwenvl
+    build: pip install -e ../../node-hub/dora-qwen2-5-vl
+    path: dora-qwen2-5-vl
+    inputs:
+      image: camera/image
+      text: dora/timer/millis/1000
+    outputs:
+      - text
+    env:
+      DEFAULT_QUESTION: output the bounding box of the items in the image # default prompt
+
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      camera/image: camera/image
+      text_qwenvl: dora-qwenvl/text
+      camera/boxes2d: parse_bbox/bbox
+
+  - id: parse_bbox
+    path: parse_bbox.py
+    inputs:
+      text: dora-qwenvl/text
+    outputs:
+      - bbox
+    env:
+      IMAGE_RESIZE_RATIO: "1.0"
+
+  - id: data_recorder
+    path: data_recorder.py
+    inputs:
+      bbox: parse_bbox/bbox
+      image: camera/image
