@@ -44,6 +44,7 @@ mod drop_stream;
 
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
+#[allow(dead_code)]
 enum TokioRuntime {
     Runtime(Runtime),
     Handle(Handle),

@@ -130,6 +130,7 @@ fn get_yuv_planes(buffer: &[u8], width: usize, height: usize) -> (&[u8], &[u8], 
     (y_plane, u_plane, v_plane)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_yuv(
     y: &[u8],
     u: &[u8],
@@ -141,7 +142,7 @@ fn send_yuv(
     id: DataId,
     metadata: &mut Metadata,
     output_encoding: &str,
-) -> () {
+) {
     // Create a new Arrow array for the YUV420 data
     let cfg = Config::new().with_encoder_config(enc.clone());
     let mut ctx: Context<u8> = cfg.new_context().unwrap();
@@ -149,13 +150,13 @@ fn send_yuv(
 
     let xdec = f.planes[0].cfg.xdec;
     let stride = (width + xdec) >> xdec;
-    f.planes[0].copy_from_raw_u8(&y, stride, 1);
+    f.planes[0].copy_from_raw_u8(y, stride, 1);
     let xdec = f.planes[1].cfg.xdec;
     let stride = (width + xdec) >> xdec;
-    f.planes[1].copy_from_raw_u8(&u, stride, 1);
+    f.planes[1].copy_from_raw_u8(u, stride, 1);
     let xdec = f.planes[2].cfg.xdec;
     let stride = (width + xdec) >> xdec;
-    f.planes[2].copy_from_raw_u8(&v, stride, 1);
+    f.planes[2].copy_from_raw_u8(v, stride, 1);
 
     match ctx.send_frame(f) {
         Ok(_) => {}
@@ -321,12 +322,9 @@ pub fn lib_main() -> Result<()> {
                     chroma_sampling: color::ChromaSampling::Cs420,
                     ..Default::default()
                 };
-                match encoding {
-                    "mono16" => {
-                        enc.bit_depth = 12;
-                        enc.chroma_sampling = color::ChromaSampling::Cs400;
-                    }
-                    _ => {}
+                if encoding == "mono16" {
+                    enc.bit_depth = 12;
+                    enc.chroma_sampling = color::ChromaSampling::Cs400;
                 }
 
                 if encoding == "bgr8" {
@@ -352,9 +350,9 @@ pub fn lib_main() -> Result<()> {
 
                         let (y, u, v) = get_yuv_planes(buffer, width, height);
                         send_yuv(
-                            &y,
-                            &u,
-                            &v,
+                            y,
+                            u,
+                            v,
                             enc,
                             width,
                             height,
@@ -374,7 +372,7 @@ pub fn lib_main() -> Result<()> {
                             fill_zeros_toward_center_y_plane_in_place(&mut buffer, width, height);
                         }
 
-                        let bytes: &[u8] = &bytemuck::cast_slice(&buffer);
+                        let bytes: &[u8] = bytemuck::cast_slice(&buffer);
 
                         let cfg = Config::new().with_encoder_config(enc.clone());
                         let mut ctx: Context<u16> = cfg.new_context().unwrap();
