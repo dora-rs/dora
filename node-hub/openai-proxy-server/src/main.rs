@@ -6,7 +6,7 @@ use dora_node_api::{
     DoraNode, Event,
 };
 
-use eyre::{Context, ContextCompat};
+use eyre::Context;
 use futures::{
     channel::oneshot::{self, Canceled},
     TryStreamExt,
@@ -36,7 +36,10 @@ pub mod message;
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let web_ui = Path::new("chatbot-ui");
-    let port = 8000;
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "8080".to_string())
+        .parse::<u16>()
+        .unwrap_or(8080);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let (server_events_tx, server_events_rx) = mpsc::channel(3);
