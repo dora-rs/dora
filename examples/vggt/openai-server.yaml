@@ -1,0 +1,54 @@
+nodes:
+  - id: dora-openai-server
+    build: cargo build -p dora-openai-proxy-server --release
+    path: ../../target/release/dora-openai-proxy-server
+    outputs:
+      - text
+    inputs:
+      text: format_response/text
+
+  - id: parse_text
+    path: parse_text.py
+    inputs:
+      text: dora-openai-server/text
+    outputs:
+      - image
+
+  - id: dora-vggt
+    build: pip install -e ../../node-hub/dora-vggt
+    path: dora-vggt
+    inputs:
+      image: parse_text/image
+    outputs:
+      - depth
+      - image
+    env:
+      DEPTH_ENCODING: mono16
+
+  - id: rav1e-image
+    path: dora-rav1e
+    build: pip install -e ../../node-hub/dora-rav1e
+    inputs:
+      image: dora-vggt/image
+    outputs:
+      - image
+    env:
+      ENCODING: avif
+
+  - id: rav1e-depth
+    path: dora-rav1e
+    build: pip install -e ../../node-hub/dora-rav1e
+    inputs:
+      depth: dora-vggt/depth
+    outputs:
+      - depth
+    env:
+      ENCODING: avif
+
+  - id: format_response
+    path: format_response.py
+    inputs:
+      depth: rav1e-depth/depth
+      image: rav1e-image/image
+    outputs:
+      - text

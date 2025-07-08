@@ -1,0 +1,29 @@
+nodes:
+  - id: dora-openai-server
+    build: cargo build -p dora-openai-proxy-server --release
+    path: ../../target/release/dora-openai-proxy-server
+    outputs:
+      - text
+    inputs:
+      text: dora-echo/echo
+
+  - id: dora-echo
+    build: pip install -e ../../node-hub/dora-echo
+    path: dora-echo
+    inputs:
+      echo: dora-openai-server/text
+    outputs:
+      - echo
+
+  - id: parse_text
+    path: parse_text.py
+    inputs:
+      text: dora-openai-server/text
+    outputs:
+      - image
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      camera/image: parse_text/image

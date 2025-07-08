@@ -107,42 +107,44 @@ async fn main() -> eyre::Result<()> {
                 } => {
                     match id.as_str() {
                         "text" => {
-                            let (reply_channel, prompt_tokens, model) =
-                                reply_channels.pop_front().context("no reply channel")?;
-                            let data = data.as_string::<i32>();
-                            let string = data.iter().fold("".to_string(), |mut acc, s| {
-                                if let Some(s) = s {
-                                    acc.push('\n');
-                                    acc.push_str(s);
-                                }
-                                acc
-                            });
+                            if let Some((reply_channel, prompt_tokens, model)) =
+                                reply_channels.pop_front()
+                            {
+                                let data = data.as_string::<i32>();
+                                let string = data.iter().fold("".to_string(), |mut acc, s| {
+                                    if let Some(s) = s {
+                                        acc.push('\n');
+                                        acc.push_str(s);
+                                    }
+                                    acc
+                                });
 
-                            let data = ChatCompletionObject {
-                                id: format!("completion-{}", uuid::Uuid::new_v4()),
-                                object: "chat.completion".to_string(),
-                                created: chrono::Utc::now().timestamp() as u64,
-                                model: model.unwrap_or_default(),
-                                choices: vec![ChatCompletionObjectChoice {
-                                    index: 0,
-                                    message: ChatCompletionObjectMessage {
-                                        role: message::ChatCompletionRole::Assistant,
-                                        content: Some(string.to_string()),
-                                        tool_calls: Vec::new(),
-                                        function_call: None,
+                                let data = ChatCompletionObject {
+                                    id: format!("completion-{}", uuid::Uuid::new_v4()),
+                                    object: "chat.completion".to_string(),
+                                    created: chrono::Utc::now().timestamp() as u64,
+                                    model: model.unwrap_or_default(),
+                                    choices: vec![ChatCompletionObjectChoice {
+                                        index: 0,
+                                        message: ChatCompletionObjectMessage {
+                                            role: message::ChatCompletionRole::Assistant,
+                                            content: Some(string.to_string()),
+                                            tool_calls: Vec::new(),
+                                            function_call: None,
+                                        },
+                                        finish_reason: message::FinishReason::stop,
+                                        logprobs: None,
+                                    }],
+                                    usage: Usage {
+                                        prompt_tokens,
+                                        completion_tokens: string.len() as u64,
+                                        total_tokens: prompt_tokens + string.len() as u64,
                                     },
-                                    finish_reason: message::FinishReason::stop,
-                                    logprobs: None,
-                                }],
-                                usage: Usage {
-                                    prompt_tokens,
-                                    completion_tokens: string.len() as u64,
-                                    total_tokens: prompt_tokens + string.len() as u64,
-                                },
-                            };
+                                };
 
-                            if reply_channel.send(Ok(data)).is_err() {
-                                tracing::warn!("failed to send chat completion reply because channel closed early");
+                                if reply_channel.send(Ok(data)).is_err() {
+                                    tracing::warn!("failed to send chat completion reply because channel closed early");
+                                }
                             }
                         }
                         _ => eyre::bail!("unexpected input id: {}", id),

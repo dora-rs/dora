@@ -130,6 +130,7 @@ def main():
                                 int(r_0),
                                 int(r_1),
                             ],
+                            "message_id": event["metadata"].get("message_id", 0),
                         },
                     )
 
@@ -154,6 +155,7 @@ def main():
                                 int(r_0),
                                 int(r_1),
                             ],
+                            "message_id": event["metadata"].get("message_id", 0),
                         },
                     )
 
