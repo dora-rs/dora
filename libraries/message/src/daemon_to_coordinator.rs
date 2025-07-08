@@ -92,5 +92,6 @@ pub enum DaemonCoordinatorReply {
         #[serde(skip)]
         notify: Option<tokio::sync::oneshot::Sender<()>>,
     },
+    InspectResult(Result<(), String>),
     Logs(Result<Vec<u8>, String>),
 }
