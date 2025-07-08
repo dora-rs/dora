@@ -24,7 +24,7 @@
         name = "dora-cli";
         venvDir = "./.venv";
         buildInputs = [
-          self.packages.${pkgs.system}.dora-cli
+          self.packages.${pkgs.system}.dora-cli-release
 
           pkgs.rustc
           pkgs.cargo
@@ -41,6 +41,7 @@
           pkgs.python3Packages.venvShellHook
 
           pkgs.python3Packages.pyarrow
+          pkgs.python3Packages.uv
         ];
 
         # Run this command, only after creating the virtual environment
@@ -51,6 +52,11 @@
         '';
         postShellHook = ''
           export CARGO_HOME=$(pwd)/.cargo
+          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [
+            pkgs.libGL
+            pkgs.wayland
+            pkgs.libxkbcommon
+          ]};
         '';
       };
     });
