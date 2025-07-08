@@ -54,7 +54,7 @@ pub fn check_dataflow(
                         };
                     }
                 },
-                dora_message::descriptor::NodeSource::GitBranch { repo, rev } => {
+                dora_message::descriptor::NodeSource::GitBranch { .. } => {
                     info!("skipping check for node with git source");
                 }
             },

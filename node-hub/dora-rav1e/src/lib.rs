@@ -8,12 +8,16 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
 use std::env::var;
+use std::vec;
 
 use dora_node_api::arrow::array::AsArray;
 use dora_node_api::arrow::datatypes::{UInt16Type, UInt8Type};
 use dora_node_api::dora_core::config::DataId;
-use dora_node_api::{DoraNode, Event, IntoArrow, Metadata, Parameter};
+use dora_node_api::{DoraNode, Event, IntoArrow, Metadata, MetadataParameters, Parameter};
 use eyre::{Context as EyreContext, Result};
+use little_exif::exif_tag::ExifTag;
+use little_exif::metadata::Metadata as ExifMetadata;
+use little_exif::rational::uR64;
 use log::warn;
 use rav1e::color::{ColorDescription, MatrixCoefficients};
 // Encode the same tiny blank frame 30 times
@@ -54,6 +58,25 @@ pub fn fill_zeros_toward_center_y_plane_in_place(y: &mut [u16], width: usize, he
             }
         }
     }
+}
+
+fn metadata_to_exif(metadata: &MetadataParameters) -> Result<Vec<u8>> {
+    let mut metadata_exif = ExifMetadata::new();
+    metadata_exif.set_tag(ExifTag::Software("dora-rs".to_string()));
+    if let Some(Parameter::ListInt(focal_lengths)) = metadata.get("focal") {
+        metadata_exif.set_tag(ExifTag::FocalLength(
+            focal_lengths
+                .iter()
+                .map(|&f| uR64 {
+                    nominator: f as u32,
+                    denominator: 1,
+                })
+                .collect::<Vec<_>>(),
+        ));
+    }
+
+    let vector = metadata_exif.as_u8_vec(little_exif::filetype::FileExtension::HEIF)?;
+    return Ok(vector);
 }
 
 fn bgr8_to_yuv420(bgr_data: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
@@ -107,6 +130,7 @@ fn get_yuv_planes(buffer: &[u8], width: usize, height: usize) -> (&[u8], &[u8], 
     (y_plane, u_plane, v_plane)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_yuv(
     y: &[u8],
     u: &[u8],
@@ -118,7 +142,7 @@ fn send_yuv(
     id: DataId,
     metadata: &mut Metadata,
     output_encoding: &str,
-) -> () {
+) {
     // Create a new Arrow array for the YUV420 data
     let cfg = Config::new().with_encoder_config(enc.clone());
     let mut ctx: Context<u8> = cfg.new_context().unwrap();
@@ -126,13 +150,13 @@ fn send_yuv(
 
     let xdec = f.planes[0].cfg.xdec;
     let stride = (width + xdec) >> xdec;
-    f.planes[0].copy_from_raw_u8(&y, stride, 1);
+    f.planes[0].copy_from_raw_u8(y, stride, 1);
     let xdec = f.planes[1].cfg.xdec;
     let stride = (width + xdec) >> xdec;
-    f.planes[1].copy_from_raw_u8(&u, stride, 1);
+    f.planes[1].copy_from_raw_u8(u, stride, 1);
     let xdec = f.planes[2].cfg.xdec;
     let stride = (width + xdec) >> xdec;
-    f.planes[2].copy_from_raw_u8(&v, stride, 1);
+    f.planes[2].copy_from_raw_u8(v, stride, 1);
 
     match ctx.send_frame(f) {
         Ok(_) => {}
@@ -159,9 +183,18 @@ fn send_yuv(
                 } else {
                     MatrixCoefficients::BT709
                 };
-                let data = avif_serialize::Aviffy::new()
+                let mut aviffy = avif_serialize::Aviffy::new();
+                aviffy
                     .set_chroma_subsampling((true, true))
-                    .set_seq_profile(0)
+                    .set_seq_profile(0);
+
+                let aviffy = if let Ok(exif) = metadata_to_exif(&metadata.parameters) {
+                    aviffy.set_exif(exif)
+                } else {
+                    &mut aviffy
+                };
+
+                let data = aviffy
                     .matrix_coefficients(match matrix_coefficients {
                         MatrixCoefficients::Identity => {
                             avif_serialize::constants::MatrixCoefficients::Rgb
@@ -289,12 +322,9 @@ pub fn lib_main() -> Result<()> {
                     chroma_sampling: color::ChromaSampling::Cs420,
                     ..Default::default()
                 };
-                match encoding {
-                    "mono16" => {
-                        enc.bit_depth = 12;
-                        enc.chroma_sampling = color::ChromaSampling::Cs400;
-                    }
-                    _ => {}
+                if encoding == "mono16" {
+                    enc.bit_depth = 12;
+                    enc.chroma_sampling = color::ChromaSampling::Cs400;
                 }
 
                 if encoding == "bgr8" {
@@ -320,9 +350,9 @@ pub fn lib_main() -> Result<()> {
 
                         let (y, u, v) = get_yuv_planes(buffer, width, height);
                         send_yuv(
-                            &y,
-                            &u,
-                            &v,
+                            y,
+                            u,
+                            v,
                             enc,
                             width,
                             height,
@@ -336,13 +366,13 @@ pub fn lib_main() -> Result<()> {
                     if let Some(buffer) = data.as_primitive_opt::<UInt16Type>() {
                         let mut buffer = buffer.values().to_vec();
                         if std::env::var("FILL_ZEROS")
-                            .map(|s| s != "false")
+                            .map(|s| s.to_lowercase() != "false")
                             .unwrap_or(true)
                         {
                             fill_zeros_toward_center_y_plane_in_place(&mut buffer, width, height);
                         }
 
-                        let bytes: &[u8] = &bytemuck::cast_slice(&buffer);
+                        let bytes: &[u8] = bytemuck::cast_slice(&buffer);
 
                         let cfg = Config::new().with_encoder_config(enc.clone());
                         let mut ctx: Context<u16> = cfg.new_context().unwrap();
@@ -370,7 +400,38 @@ pub fn lib_main() -> Result<()> {
                                 let data = pkt.data;
                                 match output_encoding.as_str() {
                                     "avif" => {
-                                        warn!("avif encoding not supported for mono16");
+                                        metadata.parameters.insert(
+                                            "encoding".to_string(),
+                                            Parameter::String("avif".to_string()),
+                                        );
+
+                                        let mut aviffy = avif_serialize::Aviffy::new();
+                                        aviffy
+                                            .full_color_range(false)
+                                            .set_seq_profile(0)
+                                            .set_monochrome(true);
+
+                                        let aviffy = if let Ok(exif) =
+                                            metadata_to_exif(&metadata.parameters)
+                                        {
+                                            aviffy.set_exif(exif)
+                                        } else {
+                                            &mut aviffy
+                                        };
+
+                                        let data = aviffy.to_vec(
+                                            &data,
+                                            None,
+                                            enc.width as u32,
+                                            enc.height as u32,
+                                            enc.bit_depth as u8,
+                                        );
+
+                                        let arrow = data.into_arrow();
+
+                                        node.send_output(id, metadata.parameters.clone(), arrow)
+                                            .context("could not send output")
+                                            .unwrap();
                                     }
                                     _ => {
                                         metadata.parameters.insert(

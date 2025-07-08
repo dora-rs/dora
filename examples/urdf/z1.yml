@@ -1,0 +1,35 @@
+nodes:
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_z1: pytorch_kinematics/cmd_vel
+    env:
+      z1_urdf: "z1_description"
+      z1_transform: "0. 0. 0. 1. 0. 0. 0."
+
+  - id: gamepad
+    build: pip install -e ../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+    env:
+      MAX_LINEAR_SPEED: 0.01
+      MAX_ANGULAR_SPEED: 0.05
+
+  - id: pytorch_kinematics
+    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      cmd_vel: gamepad/cmd_vel
+    outputs:
+      - cmd_vel
+    env:
+      MODEL_NAME: "z1_description"
+      END_EFFECTOR_LINK: "link06"
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."
+      POSITION_TOLERANCE: 0.001
+      ROTATION_TOLERANCE: 0.001
