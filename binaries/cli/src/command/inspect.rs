@@ -1,47 +1,16 @@
 use std::{ptr::NonNull, sync::Arc};
 
 use colored::Colorize;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::zenoh_output_publish_topic;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
     common::Timestamped,
-    coordinator_to_cli::ControlRequestReply,
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{eyre, Context, Result};
 use uuid::Uuid;
 
 use crate::buffer_into_arrow_array;
-
-pub fn toggle_inspect(
-    session: &mut TcpRequestReplyConnection,
-    uuid: Option<Uuid>,
-    name: Option<String>,
-    outputs: Vec<(NodeId, DataId)>,
-    inspector_id: Uuid,
-    stop: bool,
-) -> Result<Uuid> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::Inspect {
-                uuid,
-                name,
-                outputs,
-                inspector_id,
-                stop,
-            })
-            .wrap_err("")?,
-        )
-        .wrap_err("failed to send inspect request message")?;
-
-    let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match reply {
-        ControlRequestReply::Inspect(dataflow_id) => Ok(dataflow_id),
-        other => bail!("unexpected reply to daemon logs: {other:?}"),
-    }
-}
 
 pub async fn log_to_terminal(
     zenoh_session: zenoh::Session,

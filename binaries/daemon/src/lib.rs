@@ -796,43 +796,6 @@ impl Daemon {
 
                 RunStatus::Continue
             }
-            DaemonCoordinatorEvent::Inspect {
-                dataflow_id,
-                output_ids,
-                inspector_id,
-                stop,
-            } => {
-                let reply = match self.running.get_mut(&dataflow_id) {
-                    Some(dataflow) => {
-                        for output_id in &output_ids {
-                            let output_id = OutputId(output_id.0.clone(), output_id.1.clone());
-                            if stop {
-                                if dataflow.inspected_outputs.get_mut(&output_id).is_some_and(
-                                    |inspectors| {
-                                        inspectors.remove(&inspector_id);
-                                        inspectors.is_empty()
-                                    },
-                                ) {
-                                    dataflow.inspected_outputs.remove(&output_id);
-                                }
-                            } else {
-                                dataflow
-                                    .inspected_outputs
-                                    .entry(output_id)
-                                    .or_default()
-                                    .insert(inspector_id);
-                            }
-                        }
-                        Ok(())
-                    }
-                    None => Err(format!("no running dataflow with ID `{dataflow_id}`")),
-                };
-                let _ = reply_tx
-                    .send(Some(DaemonCoordinatorReply::InspectResult(reply)))
-                    .map_err(|_| error!("could not send inspect reply from daemon to coordinator"));
-
-                RunStatus::Continue
-            }
             DaemonCoordinatorEvent::Destroy => {
                 tracing::info!("received destroy command -> exiting");
                 let (notify_tx, notify_rx) = oneshot::channel();

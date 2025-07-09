@@ -68,15 +68,11 @@ pub enum ControlRequest {
         name: Option<String>,
         node: NodeId,
     },
-    Inspect {
-        uuid: Option<Uuid>,
-        name: Option<String>,
-        outputs: Vec<(NodeId, DataId)>,
-        inspector_id: Uuid,
-        stop: bool,
-    },
     Destroy,
     List,
+    Info {
+        dataflow_uuid: Uuid,
+    },
     DaemonConnected,
     ConnectedMachines,
     LogSubscribe {

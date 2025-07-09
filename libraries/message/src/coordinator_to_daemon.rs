@@ -4,12 +4,10 @@ use std::{
     time::Duration,
 };
 
-use uuid::Uuid;
-
 use crate::{
     common::{DaemonId, GitSource},
     descriptor::{Descriptor, ResolvedNode},
-    id::{DataId, NodeId, OperatorId},
+    id::{NodeId, OperatorId},
     BuildId, DataflowId, SessionId,
 };
 
@@ -53,12 +51,6 @@ pub enum DaemonCoordinatorEvent {
     Logs {
         dataflow_id: DataflowId,
         node_id: NodeId,
-    },
-    Inspect {
-        dataflow_id: DataflowId,
-        output_ids: Vec<(NodeId, DataId)>,
-        inspector_id: Uuid,
-        stop: bool,
     },
     Destroy,
     Heartbeat,

@@ -6,7 +6,7 @@ use std::{
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{common::DaemonId, id::NodeId, BuildId};
+use crate::{common::DaemonId, descriptor::Descriptor, id::NodeId, BuildId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
@@ -33,6 +33,11 @@ pub enum ControlRequestReply {
         result: DataflowResult,
     },
     DataflowList(DataflowList),
+    DataflowInfo {
+        uuid: Uuid,
+        name: Option<String>,
+        descriptor: Descriptor,
+    },
     DestroyOk,
     DaemonConnected(bool),
     ConnectedDaemons(BTreeSet<DaemonId>),

@@ -21,12 +21,7 @@ use dora_tracing::TracingBuilder;
 use duration_str::parse;
 use eyre::{bail, Context};
 use formatting::FormatDataflowError;
-use std::{
-    env::current_dir,
-    io::Write,
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
+use std::{env::current_dir, io::Write, net::SocketAddr};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
@@ -427,8 +422,9 @@ fn run_cli(args: Args) -> eyre::Result<()> {
         } => {
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-            let (uuid, name) = resolve_dataflow_identifier(&mut *session, dataflow.as_deref())?;
-            command::logs(&mut *session, uuid, name, node)?
+            let uuid = resolve_dataflow_identifier(&mut *session, dataflow.as_deref())?;
+            // kept for backward compatibility
+            command::logs(&mut *session, Some(uuid), None, node)?
         }
         Command::Inspect {
             dataflow,
@@ -441,7 +437,7 @@ fn run_cli(args: Args) -> eyre::Result<()> {
             }
             let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-            let (uuid, name) = resolve_dataflow_identifier(&mut *session, dataflow.as_deref())?;
+            let dataflow_id = resolve_dataflow_identifier(&mut *session, dataflow.as_deref())?;
             let data = data
                 .into_iter()
                 .map(|s| {
@@ -456,42 +452,37 @@ fn run_cli(args: Args) -> eyre::Result<()> {
                     }
                 })
                 .collect::<eyre::Result<Vec<_>>>()?;
-            let inspector_id = Uuid::new_v4();
-            let dataflow_id = command::inspect::toggle_inspect(
-                &mut *session,
-                uuid,
-                name.clone(),
-                data.clone(),
-                inspector_id,
-                false,
-            )?;
-
-            let outputs = data.clone();
-
-            let finalizer = move || {
-                eprintln!("\nStopping inspection...");
-                if let Err(err) = command::inspect::toggle_inspect(
-                    &mut *session,
-                    uuid,
-                    name,
-                    data,
-                    inspector_id,
-                    true,
-                ) {
-                    eprintln!("Error while stopping inspection: {err}");
+            let dataflow_descriptor = {
+                let reply_raw = session
+                    .request(
+                        &serde_json::to_vec(&ControlRequest::Info {
+                            dataflow_uuid: dataflow_id,
+                        })
+                        .unwrap(),
+                    )
+                    .wrap_err("failed to send message")?;
+                let reply: ControlRequestReply =
+                    serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+                match reply {
+                    ControlRequestReply::DataflowInfo { descriptor, .. } => descriptor,
+                    ControlRequestReply::Error(err) => bail!("{err}"),
+                    other => bail!("unexpected list dataflow reply: {other:?}"),
                 }
             };
-            let finalizer = Arc::new(Mutex::new(Some(finalizer)));
-            ctrlc::set_handler({
-                let finalizer = finalizer.clone();
-                move || {
-                    if let Some(finalizer) = finalizer.lock().unwrap().take() {
-                        finalizer();
-                    }
-                    std::process::exit(0);
-                }
-            })
-            .expect("failed to set ctrlc handler");
+            if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
+                bail!(
+                    "Dataflow `{dataflow_id}` does not have `publish_all_messages_to_zenoh` enabled. You should enable it in order to inspect data.\n\
+                    \n\
+                    Tip; Add the following snipppet to your dataflow descriptor:\n\
+                    \n\
+                    ```\n\
+                    _unstable_debug:\n  publish_all_messages_to_zenoh: true\n\
+                    ```
+                    "
+                );
+            }
+
+            let outputs = data.clone();
 
             let rt = Builder::new_multi_thread()
                 .enable_all()
@@ -529,9 +520,6 @@ fn run_cli(args: Args) -> eyre::Result<()> {
             if let Err(e) = result {
                 eprintln!("Error while inspecting data: {e}");
             }
-            if let Some(finalizer) = finalizer.lock().unwrap().take() {
-                finalizer();
-            };
         }
         Command::Start {
             dataflow,
@@ -799,27 +787,29 @@ fn buffer_into_arrow_array(
 
 fn resolve_dataflow_identifier(
     session: &mut TcpRequestReplyConnection,
-    dataflow: Option<&str>,
-) -> eyre::Result<(Option<Uuid>, Option<String>)> {
-    if let Some(dataflow) = dataflow {
-        let uuid = Uuid::parse_str(dataflow).ok();
-        let name = if uuid.is_some() {
-            None
-        } else {
-            Some(dataflow.to_owned())
-        };
-        Ok((uuid, name))
-    } else {
-        let list =
-            query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
-        let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
-        let uuid = match &active[..] {
-            [] => bail!("No dataflows are running"),
-            [uuid] => uuid.clone(),
-            _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
-        };
-        Ok((Some(uuid.uuid), None))
+    name_or_uuid: Option<&str>,
+) -> eyre::Result<Uuid> {
+    if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
+        return Ok(uuid);
     }
+
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
+    if let Some(name) = name_or_uuid {
+        let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
+            bail!("No dataflow with name `{name}` is running");
+        };
+        return Ok(dataflow.uuid);
+    }
+    Ok(match &active[..] {
+        [] => bail!("No dataflows are running"),
+        [entry] => entry.uuid,
+        _ => {
+            inquire::Select::new("Choose dataflow to show logs:", active)
+                .prompt()?
+                .uuid
+        }
+    })
 }
 
 fn stop_dataflow_interactive(
