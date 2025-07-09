@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -49,6 +50,10 @@ class DoraLeRobotRecorder:
         self.frame_interval = 1.0 / self.fps
         self.last_frame_time = None
         self.shutdown = False
+
+        # AVIF frame saving
+        self.save_avif_frames = os.getenv("SAVE_AVIF_FRAMES", "false").lower() == "true"
+        self.avif_data_buffer = {}
 
         self._setup_dataset()
         self._start_frame_timer()
@@ -142,6 +147,40 @@ class DoraLeRobotRecorder:
             image_writer_threads=int(os.getenv("IMAGE_WRITER_THREADS", "4"))
             * len(self.cameras),
         )
+
+        # Setup AVIF frame save directories
+        if self.save_avif_frames:
+            self._setup_avif_directories()
+
+    def _setup_avif_directories(self):
+        """Set up directories for AVIF frame saving."""
+        self.dataset_root = Path(self.dataset.root)
+        self.avif_base_path = self.dataset_root / "avif_frames" / "chunk-000"
+
+        for camera_name in self.cameras:
+            camera_path = self.avif_base_path / f"observation.images.{camera_name}"
+            camera_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_avif_save_path(self, camera_name: str, frame_index: int) -> Path:
+        """Get the save path for AVIF frame."""
+        episode_dir = (
+            self.avif_base_path
+            / f"observation.images.{camera_name}"
+            / f"episode_{self.episode_index:06d}"
+        )
+        episode_dir.mkdir(parents=True, exist_ok=True)
+        return episode_dir / f"frame_{frame_index:06d}.avif"
+
+    def _save_avif_frames(self):
+        """Save AVIF encoded frames when adding frame to dataset."""
+        for camera_name in self.cameras:
+            avif_input_id = f"rav1e_{camera_name}"
+            if avif_input_id in self.avif_data_buffer:
+                avif_data = self.avif_data_buffer[avif_input_id]["data"]
+                save_path = self._get_avif_save_path(camera_name, self.frame_count)
+
+                with open(save_path, "wb") as f:
+                    f.write(avif_data.to_numpy())
 
     def _check_episode_timing(self):
         """Check if we need to start/end Episodes."""
@@ -237,11 +276,19 @@ class DoraLeRobotRecorder:
         # Only store data if not in reset phase
         if not self.in_reset_phase:
             with self.buffer_lock:
-                self.data_buffer[input_id] = {
-                    "data": data,
-                    "timestamp": time.time(),
-                    "metadata": metadata,
-                }
+                # Store AVIF data separately for saving
+                if self.save_avif_frames and input_id.startswith("rav1e_"):
+                    self.avif_data_buffer[input_id] = {
+                        "data": data,
+                        "timestamp": time.time(),
+                        "metadata": metadata,
+                    }
+                else:
+                    self.data_buffer[input_id] = {
+                        "data": data,
+                        "timestamp": time.time(),
+                        "metadata": metadata,
+                    }
 
         should_stop = self._check_episode_timing()
         if should_stop:
@@ -315,6 +362,9 @@ class DoraLeRobotRecorder:
             if missing_keys:
                 print(f"Missing required data in frame: {missing_keys}")
                 return
+
+            if self.save_avif_frames:
+                self._save_avif_frames()
 
             self.dataset.add_frame(
                 frame=frame_data,
