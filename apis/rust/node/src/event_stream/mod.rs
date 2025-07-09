@@ -30,12 +30,33 @@ use dora_core::{
 };
 use eyre::{eyre, Context};
 
+pub use scheduler::Scheduler as EventScheduler;
+
 mod data_conversion;
 mod event;
 pub mod merged;
 mod scheduler;
 mod thread;
 
+/// Asynchronous iterator over the incoming [`Event`]s destined for this node.
+///
+/// This struct [implements](#impl-Stream-for-EventStream) the [`Stream`] trait,
+/// so you can use methods of the [`StreamExt`] trait
+/// on this struct. A common pattern is `while let Some(event) = event_stream.next().await`.
+///
+/// Nodes should iterate over this event stream and react to events that they are interested in.
+/// Typically, the most important event type is [`Event::Input`].
+/// You don't need to handle all events, it's fine to ignore events that are not relevant to your node.
+///
+/// The event stream will close itself after a [`Event::Stop`] was received.
+/// A manual `break` on [`Event::Stop`] is typically not needed.
+/// _(You probably do need to use a manual `break` on stop events when using the
+/// [`StreamExt::merge`][`futures_concurrency::stream::StreamExt::merge`] implementation on
+/// [`EventStream`] to combine the stream with an external one.)_
+///
+/// Once the event stream finished, nodes should exit.
+/// Note that Dora kills nodes that don't exit quickly after a [`Event::Stop`] of type
+/// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
     receiver: flume::r#async::RecvStream<'static, EventItem>,
@@ -158,16 +179,61 @@ impl EventStream {
         })
     }
 
-    /// wait for the next event on the events stream.
+    /// Synchronously waits for the next event.
+    ///
+    /// Blocks the thread until the next event arrives.
+    /// Returns [`None`] once the event stream is closed.
+    ///
+    /// For an asynchronous variant of this method see [`recv_async`][Self::recv_async].
+    ///
+    /// ## Event Reordering
+    ///
+    /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
+    /// events might be returned in a different order than they occurred. For details, check the
+    /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
+    /// [`Stream`] trait).
     pub fn recv(&mut self) -> Option<Event> {
         futures::executor::block_on(self.recv_async())
     }
 
-    /// wait for the next event on the events stream until timeout
+    /// Receives the next incoming [`Event`] synchronously with a timeout.
+    ///
+    /// Blocks the thread until the next event arrives or the timeout is reached.
+    /// Returns a [`Event::Error`] if no event was received within the given duration.
+    ///
+    /// Returns [`None`] once the event stream is closed.
+    ///
+    /// For an asynchronous variant of this method see [`recv_async_timeout`][Self::recv_async_timeout].
+    ///
+    /// ## Event Reordering
+    ///
+    /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
+    /// events might be returned in a different order than they occurred. For details, check the
+    /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
+    /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
         futures::executor::block_on(self.recv_async_timeout(dur))
     }
 
+    /// Receives the next incoming [`Event`] asynchronously, using an [`EventScheduler`] for fairness.
+    ///
+    /// Returns [`None`] once the event stream is closed.
+    ///
+    /// ## Event Reordering
+    ///
+    /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
+    /// events might be returned in a different order than they occurred. For details, check the
+    /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`] method with a custom timeout future instead
+    /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
         loop {
             if self.scheduler.is_empty() {
@@ -188,6 +254,21 @@ impl EventStream {
         event.map(Self::convert_event_item)
     }
 
+    /// Receives the next incoming [`Event`] asynchronously with a timeout.
+    ///
+    /// Returns a [`Event::Error`] if no event was received within the given duration.
+    ///
+    /// Returns [`None`] once the event stream is closed.
+    ///
+    /// ## Event Reordering
+    ///
+    /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
+    /// events might be returned in a different order than they occurred. For details, check the
+    /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`] method with a custom timeout future instead
+    /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
         match select(Delay::new(dur), pin!(self.recv_async())).await {
             Either::Left((_elapsed, _)) => Some(Self::convert_event_item(EventItem::TimeoutError(
