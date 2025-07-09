@@ -1,70 +1,101 @@
+use super::{default_tracing, Executable};
+use crate::{
+    command::start::attach::attach_dataflow,
+    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
+    output::print_log_message,
+    session::DataflowSession,
+};
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::descriptor::{Descriptor, DescriptorExt};
+use dora_core::{
+    descriptor::{Descriptor, DescriptorExt},
+    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+};
 use dora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{bail, Context};
 use std::{
-    net::{SocketAddr, TcpStream},
+    net::{IpAddr, SocketAddr, TcpStream},
     path::PathBuf,
 };
 use uuid::Uuid;
 
-use crate::{
-    connect_to_coordinator, output::print_log_message, resolve_dataflow, session::DataflowSession,
-};
-use attach::attach_dataflow;
-
 mod attach;
 
-pub fn start(
+#[derive(Debug, clap::Args)]
+/// Start the given dataflow path. Attach a name to the running dataflow by using --name.
+pub struct Start {
+    /// Path to the dataflow descriptor file
+    #[clap(value_name = "PATH")]
     dataflow: String,
+    /// Assign a name to the dataflow
+    #[clap(long)]
     name: Option<String>,
-    coordinator_socket: SocketAddr,
+    /// Address of the dora coordinator
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    coordinator_addr: IpAddr,
+    /// Port number of the coordinator control server
+    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    coordinator_port: u16,
+    /// Attach to the dataflow and wait for its completion
+    #[clap(long, action)]
     attach: bool,
+    /// Run the dataflow in background
+    #[clap(long, action)]
     detach: bool,
+    /// Enable hot reloading (Python only)
+    #[clap(long, action)]
     hot_reload: bool,
+    // Use UV to run nodes.
+    #[clap(long, action)]
     uv: bool,
-) -> eyre::Result<()> {
-    let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
-        start_dataflow(dataflow, name, coordinator_socket, uv)?;
+}
 
-    let attach = match (attach, detach) {
-        (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
-        (true, false) => true,
-        (false, true) => false,
-        (false, false) => {
-            println!("attaching to dataflow (use `--detach` to run in background)");
-            true
+impl Executable for Start {
+    fn execute(self) -> eyre::Result<()> {
+        default_tracing()?;
+        let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
+
+        let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
+            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
+
+        let attach = match (self.attach, self.detach) {
+            (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
+            (true, false) => true,
+            (false, true) => false,
+            (false, false) => {
+                println!("attaching to dataflow (use `--detach` to run in background)");
+                true
+            }
+        };
+
+        if attach {
+            let log_level = env_logger::Builder::new()
+                .filter_level(log::LevelFilter::Info)
+                .parse_default_env()
+                .build()
+                .filter();
+
+            attach_dataflow(
+                dataflow_descriptor,
+                dataflow,
+                dataflow_id,
+                &mut *session,
+                self.hot_reload,
+                coordinator_socket,
+                log_level,
+            )
+        } else {
+            let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
+            // wait until dataflow is started
+            wait_until_dataflow_started(
+                dataflow_id,
+                &mut session,
+                coordinator_socket,
+                log::LevelFilter::Info,
+                print_daemon_name,
+            )
         }
-    };
-
-    if attach {
-        let log_level = env_logger::Builder::new()
-            .filter_level(log::LevelFilter::Info)
-            .parse_default_env()
-            .build()
-            .filter();
-
-        attach_dataflow(
-            dataflow_descriptor,
-            dataflow,
-            dataflow_id,
-            &mut *session,
-            hot_reload,
-            coordinator_socket,
-            log_level,
-        )
-    } else {
-        let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
-        // wait until dataflow is started
-        wait_until_dataflow_started(
-            dataflow_id,
-            &mut session,
-            coordinator_socket,
-            log::LevelFilter::Info,
-            print_daemon_name,
-        )
     }
 }
 
@@ -83,8 +114,7 @@ fn start_dataflow(
     let mut session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to dora coordinator")?;
 
-    let local_working_dir =
-        super::local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
 
     let dataflow_id = {
         let dataflow = dataflow_descriptor.clone();
