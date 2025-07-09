@@ -22,6 +22,3 @@ nodes:
       data: dora-echo/data
     env:
       DATA: "[1, 2, 3, 4, 5]"
-
-_unstable_debug:
-  publish_all_messages_to_zenoh: true

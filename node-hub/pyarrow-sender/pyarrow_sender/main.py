@@ -49,10 +49,7 @@ def main():
         data = pa.array([data])
     else:
         data = pa.array(data)  # initialize pyarrow array
-    while True:
-        import time
-        node.send_output("data", data)
-        time.sleep(1)
+    node.send_output("data", data)
 
 
 if __name__ == "__main__":
