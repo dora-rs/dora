@@ -1,7 +1,11 @@
+//! Utility functions for converting Arrow arrays to/from raw data.
+//!
 use arrow::array::{ArrayData, BufferSpec};
 use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
 use eyre::Context;
 
+/// Calculates the data size in bytes required for storing a continuous copy of the given Arrow
+/// array.
 pub fn required_data_size(array: &ArrayData) -> usize {
     let mut next_offset = 0;
     required_data_size_inner(array, &mut next_offset);
@@ -21,6 +25,12 @@ fn required_data_size_inner(array: &ArrayData, next_offset: &mut usize) {
     }
 }
 
+/// Copy the given Arrow array into the provided buffer.
+///
+/// If the Arrow array consists of multiple buffers, they are placed continuously in the target
+/// buffer (there might be some padding for alignment)
+///
+/// Panics if the buffer is not large enough.
 pub fn copy_array_into_sample(target_buffer: &mut [u8], arrow_array: &ArrayData) -> ArrowTypeInfo {
     let mut next_offset = 0;
     copy_array_into_sample_inner(target_buffer, &mut next_offset, arrow_array)
@@ -71,6 +81,9 @@ fn copy_array_into_sample_inner(
     }
 }
 
+/// Tries to convert the given raw Arrow buffer into an Arrow array.
+///
+/// The `type_info` is required for decoding the `raw_buffer` correctly.
 pub fn buffer_into_arrow_array(
     raw_buffer: &arrow::buffer::Buffer,
     type_info: &ArrowTypeInfo,

@@ -63,6 +63,10 @@ enum TokioRuntime {
     Handle(Handle),
 }
 
+/// Allows sending outputs and retrieving node information.
+///
+/// The main purpose of this struct is to send outputs via Dora. There are also functions available
+/// for retrieving the node configuration.
 pub struct DoraNode {
     id: NodeId,
     dataflow_id: DataflowId,
@@ -80,7 +84,11 @@ pub struct DoraNode {
 }
 
 impl DoraNode {
-    /// Initiate a node from environment variables set by `dora-coordinator`
+    /// Initiate a node from environment variables set by the Dora daemon.
+    ///
+    /// This is the recommended initialization function for Dora nodes, which are spawned by
+    /// Dora daemon instances.
+    ///
     ///
     /// ```no_run
     /// use dora_node_api::DoraNode;
@@ -106,6 +114,8 @@ impl DoraNode {
     }
 
     /// Initiate a node from a dataflow id and a node id.
+    ///
+    /// This initialization function should be used for [_dynamic nodes_](index.html#dynamic-nodes).
     ///
     /// ```no_run
     /// use dora_node_api::DoraNode;
@@ -139,6 +149,11 @@ impl DoraNode {
         }
     }
 
+    /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.
+    ///
+    /// This function first tries initializing the traditional way through
+    /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
+    /// [`init_from_node_id`][Self::init_from_node_id].
     pub fn init_flexible(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
         if std::env::var("DORA_NODE_CONFIG").is_ok() {
             info!("Skipping {node_id} specified within the node initialization in favor of `DORA_NODE_CONFIG` specified by `dora start`");
@@ -148,6 +163,8 @@ impl DoraNode {
         }
     }
 
+    /// Internal initialization routine that should not be used outside of Dora.
+    #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
         let NodeConfig {
@@ -232,7 +249,8 @@ impl DoraNode {
         }
     }
 
-    /// Send data from the node to the other nodes.
+    /// Send raw data from the node to the other nodes.
+    ///
     /// We take a closure as an input to enable zero copy on send.
     ///
     /// ```no_run
@@ -255,6 +273,8 @@ impl DoraNode {
     ///     }).expect("Could not send output");
     /// ```
     ///
+    /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
+    /// configuration file.
     pub fn send_output_raw<F>(
         &mut self,
         output_id: DataId,
@@ -276,6 +296,14 @@ impl DoraNode {
         self.send_output_sample(output_id, type_info, parameters, Some(sample))
     }
 
+    /// Sends the give Arrow array as an output message.
+    ///
+    /// Uses shared memory for efficient data transfer if suitable.
+    ///
+    /// This method might copy the message once to move it to shared memory.
+    ///    
+    /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
+    /// configuration file.
     pub fn send_output(
         &mut self,
         output_id: DataId,
@@ -299,6 +327,12 @@ impl DoraNode {
         Ok(())
     }
 
+    /// Send the given raw byte data as output.
+    ///
+    /// Might copy the data once to move it into shared memory.
+    ///
+    /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
+    /// configuration file.
     pub fn send_output_bytes(
         &mut self,
         output_id: DataId,
@@ -314,6 +348,12 @@ impl DoraNode {
         })
     }
 
+    /// Send the give raw byte data with the provided type information.
+    ///
+    /// It is recommended to use a function like [`send_output`][Self::send_output] instead.
+    ///
+    /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
+    /// configuration file.
     pub fn send_typed_output<F>(
         &mut self,
         output_id: DataId,
@@ -335,6 +375,12 @@ impl DoraNode {
         self.send_output_sample(output_id, type_info, parameters, Some(sample))
     }
 
+    /// Sends the given [`DataSample`] as output, combined with the given type information.
+    ///
+    /// It is recommended to use a function like [`send_output`][Self::send_output] instead.
+    ///
+    /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
+    /// configuration file.
     pub fn send_output_sample(
         &mut self,
         output_id: DataId,
@@ -363,32 +409,46 @@ impl DoraNode {
         Ok(())
     }
 
-    pub fn close_outputs(&mut self, outputs: Vec<DataId>) -> eyre::Result<()> {
-        for output_id in &outputs {
+    /// Report the given outputs IDs as closed.
+    ///
+    /// The node is not allowed to send more outputs with the closed IDs.
+    ///
+    /// Closing outputs early can be helpful to receivers.
+    pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> eyre::Result<()> {
+        for output_id in &outputs_ids {
             if !self.node_config.outputs.remove(output_id) {
                 eyre::bail!("unknown output {output_id}");
             }
         }
 
         self.control_channel
-            .report_closed_outputs(outputs)
+            .report_closed_outputs(outputs_ids)
             .wrap_err("failed to report closed outputs to daemon")?;
 
         Ok(())
     }
 
+    /// Returns the ID of the node as specified in the dataflow configuration file.
     pub fn id(&self) -> &NodeId {
         &self.id
     }
 
+    /// Returns the unique identifier for the running dataflow instance.
+    ///
+    /// Dora assigns each dataflow instance a random identifier when started.
     pub fn dataflow_id(&self) -> &DataflowId {
         &self.dataflow_id
     }
 
+    /// Returns the input and output configuration of this node.
     pub fn node_config(&self) -> &NodeRunConfig {
         &self.node_config
     }
 
+    /// Allocates a [`DataSample`] of the specified size.
+    ///
+    /// The data sample will use shared memory when suitable to enable efficient data transfer
+    /// when sending an output message.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
         let data = if data_len >= ZERO_COPY_THRESHOLD {
             // create shared memory region
@@ -527,6 +587,11 @@ impl Drop for DoraNode {
     }
 }
 
+/// A data region suitable for sending as an output message.
+///
+/// The region is stored in shared memory when suitable to enable efficient data transfer.
+///
+/// `DataSample` implements the [`Deref`] and [`DerefMut`] traits to read and write the mapped data.
 pub struct DataSample {
     inner: DataSampleInner,
     len: usize,
