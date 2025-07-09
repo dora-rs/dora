@@ -56,6 +56,7 @@ nodes:
       
       # Optional settings
       USE_VIDEOS: "true"
+      SAVE_AVIF_FRAMES: "true" # This will additionally save frames
       PUSH_TO_HUB: "false" 
       PRIVATE: "false"
       TAGS: "robotics,manipulation,imitation_learning"
@@ -81,26 +82,26 @@ The node will send instructions on dora-rerun, about episode starting, reset tim
 
 ### Required Environment Variables
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `REPO_ID` | HuggingFace dataset repo | `"username/dataset_name"` |
-| `SINGLE_TASK` | Task description | `"Pick and place objects"` |
-| `CAMERA_NAMES` | Comma-separated camera names | `"laptop,front,top"` |
-| `CAMERA_*_RESOLUTION` | Resolution for each camera | `"480,640,3"` |
-| `ROBOT_JOINTS` | Comma-separated joint names | `"joint1,joint2,gripper"` |
+| Variable              | Description                  | Example                    |
+| --------------------- | ---------------------------- | -------------------------- |
+| `REPO_ID`             | HuggingFace dataset repo     | `"username/dataset_name"`  |
+| `SINGLE_TASK`         | Task description             | `"Pick and place objects"` |
+| `CAMERA_NAMES`        | Comma-separated camera names | `"laptop,front,top"`       |
+| `CAMERA_*_RESOLUTION` | Resolution for each camera   | `"480,640,3"`              |
+| `ROBOT_JOINTS`        | Comma-separated joint names  | `"joint1,joint2,gripper"`  |
 
 ### Optional Settings
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FPS` | `30` | Recording frame rate (match camera fps) |
-| `TOTAL_EPISODES` | `10` | Number of episodes to record |
-| `EPISODE_DURATION_S` | `60` | Episode length in seconds |
-| `RESET_DURATION_S` | `15` | Break between episodes to reset the environment |
-| `USE_VIDEOS` | `true` | Encode as MP4 videos, else saves images |
-| `PUSH_TO_HUB` | `false` | Upload to HuggingFace Hub |
-| `PRIVATE` | `false` | Make dataset private |
-| `ROOT_PATH` | `~/.cache/huggingface/lerobot/your_repo_id` | Local storage path where you want to save the dataset |
+| Variable             | Default                                     | Description                                           |
+| -------------------- | ------------------------------------------- | ----------------------------------------------------- |
+| `FPS`                | `30`                                        | Recording frame rate (match camera fps)               |
+| `TOTAL_EPISODES`     | `10`                                        | Number of episodes to record                          |
+| `EPISODE_DURATION_S` | `60`                                        | Episode length in seconds                             |
+| `RESET_DURATION_S`   | `15`                                        | Break between episodes to reset the environment       |
+| `USE_VIDEOS`         | `true`                                      | Encode as MP4 videos, else saves images               |
+| `PUSH_TO_HUB`        | `false`                                     | Upload to HuggingFace Hub                             |
+| `PRIVATE`            | `false`                                     | Make dataset private                                  |
+| `ROOT_PATH`          | `~/.cache/huggingface/lerobot/your_repo_id` | Local storage path where you want to save the dataset |
 
 ## License
 

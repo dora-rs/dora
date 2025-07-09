@@ -52,9 +52,7 @@ nodes:
       MODEL_PATH: "./outputs/train/act_so101_test/checkpoints/last/pretrained_model/" # Path to your trained model
       TASK_DESCRIPTION: "Your task"
       ROBOT_TYPE: "so101_follower"
-      CAMERA_NAMES: "laptop, front"
-      CAMERA_FRONT_RESOLUTION: "480,640,3"
-      CAMERA_LAPTOP_RESOLUTION: "480,640,3"
+      CAMERA_NAMES: "front, laptop"
       INFERENCE_FPS: "30"
 
   # Visualization in rerun (optional)
@@ -65,3 +63,7 @@ nodes:
       image_laptop: laptop_cam/image
       image_front: front_cam/image
       status: policy_inference/status
+      jointstate_so101_new_calib: so101/pose
+    env:
+      so101_new_calib_urdf: "so_arm101_description"
+      so101_new_calib_transform: "0. 0. 0. 1. 0. 0. 0."

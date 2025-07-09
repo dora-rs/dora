@@ -2,7 +2,6 @@
 
 import os
 import queue
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,33 +24,23 @@ class DoraPolicyInference:
         self.message_queue = queue.Queue()
 
         self.data_buffer = {}
-        self.buffer_lock = threading.Lock()
         self.cameras = self._parse_cameras()
         self.task_description = os.getenv("TASK_DESCRIPTION", "")
 
         self.policy = None
         self.inference_fps = int(os.getenv("INFERENCE_FPS", "30"))
-        self.last_inference_time = None
-        self.inference_interval = 1.0 / self.inference_fps
+        self.min_inference_interval = 1.0 / self.inference_fps
+        self.last_inference_time = 0
 
         self.shutdown = False
         self._load_policy()
-        self._start_timer()
 
     def _parse_cameras(self) -> dict:
         """Parse camera configuration from environment variables."""
         camera_names_str = os.getenv("CAMERA_NAMES", "laptop,front")
         camera_names = [name.strip() for name in camera_names_str.split(",")]
 
-        cameras = {}
-        for camera_name in camera_names:
-            resolution = os.getenv(
-                f"CAMERA_{camera_name.upper()}_RESOLUTION", "480,640,3"
-            )
-            dims = [int(d.strip()) for d in resolution.split(",")]
-            cameras[camera_name] = dims
-
-        return cameras
+        return camera_names
 
     def _load_policy(self):
         """Load the trained LeRobot policy."""
@@ -75,64 +64,52 @@ class DoraPolicyInference:
         self._output(f"Policy loaded successfully on device: {self.device}")
         self._output(f"Policy type: {config.type}")
 
-    def _start_timer(self):
-        """Start the inference timing thread."""
-        self.stop_timer = False
-        self.inference_thread = threading.Thread(
-            target=self._inference_loop, daemon=True
-        )
-        self.inference_thread.start()
+    def _check_inference_trigger(self, input_id: str) -> bool:
+        """Determine if inference should be triggered based on the input received."""
+        current_time = time.time()
+        # Assign lead camera as trigger for inference
+        if input_id != self.cameras[0]:
+            return False
 
-    def _inference_loop(self):
-        """Inference loop."""
-        while not self.stop_timer and not self.shutdown:
-            current_time = time.time()
-            if (
-                self.last_inference_time is None
-                or current_time - self.last_inference_time >= self.inference_interval
-            ):
-                self._run_inference()
-                self.last_inference_time = current_time
+        # don't run inference too frequently, in case camera fps is too high
+        if current_time - self.last_inference_time < self.min_inference_interval:
+            return False
 
-            time.sleep(0.001)  # Small sleep to prevent busy waiting
+        return True
 
     def _run_inference(self):
         """Run policy inference on current observations."""
-        with self.buffer_lock:
-            required_inputs = set(self.cameras.keys()) | {"robot_state"}
-            available_inputs = set(self.data_buffer.keys())
+        current_time = time.time()
 
-            if not required_inputs.issubset(available_inputs):
-                return
-
-            observation = {}
-            for camera_name in self.cameras:
-                if camera_name in self.data_buffer:
-                    image = self._convert_camera_data(
-                        self.data_buffer[camera_name]["data"],
-                        self.data_buffer[camera_name]["metadata"],
-                    )
-                    observation[f"observation.images.{camera_name}"] = image
-
-            state = self._convert_robot_data(self.data_buffer["robot_state"]["data"])
-            observation["observation.state"] = state
-
-            action = (
-                predict_action(
-                    observation=observation,
-                    policy=self.policy,
-                    device=self.device,
-                    use_amp=self.policy.config.use_amp,
-                    task=self.task_description,
+        observation = {}
+        for camera_name in self.cameras:
+            if camera_name in self.data_buffer:
+                image = self._convert_camera_data(
+                    self.data_buffer[camera_name]["data"],
+                    self.data_buffer[camera_name]["metadata"],
                 )
-                .cpu()
-                .numpy()
+                observation[f"observation.images.{camera_name}"] = image
+
+        state = self._convert_robot_data(self.data_buffer["robot_state"]["data"])
+        observation["observation.state"] = state
+
+        action = (
+            predict_action(
+                observation=observation,
+                policy=self.policy,
+                device=self.device,
+                use_amp=self.policy.config.use_amp,
+                task=self.task_description,
             )
+            .cpu()
+            .numpy()
+        )
 
-            # Convert from degrees to radians
-            action = np.deg2rad(action)
+        # Convert from degrees to radians
+        action = np.deg2rad(action)
+        self._send_action(action)
 
-            self._send_action(action)
+        self.last_inference_time = current_time
 
     def _convert_camera_data(self, dora_data, metadata) -> np.ndarray:
         """Convert camera data from Dora format to numpy."""
@@ -160,13 +137,17 @@ class DoraPolicyInference:
         self.message_queue.put(("action", action_message))
 
     def handle_input(self, input_id: str, data: Any, metadata: Any):
-        """Handle incoming data."""
-        with self.buffer_lock:
-            self.data_buffer[input_id] = {
-                "data": data,
-                "timestamp": time.time(),
-                "metadata": metadata,
-            }
+        """Handle incoming data and trigger inference if conditions are met."""
+        # Update data buffer
+        self.data_buffer[input_id] = {
+            "data": data,
+            "timestamp": time.time(),
+            "metadata": metadata,
+        }
+
+        # Check if inference should be triggered
+        if self._check_inference_trigger(input_id):
+            self._run_inference()
 
     def get_pending_messages(self):
         """Get all pending messages from the queue."""
@@ -185,11 +166,6 @@ class DoraPolicyInference:
         """Shutdown the inference node."""
         self._output("Shutting down policy inference...")
         self.shutdown = True
-        self.stop_timer = True
-
-        if self.inference_thread.is_alive():
-            self.inference_thread.join(timeout=5.0)
-
         self._output("Policy inference shutdown complete")
 
 
