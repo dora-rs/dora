@@ -1,12 +1,38 @@
+use super::Executable;
+use crate::{
+    common::{handle_dataflow_result, resolve_dataflow},
+    output::print_log_message,
+    session::DataflowSession,
+};
 use dora_daemon::{flume, Daemon, LogDestination};
+use dora_tracing::TracingBuilder;
 use eyre::Context;
 use tokio::runtime::Builder;
 
-use crate::{
-    handle_dataflow_result, output::print_log_message, resolve_dataflow, session::DataflowSession,
-};
+#[derive(Debug, clap::Args)]
+/// Run a dataflow locally.
+///
+/// Directly runs the given dataflow without connecting to a dora
+/// coordinator or daemon. The dataflow is executed on the local machine.
+pub struct Run {
+    /// Path to the dataflow descriptor file
+    #[clap(value_name = "PATH")]
+    dataflow: String,
+    // Use UV to run nodes.
+    #[clap(long, action)]
+    uv: bool,
+}
 
-pub fn run(dataflow: String, uv: bool) -> Result<(), eyre::Error> {
+pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
+    #[cfg(feature = "tracing")]
+    {
+        let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
+        TracingBuilder::new("run")
+            .with_stdout(log_level)
+            .build()
+            .wrap_err("failed to set up tracing subscriber")?;
+    }
+
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
@@ -31,4 +57,10 @@ pub fn run(dataflow: String, uv: bool) -> Result<(), eyre::Error> {
         LogDestination::Channel { sender: log_tx },
     ))?;
     handle_dataflow_result(result, None)
+}
+
+impl Executable for Run {
+    fn execute(self) -> eyre::Result<()> {
+        run_func(self.dataflow, self.uv)
+    }
 }

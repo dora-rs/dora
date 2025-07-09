@@ -14,7 +14,7 @@ use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::handle_dataflow_result;
+use crate::common::handle_dataflow_result;
 use crate::output::print_log_message;
 
 pub fn attach_dataflow(
