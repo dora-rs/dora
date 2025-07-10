@@ -1,0 +1,22 @@
+[project]
+name = "dora-isaacsim"
+version = "0.0.0"
+authors = [{ name = "berrylvz", email = "berrylvz@163.com" }]
+description = "dora-isaacsim"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.8"
+
+dependencies = ["dora-rs >= 0.3.9"]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-isaacsim = "dora_isaacsim.main:main"
+
+[tool.ruff]
+exclude = ["dora_isaacsim/Isaacsim"]
+
+[tool.black]
+extend.exclude = "dora_isaacsim/Isaacsim"
