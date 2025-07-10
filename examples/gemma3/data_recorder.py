@@ -113,7 +113,7 @@ data_dict = {
     "name_label": [bbox["label_value"] for bbox in bboxs],
 }
 
-print(data_dict)
+# print(data_dict)
 
 # turn data_dict into a format of huggingface dataset, and add the last attribute bbox_location_name_label
 dataset = Dataset.from_dict(data_dict)
@@ -141,7 +141,47 @@ features = Features({
 })
 
 dataset = dataset.cast(features)
+# print("AAAAAAAAAAAAAAAAAA: ", dataset.features)
 
-splits = dataset.train_test_split(test_size=0.2)
 
-splits.push_to_hub("zhiyingzou0202/object_detection_bbox_paligemma")
+##########
+# normalise the names
+def label_replace(example, keyword, new_name):
+    if keyword in example["name_label"]:
+        example["bbox_location_name_label"] = example["bbox_location_name_label"][:37] + new_name
+        example["name_label"] = new_name
+    return example
+dataset = dataset.map(label_replace, fn_kwargs={"keyword": "green", "new_name": "green leafy vegetables"})
+dataset = dataset.map(label_replace, fn_kwargs={"keyword": "carrot", "new_name": "shredded carrots"})
+
+def remove_brackets(example):
+    if example["name_label"].startswith("['") and example["name_label"].endswith("']"):
+        example["name_label"] = example["name_label"][2:-2]
+    return example
+dataset = dataset.map(remove_brackets)
+
+
+##########
+# combine with existing dataset 
+from datasets import load_dataset, concatenate_datasets, DatasetDict
+old_dataset = load_dataset("zhiyingzou0202/object_detection_bbox_paligemma", split="train+validation+test", features=features)
+print("existing data:", len(old_dataset))
+
+combined_dataset = concatenate_datasets([old_dataset, dataset])
+
+
+##########
+# do the train-test-validation split
+train_test_split = combined_dataset.train_test_split(test_size=0.2)
+training_splits = train_test_split["train"]
+testing_splits = train_test_split["test"]
+test_val_split = testing_splits.train_test_split(test_size=0.5)
+validation_splits = test_val_split["train"]
+testing_splits = test_val_split["test"]
+
+
+##########
+# push to hub
+from datasets import DatasetDict
+DatasetDict({"train": training_splits, "validation": validation_splits, "test": testing_splits}).push_to_hub("zhiyingzou0202/testtt")
+
