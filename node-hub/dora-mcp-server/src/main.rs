@@ -46,7 +46,12 @@ async fn main() -> eyre::Result<()> {
         let server_events_tx = server_events_tx.clone();
         let mcp_server = mcp_server.clone();
         async move {
-            let service = Service::new(routing::root(config.endpoint.clone(), mcp_server, server_events_tx.clone())).hoop(
+            let service = Service::new(routing::root(
+                config.endpoint.clone(),
+                mcp_server,
+                server_events_tx.clone(),
+            ))
+            .hoop(
                 Cors::new()
                     .allow_origin(AllowOrigin::any())
                     .allow_methods(AllowMethods::any())
