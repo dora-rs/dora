@@ -1,8 +1,6 @@
 pub use git::GitManager;
 pub use logger::{BuildLogger, LogLevelOrStdout};
 
-use url::Url;
-
 use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
 use crate::descriptor::ResolvedNode;
