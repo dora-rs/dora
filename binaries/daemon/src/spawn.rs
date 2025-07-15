@@ -121,6 +121,8 @@ impl Spawner {
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
     ) -> eyre::Result<PreparedNode> {
+        std::fs::create_dir_all(&node_working_dir)
+            .context("failed to create node working directory")?;
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let mut command =
