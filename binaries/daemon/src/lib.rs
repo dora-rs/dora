@@ -2158,9 +2158,7 @@ impl Daemon {
                 // use subfolder of daemon working dir
                 let daemon_working_dir =
                     current_dir().context("failed to get daemon working dir")?;
-                Ok(daemon_working_dir
-                    .join("_work")
-                    .join(session_id.uuid().to_string()))
+                Ok(daemon_working_dir)
             }
         }
     }
