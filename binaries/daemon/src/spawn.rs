@@ -430,19 +430,6 @@ impl PreparedNode {
                     }
                 };
 
-                if buffer.contains("TRACE")
-                    || buffer.contains("INFO")
-                    || buffer.contains("DEBUG")
-                    || buffer.contains("WARN")
-                    || buffer.contains("ERROR")
-                {
-                    // tracing output, potentially multi-line -> keep reading following lines
-                    // until double-newline
-                    if !buffer.ends_with("\n\n") && !finished {
-                        continue;
-                    }
-                }
-
                 // send the buffered lines
                 let lines = std::mem::take(&mut buffer);
                 let sent = stdout_tx.send(lines.clone()).await;
