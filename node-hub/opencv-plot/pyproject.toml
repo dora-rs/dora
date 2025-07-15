@@ -1,6 +1,6 @@
 [project]
 name = "opencv-plot"
-version = "0.3.11"
+version = "0.3.12"
 license = { file = "MIT" }
 authors = [
   { name = "Haixuan Xavier Tao", email = "tao.xavier@outlook.com" },

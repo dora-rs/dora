@@ -5,9 +5,13 @@ use dora_core::{
 };
 use dora_message::{descriptor::NodeSource, BuildId};
 use eyre::Context;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::IpAddr};
 
-use crate::{connect_to_coordinator, resolve_dataflow, session::DataflowSession};
+use super::{default_tracing, Executable};
+use crate::{
+    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
+    session::DataflowSession,
+};
 
 use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
 use local::build_dataflow_locally;
@@ -16,9 +20,42 @@ mod distributed;
 mod git;
 mod local;
 
+#[derive(Debug, clap::Args)]
+/// Run build commands provided in the given dataflow.
+pub struct Build {
+    /// Path to the dataflow descriptor file
+    #[clap(value_name = "PATH")]
+    dataflow: String,
+    /// Address of the dora coordinator
+    #[clap(long, value_name = "IP")]
+    coordinator_addr: Option<IpAddr>,
+    /// Port number of the coordinator control server
+    #[clap(long, value_name = "PORT")]
+    coordinator_port: Option<u16>,
+    // Use UV to build nodes.
+    #[clap(long, action)]
+    uv: bool,
+    // Run build on local machine
+    #[clap(long, action)]
+    local: bool,
+}
+
+impl Executable for Build {
+    fn execute(self) -> eyre::Result<()> {
+        default_tracing()?;
+        build(
+            self.dataflow,
+            self.coordinator_addr,
+            self.coordinator_port,
+            self.uv,
+            self.local,
+        )
+    }
+}
+
 pub fn build(
     dataflow: String,
-    coordinator_addr: Option<std::net::IpAddr>,
+    coordinator_addr: Option<IpAddr>,
     coordinator_port: Option<u16>,
     uv: bool,
     force_local: bool,
@@ -104,7 +141,7 @@ pub fn build(
         BuildKind::ThroughCoordinator {
             mut coordinator_session,
         } => {
-            let local_working_dir = super::local_working_dir(
+            let local_working_dir = local_working_dir(
                 &dataflow_path,
                 &dataflow_descriptor,
                 &mut *coordinator_session,

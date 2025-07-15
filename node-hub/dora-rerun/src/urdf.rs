@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::format, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use eyre::{Context, ContextCompat, Result};
 use k::{nalgebra::Quaternion, Chain, Translation3, UnitQuaternion};

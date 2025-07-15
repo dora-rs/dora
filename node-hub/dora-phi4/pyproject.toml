@@ -1,6 +1,6 @@
 [project]
 name = "dora-phi4"
-version = "0.3.11"
+version = "0.3.12"
 authors = [{ name = "Somay", email = "ssomay2002@gmail.com" }]
 description = "DORA node for Phi-4 multimodal model"
 license = { text = "MIT" }
@@ -18,7 +18,6 @@ dependencies = [
   "scipy==1.15.2",
   "backoff==2.2.1",
   "peft==0.13.2",
-  "bitsandbytes>=0.42.0",
   "opencv-python",
   "requests",
 ]
