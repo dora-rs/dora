@@ -30,6 +30,8 @@ members = [
     "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
+    "node-hub/dora-mcp-host",
+    "node-hub/dora-mcp-server",
     "node-hub/dora-record",
     "node-hub/dora-rerun",
     "node-hub/terminal-print",
@@ -94,6 +96,8 @@ pyo3 = { version = "0.23", features = [
 pythonize = "0.23"
 git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
+rust-embed = { version = "6.4.0" }
+
 
 [package]
 name = "dora-examples"
@@ -101,7 +105,6 @@ version = "0.0.0"
 edition.workspace = true
 license = "Apache-2.0"
 publish = false
-
 
 [features]
 # enables examples that depend on a sourced ROS2 installation
