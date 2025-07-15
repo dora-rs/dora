@@ -73,7 +73,7 @@ int main()
                 std::cerr << "Unknown event type " << static_cast<int>(ty) << std::endl;
             }
 
-            if (received_ticks > 20)
+            if (received_ticks > 20 && responses_received > 0)
             {
                 break;
             }
