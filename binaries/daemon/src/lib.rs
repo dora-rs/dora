@@ -996,8 +996,8 @@ impl Daemon {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn build_dataflow<'a>(
-        &'a mut self,
+    async fn build_dataflow(
+        &mut self,
         build_id: BuildId,
         session_id: SessionId,
         base_working_dir: PathBuf,
@@ -1006,7 +1006,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         local_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>> + use<'a>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>> + use<>> {
         let builder = build::Builder {
             session_id,
             base_working_dir,
@@ -1101,7 +1101,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         let mut logger = self
             .logger
             .for_dataflow(dataflow_id)
