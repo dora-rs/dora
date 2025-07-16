@@ -161,7 +161,7 @@ impl DoraNode {
 
         #[cfg(feature = "metrics")]
         {
-            let id = format!("{}/{}", dataflow_id, node_id);
+            let id = format!("{dataflow_id}/{node_id}");
             let monitor_task = async move {
                 if let Err(e) = run_metrics_monitor(id.clone())
                     .await
@@ -478,7 +478,7 @@ impl Drop for DoraNode {
         }
 
         while !self.sent_out_shared_memory.is_empty() {
-            if self.drop_stream.len() == 0 {
+            if self.drop_stream.is_empty() {
                 tracing::trace!(
                     "waiting for {} remaining drop tokens",
                     self.sent_out_shared_memory.len()
