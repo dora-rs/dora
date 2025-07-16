@@ -62,7 +62,7 @@ mod ros2 {
     pub fn generate() -> PathBuf {
         use rust_format::Formatter;
         let paths = ament_prefix_paths();
-        let generated = dora_ros2_bridge_msg_gen::gen(paths.as_slice(), true);
+        let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), true);
         let generated_string = rust_format::PrettyPlease::default()
             .format_tokens(generated)
             .unwrap();
