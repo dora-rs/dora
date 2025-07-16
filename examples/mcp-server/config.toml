@@ -10,16 +10,16 @@ endpoint = "mcp"
 name = "counter_decrement"
 args = []
 input_schema = "empty_object.json"
-node_id = "counter"
+output = "counter"
 
 [[mcp_tools]]
 name = "counter_increment"
 args = []
 input_schema = "empty_object.json"
-node_id = "counter"
+output = "counter"
 
 [[mcp_tools]]
 name = "counter_get_value"
 args = []
 input_schema = "empty_object.json"
-node_id = "counter"
+output = "counter"

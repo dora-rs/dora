@@ -19,7 +19,7 @@ pub struct McpServer {
 
 #[derive(Deserialize, Debug)]
 pub struct McpTool {
-    pub node_id: String,
+    pub output: String,
     #[serde(flatten)]
     pub inner: Tool,
 }
@@ -36,7 +36,7 @@ impl McpServer {
             };
             tools.push(McpTool {
                 inner: tool,
-                node_id: tool_config.node_id.clone(),
+                output: tool_config.output.clone(),
             });
         }
         Self {
@@ -97,7 +97,7 @@ impl McpServer {
             .ok_or_else(|| eyre::eyre!("Tool not found: {}", name))?;
         request_tx
             .send(ServerEvent::CallNode {
-                node_id: tool.node_id.clone(),
+                node_id: tool.output.clone(),
                 data: serde_json::to_string(&params).unwrap(),
                 reply: tx,
             })

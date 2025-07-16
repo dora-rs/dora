@@ -77,7 +77,7 @@ pub struct McpToolConfig {
     /// Optional additional tool information.
     pub annotations: Option<ToolAnnotations>,
 
-    pub node_id: String,
+    pub output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
