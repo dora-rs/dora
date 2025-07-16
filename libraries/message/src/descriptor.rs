@@ -190,6 +190,8 @@ pub struct Node {
     ///
     /// Supports strings, numbers, and booleans.
     ///
+    /// ## Example
+    ///
     /// ```yaml
     /// nodes:
     ///   - id: example-node
@@ -254,6 +256,79 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomNode>,
 
+    /// Output data identifiers produced by this node.
+    ///
+    /// List of output identifiers that the node sends.
+    /// Must contain all `output_id` values that the node uses when sending output, e.g. through the
+    /// [`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output)
+    /// function.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: example-node
+    ///     outputs:
+    ///       - processed_image
+    ///       - metadata
+    /// ```
+    #[serde(default)]
+    pub outputs: BTreeSet<DataId>,
+
+    /// Input data connections from other nodes.
+    ///
+    /// Defines the inputs that this node is subscribing to.
+    ///
+    /// The `inputs` field should be a key-value map of the following format:
+    ///
+    /// `input_id: source_node_id/source_node_output_id`
+    ///
+    /// The components are defined as follows:
+    ///
+    ///   - `input_id` is the local identifier that should be used for this input.
+    ///
+    ///     This will map to the `id` field of
+    ///     [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input)
+    ///     events sent to the node event loop.
+    ///   - `source_node_id` should be the `id` field of the node that sends the output that we want
+    ///     to subscribe to
+    ///   - `source_node_output_id` should be the identifier of the output that that we want
+    ///     to subscribe to
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: example-node
+    ///     outputs:
+    ///       - one
+    ///       - two
+    ///   - id: receiver
+    ///     inputs:
+    ///         my_input: example-node/two
+    /// ```
+    #[serde(default)]
+    pub inputs: BTreeMap<DataId, Input>,
+
+    /// Redirect stdout/stderr to a data output.
+    ///
+    /// This field can be used to send all stdout and stderr output of the node as a Dora output.
+    /// Each output line is sent as a separate message.
+    ///
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: example
+    ///     send_stdout_as: stdout_output
+    ///   - id: logger
+    ///     inputs:
+    ///         example_output: example/stdout_output
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_stdout_as: Option<String>,
+
     /// Git repository URL for remote nodes.
     ///
     /// ```yaml
@@ -295,34 +370,6 @@ pub struct Node {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
-
-    /// Redirect stdout/stderr to a data output.
-    ///
-    /// ```yaml
-    /// send_stdout_as: logs
-    /// ```
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub send_stdout_as: Option<String>,
-
-    /// Input data connections from other nodes.
-    ///
-    /// ```yaml
-    /// inputs:
-    ///   image: camera/frame
-    ///   config: settings/params
-    /// ```
-    #[serde(default)]
-    pub inputs: BTreeMap<DataId, Input>,
-
-    /// Output data identifiers produced by this node.
-    ///
-    /// ```yaml
-    /// outputs:
-    ///   - processed_image
-    ///   - metadata
-    /// ```
-    #[serde(default)]
-    pub outputs: BTreeSet<DataId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
