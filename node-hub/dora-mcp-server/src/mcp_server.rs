@@ -97,7 +97,7 @@ impl McpServer {
             .ok_or_else(|| eyre::eyre!("Tool not found: {}", name))?;
         request_tx
             .send(ServerEvent::CallNode {
-                node_id: tool.output.clone(),
+                output: tool.output.clone(),
                 data: serde_json::to_string(&params).unwrap(),
                 reply: tx,
             })

@@ -76,7 +76,7 @@ async fn main() -> eyre::Result<()> {
                     break;
                 }
                 ServerEvent::CallNode {
-                    node_id,
+                    output,
                     data,
                     reply,
                 } => {
@@ -84,7 +84,7 @@ async fn main() -> eyre::Result<()> {
                     let call_id = gen_call_id();
                     metadata.insert("__dora_call_id".into(), Parameter::String(call_id.clone()));
                     node.send_output(
-                        DataId::from(node_id.clone()),
+                        DataId::from(output.clone()),
                         metadata,
                         StringArray::from(vec![data]),
                     )
@@ -168,7 +168,7 @@ async fn main() -> eyre::Result<()> {
 enum ServerEvent {
     Result(eyre::Result<()>),
     CallNode {
-        node_id: String,
+        output: String,
         data: String,
         reply: oneshot::Sender<String>,
     },
