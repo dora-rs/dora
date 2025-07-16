@@ -3,11 +3,11 @@ name = "dora-message"
 # versioned separately from the other dora crates
 version = "0.5.0"
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
-
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
