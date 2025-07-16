@@ -14,18 +14,55 @@ use std::{
 pub const SHELL_SOURCE: &str = "shell";
 pub const DYNAMIC_SOURCE: &str = "dynamic";
 
-/// Dataflow description
+/// # Dataflow Specification
+///
+/// The main configuration structure for defining a Dora dataflow. Dataflows are
+/// specified through YAML files that describe the nodes, their connections, and
+/// execution parameters.
+///
+/// ## Structure
+///
+/// A dataflow consists of:
+/// - **Nodes**: The computational units that process data
+/// - **Communication**: Optional communication configuration
+/// - **Debug options**: Optional development and debugging settings
+/// - **Deployment**: Optional deployment configuration
+///
+/// ## Example
+///
+/// ```yaml
+/// nodes:
+///  - id: webcam
+///     operator:
+///       python: webcam.py
+///       inputs:
+///         tick: dora/timer/millis/100
+///       outputs:
+///         - image
+///   - id: plot
+///     operator:
+///       python: plot.py
+///       inputs:
+///         image: webcam/image
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "dora-rs specification")]
 pub struct Descriptor {
+    /// Communication configuration (optional, uses defaults)
     #[schemars(skip)]
     #[serde(default)]
     pub communication: CommunicationConfig,
+
+    /// Deployment configuration (unstable feature)
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
+
+    /// List of nodes in the dataflow
     pub nodes: Vec<Node>,
+
+    /// Debug options (unstable feature)
     #[schemars(skip)]
     #[serde(default, rename = "_unstable_debug")]
     pub debug: Debug,
@@ -34,27 +71,55 @@ pub struct Descriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
+    /// Target machine for deployment
     pub machine: Option<String>,
+    /// Working directory for the deployment
     pub working_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Debug {
+    /// Whether to publish all messages to Zenoh for debugging
     #[serde(default)]
     pub publish_all_messages_to_zenoh: bool,
 }
 
-/// Dora Node
+/// # Dora Node Configuration
+///
+/// A node represents a computational unit in a Dora dataflow. Each node runs as a
+/// separate process and can communicate with other nodes through inputs and outputs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Node {
-    /// Node identifier
+    /// Unique node identifier. Must not contain `/` characters.
+    ///
+    /// ```yaml
+    /// id: camera_node
+    /// ```
     pub id: NodeId,
-    /// Node name
+
+    /// Human-readable node name for documentation.
+    ///
+    /// ```yaml
+    /// name: "Camera Input Handler"
+    /// ```
     pub name: Option<String>,
-    /// Description of the node
+
+    /// Detailed description of the node's functionality.
+    ///
+    /// ```yaml
+    /// description: "Captures video frames from webcam"
+    /// ```
     pub description: Option<String>,
-    /// Environment variables
+
+    /// Environment variables for node execution. Supports strings, numbers, and booleans.
+    ///
+    /// ```yaml
+    /// env:
+    ///   DEBUG: true
+    ///   PORT: 8080
+    ///   API_KEY: "secret-key"
+    /// ```
     pub env: Option<BTreeMap<String, EnvValue>>,
 
     /// Unstable machine deployment configuration
@@ -62,32 +127,113 @@ pub struct Node {
     #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
 
+    /// Multiple operators running in a shared runtime process.
+    ///
+    /// ```yaml
+    /// operators:
+    ///   - id: processor
+    ///     python: process.py
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operators: Option<RuntimeNode>,
+
+    /// Legacy custom node configuration (deprecated).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomNode>,
+
+    /// Single operator configuration for simple nodes.
+    ///
+    /// ```yaml
+    /// operator:
+    ///   python: script.py
+    ///   outputs: [data]
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<SingleOperatorDefinition>,
 
+    /// Path to executable or script for custom nodes.
+    ///
+    /// ```yaml
+    /// path: ./my_node.py
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+
+    /// Git repository URL for remote nodes.
+    ///
+    /// ```yaml
+    /// git: https://github.com/user/repo.git
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<String>,
+
+    /// Git branch to checkout. Only one of branch/tag/rev allowed.
+    ///
+    /// ```yaml
+    /// branch: main
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+
+    /// Git tag to checkout. Only one of branch/tag/rev allowed.
+    ///
+    /// ```yaml
+    /// tag: v1.0.0
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+
+    /// Git commit hash to checkout. Only one of branch/tag/rev allowed.
+    ///
+    /// ```yaml
+    /// rev: abc123def456
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
 
+    /// Command-line arguments passed to the executable.
+    ///
+    /// ```yaml
+    /// args: --verbose --config config.json
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
+
+    /// Build commands executed during `dora build`. Each line runs separately.
+    ///
+    /// ```yaml
+    /// build: |
+    ///   pip install requirements.txt
+    ///   cargo build --release
+    /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+
+    /// Redirect stdout/stderr to a data output.
+    ///
+    /// ```yaml
+    /// send_stdout_as: logs
+    /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
+
+    /// Input data connections from other nodes.
+    ///
+    /// ```yaml
+    /// inputs:
+    ///   image: camera/frame
+    ///   config: settings/params
+    /// ```
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
+
+    /// Output data identifiers produced by this node.
+    ///
+    /// ```yaml
+    /// outputs:
+    ///   - processed_image
+    ///   - metadata
+    /// ```
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 }
@@ -118,11 +264,13 @@ pub enum CoreNodeKind {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RuntimeNode {
+    /// List of operators running in this runtime
     pub operators: Vec<OperatorDefinition>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorDefinition {
+    /// Unique operator identifier within the runtime
     pub id: OperatorId,
     #[serde(flatten)]
     pub config: OperatorConfig,
@@ -130,7 +278,7 @@ pub struct OperatorDefinition {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct SingleOperatorDefinition {
-    /// ID is optional if there is only a single operator.
+    /// Operator identifier (optional for single operators)
     pub id: Option<OperatorId>,
     #[serde(flatten)]
     pub config: OperatorConfig,
@@ -138,19 +286,26 @@ pub struct SingleOperatorDefinition {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorConfig {
+    /// Human-readable operator name
     pub name: Option<String>,
+    /// Detailed description of the operator
     pub description: Option<String>,
 
+    /// Input data connections
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
+    /// Output data identifiers
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 
+    /// Operator source configuration (Python, shared library, etc.)
     #[serde(flatten)]
     pub source: OperatorSource,
 
+    /// Build commands for this operator
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
+    /// Redirect stdout to data output
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 }
