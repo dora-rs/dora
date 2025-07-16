@@ -1,8 +1,8 @@
 [package]
 name = "dora-ros2-bridge-python"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
-
 
 [dependencies]
 dora-ros2-bridge = { path = "..", default-features = false }

@@ -1,7 +1,8 @@
 [package]
 name = "dora-rav1e"
-edition = "2021"
-version = "0.3.12"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
 description.workspace = true
 documentation.workspace = true
 license = "BSD-2-Clause"
