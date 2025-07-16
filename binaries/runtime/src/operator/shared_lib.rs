@@ -84,7 +84,7 @@ struct SharedLibraryOperator<'lib> {
     bindings: Bindings<'lib>,
 }
 
-impl<'lib> SharedLibraryOperator<'lib> {
+impl SharedLibraryOperator<'_> {
     fn run(self, init_done: oneshot::Sender<Result<()>>) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
@@ -263,7 +263,7 @@ struct OperatorContext<'lib> {
     drop_fn: Symbol<'lib, DoraDropOperator>,
 }
 
-impl<'lib> Drop for OperatorContext<'lib> {
+impl Drop for OperatorContext<'_> {
     fn drop(&mut self) {
         unsafe { (self.drop_fn.drop_operator)(self.raw) };
     }
