@@ -34,7 +34,7 @@ where
     type Target = Vec<T::Target>;
 
     unsafe fn to_rust(&self) -> Self::Target {
-        self.iter().map(|v| v.to_rust()).collect()
+        self.iter().map(|v| unsafe { v.to_rust() }).collect()
     }
 }
 
