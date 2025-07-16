@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo
 
+# Check if we are running in a GitHub Actions environment
+CI=${GITHUB_ACTIONS:-false}
+
 # List of ignored modules 
 ignored_folders=("dora-parler" "dora-opus" "dora-internvl" "dora-magma")
 
@@ -12,6 +15,32 @@ dir=$(pwd)
 
 # Get the base name of the directory (without the path)
 base_dir=$(basename "$dir")
+
+# Large node list requiring space cleanup
+large_node=("dora-phi4")
+
+export PYTEST_ADDOPTS="-x"
+
+# Check if the current directory is in the large node list and if we're in the CI environment
+if [[ " ${large_node[@]} " =~ " ${base_dir} " ]] && [[ "$CI" == "true" ]]; then
+    echo "Running cleanup for $base_dir..."
+    sudo rm -rf /opt/hostedtoolcache/CodeQL || :
+    # 1.4GB
+    sudo rm -rf /opt/hostedtoolcache/go || :
+    # 489MB
+    sudo rm -rf /opt/hostedtoolcache/PyPy || :
+    # 376MB
+    sudo rm -rf /opt/hostedtoolcache/node || :
+    # Remove Web browser packages
+    sudo apt purge -y \
+    firefox \
+    google-chrome-stable \
+    microsoft-edge-stable
+    sudo rm -rf /usr/local/lib/android/ 
+    sudo rm -rf /usr/share/dotnet/
+    sudo rm -rf /opt/ghc/
+fi
+
 
 # Check if the directory name is in the ignored list
 if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then
@@ -60,16 +89,8 @@ else
         if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
             maturin publish --skip-existing
         fi
-        
-        # x86_64-apple-darwin
-        rustup target add x86_64-apple-darwin
-        maturin build --target x86_64-apple-darwin --zig  --release
-        # If GITHUB_EVENT_NAME is release or workflow_dispatch, publish the wheel
-        if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
-            maturin publish --target x86_64-apple-darwin --skip-existing --zig
-        fi
 
-    elif [[ "$(uname)" = "Linux" ]]; then
+    elif [[ "$(uname)" = "Linux" ]] || [[ "$CI" == "false" ]]; then
         if [ -f "$dir/Cargo.toml" ]; then
             echo "Running build and tests for Rust project in $dir..."
             cargo check
@@ -94,7 +115,7 @@ else
             else
                 uv run pytest
             fi
-            if [ "$GITHUB_EVENT_NAME" == "release" ] || [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            if [ "${GITHUB_EVENT_NAME:-false}" == "release" ] || [ "${GITHUB_EVENT_NAME:-false}" == "workflow_dispatch" ]; then
                 uv build
                 uv publish --check-url https://pypi.org/simple
             fi

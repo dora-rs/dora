@@ -1,0 +1,53 @@
+nodes:
+  - id: camera
+    build: pip install -e ../../node-hub/dora-pyrealsense
+    path: dora-pyrealsense
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+      - depth
+
+  - id: dora-vggt
+    build: pip install -e ../../node-hub/dora-vggt
+    path: dora-vggt
+    inputs:
+      image: camera/image
+    outputs:
+      - depth
+      - image
+    env:
+      DEPTH_ENCODING: mono16
+
+  - id: rav1e-depth-vggt
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      depth: dora-vggt/depth
+    outputs:
+      - depth
+    env:
+      ENCODING: avif
+
+  - id: rav1e-depth-realsense
+    path: dora-rav1e
+    build: cargo build -p dora-rav1e --release
+    inputs:
+      depth: camera/depth
+    outputs:
+      - depth
+    env:
+      ENCODING: avif
+
+  - id: bench
+    path: image_saver.py
+    inputs:
+      camera_depth: rav1e-depth-vggt/depth
+      vggt_depth: rav1e-depth-realsense/depth
+
+  - id: plot
+    build: pip install dora-rerun
+    path: dora-rerun
+    inputs:
+      camera/image: dora-vggt/image
+      camera/depth: dora-vggt/depth

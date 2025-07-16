@@ -44,12 +44,13 @@ pub fn lib_main() -> Result<()> {
     }
 
     while let Some(event) = events.recv() {
-        match event {
-            Event::Input {
-                id,
-                metadata: _,
-                data,
-            } => match id.as_str() {
+        if let Event::Input {
+            id,
+            metadata: _,
+            data,
+        } = event
+        {
+            match id.as_str() {
                 "tick" => {
                     if let Ok(joints) = c.read_present_position(&ids) {
                         let mut parameter = BTreeMap::new();
@@ -70,8 +71,7 @@ pub fn lib_main() -> Result<()> {
                     c.write_goal_position(&ids, &data).unwrap();
                 }
                 other => eprintln!("Received input `{other}`"),
-            },
-            _ => {}
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 [project]
 name = "dora-gradio"
-version = "0.2.0"
+version = "0.3.12"
 authors = [{ name = "Shashwat Patil", email = "email@email.com" }]
 description = "dora-gradio"
 license = { text = "MIT" }

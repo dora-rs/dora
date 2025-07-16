@@ -73,6 +73,10 @@ def generate(
 
     messages = []
 
+    # If the texts is string, convert it to a list
+    if isinstance(texts, str):
+        texts = [texts]
+
     for text in texts:
         if text.startswith("<|system|>\n"):
             messages.append(

@@ -60,23 +60,44 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
         .collect::<Vec<_>>();
     let mut chains = HashMap::new();
     for (key, urdf_path) in urdfs {
-        let path = key.replace("_urdf", ".urdf").replace("_URDF", ".urdf");
-        let chain = k::Chain::<f32>::from_urdf_file(&urdf_path).context("Could not load URDF")?;
+        let urdf_path = if urdf_path.ends_with("_description") {
+            // Use robot description to get its path
+            let bash_cmd = format!("robot_descriptions pull {urdf_path}");
+            let response = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(bash_cmd)
+                .output()
+                .context("Failed to execute bash command. Are you sure `robot_descriptions` is installed?")?
+                .stdout;
+            let response_str =
+                String::from_utf8(response).context("Could not parse robot descriptions")?;
+            // Only keep last line of the response
+            let response_str = response_str
+                .lines()
+                .last()
+                .context("Could not find last line in robot descriptions response")?;
+            PathBuf::from(response_str.trim())
+        } else {
+            // Use the path directly
+            PathBuf::from(urdf_path)
+        };
+        let chain = k::Chain::<f32>::from_urdf_file(&urdf_path)
+            .context(format!("Could not load URDF {:#?}", urdf_path))?;
 
+        let path = key.replace("_urdf", ".urdf").replace("_URDF", ".urdf");
         let transform = key.replace("_urdf", "_transform");
 
         if PathBuf::from(&urdf_path).file_name() != PathBuf::from(&path).file_name() {
             return Err(eyre::eyre!(
-                "URDF path should be the same as the key without _urdf or _URDF. Got {} instead of {}", urdf_path, path
+                "URDF filename should be the same as the environment variable name and replacing the dot with a dash. Got {:#?} instead of {}", urdf_path, path
             ));
         }
-        if let Err(err) = rec.log_file_from_path(&urdf_path, None, false) {
-            println!("Could not log file: {}. Errored with {}", urdf_path, err);
-            println!("Make sure to install urdf loader with:");
-            println!(
-                "pip install git+https://github.com/rerun-io/rerun-loader-python-example-urdf.git"
-            )
-        };
+        rec.log_file_from_path(&urdf_path, None, true)
+            .context(format!(
+                "Could not log URDF file {:#?} within rerun-urdf-loader",
+                urdf_path
+            ))?;
+        println!("Logging URDF file: {:#?}", urdf_path);
 
         // Get transform by replacing URDF_ with TRANSFORM_
         if let Ok(transform) = std::env::var(transform) {
