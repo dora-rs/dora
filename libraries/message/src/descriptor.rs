@@ -25,8 +25,8 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 /// A dataflow consists of:
 /// - **Nodes**: The computational units that process data
 /// - **Communication**: Optional communication configuration
-/// - **Debug options**: Optional development and debugging settings
-/// - **Deployment**: Optional deployment configuration
+/// - **Deployment**: Optional deployment configuration (unstable)
+/// - **Debug options**: Optional development and debugging settings (unstable)
 ///
 /// ## Example
 ///
@@ -49,20 +49,36 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 #[serde(deny_unknown_fields)]
 #[schemars(title = "dora-rs specification")]
 pub struct Descriptor {
+    /// List of nodes in the dataflow
+    ///
+    /// This is the most important field of the dataflow specification.
+    /// Each node must be identified by a unique `id`:
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: foo
+    ///     path: path/to/the/executable
+    ///     # ... (see below)
+    ///   - id: bar
+    ///     path: path/to/another/executable
+    ///     # ... (see below)
+    /// ```
+    ///
+    /// For each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.
+    /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
+    pub nodes: Vec<Node>,
+
     /// Communication configuration (optional, uses defaults)
     #[schemars(skip)]
     #[serde(default)]
     pub communication: CommunicationConfig,
 
-    /// Deployment configuration (unstable feature)
+    /// Deployment configuration (optional, unstable)
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
 
-    /// List of nodes in the dataflow
-    pub nodes: Vec<Node>,
-
-    /// Debug options (unstable feature)
+    /// Debug options (optional, unstable)
     #[schemars(skip)]
     #[serde(default, rename = "_unstable_debug")]
     pub debug: Debug,
@@ -96,6 +112,13 @@ pub struct Node {
     /// ```yaml
     /// id: camera_node
     /// ```
+    ///
+    /// Node IDs can be arbitrary strings with the following limitations:
+    ///
+    /// - They must not contain any `/` characters (slashes).
+    /// - We do not recommend using whitespace characters (e.g. spaces) in IDs
+    ///
+    /// Each node must have an ID field.
     pub id: NodeId,
 
     /// Human-readable node name for documentation.
@@ -112,13 +135,69 @@ pub struct Node {
     /// ```
     pub description: Option<String>,
 
-    /// Environment variables for node execution. Supports strings, numbers, and booleans.
+    /// Path to executable or script that should be run.
+    ///
+    /// Specifies the path of the executable or script that Dora should run when starting the
+    /// dataflow.
+    /// This can point to a normal executable (e.g. when using a compiled language such as Rust) or
+    /// a Python script.
+    ///
+    /// Dora will automatically append a `.exe` extension on Windows systems when the specified
+    /// file name has no extension.
+    ///
+    /// ## Example
     ///
     /// ```yaml
-    /// env:
-    ///   DEBUG: true
-    ///   PORT: 8080
-    ///   API_KEY: "secret-key"
+    /// nodes:
+    ///   - id: rust-example
+    ///     path: target/release/rust-node
+    ///   - id: python-example
+    ///     path: ./receive_data.py
+    /// ```
+    ///
+    /// ## URL as Path
+    ///
+    /// The `path` field can also point to a URL instead of a local path.
+    /// In this case, Dora will download the given file when starting the dataflow.
+    ///
+    /// Note that this is quite an old feature and using this functionality is **not recommended**
+    /// anymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build)
+    /// key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+
+    /// Command-line arguments passed to the executable.
+    ///
+    /// The command-line arguments that should be passed to the executable/script specified in `path`.
+    /// The arguments should be separated by space.
+    /// This field is optional and defaults to an empty argument list.
+    ///
+    /// ## Example
+    /// ```yaml
+    /// nodes:
+    ///   - id: example
+    ///     path: example-node
+    ///     args: -v --some-flag foo
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+
+    /// Environment variables for node builds and execution.
+    ///
+    /// Key-value map of environment variables that should be set for both the
+    /// [`build`](Self::build) operation and the node execution (i.e. when the node is spawned
+    /// through [`path`](Self::path)).
+    ///
+    /// Supports strings, numbers, and booleans.
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: example-node
+    ///     path: path/to/node
+    ///     env:
+    ///       DEBUG: true
+    ///       PORT: 8080
+    ///       API_KEY: "secret-key"
     /// ```
     pub env: Option<BTreeMap<String, EnvValue>>,
 
@@ -129,35 +208,51 @@ pub struct Node {
 
     /// Multiple operators running in a shared runtime process.
     ///
+    /// Operators are an experimental, lightweight alternative to nodes.
+    /// Instead of running as a separate process, operators are linked into a runtime process.
+    /// This allows running multiple operators to share a single address space (not supported for
+    /// Python currently).
+    ///
+    /// Operators are defined as part of the node list, as children of a runtime node.
+    /// A runtime node is a special node that specifies no [`path`](Self::path) field, but contains
+    /// an `operators` field instead.
+    ///
+    /// ## Example
+    ///
     /// ```yaml
-    /// operators:
-    ///   - id: processor
-    ///     python: process.py
+    /// nodes:
+    ///   - id: runtime-node
+    ///     operators:
+    ///       - id: processor
+    ///         python: process.py
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operators: Option<RuntimeNode>,
 
-    /// Legacy custom node configuration (deprecated).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom: Option<CustomNode>,
-
-    /// Single operator configuration for simple nodes.
+    /// Single operator configuration.
+    ///
+    /// This is a convenience field for defining runtime nodes that contain only a single operator.
+    /// This field is an alternative to the [`operators`](Self::operators) field, which can be used
+    /// if there is only a single operator defined for the runtime node.
+    ///
+    /// ## Example
     ///
     /// ```yaml
-    /// operator:
-    ///   python: script.py
-    ///   outputs: [data]
+    /// nodes:
+    ///   - id: runtime-node
+    ///     operator:
+    ///       id: processor
+    ///       python: script.py
+    ///       outputs: [data]
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<SingleOperatorDefinition>,
 
-    /// Path to executable or script for custom nodes.
+    /// Legacy node configuration (deprecated).
     ///
-    /// ```yaml
-    /// path: ./my_node.py
-    /// ```
+    /// Please use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    pub custom: Option<CustomNode>,
 
     /// Git repository URL for remote nodes.
     ///
@@ -190,14 +285,6 @@ pub struct Node {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
-
-    /// Command-line arguments passed to the executable.
-    ///
-    /// ```yaml
-    /// args: --verbose --config config.json
-    /// ```
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<String>,
 
     /// Build commands executed during `dora build`. Each line runs separately.
     ///
