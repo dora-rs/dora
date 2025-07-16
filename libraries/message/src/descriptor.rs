@@ -54,6 +54,8 @@ pub struct Descriptor {
     /// This is the most important field of the dataflow specification.
     /// Each node must be identified by a unique `id`:
     ///
+    /// ## Example
+    ///
     /// ```yaml
     /// nodes:
     ///   - id: foo
@@ -109,29 +111,43 @@ pub struct Debug {
 pub struct Node {
     /// Unique node identifier. Must not contain `/` characters.
     ///
-    /// ```yaml
-    /// id: camera_node
-    /// ```
-    ///
     /// Node IDs can be arbitrary strings with the following limitations:
     ///
     /// - They must not contain any `/` characters (slashes).
     /// - We do not recommend using whitespace characters (e.g. spaces) in IDs
     ///
     /// Each node must have an ID field.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: camera_node
+    ///   - id: some_other_node
+    /// ```
     pub id: NodeId,
 
     /// Human-readable node name for documentation.
     ///
+    /// This optional field can be used to define a more descriptive name in addition to a short
+    /// [`id`](Self::id).
+    ///
+    /// ## Example
+    ///
     /// ```yaml
-    /// name: "Camera Input Handler"
-    /// ```
+    /// nodes:
+    ///   - id: camera_node
+    ///     name: "Camera Input Handler"
     pub name: Option<String>,
 
     /// Detailed description of the node's functionality.
     ///
+    /// ## Example
+    ///
     /// ```yaml
-    /// description: "Captures video frames from webcam"
+    /// nodes:
+    ///   - id: camera_node
+    ///     description: "Captures video frames from webcam"
     /// ```
     pub description: Option<String>,
 
