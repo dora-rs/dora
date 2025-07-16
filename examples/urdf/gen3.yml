@@ -1,0 +1,30 @@
+nodes:
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_jaco: pytorch_kinematics/cmd_vel
+    env:
+      jaco_urdf: "gen3_description"
+      jaco_transform: "0. 0. 0. 1. 0. 0. 0."
+
+  - id: gamepad
+    build: pip install -e ../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: pytorch_kinematics
+    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      cmd_vel: gamepad/cmd_vel
+    outputs:
+      - cmd_vel
+    env:
+      MODEL_NAME: "gen3_description"
+      END_EFFECTOR_LINK: "j2n6s300_end_effector"
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."

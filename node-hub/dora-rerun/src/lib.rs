@@ -12,6 +12,7 @@ use dora_node_api::{
 };
 use eyre::{bail, eyre, Context, Result};
 
+use pinyin::ToPinyin;
 use rerun::{
     components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
 };
@@ -160,8 +161,7 @@ pub fn lib_main() -> Result<()> {
                     let buffer: Vec<u8> =
                         buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
                     image_cache.insert(id.clone(), buffer.clone());
-                    let image_buffer = ImageBuffer::try_from(buffer)
-                        .context("Could not convert buffer to image buffer")?;
+                    let image_buffer = ImageBuffer::from(buffer);
                     // let tensordata = ImageBuffer(buffer);
 
                     let image = rerun::Image::new(
@@ -174,8 +174,7 @@ pub fn lib_main() -> Result<()> {
                     let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
                     image_cache.insert(id.clone(), buffer.values().to_vec());
                     let buffer: &[u8] = buffer.values();
-                    let image_buffer = ImageBuffer::try_from(buffer)
-                        .context("Could not convert buffer to image buffer")?;
+                    let image_buffer = ImageBuffer::from(buffer);
 
                     let image = rerun::Image::new(
                         image_buffer,
@@ -317,7 +316,24 @@ pub fn lib_main() -> Result<()> {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {
                     if let Some(str) = string {
-                        rec.log(id.as_str(), &rerun::TextLog::new(str))
+                        let chars = str.chars().collect::<Vec<_>>();
+                        let mut new_string = vec![];
+                        for char in chars {
+                            // Check if the character is a Chinese character
+                            if char.is_ascii() || char.is_control() {
+                                new_string.push(char);
+                                continue;
+                            }
+                            // If it is a Chinese character, replace it with its pinyin
+                            if let Some(pinyin) = char.to_pinyin() {
+                                for char in pinyin.with_tone().chars() {
+                                    new_string.push(char);
+                                }
+                                new_string.push(' ');
+                            }
+                        }
+                        let pinyined_str = new_string.iter().collect::<String>();
+                        rec.log(id.as_str(), &rerun::TextLog::new(pinyined_str))
                             .wrap_err("Could not log text")
                     } else {
                         Ok(())
@@ -385,12 +401,12 @@ pub fn lib_main() -> Result<()> {
                 // Get color or assign random color in cache
                 let color = color_cache.get(&id);
                 let color = if let Some(color) = color {
-                    color.clone()
+                    *color
                 } else {
                     let color =
                         rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
 
-                    color_cache.insert(id.clone(), color.clone());
+                    color_cache.insert(id.clone(), color);
                     color
                 };
                 let dataid = id;
@@ -412,12 +428,12 @@ pub fn lib_main() -> Result<()> {
                 // Get color or assign random color in cache
                 let color = color_cache.get(&id);
                 let color = if let Some(color) = color {
-                    color.clone()
+                    *color
                 } else {
                     let color =
                         rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
 
-                    color_cache.insert(id.clone(), color.clone());
+                    color_cache.insert(id.clone(), color);
                     color
                 };
                 let dataid = id;

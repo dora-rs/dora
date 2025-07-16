@@ -1,0 +1,14 @@
+nodes:
+  - id: keyboard
+    build: pip install -e ../../node-hub/dora-keyboard
+    path: dora-keyboard
+    outputs:
+      - char
+    env:
+      DISPLAY: $DISPLAY
+
+  - id: rerun
+    path: dora-rerun
+    build: pip install -e ../../node-hub/dora-rerun
+    inputs:
+      text_input: keyboard/char
