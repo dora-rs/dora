@@ -26,7 +26,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
         .map_err(|e| syn::Error::new(e.span(), "expected type as argument"))?;
 
     let init = quote! {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn dora_init_operator() -> dora_operator_api::types::DoraInitResult {
             dora_operator_api::raw::dora_init_operator::<#operator_ty>()
         }
@@ -37,7 +37,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
     };
 
     let drop = quote! {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn dora_drop_operator(operator_context: *mut std::ffi::c_void)
             -> dora_operator_api::types::DoraResult
         {
@@ -50,7 +50,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
     };
 
     let on_event = quote! {
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn dora_on_event(
             event: &mut dora_operator_api::types::RawEvent,
             send_output: &dora_operator_api::types::SendOutput,

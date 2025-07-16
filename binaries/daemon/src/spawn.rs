@@ -1,7 +1,8 @@
 use crate::{
+    CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
     log::{self, NodeLogger},
     node_communication::spawn_listener_loop,
-    node_inputs, CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
+    node_inputs,
 };
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
@@ -9,26 +10,26 @@ use dora_arrow_convert::IntoArrow;
 use dora_core::{
     config::DataId,
     descriptor::{
-        resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
-        ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
+        DYNAMIC_SOURCE, Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode,
+        ResolvedNodeExt, SHELL_SOURCE, resolve_path, source_is_url,
     },
     get_python_path,
     uhlc::HLC,
 };
 use dora_download::download_file;
 use dora_message::{
+    DataflowId,
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
     id::NodeId,
-    DataflowId,
 };
 use dora_node_api::{
+    Metadata,
     arrow::array::ArrayData,
     arrow_utils::{copy_array_into_sample, required_data_size},
-    Metadata,
 };
-use eyre::{bail, ContextCompat, WrapErr};
+use eyre::{ContextCompat, WrapErr, bail};
 use std::{
     future::Future,
     path::{Path, PathBuf},
@@ -59,7 +60,7 @@ impl Spawner {
         node_working_dir: PathBuf,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         logger: &mut NodeLogger<'_>,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>> + use<>> {
         let dataflow_id = self.dataflow_id;
         let node_id = node.id.clone();
         logger
@@ -221,9 +222,9 @@ impl Spawner {
                             cmd.arg("run");
                             cmd.arg("python");
                             tracing::info!(
-                            "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
-                            node.id
-                        );
+                                "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
+                                node.id
+                            );
                             cmd
                         } else {
                             let python = get_python_path()
@@ -362,7 +363,7 @@ impl PreparedNode {
                 return Ok(RunningNode {
                     pid: None,
                     node_config: self.node_config,
-                })
+                });
             }
         };
 

@@ -24,7 +24,7 @@ use uuid::Uuid;
 pub(crate) async fn control_events(
     control_listen_addr: SocketAddr,
     tasks: &FuturesUnordered<JoinHandle<()>>,
-) -> eyre::Result<impl Stream<Item = Event>> {
+) -> eyre::Result<impl Stream<Item = Event> + use<>> {
     let (tx, rx) = mpsc::channel(10);
 
     let (finish_tx, mut finish_rx) = mpsc::channel(1);

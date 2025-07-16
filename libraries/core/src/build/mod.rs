@@ -5,10 +5,10 @@ use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
 use crate::descriptor::ResolvedNode;
 use dora_message::{
+    SessionId,
     common::{GitSource, LogLevel},
     descriptor::{CoreNodeKind, EnvValue},
     id::NodeId,
-    SessionId,
 };
 use eyre::Context;
 
@@ -27,14 +27,17 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub async fn build_node(
+    pub async fn build_node<L>(
         self,
         node: ResolvedNode,
         git: Option<GitSource>,
         prev_git: Option<PrevGitSource>,
-        mut logger: impl BuildLogger,
+        mut logger: L,
         git_manager: &mut GitManager,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<BuiltNode>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuiltNode>> + use<L>>
+    where
+        L: BuildLogger,
+    {
         let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
             let target_dir = self.base_working_dir.join("git");
             let git_folder = git_manager.choose_clone_dir(
