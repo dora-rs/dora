@@ -219,11 +219,6 @@ pub struct Node {
     /// ```
     pub env: Option<BTreeMap<String, EnvValue>>,
 
-    /// Unstable machine deployment configuration
-    #[schemars(skip)]
-    #[serde(rename = "_unstable_deploy")]
-    pub deploy: Option<Deploy>,
-
     /// Multiple operators running in a shared runtime process.
     ///
     /// Operators are an experimental, lightweight alternative to nodes.
@@ -462,6 +457,11 @@ pub struct Node {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
+
+    /// Unstable machine deployment configuration
+    #[schemars(skip)]
+    #[serde(rename = "_unstable_deploy")]
+    pub deploy: Option<Deploy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
