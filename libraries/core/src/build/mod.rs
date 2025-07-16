@@ -111,7 +111,13 @@ async fn build_node(
     uv: bool,
 ) -> eyre::Result<()> {
     logger
-        .log_message(LogLevel::Info, format!("running build command: `{build}"))
+        .log_message(
+            LogLevel::Info,
+            format!(
+                "running build command: `{build}` in {}",
+                working_dir.display()
+            ),
+        )
         .await;
     let build = build.to_owned();
     let node_env = node_env.clone();
