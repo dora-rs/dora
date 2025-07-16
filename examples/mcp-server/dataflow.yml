@@ -7,7 +7,7 @@ nodes:
     inputs:
       counter_reply: counter/reply
     env:
-      MCP_SERVER_CONFIG: config.toml
+      CONFIG: config.toml
 
   - id: counter
     path: nodes/counter.py
