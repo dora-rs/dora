@@ -143,7 +143,10 @@ features = Features({
 dataset = dataset.cast(features)
 # print("AAAAAAAAAAAAAAAAAA: ", dataset.features)
 
+'''
+dataset.push_to_hub("zhiyingzou0202/object_detection_bbox_various_test")
 
+'''
 ##########
 # normalise the names
 def label_replace(example, keyword, new_name):
@@ -151,12 +154,16 @@ def label_replace(example, keyword, new_name):
         example["bbox_location_name_label"] = example["bbox_location_name_label"][:37] + new_name
         example["name_label"] = new_name
     return example
-dataset = dataset.map(label_replace, fn_kwargs={"keyword": "green", "new_name": "green leafy vegetables"})
-dataset = dataset.map(label_replace, fn_kwargs={"keyword": "carrot", "new_name": "shredded carrots"})
+# dataset = dataset.map(label_replace, fn_kwargs={"keyword": "green", "new_name": "green leafy vegetables"})
+# dataset = dataset.map(label_replace, fn_kwargs={"keyword": "carrot", "new_name": "shredded carrots"})
+# dataset = dataset.map(label_replace, fn_kwargs={"keyword": "purple", "new_name": "shredded purple cabbage"})
+# dataset = dataset.map(label_replace, fn_kwargs={"keyword": "food", "new_name": "shredded purple cabbage"})
 
 def remove_brackets(example):
     if example["name_label"].startswith("['") and example["name_label"].endswith("']"):
         example["name_label"] = example["name_label"][2:-2]
+    if "' '" in example["name_label"]:
+        example["name_label"] = example["name_label"].replace("' '", ', ')
     return example
 dataset = dataset.map(remove_brackets)
 
@@ -164,9 +171,9 @@ dataset = dataset.map(remove_brackets)
 ##########
 # combine with existing dataset 
 from datasets import load_dataset, concatenate_datasets, DatasetDict
-old_dataset = load_dataset("zhiyingzou0202/object_detection_bbox_paligemma", split="train+validation+test", features=features)
+old_dataset = load_dataset("zhiyingzou0202/object_detection_bbox_3", split="train+validation+test", features=features)
 print("existing data:", len(old_dataset))
-
+old_dataset = old_dataset.map(label_replace, fn_kwargs={"keyword": "orange", "new_name": "shredded carrots"})
 combined_dataset = concatenate_datasets([old_dataset, dataset])
 
 
@@ -183,5 +190,5 @@ testing_splits = test_val_split["test"]
 ##########
 # push to hub
 from datasets import DatasetDict
-DatasetDict({"train": training_splits, "validation": validation_splits, "test": testing_splits}).push_to_hub("zhiyingzou0202/testtt")
+DatasetDict({"train": training_splits, "validation": validation_splits, "test": testing_splits}).push_to_hub("zhiyingzou0202/object_detection_bbox_multi")
 
