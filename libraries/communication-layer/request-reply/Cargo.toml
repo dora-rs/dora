@@ -2,6 +2,7 @@
 name = "communication-layer-request-reply"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
 description.workspace = true
 license.workspace = true
