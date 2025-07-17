@@ -19,8 +19,11 @@
 //! For standard nodes, the recommended initialization function is [`init_from_env`][`DoraNode::init_from_env`].
 //! This function will return two values, a [`DoraNode`] instance and an [`EventStream`]:
 //!
-//! ```
+//! ```no_run
+//! use dora_node_api::DoraNode;
+//!
 //! let (mut node, mut events) = DoraNode::init_from_env()?;
+//! # Ok::<(), eyre::Report>(())
 //! ```
 //!
 //! You can use the `node` instance to send outputs and retrieve information about the node and
