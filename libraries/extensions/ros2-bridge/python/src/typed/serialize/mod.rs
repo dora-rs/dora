@@ -100,7 +100,7 @@ impl serde::Serialize for TypedValue<'_> {
     }
 }
 
-impl<'a> TypedValue<'a> {
+impl TypedValue<'_> {
     fn serialize_field<S>(
         &self,
         field: &dora_ros2_bridge_msg_gen::types::Member,

@@ -27,6 +27,7 @@ pub fn init(
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum EventItem {
     NodeEvent {
         event: NodeEvent,

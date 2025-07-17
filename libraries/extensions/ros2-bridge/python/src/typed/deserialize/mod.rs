@@ -55,7 +55,7 @@ struct StructVisitor<'a> {
     type_info: &'a TypeInfo<'a>,
 }
 
-impl<'a, 'de> serde::de::Visitor<'de> for StructVisitor<'a> {
+impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
     type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
