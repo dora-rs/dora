@@ -2,6 +2,7 @@
 name = "terminal-print"
 edition.workspace = true
 version.workspace = true
+rust-version.workspace = true
 description.workspace = true
 documentation.workspace = true
 license.workspace = true

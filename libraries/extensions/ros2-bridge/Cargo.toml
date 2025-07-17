@@ -2,6 +2,7 @@
 name = "dora-ros2-bridge"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "ROS2 bridge for dora-rs"
 links = "dora-ros2-bridge"

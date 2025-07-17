@@ -1,6 +1,6 @@
 [package]
 name = "dora-dav1d"
-edition = "2021"
+edition.workspace = true
 license = "BSD-2-Clause"
 version.workspace = true
 
