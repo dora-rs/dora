@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Additional data that is sent as part of output messages.
 ///
-/// Includes a timestamp, type information, and additional user-provided paramters.
+/// Includes a timestamp, type information, and additional user-provided parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     metadata_version: u16,
