@@ -49,7 +49,7 @@ pub fn check_dataflow(
                             info!("skipping path check for node with build command");
                         } else {
                             resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{}`", source)
+                                format!("Could not find source path `{source}`")
                             })?;
                         };
                     }

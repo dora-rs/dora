@@ -374,7 +374,7 @@ impl Logger {
             .await
             .wrap_err("failed to send log message to dora-coordinator")
         {
-            Ok(()) => return,
+            Ok(()) => (),
             Err(err) => tracing::warn!("{err:?}"),
         }
     }

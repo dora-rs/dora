@@ -9,6 +9,7 @@ use shared_memory_extended::{Shmem, ShmemConf};
 
 #[derive(Debug)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Stop(StopCause),
     Reload {
