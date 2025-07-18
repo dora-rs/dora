@@ -26,6 +26,9 @@ pub use arrow_data;
 pub use arrow_schema;
 use uuid::{Timestamp, Uuid};
 
+/// Unique identifier for a dataflow instance.
+///
+/// Dora assigns each dataflow instance a unique ID on start.
 pub type DataflowId = uuid::Uuid;
 
 #[derive(

@@ -289,7 +289,7 @@ pub fn metadata_to_pydict<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{ptr::NonNull, sync::Arc};
 
     use aligned_vec::{AVec, ConstAlign};
     use arrow::{
@@ -301,9 +301,8 @@ mod tests {
     };
 
     use arrow_schema::{DataType, Field};
-    use dora_node_api::{
-        arrow_utils::{copy_array_into_sample, required_data_size},
-        RawData,
+    use dora_node_api::arrow_utils::{
+        buffer_into_arrow_array, copy_array_into_sample, required_data_size,
     };
     use eyre::{Context, Result};
 
@@ -313,9 +312,16 @@ mod tests {
 
         let info = copy_array_into_sample(&mut sample, arrow_array);
 
-        let serialized_deserialized_arrow_array = RawData::Vec(sample)
-            .into_arrow_array(&info)
-            .context("Could not create arrow array")?;
+        let serialized_deserialized_arrow_array = {
+            let ptr = NonNull::new(sample.as_ptr() as *mut _).unwrap();
+            let len = sample.len();
+
+            let raw_buffer = unsafe {
+                arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(sample))
+            };
+            buffer_into_arrow_array(&raw_buffer, &info)?
+        };
+
         assert_eq!(arrow_array, &serialized_deserialized_arrow_array);
 
         Ok(())
