@@ -17,10 +17,8 @@ fn main() -> eyre::Result<()> {
                 "random" => {
                     let value = u64::try_from(&data).context("unexpected data type")?;
 
-                    let output = format!(
-                        "operator received random value {value:#x} after {} ticks",
-                        ticks
-                    );
+                    let output =
+                        format!("operator received random value {value:#x} after {ticks} ticks");
                     node.send_output(
                         status_output.clone(),
                         metadata.parameters,

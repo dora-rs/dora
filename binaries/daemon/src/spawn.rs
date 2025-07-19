@@ -633,7 +633,7 @@ async fn path_spawn_command(
                     .wrap_err("failed to download custom node")?
             } else {
                 resolve_path(source, working_dir)
-                    .wrap_err_with(|| format!("failed to resolve node source `{}`", source))?
+                    .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
             };
 
             // If extension is .py, use python to run the script

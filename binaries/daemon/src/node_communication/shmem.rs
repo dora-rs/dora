@@ -42,6 +42,7 @@ pub async fn listener_loop(
     Listener::run(connection, daemon_tx, clock).await
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Operation {
     Receive(oneshot::Sender<eyre::Result<Option<Timestamped<DaemonRequest>>>>),
     Send {
