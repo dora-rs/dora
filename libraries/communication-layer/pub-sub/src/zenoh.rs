@@ -21,10 +21,7 @@ impl ZenohCommunicationLayer {
     /// and [`subscriber`][Self::subscribe] methods. Pass an empty string if no prefix is
     /// desired.
     pub fn init(config: Config, prefix: String) -> Result<Self, BoxError> {
-        let zenoh = ::zenoh::open(config)
-            .res_sync()
-            .map_err(BoxError::from)?
-            .into_arc();
+        let zenoh = ::zenoh::open(config).res_sync()?.into_arc();
         Ok(Self {
             zenoh,
             topic_prefix: prefix,
@@ -43,8 +40,7 @@ impl CommunicationLayer for ZenohCommunicationLayer {
             .declare_publisher(self.prefixed(topic))
             .congestion_control(CongestionControl::Block)
             .priority(Priority::RealTime)
-            .res_sync()
-            .map_err(BoxError::from)?;
+            .res_sync()?;
 
         Ok(Box::new(ZenohPublisher { publisher }))
     }
@@ -54,8 +50,7 @@ impl CommunicationLayer for ZenohCommunicationLayer {
             .zenoh
             .declare_subscriber(self.prefixed(topic))
             .reliable()
-            .res_sync()
-            .map_err(BoxError::from)?;
+            .res_sync()?;
 
         Ok(Box::new(ZenohReceiver(subscriber)))
     }
@@ -102,10 +97,7 @@ impl<'a> crate::PublishSample<'a> for ZenohPublishSample {
     }
 
     fn publish(self: Box<Self>) -> Result<(), BoxError> {
-        self.publisher
-            .put(self.sample)
-            .res_sync()
-            .map_err(BoxError::from)
+        self.publisher.put(self.sample).res_sync()
     }
 }
 

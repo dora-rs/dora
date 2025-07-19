@@ -2,6 +2,7 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum MergedEvent<E> {
     Dora(super::Event),
     External(E),

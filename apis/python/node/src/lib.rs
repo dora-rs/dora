@@ -320,6 +320,7 @@ impl Events {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum EventsInner {
     Dora(EventStream),
     Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send + Sync>),

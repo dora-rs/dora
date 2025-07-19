@@ -55,25 +55,24 @@ impl Executable for SelfSubCommand {
                                 );
                             } else {
                                 println!(
-                                    "Dora CLI is already at the latest version: {}",
-                                    current_version
+                                    "Dora CLI is already at the latest version: {current_version}"
                                 );
                             }
                         }
-                        Err(e) => println!("Failed to check for updates: {}", e),
+                        Err(e) => println!("Failed to check for updates: {e}"),
                     }
                 } else {
                     // Perform the actual update
                     match status.update() {
                         Ok(update_status) => match update_status {
                             self_update::Status::UpToDate(version) => {
-                                println!("Dora CLI is already at the latest version: {}", version);
+                                println!("Dora CLI is already at the latest version: {version}");
                             }
                             self_update::Status::Updated(version) => {
-                                println!("Successfully updated Dora CLI to version: {}", version);
+                                println!("Successfully updated Dora CLI to version: {version}");
                             }
                         },
-                        Err(e) => println!("Failed to update: {}", e),
+                        Err(e) => println!("Failed to update: {e}"),
                     }
                 }
             }
