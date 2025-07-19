@@ -147,7 +147,7 @@ pub fn update_boxes2d(
             });
         }
 
-        if values.len() == 0 {
+        if values.is_empty() {
             rec.log(id.as_str(), &rerun::Clear::flat())
                 .wrap_err("Could not log Boxes2D")?;
             return Ok(());
@@ -178,7 +178,7 @@ pub fn update_boxes2d(
             });
         }
 
-        if values.len() == 0 {
+        if values.is_empty() {
             rec.log(id.as_str(), &rerun::Clear::flat())
                 .wrap_err("Could not log Boxes2D")?;
             return Ok(());
@@ -209,7 +209,7 @@ pub fn update_boxes2d(
             });
         }
 
-        if values.len() == 0 {
+        if values.is_empty() {
             rec.log(id.as_str(), &rerun::Clear::flat())
                 .wrap_err("Could not log Boxes2D")?;
             return Ok(());
@@ -239,7 +239,7 @@ pub fn update_boxes2d(
                 }
             });
         }
-        if values.len() == 0 {
+        if values.is_empty() {
             rec.log(id.as_str(), &rerun::Clear::flat())
                 .wrap_err("Could not log Boxes2D")?;
             return Ok(());

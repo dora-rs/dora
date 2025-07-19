@@ -1070,7 +1070,7 @@ impl Daemon {
             for task in tasks {
                 let NodeBuildTask {
                     node_id,
-                    dynamic_node,
+                    dynamic_node: _,
                     task,
                 } = task;
                 let node = task
@@ -2680,6 +2680,7 @@ impl Event {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum DaemonNodeEvent {
     OutputsDone {
         reply_sender: oneshot::Sender<DaemonReply>,

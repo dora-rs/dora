@@ -82,7 +82,7 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
             PathBuf::from(urdf_path)
         };
         let chain = k::Chain::<f32>::from_urdf_file(&urdf_path)
-            .context(format!("Could not load URDF {:#?}", urdf_path))?;
+            .context(format!("Could not load URDF {urdf_path:#?}"))?;
 
         let path = key.replace("_urdf", ".urdf").replace("_URDF", ".urdf");
         let transform = key.replace("_urdf", "_transform");
@@ -94,10 +94,9 @@ pub fn init_urdf(rec: &RecordingStream) -> Result<HashMap<String, Chain<f32>>> {
         }
         rec.log_file_from_path(&urdf_path, None, true)
             .context(format!(
-                "Could not log URDF file {:#?} within rerun-urdf-loader",
-                urdf_path
+                "Could not log URDF file {urdf_path:#?} within rerun-urdf-loader"
             ))?;
-        println!("Logging URDF file: {:#?}", urdf_path);
+        println!("Logging URDF file: {urdf_path:#?}");
 
         // Get transform by replacing URDF_ with TRANSFORM_
         if let Ok(transform) = std::env::var(transform) {

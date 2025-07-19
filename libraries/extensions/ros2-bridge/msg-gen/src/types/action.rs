@@ -97,7 +97,7 @@ impl Action {
 
         let request = Message {
             package: self.package.clone(),
-            name: format!("{}_Request", common),
+            name: format!("{common}_Request"),
             members: vec![
                 goal_id_type(),
                 Member {
@@ -115,7 +115,7 @@ impl Action {
         };
         let response = Message {
             package: self.package.clone(),
-            name: format!("{}_Response", common),
+            name: format!("{common}_Response"),
             members: vec![
                 Member {
                     name: "accepted".into(),
@@ -149,13 +149,13 @@ impl Action {
 
         let request = Message {
             package: self.package.clone(),
-            name: format!("{}_Request", common),
+            name: format!("{common}_Request"),
             members: vec![goal_id_type()],
             constants: vec![],
         };
         let response = Message {
             package: self.package.clone(),
-            name: format!("{}_Response", common),
+            name: format!("{common}_Response"),
             members: vec![
                 Member {
                     name: "status".into(),
