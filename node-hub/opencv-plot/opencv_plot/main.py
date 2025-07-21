@@ -150,7 +150,7 @@ def main():
                 storage = event["value"]
 
                 metadata = event["metadata"]
-                encoding = metadata["encoding"]
+                encoding = metadata["encoding"].lower()
                 width = metadata["width"]
                 height = metadata["height"]
                 if encoding == "bgr8":
@@ -206,7 +206,7 @@ def main():
 
             elif event_id == "bbox":
                 arrow_bbox = event["value"][0]
-                bbox_format = event["metadata"]["format"]
+                bbox_format = event["metadata"]["format"].lower()
 
                 if bbox_format == "xyxy":
                     bbox = arrow_bbox["bbox"].values.to_numpy().reshape(-1, 4)
