@@ -10,13 +10,12 @@ use std::{
 use url::Url;
 
 #[derive(Default)]
-#[allow(dead_code)]
 pub struct GitManager {
     /// Directories that are currently in use by running dataflows.
     pub clones_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
     /// Builds that are prepared, but not done yet.
     prepared_builds: BTreeMap<SessionId, PreparedBuild>,
-    reuse_for: BTreeMap<PathBuf, PathBuf>,
+    // reuse_for: BTreeMap<PathBuf, PathBuf>,
 }
 
 #[derive(Default)]
