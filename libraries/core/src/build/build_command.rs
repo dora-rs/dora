@@ -15,6 +15,8 @@ pub fn run_build_command(
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<()> {
+    std::fs::create_dir_all(working_dir).context("failed to create working directory")?;
+
     let lines = build.lines().collect::<Vec<_>>();
     for build_line in lines {
         let mut split = build_line.split_whitespace();
