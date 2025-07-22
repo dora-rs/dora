@@ -119,14 +119,16 @@ async fn build_node(
         run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
             .context("build command failed")
     });
-    tokio::spawn(async move {
+    let stdout_task = tokio::spawn(async move {
         while let Some(line) = stdout.recv().await {
             logger
                 .log_stdout(line.unwrap_or_else(|err| format!("io err: {}", err.kind())))
                 .await;
         }
     });
+    stdout_task.await?;
     task.await??;
+
     Ok(())
 }
 
